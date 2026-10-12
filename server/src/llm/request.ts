@@ -27,6 +27,7 @@ import { requestGoogleCloudVertex } from "./google.ts";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
+import { watchFirstByte } from "./transport.ts";
 import { sleep } from "./util.ts";
 
 export type { StreamResponseChunk };
@@ -595,6 +596,7 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     let generated: string;
     try {
         generated = await arg.ctx.localGeneration!(prompt, realModel, finalParams);
+        arg.ctx.firstByte?.mark();
     } catch (error) {
         if (arg.ctx.signal.aborted) {
             throw error;
@@ -844,6 +846,7 @@ async function requestOobaLegacy(arg: RequestDataArgumentExtended): Promise<requ
                         return;
                     }
                     try {
+                        arg.ctx.firstByte?.mark();
                         const json = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
                         if (json.event === "stream_end") {
                             end();
@@ -1232,6 +1235,9 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
                   fetch(input, {
                       ...init,
                       signal: init.signal ? AbortSignal.any([init.signal, arg.ctx.signal]) : arg.ctx.signal,
+                  }).then((response) => {
+                      const hook = arg.ctx.firstByte;
+                      return hook ? watchFirstByte(response, () => hook.mark()) : response;
                   }),
     });
     // The SDK takes no signal; `abort()` ends its open requests when the request ends.
@@ -1464,29 +1470,63 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
 
     let finalBody = applyAdditionalParameters(argument, headers, getAdditionalParameters(arg.ctx.db, arg.aiModel));
 
-    const da = await fetch("https://stablehorde.net/api/v2/generate/text/async", {
+    const hook = arg.ctx.firstByte;
+    /**
+     * The first byte of Horde's answer: Horde answers only in a response that ends the request (a
+     * refused submit, an impossible or finished poll, or one whose body cannot be read as such), so
+     * a response whose role its body decides keeps its first chunk's time (the layer's clock) and
+     * reports it once that body ended the request. Nothing is reported for a body that failed
+     * before its first chunk, nor after the request ended while it was being read (cancelled).
+     */
+    const watchHorde = (response: Response) => {
+        let at: number | undefined;
+        const watched = hook
+            ? watchFirstByte(response, () => {
+                  at ??= hook.now();
+              })
+            : response;
+        return {
+            response: watched,
+            answered: () => {
+                if (at !== undefined) {
+                    hook?.mark(at);
+                }
+            },
+        };
+    };
+
+    const submitResponse = await fetch("https://stablehorde.net/api/v2/generate/text/async", {
         body: JSON.stringify(finalBody),
         method: "POST",
         headers: headers,
         signal: abortSignal,
     });
 
-    if (da.status !== 202) {
+    if (submitResponse.status !== 202) {
+        // A refused submit is the answer from its first chunk on.
+        const refused = hook ? watchFirstByte(submitResponse, () => hook.mark()) : submitResponse;
         return {
             type: "fail",
-            result: await da.text(),
+            result: await refused.text(),
         };
     }
 
-    const json: {
+    const submitted = watchHorde(submitResponse);
+    let json: {
         id: string;
         kudos: number;
         message: string;
-    } = (await da.json()) as any;
-
+    };
     let warnMessage = "";
-    if (json.message) {
-        warnMessage = "with " + json.message;
+    try {
+        json = (await submitted.response.json()) as any;
+        if (json.message) {
+            warnMessage = "with " + json.message;
+        }
+    } catch (error) {
+        // An accepted submit whose body cannot be read ends the request.
+        submitted.answered();
+        throw error;
     }
 
     // The client polls until Horde answers; here a request that ended (the client went away, the
@@ -1499,38 +1539,47 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
                 result: "Aborted",
             };
         }
-        const data: any = await (
-            await fetch("https://stablehorde.net/api/v2/generate/text/status/" + json.id, { signal: arg.ctx.signal })
-        ).json();
-        if (!data.is_possible) {
-            // Fire and forget, as the client does; a failure must not become an unhandled rejection here.
-            fetch("https://stablehorde.net/api/v2/generate/text/status/" + json.id, {
-                method: "DELETE",
-            }).catch(() => {});
-            return {
-                type: "fail",
-                result: "Response not possible" + warnMessage,
-                noRetry: true,
-            };
-        }
-        if (data.done && Array.isArray(data.generations) && data.generations.length > 0) {
-            const generations: { text: string }[] = data.generations;
-            if (generations && generations.length > 0) {
+        const poll = watchHorde(
+            await fetch("https://stablehorde.net/api/v2/generate/text/status/" + json.id, { signal: arg.ctx.signal }),
+        );
+        try {
+            const data: any = await poll.response.json();
+            if (!data.is_possible) {
+                poll.answered();
+                // Fire and forget, as the client does; a failure must not become an unhandled rejection here.
+                fetch("https://stablehorde.net/api/v2/generate/text/status/" + json.id, {
+                    method: "DELETE",
+                }).catch(() => {});
                 return {
-                    type: "success",
-                    result: unstringlizeChat(
-                        generations[0].text ?? "",
-                        formated,
-                        arg.ctx,
-                        arg.ctx.selectedCharacterName ?? "",
-                    ),
+                    type: "fail",
+                    result: "Response not possible" + warnMessage,
+                    noRetry: true,
                 };
             }
-            return {
-                type: "fail",
-                result: "No Generations when done",
-                noRetry: true,
-            };
+            if (data.done && Array.isArray(data.generations) && data.generations.length > 0) {
+                poll.answered();
+                const generations: { text: string }[] = data.generations;
+                if (generations && generations.length > 0) {
+                    return {
+                        type: "success",
+                        result: unstringlizeChat(
+                            generations[0].text ?? "",
+                            formated,
+                            arg.ctx,
+                            arg.ctx.selectedCharacterName ?? "",
+                        ),
+                    };
+                }
+                return {
+                    type: "fail",
+                    result: "No Generations when done",
+                    noRetry: true,
+                };
+            }
+        } catch (error) {
+            // A poll whose body cannot be read or interpreted ends the request.
+            poll.answered();
+            throw error;
         }
     }
 }

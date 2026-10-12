@@ -866,6 +866,7 @@ async function runSpeaker(arg: {
                     } as Parameters<typeof services.request>[0],
                     "memory",
                     nativeCtx,
+                    "memory",
                 );
                 setup.check();
                 return response;
@@ -1047,6 +1048,9 @@ async function runSpeaker(arg: {
             } as Parameters<typeof services.request>[0],
             "model",
             nativeCtx,
+            "send",
+            // The reply's message: a continue's own, else the one the reply is appended as.
+            { messageId: generation?.messageId ?? generationId },
         );
         setup.check();
         if (req.model) {
@@ -1439,6 +1443,7 @@ async function runSpeaker(arg: {
                         { formated: igpFormated, bias: {}, chatRef } as Parameters<typeof services.request>[0],
                         "emotion",
                         nativeCtx,
+                        "igp",
                     );
                     setup.check();
                     if (rq.type === "success") {
@@ -1527,6 +1532,7 @@ async function runSpeaker(arg: {
                                 >[0],
                                 "emotion",
                                 nativeCtx,
+                                "emotion",
                             );
                             setup.check();
                             return rq;

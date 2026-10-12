@@ -13,6 +13,7 @@ import {
     type LlmRequestEvent,
     type ModelModeExtended,
     type RequestArgs,
+    type RequestSource,
     type RPCToolCallContent,
     type StreamResponseChunk,
     type ToolCallRecord,
@@ -49,6 +50,33 @@ export type ParentCallback = {
     endJob: () => void;
 };
 
+/** A request as the request layer admits it (`docs/plan/request-history-diagnostics.md`). */
+export type RequestBegin = {
+    requestId: string;
+    /** The job it runs for: its own (`runInJob`), the job callback a tab's request runs inside, or none. */
+    jobId: string | null;
+    source: RequestSource;
+    mode: ModelModeExtended;
+    chatRef: { chaId: string; chatId: string } | null;
+    /** The message it is for, where the caller knows it. */
+    messageId: string | null;
+    startedAt: number;
+};
+
+/** A fatal failure or a failed answer is an `error`; an end from outside (the job, the client, maintenance, shutdown) is `aborted`. */
+export type RequestEndStatus = "success" | "error" | "aborted";
+
+/**
+ * What the request layer reports about each request it admits: its start, the first byte of a
+ * provider's answer (`TransportOptions.onFirstByte`, at most once), and its end (exactly once). An
+ * observer's throw is logged; it never reaches the request.
+ */
+export type RequestObserver = {
+    begin(request: RequestBegin): void;
+    firstByte(requestId: string, at: number): void;
+    finish(requestId: string, end: { status: RequestEndStatus; completedAt: number }): void;
+};
+
 export type LlmRequestsOptions = {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
@@ -71,6 +99,7 @@ export type LlmRequestsOptions = {
     ) => Promise<string>;
     fetchImpl?: typeof fetch;
     now?: () => number;
+    observer?: RequestObserver;
 };
 
 type PendingCallback = {
@@ -115,6 +144,11 @@ class FatalRequestError extends Error {
         super(message);
         this.name = "FatalRequestError";
     }
+}
+
+/** How a request that ended with `reason` (its controller's) is reported. */
+function endStatus(reason: unknown): RequestEndStatus {
+    return reason instanceof FatalRequestError ? "error" : "aborted";
 }
 
 /** `strongBan` of `src/ts/tokenizer.ts`, its `localStorage` cache an LRU here (keyed by the text alone, as the client keys it). */
@@ -295,6 +329,11 @@ export type JobRequestSpec = {
     parseCbs: (text: string, chatRef?: { chaId: string; chatId: string } | null) => string;
     /** Persists what an adapter writes (signatures and audio on the server; images through the tab). */
     inlays: RequestContext["inlays"];
+    /** What made the request. */
+    source: RequestSource;
+    /** The chat the request is for, and its message where the caller knows it. */
+    chatRef: { chaId: string; chatId: string } | null;
+    messageId?: string | null;
     /** A redacted request-log entry (the tab's `requestLog` notice). */
     log: (entry: Record<string, unknown>) => void;
     /** A redacted `alertError` text for the tab. */
@@ -345,6 +384,62 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     let accepting = true;
     let paused = false;
 
+    type Tracker = {
+        /** The transport's `onFirstByte`: none without an observer, so the transport stays as it is. */
+        onFirstByte: (() => void) | undefined;
+        /** `RequestContext.firstByte`: none without an observer. */
+        hook: RequestContext["firstByte"];
+        /** `at`: when the byte came (the layer's clock), if earlier than now. */
+        firstByte(at?: number): void;
+        /** The request's end status; the first one set wins. */
+        settle(status: RequestEndStatus): void;
+        /** Reports the end once: the settled status, else `fallback`. */
+        finish(fallback: RequestEndStatus): void;
+    };
+
+    /** Reports one admitted request to the observer (`RequestObserver`). */
+    function track(request: Omit<RequestBegin, "startedAt">): Tracker {
+        const observer = options.observer;
+        const report = (call: (observer: RequestObserver) => void) => {
+            if (!observer) {
+                return;
+            }
+            try {
+                call(observer);
+            } catch (error) {
+                console.error("[LLM] request observer:", errorText(error));
+            }
+        };
+        let firstByteSeen = false;
+        let status: RequestEndStatus | null = null;
+        let finished = false;
+        report((o) => o.begin({ ...request, startedAt: now() }));
+        const firstByte = (at?: number) => {
+            if (firstByteSeen || finished) {
+                return;
+            }
+            firstByteSeen = true;
+            const time = at ?? now();
+            report((o) => o.firstByte(request.requestId, time));
+        };
+        return {
+            onFirstByte: observer ? () => firstByte() : undefined,
+            hook: observer ? { mark: firstByte, now } : undefined,
+            firstByte,
+            settle(next) {
+                status ??= next;
+            },
+            finish(fallback) {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                const end = { status: status ?? fallback, completedAt: now() };
+                report((o) => o.finish(request.requestId, end));
+            },
+        };
+    }
+
     function countOf(clientId: string) {
         let count = 0;
         for (const request of requests.values()) {
@@ -364,6 +459,9 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         extraModels: (modelId: string) => LLMModel[];
         /** A log entry, its header line already redacted. */
         log: (entry: FetchLogEntry) => void;
+        /** The first byte of a provider's answer: the transport's (`Tracker.onFirstByte`) and the hook (`Tracker.hook`). */
+        onFirstByte: Tracker["onFirstByte"];
+        firstByteHook: Tracker["hook"];
         alertError: (text: string) => void;
         parseCbs: RequestContext["parseCbs"];
         tools: RequestContext["tools"];
@@ -403,6 +501,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             log: (entry: FetchLogEntry) => p.log({ ...entry, header: redactHeaderText(entry.header) }),
             intercept: p.intercept,
             redact: (text) => p.redactor().text(text),
+            ...(p.onFirstByte ? { onFirstByte: p.onFirstByte } : {}),
             fetchImpl: options.fetchImpl,
         });
         return {
@@ -412,6 +511,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             userName: p.loaded.userName,
             signal: p.controller.signal,
             transport,
+            ...(p.firstByteHook ? { firstByte: p.firstByteHook } : {}),
             alertError: (message) => {
                 let text: string;
                 if (typeof message === "string") {
@@ -485,6 +585,14 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             finishedCallbacks: new Set(),
         };
         requests.set(id, live);
+        const tracker = track({
+            requestId: id,
+            jobId: spec.jobId,
+            source: spec.source,
+            mode: spec.mode,
+            chatRef: spec.chatRef,
+            messageId: spec.messageId ?? null,
+        });
         let resolveDrained!: () => void;
         const drained = new Promise<void>((resolve) => {
             resolveDrained = resolve;
@@ -499,6 +607,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             finalized = true;
             spec.signal.removeEventListener("abort", onJobAbort);
+            tracker.finish(controller.signal.aborted ? endStatus(controller.signal.reason) : "error");
             if (!controller.signal.aborted) {
                 controller.abort(new Error("The request finished"));
             }
@@ -526,6 +635,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             redactor: () => redactor,
             extraModels: () => [],
             log: (entry) => spec.log(redactLogEntry(entry, redactor)),
+            onFirstByte: tracker.onFirstByte,
+            firstByteHook: tracker.hook,
             alertError: (text) => spec.alertError(redactor.text(text)),
             parseCbs: async (text, chatRef) => spec.parseCbs(text, chatRef),
             tools: {
@@ -595,6 +706,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                         if (ended) {
                             return;
                         }
+                        tracker.firstByte();
                         if (!out) {
                             const stream = new ReadableStream<StreamResponseChunk>(
                                 {
@@ -651,6 +763,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                         .then((result) => {
                             switch (result.outcome) {
                                 case "answered": {
+                                    tracker.firstByte();
                                     const value = result.value as Record<string, unknown> | null;
                                     const isObject = typeof value === "object" && value !== null;
                                     if (
@@ -736,10 +849,12 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             browserOnlyModels: true,
         });
         const failed = (error: unknown): requestDataResponse => {
+            // The request's own reason first: a fatal failure that also ended the job is its error.
+            const reason = controller.signal.aborted ? controller.signal.reason : error;
+            tracker.settle(controller.signal.aborted ? endStatus(reason) : spec.signal.aborted ? "aborted" : "error");
             if (spec.signal.aborted) {
                 throw spec.signal.reason ?? new Error("The job ended");
             }
-            const reason = controller.signal.aborted ? controller.signal.reason : error;
             return { type: "fail", result: redactor.text(errorText(reason)), noRetry: true };
         };
         let response: requestDataResponse;
@@ -764,14 +879,16 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
         }
         if (response.type !== "streaming") {
+            tracker.settle(response.type === "fail" ? "error" : "success");
             finalize();
             return response.type === "fail" || spec.arg.previewBody ? redactResponse(response, redactor) : response;
         }
         const reader = response.result.getReader();
         let output!: ReadableStreamDefaultController<StreamResponseChunk>;
         let settled = false;
-        const end = () => {
+        const end = (status: RequestEndStatus) => {
             settled = true;
+            tracker.settle(status);
             controller.signal.removeEventListener("abort", onAbort);
             finalize();
         };
@@ -783,7 +900,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             const reason = new Error(redactor.text(errorText(controller.signal.reason)));
             reader.cancel(controller.signal.reason).catch(() => {});
-            end();
+            end(endStatus(controller.signal.reason));
             try {
                 output.error(reason);
             } catch {}
@@ -801,7 +918,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                             return;
                         }
                         if (done) {
-                            end();
+                            end("success");
                             out.close();
                             return;
                         }
@@ -811,13 +928,13 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                             return;
                         }
                         const reason = controller.signal.aborted ? controller.signal.reason : error;
-                        end();
+                        end(controller.signal.aborted ? endStatus(reason) : "error");
                         out.error(new Error(redactor.text(errorText(reason))));
                     }
                 },
                 cancel(reason) {
                     reader.cancel(reason).catch(() => {});
-                    end();
+                    end("aborted");
                 },
             },
             { highWaterMark: 0 },
@@ -898,6 +1015,14 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 ? { ok: false, status: 404, error: "The chat this request is for no longer exists" }
                 : { ok: false, status: 409, ...refusal };
         }
+        const tracker = track({
+            requestId: id,
+            jobId: body.channelCall?.jobId ?? null,
+            source: "tab",
+            mode: body.mode,
+            chatRef: body.arg.chatRef ?? null,
+            messageId: null,
+        });
 
         let redactor: Redactor = createRedactor([]);
         let streamController!: ReadableStreamDefaultController<Uint8Array>;
@@ -906,20 +1031,22 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         let finalized = false;
         const encoder = new TextEncoder();
 
-        const emit = (event: LlmRequestEvent) => {
+        /** Queues `event`; false when it was not (the stream is closed, or the client stopped reading). */
+        const emit = (event: LlmRequestEvent): boolean => {
             if (closed) {
-                return;
+                return false;
             }
             const bytes = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
             // The queue is measured in bytes (the strategy below), so this is what is still unread.
             if (-(streamController.desiredSize ?? 0) + bytes.byteLength > MAX_QUEUED_EVENT_BYTES) {
                 controller.abort(new Error("The client stopped reading the request's events"));
-                return;
+                return false;
             }
             if (event.type === "result" || event.type === "end" || event.type === "error") {
                 terminalSent = true;
             }
             streamController.enqueue(bytes);
+            return true;
         };
         /**
          * The secret-free projection of an event (`redact.ts`), field by field: the event's type,
@@ -979,6 +1106,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             finalized = true;
             signal.removeEventListener("abort", onClientAbort);
             parent?.unwatch();
+            tracker.finish(controller.signal.aborted ? endStatus(controller.signal.reason) : "error");
             if (!controller.signal.aborted) {
                 controller.abort(new Error("The request finished"));
             } else if (!terminalSent) {
@@ -1068,6 +1196,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 });
             } catch (error) {
                 if (error instanceof RequestTargetGoneError) {
+                    tracker.settle("error");
                     emit({ type: "result", response: { type: "fail", result: error.message, noRetry: true } });
                     return;
                 }
@@ -1124,6 +1253,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 redactor: () => redactor,
                 extraModels: (modelId) => dynamicModelFor(body, modelId),
                 log: (entry) => emitRedacted({ type: "log", entry }),
+                onFirstByte: tracker.onFirstByte,
+                firstByteHook: tracker.hook,
                 alertError: (text) => emitRedacted({ type: "notice", kind: "alertError", message: text }),
                 parseCbs: async (text, chatRef) => {
                     let value: unknown;
@@ -1199,7 +1330,14 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 // A failure and a preview may carry a request's credentials; a model's answer is
                 // the user's text and is sent as it is (redaction would rewrite URLs in it).
                 const exposesRequest = response.type === "fail" || !!body.arg.previewBody;
-                (exposesRequest ? emitRedacted : emit)({ type: "result", response });
+                if (response.type === "fail") {
+                    // The provider failed whether or not the client gets the result.
+                    tracker.settle("error");
+                }
+                // A success counts once delivered: an answer the client never got is not one.
+                if ((exposesRequest ? emitRedacted : emit)({ type: "result", response })) {
+                    tracker.settle("success");
+                }
                 return;
             }
             emit({
@@ -1255,11 +1393,12 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                         ...(remove.length ? { remove } : {}),
                     });
                 }
-                if (!controller.signal.aborted) {
-                    emit({ type: "end" });
+                if (!controller.signal.aborted && emit({ type: "end" })) {
+                    tracker.settle("success");
                 }
             } catch (error) {
                 if (!controller.signal.aborted) {
+                    tracker.settle("error");
                     emitRedacted({ type: "error", message: errorText(error) });
                 }
             } finally {
@@ -1272,6 +1411,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 if (!controller.signal.aborted) {
                     // A failure before any response: the client's adapters would have rejected; the
                     // transport turns it into a fail result.
+                    tracker.settle("error");
                     emitRedacted({ type: "error", message: errorText(error) });
                 }
             })

@@ -323,6 +323,7 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
                 { formated: [{ role: "user", content: "go" }], bias: {} } as never,
                 "model",
                 ctx,
+                "mcp",
             );
         } finally {
             hooks.request = previous;
@@ -361,7 +362,7 @@ describe("internal:risuai on the server: reads", () => {
             offered = spec.tools.descriptors.map((descriptor) => descriptor.name);
             return { type: "success", result: "done" };
         };
-        await s.bindings.services.request({ formated: [], bias: {} } as never, "model", s.ctx);
+        await s.bindings.services.request({ formated: [], bias: {} } as never, "model", s.ctx, "mcp");
         // The modules name aiaccess and graphmem: theirs are offered, RisuAccess's are not.
         expect(offered).toEqual(["runLLM", "writeMemory", "readMemory"]);
 

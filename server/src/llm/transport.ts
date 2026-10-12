@@ -83,6 +83,12 @@ export type TransportOptions = {
     intercept?: (body: unknown, type: string) => Promise<unknown>;
     /** Removes the request's credentials from a text the server logs or returns. */
     redact?: (text: string) => string;
+    /**
+     * A provider's answer began: the first body chunk of a buffered or streamed answer (its end, for
+     * an empty body; at once for a response without a body). Called for every fetch; the caller keeps
+     * the first.
+     */
+    onFirstByte?: () => void;
     fetchImpl?: typeof fetch;
 };
 
@@ -132,6 +138,33 @@ function timeoutSignal(
             ? setTimeout(() => controller.abort(new DOMException("The request timed out", "TimeoutError")), timeoutMs)
             : undefined;
     return { signal: controller.signal, cleanup: () => clearTimeout(timer) };
+}
+
+/** `response` whose body calls `mark` with its first chunk (or its end, when it has none). */
+export function watchFirstByte(response: Response, mark: () => void): Response {
+    if (!response.body) {
+        mark();
+        return response;
+    }
+    let seen = false;
+    const body = response.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+                if (!seen) {
+                    seen = true;
+                    mark();
+                }
+                controller.enqueue(chunk);
+            },
+            flush() {
+                if (!seen) {
+                    seen = true;
+                    mark();
+                }
+            },
+        }),
+    );
+    return new Response(body, { headers: response.headers, status: response.status, statusText: response.statusText });
 }
 
 function stringify(value: unknown): string {
@@ -209,14 +242,16 @@ export function createTransport(options: TransportOptions): Transport {
                     method,
                     signal: timeout.signal,
                 });
+                // The answer's first body byte, not its headers: read through the watched body.
+                const answer = options.onFirstByte ? watchFirstByte(response, options.onFirstByte) : response;
                 const isSuccess = response.ok && response.status >= 200 && response.status < 300;
                 const responseHeaders = Object.fromEntries(response.headers);
                 if (arg.rawResponse) {
-                    const data = new Uint8Array(await response.arrayBuffer());
+                    const data = new Uint8Array(await answer.arrayBuffer());
                     logBuffered("Uint8Array Response", isSuccess, url, arg, response.status);
                     return { ok: isSuccess, data, headers: responseHeaders, status: response.status };
                 }
-                const text = await response.text();
+                const text = await answer.text();
                 try {
                     const data = JSON.parse(text);
                     logBuffered(data, isSuccess, url, arg, response.status);
@@ -283,12 +318,13 @@ export function createTransport(options: TransportOptions): Transport {
             });
         }
         try {
-            return await fetchImpl(url, {
+            const response = await fetchImpl(url, {
                 body: realBody as RequestInit["body"],
                 headers,
                 method: arg.method,
                 signal: timeout.signal,
             });
+            return options.onFirstByte ? watchFirstByte(response, options.onFirstByte) : response;
         } catch (error) {
             if (isAbort(error) || timeout.signal.aborted) {
                 throw error;

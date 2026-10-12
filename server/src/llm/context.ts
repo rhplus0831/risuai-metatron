@@ -32,6 +32,14 @@ export type RequestContext = {
     /** The request's own signal (the client went away, the server is shutting down). */
     signal: AbortSignal;
     transport: Transport;
+    /**
+     * The first byte of a provider's answer on a path outside `transport` (a local model's answer, a
+     * WebSocket's first frame, an SDK's own fetch, Horde's terminal response); the request layer keeps
+     * the first. `mark()` reports it now; `mark(at)` reports an earlier time read from `now()`, the
+     * request layer's clock (Horde's body is read before it is known to be the answer). None without
+     * a request observer.
+     */
+    firstByte?: { mark(at?: number): void; now(): number };
     /** `alertError(message)` in the client's tab (an `Error` sends its message). */
     alertError: (message: string | Error) => void;
     /**

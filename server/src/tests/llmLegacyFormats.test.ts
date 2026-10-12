@@ -7,7 +7,7 @@ import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
-import { createLlmRequests } from "../llm/requests.ts";
+import { createLlmRequests, type LlmRequestsOptions, type RequestObserver } from "../llm/requests.ts";
 
 // Phase 5 slice 7a, the recorded provider bodies of the formats whose client functions lived in
 // `src/ts/process/request/request.ts` itself (NovelAI, Kobold, Cohere, NovelList, Horde, Echo) and
@@ -28,6 +28,7 @@ function harness(
     preset: Record<string, unknown>,
     providers: Record<string, unknown>,
     respond: (call: Call) => Response,
+    options: Partial<LlmRequestsOptions> = {},
 ) {
     const records: Record<string, unknown> = {
         providers: normalizeProviders(providers),
@@ -86,6 +87,7 @@ function harness(
         claudeObserver: { register() {}, reset() {}, dispose() {} } as never,
         parentCallback: () => null,
         fetchImpl,
+        ...options,
     });
     return { registry, calls };
 }
@@ -304,5 +306,228 @@ describe("the legacy formats on the server", () => {
         expect(await run(registry, body())).toEqual({ type: "result", response: { type: "success", result: "pong" } });
         expect(calls).toHaveLength(0);
         await registry.dispose();
+    });
+});
+
+describe("Horde's first byte (request history slice 1)", () => {
+    // Horde answers only in a response that ends the request (`requestHorde`'s `watchHorde`): a
+    // refused submit at its first chunk; an impossible or finished poll, or a submit or poll whose
+    // body cannot be read, at the first chunk it kept, on the layer's clock; nothing for an accepted
+    // submit, an unfinished poll, a fetch that fails before any chunk, or a body still being read
+    // when the client left. Each case runs observed and unobserved: the terminal event and the fetch
+    // sequence must agree (the observer changes nothing about the request).
+    const ASYNC = "https://stablehorde.net/api/v2/generate/text/async";
+    const STATUS = "https://stablehorde.net/api/v2/generate/text/status/gen-1";
+    const accepted = () => json({ id: "gen-1", kudos: 1, message: "" }, 202);
+    const finished = () => json({ is_possible: true, done: true, generations: [{ text: "horde says" }] });
+    type Seen = [kind: "begin" | "firstByte" | "finish", ...rest: unknown[]];
+    type Fetched = { url: string; method: string; at: number };
+
+    /**
+     * One Horde request whose upstream answers each fetch from `answers` in order (a throw rejects
+     * the fetch; `json({})` once they run out, for the fire-and-forget DELETE), over a clock that
+     * reads one more each time from 1000 (else `options.now`): the terminal event, the fetches with
+     * the clock at each, and what the observer saw (none without one).
+     */
+    async function runHorde(
+        answers: () => (() => Response)[],
+        options: { observe?: boolean; now?: () => number } = {},
+    ) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const realFetch = globalThis.fetch;
+        let tick = 1000;
+        const now = options.now ?? (() => tick++);
+        const seen: Seen[] = [];
+        const observer: RequestObserver = {
+            begin: (request) => void seen.push(["begin", request]),
+            firstByte: (requestId, at) => void seen.push(["firstByte", requestId, at]),
+            finish: (requestId, end) => void seen.push(["finish", requestId, end]),
+        };
+        const fetched: Fetched[] = [];
+        const queue = answers();
+        globalThis.fetch = (async (input: string, init: RequestInit = {}) => {
+            fetched.push({ url: input, method: init.method ?? "GET", at: now() });
+            const next = queue.shift();
+            return next ? next() : json({});
+        }) as typeof fetch;
+        try {
+            const { registry } = harness(
+                { aiModel: "horde:::auto" },
+                {},
+                () => json({}),
+                options.observe === false ? { now } : { now, observer },
+            );
+            let settled = false;
+            const pending = run(registry, body()).finally(() => (settled = true));
+            for (let i = 0; !settled && i < 8; i++) {
+                await vi.advanceTimersByTimeAsync(2000);
+            }
+            const result = await pending;
+            await registry.dispose();
+            return { result, fetched, seen, kinds: seen.map((entry) => entry[0]) };
+        } finally {
+            globalThis.fetch = realFetch;
+            vi.useRealTimers();
+        }
+    }
+    /** Both runs of one script; they must agree on the terminal event and the fetch sequence. */
+    async function both(answers: () => (() => Response)[]) {
+        const observed = await runHorde(answers);
+        const unobserved = await runHorde(answers, { observe: false });
+        expect(unobserved.result).toEqual(observed.result);
+        expect(unobserved.fetched.map(({ url, method }) => [url, method])).toEqual(
+            observed.fetched.map(({ url, method }) => [url, method]),
+        );
+        expect(unobserved.seen).toEqual([]);
+        return observed;
+    }
+    const status = (seen: Seen[]) => (seen.at(-1)?.[2] as { status: string }).status;
+    const firstByteAt = (seen: Seen[]) => seen.find((entry) => entry[0] === "firstByte")?.[2] as number | undefined;
+
+    it("a finished poll is the answer: nothing for the accepted submit or an unfinished poll (one `done` without generations too), the first byte once at the finished poll's first chunk, then a success", async () => {
+        const observed = await both(() => [
+            accepted,
+            () => json({ is_possible: true, done: false }),
+            () => json({ is_possible: true, done: true, generations: [] }),
+            finished,
+        ]);
+        expect(observed.result).toEqual({ type: "result", response: { type: "success", result: "horde says" } });
+        expect(observed.fetched.map((entry) => entry.url)).toEqual([ASYNC, STATUS, STATUS, STATUS]);
+        expect(observed.kinds).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(observed.seen)).toBe("success");
+        // Kept at the finished poll's first chunk: after that poll's fetch, before the end.
+        const at = firstByteAt(observed.seen)!;
+        expect(at).toBeGreaterThan(observed.fetched[3].at);
+        expect((observed.seen[2][2] as { completedAt: number }).completedAt).toBeGreaterThan(at);
+        expect((observed.seen[0][1] as { startedAt: number }).startedAt).toBe(1000);
+    });
+
+    it("a response that ends the request reports the first byte it kept: a refused submit, a submit or poll whose body is not JSON (an HTML 502), a poll body of `null`, an impossible generation; a poll whose fetch fails before any chunk reports none", async () => {
+        const html = (status: number) =>
+            new Response("<html><body>Bad Gateway</body></html>", { status, headers: { "content-type": "text/html" } });
+        const cases: [name: string, answers: () => (() => Response)[], terminal: unknown, kinds: Seen[0][]][] = [
+            [
+                "refused submit",
+                () => [() => new Response("insufficient kudos", { status: 401 })],
+                { type: "result", response: { type: "fail", result: "insufficient kudos" } },
+                ["begin", "firstByte", "finish"],
+            ],
+            ["accepted submit not JSON", () => [() => html(202)], { type: "error" }, ["begin", "firstByte", "finish"]],
+            ["poll not JSON", () => [accepted, () => html(502)], { type: "error" }, ["begin", "firstByte", "finish"]],
+            ["poll null", () => [accepted, () => json(null)], { type: "error" }, ["begin", "firstByte", "finish"]],
+            [
+                "impossible",
+                () => [accepted, () => json({ is_possible: false })],
+                { type: "result", response: { type: "fail", result: "Response not possible", noRetry: true } },
+                ["begin", "firstByte", "finish"],
+            ],
+            [
+                "poll fetch failed",
+                () => [
+                    accepted,
+                    () => {
+                        throw new TypeError("fetch failed");
+                    },
+                ],
+                { type: "error", message: "fetch failed" },
+                ["begin", "finish"],
+            ],
+        ];
+        for (const [name, answers, terminal, kinds] of cases) {
+            const observed = await both(answers);
+            expect(observed.result, name).toMatchObject(terminal as object);
+            expect(observed.kinds, name).toEqual(kinds);
+            expect(status(observed.seen), name).toBe("error");
+            if (kinds.includes("firstByte")) {
+                // Kept after the fetch of the response that ended the request (not the DELETE after it).
+                const ending = observed.fetched.filter((entry) => entry.method !== "DELETE").at(-1)!;
+                expect(firstByteAt(observed.seen), name).toBeGreaterThan(ending.at);
+            }
+        }
+        // The impossible generation is withdrawn, as the client does.
+        const impossible = await runHorde(() => [accepted, () => json({ is_possible: false })]);
+        expect(impossible.fetched.map(({ url, method }) => [url, method])).toEqual([
+            [ASYNC, "POST"],
+            [STATUS, "GET"],
+            [STATUS, "DELETE"],
+        ]);
+    });
+
+    it("reads the layer's clock: a clock at 0 reports 0", async () => {
+        const observed = await runHorde(() => [accepted, finished], { now: () => 0 });
+        expect(observed.result).toEqual({ type: "result", response: { type: "success", result: "horde says" } });
+        expect(observed.seen).toEqual([
+            ["begin", expect.objectContaining({ source: "tab", startedAt: 0 })],
+            ["firstByte", expect.any(String), 0],
+            ["finish", expect.any(String), { status: "success", completedAt: 0 }],
+        ]);
+    });
+
+    it("a poll body still being read when the client left reports nothing: the request is aborted, and the chunk it kept is never reported", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const realFetch = globalThis.fetch;
+        const seen: Seen[] = [];
+        const observer: RequestObserver = {
+            begin: (request) => void seen.push(["begin", request]),
+            firstByte: (requestId, at) => void seen.push(["firstByte", requestId, at]),
+            finish: (requestId, end) => void seen.push(["finish", requestId, end]),
+        };
+        let release!: () => void;
+        let pulledAgain!: () => void;
+        const chunkTaken = new Promise<void>((resolve) => (pulledAgain = resolve));
+        const urls: string[] = [];
+        globalThis.fetch = (async (input: string) => {
+            urls.push(input);
+            if (input.endsWith("/generate/text/async")) {
+                return accepted();
+            }
+            // One chunk, then open until `release`.
+            let pulls = 0;
+            return new Response(
+                new ReadableStream<Uint8Array>({
+                    pull(controller) {
+                        if (pulls++ === 0) {
+                            controller.enqueue(new TextEncoder().encode("{"));
+                            return;
+                        }
+                        pulledAgain();
+                        return new Promise<void>((resolve) => {
+                            release = () => {
+                                controller.enqueue(new TextEncoder().encode(' "is_possible": false }'));
+                                controller.close();
+                                resolve();
+                            };
+                        });
+                    },
+                }),
+                { status: 200 },
+            );
+        }) as typeof fetch;
+        try {
+            const { registry } = harness({ aiModel: "horde:::auto" }, {}, () => json({}), { observer });
+            const controller = new AbortController();
+            const started = registry.start(body(), controller.signal);
+            if (!started.ok) {
+                throw new Error(started.error);
+            }
+            const text = new Response(started.stream).text();
+            await vi.advanceTimersByTimeAsync(2000);
+            await chunkTaken;
+            expect(urls).toEqual([ASYNC, STATUS]);
+            expect(seen.map((entry) => entry[0])).toEqual(["begin"]);
+            controller.abort();
+            expect(seen.map((entry) => entry[0])).toEqual(["begin", "finish"]);
+            expect((seen[1][2] as { status: string }).status).toBe("aborted");
+            expect(registry.liveIds()).toEqual([]);
+            // The body ends after the request did: its interpretation reports nothing.
+            release();
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(await text).toContain("The client went away");
+            expect(seen.map((entry) => entry[0])).toEqual(["begin", "finish"]);
+            await registry.dispose();
+        } finally {
+            globalThis.fetch = realFetch;
+            vi.useRealTimers();
+        }
     });
 });

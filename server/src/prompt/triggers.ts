@@ -905,6 +905,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             } as RequestArgs,
                             effect.model,
                             ctx,
+                            "trigger",
                         );
                         services.fence(ctx);
 

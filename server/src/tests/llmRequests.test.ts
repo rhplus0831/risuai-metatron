@@ -5,6 +5,7 @@ import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from ".
 import type {
     LlmRequestBody,
     LlmRequestEvent,
+    RequestSource,
     RPCToolCallContent,
     StreamResponseChunk,
     ToolCallRecord,
@@ -22,9 +23,11 @@ import {
     type JobRequestSpec,
     MAX_REQUESTS_PER_CLIENT,
     type LlmRequestsOptions,
+    type RequestObserver,
 } from "../llm/requests.ts";
 import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
+import { watchFirstByte } from "../llm/transport.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 7a: the live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`)
@@ -941,59 +944,66 @@ describe("OobaLegacy over a real Node WebSocket", () => {
     });
 });
 
-describe("a job's in-process request (runInJob, slice 8a)", () => {
-    const ids = {
-        presetId: "p",
-        modelPresetId: "m",
-        personaId: "u",
-        selectedPersonaId: "u",
-        selectedCharacterId: "c",
-        speakerId: null,
+/** The ids of the job targets a job's request runs on (`JOB_TARGETS`). */
+const ids = {
+    presetId: "p",
+    modelPresetId: "m",
+    personaId: "u",
+    selectedPersonaId: "u",
+    selectedCharacterId: "c",
+    speakerId: null,
+};
+/** A spec over `records` with recording sinks; `channel.callback` answers `intercept`. */
+function jobSpec(
+    records: Records,
+    options: {
+        intercept?: CallbackResult;
+        streaming?: boolean;
+        signal?: AbortSignal;
+        /** The job's MCP tools (slice 12a); none by default. */
+        tools?: JobRequestSpec["tools"];
+        /** What the request is recorded as (request history slice 1); a Lua request of no chat by default. */
+        source?: RequestSource;
+        chatRef?: { chaId: string; chatId: string } | null;
+        messageId?: string | null;
+    } = {},
+) {
+    const loaded = loadRequestDb(fakeStore(records), kinds, ids);
+    const logs: unknown[] = [];
+    const alerts: string[] = [];
+    const ended: string[] = [];
+    const spec: JobRequestSpec = {
+        jobId: "job",
+        loaded,
+        mode: "model",
+        arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: options.streaming === true },
+        source: options.source ?? "lua",
+        chatRef: options.chatRef ?? null,
+        ...(options.messageId !== undefined ? { messageId: options.messageId } : {}),
+        tokenScope: tokenScopeFor(loaded.db),
+        mainModelImageInput: false,
+        channel: {
+            notice() {},
+            ask: async () => ({ outcome: "aborted" }),
+            callback: async () => options.intercept ?? { outcome: "refused", refusal: "unregistered", error: "none" },
+        },
+        parseCbs: (text) => text,
+        inlays: {
+            saveSignature: async (id) => id,
+            writeImage: async (image) => image.id,
+            setAsset: async () => {},
+        },
+        log: (entry) => logs.push(entry),
+        alertError: (text) => alerts.push(text),
+        endJob: (message) => ended.push(message),
+        tools: options.tools ?? noTools(),
+        toolCalls: { read: () => undefined, write: () => {} },
+        signal: options.signal ?? new AbortController().signal,
     };
-    /** A spec over `records` with recording sinks; `channel.callback` answers `intercept`. */
-    function jobSpec(
-        records: Records,
-        options: {
-            intercept?: CallbackResult;
-            streaming?: boolean;
-            signal?: AbortSignal;
-            /** The job's MCP tools (slice 12a); none by default. */
-            tools?: JobRequestSpec["tools"];
-        } = {},
-    ) {
-        const loaded = loadRequestDb(fakeStore(records), kinds, ids);
-        const logs: unknown[] = [];
-        const alerts: string[] = [];
-        const ended: string[] = [];
-        const spec: JobRequestSpec = {
-            jobId: "job",
-            loaded,
-            mode: "model",
-            arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: options.streaming === true },
-            tokenScope: tokenScopeFor(loaded.db),
-            mainModelImageInput: false,
-            channel: {
-                notice() {},
-                ask: async () => ({ outcome: "aborted" }),
-                callback: async () =>
-                    options.intercept ?? { outcome: "refused", refusal: "unregistered", error: "none" },
-            },
-            parseCbs: (text) => text,
-            inlays: {
-                saveSignature: async (id) => id,
-                writeImage: async (image) => image.id,
-                setAsset: async () => {},
-            },
-            log: (entry) => logs.push(entry),
-            alertError: (text) => alerts.push(text),
-            endJob: (message) => ended.push(message),
-            tools: options.tools ?? noTools(),
-            toolCalls: { read: () => undefined, write: () => {} },
-            signal: options.signal ?? new AbortController().signal,
-        };
-        return { spec, logs, alerts, ended };
-    }
+    return { spec, logs, alerts, ended };
+}
 
+describe("a job's in-process request (runInJob, slice 8a)", () => {
     it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the logs", async () => {
         const { registry, calls } = harness(makeRecords(), (_call, index) =>
             index === 0 ? chat(`echo ${SECRET}`) : json({ error: { message: `bad key ${SECRET}` } }, 401),
@@ -1140,6 +1150,8 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
             loaded,
             mode: "model",
             arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: streaming },
+            source: "lua",
+            chatRef: null,
             tokenScope: tokenScopeFor(loaded.db),
             mainModelImageInput: false,
             channel: {
@@ -1634,6 +1646,8 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
             loaded: { ...loaded, db },
             mode: "model",
             arg: { formated: options.formated ?? [{ role: "user", content: "hi" }], bias: {}, useStreaming: false },
+            source: "lua",
+            chatRef: null,
             tokenScope: tokenScopeFor(db),
             mainModelImageInput: false,
             channel: {
@@ -1927,5 +1941,273 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
         expect(JSON.stringify(sent)).not.toContain("missing");
         expect(registry.liveIds()).toEqual([]);
         await registry.dispose();
+    });
+});
+
+describe("the request observer (request history slice 1)", () => {
+    // `LlmRequestsOptions.observer` over both entry points: `begin` at admission with the request's
+    // identity, `firstByte` at most once on the layer's clock (`options.now`), `finish` exactly once
+    // with the end's status; a throwing observer never reaches the request; an unobserved run makes
+    // the same upstream calls and emits the same events.
+    type Seen = [kind: "begin" | "firstByte" | "finish", ...rest: unknown[]];
+    /** A clock that reads one more each time, from `from`. */
+    const ticking = (from: number) => {
+        let at = from;
+        return () => at++;
+    };
+    /** A recording observer over `now`. */
+    function observe(now: () => number = ticking(1000)) {
+        const seen: Seen[] = [];
+        const observer: RequestObserver = {
+            begin: (request) => void seen.push(["begin", request]),
+            firstByte: (requestId, at) => void seen.push(["firstByte", requestId, at]),
+            finish: (requestId, end) => void seen.push(["finish", requestId, end]),
+        };
+        const options: Partial<LlmRequestsOptions> = { observer, now };
+        return { seen, options, kinds: () => seen.map((entry) => entry[0]) };
+    }
+    const status = (seen: Seen[]) => (seen.at(-1)?.[2] as { status: string } | undefined)?.status;
+    const firstByteAt = (seen: Seen[]) => seen.find((entry) => entry[0] === "firstByte")?.[2] as number | undefined;
+    /** The events without what differs between two runs: the request id and the logs' wall clock. */
+    const comparable = (events: LlmRequestEvent[]) =>
+        events.map((event) =>
+            event.type === "accepted"
+                ? { type: "accepted" }
+                : event.type === "log"
+                  ? { ...event, entry: { ...(event.entry as Record<string, unknown>), date: "" } }
+                  : event,
+        );
+    const wire = (calls: Upstream[]) => calls.map(({ url, method, body }) => ({ url, method, body }));
+    const CHAT = { chaId: "c", chatId: "k" };
+
+    it("reports a tab's buffered request: begin with its id, source, and chat, the first body chunk on the layer's clock, and a success once delivered; an unobserved run makes the same calls and emits the same events", async () => {
+        const observed = observe();
+        const a = harness(makeRecords(), () => chat("hi there"), observed.options);
+        const ra = await run(a.registry, body({ chatRef: CHAT }));
+        const b = harness(makeRecords(), () => chat("hi there"));
+        const rb = await run(b.registry, body({ chatRef: CHAT }));
+        expect(terminal(ra.events)).toEqual([{ type: "result", response: { type: "success", result: "hi there" } }]);
+        expect(comparable(ra.events)).toEqual(comparable(rb.events));
+        expect(wire(a.calls)).toEqual(wire(b.calls));
+        expect(observed.seen).toEqual([
+            [
+                "begin",
+                {
+                    requestId: ra.id,
+                    jobId: null,
+                    source: "tab",
+                    mode: "model",
+                    chatRef: CHAT,
+                    messageId: null,
+                    startedAt: 1000,
+                },
+            ],
+            ["firstByte", ra.id, expect.any(Number)],
+            ["finish", ra.id, { status: "success", completedAt: expect.any(Number) }],
+        ]);
+        const at = firstByteAt(observed.seen)!;
+        expect(at).toBeGreaterThan(1000);
+        expect((observed.seen[2][2] as { completedAt: number }).completedAt).toBeGreaterThan(at);
+        await Promise.all([a.registry.dispose(), b.registry.dispose()]);
+    });
+
+    it("classifies a tab's ends: a provider failure is an error after its first byte, a fetch that fails before any response an error without one, an empty body counts at its end, a streamed answer is one first byte and a success, a client that leaves mid-stream is aborted", async () => {
+        const failed = observe();
+        const a = harness(makeRecords(), () => json({ error: { message: "bad" } }, 500), failed.options);
+        expect(terminal((await run(a.registry, body())).events)[0]).toMatchObject({ response: { type: "fail" } });
+        expect(failed.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(failed.seen)).toBe("error");
+
+        const unreachable = observe();
+        const b = harness(
+            makeRecords(),
+            () => {
+                throw new TypeError("fetch failed");
+            },
+            unreachable.options,
+        );
+        expect(terminal((await run(b.registry, body())).events)[0]).toMatchObject({ response: { type: "fail" } });
+        expect(unreachable.kinds()).toEqual(["begin", "finish"]);
+        expect(status(unreachable.seen)).toBe("error");
+
+        const empty = observe();
+        const c = harness(makeRecords(), () => new Response("", { status: 200 }), empty.options);
+        expect(terminal((await run(c.registry, body())).events)[0]).toMatchObject({ response: { type: "fail" } });
+        expect(empty.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(empty.seen)).toBe("error");
+
+        const records = makeRecords();
+        (records.providers as Record<string, unknown>).useStreaming = true;
+        const frame = (text: string) => JSON.stringify({ choices: [{ delta: { content: text } }] });
+        const streamed = observe();
+        const d = harness(records, () => sse([frame("a"), frame("b"), frame("c")]), streamed.options);
+        const rd = await run(d.registry, body({ useStreaming: true }));
+        expect(terminal(rd.events)).toEqual([{ type: "end" }]);
+        expect(streamed.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(streamed.seen)).toBe("success");
+
+        const left = observe();
+        const e = harness(records, (call) => sse([frame("a"), frame("b")], 20, call.signal), left.options);
+        const controller = new AbortController();
+        const re = await run(
+            e.registry,
+            body({ useStreaming: true }),
+            (event) => {
+                if (event.type === "chunk") {
+                    controller.abort();
+                }
+            },
+            controller.signal,
+        );
+        expect(terminal(re.events)).toEqual([{ type: "error", message: "The client went away" }]);
+        expect(left.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(left.seen)).toBe("aborted");
+        await Promise.all([a, b, c, d, e].map((h) => h.registry.dispose()));
+    });
+
+    it("a throwing observer is logged and never reaches the request; a clock reading 0 is reported as 0", async () => {
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        const throwing: RequestObserver = {
+            begin: () => {
+                throw new Error("begin threw");
+            },
+            firstByte: () => {
+                throw new Error("firstByte threw");
+            },
+            finish: () => {
+                throw new Error("finish threw");
+            },
+        };
+        const a = harness(makeRecords(), () => chat("fine"), { observer: throwing });
+        const ra = await run(a.registry, body());
+        expect(terminal(ra.events)).toEqual([{ type: "result", response: { type: "success", result: "fine" } }]);
+        expect(a.registry.liveIds()).toEqual([]);
+        const thrown = logged.mock.calls.filter((call) => call[0] === "[LLM] request observer:").map((call) => call[1]);
+        expect(thrown).toEqual(["begin threw", "firstByte threw", "finish threw"]);
+
+        const zero = observe(() => 0);
+        const b = harness(makeRecords(), () => chat("fine"), zero.options);
+        const rb = await run(b.registry, body());
+        expect(zero.seen).toEqual([
+            ["begin", expect.objectContaining({ requestId: rb.id, startedAt: 0 })],
+            ["firstByte", rb.id, 0],
+            ["finish", rb.id, { status: "success", completedAt: 0 }],
+        ]);
+        await Promise.all([a.registry.dispose(), b.registry.dispose()]);
+    });
+
+    it("reports a job's request with its job, source, chat, and message: a fail is an error, a stream read to its end a success, and the job's abort of an unread stream aborted", async () => {
+        const records = makeRecords();
+        const observed = observe();
+        const { registry } = harness(
+            records,
+            (_call, index) => (index === 0 ? chat("ok") : json({ error: { message: "bad key" } }, 401)),
+            observed.options,
+        );
+        const spec = jobSpec(records, { source: "send", chatRef: CHAT, messageId: "m1" }).spec;
+        expect((await registry.runInJob(spec)).type).toBe("success");
+        expect(observed.seen).toEqual([
+            [
+                "begin",
+                {
+                    requestId: expect.any(String),
+                    jobId: "job",
+                    source: "send",
+                    mode: "model",
+                    chatRef: CHAT,
+                    messageId: "m1",
+                    startedAt: 1000,
+                },
+            ],
+            ["firstByte", expect.any(String), expect.any(Number)],
+            ["finish", expect.any(String), { status: "success", completedAt: expect.any(Number) }],
+        ]);
+        const id = (observed.seen[0][1] as { requestId: string }).requestId;
+        expect(observed.seen.map((entry) => entry[1])).toEqual([expect.anything(), id, id]);
+        expect((await registry.runInJob(jobSpec(records).spec)).type).toBe("fail");
+        expect(observed.kinds().slice(3)).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(observed.seen)).toBe("error");
+        await registry.dispose();
+
+        const streaming = makeRecords();
+        (streaming.providers as Record<string, unknown>).useStreaming = true;
+        const frame = (text: string) => JSON.stringify({ choices: [{ delta: { content: text } }] });
+        const read = observe();
+        const normal = harness(streaming, () => sse([frame("hi"), frame(" there")]), read.options);
+        const done = await normal.registry.runInJob(jobSpec(streaming, { streaming: true }).spec);
+        expect(done.type).toBe("streaming");
+        await (done as { result: ReadableStream<StreamResponseChunk> }).result.pipeTo(new WritableStream());
+        expect(read.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(read.seen)).toBe("success");
+
+        const left = observe();
+        const controller = new AbortController();
+        const slow = harness(streaming, (call) => sse([frame("a"), frame("b")], 5000, call.signal), left.options);
+        const open = await slow.registry.runInJob(
+            jobSpec(streaming, { streaming: true, signal: controller.signal }).spec,
+        );
+        expect(open.type).toBe("streaming");
+        await waitFor(() => left.kinds().includes("firstByte"));
+        controller.abort(new Error("stop"));
+        await waitFor(() => slow.registry.liveIds().length === 0);
+        expect(left.kinds()).toEqual(["begin", "firstByte", "finish"]);
+        expect(status(left.seen)).toBe("aborted");
+        await Promise.all([normal.registry.dispose(), slow.registry.dispose()]);
+    });
+
+    it("watchFirstByte marks a body once at its first chunk, an empty body at its end, a missing body at once, never a body that fails before its first chunk, and keeps the response's status, headers, and text", async () => {
+        const encode = (text: string) => new TextEncoder().encode(text);
+        let marks = 0;
+        const chunked = watchFirstByte(
+            new Response(
+                new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.enqueue(encode("ab"));
+                        controller.enqueue(encode("cd"));
+                        controller.close();
+                    },
+                }),
+                { status: 201, statusText: "Created", headers: { "x-marker": "1" } },
+            ),
+            () => marks++,
+        );
+        expect(marks).toBe(0);
+        expect(await chunked.text()).toBe("abcd");
+        expect(marks).toBe(1);
+        expect([chunked.status, chunked.statusText, chunked.headers.get("x-marker")]).toEqual([201, "Created", "1"]);
+
+        marks = 0;
+        const empty = watchFirstByte(
+            new Response(
+                new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.close();
+                    },
+                }),
+            ),
+            () => marks++,
+        );
+        expect(marks).toBe(0);
+        expect(await empty.text()).toBe("");
+        expect(marks).toBe(1);
+
+        marks = 0;
+        const bodiless = new Response(null, { status: 204 });
+        expect(watchFirstByte(bodiless, () => marks++)).toBe(bodiless);
+        expect(marks).toBe(1);
+
+        marks = 0;
+        const failing = watchFirstByte(
+            new Response(
+                new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.error(new Error("reset"));
+                    },
+                }),
+            ),
+            () => marks++,
+        );
+        await expect(failing.text()).rejects.toThrow("reset");
+        expect(marks).toBe(0);
     });
 });

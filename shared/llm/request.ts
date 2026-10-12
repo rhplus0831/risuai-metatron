@@ -16,6 +16,25 @@ export const MODEL_MODES: readonly ModelModeExtended[] = [
     "translate",
 ];
 
+/**
+ * What made a request (`docs/plan/request-history-diagnostics.md`): a job's reply (`send`), its
+ * memory, emotion, and IGP requests, a trigger's `runLLM`, a Lua `LLM`/`axLLM`/`simpleLLM`, the
+ * `internal:aiaccess` MCP, a server translation, or a tab's own `POST /api/llm/request`.
+ */
+export type RequestSource = "send" | "memory" | "emotion" | "igp" | "trigger" | "lua" | "mcp" | "translation" | "tab";
+
+export const REQUEST_SOURCES: readonly RequestSource[] = [
+    "send",
+    "memory",
+    "emotion",
+    "igp",
+    "trigger",
+    "lua",
+    "mcp",
+    "translation",
+    "tab",
+];
+
 /** An MCP tool as the adapters send it to a provider (`MCPTool` without its annotations). */
 export type ToolDescriptor = { name: string; description: string; inputSchema: unknown };
 

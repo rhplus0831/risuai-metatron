@@ -8,6 +8,7 @@ import type {
     InlaySignature,
     ModelModeExtended,
     RequestArgs,
+    RequestSource,
     StreamResponseChunk,
 } from "../../../shared/llm/request.ts";
 import { activateLore } from "../../../shared/lore/activation.ts";
@@ -135,7 +136,14 @@ export type LuaBindingServices = {
     /** `options.signal` withdraws the question: an ordinary failure, not the job's. */
     ask(question: GenerationQuestion, ctx: HostContext, options?: { signal?: AbortSignal }): Promise<unknown>;
     notice(notice: Parameters<JobChannel["notice"]>[0]): void;
-    request(arg: RequestArgs, mode: ModelModeExtended, ctx: HostContext): Promise<requestDataResponse>;
+    /** A request of the job, recorded as `source` made it (and for `messageId`, where the caller knows it). */
+    request(
+        arg: RequestArgs,
+        mode: ModelModeExtended,
+        ctx: HostContext,
+        source: RequestSource,
+        meta?: { messageId?: string },
+    ): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
     /**
      * The `generateImage` callback for `characterId`: the stored inlay's id, or null when the tab could
@@ -740,6 +748,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         arg: RequestArgs,
         mode: ModelModeExtended,
         ctx: HostContext,
+        source: RequestSource,
+        meta?: { messageId?: string },
     ): Promise<requestDataResponse> => {
         const signal = AbortSignal.any([job.signal, ctx.signal]);
         const replacer = async <N extends "replacerbeforeRequest" | "replacerafterRequest">(
@@ -793,6 +803,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                     loaded: scope.request,
                     mode,
                     arg: attemptArg,
+                    source,
+                    chatRef: arg.chatRef ?? ref,
+                    messageId: meta?.messageId ?? null,
                     tokenScope: tokenScopeFor(db),
                     mainModelImageInput: mainModelTakesImages(db),
                     channel: refreshingChannel,
@@ -974,6 +987,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             } as RequestArgs,
             mode,
             ctx,
+            "lua",
         );
         if (result.type === "fail") {
             return JSON.stringify({ success: false, result: "Error: " + result.result });
@@ -1490,6 +1504,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 } as RequestArgs,
                 "model",
                 ctx,
+                "lua",
             );
             if (result.type === "fail") {
                 return JSON.stringify({ success: false, result: "Error: " + result.result });
@@ -1594,7 +1609,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 ask,
                 notice: services.notice,
                 tryCallback,
-                request,
+                // `internal:aiaccess` `runLLM`, the only request an internal MCP makes.
+                request: (arg, mode, ctx) => request(arg, mode, ctx, "mcp"),
                 getChatVar: services.getChatVar,
                 setChatVar,
                 embeddings: embeddingEnv,
