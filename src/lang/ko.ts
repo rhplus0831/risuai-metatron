@@ -188,6 +188,8 @@ export const languageKorean = {
         systemRoleReplacement: "모델이 시스템 역할을 지원하지 않는 경우 시스템 역할을 대체하는 역할입니다.",
         summarizationPrompt:
             "요약에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 채팅 데이터에 대해 {{slot}}을 사용하여 ChatML 형식을 사용할 수도 있습니다.",
+        translatorSteps:
+            "프리셋은 사용 중인 단계를 순서대로(최대 5개) 실행하며, 단계마다 요청을 하나씩 보냅니다. 사용 중인 단계가 없으면 첫 번째 단계가 실행됩니다. 각 단계는 모델 프리셋의 번역 슬롯이나 단계에 지정한 연결로 실행됩니다. 단계 프롬프트에서 {{slot::prev}}는 이전 단계의 출력(첫 단계에서는 콘텐츠)이고, {{slot::out::KEY}}는 출력 키가 KEY인 앞 단계의 출력입니다. 마지막 단계의 출력이 번역문이 됩니다.",
         translatorPrompt:
             "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 슬롯: 목적 언어 {{slot}}, 원문 언어 {{slot::from}}, 콘텐츠 {{slot::content}}, 번역자 노트 {{slot::tnote}}. ChatML 형식을 쓰면 모든 메시지를 프롬프트가 직접 정합니다. ChatML이 아니면 프롬프트가 시스템 메시지가 되고 콘텐츠가 사용자 메시지로 이어지는데, 프롬프트에 {{slot::content}}(또는 {{slot::prev}}, {{slot::out::KEY}})가 있으면 이어 보내지 않습니다. 이 프롬프트에서는 CBS가 처리되지 않으며, 응답의 `<Thoughts>`와 `<think>` 블록은 제거됩니다.",
         translateBeforeHTMLFormatting:
@@ -887,10 +889,11 @@ export const languageKorean = {
         createFromBare: "이 모델로 연결 만들기",
         useSubProfile: "보조 모델의 연결 사용",
         auxModes: { memory: "메모리", translate: "번역", emotion: "감정", otherAx: "기타 보조 요청" },
-        deleteConfirm: (name: string, uses: string) =>
-            uses
-                ? `"${name}" 연결을 삭제하시겠습니까?\n\n이 연결을 사용하는 모델 프리셋:\n${uses}\n\n해당 슬롯은 연결 없음으로 표시되며, 다른 연결을 선택할 때까지 요청을 보낼 수 없습니다.`
+        deleteConfirm: (name: string, uses: string, translatorUses: string) =>
+            uses || translatorUses
+                ? `"${name}" 연결을 삭제하시겠습니까?\n\n${uses ? `이 연결을 사용하는 모델 프리셋:\n${uses}\n\n` : ""}${translatorUses ? `이 연결을 사용하는 단계가 있는 번역 프리셋:\n${translatorUses}\n\n` : ""}해당 슬롯과 단계는 연결 없음으로 표시되며, 다른 연결을 선택할 때까지 요청을 보낼 수 없습니다.`
                 : `"${name}" 연결을 삭제하시겠습니까?`,
+        missingNamedRequest: "요청이 지정한 연결이 없어 요청을 보낼 수 없습니다.",
         missingRequest: (mode: string) => `${mode} 슬롯의 연결이 없어 요청을 보낼 수 없습니다.`,
         requiredRequest: (model: string) => `"${model}" 모델은 연결이 필요하여 요청을 보낼 수 없습니다.`,
         defaultKeys: "제공자 기본 키",
@@ -1313,9 +1316,25 @@ export const languageKorean = {
     systemRoleReplacement: "시스템 역할 교체",
     summarizationPrompt: "요약 프롬프트",
     reSummarizationPrompt: "재요약 프롬프트",
+    translatorSteps: {
+        title: "단계",
+        add: "단계 추가",
+        name: "단계 이름",
+        nameBlank: "단계에는 이름이 필요합니다. 비어 있는 동안에는 저장되지 않습니다.",
+        enabled: "사용",
+        model: "모델",
+        inheritModel: "모델 프리셋의 번역 슬롯",
+        missingProfile: "이 단계의 연결이 삭제되었습니다. 번역하기 전에 다른 연결을 선택하세요.",
+        outputKey: "출력 키",
+        outputKeyInvalid: "저장되지 않음: 출력 키는 영문자나 _로 시작하고 영문자, 숫자, _만 쓸 수 있습니다(최대 64자).",
+        outputKeyTaken: "저장되지 않음: 이 프리셋의 다른 단계가 이미 이 출력 키를 씁니다.",
+        moveUp: "단계 위로 이동",
+        moveDown: "단계 아래로 이동",
+        remove: "단계 삭제",
+        removeConfirm: (name: string) => `"${name}" 단계를 삭제하시겠습니까?`,
+        noneEnabled: "사용 중인 단계가 없어 첫 번째 단계가 실행됩니다.",
+    },
     translatorPrompt: "번역 프롬프트",
-    translatorPresetExportUnsupported:
-        "이 프리셋에는 .risutl 파일에 아직 담을 수 없는 단계가 있습니다(단계가 둘 이상이거나 단계에 별도 모델이 지정됨). 번역 모델을 쓰는 단일 단계 프리셋만 내보낼 수 있습니다.",
     translateBeforeHTMLFormatting: "HTML 포맷 전 번역",
     retranslate: "다시 번역",
     retranslateConfirm: "이 메시지를 다시 번역할까요? 지금 번역은 새 번역으로 바뀝니다.",

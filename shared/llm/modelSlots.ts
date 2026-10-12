@@ -24,7 +24,7 @@ export function definitionNeedsProfile(modelId: string): boolean {
 export type SlotProfileResolution =
     | { kind: "profile"; profile: ModelProfile; modelId: string }
     | { kind: "none"; modelId: string }
-    | { kind: "refused"; reason: "missingProfile" | "needsProfile"; modelId?: string };
+    | { kind: "refused"; reason: "missingProfile" | "missingNamedProfile" | "needsProfile"; modelId?: string };
 
 function bareModel(modelId: string): SlotProfileResolution {
     return definitionNeedsProfile(modelId)
@@ -33,10 +33,12 @@ function bareModel(modelId: string): SlotProfileResolution {
 }
 
 /**
- * One slot-routing decision for the tab and server. A static model reuses only a matching main
- * profile (O5); auxiliary slots fall back to sub when disabled or unset, and `submodel` always
- * uses sub (O3). Dangling profile ids refuse, never redirect. A bare definition uses profile
- * field defaults and its flat default key unless it requires a profile (O8).
+ * One slot-routing decision for the tab and server. A request that names a profile (`profileId`, a
+ * translator step's model) runs on it whatever its mode, `staticModel` included, and refuses with
+ * `missingNamedProfile` when it is gone. A static model reuses only a matching main profile (O5);
+ * auxiliary slots fall back to sub when disabled or unset, and `submodel` always uses sub (O3).
+ * Dangling profile ids refuse, never redirect. A bare definition uses profile field defaults and its
+ * flat default key unless it requires a profile (O8).
  *
  * Both runtimes already hold the profile collection as an array; no lookup needs to be built.
  */
@@ -45,7 +47,14 @@ export function resolveSlotProfile(
     profiles: readonly ModelProfile[],
     mode: ModelModeExtended,
     staticModel?: string,
+    profileId?: string,
 ): SlotProfileResolution {
+    if (profileId !== undefined) {
+        const profile = profiles.find((entry) => entry.id === profileId);
+        return profile
+            ? { kind: "profile", profile, modelId: profile.modelId }
+            : { kind: "refused", reason: "missingNamedProfile" };
+    }
     if (staticModel !== undefined) {
         const profile = profiles.find((entry) => entry.id === modelPreset.mainSlot.profileId);
         return profile?.modelId === staticModel
@@ -60,8 +69,8 @@ export function resolveSlotProfile(
     if ("modelId" in slot) {
         return bareModel(slot.modelId);
     }
-    const profileId = slot.profileId;
-    const profile = profiles.find((entry) => entry.id === profileId);
+    const slotProfileId = slot.profileId;
+    const profile = profiles.find((entry) => entry.id === slotProfileId);
     return profile
         ? { kind: "profile", profile, modelId: profile.modelId }
         : { kind: "refused", reason: "missingProfile" };

@@ -63,6 +63,8 @@ type ClientResponse =
 export type TransportArgument = RequestArgs & {
     currentChar?: { chaId?: string } | null;
     pluginContext?: PluginCallContext;
+    /** A chatless request's captured ids (`requestDataArgument.requestIds`). */
+    requestIds?: { presetId: string; modelPresetId: string; personaId: string };
     tools?: MCPTool[];
     /** The request chat's owner when the request began (`requestChatData`); captured here otherwise. */
     chatOwner?: string;
@@ -142,9 +144,10 @@ export async function requestServer(
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
     // The ids (`docs/plan/chat-binding.md`): a chat's request names its captured context's (the
     // chat's binding when it was captured, or a job callback's targets), else the chat's complete
-    // binding; a request without a chat names the settings views' (decision 10: the selected chat's
-    // bound ids where they exist, else the tab's selection; `requestChatDataMain` computes with the
-    // same ids). It sends no `chatRef`: it is not a send, so no binding refuses it.
+    // binding; a request without a chat names the ids its caller captured (`requestIds`), else the
+    // settings views' (decision 10: the selected chat's bound ids where they exist, else the tab's
+    // selection; `requestChatDataMain` computes with the same ids). It sends no `chatRef`: it is not
+    // a send, so no binding refuses it.
     let ids: { presetId: string; modelPresetId: string; personaId: string };
     if (arg.pluginContext) {
         ids = {
@@ -158,6 +161,12 @@ export async function requestServer(
             return refuse(chatBindingRefusalText(chatBindingProblems(binding)));
         }
         ids = chatContextIds(binding.ids);
+    } else if (arg.requestIds) {
+        ids = {
+            presetId: arg.requestIds.presetId,
+            modelPresetId: arg.requestIds.modelPresetId,
+            personaId: arg.requestIds.personaId,
+        };
     } else {
         ids = {
             presetId: activePreset.id ?? "",
@@ -173,8 +182,9 @@ export async function requestServer(
     if (missing) {
         return fail(`The ${missing} this request runs with no longer exists`);
     }
-    // A chat's request has one persona, the chat's; without a chat the view's one is forwarded.
-    const selectedPersonaId = chatRef ? personaId : (activePersona.id ?? "");
+    // A chat's request has one persona, the chat's; without a chat the captured one, else the
+    // view's one, is forwarded.
+    const selectedPersonaId = chatRef ? personaId : (arg.requestIds?.personaId ?? activePersona.id ?? "");
     const scope = { presetId, modelPresetId, personaId };
     // The main model and tokenizer of the model preset whose id the request carries.
     const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";

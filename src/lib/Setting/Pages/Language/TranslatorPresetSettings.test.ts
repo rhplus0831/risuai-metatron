@@ -42,8 +42,11 @@ vi.mock("src/ts/util", () => ({
     sleep: vi.fn(async () => undefined),
 }));
 
+import { language } from "src/lang";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../../../../shared/presets.ts";
+import { isTranslatorPreset } from "../../../../../shared/translatorPresets.ts";
 import TranslatorPresetSettings from "./TranslatorPresetSettings.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -97,6 +100,12 @@ beforeEach(() => {
         characters: [],
         translatorPresets: [preset("a", "A"), preset("b", "B")],
         translatorPresetId: "a",
+        // The connections a step can pick (translation slice 3.1), beside the default one.
+        modelProfiles: [
+            normalizeModelProfile({}, { id: DEFAULT_MODEL_PROFILE_ID }),
+            normalizeModelProfile({ id: "echo", name: "Echo", modelId: "echo_model" }),
+            normalizeModelProfile({ id: "spare", name: "Spare", modelId: "gpt-5.5" }),
+        ],
     } as any);
 });
 
@@ -288,5 +297,432 @@ describe("the first step's editor", () => {
             "second",
         ]);
         expect(settings.translatorPresets.items[0].steps[1]).toMatchObject({ id: "s2", maxResponse: 400 });
+    });
+});
+
+// Translation slice 3.1: the step editor (`TranslatorStepEditor.svelte`, one per step) finds its step
+// by the preset's and the step's ids at every access, writes only what the server's normalizer keeps
+// as it is (a blank name, an invalid or taken output key, and a cleared response size are not written;
+// a draft is shown with a hint and dropped once what it was typed over changes), and adds, moves,
+// and removes steps on the live list.
+describe("the step editor", () => {
+    type Page = ReturnType<typeof render>;
+    const box = (page: Page, id: string) => page.target.querySelector<HTMLElement>(`[data-translator-step="${id}"]`)!;
+    const boxes = (page: Page) =>
+        [...page.target.querySelectorAll<HTMLElement>("[data-translator-step]")].map(
+            (element) => element.dataset.translatorStep,
+        );
+    const texts = (element: HTMLElement) => [...element.querySelectorAll<HTMLInputElement>("input[type=text]")];
+    const nameInput = (element: HTMLElement) => texts(element)[0];
+    const keyInput = (element: HTMLElement) => texts(element)[1];
+    const sizeInput = (element: HTMLElement) => element.querySelector<HTMLInputElement>("input[type=number]")!;
+    const modelSelect = (element: HTMLElement) => element.querySelector("select")!;
+    const enabledBox = (element: HTMLElement) => element.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    const button = (element: HTMLElement, label: string) =>
+        element.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    const hints = (element: HTMLElement) => [...element.querySelectorAll("p")].map((entry) => entry.textContent);
+    const addButton = (page: Page) =>
+        [...page.target.querySelectorAll("button")].find((entry) =>
+            entry.textContent?.includes(language.translatorSteps.add),
+        );
+    const type = (input: HTMLInputElement, value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+    /** Selects an option as a user would; happy-dom has no `:checked` for options, which Svelte's select binding reads. */
+    function chooseOption(element: HTMLSelectElement, value: string) {
+        element.value = value;
+        const querySelector = element.querySelector.bind(element);
+        (element as { querySelector: unknown }).querySelector = (selector: string) =>
+            selector === ":checked" ? (element.options[element.selectedIndex] ?? null) : querySelector(selector);
+        element.dispatchEvent(new Event("change"));
+        flushSync();
+    }
+    const stepsOf = (id = "a") => settings.translatorPresets.items.find((entry) => entry.id === id)!.steps;
+    const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+    const STEPS = language.translatorSteps;
+
+    /** Preset `a` with three steps, as a reload would install them (`s1` owns the output key `result`). */
+    function threeSteps() {
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s1", name: "Draft", prompt: "p1", maxResponse: 10, outputKey: "result" },
+                        { id: "s2", name: "Polish", prompt: "p2", maxResponse: 20 },
+                        { id: "s3", name: "Final", prompt: "p3", maxResponse: 30 },
+                    ],
+                }),
+                preset("b", "B"),
+            ],
+            "a",
+        );
+    }
+
+    it("adds steps in their normalized form, each under a fresh id, up to five, and then hides the button", () => {
+        const page = render();
+        expect(boxes(page)).toHaveLength(1);
+        addButton(page)!.click();
+        flushSync();
+        const steps = stepsOf();
+        expect(steps).toHaveLength(2);
+        expect(plain(steps[1])).toEqual({
+            id: expect.any(String),
+            name: "Step 2",
+            enabled: true,
+            prompt: "",
+            maxResponse: 1000,
+            model: { mode: "inherit" },
+        });
+        expect(steps[1].id).not.toBe(steps[0].id);
+        expect(boxes(page)).toEqual(steps.map((step) => step.id));
+        // The new step's editor is live: its prompt lands on it alone.
+        const prompt = box(page, steps[1].id).querySelector("textarea")!;
+        prompt.value = "second {{slot::prev}}";
+        prompt.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(stepsOf().map((step) => step.prompt)).toEqual(["prompt a", "second {{slot::prev}}"]);
+        for (let count = 3; count <= 5; count++) {
+            addButton(page)!.click();
+            flushSync();
+            expect(stepsOf()).toHaveLength(count);
+        }
+        expect(addButton(page)).toBeUndefined();
+        expect(stepsOf().map((step) => step.name)).toEqual(["Step 1", "Step 2", "Step 3", "Step 4", "Step 5"]);
+        expect(isTranslatorPreset(plain(settings.translatorPresets.items[0]))).toBe(true);
+        // The other preset is untouched.
+        expect(stepsOf("b")).toHaveLength(1);
+    });
+
+    it("moves a step by its id, with the ends' buttons disabled, and removes one after the dialog on the list as it is then; never the last step", async () => {
+        const page = render();
+        threeSteps();
+        expect(boxes(page)).toEqual(["s1", "s2", "s3"]);
+        expect(button(box(page, "s1"), STEPS.moveUp)!.disabled).toBe(true);
+        expect(button(box(page, "s3"), STEPS.moveDown)!.disabled).toBe(true);
+        button(box(page, "s1"), STEPS.moveDown)!.click();
+        flushSync();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s2", "s1", "s3"]);
+        button(box(page, "s3"), STEPS.moveUp)!.click();
+        flushSync();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s2", "s3", "s1"]);
+        expect(boxes(page)).toEqual(["s2", "s3", "s1"]);
+        expect(stepsOf().map((step) => step.name)).toEqual(["Polish", "Final", "Draft"]);
+
+        // Remove s2 while a reload replaces every object (and drops s1): the live s2 goes.
+        const dialog = deferred<boolean>();
+        alerts.confirm.mockReturnValueOnce(dialog.promise);
+        button(box(page, "s2"), STEPS.remove)!.click();
+        expect(alerts.confirm).toHaveBeenCalledWith(STEPS.removeConfirm("Polish"));
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s2", name: "Polish", prompt: "p2", maxResponse: 20 },
+                        { id: "s3", name: "Final", prompt: "p3", maxResponse: 30 },
+                    ],
+                }),
+            ],
+            "a",
+        );
+        dialog.resolve(true);
+        await dialog.promise;
+        await tick();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s3"]);
+        expect(boxes(page)).toEqual(["s3"]);
+        // One step left: no remove button.
+        expect(button(box(page, "s3"), STEPS.remove)).toBeNull();
+
+        // A declined dialog, a target gone meanwhile, and a list shrunk to one step remove nothing.
+        threeSteps();
+        alerts.confirm.mockResolvedValueOnce(false);
+        button(box(page, "s2"), STEPS.remove)!.click();
+        await tick();
+        await tick();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s1", "s2", "s3"]);
+        const gone = deferred<boolean>();
+        alerts.confirm.mockReturnValueOnce(gone.promise);
+        button(box(page, "s2"), STEPS.remove)!.click();
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s1", name: "Draft", prompt: "p1", maxResponse: 10 },
+                        { id: "s3", name: "Final", prompt: "p3", maxResponse: 30 },
+                    ],
+                }),
+            ],
+            "a",
+        );
+        gone.resolve(true);
+        await gone.promise;
+        await tick();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s1", "s3"]);
+        const last = deferred<boolean>();
+        alerts.confirm.mockReturnValueOnce(last.promise);
+        button(box(page, "s1"), STEPS.remove)!.click();
+        reloadFromServer(
+            [createTranslatorPreset("A", { id: "a", steps: [{ id: "s1", name: "Draft", prompt: "p1" }] })],
+            "a",
+        );
+        last.resolve(true);
+        await last.promise;
+        await tick();
+        expect(stepsOf().map((step) => step.id)).toEqual(["s1"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("writes a name only when it is not blank, keeps a blank one as a draft with a hint, and drops the draft when the stored name changes, also back to the original", async () => {
+        const page = render();
+        threeSteps();
+        const s1 = () => box(page, "s1");
+        type(nameInput(s1()), "Renamed");
+        expect(stepsOf()[0].name).toBe("Renamed");
+        expect(hints(s1())).toEqual([]);
+
+        type(nameInput(s1()), "   ");
+        await tick();
+        expect(stepsOf()[0].name).toBe("Renamed");
+        expect(nameInput(s1()).value).toBe("   ");
+        expect(hints(s1())).toEqual([STEPS.nameBlank]);
+        // The other steps' editors show nothing of it.
+        expect(hints(box(page, "s2"))).toEqual([]);
+
+        // A reload that changes the stored name discards the draft for good (Astra's challenge, point 3).
+        const named = (name: string) =>
+            reloadFromServer(
+                [
+                    createTranslatorPreset("A", {
+                        id: "a",
+                        steps: [
+                            { id: "s1", name, prompt: "p1", maxResponse: 10, outputKey: "result" },
+                            { id: "s2", name: "Polish", prompt: "p2", maxResponse: 20 },
+                            { id: "s3", name: "Final", prompt: "p3", maxResponse: 30 },
+                        ],
+                    }),
+                ],
+                "a",
+            );
+        named("Updated");
+        expect(nameInput(s1()).value).toBe("Updated");
+        expect(hints(s1())).toEqual([]);
+        named("Renamed");
+        expect(nameInput(s1()).value).toBe("Renamed");
+        expect(hints(s1())).toEqual([]);
+        // A reload that keeps the name keeps a live draft.
+        type(nameInput(s1()), "");
+        named("Renamed");
+        expect(nameInput(s1()).value).toBe("");
+        expect(hints(s1())).toEqual([STEPS.nameBlank]);
+        type(nameInput(s1()), "Final name");
+        expect(stepsOf()[0].name).toBe("Final name");
+        expect(hints(s1())).toEqual([]);
+    });
+
+    it("writes a valid output key, deletes a cleared one, and keeps an invalid or taken key as a draft that is never written", async () => {
+        const page = render();
+        threeSteps();
+        const s2 = () => box(page, "s2");
+        expect(keyInput(s2()).value).toBe("");
+        type(keyInput(s2()), "polished_1");
+        expect(stepsOf()[1].outputKey).toBe("polished_1");
+        expect(hints(s2())).toEqual([]);
+
+        type(keyInput(s2()), "1bad");
+        await tick();
+        expect(stepsOf()[1].outputKey).toBe("polished_1");
+        expect(keyInput(s2()).value).toBe("1bad");
+        expect(hints(s2())).toEqual([STEPS.outputKeyInvalid]);
+        type(keyInput(s2()), "result");
+        await tick();
+        expect(stepsOf()[1].outputKey).toBe("polished_1");
+        expect(keyInput(s2()).value).toBe("result");
+        expect(hints(s2())).toEqual([STEPS.outputKeyTaken]);
+        // A disabled step's key is taken too.
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s1", name: "Draft", prompt: "p1", maxResponse: 10, outputKey: "result", enabled: false },
+                        { id: "s2", name: "Polish", prompt: "p2", maxResponse: 20, outputKey: "polished_1" },
+                        { id: "s3", name: "Final", prompt: "p3", maxResponse: 30 },
+                    ],
+                }),
+            ],
+            "a",
+        );
+        type(keyInput(s2()), "result");
+        await tick();
+        expect(stepsOf()[1].outputKey).toBe("polished_1");
+        expect(hints(s2())).toEqual([STEPS.outputKeyTaken]);
+
+        type(keyInput(s2()), "fine");
+        expect(stepsOf()[1].outputKey).toBe("fine");
+        expect(hints(s2())).toEqual([]);
+        type(keyInput(s2()), "");
+        expect(Object.hasOwn(plain(stepsOf()[1]), "outputKey")).toBe(false);
+        expect(hints(s2())).toEqual([]);
+        expect(stepsOf()[0].outputKey).toBe("result");
+        expect(isTranslatorPreset(plain(settings.translatorPresets.items[0]))).toBe(true);
+    });
+
+    it("discards a taken output key draft once the other steps' keys change, so the field never shows a key that is not stored", async () => {
+        const page = render();
+        threeSteps();
+        const s1 = () => box(page, "s1");
+        const s2 = () => box(page, "s2");
+        type(keyInput(s2()), "result");
+        await tick();
+        expect(keyInput(s2()).value).toBe("result");
+        expect(hints(s2())).toEqual([STEPS.outputKeyTaken]);
+        expect(plain(stepsOf()[1])).not.toHaveProperty("outputKey");
+
+        // The owner clears its key: the draft is not committed (Astra's challenge, point 2).
+        type(keyInput(s1()), "");
+        await tick();
+        expect(plain(stepsOf()[0])).not.toHaveProperty("outputKey");
+        expect(plain(stepsOf()[1])).not.toHaveProperty("outputKey");
+        expect(keyInput(s2()).value).toBe("");
+        expect(hints(s2())).toEqual([]);
+        // The key is free now: typing it again stores it.
+        type(keyInput(s2()), "result");
+        expect(stepsOf()[1].outputKey).toBe("result");
+        expect(keyInput(s2()).value).toBe("result");
+        expect(hints(s2())).toEqual([]);
+
+        // The owner vanishing in a reload drops a taken draft on another step the same way.
+        type(keyInput(s2()), "");
+        type(keyInput(box(page, "s3")), "result");
+        type(keyInput(s2()), "result");
+        await tick();
+        expect(hints(s2())).toEqual([STEPS.outputKeyTaken]);
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s1", name: "Draft", prompt: "p1", maxResponse: 10 },
+                        { id: "s2", name: "Polish", prompt: "p2", maxResponse: 20 },
+                    ],
+                }),
+            ],
+            "a",
+        );
+        expect(keyInput(s2()).value).toBe("");
+        expect(hints(s2())).toEqual([]);
+        expect(plain(stepsOf()[1])).not.toHaveProperty("outputKey");
+        // What the field shows is what the preset stores, so an export carries no unsaved key.
+        expect(stepsOf().map((step) => step.outputKey ?? "")).toEqual([keyInput(s1()).value, keyInput(s2()).value]);
+    });
+
+    it("writes only a finite response size: a cleared field is not written and shows the stored size again", async () => {
+        const page = render();
+        threeSteps();
+        const s2 = () => box(page, "s2");
+        type(sizeInput(s2()), "640");
+        expect(stepsOf()[1].maxResponse).toBe(640);
+        type(sizeInput(s2()), "");
+        expect(stepsOf()[1].maxResponse).toBe(640);
+        // The binding respects the setter's refusal after a tick, and the change event restores it too.
+        await tick();
+        expect(sizeInput(s2()).value).toBe("640");
+        sizeInput(s2()).value = "";
+        sizeInput(s2()).dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(sizeInput(s2()).value).toBe("640");
+        expect(stepsOf()[1].maxResponse).toBe(640);
+        expect(stepsOf().map((step) => step.maxResponse)).toEqual([10, 640, 30]);
+        expect(isTranslatorPreset(plain(settings.translatorPresets.items[0]))).toBe(true);
+    });
+
+    it("picks a step's model: the translate slot, a profile, or a deleted profile shown as missing", () => {
+        const page = render();
+        threeSteps();
+        const s2 = () => box(page, "s2");
+        expect(modelSelect(s2()).value).toBe("inherit");
+        expect([...modelSelect(s2()).options].map((option) => option.value)).toEqual([
+            "inherit",
+            `profile:${DEFAULT_MODEL_PROFILE_ID}`,
+            "profile:echo",
+            "profile:spare",
+        ]);
+        expect([...modelSelect(s2()).options].map((option) => option.textContent)).toEqual([
+            STEPS.inheritModel,
+            expect.any(String),
+            expect.stringContaining("Echo"),
+            expect.stringContaining("Spare"),
+        ]);
+        chooseOption(modelSelect(s2()), "profile:spare");
+        expect(plain(stepsOf()[1].model)).toEqual({ mode: "profile", profileId: "spare" });
+        expect(plain(stepsOf()[0].model)).toEqual({ mode: "inherit" });
+        expect(hints(s2())).toEqual([]);
+        chooseOption(modelSelect(s2()), "inherit");
+        expect(plain(stepsOf()[1].model)).toEqual({ mode: "inherit" });
+        expect(Object.keys(plain(stepsOf()[1].model))).toEqual(["mode"]);
+
+        // A step whose profile was deleted (another client, or the Connections tab).
+        reloadFromServer(
+            [
+                createTranslatorPreset("A", {
+                    id: "a",
+                    steps: [
+                        { id: "s1", name: "Draft", prompt: "p1", maxResponse: 10 },
+                        { id: "s2", name: "Polish", prompt: "p2", model: { mode: "profile", profileId: "gone" } },
+                    ],
+                }),
+            ],
+            "a",
+        );
+        expect(modelSelect(s2()).value).toBe("profile:gone");
+        const missing = [...modelSelect(s2()).options].find((option) => option.value === "profile:gone")!;
+        expect(missing.disabled).toBe(true);
+        expect(missing.textContent).toBe(language.modelProfiles.missingProfile("gone"));
+        expect(hints(s2())).toEqual([STEPS.missingProfile]);
+        chooseOption(modelSelect(s2()), "profile:echo");
+        expect(plain(stepsOf()[1].model)).toEqual({ mode: "profile", profileId: "echo" });
+        expect(hints(s2())).toEqual([]);
+        expect([...modelSelect(s2()).options].map((option) => option.value)).not.toContain("profile:gone");
+    });
+
+    it("toggles a step and notes that the first step runs when none is enabled", () => {
+        const page = render();
+        threeSteps();
+        const note = () => page.target.textContent?.includes(STEPS.noneEnabled) ?? false;
+        expect(note()).toBe(false);
+        for (const id of ["s1", "s2", "s3"]) {
+            const check = enabledBox(box(page, id));
+            expect(check.checked).toBe(true);
+            check.checked = false;
+            check.dispatchEvent(new Event("change", { bubbles: true }));
+            flushSync();
+        }
+        expect(stepsOf().map((step) => step.enabled)).toEqual([false, false, false]);
+        expect(note()).toBe(true);
+        const check = enabledBox(box(page, "s3"));
+        check.checked = true;
+        check.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(stepsOf().map((step) => step.enabled)).toEqual([false, false, true]);
+        expect(note()).toBe(false);
+    });
+
+    it("follows a reload that drops steps: their editors go, the kept step's stays live", () => {
+        const page = render();
+        threeSteps();
+        reloadFromServer(
+            [createTranslatorPreset("A", { id: "a", steps: [{ id: "s1", name: "Draft", prompt: "p1" }] })],
+            "a",
+        );
+        expect(boxes(page)).toEqual(["s1"]);
+        type(nameInput(box(page, "s1")), "Kept");
+        expect(plain(stepsOf())).toEqual([
+            { id: "s1", name: "Kept", enabled: true, prompt: "p1", maxResponse: 1000, model: { mode: "inherit" } },
+        ]);
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 });

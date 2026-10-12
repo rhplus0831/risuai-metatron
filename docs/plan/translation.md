@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5 and 2.1–2.4 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5, 2.1–2.4, and 3.1 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -512,6 +512,41 @@ As built:
   `profileId`, `resolveSlotProfile` uses it, and a missing profile refuses
   (no redirect, as for slots). Input Hooks would reuse this later.
 - `.risutl` writes version 2 for presets with steps and still reads version 1.
+
+As built:
+
+- The request layer's per-call profile is `RequestArgs.profileId` (in `REQUEST_ARG_KEYS`, so the
+  tab's transport forwards it; the route accepts a record id). `resolveSlotProfile` takes it as a
+  fifth parameter and checks it first: the profile whatever the mode (`staticModel` included), else
+  `{ kind: "refused", reason: "missingNamedProfile" }`. Both translator runs send a profile step's
+  id and keep the `translate` mode. Tokenization does not follow the profile: a request's tokenizer
+  scope stays the main model's (translation sends no biases).
+- The tab's run now pins its ids (the 1.2 note): `llmTranslationContext` captures the prompt
+  preset, model preset, and persona a chatless request would read (`requestIds`), and every step's
+  request runs with them (the preset-gone checks, the slot routing, the transport's ids). A chat
+  switch during a multi-step run no longer moves the later steps.
+- The editor is `TranslatorStepEditor.svelte`, one per step, found by the preset's and the step's
+  ids at every access. It writes only what the normalizer keeps as is: a blank name and an invalid
+  or used output key stay local drafts with a hint (dropped once the stored value, or for a key the
+  other steps' keys, change), and a cleared response size is not written (the field shows the
+  stored size again when committed).
+- `runTranslator` captures the ids once for all its chunks, as it does the preset.
+- Deleting a model profile lists the translator presets with a step on it; their steps refuse
+  (`missingNamedProfile`) and show the connection missing until another is chosen.
+- `.risutl`: version 1 when it holds the preset without loss (one enabled `inherit` step, no output
+  key, the name `Step 1`), else version 2 `{ name, steps }` with no ids. Decoding checks every level
+  (exact keys, finite sizes, model shapes, valid and unique output keys) and refuses anything else,
+  including a Fastify-shaped payload; a profile step keeps its profile id.
+- Tests: `shared/llm/tests/modelSlots.test.ts` (`profileId`), `shared/tests/translatorPresets.test.ts`
+  (`createTranslatorStep`), `server/src/tests/llmProviderAdapters.test.ts` "model profiles" (a named
+  profile's connection, key, model, and flags; a missing one refused), `server/src/tests/llmRoutes.test.ts`
+  (the route's `profileId`), `server/src/tests/translate.test.ts` (a profile step over the app and the
+  fake request layer), `src/ts/process/request/tests/requestPresetScope.test.ts` and
+  `transport.test.ts` (`requestIds` and `profileId` in the tab), `src/ts/translator/translatorLLM.test.ts`
+  (the ids captured once per call, the step's profile), `src/ts/translator/presets.test.ts` and
+  `presetsCodec.test.ts` (the version 2 codec and the lossless rule),
+  `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (the step editor), and
+  `src/lib/Setting/Pages/presetPages.test.ts` (the delete confirmation).
 
 3.2 **Send Text As-Is.** A preset option: the whole source goes into
 `{{slot::content}}` in one request, without line protection or style

@@ -88,7 +88,7 @@ export interface TranslatorPreset {
     steps: TranslatorStep[];
 }
 
-/** Which model a translator step calls. Until translation slice 3.1 every step runs on the `translate` slot. */
+/** Which model a translator step calls: the `translate` slot of the model preset, or a model profile (`RequestArgs.profileId`). */
 export type TranslatorStepModel = { mode: "inherit" } | { mode: "profile"; profileId: string };
 
 /** One request of a translator preset's pipeline (`shared/translation/pipeline.ts`). */

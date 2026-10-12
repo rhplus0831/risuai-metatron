@@ -457,6 +457,53 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect(runner().runningCount()).toBe(0);
     });
 
+    // `docs/plan/translation.md` slice 3.1: a step on a profile runs on that profile, not the slot.
+    it("runs a step on a profile on that profile: a dead connection fails the run (502) where the slot's Echo answers, a deleted profile fails it by name, and nothing is stored", async () => {
+        await seed();
+        const profiles = await single("modelProfiles");
+        await write("modelProfiles", [
+            ...profiles.data,
+            {
+                ...profiles.data[0],
+                id: "dead",
+                name: "Dead",
+                modelId: "reverse_proxy",
+                forceReplaceUrl: "http://127.0.0.1:9/v1/chat/completions",
+                customProxyRequestModel: "mock-model",
+                customAPIFormat: 0,
+            },
+        ]);
+        const stepsOn = (model: { mode: "inherit" } | { mode: "profile"; profileId: string }) =>
+            createTranslatorPreset("Steps", {
+                id: "steps",
+                steps: [{ prompt: "First {{slot::content}}" }, { prompt: "Second {{slot::prev}}", model }],
+            });
+        const usePreset = (model: Parameters<typeof stepsOn>[0]) =>
+            patch("translatorPresets", { items: [stepsOn(model)], selectedId: "steps" });
+
+        await usePreset({ mode: "profile", profileId: "dead" });
+        const dead = await translate(req("r"));
+        expect(dead.status, JSON.stringify(dead.body)).toBe(502);
+        expect(typeof dead.body.error).toBe("string");
+        expect(dead.body.error).not.toContain("connection it names");
+        expect((await message("r")).translation).toBeUndefined();
+
+        await usePreset({ mode: "profile", profileId: "deleted-profile" });
+        expect(await translate(req("r"))).toMatchObject({
+            status: 502,
+            body: { error: "Cannot send the request: the connection it names no longer exists." },
+        });
+        expect((await message("r")).translation).toBeUndefined();
+
+        // The same steps on the translate slot (the Echo profile) answer: the profile was the difference.
+        await usePreset({ mode: "inherit" });
+        expect((await translate(req("r"))).body).toMatchObject({
+            outcome: "applied",
+            translation: { text: "pong", presetId: "steps" },
+        });
+        expect(runner().runningCount()).toBe(0);
+    });
+
     it("a run outlives its HTTP request: the tab's disconnect does not end it, and the translation lands", async () => {
         await seed({ echoDelay: 0.3 });
         const node = serve({ fetch: client.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
@@ -677,6 +724,25 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(first.signal.aborted).toBe(false);
         expect(runner.runningCount()).toBe(0);
         expect(runner.workingCount()).toBe(0);
+    });
+
+    it("sends a profile step's profile as the request's profileId and an inheriting step's request without one, every step in translate mode (slice 3.1)", async () => {
+        build();
+        const preset = createTranslatorPreset("Mixed", {
+            steps: [
+                { prompt: "A {{slot::content}}", model: { mode: "profile", profileId: "profile-a" } },
+                { prompt: "B {{slot::prev}}" },
+                { prompt: "C {{slot::prev}}", model: { mode: "profile", profileId: "profile-c" } },
+            ],
+        });
+        patch("translatorPresets", { items: [preset], selectedId: preset.id });
+        expect(await runner.translate(req("m0"))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(calls.map((call) => [call.mode, call.arg.profileId, Object.hasOwn(call.arg, "profileId")])).toEqual([
+            ["translate", "profile-a", true],
+            ["translate", undefined, false],
+            ["translate", "profile-c", true],
+        ]);
+        expect(calls.map((call) => call.arg.formated[0].content)).toEqual(["A text 0", "B 번역", "C 번역"]);
     });
 
     it("translates with the chat's own translator preset when it names one (docs/plan/translation.md slice 2.2), the global selection otherwise, and falls back to it for a deleted preset without rewriting the chat", async () => {

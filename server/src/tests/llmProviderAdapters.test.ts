@@ -2050,4 +2050,125 @@ describe("model profiles", () => {
         const translate = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("x") });
         expect(failure(translate)).toContain('"openrouter" without a connection');
     });
+
+    // `docs/plan/translation.md` slice 3.1: a request may name its profile (`RequestArgs.profileId`, a
+    // translator step's model), which replaces the mode's slot entirely.
+    it("runs a request that names a profile on that profile's URL, key, and request model, not the mode's slot, also over a static model", async () => {
+        const STEP_KEY = "sk-named-step-SENTINEL-7777";
+        const proxy = (id: string, host: string, requestModel: string, credentialId: string) => ({
+            id,
+            modelId: "reverse_proxy",
+            forceReplaceUrl: `https://${host}/v1/chat/completions`,
+            customProxyRequestModel: requestModel,
+            customAPIFormat: LLMFormat.OpenAICompatible,
+            credentialId,
+        });
+        const settings = withNamed(
+            {
+                model: {
+                    preset: {
+                        mainSlot: { profileId: "main" },
+                        subSlot: { profileId: "main" },
+                        seperateModelsForAxModels: true,
+                        auxSlots: { translate: { profileId: "aux" } },
+                    },
+                    profiles: [
+                        proxy("main", "main.test", "main-model", "work"),
+                        proxy("aux", "aux.test", "aux-model", "home"),
+                        // No slot names this profile: only a request's `profileId` reaches it.
+                        proxy("step", "step.test", "step-model", "step"),
+                    ],
+                },
+            },
+            [
+                { id: "work", type: "custom", key: NAMED.work },
+                { id: "home", type: "custom", key: NAMED.home },
+                { id: "step", type: "custom", key: STEP_KEY },
+            ],
+        );
+        const STEP_CALL = ["https://step.test/v1/chat/completions", `Bearer ${STEP_KEY}`, "step-model"];
+        const named = await run({
+            settings,
+            arg: { ...prompt(), profileId: "step" },
+            mode: "translate",
+            upstream: () => chat("from step"),
+        });
+        expect(summaryOf(named)).toEqual([STEP_CALL]);
+        expect(named.result).toMatchObject({ type: "success", result: "from step" });
+        for (const foreign of ["main.test", "aux.test", NAMED.work, NAMED.home]) {
+            expect(wireOf(named)).not.toContain(foreign);
+        }
+        // The slot still serves a request that names no profile.
+        const slot = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("aux") });
+        expect(summaryOf(slot)).toEqual([
+            ["https://aux.test/v1/chat/completions", `Bearer ${NAMED.home}`, "aux-model"],
+        ]);
+        // The named profile wins whatever the mode, and over `staticModel`.
+        const main = await run({ settings, arg: { ...prompt(), profileId: "step" }, upstream: () => chat("m") });
+        expect(summaryOf(main)).toEqual([STEP_CALL]);
+        const over = await run({
+            settings,
+            arg: { ...prompt(), profileId: "step", staticModel: "gpt-5.5" },
+            mode: "memory",
+            upstream: () => chat("s"),
+        });
+        expect(summaryOf(over)).toEqual([STEP_CALL]);
+    });
+
+    it("applies a named profile's custom flags, system replacement, and key to its request, and refuses a missing named profile without an upstream call", async () => {
+        const settings = withNamed(
+            {
+                model: {
+                    preset: {
+                        mainSlot: { profileId: "main" },
+                        subSlot: { profileId: "main" },
+                        seperateModelsForAxModels: true,
+                        auxSlots: { translate: { profileId: "main" } },
+                    },
+                    profiles: [
+                        { id: "main", modelId: "gpt-5.5", credentialId: "work" },
+                        {
+                            id: "plain",
+                            modelId: "gpt-5.5",
+                            credentialId: "home",
+                            enableCustomFlags: true,
+                            customFlags: [],
+                            systemContentReplacement: "[{{slot}}]",
+                        },
+                    ],
+                },
+            },
+            [
+                { id: "work", type: "openai", key: NAMED.work },
+                { id: "home", type: "custom", key: NAMED.home },
+            ],
+        );
+        const firstMessage = (recorded: Recorded) => (recorded.calls[0].body as { messages: unknown[] }).messages[0];
+        const named = await run({
+            settings,
+            arg: { ...prompt(), profileId: "plain" },
+            mode: "translate",
+            upstream: () => chat("plain"),
+        });
+        expect(summaryOf(named)).toEqual([[OPENAI, `Bearer ${NAMED.home}`, "gpt-5.5"]]);
+        expect(firstMessage(named)).toEqual({ role: "user", content: "[Be brief.]" });
+        const slot = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("slot") });
+        expect(summaryOf(slot)).toEqual([[OPENAI, `Bearer ${NAMED.work}`, "gpt-5.5"]]);
+        expect(firstMessage(slot)).toEqual({ role: "developer", content: "Be brief." });
+
+        // A deleted profile refuses the request as a whole: no fallback to the slot, no retry.
+        const upstream = () => chat("must not run");
+        for (const mode of ["translate", "model"] as const) {
+            const missing = failure(
+                await run({ settings, arg: { ...prompt(), profileId: "deleted" }, mode, upstream }),
+            );
+            expect(missing).toBe("Cannot send the request: the connection it names no longer exists.");
+            expect(missing).not.toContain(NAMED.work);
+        }
+        expect(
+            failure(
+                await run({ settings, arg: { ...prompt(), profileId: "deleted", staticModel: "gpt-5.5" }, upstream }),
+            ),
+        ).toContain("connection it names no longer exists");
+    });
 });

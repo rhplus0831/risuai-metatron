@@ -63,6 +63,7 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 
+import { language } from "src/lang";
 import { LLMFlags, LLMFormat } from "src/ts/model/types";
 import { trackedRecord } from "src/ts/storage/records.svelte";
 import { selectModelPreset, selectPreset, selection } from "src/ts/storage/selection.svelte";
@@ -202,5 +203,95 @@ describe("a tab-run request's captured presets", () => {
         expect(provider1).not.toHaveBeenCalled();
         expect(provider2).not.toHaveBeenCalled();
         expect(stubs.getModelInfo).not.toHaveBeenCalled();
+    });
+});
+
+// `docs/plan/translation.md` slice 3.1: a chatless caller that sends several requests as one run (the
+// tab's translator pipeline) captures the ids a chatless request would read (`requestIds`), and a
+// request may name the profile it runs on (`profileId`) instead of its mode's slot.
+describe("a chatless request's captured ids and named profile", () => {
+    const requestIds = () => ({ presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" });
+    const chatless = (extra: Record<string, unknown> = {}) =>
+        ({
+            formated: [{ role: "user", content: "hi" }],
+            bias: {},
+            useStreaming: false,
+            requestIds: requestIds(),
+            ...extra,
+        }) as never;
+
+    it("runs on the captured model preset's main profile, whatever is selected, and never sends the ids to the provider", async () => {
+        expect(await requestChatData(chatless(), "model")).toEqual({
+            type: "success",
+            result: "from prov-1",
+            model: "custom",
+        });
+        expect(provider1).toHaveBeenCalledTimes(1);
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.getModelInfo).toHaveBeenCalledWith(
+            "custom",
+            requestIds(),
+            expect.objectContaining({ id: "prof-1", currentPluginProvider: "prov-1" }),
+        );
+        // Without captured ids the selection serves, as before.
+        expect(await requestChatData(chatless({ requestIds: undefined }), "model")).toMatchObject({
+            result: "from prov-2",
+        });
+        expect(selection.presetId).toBe("pp-2");
+        expect(selection.modelPresetId).toBe("mp-2");
+    });
+
+    it("is refused once a captured preset is gone: up front, or while the tools load, without the provider", async () => {
+        deleteRecord("modelPresets", "mp-1");
+        expect(await requestChatData(chatless(), "model")).toEqual({ type: "fail", result: MODEL_PRESET_GONE });
+        expect(await requestChatDataMain(chatless(), "model")).toEqual({
+            type: "fail",
+            result: MODEL_PRESET_GONE,
+        });
+        expect(stubs.getTools).not.toHaveBeenCalled();
+        boot();
+        deleteRecord("presets", "pp-1");
+        expect(await requestChatData(chatless(), "model")).toEqual({ type: "fail", result: PRESET_GONE });
+        boot();
+        stubs.getTools.mockImplementationOnce(async () => {
+            deleteRecord("modelPresets", "mp-1");
+            return [];
+        });
+        expect(await requestChatData(chatless(), "model")).toEqual({ type: "fail", result: MODEL_PRESET_GONE });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).not.toHaveBeenCalled();
+    });
+
+    it("runs on the named profile over the captured model preset's slot, and refuses a missing named profile without a retry or a fallback", async () => {
+        // The captured model preset's main profile is prof-1; the request names prof-2. The fixture's
+        // sub slot (the `translate` route) names no existing profile, which a named profile makes moot.
+        expect(await requestChatData(chatless({ profileId: "prof-2" }), "translate")).toEqual({
+            type: "success",
+            result: "from prov-2",
+            model: "custom",
+        });
+        expect(provider2).toHaveBeenCalledTimes(1);
+        expect(provider1).not.toHaveBeenCalled();
+        expect(stubs.getModelInfo).toHaveBeenCalledWith(
+            "custom",
+            requestIds(),
+            expect.objectContaining({ id: "prof-2", currentPluginProvider: "prov-2" }),
+        );
+        // A deleted profile: its own refusal, `noRetry`, and no provider (the slot is not consulted).
+        for (const mode of ["translate", "model"] as const) {
+            expect(await requestChatData(chatless({ profileId: "gone" }), mode)).toEqual({
+                type: "fail",
+                noRetry: true,
+                result: language.modelProfiles.missingNamedRequest,
+            });
+        }
+        expect(await requestChatDataMain(chatless({ profileId: "gone", staticModel: "custom" }), "model")).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: language.modelProfiles.missingNamedRequest,
+        });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).toHaveBeenCalledTimes(1);
+        expect(stubs.requestServer).not.toHaveBeenCalled();
     });
 });

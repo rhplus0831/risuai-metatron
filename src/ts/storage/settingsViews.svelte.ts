@@ -200,17 +200,21 @@ export function modelProfileRecordForSlot(slot: ModelSlot | undefined): ModelPro
         : undefined;
 }
 
-/** Shared request routing over the selected or captured model preset; never redirects a captured id. */
+/**
+ * Shared request routing over the selected or captured model preset; never redirects a captured id.
+ * A request that names a profile (`profileId`) runs on it (`resolveSlotProfile`).
+ */
 export function resolveModelSlot(
     mode: ModelModeExtended,
     scope?: PresetScope,
     staticModel?: string,
+    profileId?: string,
 ): SlotProfileResolution {
     const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
     if (!preset) {
         throw new PresetTargetGoneError("model preset");
     }
-    return resolveSlotProfile(preset, modelProfileList(), mode, staticModel);
+    return resolveSlotProfile(preset, modelProfileList(), mode, staticModel, profileId);
 }
 
 /** The selected chat's bound model preset when it exists, else the tab's (`resolveTabModelPreset`). */

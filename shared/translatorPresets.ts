@@ -33,6 +33,27 @@ function finiteNumber(value: unknown, fallback: number): number {
     return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/** The name a step gets when it has none: `Step N`, N its position from 1. */
+export function defaultTranslatorStepName(index: number): string {
+    return `Step ${index + 1}`;
+}
+
+/**
+ * A new step at `index` (0-based) in its normalized form, so a list holding it is stored as it is:
+ * a fresh id, the default name, enabled, a blank prompt (`defaultTranslatorPrompt`), the default
+ * response size, on the `translate` slot, and no output key.
+ */
+export function createTranslatorStep(index: number): TranslatorStep {
+    return {
+        id: newId(),
+        name: defaultTranslatorStepName(index),
+        enabled: true,
+        prompt: "",
+        maxResponse: DEFAULT_MAX_RESPONSE,
+        model: { mode: "inherit" },
+    };
+}
+
 function normalizeStepModel(value: unknown): TranslatorStepModel {
     if (isPlainObject(value) && value.mode === "profile" && isRecordId(value.profileId)) {
         return { mode: "profile", profileId: value.profileId };
@@ -61,7 +82,10 @@ export function normalizeTranslatorSteps(source: TranslatorPresetInput): Transla
         ids.add(id);
         const step: TranslatorStep = {
             id,
-            name: typeof value.name === "string" && value.name.trim().length > 0 ? value.name : `Step ${index + 1}`,
+            name:
+                typeof value.name === "string" && value.name.trim().length > 0
+                    ? value.name
+                    : defaultTranslatorStepName(index),
             enabled: typeof value.enabled === "boolean" ? value.enabled : true,
             prompt: typeof value.prompt === "string" ? value.prompt : "",
             maxResponse: finiteNumber(value.maxResponse, DEFAULT_MAX_RESPONSE),

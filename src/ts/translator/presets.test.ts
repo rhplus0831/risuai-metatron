@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as fflate from "fflate";
-import { decode as decodeMsgpack } from "msgpackr/index-no-eval";
+import { decode as decodeMsgpack, encode as encodeMsgpack } from "msgpackr/index-no-eval";
 
 vi.mock("src/ts/util", () => ({
     encryptBuffer: async (data: Uint8Array) => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
@@ -21,7 +21,6 @@ import {
     translatorPresetImportExtensions,
     type TranslatorPresetStateLike,
 } from "./presets";
-import { language } from "src/lang";
 
 /** `value` with every `id` removed, at any depth (the preset's and its steps' are generated on decode). */
 function withoutIds(value: unknown): unknown {
@@ -111,30 +110,163 @@ describe("translator preset file codec", () => {
         );
     });
 
-    it("refuses to export a preset a version 1 file cannot hold: more than one step, or a step on a profile", async () => {
-        const twoSteps = createTranslatorPreset("Two", {
-            steps: [{ prompt: "a" }, { prompt: "b" }],
-        });
-        await expect(encodeTranslatorPresetFile(twoSteps)).rejects.toThrow(language.translatorPresetExportUnsupported);
-        // A disabled second step is still a step the file would lose.
-        const disabledSecond = createTranslatorPreset("Two", {
-            steps: [{ prompt: "a" }, { prompt: "b", enabled: false }],
-        });
-        await expect(encodeTranslatorPresetFile(disabledSecond)).rejects.toThrow(
-            language.translatorPresetExportUnsupported,
+    // Translation slice 3.1: version 2 holds every step. The mocks make encryption and RPack identity
+    // transforms, so a file is compressed msgpack around a plain msgpack payload, in both directions.
+    const fileOf = (encoded: Uint8Array) => {
+        const container = decodeMsgpack(fflate.decompressSync(encoded)) as {
+            translatorPresetVersion: number;
+            type: string;
+            preset: Uint8Array;
+        };
+        return {
+            version: container.translatorPresetVersion,
+            type: container.type,
+            payload: decodeMsgpack(new Uint8Array(container.preset)) as Record<string, unknown>,
+        };
+    };
+    const fileWith = (version: number, payload: unknown) =>
+        fflate.compressSync(
+            encodeMsgpack({
+                translatorPresetVersion: version,
+                type: "translator-preset",
+                preset: encodeMsgpack(payload),
+            }),
         );
-        const profileStep = createTranslatorPreset("Profile", {
-            steps: [{ prompt: "a", model: { mode: "profile", profileId: "pr" } }],
+    const INVALID = "Invalid translator preset file.";
+    const stepPayload = (overrides: Record<string, unknown> = {}) => ({
+        name: "Step",
+        enabled: true,
+        prompt: "p {{slot::content}}",
+        maxResponse: 100,
+        model: { mode: "inherit" },
+        ...overrides,
+    });
+
+    it("writes version 2 for a preset version 1 would lose, with every step's fields and no id, and reads it back as the same preset under fresh ids", async () => {
+        const preset = createTranslatorPreset("Steps", {
+            steps: [
+                { name: "Draft", enabled: true, prompt: "a {{slot::content}}", maxResponse: 7, outputKey: "draft" },
+                {
+                    name: "Polish",
+                    enabled: false,
+                    prompt: "b {{slot::out::draft}}",
+                    maxResponse: 8,
+                    model: { mode: "profile", profileId: "pr-1" },
+                },
+            ],
         });
-        await expect(encodeTranslatorPresetFile(profileStep)).rejects.toThrow(
-            language.translatorPresetExportUnsupported,
-        );
-        // The other step fields (name, enabled, output key) are not in the file: one inherited step exports.
-        const oneStep = createTranslatorPreset("One", {
-            steps: [{ name: "Named", enabled: false, prompt: "a", maxResponse: 7, outputKey: "k" }],
+        const encoded = await encodeTranslatorPresetFile(preset);
+        const file = fileOf(encoded);
+        expect(file.version).toBe(2);
+        expect(file.type).toBe("translator-preset");
+        expect(file.payload).toStrictEqual({
+            name: "Steps",
+            steps: [
+                {
+                    name: "Draft",
+                    enabled: true,
+                    prompt: "a {{slot::content}}",
+                    maxResponse: 7,
+                    model: { mode: "inherit" },
+                    outputKey: "draft",
+                },
+                {
+                    name: "Polish",
+                    enabled: false,
+                    prompt: "b {{slot::out::draft}}",
+                    maxResponse: 8,
+                    model: { mode: "profile", profileId: "pr-1" },
+                },
+            ],
         });
-        const decoded = await decodeTranslatorPresetFile(await encodeTranslatorPresetFile(oneStep));
-        expect(withoutIds(decoded)).toEqual(withoutIds(createTranslatorPreset("One", { prompt: "a", maxResponse: 7 })));
+        expect(JSON.stringify(file.payload)).not.toContain('"id"');
+
+        const decoded = await decodeTranslatorPresetFile(encoded);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(preset));
+        expect(decoded.id).not.toBe(preset.id);
+        expect(decoded.steps.map((step) => step.id)).not.toContain(preset.steps[0].id);
+        expect(decoded.steps.map((step) => step.id)).not.toContain(preset.steps[1].id);
+        expect(new Set(decoded.steps.map((step) => step.id)).size).toBe(2);
+        // The profile step keeps its profile id: it runs where that profile exists, else shows as missing.
+        expect(decoded.steps[1].model).toEqual({ mode: "profile", profileId: "pr-1" });
+        // A second cycle is a fixed point on the file.
+        expect(fileOf(await encodeTranslatorPresetFile(decoded)).payload).toStrictEqual(file.payload);
+    });
+
+    it("writes version 1 only for a preset it holds without loss: one enabled step on the translate slot, without an output key, named Step 1", async () => {
+        const v1 = createTranslatorPreset("One", { prompt: "a", maxResponse: 7 });
+        expect(fileOf(await encodeTranslatorPresetFile(v1))).toMatchObject({
+            version: 1,
+            payload: { name: "One", prompt: "a", maxResponse: 7 },
+        });
+        // Each of these would lose something in version 1 (Astra's plan review, point 4).
+        const lossy: Record<string, Parameters<typeof createTranslatorPreset>[1]> = {
+            "two steps": { steps: [{ prompt: "a" }, { prompt: "b" }] },
+            "a disabled second step": { steps: [{ prompt: "a" }, { prompt: "b", enabled: false }] },
+            "a profile step": { steps: [{ prompt: "a", model: { mode: "profile", profileId: "pr" } }] },
+            "a named step": { steps: [{ name: "Named", prompt: "a" }] },
+            "a disabled step": { steps: [{ enabled: false, prompt: "a" }] },
+            "an output key": { steps: [{ prompt: "a", outputKey: "k" }] },
+        };
+        for (const [label, input] of Object.entries(lossy)) {
+            const preset = createTranslatorPreset("P", input);
+            const encoded = await encodeTranslatorPresetFile(preset);
+            expect(fileOf(encoded).version, label).toBe(2);
+            expect(withoutIds(await decodeTranslatorPresetFile(encoded)), label).toStrictEqual(withoutIds(preset));
+        }
+    });
+
+    it("reads a version 2 payload only in its exact shape at every level, and names a blank import", async () => {
+        const valid = { name: "V2", steps: [stepPayload(), stepPayload({ outputKey: "k_1", enabled: false })] };
+        const decoded = await decodeTranslatorPresetFile(fileWith(2, valid));
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(createTranslatorPreset("V2", { steps: valid.steps })));
+        expect(decoded.steps[1].outputKey).toBe("k_1");
+        expect(await decodeTranslatorPresetFile(fileWith(2, { ...valid, name: "  " }))).toMatchObject({
+            name: "Imported Preset",
+        });
+
+        const refused: Record<string, unknown> = {
+            // The Fastify fork's file carries the preset's own fields beside the steps (decision 8).
+            "a Fastify-shaped payload": { ...valid, prompt: "p", maxResponse: 1 },
+            "a preset id": { ...valid, id: "keep-me" },
+            "a missing name": { steps: valid.steps },
+            "a non-string name": { ...valid, name: 3 },
+            "no steps": { name: "V2", steps: [] },
+            "six steps": { name: "V2", steps: Array.from({ length: 6 }, () => stepPayload()) },
+            "steps not a list": { name: "V2", steps: stepPayload() },
+            "a step id": { name: "V2", steps: [stepPayload({ id: "s-1" })] },
+            "a step without a model": { name: "V2", steps: [{ ...stepPayload(), model: undefined }] },
+            "a step missing enabled": { name: "V2", steps: [{ ...stepPayload(), enabled: undefined }] },
+            "a non-boolean enabled": { name: "V2", steps: [stepPayload({ enabled: 1 })] },
+            "a non-string prompt": { name: "V2", steps: [stepPayload({ prompt: null })] },
+            "a non-finite size": { name: "V2", steps: [stepPayload({ maxResponse: Infinity })] },
+            "a string size": { name: "V2", steps: [stepPayload({ maxResponse: "100" })] },
+            "an unknown step field": { name: "V2", steps: [stepPayload({ extra: true })] },
+            "an unknown model mode": { name: "V2", steps: [stepPayload({ model: { mode: "slot" } })] },
+            "a profile model without an id": { name: "V2", steps: [stepPayload({ model: { mode: "profile" } })] },
+            "a profile model with an empty id": {
+                name: "V2",
+                steps: [stepPayload({ model: { mode: "profile", profileId: "" } })],
+            },
+            "an inherit model with extra fields": {
+                name: "V2",
+                steps: [stepPayload({ model: { mode: "inherit", profileId: "x" } })],
+            },
+            "an invalid output key": { name: "V2", steps: [stepPayload({ outputKey: "1bad" })] },
+            "a non-string output key": { name: "V2", steps: [stepPayload({ outputKey: 5 })] },
+            "a repeated output key": {
+                name: "V2",
+                steps: [stepPayload({ outputKey: "k" }), stepPayload({ outputKey: "k" })],
+            },
+            "a version 1 payload": { name: "V1", prompt: "p", maxResponse: 1 },
+        };
+        for (const [label, payload] of Object.entries(refused)) {
+            await expect(decodeTranslatorPresetFile(fileWith(2, payload)), label).rejects.toThrow(INVALID);
+        }
+        // The version is the container's: a version 1 container holds no steps, and no other version exists.
+        await expect(decodeTranslatorPresetFile(fileWith(1, valid))).rejects.toThrow(INVALID);
+        await expect(decodeTranslatorPresetFile(fileWith(3, valid))).rejects.toThrow(INVALID);
+        await expect(decodeTranslatorPresetFile(fileWith(2, "not a record"))).rejects.toThrow(INVALID);
     });
 
     it("rejects plain JSON translator preset payloads", async () => {

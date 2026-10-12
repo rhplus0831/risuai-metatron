@@ -40,6 +40,7 @@ import {
     type PresetField,
 } from "../../../shared/presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import type { TranslatorPreset } from "../../../shared/settings.ts";
 import { SECTION_FIELDS } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
 import { definitionNeedsProfile } from "../../../shared/llm/modelSlots.ts";
@@ -515,6 +516,13 @@ export function presetsUsingModelProfile(id: string): readonly DeepReadonly<Mode
     const uses = (slot: ModelSlot | undefined) => slot && "profileId" in slot && slot.profileId === id;
     return (settings.modelPresets ?? []).filter((preset) =>
         [preset.mainSlot, preset.subSlot, ...Object.values(preset.auxSlots ?? {})].some(uses),
+    );
+}
+
+/** Translator presets with a step on a profile, disabled steps included; each preset once. */
+export function translatorPresetsUsingModelProfile(id: string): readonly DeepReadonly<TranslatorPreset>[] {
+    return (settings.translatorPresets?.items ?? []).filter((preset) =>
+        (preset.steps ?? []).some((step) => step.model?.mode === "profile" && step.model.profileId === id),
     );
 }
 

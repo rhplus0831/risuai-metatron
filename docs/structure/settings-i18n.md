@@ -133,7 +133,7 @@ Languages (`src/lang/`):
 
 - `src/ts/translator/presets.test.ts` (adjacent), `src/lib/UI/GUI/guiRendering.test.ts` (primitives).
 - `src/ts/storage/tests/settingsViews.test.ts` (the views, the root resolver, the registry over the real context), `src/ts/storage/tests/settingWrappers.test.ts` (the wrappers and `SettingRenderer`), `src/lib/Setting/Pages/PersonaSettings.test.ts`; listed in `persistence.md`.
-- `src/lib/Setting/botpreset.test.ts` (the list in both kinds: the model list selects, adds, copies, renames, and removes model presets only, with their key entries; the prompt-only actions stay on the prompt list), `src/lib/Setting/Pages/presetPages.test.ts` (each page names its preset, opens its own list, and writes into its own preset), `src/ts/setting/botSettingsParamsData.test.ts` (each page's parameter items bind only its preset's fields).
+- `src/lib/Setting/botpreset.test.ts` (the list in both kinds: the model list selects, adds, copies, renames, and removes model presets only, with their key entries; the prompt-only actions stay on the prompt list), `src/lib/Setting/Pages/presetPages.test.ts` (each page names its preset, opens its own list, and writes into its own preset; the Connections tab's delete confirmation lists the translator presets with a step on the profile, disabled steps included, each once, translation slice 3.1), `src/ts/setting/botSettingsParamsData.test.ts` (each page's parameter items bind only its preset's fields).
 - Not tested: prompt editing, `changeLanguage`.
 
 ## Known Hazards

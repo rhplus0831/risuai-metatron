@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
     createTranslatorPreset,
+    createTranslatorStep,
+    defaultTranslatorStepName,
     isTranslatorPreset,
     isTranslatorStep,
     normalizeTranslatorSteps,
@@ -154,6 +156,24 @@ describe("createTranslatorPreset", () => {
         const stored = createTranslatorPreset(created.name, JSON.parse(JSON.stringify(created)));
         expect(JSON.stringify(stored)).toBe(JSON.stringify(created));
         expect(isTranslatorPreset(created)).toBe(true);
+    });
+});
+
+// Translation slice 3.1: the editor's "Add step" appends a step the normalizer keeps as it is.
+describe("createTranslatorStep", () => {
+    it("is a normalized step named by its position, with a fresh id and no output key", () => {
+        const step = createTranslatorStep(2);
+        expect(step).toEqual(inherited({ name: "Step 3" }));
+        expect(Object.keys(step)).toEqual(["id", "name", "enabled", "prompt", "maxResponse", "model"]);
+        expect(createTranslatorStep(0).id).not.toBe(createTranslatorStep(0).id);
+        expect(isTranslatorStep(step)).toBe(true);
+        // A list holding it normalizes to itself, so the tab's copy stays the server's text.
+        const steps = [createTranslatorStep(0), createTranslatorStep(1), createTranslatorStep(2)];
+        expect(normalizeTranslatorSteps({ steps: JSON.parse(JSON.stringify(steps)) })).toEqual(steps);
+        for (const index of [0, 4, 9]) {
+            expect(defaultTranslatorStepName(index)).toBe(`Step ${index + 1}`);
+            expect(createTranslatorStep(index).name).toBe(defaultTranslatorStepName(index));
+        }
     });
 });
 

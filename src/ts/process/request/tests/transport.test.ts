@@ -412,6 +412,62 @@ describe("the request body", () => {
         expect(postedBody().context).toMatchObject({ presetId: "preset-1", modelPresetId: "preset-1" });
     });
 
+    // `docs/plan/translation.md` slice 3.1: a chatless caller's captured ids (`requestIds`) and the
+    // request's named profile (`profileId`).
+    it("names a chatless caller's captured ids in the context, tokenizes with that model preset, forwards profileId but not the ids, and refuses a captured preset that is gone before the flush", async () => {
+        const requestIds = { presetId: "preset-ctx", modelPresetId: "model-ctx", personaId: "persona-2" };
+        const arg = { ...baseArg(), requestIds, profileId: "step-profile" };
+        expect(await requestServer(arg as never, "translate", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        const body = postedBody();
+        expect(body.mode).toBe("translate");
+        // The captured ids, the captured persona as the selected one too, no chat: the selected character.
+        expect(body.context).toMatchObject({
+            presetId: "preset-ctx",
+            modelPresetId: "model-ctx",
+            personaId: "persona-2",
+            selectedPersonaId: "persona-2",
+            selectedCharacterId: "char-1",
+        });
+        expect(body.arg).toEqual({
+            formated: [{ role: "user", content: "hi" }],
+            bias: {},
+            useStreaming: false,
+            profileId: "step-profile",
+        });
+        expect(body.arg).not.toHaveProperty("requestIds");
+        expect(body.arg).not.toHaveProperty("chatRef");
+        // The main model and tokenizer of the captured model preset, not the selected one (P2).
+        expect(stubs.modelInfoCalls).toEqual([["model", { presetId: "preset-ctx", modelPresetId: "model-ctx" }]]);
+
+        // A captured pair that no longer exists: refused before the flush and the POST.
+        stubs.fetch.mockClear();
+        stubs.flush.mockClear();
+        stubs.modelInfoCalls.length = 0;
+        const modelPresets = trackedRecord<{ id: string }[]>("modelPresets")!;
+        modelPresets.splice(
+            modelPresets.findIndex((entry) => entry.id === "model-ctx"),
+            1,
+        );
+        expect(await requestServer(arg as never, "translate", null, modelInfo)).toEqual({
+            type: "fail",
+            result: "The model preset this request runs with no longer exists",
+        });
+        expect(
+            await requestServer(
+                { ...baseArg(), requestIds: { ...requestIds, modelPresetId: "preset-1", presetId: "nope" } } as never,
+                "translate",
+                null,
+                modelInfo,
+            ),
+        ).toEqual({ type: "fail", result: "The preset this request runs with no longer exists" });
+        expect(stubs.flush).not.toHaveBeenCalled();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.modelInfoCalls).toEqual([]);
+    });
+
     it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
         stubs.dynamicIds.add("dynamic_google_x");
         stubs.channelCall = { jobId: "job-1", callbackId: "cb-1" };

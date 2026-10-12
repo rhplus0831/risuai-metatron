@@ -25,6 +25,7 @@ const SECRET = {
     openai: "sk-openai-SENTINEL-2222",
     memory: "sk-memory-SENTINEL-3333",
     google: "AIza-google-SENTINEL-4444",
+    step: "sk-step-SENTINEL-5555",
 };
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders; body: Buffer; closed: boolean };
@@ -299,6 +300,73 @@ describe("POST /api/llm/request", () => {
         );
         expect(parentGone.status).toBe(409);
         expect(upstreamRequests).toHaveLength(0);
+    });
+
+    // `docs/plan/translation.md` slice 3.1: `arg.profileId` names the profile the request runs on.
+    it("runs a request that names a profile on that profile's connection and key, fails one naming a missing profile without an upstream call, and refuses a malformed id", async () => {
+        const ids = await seed();
+        const read = async (kind: string) =>
+            (await (await client.get(kind, "main")).json()) as { revision: string; data: any };
+        const write = async (kind: string, data: unknown) => {
+            const current = await read(kind);
+            const res = await client.put(kind, "main", { baseRevision: current.revision, data });
+            expect(res.status).toBe(200);
+        };
+        // A second profile no slot names, on the same upstream under its own key and request model.
+        const profiles = await read("modelProfiles");
+        await write("modelProfiles", [
+            ...profiles.data,
+            {
+                ...profiles.data[0],
+                id: "step-profile",
+                name: "Step",
+                credentialId: "step-key",
+                customProxyRequestModel: "step-model",
+            },
+        ]);
+        await write("credentials", [
+            ...(await read("credentials")).data,
+            { id: "step-key", name: "Step", type: "custom" },
+        ]);
+        await writeSecret({ kind: "entry", field: "credentials", id: "step-key" }, SECRET.step);
+
+        const named = await client.json("/api/llm/request", {
+            ...body(ids, { profileId: "step-profile" }),
+            mode: "translate",
+        });
+        expect(named.status).toBe(200);
+        const got = await events(named);
+        expect(got.at(-1)).toEqual({ type: "result", response: { type: "success", result: "answer to hi" } });
+        expect(upstreamRequests).toHaveLength(1);
+        expect(upstreamRequests[0].headers.authorization).toBe(`Bearer ${SECRET.step}`);
+        expect(JSON.parse(upstreamRequests[0].body.toString()).model).toBe("step-model");
+        expect(JSON.stringify(got)).not.toContain(SECRET.step);
+        // The same request without a profile runs on the slot's profile (the proxy key, `mock-model`).
+        const slot = await client.json("/api/llm/request", { ...body(ids), mode: "translate" });
+        expect((await events(slot)).at(-1)).toMatchObject({ type: "result", response: { type: "success" } });
+        expect(upstreamRequests).toHaveLength(2);
+        expect(upstreamRequests[1].headers.authorization).toBe(`Bearer ${SECRET.proxy}`);
+        expect(JSON.parse(upstreamRequests[1].body.toString()).model).toBe("mock-model");
+
+        // A deleted profile: the request fails in the stream (no retry), nothing reaches the upstream.
+        const missing = await client.json("/api/llm/request", body(ids, { profileId: "deleted-profile" }));
+        expect(missing.status).toBe(200);
+        expect((await events(missing)).at(-1)).toEqual({
+            type: "result",
+            response: {
+                type: "fail",
+                result: "Cannot send the request: the connection it names no longer exists.",
+                noRetry: true,
+            },
+        });
+        expect(upstreamRequests).toHaveLength(2);
+        // The route takes a record id only.
+        for (const profileId of ["", 5, null, {}]) {
+            const res = await client.json("/api/llm/request", body(ids, { profileId }));
+            expect(res.status, JSON.stringify(profileId)).toBe(400);
+            expect(((await res.json()) as { error: string }).error).toMatch(/arg.profileId must be a model profile id/);
+        }
+        expect(upstreamRequests).toHaveLength(2);
     });
 
     it("answers 409 with the binding problems for a chat whose binding is not complete, and 409 mismatch for other ids (`docs/plan/chat-binding.md`)", async () => {

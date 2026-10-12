@@ -6,6 +6,7 @@ export const messages = {
         httpError: "Error: error in request:",
         modelProfileMissing: (mode: string) =>
             `Cannot request mode "${mode}": the selected connection no longer exists.`,
+        modelProfileNamedMissing: "Cannot send the request: the connection it names no longer exists.",
         modelProfileRequired: (model: string) =>
             `Cannot request model "${model}" without a connection: this definition requires connection options or a named-key choice.`,
         credentialRefused: (model: string, name: string | undefined, reason: string) =>

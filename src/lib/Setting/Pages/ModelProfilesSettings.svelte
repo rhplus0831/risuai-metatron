@@ -9,6 +9,7 @@
         updateModelProfile,
         deleteModelProfile,
         presetsUsingModelProfile,
+        translatorPresetsUsingModelProfile,
     } from "src/ts/storage/collectionStore.svelte";
     import ModelProfileEditor from "./Model/ModelProfileEditor.svelte";
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
@@ -34,7 +35,10 @@
         const uses = presetsUsingModelProfile(id)
             .map((preset) => preset.name)
             .join("\n");
-        if (await alertConfirm(language.modelProfiles.deleteConfirm(name, uses))) {
+        const translatorUses = translatorPresetsUsingModelProfile(id)
+            .map((preset) => preset.name)
+            .join("\n");
+        if (await alertConfirm(language.modelProfiles.deleteConfirm(name, uses, translatorUses))) {
             deleteModelProfile(id);
         }
     }

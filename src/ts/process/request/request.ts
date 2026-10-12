@@ -74,6 +74,16 @@ interface requestDataArgument {
     imageResponse?: boolean;
     previewBody?: boolean;
     staticModel?: string;
+    /** A model profile the request runs on instead of its mode's slot (`RequestArgs.profileId`). */
+    profileId?: string;
+    /**
+     * The ids a request without a chat runs with, captured by a caller that sends several requests as
+     * one run (the tab's translator pipeline, `docs/plan/translation.md` slice 3.1), so a selection
+     * change between them does not move the later ones. A captured preset that is gone refuses the
+     * request, as a plugin context's does. Without it a request without a chat reads the settings
+     * views at its start; a request with a chat (its `chatRef` or plugin context) never reads it.
+     */
+    requestIds?: ChatContextIds;
     escape?: boolean;
     tools?: MCPTool[];
     rememberToolUsage?: boolean;
@@ -213,6 +223,14 @@ const requestChatGone = (): requestDataResponse => ({
     result: "The chat this request is for no longer exists",
 });
 
+/** The presets a request captured: its plugin context's, else (without a chat) its `requestIds`. */
+function capturedPresetScope(arg: requestDataArgument): PresetScope | undefined {
+    if (arg.pluginContext) {
+        return arg.pluginContext;
+    }
+    return arg.chatRef ? undefined : arg.requestIds;
+}
+
 /** A refusal of a request whose captured `scope` lost a preset, or `undefined` while both exist (or without a scope). */
 function requestPresetGone(scope: PresetScope | undefined): requestDataResponse | undefined {
     const missing = scope ? missingScopeTarget(scope) : undefined;
@@ -321,9 +339,11 @@ async function requestPinnedChatData(
     abortSignal: AbortSignal,
 ): Promise<requestDataResponse> {
     const pluginContext = arg.pluginContext;
-    // The request's captured presets (its plugin context's), else the selected ones. A captured preset
-    // that is gone refuses the request, here and before every attempt below.
-    const presetGone = requestPresetGone(pluginContext);
+    // The request's captured presets (its plugin context's, else a chatless caller's `requestIds`),
+    // else the selected ones. A captured preset that is gone refuses the request, here and before
+    // every attempt below.
+    const capturedScope = capturedPresetScope(arg);
+    const presetGone = requestPresetGone(capturedScope);
     if (presetGone) {
         return presetGone;
     }
@@ -359,7 +379,7 @@ async function requestPinnedChatData(
             // Each attempt (a retry after a wait too) starts only for the chat the request began with.
             return requestChatGone();
         }
-        const goneBefore = requestPresetGone(pluginContext);
+        const goneBefore = requestPresetGone(capturedScope);
         if (goneBefore) {
             return goneBefore;
         }
@@ -371,7 +391,7 @@ async function requestPinnedChatData(
                     return requestChatGone();
                 }
             }
-            const goneAfterHooks = requestPresetGone(pluginContext);
+            const goneAfterHooks = requestPresetGone(capturedScope);
             if (goneAfterHooks) {
                 return goneAfterHooks;
             }
@@ -560,7 +580,7 @@ export async function requestChatDataMain(
     // shows, the selected chat's bound presets where they exist, else the tab's selection), read once
     // now, so the tab routes and tokenizes with the model preset whose id the server receives
     // (`requestServer` reads the same ids). A bare scope: a chatless request carries no `chatRef`.
-    const scope: PresetScope = arg.pluginContext ?? {
+    const scope: PresetScope = capturedPresetScope(arg) ?? {
         presetId: activePreset.id ?? "",
         modelPresetId: activeModelPreset.id ?? "",
     };
@@ -569,21 +589,23 @@ export async function requestChatDataMain(
     if (presetGone) {
         return presetGone;
     }
-    const resolved = resolveModelSlot(model, scope, arg.staticModel);
+    const resolved = resolveModelSlot(model, scope, arg.staticModel, arg.profileId);
     if (resolved.kind === "refused") {
         return {
             type: "fail",
             noRetry: true,
             result:
-                resolved.reason === "missingProfile"
-                    ? language.modelProfiles.missingRequest(
-                          model === "model"
-                              ? language.model
-                              : model === "submodel"
-                                ? language.submodel
-                                : language.modelProfiles.auxModes[model],
-                      )
-                    : language.modelProfiles.requiredRequest(resolved.modelId!),
+                resolved.reason === "missingNamedProfile"
+                    ? language.modelProfiles.missingNamedRequest
+                    : resolved.reason === "missingProfile"
+                      ? language.modelProfiles.missingRequest(
+                            model === "model"
+                                ? language.model
+                                : model === "submodel"
+                                  ? language.submodel
+                                  : language.modelProfiles.auxModes[model],
+                        )
+                      : language.modelProfiles.requiredRequest(resolved.modelId!),
         };
     }
     targ.aiModel = resolved.modelId;
@@ -753,9 +775,11 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     const chatRef = arg.chatRef ?? arg.pluginContext?.chatRef;
     const currentChar = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
     const characterName = currentChar?.name ?? "";
-    const userName = arg.pluginContext
-        ? (settings.personas.find((persona) => persona?.id === arg.pluginContext!.personaId)?.name ?? "User")
-        : getUserName();
+    const personaId = arg.pluginContext?.personaId ?? (chatRef ? undefined : arg.requestIds?.personaId);
+    const userName =
+        personaId !== undefined
+            ? (settings.personas.find((persona) => persona?.id === personaId)?.name ?? "User")
+            : getUserName();
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
     const realModel = aiModel.split(":::")[1];

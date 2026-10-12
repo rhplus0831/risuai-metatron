@@ -1,6 +1,13 @@
 import { getModelInfoForMode } from "../model/modellist";
 import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
-import { settings, activePreset, readPresetFieldOf } from "../storage/settingsViews.svelte";
+import {
+    settings,
+    activePersona,
+    activePreset,
+    activeModelPreset,
+    readPresetFieldOf,
+} from "../storage/settingsViews.svelte";
+import type { ChatContextIds } from "../storage/chatBinding.svelte";
 import { get } from "svelte/store";
 import { type character, type customscript, type groupChat } from "../storage/database.svelte";
 import type { TranslatorPreset } from "./presets";
@@ -87,6 +94,8 @@ export async function runTranslator(
         preset: JSON.parse(
             JSON.stringify(exarg?.globalPreset ? globalTranslatorPreset() : getCurrentTranslatorPreset()),
         ) as TranslatorPreset,
+        // The LLM requests' ids, read once too, so a chat switch between chunks moves none of them.
+        requestIds: chatlessRequestIds(),
     };
     const texts = text.split("\n");
     let chunks: [string, boolean][] = [["", true]];
@@ -141,13 +150,26 @@ export async function runTranslator(
 
 async function translateMain(
     text: string,
-    arg: { from: string; to: string; host: string; translatorNote?: string; preset: TranslatorPreset },
+    arg: {
+        from: string;
+        to: string;
+        host: string;
+        translatorNote?: string;
+        preset: TranslatorPreset;
+        requestIds: ChatContextIds;
+    },
 ) {
     if (settings.memoryTranslateMedia.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(
             text,
-            llmTranslationContext({ to: tr, from: arg.from, translatorNote: arg.translatorNote, preset: arg.preset }),
+            llmTranslationContext({
+                to: tr,
+                from: arg.from,
+                translatorNote: arg.translatorNote,
+                preset: arg.preset,
+                requestIds: arg.requestIds,
+            }),
         );
     }
     if (settings.memoryTranslateMedia.translatorType === "deepl") {
@@ -521,6 +543,11 @@ interface LLMTranslationContext {
     to: string;
     from: string;
     translatorNote: string;
+    /**
+     * The presets and persona every step's request runs with (`requestIds`), as a request without a
+     * chat would read them now, so a selection change during the run does not move the later steps.
+     */
+    requestIds: ChatContextIds;
 }
 
 function resolveTranslatorNote(explicit: string | undefined): string {
@@ -535,16 +562,34 @@ function resolveTranslatorNote(explicit: string | undefined): string {
  * The preset's steps (`arg.preset`, else the selected chat's preset or the global one; a plain copy:
  * an edit or a conflict reload during the requests changes neither the run nor its cache key) and the
  * languages and translator note, each from `arg` when it names one and otherwise as `translateHTML`
- * resolves it: the language settings and the selected character's note.
+ * resolves it: the language settings and the selected character's note. The request ids are
+ * `arg.requestIds` (a caller's capture for several calls), else the settings views' (the selected
+ * chat's bound ids where they exist, else the tab's selection).
  */
 function llmTranslationContext(
-    arg: { to?: string; from?: string; translatorNote?: string; preset?: TranslatorPreset } = {},
+    arg: {
+        to?: string;
+        from?: string;
+        translatorNote?: string;
+        preset?: TranslatorPreset;
+        requestIds?: ChatContextIds;
+    } = {},
 ): LLMTranslationContext {
     return {
         steps: JSON.parse(JSON.stringify((arg.preset ?? getCurrentTranslatorPreset()).steps)) as TranslatorStep[],
         to: arg.to ?? (settings.memoryTranslateMedia.translator || "en"),
         from: arg.from ?? settings.memoryTranslateMedia.translatorInputLanguage,
         translatorNote: resolveTranslatorNote(arg.translatorNote),
+        requestIds: arg.requestIds ?? chatlessRequestIds(),
+    };
+}
+
+/** The ids a request without a chat reads now (`requestIds`): the settings views' presets and persona. */
+function chatlessRequestIds(): ChatContextIds {
+    return {
+        presetId: activePreset.id ?? "",
+        modelPresetId: activeModelPreset.id ?? "",
+        personaId: activePersona.id ?? "",
     };
 }
 
@@ -606,8 +651,8 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
                 from: context.from,
                 translatorNote: context.translatorNote,
             },
-            async ({ messages, maxResponse }) => {
-                // Every step runs on the `translate` slot until steps name their model (translation slice 3.1).
+            async ({ messages, maxResponse, model }) => {
+                // A step on a profile runs on that profile, an inheriting step on the `translate` slot.
                 const rq = await requestChatData(
                     {
                         formated: messages,
@@ -615,6 +660,8 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
                         useStreaming: false,
                         noMultiGen: true,
                         maxTokens: maxResponse,
+                        requestIds: context.requestIds,
+                        ...(model.mode === "profile" ? { profileId: model.profileId } : {}),
                     },
                     "translate",
                 );

@@ -249,6 +249,8 @@ export const languageEnglish = {
         systemRoleReplacement: "The role that replaces system role if the model doesn't support system role.",
         summarizationPrompt:
             "The prompt that is used for summarization. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the chat data.",
+        translatorSteps:
+            "A preset runs its enabled steps in order (at most 5), each one a request; when no step is enabled, the first step runs. Each step runs on the translation slot of the model preset, or on a connection of its own. A step's prompt can use {{slot::prev}} for the previous step's output (the content for the first step) and {{slot::out::KEY}} for the output of an earlier step whose output key is KEY. The last step's output is the translation.",
         translatorPrompt:
             "The prompt that is used for translation. If it is blank, it will use the default prompt. Slots: {{slot}} for the dest language, {{slot::from}} for the source language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note. You can also use ChatML formating, which sets every message itself. Without ChatML, the prompt is the system message and the content follows as the user message, unless the prompt holds {{slot::content}} (or {{slot::prev}}, or {{slot::out::KEY}}). CBS is not evaluated in this prompt, and `<Thoughts>` and `<think>` blocks are removed from the reply.",
         translateBeforeHTMLFormatting:
@@ -981,10 +983,11 @@ export const languageEnglish = {
             emotion: "Emotion",
             otherAx: "Other auxiliary requests",
         },
-        deleteConfirm: (name: string, uses: string) =>
-            uses
-                ? `Delete connection "${name}"?\n\nUsed by these model presets:\n${uses}\n\nTheir slots will show the connection as missing and requests will be refused until another connection is chosen.`
+        deleteConfirm: (name: string, uses: string, translatorUses: string) =>
+            uses || translatorUses
+                ? `Delete connection "${name}"?\n\n${uses ? `Used by these model presets:\n${uses}\n\n` : ""}${translatorUses ? `Used by steps of these translator presets:\n${translatorUses}\n\n` : ""}Their slots and steps will show the connection as missing and requests will be refused until another connection is chosen.`
                 : `Delete connection "${name}"?`,
+        missingNamedRequest: "Requests are refused because the connection this request names is missing.",
         missingRequest: (mode: string) => `Requests are refused because the ${mode} slot's connection is missing.`,
         requiredRequest: (model: string) => `Requests are refused because model "${model}" needs a connection.`,
         defaultKeys: "Default provider keys",
@@ -1429,9 +1432,26 @@ export const languageEnglish = {
     systemRoleReplacement: "System Role Replacement",
     summarizationPrompt: "Summarization Prompt",
     reSummarizationPrompt: "Re-Summarizaion Prompt",
+    translatorSteps: {
+        title: "Steps",
+        add: "Add step",
+        name: "Step name",
+        nameBlank: "A step needs a name. The name is not saved while it is blank.",
+        enabled: "Enabled",
+        model: "Model",
+        inheritModel: "Translation slot of the model preset",
+        missingProfile: "This step's connection was deleted. Choose another before translating.",
+        outputKey: "Output key",
+        outputKeyInvalid:
+            "Not saved: an output key starts with a letter or _ and holds only letters, digits, and _ (at most 64).",
+        outputKeyTaken: "Not saved: another step of this preset uses this output key.",
+        moveUp: "Move step up",
+        moveDown: "Move step down",
+        remove: "Remove step",
+        removeConfirm: (name: string) => `Remove the step "${name}"?`,
+        noneEnabled: "No step is enabled, so the first step runs.",
+    },
     translatorPrompt: "Translation Prompt",
-    translatorPresetExportUnsupported:
-        "This preset has a step that a .risutl file cannot hold yet (more than one step, or a step with its own model). Only a single-step preset on the translation model can be exported.",
     translateBeforeHTMLFormatting: "Translate Before HTML Formatting",
     retranslate: "Retranslate",
     retranslateConfirm: "Translate this message again? The current translation is replaced.",

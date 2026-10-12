@@ -326,14 +326,22 @@ export async function requestChatDataMain(
     model: ModelModeExtended,
     ctx: RequestContext,
 ): Promise<requestDataResponse> {
-    const resolved = resolveSlotProfile(ctx.db.modelPreset, ctx.db.modelProfiles, model, arg.staticModel);
+    const resolved = resolveSlotProfile(
+        ctx.db.modelPreset,
+        ctx.db.modelProfiles,
+        model,
+        arg.staticModel,
+        arg.profileId,
+    );
     if (resolved.kind === "refused") {
         return {
             type: "fail",
             result:
                 resolved.reason === "missingProfile"
                     ? language.errors.modelProfileMissing(model)
-                    : language.errors.modelProfileRequired(resolved.modelId!),
+                    : resolved.reason === "missingNamedProfile"
+                      ? language.errors.modelProfileNamedMissing
+                      : language.errors.modelProfileRequired(resolved.modelId!),
             noRetry: true,
         };
     }

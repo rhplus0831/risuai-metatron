@@ -101,6 +101,40 @@ describe("resolveSlotProfile", () => {
         const dangling = preset({ mainSlot: { profileId: "gone" } });
         expect(summary(resolveSlotProfile(dangling, profiles, "model", "gpt-5.5"))).toBe("none:gpt-5.5");
     });
+
+    it("runs a request that names a profile on it, whatever the mode, the slots, or a static model, and refuses a missing one (translation slice 3.1)", () => {
+        const on = preset({
+            seperateModelsForAxModels: true,
+            auxSlots: { translate: { profileId: "sub" }, memory: { modelId: "gemini-2.5-flash" } },
+        });
+        for (const mode of ["model", "submodel", ...AUX_MODES] as const) {
+            expect(summary(resolveSlotProfile(on, profiles, mode, undefined, "memory")), mode).toBe("profile:memory");
+        }
+        expect(resolveSlotProfile(on, profiles, "translate", undefined, "proxy")).toEqual({
+            kind: "profile",
+            profile: profiles[3],
+            modelId: "reverse_proxy",
+        });
+        // The named profile wins over `staticModel`, and a bare slot's definition plays no part.
+        expect(summary(resolveSlotProfile(on, profiles, "model", "gpt-5.5", "memory"))).toBe("profile:memory");
+        expect(summary(resolveSlotProfile(on, profiles, "memory", undefined, "sub"))).toBe("profile:sub");
+        // Dangling slots do not matter when the request names its profile.
+        const dangling = preset({ mainSlot: { profileId: "gone" }, subSlot: { profileId: "gone" } });
+        expect(summary(resolveSlotProfile(dangling, profiles, "translate", undefined, "main"))).toBe("profile:main");
+        // A missing named profile refuses with its own reason: never the slot, never a bare model.
+        for (const mode of ["model", "translate"] as const) {
+            expect(resolveSlotProfile(on, profiles, mode, undefined, "deleted"), mode).toEqual({
+                kind: "refused",
+                reason: "missingNamedProfile",
+            });
+        }
+        expect(summary(resolveSlotProfile(on, profiles, "model", "gpt-5.5", "deleted"))).toBe(
+            "refused:missingNamedProfile",
+        );
+        expect(summary(resolveSlotProfile(on, [], "model", undefined, "main"))).toBe("refused:missingNamedProfile");
+        // `undefined` is "no profile named": the slot routing as before.
+        expect(summary(resolveSlotProfile(on, profiles, "translate", undefined, undefined))).toBe("profile:sub");
+    });
 });
 
 describe("definitionNeedsProfile", () => {

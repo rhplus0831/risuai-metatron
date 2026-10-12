@@ -245,11 +245,19 @@ export function createTranslationRunner(deps: {
                 from,
                 translatorNote: translatorNoteOf(scope),
             },
-            async ({ messages, maxResponse }) => {
+            async ({ messages, maxResponse, model }) => {
                 assertLive(life);
-                // Every step runs on the `translate` slot until steps name their model (slice 3.1).
+                // A step on a profile runs on that profile (a missing one fails the run), an
+                // inheriting step on the `translate` slot of the run's model preset.
                 const response: requestDataResponse = await requestChatDataOuter(
-                    { formated: messages, bias: {}, useStreaming: false, noMultiGen: true, maxTokens: maxResponse },
+                    {
+                        formated: messages,
+                        bias: {},
+                        useStreaming: false,
+                        noMultiGen: true,
+                        maxTokens: maxResponse,
+                        ...(model.mode === "profile" ? { profileId: model.profileId } : {}),
+                    },
                     "translate",
                     {
                         db,

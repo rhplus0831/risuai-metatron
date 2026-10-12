@@ -80,7 +80,7 @@ import { get } from "svelte/store";
 import type { Chat as ChatRecord } from "../../../shared/database.ts";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { assembleChats, chatEntry, seedChats, selectChat } from "src/ts/storage/chatStore.svelte";
-import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { doingChat } from "src/ts/process/index.svelte";
@@ -125,6 +125,35 @@ const requests = () =>
         maxTokens: arg.maxTokens,
         messages: arg.formated,
     }));
+/** Each request's captured ids and named profile (translation slice 3.1), in call order. */
+const routing = () =>
+    request.requestChatData.mock.calls.map(([arg]) => ({
+        requestIds: arg.requestIds,
+        profileId: arg.profileId,
+        named: Object.hasOwn(arg, "profileId"),
+    }));
+
+/**
+ * Two prompt presets (with their implied model presets, `installFlatDatabase`) and two personas, so a
+ * run can be caught switching between them; `pp-1`/`u1` selected.
+ */
+const SELECTABLE = {
+    botPresets: [
+        { id: "pp-1", name: "PP 1" },
+        { id: "pp-2", name: "PP 2" },
+    ],
+    personas: [
+        { id: "u1", name: "U1" },
+        { id: "u2", name: "U2" },
+    ],
+};
+const IDS_1 = { presetId: "pp-1", modelPresetId: "pp-1", personaId: "u1" };
+const IDS_2 = { presetId: "pp-2", modelPresetId: "pp-2", personaId: "u2" };
+function selectPair(ids: typeof IDS_1) {
+    selectPreset(ids.presetId);
+    selectModelPreset(ids.modelPresetId);
+    selectPersona(ids.personaId);
+}
 
 const succeed = (...results: string[]) => {
     for (const result of results) {
@@ -137,12 +166,14 @@ beforeEach(() => {
     doingChat.set(false);
     installFlatDatabase({
         characters: [],
+        ...SELECTABLE,
         translatorPresets: [twoSteps(), oneStep()],
         translatorPresetId: "two",
         translatorType: "llm",
         translator: "ko",
         translatorInputLanguage: "en",
     } as any);
+    selectPair(IDS_1);
 });
 
 afterEach(() => {
@@ -175,6 +206,18 @@ describe("llmTranslationCacheKey", () => {
         changed("prompt", () => (settings.translatorPresets.items[0].steps[0].prompt = "Changed {{slot::content}}"));
         changed("maxResponse", () => (settings.translatorPresets.items[0].steps[0].maxResponse = 12));
         changed("outputKey", () => (settings.translatorPresets.items[0].steps[0].outputKey = "other"));
+        changed(
+            "a step's model (slice 3.1)",
+            () => (settings.translatorPresets.items[0].steps[0].model = { mode: "profile", profileId: "pr-1" }),
+        );
+        changed(
+            "another profile",
+            () => (settings.translatorPresets.items[0].steps[0].model = { mode: "profile", profileId: "pr-2" }),
+        );
+        // The request ids are not part of the key: a cached translation serves whatever is selected.
+        selectPair(IDS_2);
+        expect(llmTranslationCacheKey("Hello")).toBe([...seen].at(-1));
+        selectPair(IDS_1);
         changed("disable a step", () => (settings.translatorPresets.items[0].steps[1].enabled = false));
         changed("select another preset", () => (settings.translatorPresets.selectedId = "one"));
         changed("target language", () => (settings.memoryTranslateMedia.translator = "ja"));
@@ -315,12 +358,14 @@ describe("the preset per call", () => {
                     triggerscript: [],
                 },
             ],
+            ...SELECTABLE,
             translatorPresets: [twoSteps(), oneStep()],
             translatorPresetId: "two",
             translatorType: "llm",
             translator: "ko",
             translatorInputLanguage: "en",
         } as any);
+        selectPair(IDS_1);
         const data = {
             id: "k",
             name: "K",
@@ -419,5 +464,90 @@ describe("the preset per call", () => {
         // The deleted preset's entries stay in the cache under their own key, unread by the current context.
         expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(3);
         expect(await getLLMCache("second")).toBeNull();
+    });
+});
+
+// `docs/plan/translation.md` slice 3.1: every step's request carries the ids a chatless request would
+// read when the run began (`requestIds`: the prompt preset, model preset, and persona), captured once
+// for every chunk of a `runTranslator` call and once per `translateHTML` context, and a step on a
+// profile names it (`profileId`); a step on the translate slot names none.
+describe("the request ids and the step's profile", () => {
+    const mixed = () =>
+        createTranslatorPreset("Mixed", {
+            id: "mixed",
+            steps: [
+                {
+                    id: "a",
+                    prompt: "A {{slot::content}}",
+                    maxResponse: 1,
+                    model: { mode: "profile", profileId: "pr-a" },
+                },
+                { id: "b", prompt: "B {{slot::prev}}", maxResponse: 2 },
+                { id: "c", prompt: "C {{slot::prev}}", maxResponse: 3, model: { mode: "profile", profileId: "pr-c" } },
+            ],
+        });
+
+    it("passes every step the captured ids, and a profile step its profile id only", async () => {
+        settings.translatorPresets.items.push(mixed());
+        settings.translatorPresets.selectedId = "mixed";
+        succeed("A", "B", "C");
+        await expect(runTranslator("Hello", false, "ko", "en")).resolves.toBe("C");
+        expect(routing()).toEqual([
+            { requestIds: IDS_1, profileId: "pr-a", named: true },
+            { requestIds: IDS_1, profileId: undefined, named: false },
+            { requestIds: IDS_1, profileId: "pr-c", named: true },
+        ]);
+        expect(requests().map((entry) => entry.mode)).toEqual(["translate", "translate", "translate"]);
+        // The ids are read from the views: another selection, another capture for the next call.
+        selectPair(IDS_2);
+        succeed("A2", "B2", "C2");
+        await expect(runTranslator("Other", false, "ko", "en")).resolves.toBe("C2");
+        expect(
+            routing()
+                .slice(3)
+                .map((entry) => entry.requestIds),
+        ).toEqual([IDS_2, IDS_2, IDS_2]);
+    });
+
+    it("captures the ids once per call: a selection switch during the first step moves neither the later steps nor the later chunks", async () => {
+        // The two-step global preset; the text has two chunks (a blank line between them).
+        request.requestChatData.mockImplementationOnce(async () => {
+            // The user opens another chat (or picks other presets) while the first request runs.
+            selectPair(IDS_2);
+            return { type: "success", result: "D1" };
+        });
+        succeed("F1", "D2", "F2");
+        await expect(runTranslator("first\n\nsecond", false, "ko", "en")).resolves.toBe("F1\n\nF2");
+        expect(requests().map((entry) => entry.messages[0].content)).toEqual([
+            "Draft first into ko from en",
+            "Polish D1 (draft D1; note )",
+            "Draft second into ko from en",
+            "Polish D2 (draft D2; note )",
+        ]);
+        expect(routing().map((entry) => entry.requestIds)).toEqual([IDS_1, IDS_1, IDS_1, IDS_1]);
+        for (const entry of routing()) {
+            expect(entry.named).toBe(false);
+        }
+        // `translateHTML` reads its context once too: a switch during its first step keeps the second.
+        selectPair(IDS_1);
+        request.requestChatData.mockImplementationOnce(async () => {
+            selectPair(IDS_2);
+            return { type: "success", result: "D3" };
+        });
+        succeed("F3");
+        await expect(translateHTML("Third", false, "", -1)).resolves.toBe("F3");
+        expect(
+            routing()
+                .slice(4)
+                .map((entry) => entry.requestIds),
+        ).toEqual([IDS_1, IDS_1]);
+        // The next call starts from the switched selection.
+        succeed("D4", "F4");
+        await runTranslator("Fourth", false, "ko", "en");
+        expect(
+            routing()
+                .slice(6)
+                .map((entry) => entry.requestIds),
+        ).toEqual([IDS_2, IDS_2]);
     });
 });

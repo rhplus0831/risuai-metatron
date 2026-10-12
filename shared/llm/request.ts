@@ -75,6 +75,11 @@ export type RequestArgs = {
     imageResponse?: boolean;
     previewBody?: boolean;
     staticModel?: string;
+    /**
+     * A model profile the request runs on instead of its mode's slot (a translator step's model,
+     * `docs/plan/translation.md` slice 3.1). A missing profile refuses; it never falls back to the slot.
+     */
+    profileId?: string;
     rememberToolUsage?: boolean;
 };
 
@@ -99,6 +104,7 @@ export const REQUEST_ARG_KEYS = [
     "imageResponse",
     "previewBody",
     "staticModel",
+    "profileId",
     "rememberToolUsage",
 ] as const satisfies readonly (keyof RequestArgs)[];
 

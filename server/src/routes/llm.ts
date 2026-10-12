@@ -9,6 +9,7 @@ import {
     type ToolCallRecord,
     type ToolDescriptor,
 } from "../../../shared/llm/request.ts";
+import { isRecordId } from "../../../shared/ids.ts";
 import { isModelDescriptor } from "../../../shared/llm/validate.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -88,6 +89,10 @@ function parseArgs(value: unknown): RequestArgs | string {
         if (!optionalString(value[key])) {
             return `arg.${key} must be a string`;
         }
+    }
+    // A collection reference, checked as the translator step that names it is (`isRecordId`).
+    if (value.profileId !== undefined && !isRecordId(value.profileId)) {
+        return "arg.profileId must be a model profile id";
     }
     if (value.chatRef !== undefined && value.chatRef !== null && !isChatRef(value.chatRef)) {
         return "arg.chatRef must be { chaId, chatId } or null";

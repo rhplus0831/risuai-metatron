@@ -32,7 +32,11 @@ vi.mock("src/ts/tokenizer", () => ({
 vi.mock("src/ts/process/prompt", () => ({ tokenizePreset: vi.fn(async () => 0) }));
 
 import { get } from "svelte/store";
+import { language } from "src/lang";
+import { alertConfirm } from "src/ts/alert";
+import { translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
+import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
@@ -185,6 +189,52 @@ describe("the Connections tab", () => {
         // The main slot's profile keeps its own value.
         expect(activeMainProfile.maxContext).toBe(9000);
         expect(settings.modelPresets[0]).not.toHaveProperty("maxContext");
+    });
+
+    // Translation slice 3.1: a translator step may name a profile; deleting the profile lists them.
+    it("lists the translator presets with a step on the profile in the delete confirmation, disabled steps included, each preset once", async () => {
+        const onSpare = (overrides: Record<string, unknown> = {}) => ({
+            prompt: "x",
+            model: { mode: "profile" as const, profileId: "spare" },
+            ...overrides,
+        });
+        settings.translatorPresets.items = [
+            createTranslatorPreset("Twice", { id: "t1", steps: [onSpare(), onSpare({ enabled: false })] }),
+            createTranslatorPreset("Slot only", { id: "t2", prompt: "y" }),
+            createTranslatorPreset("Disabled step", {
+                id: "t3",
+                steps: [{ prompt: "z" }, onSpare({ enabled: false })],
+            }),
+            createTranslatorPreset("Other profile", {
+                id: "t4",
+                steps: [{ prompt: "w", model: { mode: "profile", profileId: "echo" } }],
+            }),
+        ];
+        expect(translatorPresetsUsingModelProfile("spare").map((preset) => preset.name)).toEqual([
+            "Twice",
+            "Disabled step",
+        ]);
+        expect(translatorPresetsUsingModelProfile("nobody")).toEqual([]);
+
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+        vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+        [...page.querySelectorAll("button")]
+            .find((entry) => entry.textContent?.trim() === language.modelProfiles.delete)!
+            .click();
+        await Promise.resolve();
+        // No model preset slot names `spare`; two translator presets do.
+        expect(alertConfirm).toHaveBeenCalledWith(
+            language.modelProfiles.deleteConfirm("Spare", "", "Twice\nDisabled step"),
+        );
+        const text = vi.mocked(alertConfirm).mock.calls[0][0] as string;
+        expect(text).toContain("Used by steps of these translator presets:\nTwice\nDisabled step");
+        expect(text).not.toContain("Used by these model presets");
+        // Declined: the profile and the presets stay.
+        await Promise.resolve();
+        expect(settings.modelProfiles.map((profile) => profile.id)).toEqual(["echo", "spare"]);
+        expect(settings.translatorPresets.items).toHaveLength(4);
     });
 });
 

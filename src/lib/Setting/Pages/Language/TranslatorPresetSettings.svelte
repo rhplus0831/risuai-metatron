@@ -2,14 +2,13 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { DownloadIcon, HardDriveUploadIcon, PencilIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import Help from "src/lib/Others/Help.svelte";
-    import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
-    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import Button from "src/lib/UI/GUI/Button.svelte";
+    import TranslatorStepEditor from "./TranslatorStepEditor.svelte";
     import { alertConfirm, alertError, alertInput, alertNormal } from "src/ts/alert";
     import { downloadFile } from "src/ts/globalApi.svelte";
     import {
         createTranslatorPreset,
         decodeTranslatorPresetFile,
-        defaultTranslatorPrompt,
         encodeTranslatorPresetFile,
         getCurrentTranslatorPresetFromState,
         getTranslatorPresetDownloadName,
@@ -17,6 +16,7 @@
     } from "src/ts/translator/presets";
     import { selectSingleFile } from "src/ts/util";
     import { language } from "src/lang";
+    import { createTranslatorStep, TRANSLATOR_PRESET_MAX_STEPS } from "../../../../../shared/translatorPresets.ts";
 
     /** The selected preset, by id (`translatorPresetId`); the first one when that id is gone. */
     const current = $derived(
@@ -25,6 +25,14 @@
             translatorPresetId: settings.translatorPresets.selectedId,
         }),
     );
+
+    /** Appends a step to the preset `presetId` (found again by id), up to `TRANSLATOR_PRESET_MAX_STEPS`. */
+    function addStep(presetId: string) {
+        const steps = settings.translatorPresets.items.find((entry) => entry.id === presetId)?.steps;
+        if (steps && steps.length < TRANSLATOR_PRESET_MAX_STEPS) {
+            steps.push(createTranslatorStep(steps.length));
+        }
+    }
 </script>
 
 <span class="text-textcolor mt-4">Preset</span>
@@ -154,30 +162,21 @@
     </button>
 </div>
 
-{#if settings.translatorPresets.items?.some((entry) => entry.id === current.id) && current.steps[0]}
-    <!-- One prompt until the step editor (translation slice 3.1): the first step's. Read through the
-         preset at each access, so a conflict reload that replaces the steps is followed. -->
+{#if settings.translatorPresets.items?.some((entry) => entry.id === current.id)}
+    <!-- The steps of the selected preset (translation slice 3.1). Each editor finds its step by the
+         preset's id and its own, so a conflict reload that replaces the steps is followed. -->
     {@const preset = current}
-    <span class="text-textcolor mt-4">{language.translationResponseSize}</span>
-    <NumberInput
-        min={0}
-        max={2048}
-        marginBottom={true}
-        bind:value={
-            () => preset.steps[0].maxResponse,
-            (value) => {
-                preset.steps[0].maxResponse = value;
-            }
-        }
-    />
-    <span class="text-textcolor mt-4">{language.translatorPrompt} <Help key="translatorPrompt" /></span>
-    <TextAreaInput
-        bind:value={
-            () => preset.steps[0].prompt,
-            (value) => {
-                preset.steps[0].prompt = value;
-            }
-        }
-        placeholder={defaultTranslatorPrompt}
-    />
+    <span class="text-textcolor mt-4">{language.translatorSteps.title} <Help key="translatorSteps" /></span>
+    {#each preset.steps as step, index (step.id)}
+        <TranslatorStepEditor presetId={preset.id} stepId={step.id} {index} count={preset.steps.length} />
+    {/each}
+    {#if !preset.steps.some((step) => step.enabled)}
+        <p class="text-textcolor2 text-xs mt-2">{language.translatorSteps.noneEnabled}</p>
+    {/if}
+    {#if preset.steps.length < TRANSLATOR_PRESET_MAX_STEPS}
+        <Button size="sm" styled="outlined" className="mt-2" onclick={() => addStep(preset.id)}>
+            <PlusIcon size={16} />
+            {language.translatorSteps.add}
+        </Button>
+    {/if}
 {/if}
