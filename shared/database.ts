@@ -131,7 +131,7 @@ export interface Database {
     customBackground: string;
     textgenWebUIStreamURL: string;
     textgenWebUIBlockingURL: string;
-    autoTranslate: boolean;
+    autoTranslate?: boolean; // legacy: a chat setting now (`Chat.autoTranslate`)
     fullScreen: boolean;
     playMessage: boolean;
     iconsize: number;
@@ -1171,6 +1171,22 @@ export interface Chat {
     modelPresetId?: string;
     /** Set on an imported chat: its binding needs the user's confirmation before it is sent. */
     bindingReview?: boolean;
+    /*
+     * Translation settings (`docs/plan/translation.md` slice 2.1; read through
+     * `shared/translation/chatSettings.ts`, missing means off). List fields, stored as sent.
+     */
+    /** The chat's translator preset; none, or one that was deleted, uses the global selection. */
+    translatorPresetId?: string;
+    /** Show (and, from slice 2.3, request) this chat's translations without a click. */
+    autoTranslate?: boolean;
+    /** Slice 2.3: automatic translation of the replies only, not the user's messages. */
+    translateBotOnly?: boolean;
+    /** Slice 2.4: the source and its translation shown in pairs. */
+    bilingualDisplay?: boolean;
+    /** Slice 2.4: which side of a pair is emphasized. */
+    bilingualEmphasis?: "original" | "translation";
+    /** Slice 2.4: 0 or unset pairs by line; 1–10 pairs every N sentences. */
+    bilingualSentences?: number;
     fmIndex?: number;
     hypaV3Data?: SerializableHypaV3Data;
     folderId?: string;

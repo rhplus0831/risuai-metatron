@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5, 2.1, and 2.2 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -131,8 +131,9 @@ interface MessageTranslation {
   `translateBotOnly?: boolean`, `bilingualDisplay?: boolean`,
   `bilingualEmphasis?: "original" | "translation"`,
   `bilingualSentences?: number` (0 or unset pairs by line; 1–10 pairs every
-  N sentences). They are not list fields: only a loaded chat is displayed,
-  and the server reads the chat it translates.
+  N sentences). They are list fields (the chat summary carries them, as
+  built in 2.1): a new chat inherits them from the character's selected
+  chat, which may not be loaded.
 - `TranslatorPreset` (phase 1) gains
   `steps: TranslatorStep[]` (1–5 steps) with
   `TranslatorStep = { id, name, enabled, prompt, maxResponse, model, outputKey? }`
@@ -368,6 +369,38 @@ As built:
 `shared/translation/`: the chat's preset when it exists, else the global
 selection. Deleting a preset rewrites nothing (decision 4).
 
+As built (2.1 and 2.2 together):
+
+- The six fields are list fields (`ChatSummary`, the tab's list entry,
+  `SUMMARY_FIELD_TYPES`), so `inherit` reads a source chat that is not
+  loaded and the panel shows while a chat loads. `shared/translation/chatSettings.ts`
+  holds the field types, `readChatTranslationSettings` (missing or
+  malformed is off), `selectedTranslatorPreset` (the global rule, now
+  shared by the tab and the server), and
+  `resolveTranslatorPreset(chat, presets, selectedId)` (`missing` for a
+  deleted preset).
+- `inherit` copies the six fields as stored, a deleted preset id included
+  (it falls back as it did in the source chat); `empty` and a character
+  without chats start with none. `importChat` drops a preset id that names
+  no preset here. Copies and branches already spread the whole chat.
+- The panel (`ChatTranslationPanel.svelte`, in the open chat's sidebar
+  below the binding, while a target language is set) has auto-translate
+  and, for the LLM translator, the preset. The `translateBotOnly` and
+  bilingual rows move to 2.3 and 2.4, so no control does nothing yet.
+- A chat's `autoTranslate` counts only while a target language is set
+  (`chatAutoTranslate`). The rendered path takes it as a `ChatBody` prop
+  and restarts the row when it changes; the suggestions' toggle starts
+  from it per chat.
+- The tab resolves against the selected chat (its list entry, so also
+  while it loads), read once per `runTranslator` call; the translation
+  playground uses the global preset (`globalPreset`). The server runner
+  resolves the chat it translates.
+- The global `autoTranslate` is a `DROPPED_FIELDS` entry; the language page
+  item and the slice 1.5 Bergamot migration's `autoTranslate = false` are
+  gone. The first-run wizard's "English Processing" no longer turns on
+  output translation (there is no chat yet); its en/ko description says to
+  turn on auto-translate in a chat's settings.
+
 2.3 **Automatic translation of replies.**
 
 - After a send's reply is written and its lock released, the job hands the
@@ -380,6 +413,8 @@ selection. Deleting a preset rewrites nothing (decision 4).
   loading state for them until the stored translation arrives or the runner
   reports a failure.
 - `autoTranslateCachedOnly` keeps its meaning for the rendered path only.
+- The chat panel gets its "bot replies only" row (`translateBotOnly`),
+  moved here from 2.1.
 
 Test: an Echo send with auto-translate stores a translation on the reply, and
 a second send starts while it runs.
@@ -392,6 +427,8 @@ a second send starts while it runs.
   emphasis.
 - Port `pruneEmptyBilingualPairs` as an after-render step, and the pair and
   muted CSS.
+- The chat panel gets the bilingual display row with its emphasis and
+  pairing, moved here from 2.1.
 - Tests: both helpers (pure).
 - Manual check: a card whose `editdisplay` regexes and display triggers
   match whole messages. The wrappers sit between the lines the scripts see.

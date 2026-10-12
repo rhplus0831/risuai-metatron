@@ -1,4 +1,5 @@
 import type { Chat, Message, MessageTranslation } from "./database.ts";
+import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 
 /**
  * The chat wire contract (Phase 2 of `docs/plan/PLAN.md`). A chat is stored as its metadata plus
@@ -123,7 +124,7 @@ export type ChatSummary = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-};
+} & ChatTranslationFields;
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group

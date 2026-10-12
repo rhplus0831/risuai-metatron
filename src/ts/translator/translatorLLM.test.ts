@@ -77,11 +77,16 @@ vi.mock("src/ts/util", () => ({
 }));
 
 import { get } from "svelte/store";
+import type { Chat as ChatRecord } from "../../../shared/database.ts";
+import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+import { assembleChats, chatEntry, seedChats, selectChat } from "src/ts/storage/chatStore.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { doingChat } from "src/ts/process/index.svelte";
 import {
     exportLLMCacheAsJSON,
+    getCurrentTranslatorPreset,
     getLLMCache,
     llmTranslationCacheKey,
     runTranslator,
@@ -283,5 +288,136 @@ describe("the LLM translation", () => {
         settings.translatorPresets.selectedId = "one";
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
         expect(request.requestChatData).toHaveBeenCalledTimes(2);
+    });
+});
+
+// `docs/plan/translation.md` slice 2.2: the tab translates with the selected chat's translator preset
+// (its list entry), else the global selection; `runTranslator` reads it once for every chunk of a
+// call as a plain copy, so a preset deleted while a chunk runs neither changes the later chunks nor
+// throws (the record view resolves by id on each read), and the next call falls back; the
+// playground's `globalPreset` ignores the chat's preset.
+describe("the preset per call", () => {
+    const ref = { chaId: "c", chatId: "k" };
+
+    /** Installs character `c` holding chat `k` with `fields`, selected; the presets `two` (global) and `one`. */
+    function selectChatWith(fields: Record<string, unknown>) {
+        installFlatDatabase({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    firstMessage: "Hello",
+                    chatPage: 0,
+                    customscript: [],
+                    emotionImages: [],
+                    additionalAssets: [],
+                    triggerscript: [],
+                },
+            ],
+            translatorPresets: [twoSteps(), oneStep()],
+            translatorPresetId: "two",
+            translatorType: "llm",
+            translator: "ko",
+            translatorInputLanguage: "en",
+        } as any);
+        const data = {
+            id: "k",
+            name: "K",
+            note: "",
+            localLore: [],
+            message: [{ role: "user", data: "B", chatId: "b" }],
+            ...fields,
+        } as unknown as ChatRecord;
+        const listed = [{ characterId: "c", id: "k", revision: "e:1:1", data }];
+        const orders = [{ characterId: "c", revision: "e:1:1", ids: ["k"] }];
+        seedChats(listed, orders);
+        assembleChats([selectedCharacter() ?? { chaId: "c" }] as never, listed, orders);
+        selectCharacter("c");
+        selectChat("c", "k");
+    }
+
+    it("translates with the selected chat's preset, with the global one at home or for a chat without its own, and with the global one under globalPreset", async () => {
+        const atHome = llmTranslationCacheKey("Hello");
+        selectChatWith({ translatorPresetId: "one" });
+        expect(getCurrentTranslatorPreset().id).toBe("one");
+        // The editors' key follows the chat's preset: the key the global `one` would give.
+        const withChat = llmTranslationCacheKey("Hello");
+        expect(withChat).not.toBe(atHome);
+        succeed("ONE");
+        await expect(runTranslator("Hello", false, "ko", "en")).resolves.toBe("ONE");
+        expect(requests()).toEqual([
+            { mode: "translate", maxTokens: 5, messages: [{ role: "system", content: "Other Hello" }] },
+        ]);
+        expect(await getLLMCache("Hello")).toBe("ONE");
+
+        // The playground: the global preset, whatever the chat names.
+        succeed("D", "GLOBAL");
+        await expect(runTranslator("Hello", false, "ko", "en", { globalPreset: true })).resolves.toBe("GLOBAL");
+        expect(requests().slice(1)).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 11,
+                messages: [{ role: "system", content: "Draft Hello into ko from en" }],
+            },
+            { mode: "translate", maxTokens: 22, messages: [{ role: "system", content: "Polish D (draft D; note )" }] },
+        ]);
+
+        // Home: the global selection, whose key is the one from before.
+        selectCharacter(null);
+        expect(getCurrentTranslatorPreset().id).toBe("two");
+        expect(llmTranslationCacheKey("Hello")).toBe(atHome);
+        await expect(runTranslator("Hello", false, "ko", "en")).resolves.toBe("GLOBAL");
+        expect(request.requestChatData).toHaveBeenCalledTimes(3);
+
+        // A chat without its own preset, and one naming the global selection: the same context.
+        selectChatWith({});
+        expect(getCurrentTranslatorPreset().id).toBe("two");
+        expect(llmTranslationCacheKey("Hello")).toBe(atHome);
+        selectChatWith({ translatorPresetId: "two" });
+        expect(llmTranslationCacheKey("Hello")).toBe(atHome);
+        // Selecting `one` globally gives the chat's context of before.
+        selectCharacter(null);
+        settings.translatorPresets.selectedId = "one";
+        expect(llmTranslationCacheKey("Hello")).toBe(withChat);
+    });
+
+    it("reads the preset once per call: a preset deleted while the first chunk runs lets the second chunk finish with the captured steps, and the next call falls back to the global one", async () => {
+        selectChatWith({ translatorPresetId: "one" });
+        request.requestChatData.mockImplementationOnce(async () => {
+            // The preset editor deletes the chat's preset (or another tab's update removes it) mid-run.
+            const presets = settings.translatorPresets.items;
+            presets.splice(
+                presets.findIndex((preset) => preset.id === "one"),
+                1,
+            );
+            return { type: "success", result: "F1" };
+        });
+        succeed("F2");
+        await expect(runTranslator("first\n\nsecond", false, "ko", "en")).resolves.toBe("F1\n\nF2");
+        expect(requests()).toEqual([
+            { mode: "translate", maxTokens: 5, messages: [{ role: "system", content: "Other first" }] },
+            { mode: "translate", maxTokens: 5, messages: [{ role: "system", content: "Other second" }] },
+        ]);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(settings.translatorPresets.items.map((preset) => preset.id)).toEqual(["two"]);
+        // Nothing rewritten: the chat still names the deleted preset; the tab resolves the global one.
+        expect(chatEntry(ref)?.translatorPresetId).toBe("one");
+        expect(getCurrentTranslatorPreset().id).toBe("two");
+
+        // The next call is independent: the global preset's two steps.
+        succeed("D", "FALLBACK");
+        await expect(runTranslator("first", false, "ko", "en")).resolves.toBe("FALLBACK");
+        expect(requests().slice(2)).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 11,
+                messages: [{ role: "system", content: "Draft first into ko from en" }],
+            },
+            { mode: "translate", maxTokens: 22, messages: [{ role: "system", content: "Polish D (draft D; note )" }] },
+        ]);
+        // The deleted preset's entries stay in the cache under their own key, unread by the current context.
+        expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(3);
+        expect(await getLLMCache("second")).toBeNull();
     });
 });

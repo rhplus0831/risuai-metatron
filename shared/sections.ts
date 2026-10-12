@@ -128,7 +128,6 @@ export const SECTION_FIELDS = {
         "loreBookDepth",
         "supaMemoryPrompt",
         "translator",
-        "autoTranslate",
         "sdProvider",
         "webUiUrl",
         "sdSteps",
@@ -501,6 +500,7 @@ export const DROPPED_FIELDS = [
     "realmDirectOpen",
     "auxModelUnderModelSettings",
     "htmlTranslation",
+    "autoTranslate",
 ] as const satisfies readonly (keyof Database | "modelCredentials")[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */

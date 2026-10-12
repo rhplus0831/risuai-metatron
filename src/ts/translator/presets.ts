@@ -3,11 +3,8 @@ import * as fflate from "fflate";
 import { decryptBuffer, encryptBuffer } from "src/ts/util";
 import { decodeRPack, encodeRPack } from "src/ts/rpack/rpack_js.js";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
-import {
-    createTranslatorPreset,
-    defaultTranslatorPrompt,
-    isTranslatorPreset,
-} from "../../../shared/translatorPresets.ts";
+import { createTranslatorPreset, defaultTranslatorPrompt } from "../../../shared/translatorPresets.ts";
+import { selectedTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 import { language } from "src/lang";
 
 export type { TranslatorPreset } from "../../../shared/settings.ts";
@@ -86,12 +83,7 @@ function sanitizeFileNamePart(value: string): string {
  * client's deletion until the next reload). It never writes the state.
  */
 export function getCurrentTranslatorPresetFromState(state: TranslatorPresetStateLike): TranslatorPreset {
-    const presets = Array.isArray(state.translatorPresets) ? state.translatorPresets.filter(isTranslatorPreset) : [];
-    return (
-        presets.find((preset) => preset.id === state.translatorPresetId) ??
-        presets[0] ??
-        createTranslatorPreset("Default")
-    );
+    return selectedTranslatorPreset(state.translatorPresets, state.translatorPresetId);
 }
 
 async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<TranslatorPreset> {

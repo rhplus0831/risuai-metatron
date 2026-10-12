@@ -387,7 +387,7 @@ export const languageEnglish = {
             "This will make AI to use English and input/output in English. Recommended for English speakers.",
         chooseChatTypeOption2: "English Processing",
         chooseChatTypeOption2Desc:
-            "This will make AI to use English internaly, but input/output will be in your language. Recommended for non-English speakers.",
+            "This will make AI to use English internaly, but your input is translated from your language. Turn on auto-translate in a chat's settings to read its replies in your language. Recommended for non-English speakers.",
         chooseChatTypeOption3: "No Language Focused",
         chooseChatTypeOption3Desc:
             "This will make AI to use your language internaly, but this could make quality lower.",
@@ -1442,6 +1442,12 @@ export const languageEnglish = {
     translationSourceChanged: "The message changed while it was being translated. Translate it again.",
     translationEditStale: "The message changed since the translation editor opened. The translation was not saved.",
     translationNoContext: "This chat has no preset, model preset, or persona to translate with.",
+    chatTranslation: {
+        title: "Translation",
+        translatorPreset: "Translator preset",
+        global: (name: string) => `Global (${name})`,
+        goneUsingGlobal: "Deleted, using global",
+    },
     editTranslation: "Edit Translation",
     editTranslationSave: "Save Translation",
     exportTranslationCache: "Export Translation Cache",

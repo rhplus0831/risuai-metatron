@@ -3,7 +3,8 @@ import { type AnyClientCharacter, selectedCharacter } from "../storage/character
 import { settings, activePreset, readPresetFieldOf } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { type character, type customscript, type groupChat } from "../storage/database.svelte";
-import { getCurrentTranslatorPresetFromState, type TranslatorPreset } from "./presets";
+import type { TranslatorPreset } from "./presets";
+import { currentTranslatorPreset, globalTranslatorPreset } from "./chatTranslation.svelte";
 import type { TranslatorStep } from "../../../shared/settings.ts";
 import { runTranslatorPipeline, translatorPipelineSignature } from "../../../shared/translation/pipeline.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -29,11 +30,12 @@ export const LLMCacheStorage = localforage.createInstance({
 
 let waitTrans = 0;
 
+/**
+ * The translator preset the tab translates with: the selected chat's own, else the global selection
+ * (`docs/plan/translation.md` slice 2.2, `resolveTranslatorPreset`).
+ */
 export function getCurrentTranslatorPreset(): TranslatorPreset {
-    return getCurrentTranslatorPresetFromState({
-        translatorPresets: settings.translatorPresets.items,
-        translatorPresetId: settings.translatorPresets.selectedId,
-    });
+    return currentTranslatorPreset();
 }
 
 /**
@@ -65,7 +67,8 @@ export async function runTranslator(
     reverse: boolean,
     from: string,
     target: string,
-    exarg?: { translatorNote?: string },
+    /** `globalPreset`: translate with the global translator preset, not the selected chat's (the playground). */
+    exarg?: { translatorNote?: string; globalPreset?: boolean },
 ) {
     // Whether the result may enter the memory cache, decided now: a translator switched meanwhile
     // must not put an LLM result there.
@@ -78,6 +81,12 @@ export async function runTranslator(
         host: "translate.googleapis.com",
 
         translatorNote: exarg?.translatorNote,
+
+        // The LLM translator's preset, read once for every chunk of this call: a plain copy, since the
+        // record view resolves by id on each read and throws once the preset is deleted meanwhile.
+        preset: JSON.parse(
+            JSON.stringify(exarg?.globalPreset ? globalTranslatorPreset() : getCurrentTranslatorPreset()),
+        ) as TranslatorPreset,
     };
     const texts = text.split("\n");
     let chunks: [string, boolean][] = [["", true]];
@@ -130,12 +139,15 @@ export async function runTranslator(
     return result;
 }
 
-async function translateMain(text: string, arg: { from: string; to: string; host: string; translatorNote?: string }) {
+async function translateMain(
+    text: string,
+    arg: { from: string; to: string; host: string; translatorNote?: string; preset: TranslatorPreset },
+) {
     if (settings.memoryTranslateMedia.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(
             text,
-            llmTranslationContext({ to: tr, from: arg.from, translatorNote: arg.translatorNote }),
+            llmTranslationContext({ to: tr, from: arg.from, translatorNote: arg.translatorNote, preset: arg.preset }),
         );
     }
     if (settings.memoryTranslateMedia.translatorType === "deepl") {
@@ -520,16 +532,16 @@ function resolveTranslatorNote(explicit: string | undefined): string {
 }
 
 /**
- * The selected preset's steps (a plain copy: an edit or a conflict reload during the requests changes
- * neither the run nor its cache key) and the languages and translator note, each from `arg` when it
- * names one and otherwise as `translateHTML` resolves it: the language settings and the selected
- * character's note.
+ * The preset's steps (`arg.preset`, else the selected chat's preset or the global one; a plain copy:
+ * an edit or a conflict reload during the requests changes neither the run nor its cache key) and the
+ * languages and translator note, each from `arg` when it names one and otherwise as `translateHTML`
+ * resolves it: the language settings and the selected character's note.
  */
 function llmTranslationContext(
-    arg: { to?: string; from?: string; translatorNote?: string } = {},
+    arg: { to?: string; from?: string; translatorNote?: string; preset?: TranslatorPreset } = {},
 ): LLMTranslationContext {
     return {
-        steps: JSON.parse(JSON.stringify(getCurrentTranslatorPreset().steps)) as TranslatorStep[],
+        steps: JSON.parse(JSON.stringify((arg.preset ?? getCurrentTranslatorPreset()).steps)) as TranslatorStep[],
         to: arg.to ?? (settings.memoryTranslateMedia.translator || "en"),
         from: arg.from ?? settings.memoryTranslateMedia.translatorInputLanguage,
         translatorNote: resolveTranslatorNote(arg.translatorNote),

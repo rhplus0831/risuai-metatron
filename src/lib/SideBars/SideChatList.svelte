@@ -18,6 +18,7 @@
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
     import { chatBindingDialog, ReloadGUIPointer } from "src/ts/stores.svelte";
     import { chatBinding, initialChatBinding } from "src/ts/storage/chatBinding.svelte";
+    import { initialChatTranslation } from "src/ts/translator/chatTranslation.svelte";
 
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -223,6 +224,7 @@
             const newChat: Chat = {
                 // Read before the chat is created: it becomes the selected chat.
                 ...initialChatBinding(cha.chaId),
+                ...initialChatTranslation(cha.chaId),
                 message: [],
                 note: "",
                 name: `New Chat ${len + 1}`,

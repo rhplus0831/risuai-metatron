@@ -96,11 +96,14 @@ describe("the language page's stored-translation items", () => {
         expect(Object.hasOwn(languageEnglish, "htmlTranslation")).toBe(false);
     });
 
-    it("keeps the auto-translate toggle and the cache buttons for the LLM translator on either target", () => {
+    it("has no global auto-translate item (a chat setting since docs/plan/translation.md slice 2.1) and keeps the cache buttons for the LLM translator on either target", () => {
+        expect(languageSettingsItems.some((entry) => entry.id === "lang.autoTranslate")).toBe(false);
+        // `bindKey` is typed by the settings root keys, so a build fails on the dropped field already.
+        expect(languageSettingsItems.some((entry) => (entry.bindKey as string) === "autoTranslate")).toBe(false);
+        // The label stays: the chat panel's auto-translate row uses it.
+        expect(languageEnglish.autoTranslation).toBeTypeOf("string");
         for (const target of ["message", "rendered"]) {
             const media = { translator: "ko", translatorType: "llm", llmTranslationTarget: target };
-            const auto = item("lang.autoTranslate");
-            expect(auto.condition ? auto.condition(ctx(media)) : true, `autoTranslate ${target}`).toBe(true);
             const cacheButtons = languageSettingsItems.filter((entry) => /^lang\.(export|import)Cache$/.test(entry.id));
             expect(cacheButtons.length).toBeGreaterThan(0);
             for (const button of cacheButtons) {

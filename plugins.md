@@ -1279,7 +1279,7 @@ const array = await Risuai.unwarpSafeArray(safeArray);
 
 #### Translation Cache
 
-Search or retrieve entries from the LLM translation cache:
+Search or retrieve entries from the LLM translation cache. Both read the entries of the current translation context: the selected chat's translator preset (else the global one), the languages, and the selected character's translator note.
 
 ```javascript
 // Search by partial key

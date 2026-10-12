@@ -13,6 +13,7 @@ import type {
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat, MessageTranslation } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
@@ -562,6 +563,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (typeof meta.bindingReview === "boolean") {
             summary.bindingReview = meta.bindingReview;
         }
+        // The translation settings (`docs/plan/translation.md` slice 2.1): a new chat inherits them.
+        Object.assign(summary, chatTranslationSummary(meta));
         return summary;
     }
 

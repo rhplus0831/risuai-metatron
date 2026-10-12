@@ -108,6 +108,7 @@
         type StoredTranslationEdit,
         usesStoredTranslation,
     } from "../../ts/translator/storedTranslation.svelte";
+    import { chatAutoTranslate } from "../../ts/translator/chatTranslation.svelte";
 
     let translating = $state(false);
     let editMode = $state(false);
@@ -203,10 +204,12 @@
         storedPath && displayedChat && messageId ? heldMessage(displayedChat, messageId) : undefined,
     );
     let storedFresh = $derived(storedMessage ? freshTranslation(storedMessage) : null);
-    /** The row asks for the translation: its choice (kept across a remount), else the global `autoTranslate`. */
+    /** The chat's `autoTranslate` (slice 2.1; off for a row outside a chat): its translations show without a click. */
+    let chatAutoShow = $derived(chatAutoTranslate(displayedChat));
+    /** The row asks for the translation: its choice (kept across a remount), else the chat's `autoTranslate`. */
     let storedWanted = $derived(
         storedPath && displayedChat && messageId
-            ? (storedTranslationChoice(displayedChat, messageId) ?? settings.memoryTranslateMedia.autoTranslate)
+            ? (storedTranslationChoice(displayedChat, messageId) ?? chatAutoShow)
             : false,
     );
     let storedPending = $derived(
@@ -910,6 +913,7 @@
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}
+                    autoTranslate={chatAutoShow}
                     storedTranslationShown={storedShown}
                     storedPending={storedPending && storedWanted}
                 />

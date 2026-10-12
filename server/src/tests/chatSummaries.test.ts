@@ -27,6 +27,13 @@ const SUMMARY_KEYS = [
     "name",
     "promptPresetId",
     "revision",
+    // The translation settings (`docs/plan/translation.md` slice 2.1).
+    "translatorPresetId",
+    "autoTranslate",
+    "translateBotOnly",
+    "bilingualDisplay",
+    "bilingualEmphasis",
+    "bilingualSentences",
 ];
 
 const stores: ResourceStore[] = [];
@@ -181,6 +188,102 @@ describe("the store's summary reads", () => {
                 summary.id,
             ).toBe(true);
         }
+    });
+
+    it("projects the translation settings (docs/plan/translation.md slice 2.1) as list fields: typed values only, false and 0 kept, nothing defaulted; a meta op moves them", () => {
+        const store = createResourceStore({ file: ":memory:", kinds });
+        stores.push(store);
+        const full = {
+            translatorPresetId: "tp",
+            autoTranslate: false,
+            translateBotOnly: true,
+            bilingualDisplay: false,
+            bilingualEmphasis: "translation",
+            bilingualSentences: 0,
+        };
+        const seeded = store.applyChanges({
+            ops: [{ kind: characters, id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [
+                group("full", [create({ id: "full", name: "Full", ...full, message: [m("a", "A")] })]),
+                group("malformed", [
+                    create({
+                        id: "malformed",
+                        name: "Malformed",
+                        translatorPresetId: 5,
+                        autoTranslate: "true",
+                        translateBotOnly: null,
+                        bilingualDisplay: 1,
+                        bilingualEmphasis: true,
+                        bilingualSentences: "3",
+                        message: [],
+                    }),
+                ]),
+                // Stored as sent: a padded id, a string emphasis, and a number out of range are typed values.
+                group("odd", [
+                    create({
+                        id: "odd",
+                        name: "Odd",
+                        translatorPresetId: " tp ",
+                        bilingualEmphasis: "weird",
+                        bilingualSentences: 99,
+                        message: [],
+                    }),
+                ]),
+            ],
+        });
+        const summaries = () => store.readKinds([characters], { chatSummaries: true }).chatSummaries!;
+        const byId = Object.fromEntries(summaries().map((summary) => [summary.id, summary]));
+        expect(byId.full).toEqual({
+            characterId: "c",
+            id: "full",
+            revision: seeded.chats[0].revision,
+            name: "Full",
+            fmIndex: -1,
+            ...full,
+        });
+        expect(byId.malformed).toEqual({
+            characterId: "c",
+            id: "malformed",
+            revision: seeded.chats[1].revision,
+            name: "Malformed",
+            fmIndex: -1,
+        });
+        expect(byId.odd).toMatchObject({
+            translatorPresetId: " tp ",
+            bilingualEmphasis: "weird",
+            bilingualSentences: 99,
+        });
+        for (const summary of summaries()) {
+            expect(
+                Object.keys(summary).every((key) => SUMMARY_KEYS.includes(key)),
+                summary.id,
+            ).toBe(true);
+        }
+        // The collection read projects the same fields.
+        const collection = store.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0];
+        expect(collection.chats.find((chat) => chat.id === "full")).toEqual(byId.full);
+
+        // A `meta` op sets and unsets them in the summary (the tab's panel writes this way).
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "full",
+                    baseRevision: seeded.chats[0].revision,
+                    ops: [
+                        {
+                            op: "meta",
+                            set: { autoTranslate: true, bilingualSentences: 4 },
+                            unset: ["translatorPresetId", "bilingualEmphasis"],
+                        },
+                    ],
+                },
+            ],
+        });
+        const after = summaries().find((summary) => summary.id === "full")!;
+        expect(after).toMatchObject({ autoTranslate: true, bilingualSentences: 4, translateBotOnly: true });
+        expect(after).not.toHaveProperty("translatorPresetId");
+        expect(after).not.toHaveProperty("bilingualEmphasis");
     });
 
     it("refuses chats together with chatSummaries, and answers neither without the options", () => {

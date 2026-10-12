@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
 import { normalizeModelProfile } from "../../../shared/presets.ts";
-import { SECTION_FIELDS, type SectionKind } from "../../../shared/sections.ts";
+import { DROPPED_FIELDS, SECTION_FIELDS, type SectionKind } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeMemoryTranslateMedia } from "../data/normalize/memoryTranslateMedia.ts";
@@ -401,7 +401,7 @@ describe("memoryTranslateMedia", () => {
         expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "rendered" });
     });
 
-    it("turns a stored `bergamot` translator into Google with translation and both automatic translations off, keeps the rest, and drops `htmlTranslation` (docs/plan/translation.md slice 1.5)", () => {
+    it("turns a stored `bergamot` translator into Google with translation and input translation off, keeps the rest, and drops `htmlTranslation` (docs/plan/translation.md slice 1.5); the legacy global `autoTranslate` is dropped from every record (slice 2.1)", () => {
         const bergamot = {
             translatorType: "bergamot",
             translator: "ko",
@@ -420,7 +420,6 @@ describe("memoryTranslateMedia", () => {
         expect(migrated).toMatchObject({
             translatorType: "google",
             translator: "",
-            autoTranslate: false,
             useAutoTranslateInput: false,
             translatorInputLanguage: "ja",
             legacyTranslation: true,
@@ -430,22 +429,24 @@ describe("memoryTranslateMedia", () => {
             loreBookDepth: 9,
         });
         expect(Object.hasOwn(migrated, "htmlTranslation")).toBe(false);
+        // Auto-translate is a chat setting now: the global field is dropped, never set to `false`.
+        expect(Object.hasOwn(migrated, "autoTranslate")).toBe(false);
+        expect(DROPPED_FIELDS).toContain("autoTranslate");
+        expect(SECTION_FIELDS.memoryTranslateMedia).not.toContain("autoTranslate");
         for (const key of Object.keys(migrated)) {
             expect(SECTION_FIELDS.memoryTranslateMedia, key).toContain(key);
         }
         // The migrated record reads as a Google record from then on: the mapping does not run again.
         expectIdempotent(normalizeMemoryTranslateMedia, bergamot);
         expect(serialize(normalizeMemoryTranslateMedia(migrated)).text).toBe(serialize(migrated).text);
-        // Bergamot without a target or the automatic translations is mapped the same way.
-        expect(normalizeMemoryTranslateMedia({ translatorType: "bergamot" })).toMatchObject({
-            translatorType: "google",
-            translator: "",
-            autoTranslate: false,
-            useAutoTranslateInput: false,
-        });
+        // Bergamot without a target or the input translation is mapped the same way.
+        const bare = normalizeMemoryTranslateMedia({ translatorType: "bergamot" });
+        expect(bare).toMatchObject({ translatorType: "google", translator: "", useAutoTranslateInput: false });
+        expect(Object.hasOwn(bare, "autoTranslate")).toBe(false);
 
-        // Every other provider keeps its target and its automatic translations, `none` and an
-        // unknown string included (the spec checks the kind, not the value).
+        // Every other provider keeps its target and its input translation, `none` and an unknown
+        // string included (the spec checks the kind, not the value); the global `autoTranslate` of
+        // its input is dropped all the same.
         for (const translatorType of ["google", "deepl", "deeplX", "llm", "none", "Bergamot", "bergamot "]) {
             const kept = normalizeMemoryTranslateMedia({
                 ...bergamot,
@@ -454,22 +455,24 @@ describe("memoryTranslateMedia", () => {
             expect(kept, translatorType).toMatchObject({
                 translatorType,
                 translator: "ko",
-                autoTranslate: true,
                 useAutoTranslateInput: true,
             });
             expect(Object.hasOwn(kept, "htmlTranslation"), translatorType).toBe(false);
+            expect(Object.hasOwn(kept, "autoTranslate"), translatorType).toBe(false);
         }
-        // A missing or wrong-kind provider reads as the default without touching the flags.
+        // A missing or wrong-kind provider reads as the default without touching the flag.
         for (const translatorType of [undefined, null, 3, ["bergamot"]]) {
-            expect(
-                normalizeMemoryTranslateMedia({ ...bergamot, translatorType }),
-                JSON.stringify(translatorType),
-            ).toMatchObject({
+            const kept = normalizeMemoryTranslateMedia({ ...bergamot, translatorType });
+            expect(kept, JSON.stringify(translatorType)).toMatchObject({
                 translatorType: "google",
                 translator: "ko",
-                autoTranslate: true,
                 useAutoTranslateInput: true,
             });
+            expect(Object.hasOwn(kept, "autoTranslate"), JSON.stringify(translatorType)).toBe(false);
+        }
+        // A record without a translator type carrying only the legacy flag loses it too (`false` included).
+        for (const autoTranslate of [true, false]) {
+            expect(Object.hasOwn(normalizeMemoryTranslateMedia({ autoTranslate }), "autoTranslate")).toBe(false);
         }
     });
 

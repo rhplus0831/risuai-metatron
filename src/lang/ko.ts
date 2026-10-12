@@ -305,7 +305,7 @@ export const languageKorean = {
         chooseChatTypeOption1Desc: "AI가 영어를 사용하고, 입력/출력이 영어로 됩니다. 영어 사용자에게 추천합니다.",
         chooseChatTypeOption2: "영어 처리",
         chooseChatTypeOption2Desc:
-            "AI가 내부적으로 영어를 사용하지만, 입력/출력은 사용자의 언어로 됩니다. 영어 이외의 언어 사용자에게 추천합니다.",
+            "AI가 내부적으로 영어를 사용하지만, 입력은 사용자의 언어에서 번역됩니다. 답변을 사용자의 언어로 보려면 채팅 설정에서 자동 번역을 켜세요. 영어 이외의 언어 사용자에게 추천합니다.",
         chooseChatTypeOption3: "언어에 집중하지 않음",
         chooseChatTypeOption3Desc: "AI가 내부적으로 사용자의 언어를 사용하지만, 품질이 낮아질 수 있습니다.",
         chooseCheapOrMemory: "기억력과 가격 중 어느 것을 선호하세요? 잘 모르겠으면 균형으로 해주세요!",
@@ -1326,6 +1326,12 @@ export const languageKorean = {
     translationSourceChanged: "번역하는 동안 메시지가 바뀌었습니다. 다시 번역하세요.",
     translationEditStale: "번역 편집기를 연 뒤 메시지가 바뀌어 번역을 저장하지 않았습니다.",
     translationNoContext: "이 채팅에는 번역에 쓸 프리셋, 모델 프리셋, 페르소나가 없습니다.",
+    chatTranslation: {
+        title: "번역",
+        translatorPreset: "번역 프리셋",
+        global: (name: string) => `전역 (${name})`,
+        goneUsingGlobal: "삭제됨, 전역 사용",
+    },
     editTranslation: "번역 수정",
     editTranslationSave: "번역 저장",
     exportTranslationCache: "번역 캐시 내보내기",

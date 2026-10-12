@@ -9,7 +9,6 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
     loreBookDepth: ["number", 5],
     supaMemoryPrompt: ["string", ""],
     translator: ["string", ""],
-    autoTranslate: ["boolean", false],
     sdProvider: ["string", ""],
     webUiUrl: ["string", "http://127.0.0.1:7860/"],
     sdSteps: ["number", 30],
@@ -110,12 +109,12 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
 export function normalizeMemoryTranslateMedia(input: unknown): SectionResource<"memoryTranslateMedia"> {
     const record = normalizeSection("memoryTranslateMedia", spec, input);
     // `docs/plan/translation.md` slice 1.5: Bergamot (a local translator) was removed. Its users get
-    // Google with translation and both automatic translations off, so nothing they write is sent to
-    // an online translator until they turn translation on again.
+    // Google with translation and input translation off, so nothing they write is sent to an online
+    // translator until they turn translation on again (a chat's own `autoTranslate` shows translations
+    // only while a target language is set).
     if ((record.translatorType as string) === "bergamot") {
         record.translatorType = "google";
         record.translator = "";
-        record.autoTranslate = false;
         record.useAutoTranslateInput = false;
     }
     // `docs/plan/translation.md` decision 9: anything but the two targets reads as the default.

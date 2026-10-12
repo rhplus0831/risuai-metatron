@@ -170,7 +170,8 @@
                     }
                 }
                 if (chatLang === 1) {
-                    settings.memoryTranslateMedia.autoTranslate = true;
+                    // Showing replies translated is each chat's `autoTranslate` (`docs/plan/translation.md`
+                    // slice 2.1); there is no chat yet to set it on.
                     settings.memoryTranslateMedia.translatorType = "google";
                     settings.memoryTranslateMedia.useAutoTranslateInput = true;
                 }

@@ -679,6 +679,51 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(runner.workingCount()).toBe(0);
     });
 
+    it("translates with the chat's own translator preset when it names one (docs/plan/translation.md slice 2.2), the global selection otherwise, and falls back to it for a deleted preset without rewriting the chat", async () => {
+        build({ now: () => 99 });
+        const own = createTranslatorPreset("Own", { prompt: "Own {{slot::content}}", maxResponse: 7 });
+        const global = createTranslatorPreset("Global", { prompt: "Global {{slot::content}}", maxResponse: 8 });
+        patch("translatorPresets", { items: [global, own], selectedId: global.id });
+        // Another chat of the character, without a preset of its own, translates with the global one.
+        store.applyChanges({
+            chats: [
+                group("other", null, [{ op: "create", chat: { name: "O", message: [m("o0", "other 0")] } as never }]),
+            ],
+        });
+        chatBatch([{ op: "meta", set: { translatorPresetId: own.id }, unset: [] }]);
+
+        const withOwn = await runner.translate(req("m0"));
+        expect(withOwn).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: "번역", presetId: own.id },
+        });
+        expect(message("m0").translation).toMatchObject({ presetId: own.id, targetLanguage: "ko", translatedAt: 99 });
+        expect(calls).toHaveLength(1);
+        expect(calls[0].arg.formated).toEqual([{ role: "system", content: "Own text 0" }]);
+        expect(calls[0].arg.maxTokens).toBe(7);
+
+        const withGlobal = await runner.translate(req("o0", { chatId: "other" }));
+        expect(withGlobal).toMatchObject({ ok: true, outcome: "applied", translation: { presetId: global.id } });
+        expect(calls).toHaveLength(2);
+        expect(calls[1].arg.formated).toEqual([{ role: "system", content: "Global other 0" }]);
+        expect(calls[1].arg.maxTokens).toBe(8);
+
+        // The chat's preset is deleted: the global selection, and the chat keeps naming the deleted one.
+        patch("translatorPresets", { items: [global], selectedId: global.id });
+        const fallback = await runner.translate(req("m1"));
+        expect(fallback).toMatchObject({ ok: true, outcome: "applied", translation: { presetId: global.id } });
+        expect(calls).toHaveLength(3);
+        expect(calls[2].arg.formated).toEqual([{ role: "system", content: "Global text 1" }]);
+        expect((readChat().data as unknown as { translatorPresetId?: string }).translatorPresetId).toBe(own.id);
+        // The earlier translation stays fresh under the deleted preset's id.
+        expect(await runner.translate(req("m0"))).toMatchObject({
+            outcome: "fresh",
+            translation: { presetId: own.id },
+        });
+        expect(calls).toHaveLength(3);
+    });
+
     it("answers fresh without a run or a map entry, runs again with force, and lets a non-forced request join that run", async () => {
         build();
         chatBatch([{ op: "setTranslation", id: "m0", translation: tr("old", "text 0") }]);

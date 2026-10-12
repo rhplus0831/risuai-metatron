@@ -17,6 +17,11 @@ import type { StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import {
+    CHAT_TRANSLATION_FIELD_TYPES,
+    chatTranslationSummary,
+    type ChatTranslationFields,
+} from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
@@ -206,7 +211,7 @@ type ChatEntryMeta = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-};
+} & ChatTranslationFields;
 
 /**
  * One character's chats: the ids in order (its membership), the loaded chats by id, and the summaries
@@ -438,6 +443,8 @@ function metaOf(source: {
     if (typeof source.bindingReview === "boolean") {
         meta.bindingReview = source.bindingReview;
     }
+    // The translation settings, as the server's summary carries them.
+    Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>));
     return meta;
 }
 
@@ -621,16 +628,7 @@ export function chatCount(chaId: string): number {
 }
 
 /** One entry of a character's chat list (`chatList`): what a chat list shows, never a whole chat. */
-export type ChatListEntry = {
-    id: string;
-    name: string;
-    folderId?: string;
-    bindedPersona?: string;
-    promptPresetId?: string;
-    modelPresetId?: string;
-    bindingReview?: boolean;
-    fmIndex: number;
-};
+export type ChatListEntry = { id: string } & ChatEntryMeta;
 
 /**
  * A character's chats as list entries, in order (reactive over the listed fields and the
@@ -1629,6 +1627,7 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
     modelPresetId: "string",
     bindingReview: "boolean",
     fmIndex: "number",
+    ...CHAT_TRANSLATION_FIELD_TYPES,
 };
 
 /**

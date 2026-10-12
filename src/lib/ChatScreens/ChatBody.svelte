@@ -43,6 +43,11 @@
         storedTranslationShown?: boolean;
         /** On the stored path: a translation the row shows is being requested (the loading state). */
         storedPending?: boolean;
+        /**
+         * The row's chat's `autoTranslate` (`docs/plan/translation.md` slice 2.1): on the rendered path,
+         * the row starts translated (or with the cached translation only, `autoTranslateCachedOnly`).
+         */
+        autoTranslate?: boolean;
     }
 
     let {
@@ -62,6 +67,7 @@
         storedPath = false,
         storedTranslationShown = false,
         storedPending = false,
+        autoTranslate = false,
     }: Props = $props();
 
     const LOADING_HTML = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`;
@@ -70,6 +76,8 @@
     let lastParsed = "";
     let lastCharArg: string | simpleCharacterArgument = null;
     let lastChatId = -10;
+    /** The chat's `autoTranslate` the row last started from: a change starts it again. */
+    let lastAutoTranslate: boolean | null = null;
     let lastRenderedRevision: number | null = null;
 
     function getCbsCondition() {
@@ -121,13 +129,16 @@
                 lastParsedQueue = marked;
                 return marked;
             }
-            if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId) {
+            // Read before any await, so a change of the chat's flag renders again (and restarts the row).
+            const auto = autoTranslate;
+            if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId || auto !== lastAutoTranslate) {
                 lastParsedQueue = "";
                 lastCharArg = charArg;
                 lastChatId = chatID;
+                lastAutoTranslate = auto;
                 let translateText = false;
                 try {
-                    if (settings.memoryTranslateMedia.autoTranslate) {
+                    if (auto) {
                         if (
                             settings.memoryTranslateMedia.autoTranslateCachedOnly &&
                             settings.memoryTranslateMedia.translatorType === "llm"

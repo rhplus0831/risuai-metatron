@@ -9,7 +9,7 @@ import type { TranslatorPreset } from "../../../shared/settings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { runTranslatorPipeline } from "../../../shared/translation/pipeline.ts";
-import { createTranslatorPreset, isTranslatorPreset } from "../../../shared/translatorPresets.ts";
+import { resolveTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { ResourceBatchConflictError, ResourceEpochError, type ResourceStore } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
@@ -147,17 +147,9 @@ export function createTranslationRunner(deps: {
         return null;
     };
 
-    /** The selected translator preset (the chat's own arrives in slice 2.2). */
-    const selectedPreset = (scope: JobScope): TranslatorPreset => {
-        const presets = Array.isArray(scope.db.translatorPresets)
-            ? scope.db.translatorPresets.filter(isTranslatorPreset)
-            : [];
-        return (
-            presets.find((preset) => preset.id === scope.db.translatorPresetId) ??
-            presets[0] ??
-            createTranslatorPreset("Default")
-        );
-    };
+    /** The chat's translator preset, else the global selection (`docs/plan/translation.md` slice 2.2). */
+    const selectedPreset = (scope: JobScope): TranslatorPreset =>
+        resolveTranslatorPreset(scopeChat(scope), scope.db.translatorPresets, scope.db.translatorPresetId).preset;
 
     /** The character's translator note, as the tab reads it: a group has none. */
     const translatorNoteOf = (scope: JobScope): string => {

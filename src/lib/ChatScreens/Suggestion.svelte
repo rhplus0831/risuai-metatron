@@ -10,6 +10,7 @@
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
     import { translate } from "src/ts/translator/translator";
+    import { chatAutoTranslate } from "src/ts/translator/chatTranslation.svelte";
     import { CopyIcon, LanguagesIcon, RefreshCcwIcon } from "@lucide/svelte";
     import { alertConfirm } from "src/ts/alert";
     import { language } from "src/lang";
@@ -29,7 +30,10 @@
     let { send, messageInput }: Props = $props();
     let suggestMessages: readonly string[] = $state(selectedChat()?.suggestMessages);
     let suggestMessagesTranslated: string[] = $state();
-    let toggleTranslate: boolean = $state(settings.memoryTranslateMedia.autoTranslate);
+    /** Whether the suggestions show translated: the chat's `autoTranslate` until clicked (slice 2.1). */
+    let toggleTranslate: boolean = $state(false);
+    /** The chat and flag `toggleTranslate` was last started from: a change of either starts it again. */
+    let toggleSource: string | null = null;
     let progress: boolean = $state();
     /** The chat a running request is for (by id), or null. */
     let progressChatId: string | null = null;
@@ -191,6 +195,15 @@
         currentCharacter?.chaId;
         chatId = currentCharacter ? selectedChatId(currentCharacter.chaId) : null;
         updateSuggestions();
+    });
+    $effect.pre(() => {
+        const chaId = currentCharacter?.chaId;
+        const auto = chaId && chatId !== null ? chatAutoTranslate({ chaId, chatId }) : false;
+        const source = `${chaId ?? ""}\n${chatId ?? ""}\n${auto}`;
+        if (source !== toggleSource) {
+            toggleSource = source;
+            toggleTranslate = auto;
+        }
     });
     $effect.pre(() => {
         translateSuggest(toggleTranslate, suggestMessages);

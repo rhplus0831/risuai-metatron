@@ -183,12 +183,14 @@ test("the first-run wizard writes every answer into its section, the selected pr
     // lists, the selected ones, and the characters).
     const after = await views(s.page);
     expect(after.ui).toMatchObject({ didFirstSetup: true, language: "en", textTheme: "highcontrast" });
+    // Showing replies translated is each chat's `autoTranslate` (`docs/plan/translation.md` slice
+    // 2.1): the wizard sets the language, the provider, and the input translation, and no global flag.
     expect(after.memory).toMatchObject({
         translator: "en",
-        autoTranslate: true,
         translatorType: "google",
         useAutoTranslateInput: true,
     });
+    expect(after.memory).not.toHaveProperty("autoTranslate");
     expect(after.preset).toMatchObject({ id: before.preset.id, maxResponse: 500 });
     // The model and its context size are a profile's, which the selected model preset's main and sub
     // slots name (`docs/plan/model-profiles.md`).
@@ -229,10 +231,10 @@ test("the first-run wizard writes every answer into its section, the selected pr
     const memory = (await s.api("/api/resources/memoryTranslateMedia/main")).body.data;
     expect(memory).toMatchObject({
         translator: "en",
-        autoTranslate: true,
         translatorType: "google",
         useAutoTranslateInput: true,
     });
+    expect(memory).not.toHaveProperty("autoTranslate");
     const presets = (await s.api("/api/resources/presets/main")).body.data as any[];
     expect(presets.find((preset) => preset.id === before.preset.id)).toMatchObject({ maxResponse: 500 });
     const profiles = (await s.api("/api/resources/modelProfiles/main")).body.data as any[];
@@ -348,7 +350,7 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
                     kind: "memoryTranslateMedia",
                     id: "main",
                     baseRevision: memoryRecord.revision,
-                    data: { ...memoryRecord.data, autoTranslate: false, ...memory },
+                    data: { ...memoryRecord.data, ...memory },
                 },
                 {
                     kind: "providers",

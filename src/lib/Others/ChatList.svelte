@@ -10,6 +10,7 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { changeChatTo } from "src/ts/globalApi.svelte";
     import { initialChatBinding } from "src/ts/storage/chatBinding.svelte";
+    import { initialChatTranslation } from "src/ts/translator/chatTranslation.svelte";
     import {
         chatList,
         createChat,
@@ -127,6 +128,7 @@
                         {
                             // Read before the chat is created: it becomes the selected chat.
                             ...initialChatBinding(cha.chaId),
+                            ...initialChatTranslation(cha.chaId),
                             message,
                             note: "",
                             name: `New Chat ${len + 1}`,

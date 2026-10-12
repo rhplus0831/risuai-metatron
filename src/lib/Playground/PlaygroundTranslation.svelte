@@ -108,6 +108,7 @@
                         translatorNote: prContext
                             ? `<Previous Content>${prContext.trim()}</Previous Content>\n${pvc}`
                             : "",
+                        globalPreset: true,
                     });
                     if (keepContext) {
                         prContexts.push(
@@ -134,7 +135,7 @@
                 return;
             }
             loading = true;
-            output = await runTranslator(r, false, sourceLang, outputLang);
+            output = await runTranslator(r, false, sourceLang, outputLang, { globalPreset: true });
             loading = false;
         } catch (error) {
             console.error(error);

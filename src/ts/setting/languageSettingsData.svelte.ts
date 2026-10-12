@@ -227,16 +227,7 @@ export const languageSettingsItems: SettingItem[] = [
         },
     },
 
-    // General Translation Options
-    {
-        id: "lang.autoTranslate",
-        type: "check",
-        labelKey: "autoTranslation",
-        bindKey: "autoTranslate",
-        classes: "mt-2",
-        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
-    },
-
+    // General Translation Options (auto-translate is a chat setting: the chat panel's translation section)
     {
         id: "lang.combineTranslation",
         type: "check",

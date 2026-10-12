@@ -10,7 +10,9 @@ import { translationSourceHash } from "../../../shared/translation/hash.ts";
 // translation through the normal display path, re-deriving it when the chat's refresh brings one (no
 // remount), keeps the row's show/hide choice across a remount, requests a translation only when none
 // is fresh, and edits through a captured session. The rendered path (`"rendered"`, or a row without a
-// message id) is unchanged: `translateHTML` runs and the stored translation is never shown.
+// message id) is unchanged: `translateHTML` runs and the stored translation is never shown. Auto-show
+// is the chat's own `autoTranslate` (`docs/plan/translation.md` slice 2.1), counted only while a target
+// language is set; on the rendered path a change of it on a mounted row starts or stops the translation.
 
 const hoisted = vi.hoisted(() => ({
     alerts: { error: vi.fn(), confirm: vi.fn(), normal: vi.fn() },
@@ -101,6 +103,7 @@ import {
     removeMessages,
     seedChats,
     selectChat,
+    setChatMeta,
     setMessageText,
     setMessageTranslation,
 } from "src/ts/storage/chatStore.svelte";
@@ -137,10 +140,18 @@ function deferred<T>(): Deferred<T> {
 const fetchCalls: { path: string; body: Record<string, unknown> }[] = [];
 let revision = 1;
 
-/** Installs the records and holds chat `chatId` of character `c` (messages a "A", b "B"), selected. */
+/**
+ * Installs the records and holds chat `chatId` of character `c` (messages a "A", b "B"), selected.
+ * `autoTranslate` is the chat's own field (slice 2.1); `translator` the target language (`ko`).
+ */
 function boot(
     chatId: string,
-    options: { translation?: MessageTranslation; autoTranslate?: boolean; target?: "message" | "rendered" } = {},
+    options: {
+        translation?: MessageTranslation;
+        autoTranslate?: boolean;
+        target?: "message" | "rendered";
+        translator?: string;
+    } = {},
 ) {
     installFlatDatabase({
         characters: [
@@ -160,9 +171,8 @@ function boot(
         modelPresets: [{ id: "m1", name: "M1" }],
         personas: [{ id: "u1", name: "U1" }],
         translatorType: "llm",
-        translator: "ko",
+        translator: options.translator ?? "ko",
         llmTranslationTarget: options.target ?? "message",
-        autoTranslate: options.autoTranslate ?? false,
         translateBeforeHTMLFormatting: false,
         legacyTranslation: false,
         autoTranslateCachedOnly: false,
@@ -182,6 +192,7 @@ function boot(
         name: "K",
         note: "",
         localLore: [],
+        ...(options.autoTranslate ? { autoTranslate: true } : {}),
         message: [
             {
                 role: "char",
@@ -304,7 +315,7 @@ function answerWith(answer: (body: Record<string, unknown>) => Promise<Response>
 }
 
 describe("the stored path: display", () => {
-    it("with autoTranslate on, shows the stored translation the refresh brings without a remount, the original again when it is cleared, and a replacement in its turn", async () => {
+    it("with the chat's autoTranslate on, shows the stored translation the refresh brings without a remount, the original again when it is cleared, and a replacement in its turn", async () => {
         const { ref, hydrate } = boot("k1", { autoTranslate: true });
         const ui = render();
         await ui.expectText("A");
@@ -344,8 +355,8 @@ describe("the stored path: display", () => {
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(true);
     });
 
-    it("the toggle shows a fresh translation without a request and hides it again; the choice survives a remount and wins over autoTranslate", async () => {
-        boot("k3", { translation: tr("ㄱ", "A") });
+    it("the toggle shows a fresh translation without a request and hides it again; the choice survives a remount and wins over the chat's autoTranslate", async () => {
+        const { ref } = boot("k3", { translation: tr("ㄱ", "A") });
         let ui = render();
         await ui.expectText("A");
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
@@ -367,13 +378,52 @@ describe("the stored path: display", () => {
         await ui.expectText("ㄱ");
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(true);
 
-        // An explicit hide also holds, over autoTranslate.
+        // An explicit hide also holds, over the chat's autoTranslate turned on meanwhile.
         ui.click(ui.toggle());
         await ui.expectText("A");
-        settings.memoryTranslateMedia.autoTranslate = true;
+        setChatMeta(ref, { autoTranslate: true });
+        flushSync();
         ui = ui.remount();
         await ui.expectText("A");
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+    });
+
+    it("auto-show follows the chat's flag, not another chat's or a global one: turning it on shows the fresh translation without a click, and off hides it; nothing shows without a target language", async () => {
+        const { ref } = boot("k3b", { translation: tr("ㄱ", "A") });
+        const ui = render();
+        await ui.expectText("A");
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+
+        setChatMeta(ref, { autoTranslate: true });
+        flushSync();
+        await ui.expectText("ㄱ");
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(true);
+        expect(fetchCalls).toEqual([]);
+        expect(hoisted.translateHTML).not.toHaveBeenCalled();
+
+        // No target language: the flag counts for nothing (the stored translation is not shown).
+        settings.memoryTranslateMedia.translator = "";
+        flushSync();
+        await ui.expectText("A");
+        settings.memoryTranslateMedia.translator = "ko";
+        flushSync();
+        await ui.expectText("ㄱ");
+
+        setChatMeta(ref, {}, ["autoTranslate"]);
+        flushSync();
+        await ui.expectText("A");
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+        expect(fetchCalls).toEqual([]);
+    });
+
+    it("with the flag on but no target language, a mounted row shows the original and requests nothing", async () => {
+        boot("k3c", { autoTranslate: true, translator: "", translation: tr("ㄱ", "A") });
+        const ui = render();
+        await ui.expectText("A");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(ui.text()).toBe("A");
+        expect(fetchCalls).toEqual([]);
+        expect(hoisted.translateHTML).not.toHaveBeenCalled();
     });
 });
 
@@ -587,6 +637,30 @@ describe("the rendered path is unchanged", () => {
         ui.click(ui.toggle());
         await ui.expectText("A");
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+        expect(fetchCalls).toEqual([]);
+    });
+
+    it("on `rendered`, toggling the chat's flag on a mounted row starts the auto translation and stops it again", async () => {
+        const { ref } = boot("k9b", { target: "rendered" });
+        const ui = render();
+        await ui.expectText("A");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(hoisted.translateHTML).not.toHaveBeenCalled();
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+
+        setChatMeta(ref, { autoTranslate: true });
+        flushSync();
+        await vi.waitFor(() => expect(hoisted.translateHTML).toHaveBeenCalled());
+        await ui.expectText("[T]A");
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(true);
+        const calls = hoisted.translateHTML.mock.calls.length;
+
+        setChatMeta(ref, {}, ["autoTranslate"]);
+        flushSync();
+        await ui.expectText("A");
+        expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(hoisted.translateHTML.mock.calls.length).toBe(calls);
         expect(fetchCalls).toEqual([]);
     });
 
