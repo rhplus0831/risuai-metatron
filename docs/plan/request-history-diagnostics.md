@@ -102,19 +102,24 @@ The history lives in `save/data/request-history.sqlite`, its own file, like
 only `resources.sqlite` (`server/src/data/snapshots.ts`), so it stays out of
 them. Backups read the store and `save/assets/`, so it stays out of those too.
 
-One row per request:
+One row per request. A request is one `runInJob` or `start` call, so each
+retry of `requestChatDataOuter` (`server/src/llm/outer.ts`), which calls
+`runInJob` once per attempt, is its own row with its own id. A job's attempts
+share its `jobId`.
 
 - **Identity:** `id` (the request id), `jobId`, `source`, `mode` (the model
   slot), `chaId`, `chatId`, `messageId` where the job knows it.
 - **Model:** model id, profile id and name, provider (`LLMFormat` name).
-- **Timing and outcome:** `startedAt`, `firstByteAt`, `completedAt`, `status`
+- **Timing and outcome:** `startedAt`, `firstByteAt` (the first byte of the
+  response that ended the request, see slice 3), `completedAt`, `status`
   (`pending | success | error | aborted | interrupted`), HTTP status of the
   last exchange, the provider error code, and the error message (redacted,
   64 KiB).
 - **Sizes:** request bytes and response bytes.
 - **Content** (null when capture is off): `prompt` (the `formated` the request
   layer received, 2 MiB) and `exchanges`. `exchanges` is every transport log
-  entry of the request in order (retries, tool rounds, the Vertex token call),
+  entry of the request in order (tool rounds, the Vertex token call, a batch's
+  submit, status, and results calls),
   each with URL, header, body, and response. Bounds: 32 exchanges, a body 2 MiB,
   a response 4 MiB, a header 64 KiB.
 - **Truncation:** which fields were cut, with original and stored bytes.
@@ -249,6 +254,20 @@ projection:
   - the URL query (`?key=`)
 - `fetchStream` tees the raw body into the exchange, bounded at 4 MiB, honoring
   `logFetch: false`.
+- The first byte is the first byte of the response that ended the request.
+  Slice 1 already does this for Horde: its submit acknowledgement and pending
+  polls do not count. Anthropic batching (`claudeBatching`,
+  `server/src/llm/anthropic.ts`) does not yet: its submit and status calls go
+  through the observed transport, so `firstByteAt` is the acknowledgement.
+  - `StreamFetchArgs` gains a per-call `firstByte?: boolean` (default `true`).
+    `false` leaves that call's response unobserved.
+  - The batch's submit, status, and cancel calls pass `false`. The results
+    call keeps the default.
+  - A refused submit (not 200) or a failed status poll ends the request, so it
+    marks its first byte, as Horde's refused submit does.
+- Horde: check `typeof json.id === "string"` inside the submit's `try`, so a
+  malformed id ends the request through the existing `catch` and keeps its
+  first byte (today it throws outside the `try` while building the poll URL).
 - The translation runner's `log` writes the history.
 - Remove the `requestLog` notice: the kind in `shared/jobs.ts`, the send in
   `bindings.ts`, and the client case.
@@ -257,7 +276,11 @@ projection:
     error. Cases: OpenAI bearer, Anthropic `x-api-key`, Gemini `?key=`, a
     Vertex token acquired mid-request, a named API key, and AWS SigV4 headers.
   - A streamed response is stored, and cut at the bound.
-  - A retry produces two exchanges in one row.
+  - A tool round produces two exchanges in one row.
+  - A retry produces two rows with the same `jobId`, each with its own
+    exchanges.
+  - An Anthropic batch's `firstByteAt` is its results response, not the
+    submit acknowledgement or a pending status poll.
   - An aborted job's request ends `aborted`.
 
 #### 4. Routes and settings
@@ -281,6 +304,8 @@ projection:
   - The list shows time, source, model, status, duration, and the chat's
     name.
   - A filter shows "this chat" only.
+  - A retried request's attempts are separate rows; the job filter
+    (`jobId`) shows them together.
   - A row expands to load its detail. Prompt, body, and response each get a
     copy button, and truncation is marked.
   - A second tab, "This tab", shows the tab's browser-only requests (plugin
