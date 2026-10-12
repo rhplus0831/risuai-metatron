@@ -4,12 +4,13 @@ import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../shared/llm/request.ts";
-import { isChatConflict } from "../../../shared/resources.ts";
+import { isChatConflict, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import { SECTION_KIND } from "../../../shared/sections.ts";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { runTranslatorPipeline } from "../../../shared/translation/pipeline.ts";
-import { resolveTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
+import { readChatTranslationSettings, resolveTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { ResourceBatchConflictError, ResourceEpochError, type ResourceStore } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
@@ -95,6 +96,8 @@ type RunLife = { controller: AbortController; deadlineAt: number };
 
 type Run = {
     controller: AbortController;
+    /** The hash of the text the run translates (a caller for a newer text waits and translates again). */
+    sourceHash: string;
     /** What every caller of the run gets: the work's result, or the end the controller was aborted with. */
     result: Promise<TranslateMessageResult>;
 };
@@ -335,126 +338,223 @@ export function createTranslationRunner(deps: {
         return failure(500, "The translation failed");
     }
 
-    return {
-        /**
-         * Translates the message: joins its run in flight, returns a fresh stored translation when not
-         * forced, or starts a run. Settles when the run ends; the caller's own abort does not end it.
-         */
-        translate(request: TranslateMessageRequest): Promise<TranslateMessageResult> {
-            const refused = admission();
-            if (refused) {
-                return Promise.resolve(refused);
-            }
-            const key = keyOf(request);
-            const sent = {
-                presetId: request.presetId,
-                modelPresetId: request.modelPresetId,
-                personaId: request.personaId,
-            };
-            const inFlight = runs.get(key);
-            if (inFlight) {
-                // A joining caller's ids pass the chat's display binding too.
-                const state = readChatBindingState(store, kinds, request);
-                if (!state.chat) {
-                    return Promise.resolve(failure(404, "The chat no longer exists"));
-                }
-                const refusal = checkChatBinding(state.chat, state.lookup, sent, "display");
-                if (refusal) {
-                    return Promise.resolve({ ok: false, status: 409, error: refusal.error });
-                }
-                // The ids a start would load must exist for a joiner too (an unbound field takes the sent one).
-                if (
-                    !state.lookup.promptPreset(request.presetId) ||
-                    !state.lookup.modelPreset(request.modelPresetId) ||
-                    !state.lookup.persona(request.personaId)
-                ) {
-                    return Promise.resolve(
-                        failure(404, "The request's preset, model preset, or persona no longer exists"),
-                    );
-                }
-                return inFlight.result;
-            }
+    /** The hash of the message's current text, or null when it (or its chat) is gone. */
+    const currentSourceHash = (request: TranslateMessageRequest): string | null => {
+        const chat = store.readRefs([], { chats: [{ characterId: request.characterId, id: request.chatId }] }).chats[0]
+            ?.data;
+        const message = chat?.message.find((entry) => entry.chatId === request.messageId);
+        return message ? translationSourceHash(message.data) : null;
+    };
 
-            // Capacity counts the work still running, also of a run that ended and has not stopped yet,
-            // and is checked before the scope load (a fresh stored translation is not served at capacity).
-            if (working.size >= MAX_RUNNING_TRANSLATIONS) {
-                return Promise.resolve(failure(429, "Too many translations are running"));
+    /**
+     * Translates the message: joins its run in flight, returns a fresh stored translation when not
+     * forced, or starts a run. Settles when the run ends; the caller's own abort does not end it.
+     * A caller whose message text is not the one the run in flight translates (a continue extended
+     * it meanwhile) waits for that run and then translates the current text (`docs/plan/translation.md`
+     * slice 2.3): the run's write would be ignored.
+     */
+    function translate(request: TranslateMessageRequest): Promise<TranslateMessageResult> {
+        const refused = admission();
+        if (refused) {
+            return Promise.resolve(refused);
+        }
+        const key = keyOf(request);
+        const sent = {
+            presetId: request.presetId,
+            modelPresetId: request.modelPresetId,
+            personaId: request.personaId,
+        };
+        const inFlight = runs.get(key);
+        if (inFlight) {
+            // A joining caller's ids pass the chat's display binding too.
+            const state = readChatBindingState(store, kinds, request);
+            if (!state.chat) {
+                return Promise.resolve(failure(404, "The chat no longer exists"));
             }
-            // Everything up to the run's start is synchronous: one committed state, no other caller between.
-            const epoch = store.epoch();
-            const context: GenerationContext = {
-                characterId: request.characterId,
-                chatId: request.chatId,
-                ...sent,
-                mode: "translate",
-                input: "",
-                chatRevision: "",
-            };
-            let scope: JobScope;
-            try {
-                scope = loadJobScope(store, kinds, context, { binding: "display" });
-            } catch (error) {
-                if (error instanceof ChatBindingError) {
-                    return Promise.resolve({
-                        ok: false,
-                        status: 409,
-                        error: error.refusal.error,
-                        ...(error.refusal.error === "chatBindingIncomplete"
-                            ? { problems: error.refusal.problems }
-                            : {}),
-                    });
-                }
-                if (error instanceof GenerationRunnerError && error.status === 404) {
-                    return Promise.resolve(failure(404, error.message));
-                }
-                if (error instanceof RequestTargetGoneError) {
-                    return Promise.resolve(failure(404, error.message));
-                }
-                throw error;
+            const refusal = checkChatBinding(state.chat, state.lookup, sent, "display");
+            if (refusal) {
+                return Promise.resolve({ ok: false, status: 409, error: refusal.error });
             }
-            const message = scopeChat(scope)?.message.find((entry) => entry.chatId === request.messageId);
-            if (!message) {
-                return Promise.resolve(failure(404, "The message no longer exists"));
+            // The ids a start would load must exist for a joiner too (an unbound field takes the sent one).
+            if (
+                !state.lookup.promptPreset(request.presetId) ||
+                !state.lookup.modelPreset(request.modelPresetId) ||
+                !state.lookup.persona(request.personaId)
+            ) {
+                return Promise.resolve(failure(404, "The request's preset, model preset, or persona no longer exists"));
             }
-            if (lock.holder(request.characterId, request.chatId, request.messageId) !== null) {
-                return Promise.resolve(failure(409, "generating"));
+            const current = currentSourceHash(request);
+            if (current !== null && current !== inFlight.sourceHash) {
+                // The run translates an older text: its write will be ignored. Translate the current
+                // text once it settles (the run is gone from the map by then; a caller still finds it
+                // through this chain).
+                return inFlight.result.then(() => translate(request));
             }
-            if (!request.force && storedTranslation(message) !== null) {
+            return inFlight.result;
+        }
+
+        // Capacity counts the work still running, also of a run that ended and has not stopped yet,
+        // and is checked before the scope load (a fresh stored translation is not served at capacity).
+        if (working.size >= MAX_RUNNING_TRANSLATIONS) {
+            return Promise.resolve(failure(429, "Too many translations are running"));
+        }
+        // Everything up to the run's start is synchronous: one committed state, no other caller between.
+        const epoch = store.epoch();
+        const context: GenerationContext = {
+            characterId: request.characterId,
+            chatId: request.chatId,
+            ...sent,
+            mode: "translate",
+            input: "",
+            chatRevision: "",
+        };
+        let scope: JobScope;
+        try {
+            scope = loadJobScope(store, kinds, context, { binding: "display" });
+        } catch (error) {
+            if (error instanceof ChatBindingError) {
                 return Promise.resolve({
-                    ok: true,
-                    outcome: "fresh",
-                    translation: structuredClone(message.translation!),
+                    ok: false,
+                    status: 409,
+                    error: error.refusal.error,
+                    ...(error.refusal.error === "chatBindingIncomplete" ? { problems: error.refusal.problems } : {}),
                 });
             }
-            const controller = new AbortController();
-            const life: RunLife = { controller, deadlineAt: Date.now() + TRANSLATION_DEADLINE_MS };
-            const deadline = setTimeout(
-                () => controller.abort(new TranslationEnd(504, "The translation took too long")),
-                TRANSLATION_DEADLINE_MS,
-            );
-            deadline.unref?.();
-            const done = work(request, scope, message, life, epoch).then(
-                (result) => result,
-                (error) => settle(request, controller.signal.aborted ? controller.signal.reason : error),
-            );
-            working.add(done);
-            void done.finally(() => working.delete(done));
-            // An end settles every caller at once, whether or not the work has stopped (it writes nothing after).
-            const ended = new Promise<TranslateMessageResult>((resolve) => {
-                controller.signal.addEventListener("abort", () => resolve(settle(request, controller.signal.reason)), {
-                    once: true,
-                });
+            if (error instanceof GenerationRunnerError && error.status === 404) {
+                return Promise.resolve(failure(404, error.message));
+            }
+            if (error instanceof RequestTargetGoneError) {
+                return Promise.resolve(failure(404, error.message));
+            }
+            throw error;
+        }
+        const message = scopeChat(scope)?.message.find((entry) => entry.chatId === request.messageId);
+        if (!message) {
+            return Promise.resolve(failure(404, "The message no longer exists"));
+        }
+        if (lock.holder(request.characterId, request.chatId, request.messageId) !== null) {
+            return Promise.resolve(failure(409, "generating"));
+        }
+        if (!request.force && storedTranslation(message) !== null) {
+            return Promise.resolve({
+                ok: true,
+                outcome: "fresh",
+                translation: structuredClone(message.translation!),
             });
-            const run: Run = { controller, result: Promise.race([done, ended]) };
-            runs.set(key, run);
-            void run.result.finally(() => {
-                clearTimeout(deadline);
-                if (runs.get(key) === run) {
-                    runs.delete(key);
-                }
+        }
+        const controller = new AbortController();
+        const life: RunLife = { controller, deadlineAt: Date.now() + TRANSLATION_DEADLINE_MS };
+        const deadline = setTimeout(
+            () => controller.abort(new TranslationEnd(504, "The translation took too long")),
+            TRANSLATION_DEADLINE_MS,
+        );
+        deadline.unref?.();
+        const done = work(request, scope, message, life, epoch).then(
+            (result) => result,
+            (error) => settle(request, controller.signal.aborted ? controller.signal.reason : error),
+        );
+        working.add(done);
+        void done.finally(() => working.delete(done));
+        // An end settles every caller at once, whether or not the work has stopped (it writes nothing after).
+        const ended = new Promise<TranslateMessageResult>((resolve) => {
+            controller.signal.addEventListener("abort", () => resolve(settle(request, controller.signal.reason)), {
+                once: true,
             });
-            return run.result;
-        },
+        });
+        const run: Run = {
+            controller,
+            sourceHash: translationSourceHash(message.data),
+            result: Promise.race([done, ended]),
+        };
+        runs.set(key, run);
+        void run.result.finally(() => {
+            clearTimeout(deadline);
+            if (runs.get(key) === run) {
+                runs.delete(key);
+            }
+        });
+        return run.result;
+    }
+
+    /**
+     * Hands a finished send's messages to the runner (`docs/plan/translation.md` slice 2.3), when the
+     * chat auto-translates: its `autoTranslate` is on, a target language is set, the translator is the
+     * LLM one, and `llmTranslationTarget` is `"message"`. With `translateBotOnly`, user messages are
+     * skipped. Each message gets an unforced `translate` (not awaited: the send does not wait for it).
+     * Returns the ids with a run started or in flight (the ids are checked against the chat's display
+     * binding first); a refusal (a lock, the binding, capacity) or a fresh stored translation is not
+     * returned. Best effort: a run that cannot start is not retried.
+     */
+    function handOff(
+        target: Pick<TranslateMessageRequest, "characterId" | "chatId" | "presetId" | "modelPresetId" | "personaId">,
+        messageIds: readonly string[],
+    ): string[] {
+        if (messageIds.length === 0 || admission()) {
+            return [];
+        }
+        const section = kinds.get(SECTION_KIND.memoryTranslateMedia);
+        if (!section) {
+            return [];
+        }
+        const read = store.readRefs([{ kind: section, id: SINGLETON_RESOURCE_ID }], {
+            chats: [{ characterId: target.characterId, id: target.chatId }],
+        });
+        const media = read.items[0]?.data as
+            { translator?: unknown; translatorType?: unknown; llmTranslationTarget?: unknown } | undefined;
+        const chat = read.chats[0]?.data;
+        if (
+            !chat ||
+            typeof media?.translator !== "string" ||
+            media.translator === "" ||
+            media.translatorType !== "llm" ||
+            media.llmTranslationTarget !== "message"
+        ) {
+            return [];
+        }
+        const settings = readChatTranslationSettings(chat);
+        if (!settings.autoTranslate) {
+            return [];
+        }
+        // The ids pass the display binding and name existing records, as a joiner's must: a refused
+        // hand-off is not reported as handed over because another caller's run is in flight.
+        const binding = readChatBindingState(store, kinds, target);
+        if (
+            !binding.chat ||
+            checkChatBinding(
+                binding.chat,
+                binding.lookup,
+                { presetId: target.presetId, modelPresetId: target.modelPresetId, personaId: target.personaId },
+                "display",
+            ) ||
+            !binding.lookup.promptPreset(target.presetId) ||
+            !binding.lookup.modelPreset(target.modelPresetId) ||
+            !binding.lookup.persona(target.personaId)
+        ) {
+            return [];
+        }
+        const handed: string[] = [];
+        for (const messageId of new Set(messageIds)) {
+            const message = chat.message.find((entry) => entry.chatId === messageId);
+            if (!message || (settings.translateBotOnly && message.role === "user")) {
+                continue;
+            }
+            const request: TranslateMessageRequest = { ...target, messageId, force: false };
+            try {
+                void translate(request).catch(() => {});
+            } catch (error) {
+                console.error("[translate] hand-off failed:", error instanceof Error ? error.name : typeof error);
+                continue;
+            }
+            if (runs.has(keyOf(request))) {
+                handed.push(messageId);
+            }
+        }
+        return handed;
+    }
+
+    return {
+        translate,
+        handOff,
 
         /** Maintenance began: every run ends (503) and new ones are refused until `resume`. */
         pause(reason: string) {

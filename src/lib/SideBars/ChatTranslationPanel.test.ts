@@ -49,6 +49,7 @@ function renderPanel(chatRef: { chaId: string; chatId: string }) {
     flushSync();
     const panel = () => target.querySelector("[data-chat-translation-panel]");
     const checkbox = () => target.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const checkboxes = () => [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
     const select = () => target.querySelector<HTMLSelectElement>("select");
     /** The select's options as `[value, label]`. */
     const options = () => [...(select()?.options ?? [])].map((option) => [option.value, option.textContent?.trim()]);
@@ -63,7 +64,7 @@ function renderPanel(chatRef: { chaId: string; chatId: string }) {
         flushSync();
         await tick();
     };
-    return { target, panel, checkbox, select, options, choose, settle };
+    return { target, panel, checkbox, checkboxes, select, options, choose, settle };
 }
 
 /** Chat `k` names `tp2` with auto-translate on; `j` names the deleted `tp-gone`; `p` has no settings. */
@@ -91,6 +92,7 @@ beforeEach(() => {
         translatorPresetId: "tp1",
         translatorType: "llm",
         translator: "ko",
+        llmTranslationTarget: "message",
     } as any);
 });
 
@@ -180,6 +182,51 @@ describe("ChatTranslationPanel", () => {
         panel.choose("");
         expect(chatEntry(refJ)).not.toHaveProperty("translatorPresetId");
         expect(panel.options().map(([value]) => value)).toEqual(["", "tp1", "tp2"]);
+    });
+
+    it("the bot-only row (slice 2.3) shows with the stored translation and auto-translate on, writes true or unsets, and hides for the rendered target or another translator", () => {
+        const panel = renderPanel(refK);
+        expect(panel.checkboxes()).toHaveLength(2);
+        expect(panel.target.textContent).toContain(strings.botOnly);
+        expect(panel.checkboxes()[1].checked).toBe(false);
+        panel.checkboxes()[1].click();
+        flushSync();
+        expect(chatEntry(refK)).toMatchObject({ autoTranslate: true, translateBotOnly: true });
+        expect(panel.checkboxes()[1].checked).toBe(true);
+        panel.checkboxes()[1].click();
+        flushSync();
+        expect(chatEntry(refK)).not.toHaveProperty("translateBotOnly");
+        expect(chatEntry(refK)).toMatchObject({ autoTranslate: true });
+
+        // Without auto-translate the row is gone; turning it on brings the row (its own value kept).
+        panel.checkboxes()[1].click();
+        flushSync();
+        panel.checkbox().click();
+        flushSync();
+        expect(panel.checkboxes()).toHaveLength(1);
+        expect(panel.target.textContent).not.toContain(strings.botOnly);
+        expect(chatEntry(refK)).toMatchObject({ translateBotOnly: true });
+        expect(chatEntry(refK)).not.toHaveProperty("autoTranslate");
+        panel.checkbox().click();
+        flushSync();
+        expect(panel.checkboxes()).toHaveLength(2);
+        expect(panel.checkboxes()[1].checked).toBe(true);
+
+        // The rendered target and another translator have no automatic requests to limit.
+        settings.memoryTranslateMedia.llmTranslationTarget = "rendered";
+        flushSync();
+        expect(panel.checkboxes()).toHaveLength(1);
+        settings.memoryTranslateMedia.llmTranslationTarget = "message";
+        settings.memoryTranslateMedia.translatorType = "google";
+        flushSync();
+        expect(panel.checkboxes()).toHaveLength(1);
+        settings.memoryTranslateMedia.translatorType = "llm";
+        flushSync();
+        expect(panel.checkboxes()).toHaveLength(2);
+
+        // A chat without auto-translate starts without the row.
+        const off = renderPanel(refP);
+        expect(off.checkboxes()).toHaveLength(1);
     });
 
     it("another translator hides the preset row and keeps the checkbox; the LLM translator brings it back", () => {

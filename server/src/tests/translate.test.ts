@@ -941,4 +941,168 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(message("m0").translation).toBeUndefined();
         expect(runner.workingCount()).toBe(0);
     });
+
+    // `docs/plan/translation.md` slice 2.3: a send's hand-off, and the chain behind a run of an older text.
+    const target = () => ({ characterId: "c", chatId: "k", ...ids });
+    /** Chat `k` auto-translates with the LLM translator on the stored translation; `r1` and `r2` are replies. */
+    function enableAutoTranslation() {
+        patch("memoryTranslateMedia", { translatorType: "llm", llmTranslationTarget: "message" });
+        chatBatch([
+            { op: "meta", set: { autoTranslate: true }, unset: [] },
+            {
+                op: "append",
+                messages: [m("r1", "reply one", "char"), m("r2", "reply two", "char")],
+                anchor: { end: true },
+            },
+        ]);
+    }
+
+    it("handOff starts an unforced run per message when the chat auto-translates on the stored LLM translation, skips user messages with translateBotOnly, and returns only the ids with a run", async () => {
+        build();
+        const pending = pendingAnswers();
+        const sent = () => pending.length;
+
+        // Off: the chat's flag, a target language, the LLM translator, and the stored target are all needed.
+        patch("memoryTranslateMedia", { translatorType: "llm", llmTranslationTarget: "message" });
+        expect(runner.handOff(target(), ["m0"])).toEqual([]);
+        chatBatch([{ op: "meta", set: { autoTranslate: true }, unset: [] }]);
+        patch("memoryTranslateMedia", { translator: "" });
+        expect(runner.handOff(target(), ["m0"])).toEqual([]);
+        patch("memoryTranslateMedia", { translator: "ko", translatorType: "google" });
+        expect(runner.handOff(target(), ["m0"])).toEqual([]);
+        patch("memoryTranslateMedia", { translatorType: "llm", llmTranslationTarget: "rendered" });
+        expect(runner.handOff(target(), ["m0"])).toEqual([]);
+        patch("memoryTranslateMedia", { llmTranslationTarget: "message" });
+        expect(runner.handOff({ ...target(), chatId: "nope" }, ["m0"])).toEqual([]);
+        expect(runner.handOff(target(), [])).toEqual([]);
+        await tick();
+        expect(runner.runningCount()).toBe(0);
+        expect(sent()).toBe(0);
+
+        // On: one run per message (duplicates once, unknown ids skipped), each an unforced start.
+        chatBatch([
+            {
+                op: "append",
+                messages: [m("r1", "reply one", "char"), m("r2", "reply two", "char")],
+                anchor: { end: true },
+            },
+        ]);
+        expect(runner.handOff(target(), ["r1", "m0", "r1", "nope"])).toEqual(["r1", "m0"]);
+        expect(runner.runningCount()).toBe(2);
+        await until(() => sent() === 2);
+        const source = (index: number) => JSON.stringify(calls[index].arg.formated);
+        expect(source(0)).toContain("reply one");
+        expect(source(1)).toContain("text 0");
+        // A message in flight is reported again (the tab follows it); a fresh one and a locked one are not.
+        expect(runner.handOff(target(), ["r1"])).toEqual(["r1"]);
+        expect(runner.runningCount()).toBe(2);
+        pending[0].resolve({ type: "success", result: "하나" });
+        pending[1].resolve({ type: "success", result: "영" });
+        await until(() => runner.runningCount() === 0);
+        expect(message("r1").translation).toMatchObject({
+            text: "하나",
+            sourceHash: translationSourceHash("reply one"),
+        });
+        expect(message("m0").translation).toMatchObject({ text: "영" });
+        expect(runner.handOff(target(), ["r1", "m0"])).toEqual([]);
+        lock.addToken("t");
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r2" }, { jobId: "j", generationId: "g", token: "t" });
+        expect(runner.handOff(target(), ["r2"])).toEqual([]);
+        lock.release({ characterId: "c", chatId: "k", messageId: "r2" }, "t", "g");
+        expect(runner.runningCount()).toBe(0);
+        expect(sent()).toBe(2);
+
+        // Bot replies only: the user messages are skipped, the replies translated.
+        chatBatch([{ op: "meta", set: { translateBotOnly: true }, unset: [] }]);
+        expect(runner.handOff(target(), ["r2", "m1"])).toEqual(["r2"]);
+        expect(runner.runningCount()).toBe(1);
+        await until(() => sent() === 3);
+        expect(source(2)).toContain("reply two");
+        expect(calls[2].arg).toMatchObject({ useStreaming: false, noMultiGen: true });
+
+        // Ids that fail the chat's display binding or name a missing record hand nothing over, also while
+        // the message's run is in flight (a joiner's refusal is not "in flight").
+        expect(runner.handOff({ ...target(), modelPresetId: "other" }, ["r2", "m1"])).toEqual([]);
+        expect(runner.handOff({ ...target(), personaId: "nope" }, ["r2"])).toEqual([]);
+        // Maintenance refuses the hand-off; the run in flight ends.
+        runner.pause("The server data is being replaced");
+        expect(runner.handOff(target(), ["r2"])).toEqual([]);
+        runner.resume();
+        await until(() => runner.runningCount() === 0);
+        pending[2].resolve({ type: "success", result: "late" });
+        await until(() => runner.workingCount() === 0);
+        expect(message("r2").translation).toBeUndefined();
+
+        // At capacity the hand-off is best effort: nothing is queued or retried.
+        chatBatch([{ op: "meta", set: {}, unset: ["translateBotOnly"] }]);
+        const filling = Array.from({ length: MAX_RUNNING_TRANSLATIONS }, (_, i) => runner.translate(req(`m${i + 1}`)));
+        await until(() => sent() === 3 + MAX_RUNNING_TRANSLATIONS);
+        expect(runner.handOff(target(), ["r2"])).toEqual([]);
+        expect(runner.runningCount()).toBe(MAX_RUNNING_TRANSLATIONS);
+        for (const entry of pending.slice(3)) {
+            entry.resolve({ type: "success", result: "번역" });
+        }
+        await Promise.all(filling);
+        await until(() => runner.workingCount() === 0);
+        expect(runner.handOff(target(), ["r2"])).toEqual(["r2"]);
+        await until(() => sent() === 4 + MAX_RUNNING_TRANSLATIONS);
+        pending.at(-1)!.resolve({ type: "success", result: "둘" });
+        await until(() => runner.runningCount() === 0);
+        expect(message("r2").translation?.text).toBe("둘");
+    });
+
+    it("a request for a text the run in flight no longer translates waits for that run and then translates the current text; a hand-off made meanwhile is reported and followed through the chain", async () => {
+        build();
+        enableAutoTranslation();
+        const pending = pendingAnswers();
+        const first = runner.translate(req("r1"));
+        await until(() => pending.length === 1);
+        expect(runner.runningCount()).toBe(1);
+
+        // A continue extended the reply while its translation runs: the send's hand-off waits behind
+        // the run (and is reported, so the tab follows), and so does a follower's request.
+        chatBatch([{ op: "setText", id: "r1", text: "reply one, continued" }]);
+        expect(runner.handOff(target(), ["r1"])).toEqual(["r1"]);
+        const follower = runner.translate(req("r1"));
+        // A request for the unchanged text of another message joins as before; nothing new started.
+        await tick();
+        expect(runner.runningCount()).toBe(1);
+        expect(calls).toHaveLength(1);
+
+        // The old run's write is ignored (its text is gone); the chain starts one run for the new text.
+        pending[0].resolve({ type: "success", result: "stale" });
+        expect(await first).toEqual({ ok: true, outcome: "ignored", translation: null });
+        await until(() => pending.length === 2);
+        expect(runner.runningCount()).toBe(1);
+        expect(calls).toHaveLength(2);
+        expect(JSON.stringify(calls[1].arg.formated)).toContain("reply one, continued");
+        expect(calls[1].jobId).not.toBe(calls[0].jobId);
+        // A late joiner finds the new run through the map.
+        const late = runner.translate(req("r1", { force: true }));
+        await tick();
+        expect(calls).toHaveLength(2);
+
+        pending[1].resolve({ type: "success", result: "이어서" });
+        const results = await Promise.all([follower, late]);
+        expect(results[0]).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: "이어서", sourceHash: translationSourceHash("reply one, continued") },
+        });
+        expect(results[1]).toEqual(results[0]);
+        expect(message("r1").translation).toEqual(results[0].ok ? results[0].translation : null);
+        await until(() => runner.runningCount() === 0 && runner.workingCount() === 0);
+
+        // A chained request whose chat is gone when the run settles ends with the chain's own refusal.
+        const again = runner.translate(req("r2", { force: true }));
+        await until(() => pending.length === 3);
+        chatBatch([{ op: "setText", id: "r2", text: "reply two, continued" }]);
+        const chained = runner.translate(req("r2"));
+        chatBatch([{ op: "delete" }]);
+        pending[2].resolve({ type: "success", result: "stale" });
+        expect(await again).toEqual({ ok: false, status: 404, error: "The chat no longer exists" });
+        expect(await chained).toMatchObject({ ok: false, status: 404 });
+        expect(calls).toHaveLength(3);
+        expect(runner.runningCount()).toBe(0);
+    });
 });

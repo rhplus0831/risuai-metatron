@@ -1447,6 +1447,7 @@ export const languageEnglish = {
         translatorPreset: "Translator preset",
         global: (name: string) => `Global (${name})`,
         goneUsingGlobal: "Deleted, using global",
+        botOnly: "Auto-translate bot replies only",
     },
     editTranslation: "Edit Translation",
     editTranslationSave: "Save Translation",

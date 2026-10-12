@@ -33,6 +33,7 @@ const deps = vi.hoisted(() => ({
     chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
     mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
     sayTTS: vi.fn(),
+    followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
     stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
     getModelInfo: vi.fn((id: string) => ({
         id,
@@ -108,6 +109,10 @@ vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setT
 vi.mock("../../lang", () => ({ language: {} }));
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
+vi.mock("../translator/storedTranslation.svelte", () => ({
+    followStoredTranslations: (ref: unknown, ids: unknown, follow: { report: (message: string) => void }) =>
+        deps.followTranslations(ref, ids, follow),
+}));
 vi.mock("../process/stableDiff", () => ({ stableDiff: deps.stableDiff }));
 vi.mock("../model/modellist", () => ({ getModelInfo: deps.getModelInfo }));
 
@@ -233,6 +238,7 @@ beforeEach(async () => {
     deps.mcps.clear();
     deps.sayTTS.mockReset();
     deps.stableDiff.mockReset();
+    deps.followTranslations.mockReset();
     stores = await import("../stores.svelte");
     // The mocked stores module outlives `resetModules`: start each test from idle registries.
     stores.bodyIntercepterStore.length = 0;
@@ -383,6 +389,47 @@ describe("notices and questions", () => {
         await pump();
         expect(deps.sayTTS).toHaveBeenCalledTimes(1);
         expect(deps.sayTTS.mock.calls[0][1]).toBe("hello");
+    });
+
+    it("a translating notice (slice 2.3) starts following the named messages, with a reporter whose failures queue behind a question like an alertError notice; a malformed payload is dropped", async () => {
+        send(notice("translating", { chaId: "c", chatId: "k", messageIds: ["m1", "m2"] }));
+        await pump();
+        expect(deps.followTranslations).toHaveBeenCalledTimes(1);
+        const [ref, ids, follow] = deps.followTranslations.mock.calls[0];
+        expect(ref).toEqual({ chaId: "c", chatId: "k" });
+        expect(ids).toEqual(["m1", "m2"]);
+        // The next send asks a question; the translation fails meanwhile: the question stays, and the
+        // failure shows after its answer, which is the user's (Astra's challenge of the plan).
+        send(question("q1", "alertConfirm", { message: "sure?" }), "J2");
+        expect(alert()).toMatchObject({ type: "ask", msg: "sure?" });
+        follow.report("translation broke");
+        await pump();
+        expect(alert()).toMatchObject({ type: "ask", msg: "sure?" });
+        expect(tx.answers).toEqual([]);
+        userAnswers("yes");
+        await pump();
+        expect(tx.answers).toEqual([{ type: "answer", id: "q1", outcome: "answered", value: true }]);
+        expect(alert()).toMatchObject({ type: "error", msg: "translation broke" });
+        userAnswers("");
+        await pump();
+        expect(alert().type).toBe("none");
+        // Idle: the report shows at once, as a modal notice does.
+        follow.report("again");
+        await pump();
+        expect(alert()).toMatchObject({ type: "error", msg: "again" });
+        userAnswers("");
+        await pump();
+
+        for (const payload of [
+            { chaId: "c", chatId: "k", messageIds: ["m1", 2] },
+            { chaId: 1, chatId: "k", messageIds: ["m1"] },
+            { chaId: "c", chatId: "k", messageIds: "m1" },
+            { chaId: "c", messageIds: ["m1"] },
+        ]) {
+            send(notice("translating", payload));
+        }
+        await pump();
+        expect(deps.followTranslations).toHaveBeenCalledTimes(1);
     });
 
     it("drops a cancelled queued question, closes only the alert the showing one owns, releases the queue, and never sends its late result", async () => {

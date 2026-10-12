@@ -180,6 +180,7 @@ export function createServerContext(options: {
         transformers,
         mcp: mcpRegistry,
         lock: generationLock,
+        translations: translationRunner,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);

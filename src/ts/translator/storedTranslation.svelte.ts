@@ -34,8 +34,12 @@ import sendSound from "../../etc/send.mp3";
  * refresh brings up to date, and the request stays pending until it does (bounded).
  */
 
-/** How long the tab waits for an answer: the server's 10-minute deadline, plus transport. */
-const ANSWER_TIMEOUT_MS = 11 * 60 * 1000;
+/**
+ * How long the tab waits for an answer: the server's 10-minute deadline twice (a request for a text
+ * that a run in flight no longer matches waits for that run, then translates; slice 2.3), plus
+ * transport.
+ */
+const ANSWER_TIMEOUT_MS = 21 * 60 * 1000;
 /** How long a request stays pending after its answer, waiting for the chat refresh to bring the translation. */
 const SYNC_WAIT_MS = 15 * 1000;
 const SYNC_POLL_MS = 100;
@@ -45,6 +49,17 @@ const messageKey = (ref: ChatRef, messageId: string) => `${ref.chaId}\u0000${ref
 /** Messages with a request running in this tab (reactive: a remounted row still shows the loading state). */
 const pending = new SvelteSet<string>();
 const inFlight = new Map<string, Promise<boolean>>();
+/**
+ * Messages whose newer hand-off arrived while this tab's request was running (a Continue's, slice
+ * 2.3): that request may have joined the older run, so another follows once it settles.
+ */
+const followAgain = new Map<string, StoredTranslationFollow>();
+
+/** A request that follows a server hand-off (slice 2.3), and how it reports a failure. */
+export interface StoredTranslationFollow {
+    /** Shows a failure (the job channel queues it behind any question it shows). */
+    report(message: string): void;
+}
 /** The rows' explicit show/hide choices by message (reactive; kept across a row's remount). */
 const choices = new SvelteMap<string, boolean>();
 
@@ -90,22 +105,41 @@ export function setStoredTranslationChoice(ref: ChatRef, messageId: string, show
  * stored). One request per message at a time in this tab: a second call returns the running one.
  * Alerts on failure; resolves true when the translation is stored (and held, unless the refresh is
  * still late).
+ *
+ * `follow`: the server already runs it (a send's hand-off, slice 2.3). The request joins that run
+ * (an unforced request for a message in flight), so the tab gets its result or failure, reported
+ * through `follow.report`. It skips the save barrier and the stability checks (the server translates
+ * its own copy, which the job just wrote; the next send's job may already block a save) and says
+ * nothing when the text changed. If the run ended before the request arrives, the answer is the
+ * stored translation (`fresh`), or the request starts a run of its own (a failed run is tried once
+ * more). A follow while a request for the message runs follows again once it settles (it may have
+ * joined an older text's run); the message stays pending meanwhile.
  */
 export function requestStoredTranslation(
     ref: ChatRef,
     messageId: string,
-    options: { force: boolean },
+    options: { force: boolean; follow?: StoredTranslationFollow },
 ): Promise<boolean> {
     const key = messageKey(ref, messageId);
     const running = inFlight.get(key);
     if (running) {
+        if (options.follow) {
+            followAgain.set(key, options.follow);
+        }
         return running;
     }
     const target = { chaId: ref.chaId, chatId: ref.chatId };
     pending.add(key);
-    const work = runRequest(target, messageId, options.force).finally(() => {
+    const work = runRequest(target, messageId, options.force, options.follow ?? null).finally(() => {
         inFlight.delete(key);
-        pending.delete(key);
+        const again = followAgain.get(key);
+        followAgain.delete(key);
+        if (again) {
+            // Takes the message's place at once, so it stays pending.
+            void requestStoredTranslation(target, messageId, { force: false, follow: again });
+        } else {
+            pending.delete(key);
+        }
     });
     inFlight.set(key, work);
     return work;
@@ -114,43 +148,53 @@ export function requestStoredTranslation(
 const sameIds = (a: ReturnType<typeof chatDisplayIds>, b: ReturnType<typeof chatDisplayIds>) =>
     a.presetId === b.presetId && a.modelPresetId === b.modelPresetId && a.personaId === b.personaId;
 
-async function runRequest(ref: ChatRef, messageId: string, force: boolean): Promise<boolean> {
+async function runRequest(
+    ref: ChatRef,
+    messageId: string,
+    force: boolean,
+    follow: StoredTranslationFollow | null,
+): Promise<boolean> {
+    const report = follow ? (message: string) => follow.report(message) : alertError;
     // Captured before any await: the chat's display ids and the text the user asked to translate.
     const ids = chatDisplayIds(ref);
     if (!ids.presetId || !ids.modelPresetId || !ids.personaId) {
-        alertError(language.translationNoContext);
+        if (!follow) {
+            alertError(language.translationNoContext);
+        }
         return false;
     }
-    const message = heldMessage(ref, messageId);
-    if (!message) {
-        return false;
-    }
-    const sourceHash = translationSourceHash(message.data);
+    if (!follow) {
+        const message = heldMessage(ref, messageId);
+        if (!message) {
+            return false;
+        }
+        const sourceHash = translationSourceHash(message.data);
 
-    // The server translates its own copy: save this tab's changes first (the message may be new, or
-    // its text edited). This saves every pending change, not only this chat's.
-    try {
-        const { discarded } = await flushResources();
-        if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`)) {
+        // The server translates its own copy: save this tab's changes first (the message may be new,
+        // or its text edited). This saves every pending change, not only this chat's.
+        try {
+            const { discarded } = await flushResources();
+            if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`)) {
+                alertError(language.translationSourceChanged);
+                return false;
+            }
+        } catch (error) {
+            alertError(
+                error instanceof GenerationBlockedError
+                    ? language.chatGenerating
+                    : `${language.translationFailed}: ${error instanceof Error ? error.message : error}`,
+            );
+            return false;
+        }
+        const saved = heldMessage(ref, messageId);
+        if (heldChatRevision(ref) === null || !saved || translationSourceHash(saved.data) !== sourceHash) {
             alertError(language.translationSourceChanged);
             return false;
         }
-    } catch (error) {
-        alertError(
-            error instanceof GenerationBlockedError
-                ? language.chatGenerating
-                : `${language.translationFailed}: ${error instanceof Error ? error.message : error}`,
-        );
-        return false;
-    }
-    const saved = heldMessage(ref, messageId);
-    if (heldChatRevision(ref) === null || !saved || translationSourceHash(saved.data) !== sourceHash) {
-        alertError(language.translationSourceChanged);
-        return false;
-    }
-    if (!sameIds(ids, chatDisplayIds(ref))) {
-        alertError(language.chatBinding.mismatch);
-        return false;
+        if (!sameIds(ids, chatDisplayIds(ref))) {
+            alertError(language.chatBinding.mismatch);
+            return false;
+        }
     }
 
     const body: TranslateMessageBody = {
@@ -200,7 +244,7 @@ async function runRequest(ref: ChatRef, messageId: string, force: boolean): Prom
         exchange.catch(() => {});
         ({ sent: response, parsed: answer } = await Promise.race([exchange, expired]));
     } catch (error) {
-        alertError(`${language.translationFailed}: ${error instanceof Error ? error.message : error}`);
+        report(`${language.translationFailed}: ${error instanceof Error ? error.message : error}`);
         return false;
     } finally {
         clearTimeout(timer);
@@ -217,20 +261,22 @@ async function runRequest(ref: ChatRef, messageId: string, force: boolean): Prom
     if (!response.ok) {
         const error = typeof refusal.error === "string" ? refusal.error : "";
         if (response.status === 409 && error === "generating") {
-            alertError(language.chatGenerating);
+            report(language.chatGenerating);
         } else if (response.status === 409 && error === "chatBindingMismatch") {
-            alertError(language.chatBinding.mismatch);
+            report(language.chatBinding.mismatch);
         } else {
-            alertError(`${language.translationFailed}: ${error || `HTTP ${response.status}`}`);
+            report(`${language.translationFailed}: ${error || `HTTP ${response.status}`}`);
         }
         return false;
     }
     if (!isTranslateMessageAnswer(answer)) {
-        alertError(`${language.translationFailed}: an unexpected answer`);
+        report(`${language.translationFailed}: an unexpected answer`);
         return false;
     }
     if (answer.outcome === "ignored") {
-        alertError(language.translationSourceChanged);
+        if (!follow) {
+            report(language.translationSourceChanged);
+        }
         return false;
     }
     if (answer.outcome === "applied" && settings.memoryTranslateMedia.playMessageOnTranslateEnd) {
@@ -238,6 +284,16 @@ async function runRequest(ref: ChatRef, messageId: string, force: boolean): Prom
     }
     await heldCatchesUp(ref, messageId, answer.translation);
     return true;
+}
+
+/**
+ * Follows the server's translations of a send's messages (the job's `translating` notice, slice 2.3):
+ * each shows the loading state until its stored translation arrives or its run fails (alerted).
+ */
+export function followStoredTranslations(ref: ChatRef, messageIds: readonly string[], follow: StoredTranslationFollow) {
+    for (const messageId of messageIds) {
+        void requestStoredTranslation(ref, messageId, { force: false, follow });
+    }
 }
 
 /**

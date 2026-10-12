@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5, 2.1, and 2.2 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5 and 2.1–2.3 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -418,6 +418,45 @@ As built (2.1 and 2.2 together):
 
 Test: an Echo send with auto-translate stores a translation on the reply, and
 a second send starts while it runs.
+
+As built:
+
+- `runSend` collects every reply its speakers and rounds wrote (an
+  auto-continue extends one; a resend or a group member adds one) and the
+  user message of its input stage. Before `done` (each final write already
+  released its lock), unless the job was aborted, it calls the runner's
+  `handOff` with the job's context ids, replies first. The runner reads the
+  current settings and chat (not the job's scope) and decides; every message
+  gets an unforced `translate`, detached from the job.
+- The `translating` notice lists the ids with a run started or in flight. A
+  refused one (lock, binding, capacity) or a fresh stored translation is
+  left out, and nothing is retried: auto-translation is best effort.
+- The tab follows each id with an unforced POST (`follow`: no save barrier,
+  no stability checks, silent on `ignored`) that joins the run, so it gets
+  the run's own result or failure. A run that ended before the POST arrives
+  answers `fresh`, or the POST starts a new run (a failed run is tried once
+  more). Its failures are queued in the job channel's alert queue, so they
+  never replace the next send's question. A hand-off that arrives while the
+  tab's request for that message runs is followed again once it settles.
+  The tab waits 21 minutes (two server deadlines, for the wait below). Other
+  tabs and a tab disconnected at the notice show no loading state; they get
+  the translation through the chat refresh.
+- A request for a message whose text is no longer the one its run in flight
+  translates (a Continue extended the reply) waits for that run and then
+  translates the current text, so a Continue's hand-off is not lost.
+- A cached reroll alternative chosen in the tab is not a send: it is not
+  translated automatically.
+- The panel's "bot replies only" row shows with the stored translation and
+  auto-translate on. It limits the automatic requests only: a user message's
+  fresh translation still shows by the chat's flag.
+- Tests: `server/src/tests/promptRunner.test.ts` (the send's hand-off end to
+  end with the translation requests held: the notice before `done`, a second
+  send meanwhile, continue, group, bot-only, off, abort),
+  `server/src/tests/translate.test.ts` (`handOff` and the stale-source chain),
+  `src/ts/translator/storedTranslation.test.ts` (the follow mode, the
+  follow-again, the 21-minute bound), `src/ts/network/jobChannel.test.ts`
+  (the notice and the queued failure), and
+  `src/lib/SideBars/ChatTranslationPanel.test.ts` (the bot-only row).
 
 2.4 **Bilingual display.**
 

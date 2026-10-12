@@ -4,8 +4,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 9: a send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
@@ -30,6 +31,8 @@ const SLOW = 60_000;
 // The provider: `mode` picks the next answer; `onRequest` runs when a request arrives.
 let mode: { chunks: string[]; delayMs: number; status?: number } = { chunks: ["Hel", "lo"], delayMs: 0 };
 let onRequest: (() => Promise<void>) | null = null;
+/** The text a non-streaming request (a translation's) gets instead of `mode.chunks` while set. */
+let plainAnswer: ((body: any) => string) | null = null;
 /** Resolves once the current job's owner socket is open (set per job by `job()`). */
 let socketOpen: Promise<void> = Promise.resolve();
 const bodies: any[] = [];
@@ -53,7 +56,8 @@ const provider = http.createServer(async (req, res) => {
     }
     if (!body.stream) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: mode.chunks.join("") } }] }));
+        const content = plainAnswer ? plainAnswer(body) : mode.chunks.join("");
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -97,14 +101,15 @@ async function api(url: string, init: RequestInit = {}) {
 }
 const single = async (kind: string) => (await api(`/api/resources/${kind}/main`)).body;
 const batch = (body: unknown) => api("/api/resources/batch", { method: "POST", body: JSON.stringify(body) });
-/** Patches the `providers` section (streaming, `inlayErrorResponse`, `presetChain`). */
-async function patchProviders(patch: Record<string, unknown>) {
-    const current = await single("providers");
+/** Patches a settings section (`providers`: streaming, `inlayErrorResponse`, `presetChain`; `memoryTranslateMedia`). */
+async function patchSection(kind: string, patch: Record<string, unknown>) {
+    const current = await single(kind);
     const res = await batch({
-        ops: [{ kind: "providers", id: "main", baseRevision: current.revision, data: { ...current.data, ...patch } }],
+        ops: [{ kind, id: "main", baseRevision: current.revision, data: { ...current.data, ...patch } }],
     });
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
 }
+const patchProviders = (patch: Record<string, unknown>) => patchSection("providers", patch);
 /** Patches one prompt preset (`presets`), model preset (`modelPresets`), or model profile by id. */
 async function patchPreset(
     kind: "presets" | "modelPresets" | "modelProfiles",
@@ -163,6 +168,8 @@ async function seedCharacter(options: {
     messages?: Record<string, unknown>[];
     triggerscript?: unknown[];
     customscript?: unknown[];
+    /** More fields of the chat (its translation settings). */
+    chat?: Record<string, unknown>;
 }) {
     const chaId = `send-${++seeded}`;
     const res = await batch({
@@ -208,6 +215,7 @@ async function seedCharacter(options: {
                             promptPresetId: presetId,
                             bindedPersona: personaId,
                             message: options.messages ?? [],
+                            ...(options.chat ?? {}),
                         },
                     },
                 ],
@@ -824,4 +832,204 @@ describe("the route", () => {
             expect(bad.body.error).toMatch(/userMessageId must be an id/);
         }
     });
+});
+
+describe("automatic translation of a send's messages (docs/plan/translation.md slice 2.3)", () => {
+    /** Polls the chat until `condition` holds on it. */
+    async function chatUntil(chaId: string, condition: (chat: any) => boolean, timeoutMs = 10_000) {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+            const chat = await readChat(chaId);
+            if (condition(chat.data)) {
+                return chat;
+            }
+            if (Date.now() > deadline) {
+                throw new Error(`chat ${chaId}: ${JSON.stringify(chat.data.message)}`);
+            }
+            await sleep(25);
+        }
+    }
+    const translations = (chat: { data: any }) =>
+        chat.data.message.map((m: any) => [m.chatId, m.translation?.text ?? null]);
+    const translating = (events: any[]) => notices(events, "translating").map((event) => event.payload);
+    /** A deferred hold for the translation requests (the non-streaming ones); the sends run on. */
+    function holdTranslations() {
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        onRequest = async () => {
+            if (!bodies.at(-1).stream) {
+                await released;
+            }
+        };
+        return release;
+    }
+
+    beforeAll(async () => {
+        await patchSection("memoryTranslateMedia", {
+            translator: "ko",
+            translatorType: "llm",
+            llmTranslationTarget: "message",
+        });
+        plainAnswer = (body) => `번역: ${body.messages.at(-1).content}`;
+    });
+    afterAll(async () => {
+        onRequest = null;
+        plainAnswer = null;
+        await patchSection("memoryTranslateMedia", { translator: "", translatorType: "google" });
+    });
+    afterEach(() => {
+        onRequest = null;
+    });
+
+    it(
+        "hands the reply and the user message over before done and tells the tab, without waiting: a second send runs while the translations are held, then they land",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", chat: { autoTranslate: true } });
+            mode = { chunks: ["Reply one."], delayMs: 0 };
+            const before = bodies.length;
+            const release = holdTranslations();
+            try {
+                const { events, terminal } = await job("send", chaId, { input: "hi you", userMessageId: "user-1" });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                const chat = await readChat(chaId);
+                const replyId = chat.data.message[1].chatId;
+                // The notice names the replies first, then the user message, and precedes `done`.
+                expect(translating(events)).toEqual([{ chaId, chatId: "k", messageIds: [replyId, "user-1"] }]);
+                expect(
+                    events.findIndex((event) => event.type === "notice" && event.kind === "translating"),
+                ).toBeLessThan(events.findIndex((event) => event.type === "done"));
+                expect(translations(chat)).toEqual([
+                    ["user-1", null],
+                    [replyId, null],
+                ]);
+                // The two translation requests reach the provider (non-streaming, the source text in each) and are held.
+                await waitFor(() => bodies.length === before + 3, 10_000);
+                const held = bodies.slice(before + 1);
+                expect(held.map((body) => body.stream ?? false)).toEqual([false, false]);
+                expect(held.map((body) => body.messages.at(-1).content).sort()).toEqual(["Reply one.", "hello you"]);
+                expect(server.context.translationRunner.runningCount()).toBe(2);
+
+                // The send did not wait: another send on the same chat runs to its end meanwhile.
+                mode = { chunks: ["Reply two."], delayMs: 0 };
+                const second = await job("send", chaId, { input: "again", userMessageId: "user-2" });
+                expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+                expect(server.context.translationRunner.runningCount()).toBe(4);
+                const secondReply = (second.terminal as any).messageId as string;
+                expect(translating(second.events)).toEqual([
+                    { chaId, chatId: "k", messageIds: [secondReply, "user-2"] },
+                ]);
+                expect(translations(await readChat(chaId))).toEqual([
+                    ["user-1", null],
+                    [replyId, null],
+                    ["user-2", null],
+                    [secondReply, null],
+                ]);
+
+                release();
+                const done = await chatUntil(chaId, (data) => data.message.every((m: any) => m.translation));
+                expect(translations(done)).toEqual([
+                    ["user-1", "번역: hello you"],
+                    [replyId, "번역: Reply one."],
+                    ["user-2", "번역: again"],
+                    [secondReply, "번역: Reply two."],
+                ]);
+                expect(done.data.message[1].translation).toMatchObject({
+                    sourceHash: translationSourceHash("Reply one."),
+                    targetLanguage: "ko",
+                });
+                await waitFor(() => server.context.translationRunner.runningCount() === 0);
+                // A reply with a fresh translation is not handed over again (the user message's text is new).
+                mode = { chunks: ["Reply three."], delayMs: 0 };
+                const third = await job("continue", chaId);
+                expect(third.terminal?.type).toBe("done");
+                expect(translating(third.events)).toEqual([{ chaId, chatId: "k", messageIds: [secondReply] }]);
+                const continued = await chatUntil(
+                    chaId,
+                    (data) => data.message.at(-1).translation?.text !== "번역: Reply two.",
+                );
+                expect(continued.data.message.at(-1).translation.text).toBe("번역: Reply two.Reply three.");
+            } finally {
+                release();
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a group send hands every member's reply, then the user message it found in the chat; bot-only skips the user message; a chat that does not auto-translate hands nothing",
+        async () => {
+            const bob = await seedCharacter({ name: "Bob" });
+            const cid = await seedCharacter({ name: "Cid" });
+            const grp = await seedCharacter({
+                name: "Grp",
+                type: "group",
+                members: [bob, cid],
+                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+                chat: { autoTranslate: true },
+            });
+            mode = { chunks: ["Reply."], delayMs: 0 };
+            const { events, terminal } = await job("group", grp, { input: "hello all", userMessageId: "u0" });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            const chat = await readChat(grp);
+            const [, first, second] = chat.data.message.map((m: any) => m.chatId);
+            expect(translating(events)).toEqual([{ chaId: grp, chatId: "k", messageIds: [first, second, "u0"] }]);
+            await chatUntil(grp, (data) => data.message.every((m: any) => m.translation));
+            expect(translations(await readChat(grp))).toEqual([
+                ["u0", "번역: hello all"],
+                [first, "번역: Reply."],
+                [second, "번역: Reply."],
+            ]);
+
+            const botOnly = await seedCharacter({ name: "Ann", chat: { autoTranslate: true, translateBotOnly: true } });
+            const only = await job("send", botOnly, { input: "hi", userMessageId: "u1" });
+            expect(only.terminal?.type).toBe("done");
+            const onlyReply = (only.terminal as any).messageId as string;
+            expect(translating(only.events)).toEqual([{ chaId: botOnly, chatId: "k", messageIds: [onlyReply] }]);
+            await chatUntil(botOnly, (data) => data.message[1].translation);
+            expect(translations(await readChat(botOnly))).toEqual([
+                ["u1", null],
+                [onlyReply, "번역: Reply."],
+            ]);
+
+            const plain = await seedCharacter({ name: "Ann" });
+            const before = bodies.length;
+            const off = await job("send", plain, { input: "hi", userMessageId: "u1" });
+            expect(off.terminal?.type).toBe("done");
+            expect(translating(off.events)).toEqual([]);
+            await sleep(200);
+            expect(bodies.length).toBe(before + 1);
+            expect(translations(await readChat(plain))).toEqual([
+                ["u1", null],
+                [(off.terminal as any).messageId, null],
+            ]);
+            await waitFor(() => server.context.translationRunner.runningCount() === 0);
+        },
+        SLOW,
+    );
+
+    it(
+        "an aborted send hands nothing over: no notice, and neither its partial reply nor its user message is translated",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", chat: { autoTranslate: true } });
+            mode = { chunks: ["First.", " Never."], delayMs: 20_000 };
+            const before = bodies.length;
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                { input: "hi", userMessageId: "u1" },
+                { abortAfterChunks: 1 },
+            );
+            expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
+            expect(translating(events)).toEqual([]);
+            await sleep(200);
+            expect(bodies.length).toBe(before + 1);
+            expect(server.context.translationRunner.runningCount()).toBe(0);
+            expect(translations(await readChat(chaId))).toEqual([
+                ["u1", null],
+                [expect.any(String), null],
+            ]);
+            expect(texts(await readChat(chaId))).toEqual(["user:hello", "char:First."]);
+        },
+        SLOW,
+    );
 });

@@ -29,6 +29,7 @@ import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
+import type { TranslationRunner } from "../translation/runner.ts";
 
 export type GenerationRunnerDeps = {
     store: ResourceStore;
@@ -48,6 +49,8 @@ export type GenerationRunnerDeps = {
     lock: MessageGuard;
     /** The random source of `presetChain` and the group order (default `Math.random`). */
     random?: () => number;
+    /** The translation runner a send hands its messages to (slice 2.3 of `docs/plan/translation.md`). */
+    translations?: Pick<TranslationRunner, "handOff">;
 };
 
 /** Rejects with the signal's reason when it aborts first. */

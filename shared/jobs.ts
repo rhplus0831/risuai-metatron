@@ -231,6 +231,11 @@ export type GenerationNotice =
     | { kind: "notification"; payload: { chaId: string; body: string } }
     /** Opens a web page in the tab (an MCP server's OAuth authorization page, slice 12); `http(s)` only. */
     | { kind: "openURL"; payload: { url: string } }
+    /**
+     * The send's messages handed to the translation runner (`docs/plan/translation.md` slice 2.3): the
+     * tab shows them loading and follows their runs.
+     */
+    | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } }
     /** The secret-free request projection (`request-layer-and-llm-secrets`). */
     | { kind: "requestLog"; payload: unknown };
 

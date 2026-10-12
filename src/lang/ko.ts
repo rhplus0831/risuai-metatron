@@ -1331,6 +1331,7 @@ export const languageKorean = {
         translatorPreset: "번역 프리셋",
         global: (name: string) => `전역 (${name})`,
         goneUsingGlobal: "삭제됨, 전역 사용",
+        botOnly: "봇 답변만 자동 번역",
     },
     editTranslation: "번역 수정",
     editTranslationSave: "번역 저장",

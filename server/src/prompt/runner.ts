@@ -314,6 +314,8 @@ async function runSend(
         return applied.chats[0]?.checkpoints ?? [];
     };
 
+    // The user message of this send (appended here, or already in the chat): auto-translated with the replies.
+    let sentUserMessageId: string | null = null;
     // The input stage, on the admitted preset.
     if (INPUT_KINDS.has(job.kind) && job.context.input !== "") {
         const userMessageId = job.context.userMessageId ?? randomUUID();
@@ -357,6 +359,7 @@ async function runSend(
             ]);
             job.emit({ type: "accepted", jobId: job.id, userMessageId, revision: scope.chatRevision, text: "" });
         }
+        sentUserMessageId = userMessageId;
     }
 
     if (chain && "missing" in chain) {
@@ -402,6 +405,8 @@ async function runSend(
 
     const baseRequest = scope.request;
     let last: { messageId: string; alternatives?: string[] } | null = null;
+    /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
+    const replyIds = new Set<string>();
     let stopped = false;
     speakers: for (const speakerId of speakers) {
         // One speaker's turn: its send, then the rounds it asks for (an auto-continue of its reply, a
@@ -440,6 +445,7 @@ async function runSend(
                 // The reply is gone: nothing of this turn to continue.
                 break;
             }
+            replyIds.add(result.messageId);
             // The reply of the last round is the one the job reports, with that round's alternatives.
             last = {
                 messageId: result.messageId,
@@ -467,6 +473,7 @@ async function runSend(
     if (last && !scopeChat(scope)?.message.some((message) => message.chatId === last!.messageId)) {
         last = null;
     }
+    handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
     job.emit({
         type: "done",
         revision: store.chatRevision(characterId, chatId),
@@ -474,6 +481,35 @@ async function runSend(
         ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
     });
+}
+
+/**
+ * Automatic translation of a send's messages (`docs/plan/translation.md` slice 2.3): after the final
+ * writes (each released its message's lock) and before `done`, the messages go to the translation
+ * runner, which decides from the chat's settings whether to translate them and runs detached from the
+ * job (the next send is not blocked). The replies come first, so a runner near capacity takes them
+ * before the user message. The tab gets a `translating` notice for the ones handed over and follows
+ * them. An aborted job hands over nothing (its partial reply is not translated).
+ */
+function handOffTranslations(job: RunningJob, deps: GenerationRunnerDeps, messageIds: string[]) {
+    if (!deps.translations || job.signal.aborted || messageIds.length === 0) {
+        return;
+    }
+    const { characterId, chatId, presetId, modelPresetId, personaId } = job.context;
+    if (!presetId || !modelPresetId || !personaId) {
+        return;
+    }
+    let handed: string[];
+    try {
+        handed = deps.translations.handOff({ characterId, chatId, presetId, modelPresetId, personaId }, messageIds);
+    } catch (error) {
+        // A translation never fails the send it follows.
+        console.error("[translate] hand-off failed:", error instanceof Error ? error.name : typeof error);
+        return;
+    }
+    if (handed.length > 0) {
+        job.channel.notice({ kind: "translating", payload: { chaId: characterId, chatId, messageIds: handed } });
+    }
 }
 
 type SpeakerResult =

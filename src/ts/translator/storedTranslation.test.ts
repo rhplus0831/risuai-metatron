@@ -326,7 +326,7 @@ describe("requestStoredTranslation: the request and the wait", () => {
         expect(hoisted.alerts.error).not.toHaveBeenCalled();
     });
 
-    it("bounds the whole exchange at 11 minutes, authentication included, and a request authenticated after the deadline is not sent", async () => {
+    it("bounds the whole exchange at 21 minutes (two server deadlines: a request behind an older text's run waits for both), authentication included, and a request authenticated after the deadline is not sent", async () => {
         vi.useFakeTimers();
         const { stored } = await boot();
         let beforeDispatch: (() => void) | undefined;
@@ -335,7 +335,7 @@ describe("requestStoredTranslation: the request and the wait", () => {
             return new Promise<Response>(() => {});
         });
         const request = stored.requestStoredTranslation(ref, "a", { force: false });
-        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
         expect(beforeDispatch).toBeDefined();
         expect(() => beforeDispatch!()).not.toThrow();
@@ -407,6 +407,182 @@ describe("requestStoredTranslation: the answers", () => {
         expect(mismatches).toEqual(["e2"]);
         // No automatic retry anywhere.
         expect(fetchCalls).toHaveLength(cases.length);
+    });
+});
+
+describe("following a server hand-off (docs/plan/translation.md slice 2.3)", () => {
+    const follow = () => ({ report: vi.fn<(message: string) => void>() });
+
+    it("posts an unforced request per id at once, without the save barrier or the stability checks, and holds the row pending until the translation arrives; `ignored` and a missing context say nothing", async () => {
+        const { stored, held, hydrate } = await boot();
+        const flush = vi.fn(async () => ({ discarded: [] }));
+        hoisted.flush.run = flush;
+        const answers = new Map<string, ReturnType<typeof deferred<Response>>>();
+        answerWith(async (call) => {
+            const body = JSON.parse(call.init.body as string) as { messageId: string };
+            const entry = deferred<Response>();
+            answers.set(body.messageId, entry);
+            return entry.promise;
+        });
+        const reporter = follow();
+        stored.followStoredTranslations(ref, ["a", "b"], reporter);
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
+        expect(stored.isStoredTranslationPending(ref, "b")).toBe(true);
+        await vi.waitFor(() => expect(fetchCalls).toHaveLength(2));
+        expect(flush).not.toHaveBeenCalled();
+        expect(fetchCalls.map((call) => JSON.parse(call.init.body as string))).toEqual([
+            {
+                characterId: "c",
+                chatId: "k",
+                messageId: "a",
+                presetId: "p1",
+                modelPresetId: "m1",
+                personaId: "u1",
+                force: false,
+            },
+            {
+                characterId: "c",
+                chatId: "k",
+                messageId: "b",
+                presetId: "p1",
+                modelPresetId: "m1",
+                personaId: "u1",
+                force: false,
+            },
+        ]);
+
+        // The run's write lands through the chat refresh: pending until then, then shown.
+        const T = tr("ㄱ", "A", { translatedAt: 5 });
+        answers.get("a")!.resolve(json(200, { outcome: "applied", translation: T }));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
+        expect(hydrate("a", T)).toBe(true);
+        await vi.waitFor(() => expect(stored.isStoredTranslationPending(ref, "a")).toBe(false));
+        expect(stored.freshTranslation(held("a")!)).toEqual(T);
+        // The user edited the text meanwhile: the run's `ignored` is not a failure to report.
+        answers.get("b")!.resolve(json(200, { outcome: "ignored", translation: null }));
+        await vi.waitFor(() => expect(stored.isStoredTranslationPending(ref, "b")).toBe(false));
+        expect(reporter.report).not.toHaveBeenCalled();
+        expect(hoisted.alerts.error).not.toHaveBeenCalled();
+        expect(fetchCalls).toHaveLength(2);
+
+        // No complete display context: nothing sent, nothing said.
+        const { stored: bare } = await boot({ persona: false });
+        answerWith(async () => json(200, { outcome: "fresh", translation: T }));
+        bare.followStoredTranslations(ref, ["a"], reporter);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(bare.isStoredTranslationPending(ref, "a")).toBe(false);
+        expect(fetchCalls).toHaveLength(2);
+
+        // A text edited in the tab (not saved) stops a manual request; a follow still asks (the server
+        // translates its own copy) and takes the run's `ignored` quietly.
+        const edited = await boot();
+        edited.chat.setMessageText(ref, "a", "A edited in the tab");
+        answerWith(async () => json(200, { outcome: "ignored", translation: null }));
+        edited.stored.followStoredTranslations(ref, ["a"], reporter);
+        await vi.waitFor(() => expect(fetchCalls).toHaveLength(3));
+        expect(flush).not.toHaveBeenCalled();
+        expect(JSON.parse(fetchCalls[2].init.body as string)).toMatchObject({ messageId: "a", force: false });
+        await vi.waitFor(() => expect(edited.stored.isStoredTranslationPending(ref, "a")).toBe(false));
+        expect(reporter.report).not.toHaveBeenCalled();
+        expect(hoisted.alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("reports a failure through the follow (never the alert store directly): a refusal, a failed request, a bad answer; a manual request still alerts", async () => {
+        const { stored } = await boot();
+        const cases: { answer: () => Promise<Response>; report: string }[] = [
+            { answer: async () => json(409, { error: "generating" }), report: language.chatGenerating },
+            {
+                answer: async () => json(409, { error: "chatBindingMismatch" }),
+                report: language.chatBinding.mismatch,
+            },
+            {
+                answer: async () => json(502, { error: "The provider refused" }),
+                report: `${language.translationFailed}: The provider refused`,
+            },
+            {
+                answer: async () => json(200, { outcome: "done", translation: null }),
+                report: `${language.translationFailed}: an unexpected answer`,
+            },
+            {
+                answer: async () => {
+                    throw new Error("socket closed");
+                },
+                report: `${language.translationFailed}: socket closed`,
+            },
+        ];
+        for (const [index, entry] of cases.entries()) {
+            const reporter = follow();
+            answerWith(entry.answer);
+            await expect(
+                stored.requestStoredTranslation(ref, "a", { force: false, follow: reporter }),
+                `case ${index}`,
+            ).resolves.toBe(false);
+            expect(reporter.report.mock.calls, `case ${index}`).toEqual([[entry.report]]);
+            expect(stored.isStoredTranslationPending(ref, "a"), `case ${index}`).toBe(false);
+        }
+        expect(hoisted.alerts.error).not.toHaveBeenCalled();
+        // The 412 handler is shared and silent either way.
+        answerWith(async () => json(412, { error: "EpochMismatch", epoch: "e9" }));
+        const reporter = follow();
+        await expect(stored.requestStoredTranslation(ref, "a", { force: false, follow: reporter })).resolves.toBe(
+            false,
+        );
+        expect(reporter.report).not.toHaveBeenCalled();
+        // A manual request keeps alerting.
+        answerWith(async () => json(502, { error: "The provider refused" }));
+        await expect(stored.requestStoredTranslation(ref, "a", { force: true })).resolves.toBe(false);
+        expect(hoisted.alerts.error).toHaveBeenCalledWith(`${language.translationFailed}: The provider refused`);
+    });
+
+    it("a hand-off that arrives while a request for the message runs follows again once it settles (the row pending throughout), reporting through the newer follow; a plain second call does not", async () => {
+        const { stored, held, hydrate } = await boot();
+        const answers: ReturnType<typeof deferred<Response>>[] = [];
+        answerWith(async () => {
+            const entry = deferred<Response>();
+            answers.push(entry);
+            return entry.promise;
+        });
+        const first = follow();
+        const second = follow();
+        const running = stored.requestStoredTranslation(ref, "a", { force: false, follow: first });
+        await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
+        // A Continue's hand-off arrives: the running request may have joined the older text's run.
+        stored.followStoredTranslations(ref, ["a"], second);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(fetchCalls).toHaveLength(1);
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
+
+        // The first settles (the old run's write was ignored): another request follows at once.
+        answers[0].resolve(json(200, { outcome: "ignored", translation: null }));
+        await expect(running).resolves.toBe(false);
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
+        await vi.waitFor(() => expect(fetchCalls).toHaveLength(2));
+        expect(JSON.parse(fetchCalls[1].init.body as string)).toMatchObject({ messageId: "a", force: false });
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
+        // Its failure is the newer follow's to report.
+        answers[1].resolve(json(502, { error: "The provider refused" }));
+        await vi.waitFor(() => expect(stored.isStoredTranslationPending(ref, "a")).toBe(false));
+        expect(first.report).not.toHaveBeenCalled();
+        expect(second.report.mock.calls).toEqual([[`${language.translationFailed}: The provider refused`]]);
+        expect(fetchCalls).toHaveLength(2);
+
+        // The follow-again is consumed: a third request starts from nothing, and a plain second call
+        // (the toggle) while it runs joins it without arranging another.
+        const third = follow();
+        stored.followStoredTranslations(ref, ["a"], third);
+        await vi.waitFor(() => expect(fetchCalls).toHaveLength(3));
+        const joined = stored.requestStoredTranslation(ref, "a", { force: false });
+        const T = tr("ㄱ", "A", { translatedAt: 9 });
+        answers[2].resolve(json(200, { outcome: "applied", translation: T }));
+        hydrate("a", T);
+        await expect(joined).resolves.toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(fetchCalls).toHaveLength(3);
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(false);
+        expect(stored.freshTranslation(held("a")!)).toEqual(T);
+        expect(third.report).not.toHaveBeenCalled();
+        expect(hoisted.alerts.error).not.toHaveBeenCalled();
     });
 });
 

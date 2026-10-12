@@ -8,6 +8,7 @@
         globalTranslatorPreset,
         setChatTranslationSettings,
     } from "src/ts/translator/chatTranslation.svelte";
+    import { usesStoredTranslation } from "src/ts/translator/storedTranslation.svelte";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
@@ -17,11 +18,12 @@
     }
 
     /*
-     * A chat's translation settings (`docs/plan/translation.md` slices 2.1 and 2.2): auto-translate,
-     * and for the LLM translator the chat's translator preset ("Global" uses the global selection; a
-     * deleted one is shown as such and falls back to it). They are list fields, so the panel works
-     * while the chat loads; a chat that is not a member shows nothing. Bot-only translation (slice 2.3)
-     * and the bilingual display (slice 2.4) get their rows with those slices.
+     * A chat's translation settings (`docs/plan/translation.md` slices 2.1–2.3): auto-translate; with
+     * the stored translation (LLM on `"message"`) and auto-translate on, "bot replies only" (a send
+     * hands only its replies to the server, slice 2.3); and for the LLM translator the chat's
+     * translator preset ("Global" uses the global selection; a deleted one is shown as such and falls
+     * back to it). They are list fields, so the panel works while the chat loads; a chat that is not a
+     * member shows nothing. The bilingual display (slice 2.4) gets its row with that slice.
      */
     let { chatRef }: Props = $props();
     const member = $derived(chatEntry(chatRef) !== undefined);
@@ -45,6 +47,13 @@
             name={language.autoTranslation}
             onChange={(check) => write({ autoTranslate: check ? true : null })}
         />
+        {#if usesStoredTranslation() && current.autoTranslate}
+            <CheckInput
+                check={current.translateBotOnly}
+                name={language.chatTranslation.botOnly}
+                onChange={(check) => write({ translateBotOnly: check ? true : null })}
+            />
+        {/if}
         {#if settings.memoryTranslateMedia.translatorType === "llm"}
             <div class="flex items-center gap-2">
                 <span class="text-sm text-textcolor2 shrink-0">{language.chatTranslation.translatorPreset}</span>

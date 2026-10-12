@@ -218,7 +218,7 @@ function showNotice(notice: GenerationNotice): boolean {
 let progressJobId: string | null = null;
 
 /** The effects that never touch the alert store run at once. */
-function applyEffect(notice: GenerationNotice) {
+function applyEffect(jobId: string, notice: GenerationNotice) {
     switch (notice.kind) {
         case "reloadDisplay":
         case "updateGUI":
@@ -271,6 +271,26 @@ function applyEffect(notice: GenerationNotice) {
                     .catch(() => {});
             }
             return;
+        case "translating": {
+            // The send's messages the server translates (slice 2.3): shown loading while the tab follows
+            // them. A failure is queued like an `alertError` notice: it never replaces a question.
+            const { chaId, chatId, messageIds } = notice.payload;
+            const report = (message: string) =>
+                enqueueUi({ type: "notice", jobId, notice: { kind: "alertError", payload: { message } } });
+            if (
+                typeof chaId === "string" &&
+                typeof chatId === "string" &&
+                Array.isArray(messageIds) &&
+                messageIds.every((id) => typeof id === "string")
+            ) {
+                void import("../translator/storedTranslation.svelte")
+                    .then(({ followStoredTranslations }) =>
+                        followStoredTranslations({ chaId, chatId }, messageIds, { report }),
+                    )
+                    .catch(console.error);
+            }
+            return;
+        }
         case "requestLog":
             // Slice 7a defines the projection and where it is kept.
             console.debug("[Channel] request log", notice.payload);
@@ -946,7 +966,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
                         return;
                     }
                 }
-                applyEffect(notice);
+                applyEffect(jobId, notice);
             }
             return;
         }
