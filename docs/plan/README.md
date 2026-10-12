@@ -12,4 +12,4 @@ When no plans are active, keep the list below set to `None`.
 
 Active planning and implementation:
 
-- None
+- [Web Push](web-push.md): chat completion notifications through Web Push, with a per-character message
