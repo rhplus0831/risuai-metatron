@@ -125,7 +125,7 @@
             shownStored: boolean;
             pairing: { source: string; options: BilingualInterleaveOptions } | null;
         },
-    ) => {
+    ): Promise<string> => {
         // track 'translated' and 'retranslate' state
         translated;
         retranslate;
@@ -194,9 +194,10 @@
                     }, 10);
 
                     // State change of `translated` triggers markParsing again,
-                    // causing redundant translation attempts
+                    // causing redundant translation attempts. The empty body is what this
+                    // render shows until then (the template's prune takes a string).
                     if (lastTranslated !== translateText) {
-                        return;
+                        return "";
                     }
                 } catch (error) {
                     console.error(error);
