@@ -336,8 +336,9 @@
                 textareaRef.focus();
                 adjustHeight();
                 setTimeout(() => {
+                    // The editor may have closed since (`textareaRef` null).
                     const buttonsEl = textareaRef
-                        .closest(".partial-edit-modal")
+                        ?.closest(".partial-edit-modal")
                         ?.querySelector(".partial-edit-buttons");
                     if (buttonsEl) {
                         (buttonsEl as HTMLElement).scrollIntoView({ behavior: "instant", block: "nearest" });

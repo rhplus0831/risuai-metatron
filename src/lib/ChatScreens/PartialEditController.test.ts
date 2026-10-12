@@ -86,8 +86,11 @@ function render(props: {
     flushSync();
 
     const query = <T extends Element>(selector: string) => document.querySelector<T>(selector);
-    /** Hovers the block and clicks its edit (or delete) button; waits for the editor or the modal. */
-    const start = async (action: "edit" | "delete") => {
+    /**
+     * Hovers the block and clicks its edit (or delete) button; waits for the editor or the modal, then
+     * (unless `settle` is false) for the editor's focus and scroll timers.
+     */
+    const start = async (action: "edit" | "delete", { settle = true } = {}) => {
         document.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 5, bubbles: true }));
         await vi.waitFor(() => {
             const wrapper = query<HTMLElement>(".partial-edit-btn-wrapper");
@@ -100,10 +103,10 @@ function render(props: {
                 query(".partial-edit-modal") ?? query(".partial-delete-modal") ?? query(".partial-match-failed-modal"),
             ).not.toBeNull();
         });
-        // `proceedWithEdit` focuses the textarea 10 ms after opening and scrolls its buttons 200 ms
-        // later, reading `textareaRef` without a null check (pre-existing): an editor closed before
-        // that throws from the timer. The cases below close editors only after it has run.
-        await new Promise((resolve) => setTimeout(resolve, 230));
+        // `proceedWithEdit` focuses the textarea 10 ms after opening and scrolls its buttons 200 ms later.
+        if (settle) {
+            await new Promise((resolve) => setTimeout(resolve, 230));
+        }
     };
     const textarea = () => query<HTMLTextAreaElement>(".partial-edit-textarea");
     const type = (text: string) => {
@@ -251,6 +254,17 @@ describe("PartialEditController translation writes", () => {
             translationKey: "llm:abc:Hello world",
         });
         expect(ui.query(".partial-edit-modal")).toBeNull();
+    });
+
+    it("an editor closed before its scroll timer runs leaves the timer nothing to do (no error)", async () => {
+        const ui = render({ translatedView: false });
+        await ui.start("edit", { settle: false });
+        ui.cancel();
+        expect(ui.query(".partial-edit-modal")).toBeNull();
+        // The 10 ms focus timer saw the editor; its 200 ms scroll timer runs after the editor closed.
+        // An error thrown there fails the run as an unhandled error.
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        expect(ui.saved).toEqual([]);
     });
 
     it("an original edit dispatches `save` on the original and never calls the translation callback", async () => {
