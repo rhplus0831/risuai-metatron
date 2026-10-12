@@ -18,7 +18,7 @@ vi.mock("../parser/parser.svelte", () => ({
 
 import { activePreset } from "../storage/settingsViews.svelte";
 import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
-import { applyEdittransRegex } from "./translator";
+import { applyEdittransRegex, applyEdittransToStoredTranslation } from "./translator";
 
 // A fixture installed into the records, since the translator reads the preset's scripts through the
 // record views (Phase 6 slice 7): its root `presetRegex` becomes the one preset's `regex`, which a
@@ -139,5 +139,31 @@ describe("applyEdittransRegex", () => {
     it("returns the text untouched for an empty charArg", () => {
         activePreset.regex = [script({ in: "hello", out: "bye" })];
         expect(applyEdittransRegex("hello", "", alwaysExistChar)).toBe("hello");
+    });
+});
+
+// `docs/plan/translation.md` slice 1.4: a shown stored translation takes the `edittrans` scripts
+// before Markdown, as the `translateBeforeHTMLFormatting` rendered path applies them to its translated
+// text, with the same character resolution (`translateHTML`'s `alwaysExistChar`).
+describe("applyEdittransToStoredTranslation", () => {
+    it("applies the preset's edittrans scripts to the stored translation with the character argument as the always-existing character", () => {
+        activePreset.regex = [
+            script({ in: "world", out: "there" }),
+            script({ in: "hello", out: "bye", type: "editdisplay" }),
+        ];
+        expect(applyEdittransToStoredTranslation("hello world", alwaysExistChar as never, 3, null)).toBe("hello there");
+    });
+
+    it("forwards the chat id to the parser for message scoped syntaxes", () => {
+        activePreset.regex = [script({ in: "{{char}}", out: "Seia", ableFlag: true, flag: "g<cbs>" })];
+        expect(applyEdittransToStoredTranslation("Risu said hi", alwaysExistChar as never, 9, null)).toBe(
+            "Seia said hi",
+        );
+        expect(parserCalls).toEqual([{ data: "{{char}}", chatID: 9 }]);
+    });
+
+    it("returns the text untouched for an empty charArg (a row without a character)", () => {
+        activePreset.regex = [script({ in: "hello", out: "bye" })];
+        expect(applyEdittransToStoredTranslation("hello", "", 0, null)).toBe("hello");
     });
 });

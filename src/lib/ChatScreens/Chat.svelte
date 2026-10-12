@@ -32,6 +32,7 @@
         UserIcon,
         Volume2Icon,
         Scissors,
+        XIcon,
     } from "@lucide/svelte";
     import { rerenderMessage } from "src/ts/parser/transformClient";
     import {
@@ -95,6 +96,18 @@
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
     import { llmTranslationCacheKey, readLLMCacheEntry, writeLLMCacheEntry } from "../../ts/translator/translator";
+    import {
+        beginStoredTranslationEdit,
+        freshTranslation,
+        heldMessage,
+        isStoredTranslationPending,
+        requestStoredTranslation,
+        saveStoredTranslationEdit,
+        setStoredTranslationChoice,
+        storedTranslationChoice,
+        type StoredTranslationEdit,
+        usesStoredTranslation,
+    } from "../../ts/translator/storedTranslation.svelte";
 
     let translating = $state(false);
     let editMode = $state(false);
@@ -103,7 +116,9 @@
     let editTranslationMode = $state(false);
     let loadingTranslationEdit = $state(false);
     let editTranslationText = $state("");
-    let editTranslationKey: string | null = null;
+    /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
+    let editTranslationTarget: { kind: "cache"; key: string } | { kind: "stored"; edit: StoredTranslationEdit } | null =
+        null;
     let chatBodyRevision = $state(0);
     /** Whether this message was locked when last seen (the server transform skips a locked message). */
     let wasLocked = false;
@@ -177,7 +192,35 @@
      */
     let locked = $derived(isMessageLocked(displayedChat, messageId));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
-    let translationEditControlDisabled = $derived(editMode || loadingTranslationEdit);
+
+    // The stored translation (`docs/plan/translation.md` slice 1.4): the LLM translator on
+    // `llmTranslationTarget: "message"`, for a row of a stored message. Rows without a message id (the
+    // greeting, bookmark previews, the welcome screen) keep the rendered path. Every read below is
+    // tracked: the held chats are deep state, so a refresh that brings a translation re-derives it
+    // without remounting the row.
+    let storedPath = $derived(usesStoredTranslation() && !!messageId && displayedChat !== null);
+    let storedMessage = $derived(
+        storedPath && displayedChat && messageId ? heldMessage(displayedChat, messageId) : undefined,
+    );
+    let storedFresh = $derived(storedMessage ? freshTranslation(storedMessage) : null);
+    /** The row asks for the translation: its choice (kept across a remount), else the global `autoTranslate`. */
+    let storedWanted = $derived(
+        storedPath && displayedChat && messageId
+            ? (storedTranslationChoice(displayedChat, messageId) ?? settings.memoryTranslateMedia.autoTranslate)
+            : false,
+    );
+    let storedPending = $derived(
+        storedPath && displayedChat && messageId ? isStoredTranslationPending(displayedChat, messageId) : false,
+    );
+    /** The stored translation is what the row shows. */
+    let storedShown = $derived(storedWanted && storedFresh !== null);
+    /** The translation view is on: shown, or asked for and being requested (the toggle's highlight). */
+    let translationViewOn = $derived(storedPath ? storedShown || (storedWanted && storedPending) : translated);
+    let translationEditControlDisabled = $derived(
+        editMode ||
+            loadingTranslationEdit ||
+            (storedPath && !editTranslationMode && (storedFresh === null || storedPending)),
+    );
 
     export function updateStreamingDisplay(state: {
         isOptimizedStreamingMessage: boolean;
@@ -301,12 +344,78 @@
 
     function toggleTranslation() {
         if (translationViewControlsDisabled) return;
+        if (storedPath) {
+            toggleStoredTranslation();
+            return;
+        }
         translated = !translated;
     }
 
-    function requestRetranslation() {
+    /**
+     * The stored path's toggle: hides the translation when it is on; otherwise shows it, and asks the
+     * server for one when the message has no fresh translation and none is being requested.
+     */
+    function toggleStoredTranslation() {
+        const ref = displayedChat;
+        const id = messageId;
+        if (!ref || !id) return;
+        if (translationViewOn) {
+            setStoredTranslationChoice(ref, id, false);
+            return;
+        }
+        setStoredTranslationChoice(ref, id, true);
+        if (storedFresh === null && !storedPending) {
+            if (isMessageLocked(ref, id)) {
+                alertError(language.chatGenerating);
+                return;
+            }
+            void requestStoredTranslation(ref, id, { force: false });
+        }
+    }
+
+    async function requestRetranslation() {
         if (translationViewControlsDisabled) return;
-        retranslate = true;
+        if (!storedPath) {
+            retranslate = true;
+            return;
+        }
+        // The message as the click found it (the selected chat can change during the dialog).
+        const ref = displayedChat ? { ...displayedChat } : null;
+        const id = messageId;
+        if (!ref || !id || isStoredTranslationPending(ref, id)) return;
+        if (!(await alertConfirm(language.retranslateConfirm))) return;
+        if (!heldMessage(ref, id)) return;
+        if (isMessageLocked(ref, id)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        setStoredTranslationChoice(ref, id, true);
+        void requestStoredTranslation(ref, id, { force: true });
+    }
+
+    /** The partial editor's open stored-translation edits, by the key its context handed out. */
+    const storedPartialEdits = new Map<string, StoredTranslationEdit>();
+    let storedPartialEditSeq = 0;
+
+    /**
+     * Writes the partial editor's translation edit: a stored edit through its captured session, a
+     * rendered one to its cache key. False (the editor keeps the draft) when it was not taken.
+     */
+    async function savePartialTranslation(newData: string, key: string): Promise<boolean> {
+        const edit = storedPartialEdits.get(key);
+        if (edit) {
+            if (!saveStoredTranslationEdit(edit, newData)) {
+                return false;
+            }
+            storedPartialEdits.delete(key);
+            return true;
+        }
+        if (key.startsWith("stored:")) {
+            alertError(language.translationEditStale);
+            return false;
+        }
+        await updateTranslationCache(key, newData);
+        return true;
     }
 
     async function handlePartialEditSave(
@@ -317,7 +426,7 @@
         if (e.detail.target === "translation") {
             if (!e.detail.translationKey) return;
 
-            await updateTranslationCache(e.detail.translationKey, e.detail.newData);
+            await savePartialTranslation(e.detail.newData, e.detail.translationKey);
             return;
         }
 
@@ -339,6 +448,21 @@
     }
 
     async function getTranslationPartialEditContext() {
+        if (storedPath) {
+            // The stored translation as shown; its edit session is captured now (the chat, the
+            // message, the source hash, and the translation), so the save lands on what was edited.
+            const edit =
+                storedShown && !storedPending && displayedChat && messageId
+                    ? beginStoredTranslationEdit(displayedChat, messageId)
+                    : null;
+            if (!edit) {
+                return null;
+            }
+            const key = `stored:${++storedPartialEditSeq}`;
+            storedPartialEdits.clear();
+            storedPartialEdits.set(key, edit);
+            return { key, data: edit.base.text };
+        }
         if (!translated || settings.memoryTranslateMedia.translatorType !== "llm") {
             return null;
         }
@@ -387,26 +511,48 @@
     async function loadTranslationForEdit() {
         if (translationViewControlsDisabled) return;
 
+        if (storedPath) {
+            // Only a fresh stored translation is edited (the button is off without one).
+            const edit = displayedChat && messageId ? beginStoredTranslationEdit(displayedChat, messageId) : null;
+            if (!edit) return;
+            editTranslationTarget = { kind: "stored", edit };
+            editTranslationText = edit.base.text;
+            editTranslationMode = true;
+            return;
+        }
+
         loadingTranslationEdit = true;
         try {
             const key = await getTranslationCacheKey();
             const cached = await readLLMCacheEntry(key);
-            editTranslationKey = key;
+            editTranslationTarget = { kind: "cache", key };
             editTranslationText = cached ?? "";
             editTranslationMode = true;
         } catch (error) {
-            editTranslationKey = null;
+            editTranslationTarget = null;
             throw error;
         } finally {
             loadingTranslationEdit = false;
         }
     }
 
-    async function saveTranslationEdit() {
-        if (editTranslationKey === null) return;
+    /** Closes the translation editor without writing. */
+    function cancelTranslationEdit() {
+        editTranslationTarget = null;
+        editTranslationMode = false;
+    }
 
-        await updateTranslationCache(editTranslationKey, editTranslationText);
-        editTranslationKey = null;
+    async function saveTranslationEdit() {
+        const target = editTranslationTarget;
+        if (target === null) return;
+
+        if (target.kind === "stored") {
+            // A refused write keeps the editor open with the draft.
+            if (!saveStoredTranslationEdit(target.edit, editTranslationText)) return;
+        } else {
+            await updateTranslationCache(target.key, editTranslationText);
+        }
+        editTranslationTarget = null;
         editTranslationMode = false;
     }
 
@@ -431,7 +577,10 @@
     let blankMessage = $derived(
         ((message === "{{none}}" || message === "{{blank}}" || message === "") && idx === -1) || isComment,
     );
-    let displayMessage = $derived(isOptimizedStreamingMessage ? rawStreamingText : message);
+    // On the stored path the stored translation goes through the normal display path in place of the text.
+    let displayMessage = $derived(
+        isOptimizedStreamingMessage ? rawStreamingText : storedShown && storedFresh ? storedFresh.text : message,
+    );
     let renderRawStreaming = $derived(isOptimizedStreamingMessage && streamingOptimizationMode === "strong");
 
     function updateDisplayedMessage() {
@@ -632,13 +781,25 @@
                 </span>
             </button>
         {/if}
-        {#if settings.memoryTranslateMedia.translatorType === "llm" && translated}
+        <!-- An open translation editor keeps its Save and Cancel whatever the settings do meanwhile (it writes to its captured target). -->
+        {#if editTranslationMode || (settings.memoryTranslateMedia.translatorType === "llm" && (storedPath ? storedWanted : translated))}
+            {#if editTranslationMode}
+                <button
+                    class="text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center hover:ring-darkbutton hover:ring-3 hover:text-textcolor"
+                    onclick={cancelTranslationEdit}
+                >
+                    <XIcon size={20} />
+                    <span class="ml-1">
+                        {language.cancel}
+                    </span>
+                </button>
+            {/if}
             <button
                 class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                    (translationViewControlsDisabled
+                    (translationViewControlsDisabled || (storedPath && storedPending)
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
-                disabled={translationViewControlsDisabled}
+                disabled={translationViewControlsDisabled || (storedPath && storedPending)}
                 onclick={requestRetranslation}
             >
                 <RefreshCcwIcon size={20} />
@@ -748,6 +909,9 @@
                     bind:retranslate
                     {renderRawStreaming}
                     {rawStreamingText}
+                    {storedPath}
+                    storedTranslationShown={storedShown}
+                    storedPending={storedPending && storedWanted}
                 />
             {/key}
         </span>
@@ -758,8 +922,9 @@
                 {bodyRoot}
                 blockEditEnabled={settings.ui.enableBlockPartialEdit}
                 dragEditEnabled={settings.ui.enableDragPartialEdit}
-                translatedView={translated}
+                translatedView={storedPath ? storedShown : translated}
                 getTranslationEditContext={getTranslationPartialEditContext}
+                saveTranslation={savePartialTranslation}
                 on:save={handlePartialEditSave}
             />
         {/if}
@@ -1147,8 +1312,8 @@
                 (translationViewControlsDisabled
                     ? "opacity-50 cursor-not-allowed"
                     : "cursor-pointer hover:text-blue-500") +
-                (translated ? " text-blue-400" : "")}
-            class:translating
+                (translationViewOn ? " text-blue-400" : "")}
+            class:translating={storedPath ? storedPending : translating}
             disabled={translationViewControlsDisabled}
             onclick={toggleTranslation}
         >

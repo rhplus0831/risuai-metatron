@@ -415,6 +415,7 @@
   "stabilityModel": "sd3-large",
   "stabllityStyle": "",
   "legacyTranslation": false,
+  "llmTranslationTarget": "message",
   "comfyUiUrl": "http://localhost:8188",
   "comfyConfig": {
     "workflow": "",

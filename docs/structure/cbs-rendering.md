@@ -53,7 +53,7 @@
   - `AllCBS` is the autocomplete list, maintained by hand.
   - Used by `src/lib/UI/GUI/TextAreaInput.svelte`.
 - `gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty, so Monaco has no CBS language support.
-- `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles.
+- `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles; a translation edit goes through the awaitable `saveTranslation` prop instead when the parent passes one (`media-aux.md`, the stored path), and the draft stays when that write is refused.
 
 ## Flows
 
@@ -137,7 +137,8 @@ Display:
 - `e2e/serverTransform.spec.ts` (mock provider): one send per streaming mode (raw while streaming, transformed once at the end, no other row transformed, 0 DOM mutations on an unrelated row, an open `<details>` stays open); a locked row that is not the last renders raw with no request and is transformed once when the lock ends; Re-render sends one request with a bypass target for that message only; a chat switch while answers are held (A's answer does not land in B, stored variables unchanged).
 - `e2e/transformGolden.spec.ts`: the script-transform golden. All of `fixtures/baseline/markdown.json` (`direct`, `prePass`, `back`, `editprocess`, with and without hooks) on the server path against the fixture recorded from the browser path before the cutover; the server-evaluated random and clock messages (`m-m3`, `m-m4`) are compared by format. Independent cases against their expected output recorded from the browser path at `219dfb51` (`server/src/tests/fixtures/transform/display-trigger-assets.json`, with its provenance): a v2 `display` trigger and both asset passes. On a page's first load (no controlling worker) the same render holds object URLs, a large image included, and otherwise matches the recording.
 - A new chat's first-save re-render: the `chatSaveVersion` count it keys on is pinned in `src/ts/storage/tests/resourceSyncChats.test.ts` ("a chat's first save", `persistence.md`); the `Chat.svelte` effect itself runs only in the component.
-- Not tested: most of `shared/cbs/registry.ts`, inlay and dynamic-asset rendering, `partialEdit`, `highlight.ts`.
+- `src/lib/ChatScreens/PartialEditController.test.ts`: the controller's translation writes through `saveTranslation` and the dispatched `save` without it (`media-aux.md` Tests).
+- Not tested: most of `shared/cbs/registry.ts`, inlay and dynamic-asset rendering, `partialEdit` (the matcher), `highlight.ts`.
 - Not tested: the transform cache key's dependency on `GLGlobalVariables`, the preset and persona ids, the greeting, and the background targets (the chat's variables, note, local lore, source character, and language are).
 
 ## Known Hazards

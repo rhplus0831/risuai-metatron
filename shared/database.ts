@@ -407,6 +407,12 @@ export interface Database {
     };
     translateBeforeHTMLFormatting: boolean;
     autoTranslateCachedOnly: boolean;
+    /**
+     * What the LLM translator translates (`docs/plan/translation.md` decision 9): `"message"`, the
+     * message's source text, stored on the message by the server; `"rendered"`, the rendered output,
+     * cached in this browser.
+     */
+    llmTranslationTarget: "message" | "rendered";
     notification: boolean;
     customFlags: LLMFlags[];
     enableCustomFlags: boolean;

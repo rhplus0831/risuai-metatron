@@ -13,7 +13,7 @@
         type CbsConditions,
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
-    import { getLLMCache, translateHTML } from "../../ts/translator/translator";
+    import { applyEdittransToStoredTranslation, getLLMCache, translateHTML } from "../../ts/translator/translator";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getModuleAssets } from "src/ts/process/modules";
     import { getFileSrc } from "src/ts/globalApi.svelte";
@@ -33,6 +33,16 @@
         modelShortName: string;
         renderRawStreaming?: boolean;
         rawStreamingText?: string;
+        /**
+         * The row is on the stored-translation path (`docs/plan/translation.md` slice 1.4): `msgDisplay`
+         * is rendered as it is (the original, or the stored translation `Chat` chose), never through
+         * the rendered translation, and `translated`/`retranslate` are not read.
+         */
+        storedPath?: boolean;
+        /** On the stored path: `msgDisplay` is the stored translation (the `edittrans` scripts apply). */
+        storedTranslationShown?: boolean;
+        /** On the stored path: a translation the row shows is being requested (the loading state). */
+        storedPending?: boolean;
     }
 
     let {
@@ -49,7 +59,12 @@
         modelShortName = "",
         renderRawStreaming = false,
         rawStreamingText = "",
+        storedPath = false,
+        storedTranslationShown = false,
+        storedPending = false,
     }: Props = $props();
+
+    const LOADING_HTML = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`;
 
     // svelte-ignore non_reactive_update
     let lastParsed = "";
@@ -72,7 +87,9 @@
         }
     }
 
-    let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate);
+    let shouldRenderRawStreaming = $derived(
+        renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
+    );
 
     const markParsing = async (
         data: string,
@@ -82,16 +99,28 @@
         tries?: number,
         /** A retry's: the operation's own capture (a retry keeps the chat, preset, and persona it began with). */
         retryTransform?: CapturedTransform | null,
+        /** A retry's: the stored-path state its operation began with. */
+        retryStored?: { stored: boolean; shownStored: boolean },
     ) => {
         // track 'translated' and 'retranslate' state
         translated;
         retranslate;
+        // The stored path, read once for this render (a switch renders again).
+        const stored = retryStored ? retryStored.stored : storedPath;
+        const shownStored = retryStored ? retryStored.shownStored : storedTranslationShown;
         // The server transform's context, captured once for every stage and retry of this render (flag on).
         const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
         let lastParsedQueue = "";
         let mode = "notrim" as const;
         try {
+            if (stored) {
+                // The normal display path; a stored translation takes the `edittrans` scripts first.
+                const text = shownStored ? applyEdittransToStoredTranslation(data, charArg, chatID, transform) : data;
+                const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
+                lastParsedQueue = marked;
+                return marked;
+            }
             if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId) {
                 lastParsedQueue = "";
                 lastCharArg = charArg;
@@ -143,7 +172,7 @@
             }
             if (retranslate || translated) {
                 if (settings.ui.showTranslationLoading && !preservePendingContent) {
-                    lastParsed = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`;
+                    lastParsed = LOADING_HTML;
                 }
 
                 let transResult;
@@ -204,7 +233,10 @@
                 alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`);
                 return data;
             }
-            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1, transform);
+            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1, transform, {
+                stored,
+                shownStored,
+            });
             if (retried !== undefined) {
                 lastParsedQueue = retried;
             }
@@ -305,6 +337,8 @@
 
 {#if shouldRenderRawStreaming}
     <span class="whitespace-pre-wrap">{rawStreamingText}</span>
+{:else if storedPath && storedPending && settings.ui.showTranslationLoading}
+    {@html LOADING_HTML}
 {:else}
     {#await markParsingResult}
         {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}

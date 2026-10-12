@@ -172,6 +172,7 @@ export const SECTION_FIELDS = {
         "falLoraScale",
         "translateBeforeHTMLFormatting",
         "autoTranslateCachedOnly",
+        "llmTranslationTarget",
         "hypaV3",
         "useExperimentalGoogleTranslator",
         "playMessageOnTranslateEnd",

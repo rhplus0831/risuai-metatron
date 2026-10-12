@@ -709,6 +709,24 @@ interface pEdittransScript {
 }
 
 /**
+ * Applies the `edittrans` scripts to a stored translation (`docs/plan/translation.md` slice 1.4)
+ * before it is rendered, as the `translateBeforeHTMLFormatting` path applies them to its translated
+ * text: the character as `translateHTML` resolves it.
+ */
+export function applyEdittransToStoredTranslation(
+    text: string,
+    charArg: simpleCharacterArgument | string,
+    chatID: number,
+    transform: CapturedTransform | null,
+): string {
+    if (charArg === "") {
+        return text;
+    }
+    const alwaysExistChar = typeof charArg === "string" ? selectedCharacter() : charArg;
+    return applyEdittransRegex(text, charArg, alwaysExistChar, chatID, transform);
+}
+
+/**
  * Applies the `edittrans` scripts. With `transform` (a render that captured its chat before its
  * awaits), the preset's and the modules' scripts and their CBS are that chat's (its display ids);
  * without one, the selected chat's.

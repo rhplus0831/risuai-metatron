@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.3 done (2026-10-12). No open questions.
+Status: slices 1.1–1.4 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -269,6 +269,47 @@ personaId, force? }`: the server's request settings also need a prompt
 
 The non-LLM translators, and the LLM translator on `"rendered"`, keep the
 rendered path unchanged.
+
+As built:
+
+- The stored path is per row: a row of a stored message (`Chat.svelte` with a
+  `messageId` in the displayed chat). The greeting (no stored message until
+  phase 4), the bookmark previews, and the welcome rows keep the rendered path
+  under `"message"` too; the toggles hidden on the language page keep their
+  values for them.
+- The global `autoTranslate` reads, on the stored path, as "show stored
+  translations by default" and never requests one (interim until 2.1 and 2.3).
+  A row's own show/hide choice wins and survives its remount (kept by chat and
+  message id in `src/ts/translator/storedTranslation.svelte.ts`, as is the
+  pending state).
+- The toggle: on (shown, or asked for and pending) → off; otherwise on, and a
+  request when there is no fresh translation and none pending. A failed
+  request leaves nothing shown, so the next click retries.
+- The runner's answer is not displayed by itself: the request stays pending
+  until the held message holds the translation (the chat's resource refresh),
+  at most 15 s. Before the POST the tab saves every pending change
+  (`flushResources`), so a translation can wait on unrelated work; a
+  generation blocking that save alerts `chatGenerating`.
+- Edit translation needs a fresh stored translation and nothing pending. Both
+  editors capture the edit session (chat, message, source hash, base
+  translation) when they open; the write keeps the base's `presetId` and
+  `targetLanguage` and sets `translatedAt` and `edited: true`. A refused write
+  (locked, gone, the text changed) keeps the draft. Same-source edits from two
+  places are last-writer-wins, as is a runner result that lands after an edit.
+- The `edittrans` scripts apply to a shown stored translation before Markdown,
+  as on the `translateBeforeHTMLFormatting` path.
+- The partial editor never edits the original from a translated view whose
+  translation context is missing (both paths): it shows the match failure.
+- Tests: `shared/tests/translateRoute.test.ts`,
+  `src/ts/translator/storedTranslation.test.ts` (the request, the barrier,
+  the wait, the answers, the edit session),
+  `src/lib/ChatScreens/Chat.test.ts` (the mounted row: display, toggle,
+  requests, Retranslate, the full editor, the rendered path kept),
+  `src/lib/ChatScreens/PartialEditController.test.ts` (the session-guarded
+  translation writes), `src/ts/setting/languageSettingsData.test.ts`, the
+  `applyEdittransToStoredTranslation` cases in `edittransRegex.test.ts`, and
+  the normalizer case in `server/src/tests/normalizeSections.test.ts`. The
+  boot fixture carries `llmTranslationTarget: "message"`.
 
 1.5 **Remove Bergamot.** Remove:
 

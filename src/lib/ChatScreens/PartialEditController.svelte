@@ -3,6 +3,7 @@
     import { CheckIcon, XIcon } from "@lucide/svelte";
     import { createEventDispatcher, onDestroy } from "svelte";
     import { language } from "src/lang";
+    import { alertError } from "src/ts/alert";
     import {
         findAllOriginalRangesFromHtml,
         findAllOriginalRangesFromText,
@@ -20,6 +21,11 @@
         dragEditEnabled?: boolean;
         translatedView?: boolean;
         getTranslationEditContext?: () => Promise<{ key: string; data: string } | null>;
+        /**
+         * Writes a translation edit (the context's key). False when it was not taken: an edit keeps
+         * its draft open. Without it a translation edit is dispatched as `save` and not checked.
+         */
+        saveTranslation?: (newData: string, key: string) => Promise<boolean> | boolean;
     }
 
     let {
@@ -30,6 +36,7 @@
         dragEditEnabled = false,
         translatedView = false,
         getTranslationEditContext,
+        saveTranslation,
     }: Props = $props();
 
     const dispatch = createEventDispatcher<{
@@ -246,8 +253,15 @@
                 ? { extendToEOL: false, snapStartToPrevEOL: false }
                 : { extendToEOL: true, snapStartToPrevEOL: true };
 
+        // A selection in a translated view edits the translation, or nothing: never the original.
+        const translationRequested = translatedView && !!getTranslationEditContext;
         const translationContext = await getTranslationContextIfNeeded();
         if (requestId !== matchingRequestId) return;
+        if (translationRequested && !translationContext) {
+            matchingState = createMatchingState();
+            showMatchFailedModal = true;
+            return;
+        }
 
         const sourceType: PartialEditTarget = translationContext ? "translation" : "original";
         const sourceData = translationContext?.data ?? messageData;
@@ -354,16 +368,55 @@
         resetMatchingState();
     }
 
+    /** A translation write through `saveTranslation` is running: the save and delete controls wait for it. */
+    let writingTranslation = false;
+
+    /**
+     * Writes a translation edit through `saveTranslation`; null when the caller has none (dispatched
+     * instead). A failed callback alerts and counts as not taken.
+     */
+    async function writeTranslation(newData: string, key: string | null): Promise<boolean | null> {
+        if (!saveTranslation) {
+            return null;
+        }
+        if (!key) {
+            return false;
+        }
+        writingTranslation = true;
+        try {
+            return await saveTranslation(newData, key);
+        } catch (error) {
+            alertError(error instanceof Error ? error.message : String(error));
+            return false;
+        } finally {
+            writingTranslation = false;
+        }
+    }
+
     // Save edited text
-    function handleSave() {
-        if (!matchingState.selectedRange) return;
+    async function handleSave() {
+        if (!matchingState.selectedRange || writingTranslation) return;
 
         const newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, editText);
-        dispatch("save", {
-            newData,
-            target: matchingState.sourceType,
-            translationKey: matchingState.translationKey ?? undefined,
-        });
+        const target = matchingState.sourceType;
+        const translationKey = matchingState.translationKey;
+        if (target === "translation") {
+            // The edit session this save belongs to: a cancel or another edit started meanwhile ends it.
+            const session = matchingRequestId;
+            const written = await writeTranslation(newData, translationKey);
+            if (session !== matchingRequestId) {
+                return;
+            }
+            if (written === false) {
+                // Not taken (the caller alerted): the draft stays open.
+                return;
+            }
+            if (written === true) {
+                closeEdit();
+                return;
+            }
+        }
+        dispatch("save", { newData, target, translationKey: translationKey ?? undefined });
 
         closeEdit();
     }
@@ -391,17 +444,27 @@
     }
 
     // Confirm deletion
-    function handleConfirmDelete() {
-        if (!matchingState.selectedRange) return;
+    async function handleConfirmDelete() {
+        if (!matchingState.selectedRange || writingTranslation) return;
 
         let newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, "");
         newData = newData.replace(/\n{3,}/g, "\n\n").trim();
+        const target = matchingState.sourceType;
+        const translationKey = matchingState.translationKey;
 
-        dispatch("save", {
-            newData,
-            target: matchingState.sourceType,
-            translationKey: matchingState.translationKey ?? undefined,
-        });
+        if (target === "translation") {
+            const session = matchingRequestId;
+            const written = await writeTranslation(newData, translationKey);
+            if (session !== matchingRequestId) {
+                return;
+            }
+            if (written !== null) {
+                // Taken or refused (the caller alerted): the confirmation ends either way.
+                closeDeleteConfirm();
+                return;
+            }
+        }
+        dispatch("save", { newData, target, translationKey: translationKey ?? undefined });
         closeDeleteConfirm();
     }
 

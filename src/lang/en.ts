@@ -255,6 +255,8 @@ export const languageEnglish = {
             "If enabled, it will translate the text before Regex scripts and HTML formatting. This could make the token lesser but could break the formatting.",
         autoTranslateCachedOnly:
             "If enabled with Auto Translation option on, it will automatically translate only the messages that the user has translated previously.",
+        llmTranslationTarget:
+            "Stored on the message: the model translates the message's own text on the server, and the translation is saved with the message, so every device sees it. Text that display scripts add (for example a status panel) is not translated. Editing the message makes its translation stale; translate it again. With Auto Translation on, messages show their stored translation when they have one; nothing is translated automatically yet.\n\nRendered output: the model translates the message as it is shown, in this browser, and the result is cached in this browser only.",
         presetChain:
             "If it is not blank, the preset will be changed and applied randomly every time when user sends a message in the preset list in this input. Preset list should be seperated by comma, for example, `preset1,preset2`.",
         legacyMediaFindings:
@@ -1433,6 +1435,14 @@ export const languageEnglish = {
         "This preset has a step that a .risutl file cannot hold yet (more than one step, or a step with its own model). Only a single-step preset on the translation model can be exported.",
     translateBeforeHTMLFormatting: "Translate Before HTML Formatting",
     retranslate: "Retranslate",
+    retranslateConfirm: "Translate this message again? The current translation is replaced.",
+    llmTranslationTarget: "Translate",
+    llmTranslationTargetMessage: "Message text (stored on the message)",
+    llmTranslationTargetRendered: "Rendered output (this browser)",
+    translationFailed: "Translation failed",
+    translationSourceChanged: "The message changed while it was being translated. Translate it again.",
+    translationEditStale: "The message changed since the translation editor opened. The translation was not saved.",
+    translationNoContext: "This chat has no preset, model preset, or persona to translate with.",
     editTranslation: "Edit Translation",
     editTranslationSave: "Save Translation",
     exportTranslationCache: "Export Translation Cache",

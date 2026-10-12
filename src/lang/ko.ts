@@ -194,6 +194,8 @@ export const languageKorean = {
             "활성화하면 정규식 스크립트와 HTML 포맷팅 전에 텍스트를 번역합니다. 토큰이 줄어들 수 있지만 포맷이 깨질 수 있습니다.",
         autoTranslateCachedOnly:
             "자동 번역 옵션이 켜진 상태에서 활성화하면, 사용자가 이전에 번역한 메시지만 자동으로 번역됩니다.",
+        llmTranslationTarget:
+            "메시지 원문(메시지에 저장): 모델이 서버에서 메시지 원문을 번역하고, 번역은 메시지와 함께 저장되어 모든 기기에서 보입니다. 표시 스크립트가 덧붙이는 텍스트(예: 상태창)는 번역되지 않습니다. 메시지를 수정하면 번역이 오래된 것이 되므로 다시 번역하세요. 자동 번역을 켜면 저장된 번역이 있는 메시지는 번역을 보여 줍니다. 아직 자동으로 번역하지는 않습니다.\n\n렌더링 결과(이 브라우저): 모델이 이 브라우저에서 표시되는 메시지를 번역하고, 결과는 이 브라우저에만 캐시됩니다.",
         presetChain:
             "비어있지 않으면 사용자가 메시지를 보낼 때마다 이 입력의 프리셋 목록에서 무작위로 프리셋이 변경 및 적용됩니다. 프리셋 목록은 쉼표로 구분해야 합니다. 예: `preset1,preset2`.",
         legacyMediaFindings: "활성화하면 추가 검색 알고리즘을 사용하지 않고 기존 방식으로 미디어 에셋을 찾습니다.",
@@ -1317,6 +1319,14 @@ export const languageKorean = {
         "이 프리셋에는 .risutl 파일에 아직 담을 수 없는 단계가 있습니다(단계가 둘 이상이거나 단계에 별도 모델이 지정됨). 번역 모델을 쓰는 단일 단계 프리셋만 내보낼 수 있습니다.",
     translateBeforeHTMLFormatting: "HTML 포맷 전 번역",
     retranslate: "다시 번역",
+    retranslateConfirm: "이 메시지를 다시 번역할까요? 지금 번역은 새 번역으로 바뀝니다.",
+    llmTranslationTarget: "번역 대상",
+    llmTranslationTargetMessage: "메시지 원문 (메시지에 저장)",
+    llmTranslationTargetRendered: "렌더링 결과 (이 브라우저)",
+    translationFailed: "번역 실패",
+    translationSourceChanged: "번역하는 동안 메시지가 바뀌었습니다. 다시 번역하세요.",
+    translationEditStale: "번역 편집기를 연 뒤 메시지가 바뀌어 번역을 저장하지 않았습니다.",
+    translationNoContext: "이 채팅에는 번역에 쓸 프리셋, 모델 프리셋, 페르소나가 없습니다.",
     editTranslation: "번역 수정",
     editTranslationSave: "번역 저장",
     exportTranslationCache: "번역 캐시 내보내기",

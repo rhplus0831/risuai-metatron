@@ -97,6 +97,7 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
     falLoraScale: ["number", 1],
     translateBeforeHTMLFormatting: ["boolean"],
     autoTranslateCachedOnly: ["boolean"],
+    llmTranslationTarget: ["string", "message"],
     hypaV3: ["boolean"],
     useExperimentalGoogleTranslator: ["boolean", false],
     playMessageOnTranslateEnd: ["boolean"],
@@ -109,6 +110,10 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
 
 export function normalizeMemoryTranslateMedia(input: unknown): SectionResource<"memoryTranslateMedia"> {
     const record = normalizeSection("memoryTranslateMedia", spec, input);
+    // `docs/plan/translation.md` decision 9: anything but the two targets reads as the default.
+    if (record.llmTranslationTarget !== "message" && record.llmTranslationTarget !== "rendered") {
+        record.llmTranslationTarget = "message";
+    }
     // The NAI v4 fields, added to a config saved before them (the `setDatabase` migration).
     const nai = record.NAIImgConfig;
     if (isPlainObject(nai) && (nai.v4_prompt === undefined || nai.v4_prompt === null)) {

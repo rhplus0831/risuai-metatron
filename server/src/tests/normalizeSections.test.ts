@@ -112,12 +112,15 @@ describe("every section normalizer", () => {
                 }
                 const value = defaults[field];
                 // An enum field keeps only its own values: its valid alternate stands in for the
-                // generated string (`ui.newChatBinding`; the invalid strings are covered under `ui`).
+                // generated string (`ui.newChatBinding`, `memoryTranslateMedia.llmTranslationTarget`;
+                // the invalid strings are covered under their sections).
                 const replacement =
                     valueKindOf(value) === "string"
                         ? field === "newChatBinding"
                             ? "empty"
-                            : `changed-${field}`
+                            : field === "llmTranslationTarget"
+                              ? "rendered"
+                              : `changed-${field}`
                         : valueKindOf(value) === "number"
                           ? 7
                           : valueKindOf(value) === "boolean"
@@ -371,6 +374,33 @@ describe("ui", () => {
 });
 
 describe("memoryTranslateMedia", () => {
+    it("defaults llmTranslationTarget to `message`, keeps `rendered`, and replaces any other string, or another kind, with `message` (docs/plan/translation.md decision 9)", () => {
+        expect(normalizeMemoryTranslateMedia(undefined).llmTranslationTarget).toBe("message");
+        expect(normalizeMemoryTranslateMedia({}).llmTranslationTarget).toBe("message");
+        expect(normalizeMemoryTranslateMedia({ llmTranslationTarget: "message" }).llmTranslationTarget).toBe("message");
+        expect(normalizeMemoryTranslateMedia({ llmTranslationTarget: "rendered" }).llmTranslationTarget).toBe(
+            "rendered",
+        );
+        for (const value of [
+            "",
+            "Message",
+            "RENDERED",
+            "changed-llmTranslationTarget",
+            1,
+            true,
+            null,
+            {},
+            ["rendered"],
+        ]) {
+            expect(
+                normalizeMemoryTranslateMedia({ llmTranslationTarget: value }).llmTranslationTarget,
+                JSON.stringify(value),
+            ).toBe("message");
+        }
+        expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "bogus" });
+        expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "rendered" });
+    });
+
     it("adds the NAI v4 fields to a config saved before them, and leaves a v4 config alone", () => {
         const legacy: unknown = normalizeMemoryTranslateMedia({
             NAIImgConfig: { width: 1, autoSmea: true },

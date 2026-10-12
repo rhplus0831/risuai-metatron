@@ -1,6 +1,7 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { TRANSLATE_MESSAGE_PATH } from "../../../shared/translation/route.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
@@ -8,7 +9,7 @@ import type { TranslateMessageRequest, TranslationRunner } from "../translation/
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
-export const TRANSLATE_MESSAGE_PATH = "/api/translate/message";
+export { TRANSLATE_MESSAGE_PATH };
 
 /** The body holds ids and a flag only. */
 const MAX_TRANSLATE_BODY_BYTES = 16 * 1024;

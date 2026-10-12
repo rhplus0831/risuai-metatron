@@ -187,6 +187,24 @@ export const languageSettingsItems: SettingItem[] = [
     },
 
     {
+        id: "lang.llmTranslationTarget",
+        type: "select",
+        labelKey: "llmTranslationTarget",
+        bindKey: "llmTranslationTarget",
+        helpKey: "llmTranslationTarget",
+        classes: "mt-4",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
+        options: {
+            selectOptions: [
+                { value: "message", labelKey: "llmTranslationTargetMessage" },
+                { value: "rendered", labelKey: "llmTranslationTargetRendered" },
+            ],
+        },
+    },
+
+    {
         id: "lang.googleSourceLang",
         type: "select",
         labelKey: "sourceLanguage",
@@ -248,7 +266,11 @@ export const languageSettingsItems: SettingItem[] = [
         bindKey: "legacyTranslation",
         helpKey: "legacyTranslation",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
+        // The rendered path's option: every translator but the LLM one on `"message"` takes it.
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            (ctx.settings.memoryTranslateMedia.translatorType !== "llm" ||
+                ctx.settings.memoryTranslateMedia.llmTranslationTarget === "rendered"),
     },
 
     {
@@ -260,7 +282,8 @@ export const languageSettingsItems: SettingItem[] = [
         classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
-            ctx.settings.memoryTranslateMedia.translatorType === "llm",
+            ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
+            ctx.settings.memoryTranslateMedia.llmTranslationTarget === "rendered",
     },
 
     {
@@ -272,7 +295,8 @@ export const languageSettingsItems: SettingItem[] = [
         classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
-            ctx.settings.memoryTranslateMedia.translatorType === "llm",
+            ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
+            ctx.settings.memoryTranslateMedia.llmTranslationTarget === "rendered",
     },
 
     // Translation Cache
