@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5, 2.1–2.4, 3.1, and 3.2 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5, 2.1–2.4, and 3.1–3.3 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -601,6 +601,49 @@ As built:
   (default 2048) with the server tokenizer.
 
 They resolve only in the server runner, and to an empty string elsewhere.
+
+As built:
+
+- `shared/translation/historySlots.ts` holds the pure rules; `fillTranslatorSlots` fills both slots
+  in its one pass (a filled-in history is never read for slots again), from the caller's `history`,
+  and an invalid N (`0`, `51`, `abc`) fills in empty. A history slot is not an input slot: a prompt
+  holding only it still sends the source as the user message. The tab passes no history, so its
+  history slots are empty there; its `LLMTranslateCache` key did not change (a key cached with a
+  literal history slot in its prompt is not told apart; Retranslate replaces it).
+- The walk starts at the row before the message (the message and the rows after it are not
+  history): a `disabled: "allBefore"` row ends it and is not taken, comment or not; disabled and
+  comment rows are skipped. An entry is `user: <text>` or `char: <text>` followed by
+  `\n\n---\n\n`; `history` shows the raw `data` (no CBS), `historytrans` the fresh stored
+  translation of the same entries, an empty block for an entry without one, so both slots list the
+  same rows in the same order.
+- The budget is per N and covers the history blocks only: an entry costs its source block plus its
+  translation block (an empty one included, unlike Fastify, which did not count the empty
+  blocks it showed), and the oldest whole entries are dropped while the sum passes
+  `translatorHistoryMaxTokens` (`memoryTranslateMedia`, 2048 by default; the normalizer turns a
+  value at or below 0 into 2048; the language page shows it for the LLM translator on `"message"`
+  and writes only a finite number above 0). A newest entry alone over the budget leaves the slot
+  empty.
+- The server runner counts with the main model's tokenizer (`tokenScopeFor`, the app's token
+  counter, a new `tokens` dependency), not a profile step's. It builds the history from the run's
+  chat copy once, when the first pipeline run starts (a protected-only text counts nothing), and
+  shares it across every part and step, with or without Send Text As-Is (Fastify filled history
+  slots only on its As-Is path). Each count yields a turn and checks the run before and after it; a
+  Google count cannot be aborted, so one in flight may outlive an ended run (its work still counts
+  against capacity). A tokenizer error fails the run (500) and stores nothing.
+- No greeting: Fastify appended the chat's greeting source when the walk ran out of rows; here the
+  greeting is the character's `firstMessage` or alternate greeting, which prompt assembly runs
+  through CBS and `editprocess`, and greeting translation is a phase 4 item.
+- Tests: `shared/tests/translatorHistorySlots.test.ts` (the count, the budget, the walk, the block,
+  the build), the history-slot cases of `shared/tests/translatorPipeline.test.ts` (the one-pass fill,
+  the counts of the executed steps, the nested malformed tokens of the challenge, not an input
+  slot, the run), `server/src/tests/translate.test.ts` (the runner: built once per run for every
+  part and step in both modes in the main model's token scope, nothing counted for a prompt
+  without a valid slot or a protected-only text, the budget as stored, the run's chat copy, and a
+  count held past the deadline, maintenance, or shutdown, a tokenizer failure), the normalizer's
+  default in `server/src/tests/normalizeSections.test.ts`, the language page item in
+  `src/ts/setting/languageSettingsData.test.ts`, the tab's empty slots and unchanged key in
+  `src/ts/translator/translatorLLM.test.ts`, and the `.risutl` round trip in
+  `src/ts/translator/presetsCodec.test.ts`.
 
 3.4 **Chain of thought.** A preset option that also strips `<Thoughts>` and
 `<think>` from the source and the history before sending. Output stripping is

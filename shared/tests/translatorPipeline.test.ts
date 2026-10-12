@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TranslatorStep } from "../settings.ts";
 import { defaultTranslatorPrompt } from "../translatorPresets.ts";
+import type { TranslatorHistory, TranslatorHistorySlot } from "../translation/historySlots.ts";
 import {
     buildTranslatorStepMessages,
     fillTranslatorSlots,
@@ -10,6 +11,7 @@ import {
     runTranslatorPipeline,
     stripTranslatorReasoning,
     translateProtectingLines,
+    translatorHistorySlotCounts,
     translatorPipelineSignature,
     translatorStepsToRun,
     type TranslatorSlotValues,
@@ -409,5 +411,182 @@ describe("translateProtectingLines", () => {
         });
         await expect(translateProtectingLines("a\n\nb\n\nc", failing)).rejects.toThrow("provider down");
         expect(failing.mock.calls.map(([chunk]) => chunk)).toEqual(["a", "b"]);
+    });
+});
+
+// `docs/plan/translation.md` slice 3.3: the history slots in the pipeline. `{{slot::history::N}}` and
+// `{{slot::historytrans::N}}` fill in from the caller's `history` in the same one pass as every other
+// slot (empty without one, or for an invalid N); the counts a preset's executed prompts name are read
+// from the same matches, so discovery and replacement agree on a nested malformed token; and a
+// history slot is not an input slot.
+describe("the history slots", () => {
+    /** A history that records its calls and answers `<slot N>`. */
+    function recording() {
+        const calls: [TranslatorHistorySlot, number][] = [];
+        const history: TranslatorHistory = (slot, count) => {
+            calls.push([slot, count]);
+            return `<${slot} ${count}>`;
+        };
+        return { calls, history };
+    }
+
+    it("fills a valid count from the history, leading zeros read as the number, and an invalid count as empty without asking", () => {
+        const { calls, history } = recording();
+        expect(
+            fillTranslatorSlots(
+                "[{{slot::history::1}}][{{slot::historytrans::50}}][{{slot::history::05}}][{{slot::historytrans::007}}]",
+                values({ history }),
+            ),
+        ).toBe("[<history 1>][<historytrans 50>][<history 5>][<historytrans 7>]");
+        expect(calls).toEqual([
+            ["history", 1],
+            ["historytrans", 50],
+            ["history", 5],
+            ["historytrans", 7],
+        ]);
+        calls.length = 0;
+        const invalid =
+            "[{{slot::history::0}}][{{slot::history::51}}][{{slot::historytrans::abc}}][{{slot::history::}}][{{slot::history:: 5}}][{{slot::historytrans::1.5}}][{{slot::history::-1}}]";
+        expect(fillTranslatorSlots(invalid, values({ history }))).toBe("[][][][][][][]");
+        expect(calls).toEqual([]);
+        // Without the `::N` part it is not a slot: left as it is, like every unknown `{{...}}`.
+        expect(
+            fillTranslatorSlots("{{slot::history}} {{slot::historytrans}} {{slot::history::}}", values({ history })),
+        ).toBe("{{slot::history}} {{slot::historytrans}} ");
+        expect(calls).toEqual([]);
+    });
+
+    it("fills every history slot in empty without a history, keeping the other slots", () => {
+        expect(
+            fillTranslatorSlots("[{{slot::history::3}}][{{slot::historytrans::3}}][{{slot::content}}]", values()),
+        ).toBe("[][][SOURCE]");
+    });
+
+    it("never reads a filled-in history, source, note, or output for slots", () => {
+        const { history } = recording();
+        const nested: TranslatorHistory = () => "{{slot::content}} {{slot::history::2}} $& $1";
+        expect(fillTranslatorSlots("{{slot::history::1}}|{{slot::content}}", values({ history: nested }))).toBe(
+            "{{slot::content}} {{slot::history::2}} $& $1|SOURCE",
+        );
+        expect(
+            fillTranslatorSlots(
+                "{{slot::content}}|{{slot::tnote}}|{{slot::out::draft}}|{{slot::prev}}",
+                values({
+                    history,
+                    sourceText: "{{slot::history::1}}",
+                    translatorNote: "{{slot::historytrans::1}}",
+                    outputsByKey: new Map([["draft", "{{slot::history::2}}"]]),
+                    prevOutput: "{{slot::history::3}}",
+                }),
+            ),
+        ).toBe("{{slot::history::1}}|{{slot::historytrans::1}}|{{slot::history::2}}|{{slot::history::3}}");
+    });
+
+    it("consumes a nested malformed token the way the fill does: an input slot inside it is not an input slot, so the source still follows as the user message", () => {
+        const { calls, history } = recording();
+        // Astra's challenge finding 1: the invalid history token consumes `{{slot::content`.
+        for (const inner of ["{{slot::content}}", "{{slot::prev}}", "{{solt::content}}", "{{slot::out::draft}}"]) {
+            const prompt = `{{slot::history::${inner}}}`;
+            expect(fillTranslatorSlots(prompt, values({ history })), prompt).toBe("}}");
+            expect(buildTranslatorStepMessages(step({ prompt }), values({ history })), prompt).toEqual([
+                { role: "system", content: "}}" },
+                { role: "user", content: "PREV" },
+            ]);
+        }
+        expect(calls).toEqual([]);
+        // The other way round: an output slot swallows the history token, which is then not a count.
+        const swallowed = "{{slot::out::{{slot::history::50}}}}";
+        expect(fillTranslatorSlots(swallowed, values({ history }))).toBe("}}");
+        expect(buildTranslatorStepMessages(step({ prompt: swallowed }), values({ history }))).toEqual([
+            { role: "system", content: "}}" },
+        ]);
+        expect(translatorHistorySlotCounts([step({ prompt: swallowed })])).toEqual([]);
+        expect(translatorHistorySlotCounts([step({ prompt: "{{slot::history::{{slot::content}}}}" })])).toEqual([]);
+        expect(calls).toEqual([]);
+    });
+
+    it("is not an input slot: a prompt holding only history slots still sends the previous output as the user message", () => {
+        const { history } = recording();
+        expect(
+            buildTranslatorStepMessages(
+                step({ prompt: "Context:\n{{slot::history::2}}\n{{slot::historytrans::2}}\nInto {{slot}}" }),
+                values({ history }),
+            ),
+        ).toEqual([
+            { role: "system", content: "Context:\n<history 2>\n<historytrans 2>\nInto ko" },
+            { role: "user", content: "PREV" },
+        ]);
+        // With an input slot beside it, the one system message as before.
+        expect(
+            buildTranslatorStepMessages(
+                step({ prompt: "{{slot::history::2}}\n{{slot::content}}" }),
+                values({ history }),
+            ),
+        ).toEqual([{ role: "system", content: "<history 2>\nSOURCE" }]);
+        // ChatML with history slots: its own messages.
+        expect(
+            buildTranslatorStepMessages(
+                step({
+                    prompt: "<|im_start|>system<|im_sep|>{{slot::historytrans::1}}<|im_end|><|im_start|>user<|im_sep|>{{slot::content}}<|im_end|>",
+                }),
+                values({ history }),
+            ),
+        ).toEqual([
+            { role: "system", content: "<historytrans 1>" },
+            { role: "user", content: "SOURCE" },
+        ]);
+    });
+
+    describe("translatorHistorySlotCounts", () => {
+        it("lists each valid count of the executed steps' prompts once, in order of first appearance, from both slots", () => {
+            const steps = [
+                step({ id: "a", prompt: "{{slot::history::3}} {{slot::historytrans::3}} {{slot::history::05}}" }),
+                step({ id: "off", enabled: false, prompt: "{{slot::history::9}}" }),
+                step({ id: "b", prompt: "{{slot::historytrans::50}} {{slot::history::3}} {{slot::history::1}}" }),
+            ];
+            expect(translatorHistorySlotCounts(steps)).toEqual([3, 5, 50, 1]);
+            // Nothing enabled: the first step alone (`translatorStepsToRun`).
+            expect(translatorHistorySlotCounts(steps.map((entry) => ({ ...entry, enabled: false })))).toEqual([3, 5]);
+            expect(translatorHistorySlotCounts([])).toEqual([]);
+        });
+
+        it("ignores invalid counts, a slot without a count, and the other slots; a blank prompt is the default prompt", () => {
+            expect(
+                translatorHistorySlotCounts([
+                    step({
+                        prompt: "{{slot::history::0}} {{slot::history::51}} {{slot::historytrans::abc}} {{slot::history::}} {{slot::history}} {{slot::history:: 2}} {{slot::content}} {{slot::out::history::2}}",
+                    }),
+                ]),
+            ).toEqual([]);
+            expect(translatorHistorySlotCounts([step({ prompt: "" })])).toEqual([]);
+            expect(defaultTranslatorPrompt).not.toMatch(/slot::history/);
+        });
+    });
+
+    it("runTranslatorPipeline hands the history to every step, and a step's output holding a slot is not read for it", async () => {
+        const { calls, history } = recording();
+        const seen: { role: string; content: string }[][] = [];
+        const runStep = vi.fn(async (request: { messages: { role: string; content: string }[] }) => {
+            seen.push(request.messages);
+            return seen.length === 1 ? "{{slot::history::1}} out" : "final";
+        });
+        const steps = [
+            step({ id: "a", prompt: "A {{slot::history::2}} {{slot::content}}", outputKey: "draft" }),
+            step({ id: "b", prompt: "B {{slot::historytrans::2}} {{slot::prev}} [{{slot::out::draft}}]" }),
+        ];
+        const input = { sourceText: "SOURCE", to: "ko", from: "en", translatorNote: "" };
+        await expect(runTranslatorPipeline({ steps, ...input, history }, runStep)).resolves.toBe("final");
+        expect(seen).toEqual([
+            [{ role: "system", content: "A <history 2> SOURCE" }],
+            [{ role: "system", content: "B <historytrans 2> {{slot::history::1}} out [{{slot::history::1}} out]" }],
+        ]);
+        expect(calls).toEqual([
+            ["history", 2],
+            ["historytrans", 2],
+        ]);
+        // Without a history (the tab), the slots are empty and the input is kept.
+        seen.length = 0;
+        await runTranslatorPipeline({ steps, ...input }, runStep);
+        expect(seen[0]).toEqual([{ role: "system", content: "A  SOURCE" }]);
     });
 });

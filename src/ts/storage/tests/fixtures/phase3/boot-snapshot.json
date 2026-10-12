@@ -416,6 +416,7 @@
   "stabllityStyle": "",
   "legacyTranslation": false,
   "llmTranslationTarget": "message",
+  "translatorHistoryMaxTokens": 2048,
   "comfyUiUrl": "http://localhost:8188",
   "comfyConfig": {
     "workflow": "",

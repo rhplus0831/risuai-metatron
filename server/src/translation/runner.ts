@@ -9,7 +9,12 @@ import { SECTION_KIND } from "../../../shared/sections.ts";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
-import { runTranslatorPipeline, translateProtectingLines } from "../../../shared/translation/pipeline.ts";
+import { buildTranslatorHistory, type TranslatorHistory } from "../../../shared/translation/historySlots.ts";
+import {
+    runTranslatorPipeline,
+    translateProtectingLines,
+    translatorHistorySlotCounts,
+} from "../../../shared/translation/pipeline.ts";
 import { readChatTranslationSettings, resolveTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { ResourceBatchConflictError, ResourceEpochError, type ResourceStore } from "../data/resourceStore.ts";
@@ -25,6 +30,7 @@ import { collectSecrets, createRedactor } from "../llm/redact.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, RequestTargetGoneError, tokenScopeFor } from "../llm/settings.ts";
+import type { TokenCounter } from "../prompt/tokens.ts";
 
 /** How long one translation may run, from its start; past it the run ends (504) and writes nothing. */
 export const TRANSLATION_DEADLINE_MS = 10 * 60_000;
@@ -119,6 +125,8 @@ export type TranslationRunner = ReturnType<typeof createTranslationRunner>;
  * - The requests run through the request layer in-process (`runInJob`) as a detached job without a
  *   tab: no plugin interceptor, plugin provider, `request` trigger, tool, or inlay. CBS (stop strings,
  *   JSON schema settings) is evaluated over the chat with a run-wide budget and cannot write.
+ * - The history slots (`docs/plan/translation.md` slice 3.3) are built from the run's committed chat
+ *   copy, once, when the first pipeline run starts, with the main model's tokenizer (`tokens`).
  */
 export function createTranslationRunner(deps: {
     store: ResourceStore;
@@ -126,6 +134,8 @@ export function createTranslationRunner(deps: {
     gate: MaintenanceGate;
     lock: Pick<MessageGuard, "holder">;
     llm: Pick<LlmRequests, "runInJob">;
+    /** The history slots' token counts (the app's counter). */
+    tokens: Pick<TokenCounter, "count">;
     rootDir: string;
     now?: () => number;
 }) {
@@ -238,9 +248,41 @@ export function createTranslationRunner(deps: {
         });
 
         const translatorNote = translatorNoteOf(scope);
+        // The history slots of the message (slice 3.3), from the scope's chat copy (the one `message`
+        // comes from), built once for every part and step, when the first pipeline run starts: a text
+        // that sends nothing counts nothing. Each count yields a turn and checks the run before and
+        // after it (a Google count cannot be aborted; one in flight may outlive an ended run, which
+        // still counts against capacity until it settles).
+        const historyCounts = translatorHistorySlotCounts(preset.steps);
+        const tokenScope = tokenScopeFor(db);
+        let history: Promise<TranslatorHistory> | undefined;
+        const historyOf = (): Promise<TranslatorHistory> | undefined => {
+            if (historyCounts.length === 0) {
+                return undefined;
+            }
+            history ??= (async () => {
+                const messages = scopeChat(scope)?.message ?? [];
+                const built = await buildTranslatorHistory({
+                    messages,
+                    messageIndex: messages.indexOf(message),
+                    counts: historyCounts,
+                    maxTokens: scope.db.translatorHistoryMaxTokens,
+                    countTokens: async (text) => {
+                        await new Promise<void>((resolve) => setImmediate(resolve));
+                        assertLive(life);
+                        const count = await deps.tokens.count(text, tokenScope);
+                        assertLive(life);
+                        return count;
+                    },
+                });
+                assertLive(life);
+                return built;
+            })();
+            return history;
+        };
         // One pipeline run over `sourceText`. Every run of this message shares the controller, the
-        // deadline, the job id, the CBS budget, and the single write below.
-        const translateText = (sourceText: string) =>
+        // deadline, the job id, the CBS budget, the history, and the single write below.
+        const translateText = async (sourceText: string) =>
             runTranslatorPipeline(
                 {
                     steps: preset.steps,
@@ -248,6 +290,7 @@ export function createTranslationRunner(deps: {
                     to,
                     from,
                     translatorNote,
+                    history: await historyOf(),
                 },
                 async ({ messages, maxResponse, model }) => {
                     assertLive(life);

@@ -1,4 +1,8 @@
 import type { SectionResource } from "../../../../shared/resources.ts";
+import {
+    DEFAULT_TRANSLATOR_HISTORY_MAX_TOKENS,
+    translatorHistoryMaxTokens,
+} from "../../../../shared/translation/historySlots.ts";
 import { isPlainObject, normalizeSection, type SectionSpec } from "./shared.ts";
 
 /**
@@ -96,6 +100,7 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
     translateBeforeHTMLFormatting: ["boolean"],
     autoTranslateCachedOnly: ["boolean"],
     llmTranslationTarget: ["string", "message"],
+    translatorHistoryMaxTokens: ["number", DEFAULT_TRANSLATOR_HISTORY_MAX_TOKENS],
     hypaV3: ["boolean"],
     useExperimentalGoogleTranslator: ["boolean", false],
     playMessageOnTranslateEnd: ["boolean"],
@@ -121,6 +126,8 @@ export function normalizeMemoryTranslateMedia(input: unknown): SectionResource<"
     if (record.llmTranslationTarget !== "message" && record.llmTranslationTarget !== "rendered") {
         record.llmTranslationTarget = "message";
     }
+    // `docs/plan/translation.md` slice 3.3: a history budget at or below 0 reads as the default.
+    record.translatorHistoryMaxTokens = translatorHistoryMaxTokens(record.translatorHistoryMaxTokens);
     // The NAI v4 fields, added to a config saved before them (the `setDatabase` migration).
     const nai = record.NAIImgConfig;
     if (isPlainObject(nai) && (nai.v4_prompt === undefined || nai.v4_prompt === null)) {

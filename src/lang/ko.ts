@@ -193,11 +193,13 @@ export const languageKorean = {
         translatorSendTextAsIs:
             "켜면 LLM 번역기가 텍스트 전체를 프리셋의 단계에 한 번 보내고(단계마다 요청 하나) 응답을 그대로 씁니다. 끄면 메시지의 저장 번역을 문단별로 만듭니다. 빈 줄과 에셋 줄({{img, {{raw, {{video, {{audio}})에서 텍스트를 나누고, 이 줄은 번역하지 않고 그대로 두며, 나머지 부분을 하나씩 따로 번역합니다. 그대로 둔 줄이 연달아 있으면 그 사이에 빈 줄이 하나 더 생기고, 앞뒤 공백은 잘립니다. 이때 입력·추천 답변·TTS 번역도 부분별로 번역하고, 렌더링 결과와 요약을 번역할 때는 <risu-style> 블록을 요청에서 빼 둡니다. 어느 쪽이든 응답의 추론 블록은 제거되고 번역 표시 스크립트는 적용됩니다.",
         translatorPrompt:
-            "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 슬롯: 목적 언어 {{slot}}, 원문 언어 {{slot::from}}, 콘텐츠 {{slot::content}}, 번역자 노트 {{slot::tnote}}. ChatML 형식을 쓰면 모든 메시지를 프롬프트가 직접 정합니다. ChatML이 아니면 프롬프트가 시스템 메시지가 되고 콘텐츠가 사용자 메시지로 이어지는데, 프롬프트에 {{slot::content}}(또는 {{slot::prev}}, {{slot::out::KEY}})가 있으면 이어 보내지 않습니다. 이 프롬프트에서는 CBS가 처리되지 않으며, 응답의 `<Thoughts>`와 `<think>` 블록은 제거됩니다.",
+            "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 슬롯: 목적 언어 {{slot}}, 원문 언어 {{slot::from}}, 콘텐츠 {{slot::content}}, 번역자 노트 {{slot::tnote}}. {{slot::history::N}}와 {{slot::historytrans::N}}(N은 1부터 50까지)에는 번역하는 메시지 앞의 메시지 N개가 `user:`/`char:` 블록으로 들어갑니다. 각각 원문과 저장된 번역이며, 지금 번역이 없는 메시지는 빈 블록이 됩니다. 비활성화된 메시지와 코멘트는 건너뛰고, AI용 메시지 자르기(Cut Messages for AI)로 표시한 메시지에서 멈춥니다. 서버가 메시지를 번역해 저장할 때만 번역 기록 최대 토큰 안에서 채워지고, 다른 곳에서는 비어 있습니다. ChatML 형식을 쓰면 모든 메시지를 프롬프트가 직접 정합니다. ChatML이 아니면 프롬프트가 시스템 메시지가 되고 콘텐츠가 사용자 메시지로 이어지는데, 프롬프트에 {{slot::content}}(또는 {{slot::prev}}, {{slot::out::KEY}})가 있으면 이어 보내지 않습니다. 이 프롬프트에서는 CBS가 처리되지 않으며, 응답의 `<Thoughts>`와 `<think>` 블록은 제거됩니다.",
         translateBeforeHTMLFormatting:
             "활성화하면 정규식 스크립트와 HTML 포맷팅 전에 텍스트를 번역합니다. 토큰이 줄어들 수 있지만 포맷이 깨질 수 있습니다.",
         autoTranslateCachedOnly:
             "자동 번역 옵션이 켜진 상태에서 활성화하면, 사용자가 이전에 번역한 메시지만 자동으로 번역됩니다.",
+        translatorHistoryMaxTokens:
+            "번역 프롬프트의 {{slot::history::N}}, {{slot::historytrans::N}} 슬롯 하나하나의 토큰 한도입니다. 메인 모델의 토크나이저로 세며, 슬롯에 들어갈 메시지들(원문 블록과 번역 블록을 합친 것)이 한도를 넘는 동안 가장 오래된 메시지부터 통째로 뺍니다. 요청의 나머지 부분은 세지 않습니다. 서버가 메시지를 번역해 저장할 때만 쓰입니다.",
         llmTranslationTarget:
             "메시지 원문(메시지에 저장): 모델이 서버에서 메시지 원문을 번역하고, 번역은 메시지와 함께 저장되어 모든 기기에서 보입니다. 표시 스크립트가 덧붙이는 텍스트(예: 상태창)는 번역되지 않습니다. 메시지를 수정하면 번역이 오래된 것이 되므로 다시 번역하세요. 자동 번역을 켜면 저장된 번역이 있는 메시지는 번역을 보여 줍니다. 아직 자동으로 번역하지는 않습니다.\n\n렌더링 결과(이 브라우저): 모델이 이 브라우저에서 표시되는 메시지를 번역하고, 결과는 이 브라우저에만 캐시됩니다.",
         presetChain:
@@ -1342,6 +1344,7 @@ export const languageKorean = {
     retranslate: "다시 번역",
     retranslateConfirm: "이 메시지를 다시 번역할까요? 지금 번역은 새 번역으로 바뀝니다.",
     llmTranslationTarget: "번역 대상",
+    translatorHistoryMaxTokens: "번역 기록 최대 토큰",
     llmTranslationTargetMessage: "메시지 원문 (메시지에 저장)",
     llmTranslationTargetRendered: "렌더링 결과 (이 브라우저)",
     translationFailed: "번역 실패",

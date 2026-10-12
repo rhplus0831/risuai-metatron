@@ -704,3 +704,61 @@ describe("Send Text As-Is", () => {
         expect(await getLLMCache("b")).toBe("B");
     });
 });
+
+// `docs/plan/translation.md` slice 3.3: the tab passes no history, so a prompt's history slots are
+// empty in its requests while the current input is kept; its cache key is deliberately unchanged (the
+// pre-3.3 formula over the pipeline, the languages, and the note), so an entry cached under a prompt
+// with a literal history slot is still served, and `regenerate` replaces it.
+describe("the history slots in the tab", () => {
+    const historyPreset = () =>
+        createTranslatorPreset("History", {
+            id: "hist",
+            steps: [
+                {
+                    id: "h1",
+                    name: "Draft",
+                    prompt: "H[{{slot::history::3}}][{{slot::historytrans::2}}][{{slot::history::0}}] {{slot::content}}",
+                    maxResponse: 11,
+                },
+                { id: "h2", name: "Polish", prompt: "Only {{slot::history::1}} into {{slot}}", maxResponse: 22 },
+            ],
+        });
+
+    it("expands the history slots to empty, keeps the input, keeps the old key, serves an entry cached under it, and replaces it on regenerate", async () => {
+        settings.translatorPresets.items.push(historyPreset());
+        settings.translatorPresets.selectedId = "hist";
+        const key = llmTranslationCacheKey("Hello");
+        const signature = JSON.stringify({
+            pipeline: translatorPipelineSignature(historyPreset().steps),
+            to: "ko",
+            from: "en",
+            translatorNote: "",
+        });
+        expect(key).toBe(`llm:${translationSourceHash(signature)}:Hello`);
+
+        // An entry from before the slots had a meaning is served as it is.
+        store.set(key, "OLD");
+        await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("OLD");
+        expect(request.requestChatData).not.toHaveBeenCalled();
+
+        // Regenerate: the pipeline runs with the slots empty, the source kept, and the entry replaced.
+        succeed("D", "NEW");
+        await expect(translateHTML("Hello", false, "", -1, true)).resolves.toBe("NEW");
+        expect(requests()).toEqual([
+            { mode: "translate", maxTokens: 11, messages: [{ role: "system", content: "H[][][] Hello" }] },
+            {
+                mode: "translate",
+                maxTokens: 22,
+                messages: [
+                    { role: "system", content: "Only  into ko" },
+                    { role: "user", content: "D" },
+                ],
+            },
+        ]);
+        expect(await getLLMCache("Hello")).toBe("NEW");
+        expect(store.get(key)).toBe("NEW");
+        await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("NEW");
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+});

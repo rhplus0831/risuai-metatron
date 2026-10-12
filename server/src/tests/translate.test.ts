@@ -16,6 +16,7 @@ import type { GenerationRunner, RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock, type GenerationLock } from "../jobs/generationLock.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec } from "../llm/requests.ts";
+import type { TokenCountScope } from "../prompt/tokens.ts";
 import {
     createTranslationRunner,
     MAX_RUNNING_TRANSLATIONS,
@@ -544,6 +545,10 @@ describe("createTranslationRunner over a fake request layer", () => {
         type: "success",
         result: "번역",
     });
+    /** Every `tokens.count` call (the history slots of slice 3.3), in order. */
+    let counts: { text: string; scope: TokenCountScope }[] = [];
+    /** What `tokens.count` answers (a test sets it): one token per character by default. */
+    let count: (text: string, scope: TokenCountScope) => Promise<number> = async (text) => text.length;
     const gate: MaintenanceGate = {
         get active() {
             return gateClosed;
@@ -655,6 +660,12 @@ describe("createTranslationRunner over a fake request layer", () => {
                     return answer(spec);
                 },
             },
+            tokens: {
+                count: (text, scope) => {
+                    counts.push({ text, scope });
+                    return count(text, scope);
+                },
+            },
             rootDir,
             ...options,
         });
@@ -671,6 +682,8 @@ describe("createTranslationRunner over a fake request layer", () => {
         gateClosed = false;
         calls = [];
         answer = async () => ({ type: "success", result: "번역" });
+        counts = [];
+        count = async (text) => text.length;
         store?.close();
     });
 
@@ -1315,5 +1328,313 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(message("r2").translation).toMatchObject({ text: " 둘 ", presetId: "asis" });
         expect(calls).toHaveLength(3);
         await until(() => runner.workingCount() === 0);
+    });
+
+    // `docs/plan/translation.md` slice 3.3: the history slots. The runner builds the history of the
+    // message from the run's chat copy once, when the first pipeline run starts, with `tokens` in the
+    // main model's scope, and hands it to every part and step in both modes; a text that sends nothing
+    // counts nothing. Each count yields a turn and checks the run before and after it, so a run ended
+    // during a held count settles its callers at once, stays counted until the count settles, and
+    // then neither counts, requests, nor writes; a tokenizer failure is an unexpected failure (500).
+    const HISTORY_STEPS = [
+        { prompt: "A[{{slot::history::10}}] {{slot::content}}", outputKey: "draft" },
+        {
+            prompt: "B[{{slot::historytrans::10}}] {{slot::prev}}",
+            model: { mode: "profile", profileId: "profile-b" } as const,
+        },
+    ];
+    /** Selects a `hist` preset of `steps`. */
+    function useHistoryPreset(
+        steps: NonNullable<Parameters<typeof createTranslatorPreset>[1]>["steps"],
+        sendTextAsIs?: boolean,
+    ) {
+        patch("translatorPresets", {
+            items: [createTranslatorPreset("Hist", { id: "hist", steps, sendTextAsIs })],
+            selectedId: "hist",
+        });
+    }
+    /**
+     * Appends to chat `k`: an `allBefore` row, `h0` (translated), a comment, `h2` (raw CBS, no
+     * translation), a disabled row, the target `t` ("target\n\nsecond"), and a row after it.
+     */
+    function appendHistoryRows() {
+        chatBatch([
+            {
+                op: "append",
+                messages: [
+                    { ...m("cut", "cut here"), disabled: "allBefore" },
+                    { ...m("h0", "hello"), translation: tr("안녕", "hello") },
+                    { ...m("h1", "a comment", "char"), isComment: true },
+                    m("h2", "world {{char}}", "char"),
+                    { ...m("h3", "off"), disabled: true },
+                    m("t", "target\n\nsecond", "char"),
+                    m("after", "later"),
+                ],
+                anchor: { end: true },
+            },
+        ]);
+    }
+    const HISTORY = "user: hello\n\n---\n\nchar: world {{char}}\n\n---\n\n";
+    const HISTORY_TRANS = "user: 안녕\n\n---\n\nchar: \n\n---\n\n";
+    const BLOCKS = [
+        "user: hello\n\n---\n\n",
+        "user: 안녕\n\n---\n\n",
+        "char: world {{char}}\n\n---\n\n",
+        "char: \n\n---\n\n",
+    ];
+    /** A `tokens.count` whose first call stays pending until the test settles it; the rest count characters. */
+    function holdFirstCount() {
+        const held = deferred<number>();
+        let first = true;
+        count = async (text) => {
+            if (first) {
+                first = false;
+                return held.promise;
+            }
+            return text.length;
+        };
+        return held;
+    }
+
+    it("fills the history slots from the run's chat copy, built once for every part and step in the main model's token scope, in both modes", async () => {
+        build({ now: () => 5 });
+        appendHistoryRows();
+        useHistoryPreset(HISTORY_STEPS);
+        const profiles = single("modelProfiles");
+        store.applyChanges({
+            ops: [
+                {
+                    kind: kindOf("modelProfiles"),
+                    id: "main",
+                    baseRevision: profiles.revision,
+                    data: [
+                        ...profiles.data,
+                        { ...profiles.data[0], id: "profile-b", name: "B", modelId: "other-model" },
+                    ],
+                },
+            ],
+        });
+        answer = async () => ({ type: "success", result: `out${calls.length}` });
+
+        expect(await runner.translate(req("t"))).toEqual({
+            ok: true,
+            outcome: "applied",
+            translation: {
+                text: "out2\n\nout4",
+                sourceHash: translationSourceHash("target\n\nsecond"),
+                presetId: "hist",
+                targetLanguage: "ko",
+                translatedAt: 5,
+            },
+        });
+        // The same history in every part's steps: the sources in step A, the translations in step B.
+        expect(contents()).toEqual([
+            `A[${HISTORY}] target`,
+            `B[${HISTORY_TRANS}] out1`,
+            `A[${HISTORY}] second`,
+            `B[${HISTORY_TRANS}] out3`,
+        ]);
+        // Two entries, two blocks each, counted once for the whole run, in the main model's scope,
+        // although step B runs on another profile.
+        expect(counts.map((entry) => entry.text)).toEqual(BLOCKS);
+        expect(calls[1].arg.profileId).toBe("profile-b");
+        for (const entry of counts) {
+            expect(entry.scope).toEqual(calls[0].tokenScope);
+            expect(entry.scope.aiModel).toBe(profiles.data[0].modelId);
+            expect(entry.scope.aiModel).not.toBe("other-model");
+        }
+        expect(message("t").translation?.text).toBe("out2\n\nout4");
+        expect(runner.workingCount()).toBe(0);
+
+        // Send Text As-Is: one run over the whole source, the same history, built once again.
+        calls = [];
+        counts = [];
+        useHistoryPreset(HISTORY_STEPS, true);
+        expect(await runner.translate(req("t", { force: true }))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: "out2" },
+        });
+        expect(contents()).toEqual([`A[${HISTORY}] target\n\nsecond`, `B[${HISTORY_TRANS}] out1`]);
+        expect(counts.map((entry) => entry.text)).toEqual(BLOCKS);
+        expect(runner.workingCount()).toBe(0);
+    });
+
+    it("counts nothing for a prompt without a valid history slot (an invalid count fills in empty), for a protected-only text, or for a disabled step's slot", async () => {
+        build();
+        appendHistoryRows();
+        useHistoryPreset([
+            { prompt: "X[{{slot::history::0}}][{{slot::history}}][{{slot::historytrans::51}}] {{slot::content}}" },
+        ]);
+        expect(await runner.translate(req("t"))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()).toEqual(["X[][{{slot::history}}][] target", "X[][{{slot::history}}][] second"]);
+        expect(counts).toEqual([]);
+
+        // A protected-only text with a history prompt: no part is sent, so nothing is counted.
+        useHistoryPreset(HISTORY_STEPS);
+        chatBatch([{ op: "append", messages: [m("q", "\n{{img::a}}\n", "char")], anchor: { end: true } }]);
+        expect(await runner.translate(req("q"))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: "{{img::a}}" },
+        });
+        expect(counts).toEqual([]);
+        expect(calls).toHaveLength(2);
+
+        // A history slot in a step that does not run is not counted.
+        useHistoryPreset([{ prompt: "Y {{slot::content}}" }, { prompt: "{{slot::history::3}}", enabled: false }]);
+        expect(await runner.translate(req("t", { force: true }))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents().at(-1)).toBe("Y second");
+        expect(counts).toEqual([]);
+    });
+
+    it("trims the oldest whole entries to translatorHistoryMaxTokens as stored, charging both blocks; a budget at or below 0 is stored as 2048", async () => {
+        build();
+        appendHistoryRows();
+        useHistoryPreset([{ prompt: "A[{{slot::history::10}}|{{slot::historytrans::10}}] {{slot::content}}" }], true);
+        // The entries cost 18 + 15 = 33 and 27 + 13 = 40 (one token per character, the empty
+        // translation block included): a budget of exactly 40 keeps the newest entry alone.
+        patch("memoryTranslateMedia", { translatorHistoryMaxTokens: 40 });
+        expect(await runner.translate(req("t"))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()).toEqual(["A[char: world {{char}}\n\n---\n\n|char: \n\n---\n\n] target\n\nsecond"]);
+        expect(counts.map((entry) => entry.text)).toEqual(BLOCKS);
+        // One token less: the newest entry alone passes the budget, both slots are empty.
+        patch("memoryTranslateMedia", { translatorHistoryMaxTokens: 39 });
+        expect(await runner.translate(req("t", { force: true }))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()[1]).toBe("A[|] target\n\nsecond");
+        // The normalizer stores a value at or below 0 as the default, under which both entries fit.
+        patch("memoryTranslateMedia", { translatorHistoryMaxTokens: 0 });
+        expect(single("memoryTranslateMedia").data.translatorHistoryMaxTokens).toBe(2048);
+        expect(await runner.translate(req("t", { force: true }))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()[2]).toBe(`A[${HISTORY}|${HISTORY_TRANS}] target\n\nsecond`);
+        expect(runner.workingCount()).toBe(0);
+    });
+
+    it("builds from the run's chat copy: history rows edited during a held count do not change the run, and the target's own edit makes the write ignored", async () => {
+        build();
+        appendHistoryRows();
+        useHistoryPreset([{ prompt: "A[{{slot::history::10}}] {{slot::content}}" }], true);
+        const held = holdFirstCount();
+        const result = runner.translate(req("t"));
+        await until(() => counts.length === 1);
+        expect(calls).toHaveLength(0);
+        chatBatch([
+            { op: "setText", id: "h0", text: "changed" },
+            { op: "setText", id: "h2", text: "changed too" },
+        ]);
+        held.resolve(1);
+        expect(await result).toMatchObject({ ok: true, outcome: "applied", translation: { text: "번역" } });
+        expect(contents()).toEqual([`A[${HISTORY}] target\n\nsecond`]);
+        expect(message("h0").data).toBe("changed");
+        expect(message("t").translation?.text).toBe("번역");
+
+        // The target itself edited during the held count: the run finishes on the captured text and
+        // its write is ignored.
+        calls = [];
+        counts = [];
+        const again = holdFirstCount();
+        const second = runner.translate(req("t", { force: true }));
+        await until(() => counts.length === 1);
+        chatBatch([{ op: "setText", id: "t", text: "target edited" }]);
+        again.resolve(1);
+        expect(await second).toEqual({ ok: true, outcome: "ignored", translation: null });
+        expect(contents()).toEqual(["A[user: changed\n\n---\n\nchar: changed too\n\n---\n\n] target\n\nsecond"]);
+        expect(message("t").translation?.text).toBe("번역");
+        expect(message("t").translation?.sourceHash).toBe(translationSourceHash("target\n\nsecond"));
+        expect(runner.workingCount()).toBe(0);
+    });
+
+    it("a count held past the deadline: the callers settle 504 at once, the work stays counted, and the late count brings no further count, request, or write", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        build();
+        appendHistoryRows();
+        useHistoryPreset([{ prompt: "A[{{slot::history::10}}] {{slot::content}}" }], true);
+        const held = holdFirstCount();
+        const result = runner.translate(req("t"));
+        await until(() => counts.length === 1);
+        expect(runner.runningCount()).toBe(1);
+        vi.advanceTimersByTime(TRANSLATION_DEADLINE_MS);
+        expect(await result).toEqual({ ok: false, status: 504, error: "The translation took too long" });
+        expect(runner.runningCount()).toBe(0);
+        expect(runner.workingCount()).toBe(1);
+        held.resolve(1);
+        await until(() => runner.workingCount() === 0);
+        expect(counts).toHaveLength(1);
+        expect(calls).toHaveLength(0);
+        expect(message("t").translation).toBeUndefined();
+    });
+
+    it("the deadline read from the clock during a held count: 504 once the count settles, nothing requested or written", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        build();
+        appendHistoryRows();
+        useHistoryPreset([{ prompt: "A[{{slot::history::10}}] {{slot::content}}" }], true);
+        const held = holdFirstCount();
+        const result = runner.translate(req("t"));
+        await until(() => counts.length === 1);
+        vi.setSystemTime(Date.now() + TRANSLATION_DEADLINE_MS);
+        held.resolve(1);
+        expect(await result).toEqual({ ok: false, status: 504, error: "The translation took too long" });
+        await until(() => runner.workingCount() === 0);
+        expect(counts).toHaveLength(1);
+        expect(calls).toHaveLength(0);
+        expect(message("t").translation).toBeUndefined();
+    });
+
+    it("maintenance and shutdown during a held count settle the callers 503 at once; a late rejection or resolution counts, requests, and writes nothing more", async () => {
+        build();
+        appendHistoryRows();
+        useHistoryPreset([{ prompt: "A[{{slot::history::10}}] {{slot::content}}" }], true);
+        const held = holdFirstCount();
+        const result = runner.translate(req("t"));
+        await until(() => counts.length === 1);
+        runner.pause("The server data is being replaced");
+        expect(await result).toEqual({ ok: false, status: 503, error: "The server data is being replaced" });
+        expect(runner.runningCount()).toBe(0);
+        expect(runner.workingCount()).toBe(1);
+        held.reject(new Error("the count failed late"));
+        await until(() => runner.workingCount() === 0);
+        expect(counts).toHaveLength(1);
+        expect(calls).toHaveLength(0);
+        expect(message("t").translation).toBeUndefined();
+        runner.resume();
+
+        counts = [];
+        const again = holdFirstCount();
+        const second = runner.translate(req("t"));
+        await until(() => counts.length === 1);
+        runner.beginShutdown();
+        expect(await second).toEqual({ ok: false, status: 503, error: "The server is shutting down" });
+        expect(runner.workingCount()).toBe(1);
+        again.resolve(1);
+        await runner.drain();
+        expect(runner.workingCount()).toBe(0);
+        expect(counts).toHaveLength(1);
+        expect(calls).toHaveLength(0);
+        expect(message("t").translation).toBeUndefined();
+    });
+
+    it("a tokenizer failure is an unexpected failure: 500 with only the error name logged, nothing requested or written; the next run counts again", async () => {
+        build();
+        appendHistoryRows();
+        useHistoryPreset(HISTORY_STEPS);
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        count = async () => {
+            throw new Error("tokenizer exploded with details");
+        };
+        expect(await runner.translate(req("t"))).toEqual({ ok: false, status: 500, error: "The translation failed" });
+        expect(logged).toHaveBeenCalledWith("[translate] unexpected failure:", "Error");
+        expect(logged.mock.calls.flat().join(" ")).not.toContain("exploded");
+        logged.mockRestore();
+        expect(counts).toHaveLength(1);
+        expect(calls).toHaveLength(0);
+        expect(message("t").translation).toBeUndefined();
+        expect(runner.runningCount()).toBe(0);
+        expect(runner.workingCount()).toBe(0);
+
+        count = async (text) => text.length;
+        expect(await runner.translate(req("t"))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(counts).toHaveLength(5);
+        expect(contents()[0]).toBe(`A[${HISTORY}] target`);
     });
 });

@@ -208,6 +208,45 @@ describe(".risutl round trip through the real codecs", () => {
         });
     });
 
+    // Translation slice 3.3: the history slots are prompt text; the budget is a global setting, so a
+    // file carries no budget field and the version rules do not change.
+    it("round-trips prompts with history slots through both versions as prompt text alone, without a budget field", async () => {
+        const historyPrompt =
+            "Context:\n{{slot::history::5}}\n{{slot::historytrans::05}}\n{{slot::history::0}}\n{{slot::content}}";
+        const one = createTranslatorPreset("History ✓", { prompt: historyPrompt, maxResponse: 3 });
+        const oneBytes = await encodeTranslatorPresetFile(one);
+        expect(await decodeRisutl(oneBytes, 1)).toStrictEqual({
+            name: "History ✓",
+            prompt: historyPrompt,
+            maxResponse: 3,
+        });
+        expect(withoutIds(await decodeTranslatorPresetFile(oneBytes))).toStrictEqual(withoutIds(one));
+
+        const two = createTranslatorPreset("History steps", {
+            steps: [
+                { name: "Draft", prompt: `A ${historyPrompt}`, maxResponse: 4, outputKey: "draft" },
+                { name: "Polish", prompt: "B {{slot::historytrans::50}} {{slot::prev}}", maxResponse: 5 },
+            ],
+        });
+        const twoBytes = await encodeTranslatorPresetFile(two);
+        const payload = await decodeRisutl(twoBytes, 2);
+        expect(Object.keys(payload).sort()).toEqual(["name", "steps"]);
+        expect((payload.steps as Record<string, unknown>[]).map((step) => Object.keys(step).sort())).toEqual([
+            ["enabled", "maxResponse", "model", "name", "outputKey", "prompt"],
+            ["enabled", "maxResponse", "model", "name", "prompt"],
+        ]);
+        expect((payload.steps as { prompt: string }[]).map((step) => step.prompt)).toEqual([
+            `A ${historyPrompt}`,
+            "B {{slot::historytrans::50}} {{slot::prev}}",
+        ]);
+        expect(JSON.stringify(payload)).not.toContain("translatorHistoryMaxTokens");
+        const decoded = await decodeTranslatorPresetFile(twoBytes);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(two));
+        expect(withoutIds(await decodeTranslatorPresetFile(await encodeTranslatorPresetFile(decoded)))).toStrictEqual(
+            withoutIds(two),
+        );
+    });
+
     it("rejects a file whose payload is not a translator preset, after the real decryption", async () => {
         const preset = createTranslatorPreset("P", { prompt: "x", maxResponse: 1 });
         const bytes = await encodeTranslatorPresetFile(preset);

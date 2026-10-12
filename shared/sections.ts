@@ -171,6 +171,7 @@ export const SECTION_FIELDS = {
         "translateBeforeHTMLFormatting",
         "autoTranslateCachedOnly",
         "llmTranslationTarget",
+        "translatorHistoryMaxTokens",
         "hypaV3",
         "useExperimentalGoogleTranslator",
         "playMessageOnTranslateEnd",

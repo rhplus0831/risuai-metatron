@@ -13,7 +13,16 @@ vi.mock("../alert", () => ({
     alertError: vi.fn(),
     alertWait: vi.fn(),
 }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn() }));
+vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+// `./utils` (the wrapper's write) reaches the settings views and the stores, whose module effect is
+// not under test.
+vi.mock("../process/modules", () => ({
+    moduleUpdate: vi.fn(),
+    getModules: vi.fn(() => []),
+    getModuleLorebooks: vi.fn(() => []),
+    getModuleAssets: vi.fn(() => []),
+    getModuleRegexScripts: vi.fn(() => []),
+}));
 vi.mock("../util", () => ({ sleep: vi.fn(async () => undefined), selectFileByDom: vi.fn() }));
 vi.mock("../translator/translator", () => ({
     exportLLMCacheAsJSON: vi.fn(),
@@ -21,9 +30,11 @@ vi.mock("../translator/translator", () => ({
     clearLLMCache: vi.fn(),
 }));
 
+import { translatorHistoryMaxTokens } from "../../../shared/translation/historySlots.ts";
 import { languageEnglish } from "src/lang/en";
 import { languageSettingsItems } from "./languageSettingsData.svelte";
 import type { SettingContext, SettingItem } from "./types";
+import { getSettingValue, updateSettingValue } from "./utils";
 
 type Media = { translator: string; translatorType: string; llmTranslationTarget: string };
 
@@ -110,5 +121,83 @@ describe("the language page's stored-translation items", () => {
                 expect(button.condition ? button.condition(ctx(media)) : true, `${button.id} ${target}`).toBe(true);
             }
         }
+    });
+});
+
+// `docs/plan/translation.md` slice 3.3: the history slots' budget, `lang.translatorHistoryMaxTokens`,
+// a number item shown for the LLM translator on the stored translation only; its own getter reads
+// the field as stored and its setter writes only what the server normalizer keeps (a finite number
+// above 0, exactly), through the wrapper's `updateSettingValue`.
+describe("the history budget item", () => {
+    const BUDGET = "lang.translatorHistoryMaxTokens";
+    const LLM_MESSAGE: Media = { translator: "ko", translatorType: "llm", llmTranslationTarget: "message" };
+    /** A context whose `memoryTranslateMedia` record the test can read back. */
+    const budgetCtx = (translatorHistoryMaxTokens: unknown, media: Media = LLM_MESSAGE) => {
+        const record = { ...media, translatorHistoryMaxTokens };
+        return { ctx: { settings: { memoryTranslateMedia: record } } as unknown as SettingContext, record };
+    };
+
+    it("is a number item right after the target select, with its label and help, a minimum hint of 1, and no bound key", () => {
+        const budget = item(BUDGET);
+        expect(budget.type).toBe("number");
+        expect(budget.labelKey).toBe("translatorHistoryMaxTokens");
+        expect(budget.helpKey).toBe("translatorHistoryMaxTokens");
+        expect(budget.options).toEqual({ min: 1 });
+        expect(budget.bindKey).toBeUndefined();
+        expect(budget.bindPath).toBeUndefined();
+        expect(budget.getValue).toBeTypeOf("function");
+        expect(budget.setValue).toBeTypeOf("function");
+        expect(languageEnglish.translatorHistoryMaxTokens).toBeTypeOf("string");
+        expect(languageEnglish.help.translatorHistoryMaxTokens).toBeTypeOf("string");
+        expect(languageEnglish.help.translatorPrompt).toContain("{{slot::history::N}}");
+        expect(languageEnglish.help.translatorPrompt).toContain("{{slot::historytrans::N}}");
+        const ids = languageSettingsItems.map((entry) => entry.id);
+        expect(ids.indexOf(BUDGET)).toBe(ids.indexOf("lang.llmTranslationTarget") + 1);
+    });
+
+    it("is shown for the LLM translator on the stored translation only", () => {
+        expect(shown(BUDGET, LLM_MESSAGE)).toBe(true);
+        expect(shown(BUDGET, { ...LLM_MESSAGE, llmTranslationTarget: "rendered" })).toBe(false);
+        expect(shown(BUDGET, { ...LLM_MESSAGE, translatorType: "google" })).toBe(false);
+        expect(shown(BUDGET, { ...LLM_MESSAGE, translatorType: "deepl", llmTranslationTarget: "rendered" })).toBe(
+            false,
+        );
+        expect(shown(BUDGET, { ...LLM_MESSAGE, translator: "" })).toBe(false);
+    });
+
+    it("reads the field as stored and writes only a finite number above 0, exactly, through the wrapper's write", () => {
+        const budget = item(BUDGET);
+        const { ctx, record } = budgetCtx(2048);
+        expect(getSettingValue(budget, ctx)).toBe(2048);
+        // What the normalizer would not keep never enters the record: a cleared field (NaN), 0, a
+        // negative, a nonfinite, or a non-number.
+        for (const value of [
+            0,
+            -0,
+            -1,
+            -0.5,
+            Number.NaN,
+            Infinity,
+            -Infinity,
+            "5",
+            "",
+            null,
+            undefined,
+            true,
+            [],
+            {},
+        ]) {
+            updateSettingValue(budget, value, ctx);
+            expect(record.translatorHistoryMaxTokens, String(value)).toBe(2048);
+        }
+        // A valid write lands as it is (no rounding, a fraction kept) and is what the normalizer keeps.
+        for (const value of [1, 0.5, 3000.25, 2048, 1e9]) {
+            updateSettingValue(budget, value, ctx);
+            expect(record.translatorHistoryMaxTokens, String(value)).toBe(value);
+            expect(translatorHistoryMaxTokens(record.translatorHistoryMaxTokens), String(value)).toBe(value);
+            expect(getSettingValue(budget, ctx), String(value)).toBe(value);
+        }
+        // No client-side default: a record without the field reads as it is.
+        expect(getSettingValue(budget, budgetCtx(undefined).ctx)).toBeUndefined();
     });
 });

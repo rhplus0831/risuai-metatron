@@ -1,11 +1,13 @@
 import type { TranslatorStep, TranslatorStepModel } from "../settings.ts";
 import { defaultTranslatorPrompt } from "../translatorPresets.ts";
+import { type TranslatorHistory, type TranslatorHistorySlot, translatorHistoryCount } from "./historySlots.ts";
 
 /**
  * The translator pipeline (`docs/plan/translation.md` slice 1.2): a preset's steps run in order, each
  * one a request whose prompt can name the source, the previous step's output, and earlier named
  * outputs. Pure: the caller sends each step's request (`runTranslatorPipeline`'s `runStep`). CBS is
- * not evaluated anywhere in a translator prompt.
+ * not evaluated anywhere in a translator prompt. The history slots (slice 3.3) fill in from the
+ * caller's `history`, empty without one.
  */
 
 export interface TranslatorChatMessage {
@@ -33,13 +35,37 @@ export interface TranslatorSlotValues {
     from: string;
     /** The character's translator note: `{{slot::tnote}}`. */
     translatorNote: string;
+    /**
+     * The history slots (`{{slot::history::N}}`, `{{slot::historytrans::N}}`, N from 1 to 50,
+     * `historySlots.ts`): only the server runner builds them; without it, and for an invalid N, they
+     * fill in empty.
+     */
+    history?: TranslatorHistory;
 }
 
-/** Every slot, matched in one pass so a filled-in value is never read for slots again. */
-const SLOT_PATTERN = /{{(slot|slot::from|slot::content|solt::content|slot::prev|slot::tnote|slot::out::([^}]+))}}/g;
+/**
+ * Every slot, matched in one pass so a filled-in value is never read for slots again. Groups: 1 the
+ * slot, 2 an output key, 3 a history slot and 4 its count (any text; an invalid one fills in empty).
+ */
+const SLOT_PATTERN =
+    /{{(slot|slot::from|slot::content|solt::content|slot::prev|slot::tnote|slot::out::([^}]+)|slot::(history|historytrans)::([^}]*))}}/g;
 
 /** The slots that carry the input: a prompt holding one sends no separate user message. */
-const INPUT_SLOT_PATTERN = /{{(?:solt::content|slot::(?:content|prev|out::[^}]+))}}/;
+const INPUT_SLOTS = new Set(["slot::content", "solt::content", "slot::prev"]);
+
+/**
+ * Whether `template` holds an input slot (`INPUT_SLOTS` or an output slot), read from the same
+ * one-pass match as `fillTranslatorSlots`: an input slot inside another slot (a malformed history
+ * slot such as `{{slot::history::{{slot::content}}}}`) is not filled, so it does not count.
+ */
+function holdsInputSlot(template: string): boolean {
+    for (const match of template.matchAll(SLOT_PATTERN)) {
+        if (match[2] !== undefined || INPUT_SLOTS.has(match[1])) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /** The steps that run: the enabled ones, else the first step alone. */
 export function translatorStepsToRun<T extends { readonly enabled: boolean }>(steps: readonly T[]): T[] {
@@ -92,24 +118,55 @@ export function parseTranslatorChatML(text: string): TranslatorChatMessage[] | n
 
 /** `template` with its slots filled in; an unknown `{{...}}` is left as it is. */
 export function fillTranslatorSlots(template: string, values: TranslatorSlotValues): string {
-    return template.replace(SLOT_PATTERN, (_match, slot: string, outputKey: string | undefined) => {
-        if (outputKey !== undefined) {
-            return values.outputsByKey.get(outputKey) ?? "";
+    return template.replace(
+        SLOT_PATTERN,
+        (
+            _match,
+            slot: string,
+            outputKey: string | undefined,
+            historySlot: TranslatorHistorySlot | undefined,
+            rawCount: string | undefined,
+        ) => {
+            if (outputKey !== undefined) {
+                return values.outputsByKey.get(outputKey) ?? "";
+            }
+            if (historySlot !== undefined) {
+                const count = translatorHistoryCount(rawCount ?? "");
+                return count === null ? "" : (values.history?.(historySlot, count) ?? "");
+            }
+            switch (slot) {
+                case "slot":
+                    return values.to;
+                case "slot::from":
+                    return values.from;
+                case "slot::content":
+                case "solt::content":
+                    return values.sourceText;
+                case "slot::prev":
+                    return values.prevOutput;
+                default:
+                    return values.translatorNote;
+            }
+        },
+    );
+}
+
+/**
+ * The valid history slot counts (`{{slot::history::N}}`, `{{slot::historytrans::N}}`) in the prompts
+ * of the steps that run (a blank prompt is `defaultTranslatorPrompt`), each once. Read with the same
+ * one-pass match as `fillTranslatorSlots`, so a history slot inside another slot is not counted.
+ */
+export function translatorHistorySlotCounts(steps: readonly TranslatorStep[]): number[] {
+    const counts = new Set<number>();
+    for (const step of translatorStepsToRun(steps)) {
+        for (const match of (step.prompt || defaultTranslatorPrompt).matchAll(SLOT_PATTERN)) {
+            const count = match[3] === undefined ? null : translatorHistoryCount(match[4]);
+            if (count !== null) {
+                counts.add(count);
+            }
         }
-        switch (slot) {
-            case "slot":
-                return values.to;
-            case "slot::from":
-                return values.from;
-            case "slot::content":
-            case "solt::content":
-                return values.sourceText;
-            case "slot::prev":
-                return values.prevOutput;
-            default:
-                return values.translatorNote;
-        }
-    });
+    }
+    return [...counts];
 }
 
 /**
@@ -128,7 +185,7 @@ export function buildTranslatorStepMessages(
     if (parsed) {
         return parsed;
     }
-    if (INPUT_SLOT_PATTERN.test(template)) {
+    if (holdsInputSlot(template)) {
         return [{ role: "system", content: prompt }];
     }
     return [
@@ -255,6 +312,8 @@ export async function runTranslatorPipeline(
         to: string;
         from: string;
         translatorNote: string;
+        /** The history slots' text (the server runner); without it they fill in empty. */
+        history?: TranslatorHistory;
     },
     runStep: (request: TranslatorStepRequest) => Promise<string>,
 ): Promise<string> {
@@ -269,6 +328,7 @@ export async function runTranslatorPipeline(
             to: input.to,
             from: input.from,
             translatorNote: input.translatorNote,
+            history: input.history,
         });
         const output = stripTranslatorReasoning(
             await runStep({ messages, maxResponse: step.maxResponse, model: step.model }),

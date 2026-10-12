@@ -147,6 +147,7 @@ export function createServerContext(options: {
         gate: snapshots.gate,
         lock: generationLock,
         llm: llmRequests,
+        tokens: tokenCounter,
         rootDir: options.rootDir,
     });
     // A restore or an import replaces the settings: live requests end, new ones wait (503).

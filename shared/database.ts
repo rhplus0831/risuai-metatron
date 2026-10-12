@@ -413,6 +413,11 @@ export interface Database {
      * cached in this browser.
      */
     llmTranslationTarget: "message" | "rendered";
+    /**
+     * The token budget of each translator history slot (`docs/plan/translation.md` slice 3.3), counted
+     * with the main model's tokenizer by the server runner: a finite number above 0 (2048 by default).
+     */
+    translatorHistoryMaxTokens: number;
     notification: boolean;
     customFlags: LLMFlags[];
     enableCustomFlags: boolean;

@@ -203,6 +203,28 @@ export const languageSettingsItems: SettingItem[] = [
         },
     },
 
+    // The history slots' budget (`docs/plan/translation.md` slice 3.3): only the server runner builds
+    // them, so it is shown for the stored path. Only a value the normalizer keeps is written (a finite
+    // number above 0); a cleared field writes nothing.
+    {
+        id: "lang.translatorHistoryMaxTokens",
+        type: "number",
+        labelKey: "translatorHistoryMaxTokens",
+        helpKey: "translatorHistoryMaxTokens",
+        classes: "mt-4",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
+            ctx.settings.memoryTranslateMedia.llmTranslationTarget === "message",
+        options: { min: 1 },
+        getValue: (ctx) => ctx.settings.memoryTranslateMedia.translatorHistoryMaxTokens,
+        setValue: (value, ctx) => {
+            if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+                ctx.settings.memoryTranslateMedia.translatorHistoryMaxTokens = value;
+            }
+        },
+    },
+
     {
         id: "lang.googleSourceLang",
         type: "select",

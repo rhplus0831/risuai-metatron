@@ -254,11 +254,13 @@ export const languageEnglish = {
         translatorSendTextAsIs:
             "When on, the LLM translator sends the whole text through the preset's steps once (one request per step) and keeps the reply as it is. When off, a message's stored translation is made paragraph by paragraph: the text is cut at empty lines and at asset lines ({{img, {{raw, {{video, {{audio}}), which are kept untranslated, and each part is translated on its own; two kept lines in a row get an extra blank line between them, and the text is trimmed. The input, suggestion, and TTS translations then also go part by part, and the translation of the rendered output and of summaries keeps <risu-style> blocks out of the request. The reasoning blocks are removed from the reply and the translation display scripts apply either way.",
         translatorPrompt:
-            "The prompt that is used for translation. If it is blank, it will use the default prompt. Slots: {{slot}} for the dest language, {{slot::from}} for the source language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note. You can also use ChatML formating, which sets every message itself. Without ChatML, the prompt is the system message and the content follows as the user message, unless the prompt holds {{slot::content}} (or {{slot::prev}}, or {{slot::out::KEY}}). CBS is not evaluated in this prompt, and `<Thoughts>` and `<think>` blocks are removed from the reply.",
+            "The prompt that is used for translation. If it is blank, it will use the default prompt. Slots: {{slot}} for the dest language, {{slot::from}} for the source language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note. {{slot::history::N}} and {{slot::historytrans::N}} (N from 1 to 50) hold the N messages before the translated one (disabled and comment messages skipped, stopping at a message marked with Cut Messages for AI) as `user:`/`char:` blocks: their text, and their stored translations (an empty block for a message without a current one). They are filled only when the server translates a message to store its translation, within the Translation History Max Tokens budget, and are empty elsewhere. You can also use ChatML formating, which sets every message itself. Without ChatML, the prompt is the system message and the content follows as the user message, unless the prompt holds {{slot::content}} (or {{slot::prev}}, or {{slot::out::KEY}}). CBS is not evaluated in this prompt, and `<Thoughts>` and `<think>` blocks are removed from the reply.",
         translateBeforeHTMLFormatting:
             "If enabled, it will translate the text before Regex scripts and HTML formatting. This could make the token lesser but could break the formatting.",
         autoTranslateCachedOnly:
             "If enabled with Auto Translation option on, it will automatically translate only the messages that the user has translated previously.",
+        translatorHistoryMaxTokens:
+            "The token budget of each {{slot::history::N}} and {{slot::historytrans::N}} slot in a translation prompt, counted with the main model's tokenizer: while a slot's messages (their text and translation blocks together) pass it, the oldest whole messages are left out. It does not cover the rest of the request. Used only when the server translates a message to store it.",
         llmTranslationTarget:
             "Stored on the message: the model translates the message's own text on the server, and the translation is saved with the message, so every device sees it. Text that display scripts add (for example a status panel) is not translated. Editing the message makes its translation stale; translate it again. With Auto Translation on, messages show their stored translation when they have one; nothing is translated automatically yet.\n\nRendered output: the model translates the message as it is shown, in this browser, and the result is cached in this browser only.",
         presetChain:
@@ -1459,6 +1461,7 @@ export const languageEnglish = {
     retranslate: "Retranslate",
     retranslateConfirm: "Translate this message again? The current translation is replaced.",
     llmTranslationTarget: "Translate",
+    translatorHistoryMaxTokens: "Translation History Max Tokens",
     llmTranslationTargetMessage: "Message text (stored on the message)",
     llmTranslationTargetRendered: "Rendered output (this browser)",
     translationFailed: "Translation failed",

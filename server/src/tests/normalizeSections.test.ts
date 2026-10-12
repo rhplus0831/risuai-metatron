@@ -401,6 +401,24 @@ describe("memoryTranslateMedia", () => {
         expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "rendered" });
     });
 
+    it("defaults translatorHistoryMaxTokens to 2048 for a missing, wrong-kind, nonfinite, zero, or negative value and keeps a positive number, fractions included, exactly (docs/plan/translation.md slice 3.3)", () => {
+        const budget = (input: unknown) =>
+            normalizeMemoryTranslateMedia(input === undefined ? undefined : { translatorHistoryMaxTokens: input })
+                .translatorHistoryMaxTokens;
+        expect(bootSnapshot.translatorHistoryMaxTokens).toBe(2048);
+        expect(budget(undefined)).toBe(2048);
+        expect(normalizeMemoryTranslateMedia({}).translatorHistoryMaxTokens).toBe(2048);
+        for (const value of [null, "2048", "", true, [], {}, Number.NaN, Infinity, -Infinity, 0, -0, -1, -0.5, -1e9]) {
+            expect(budget(value), JSON.stringify(value) ?? String(value)).toBe(2048);
+        }
+        for (const value of [1, 0.5, 0.0001, 3000.25, 2048, 1e9]) {
+            expect(budget(value), String(value)).toBe(value);
+        }
+        expectIdempotent(normalizeMemoryTranslateMedia, { translatorHistoryMaxTokens: 0 });
+        expectIdempotent(normalizeMemoryTranslateMedia, { translatorHistoryMaxTokens: 0.5 });
+        expectIdempotent(normalizeMemoryTranslateMedia, { translatorHistoryMaxTokens: "x" });
+    });
+
     it("turns a stored `bergamot` translator into Google with translation and input translation off, keeps the rest, and drops `htmlTranslation` (docs/plan/translation.md slice 1.5); the legacy global `autoTranslate` is dropped from every record (slice 2.1)", () => {
         const bergamot = {
             translatorType: "bergamot",
