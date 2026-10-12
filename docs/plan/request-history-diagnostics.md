@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: planned. Two phases.
+Status: Phase 1 in progress (slices 1–2 done). Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -143,7 +143,9 @@ defaults in the server normalizer (D2):
 - `requestHistoryContent: boolean`, default `true`.
 - `requestHistoryLimit: number`, default `1000`.
 
-The server reads both from the store when a request begins.
+The server reads `requestHistoryContent` from the store when a request begins.
+`requestHistoryLimit` is read at every prune (the store's `limit` getter), so
+lowering it applies to the whole history at the next write.
 
 ### Failure fields on the job error event
 
@@ -223,23 +225,34 @@ projection:
 #### 2. The history store
 
 - Add `server/src/data/requestHistory.ts`:
-  `createRequestHistory({ file, maxBytes, now })`.
-  - `begin(summary)`: returns the row.
-  - `exchange(id, entry)`: appends a transport log entry.
-  - `finish(id, outcome)`
-  - `list({ cursor, limit, chaId, chatId, jobId, status })`: summaries only.
+  `createRequestHistory({ file, maxBytes, now, limit })`. `limit` is a getter
+  for the count cap, read at every prune.
+  - `begin(summary)`: inserts a `pending` row (no return; later calls key by
+    request id).
+  - `describe(id, model)`: fills the model of a pending row (a tab's request
+    resolves it after it began).
+  - `firstByte(id, at)`: the first one wins.
+  - `exchange(id, entry, cuts?)`: appends a transport log entry. `cuts` carries
+    the original bytes of fields the caller already cut (the stream tee). The
+    first 32 exchanges are kept; later ones are only counted.
+  - `finish(id, outcome)`: the first one wins.
+  - `list({ cursor, limit, chaId, chatId, jobId, status })`: summaries only (no
+    content, no error text).
   - `get(id)`
   - `deleteAll()`
   - `setShared(ids, at | null)`
-  - `prune(limit)`
+  - `prune(limit)`, `stats()`, `close()`
 - Writes are synchronous `node:sqlite` statements, as in `vectorCache.ts`.
-  Field bounds and truncation records follow the data model. Pruning runs
-  after `finish`.
+  Field bounds and truncation records follow the data model; display fields
+  (model, provider, provider code) are bounded at 1 KiB, and an id is never
+  cut (over 2 KiB it is not stored). Every write prunes: the oldest rows by
+  begin order go first, a pending one included (later writes to it are
+  skipped). The store never throws to its caller.
 - Wire it in `createServerContext` (`server/src/app.ts`). Dispose it at
   shutdown.
 - Tests: the field bounds and truncation records, the count and byte pruning
   (oldest first), the boot sweep to `interrupted`, the summary-only row when
-  content is off, and `list` paging and filters.
+  content is off, `list` paging and filters, reopening, and the 33rd exchange.
 
 #### 3. Capture
 

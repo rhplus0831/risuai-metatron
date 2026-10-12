@@ -11,6 +11,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from ".
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
+import { createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
@@ -131,6 +132,13 @@ export function createServerContext(options: {
     const vectorCache = createVectorCache({ file: path.join(savePath, "data", "vectors.sqlite") });
     // The vectors of another database (a restore or an import while the server was down) are dropped.
     vectorCache.sync(resources.epoch());
+    // The LLM request history (`docs/plan/request-history-diagnostics.md`): diagnostic data in a file of
+    // its own, in no snapshot (they copy only `resources.sqlite`) or archive; a restore, an import,
+    // or a maintenance leaves it as it is.
+    const requestHistory = createRequestHistory({
+        file: path.join(savePath, "data", "request-history.sqlite"),
+        maxBytes: parseRequestHistoryMaxBytes(process.env.RISU_REQUEST_HISTORY_MAX_BYTES),
+    });
     const transformers = createTransformers({ cacheDir: path.join(savePath, "models", "transformers") });
     const embeddings = createEmbeddings({ cache: vectorCache, transformers });
     const llmRequests = createLlmRequests({
@@ -392,6 +400,7 @@ export function createServerContext(options: {
         beginShutdown,
         generationJobs,
         llmRequests,
+        requestHistory,
         translationRunner,
         push,
         eventSockets,
@@ -438,6 +447,7 @@ export function createServerContext(options: {
                 .then(() => transformers.dispose())
                 .then(() => mcpRegistry.dispose())
                 .then(() => vectorCache.close())
+                .then(() => requestHistory.close())
                 .then(() => snapshots.stop())
                 .then(() => resources.close());
             return disposing;
@@ -452,6 +462,17 @@ function parseMaxImportBytes(raw: string | undefined): number {
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new Error(`Invalid RISU_MAX_IMPORT_BYTES: ${raw}`);
+    }
+    return value;
+}
+
+function parseRequestHistoryMaxBytes(raw: string | undefined): number {
+    if (raw === undefined || raw === "") {
+        return REQUEST_HISTORY_MAX_BYTES;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`Invalid RISU_REQUEST_HISTORY_MAX_BYTES: ${raw}`);
     }
     return value;
 }
