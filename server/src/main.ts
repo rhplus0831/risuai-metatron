@@ -4,6 +4,7 @@ import https from "node:https";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { createServerContext } from "./app.ts";
+import { errorFields } from "./diagnostics/log.ts";
 
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
@@ -24,6 +25,17 @@ async function getHttpsOptions(): Promise<{ key: Buffer; cert: Buffer } | null> 
 
 async function startServer() {
     const context = createServerContext({ rootDir, trustProxy: process.env.TRUST_PROXY });
+    // A fault that ends the process lands in the diagnostics folder first (its event and the state,
+    // written synchronously). A monitor leaves Node's behavior as it is: with no `unhandledRejection`
+    // listener in this process, an unhandled rejection reaches it too (origin `unhandledRejection`)
+    // before the process exits. A failure `startServer`'s own catch takes (here, or in `serve()`'s
+    // setup) is not recorded.
+    process.on("uncaughtExceptionMonitor", (error, origin) => {
+        try {
+            context.diagnostics.record({ kind: "runtime", origin, ...errorFields(error) });
+            context.diagnostics.writeState();
+        } catch {}
+    });
     const port = Number(process.env.PORT || 6001);
     const httpsOptions = await getHttpsOptions();
     const protocol = httpsOptions ? "https" : "http";
@@ -40,6 +52,10 @@ async function startServer() {
         },
     ) as http.Server;
     server.on("error", (error) => {
+        try {
+            context.diagnostics.record({ kind: "runtime", origin: "serverError", ...errorFields(error) });
+            context.diagnostics.writeState();
+        } catch {}
         console.error("[Server] Failed to start server :", error);
         process.exit(1);
     });

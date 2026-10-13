@@ -16,6 +16,7 @@ import {
 } from "../data/archive.ts";
 import { ResourceEpochError, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
+import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
@@ -53,9 +54,11 @@ export function registerBackupRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         maxImportBytes: number;
+        /** The diagnostics journal: a `lifecycle` event after a restore or an import replaced the data. */
+        diagnostics?: DiagnosticsRecorder;
     },
 ) {
-    const { savePath, store, snapshots, auth, limiter, maxImportBytes } = arg;
+    const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics } = arg;
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
     let importing = false;
@@ -102,6 +105,7 @@ export function registerBackupRoutes(
             if (epoch === null) {
                 return c.json({ error: "Snapshot not found" }, 404);
             }
+            recordSafely(diagnostics, { kind: "lifecycle", phase: "restore" });
             return c.json({ epoch });
         } catch (error) {
             return backupErrorResponse(c, error);
@@ -346,6 +350,7 @@ export function registerBackupRoutes(
                 const epoch = store.replaceAll(validated);
                 return { epoch, assetsWritten: written, assetsSkipped: skipped };
             });
+            recordSafely(diagnostics, { kind: "lifecycle", phase: "import" });
             return c.json(result);
         } finally {
             await handle?.close().catch(() => {});

@@ -33,6 +33,7 @@ import { GenerationRunnerError, markFailure, type RunningJob } from "./generatio
 import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
+import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import type { PushService } from "../push/pushService.ts";
 import type { TranslationRunner } from "../translation/runner.ts";
@@ -59,6 +60,8 @@ export type GenerationRunnerDeps = {
     translations?: Pick<TranslationRunner, "handOff">;
     /** Web Push for chat completions (`docs/plan/web-push.md`); without it only the tab is notified. */
     push?: Pick<PushService, "send">;
+    /** The diagnostics journal (its caught faults). */
+    diagnostics?: DiagnosticsRecorder;
 };
 
 /** Rejects with the signal's reason when it aborts first. */

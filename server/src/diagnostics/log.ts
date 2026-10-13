@@ -7,15 +7,22 @@ import {
     type GenerationErrorStage,
     type GenerationKind,
 } from "../../../shared/jobs.ts";
-import { isProviderCode } from "../../../shared/requestHistory.ts";
+import {
+    errorName,
+    isProviderCode,
+    RUNTIME_ORIGINS,
+    sanitizeStack,
+    type DiagnosticEventInput,
+} from "../../../shared/diagnostics.ts";
 
 /**
  * The server's diagnostic events (`docs/plan/request-history-diagnostics.md` slice 6). Content-free
  * by construction (decision 9): a closed set of kinds, a closed set of fields each with its own
  * check (a value that fails it is left out), and of an error only its class name (a known one,
  * else `?`) and the first application frame of its stack (file, line, column), never its message.
- * In phase 1 an event is one console line, `[Generation] failed job=<id> request=<id> stage=<stage>
- * …`; phase 2 also writes it to the journal.
+ * An event is one console line, `[Generation] failed job=<id> request=<id> stage=<stage> …`. With
+ * a recorder (the server context's journal, slice 7), a caught fault (every kind but
+ * `generation.failed`, whose fields the job's own `job` event carries) is also a `runtime` event.
  */
 export const LOG_EVENT_KINDS = [
     /** A job ended with an error other than its owner's abort. */
@@ -46,32 +53,32 @@ export type LogEventFields = {
     providerCode?: string | null;
 };
 
-/** The error classes an event may name; any other name (a free text) is printed as `?`. */
-const ERROR_NAMES = new Set([
-    "Error",
-    "TypeError",
-    "RangeError",
-    "SyntaxError",
-    "ReferenceError",
-    "AbortError",
-    "TimeoutError",
-    "GenerationRunnerError",
-    "GenerationJobEndedError",
-    "JobWriteConflictError",
-    "SendError",
-    "ChatBindingError",
-    "LuaJobFatalError",
-    "JobRequestError",
-    "FatalRequestError",
-    "CallbackFailedError",
-    "ResourceBatchConflictError",
-    "TriggerEffectLimitError",
-    "CbsLimitError",
-]);
-/** A stack frame's location: `at fn (path:line:col)` or `at path:line:col`. */
-const FRAME = /^\s+at (?:.*\()?(?:file:\/\/)?([^()\s]+):(\d{1,7}):(\d{1,7})\)?$/;
 /** An application path: a file under `server/src/` or `shared/` of an absolute path. */
 const APP_PATH = /\/((?:server\/src|shared)\/[A-Za-z0-9_/-]{1,200}\.[cm]?[jt]s)$/;
+
+/** The application-relative path of a stack frame's file, or null for any other file. */
+export function serverAppPath(file: string): string | null {
+    return APP_PATH.exec(file)?.[1] ?? null;
+}
+
+/**
+ * An error's content-free fields: its class name (a known one, else `?`) and its application frames.
+ * Never throws: an error whose `name` or `stack` accessor throws gives `?` and no frames.
+ */
+export function errorFields(error: unknown): { name: string; stack: string[] } {
+    try {
+        return { name: errorName(error), stack: sanitizeStack(error, serverAppPath) };
+    } catch {
+        return { name: "?", stack: [] };
+    }
+}
+
+/** Records `input` to `recorder`, if any; a recorder's throw never reaches the caller. */
+export function recordSafely(recorder: DiagnosticsRecorder | undefined, input: DiagnosticEventInput): void {
+    try {
+        recorder?.record(input);
+    } catch {}
+}
 
 const checks: { [K in keyof LogEventFields]-?: (value: unknown) => boolean } = {
     job: (value) => typeof value === "string" && GENERATION_ID_PATTERN.test(value),
@@ -96,9 +103,8 @@ export function formatLogEvent(kind: LogEventKind, fields: LogEventFields, error
         }
     }
     if (error !== undefined) {
-        const name = error instanceof Error ? error.name : null;
-        parts.push(`error=${name !== null && ERROR_NAMES.has(name) ? name : "?"}`);
-        const frame = error instanceof Error ? appFrame(error) : null;
+        parts.push(`error=${errorName(error)}`);
+        const [frame] = sanitizeStack(error, serverAppPath, 1);
         if (frame) {
             parts.push(`at=${frame}`);
         }
@@ -106,37 +112,22 @@ export function formatLogEvent(kind: LogEventKind, fields: LogEventFields, error
     return parts.join(" ");
 }
 
-/**
- * The first application frame of `error`'s stack, or null. Only the frames are read: the stack's
- * header (the error's name and message, which may span lines) must be exactly what the error says
- * now, else nothing is read, so a message never reaches the line.
- */
-function appFrame(error: Error): string | null {
-    const stack = typeof error.stack === "string" ? error.stack : "";
-    const header = error.message ? `${error.name}: ${error.message}` : error.name;
-    if (!stack.startsWith(`${header}\n`)) {
-        return null;
-    }
-    for (const line of stack.slice(header.length + 1).split("\n")) {
-        if (!/^\s+at /.test(line)) {
-            return null;
-        }
-        // A frame without a file location (`<anonymous>`, `native`) is passed over.
-        const frame = FRAME.exec(line);
-        if (!frame) {
-            continue;
-        }
-        const path = APP_PATH.exec(frame[1]);
-        if (path && !path[1].split("/").includes("..")) {
-            return `${path[1]}:${frame[2]}:${frame[3]}`;
-        }
-    }
-    return null;
-}
+/** Where an event goes besides the console: the server context's journal (`createDiagnosticsJournal`). */
+export type DiagnosticsRecorder = { record(input: DiagnosticEventInput): void };
 
-/** Writes one diagnostic event (`formatLogEvent`). Never throws. */
-export function logEvent(kind: LogEventKind, fields: LogEventFields, error?: unknown): void {
+/** Writes one diagnostic event (`formatLogEvent`), and a caught fault to `recorder`. Never throws. */
+export function logEvent(
+    kind: LogEventKind,
+    fields: LogEventFields,
+    error?: unknown,
+    recorder?: DiagnosticsRecorder,
+): void {
     try {
         console.error(formatLogEvent(kind, fields, error));
     } catch {}
+    if (recorder && (RUNTIME_ORIGINS as readonly string[]).includes(kind)) {
+        try {
+            recorder.record({ kind: "runtime", origin: kind, jobId: fields.job, ...errorFields(error) });
+        } catch {}
+    }
 }

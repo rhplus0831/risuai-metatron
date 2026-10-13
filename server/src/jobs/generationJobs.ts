@@ -30,7 +30,8 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
-import { logEvent } from "../diagnostics/log.ts";
+import { type DiagnosticsRecorder, logEvent, recordSafely } from "../diagnostics/log.ts";
+import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import { checkChatBinding, readChatBindingState } from "./chatBinding.ts";
 import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
@@ -268,8 +269,10 @@ export function createGenerationJobs(options: {
     runner?: GenerationRunner;
     /** The channel hub (tests inject one with a fake clock). */
     hub?: ChannelHub;
+    /** The diagnostics journal: a `job` event at admission and at the end, and the caught faults. */
+    diagnostics?: DiagnosticsRecorder;
 }) {
-    const { store, kinds, gate, snapshots, lock, authorize } = options;
+    const { store, kinds, gate, snapshots, lock, authorize, diagnostics } = options;
     const runner = options.runner ?? unavailableRunner;
     const hub = options.hub ?? createChannelHub();
     const jobs = new Map<string, Job>();
@@ -280,6 +283,9 @@ export function createGenerationJobs(options: {
     let disposed = false;
     let maintenancePending = 0;
     let gcTimer: ReturnType<typeof setInterval> | null = null;
+
+    /** A `job` event to the journal; a recorder's throw never reaches the job. */
+    const record = (input: DiagnosticEventInput) => recordSafely(diagnostics, input);
 
     function send(job: Job, event: GenerationEvent): boolean {
         return sendText(job, JSON.stringify(event));
@@ -295,7 +301,7 @@ export function createGenerationJobs(options: {
                     taken = true;
                 }
             } catch (error) {
-                logEvent("generation.socketSend", { job: job.id }, error);
+                logEvent("generation.socketSend", { job: job.id }, error, diagnostics);
             }
         }
         return taken;
@@ -432,7 +438,7 @@ export function createGenerationJobs(options: {
         try {
             job.channelLink.close("The job has ended");
         } catch (error) {
-            logEvent("generation.channelClose", { job: job.id }, error);
+            logEvent("generation.channelClose", { job: job.id }, error, diagnostics);
         }
         let terminal = { ...(job.abortReason ? abortTerminal(job.abortReason) : requested), epoch: job.epoch };
         let text: string;
@@ -449,6 +455,22 @@ export function createGenerationJobs(options: {
         job.ended = true;
         job.endedAt = Date.now();
         job.terminal = terminal as GenerationTerminalEvent;
+        record({
+            kind: "job",
+            phase: terminal.type === "error" ? "error" : "done",
+            jobId: job.id,
+            jobKind: job.kind,
+            durationMs: job.endedAt - job.startedAt,
+            ...(terminal.type === "error"
+                ? {
+                      reason: terminal.reason,
+                      status: terminal.status,
+                      stage: terminal.stage,
+                      requestId: terminal.requestId,
+                      providerCode: terminal.providerCode,
+                  }
+                : {}),
+        });
         if (terminal.type === "error" && terminal.reason !== "aborted") {
             logEvent("generation.failed", {
                 job: job.id,
@@ -474,7 +496,7 @@ export function createGenerationJobs(options: {
             sendChat(job);
             sendText(job, text);
         } catch (error) {
-            logEvent("generation.endDelivery", { job: job.id }, error);
+            logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
         } finally {
             job.resolveFinished();
         }
@@ -717,7 +739,7 @@ export function createGenerationJobs(options: {
                     message: "The job ended without a result",
                 }),
             (error) => finalize(job, errorTerminal(error)),
-        ).catch((error) => logEvent("generation.runnerSettle", { job: job.id }, error));
+        ).catch((error) => logEvent("generation.runnerSettle", { job: job.id }, error, diagnostics));
     }
 
     function create(body: GenerationCreateBody, epoch: string | undefined): CreateResult {
@@ -805,6 +827,7 @@ export function createGenerationJobs(options: {
         lock.addToken(job.token);
         jobs.set(job.id, job);
         chatSlots.set(chatKey(characterId, chatId), job.id);
+        record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
         start(job);
         return { ok: true, jobId: job.id };
     }
@@ -891,7 +914,7 @@ export function createGenerationJobs(options: {
                 try {
                     listener(message);
                 } catch (error) {
-                    logEvent("generation.listener", { job: job.id }, error);
+                    logEvent("generation.listener", { job: job.id }, error, diagnostics);
                 }
             }
         });
@@ -1057,6 +1080,16 @@ export function createGenerationJobs(options: {
             return Promise.all(runningJobs().map((job) => job.finished)).then(() => {});
         },
 
+        /** The jobs not ended yet (`state.json`). */
+        live(): number {
+            let live = 0;
+            for (const job of jobs.values()) {
+                if (!job.ended) {
+                    live++;
+                }
+            }
+            return live;
+        },
         /** Closes every socket; call after `drain`. */
         dispose() {
             disposed = true;

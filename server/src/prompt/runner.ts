@@ -1633,7 +1633,7 @@ async function runSpeaker(arg: {
             try {
                 finalize();
             } catch (error) {
-                logEvent("generation.release", { job: job.id }, error);
+                logEvent("generation.release", { job: job.id }, error, deps.diagnostics);
             }
         }
     }

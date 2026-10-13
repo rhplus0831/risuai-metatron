@@ -1,4 +1,6 @@
+import { diagnosticModel } from "../../../shared/diagnostics.ts";
 import type { RequestHistory } from "../data/requestHistory.ts";
+import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import type { RequestObserver } from "./requests.ts";
 
 /**
@@ -12,12 +14,38 @@ import type { RequestObserver } from "./requests.ts";
  * What the layer hands over is already redacted. The per-request totals live only while the
  * request does: they are dropped at its end, so a late exchange (a body flushed after the end)
  * reaches the store but not the totals.
+ *
+ * With `diagnostics`, every end is also a content-free `request` event (slice 7): its ids, source,
+ * outcome, provider (the `LLMFormat` name), model (a catalog id, else `custom`: `diagnosticModel`),
+ * the last HTTP status, the provider code, its duration, and its bytes.
  */
-export function createHistoryObserver(history: RequestHistory, options: { content: () => boolean }): RequestObserver {
-    const totals = new Map<string, { requestBytes: number; responseBytes: number; httpStatus: number | null }>();
+export function createHistoryObserver(
+    history: RequestHistory,
+    options: { content: () => boolean; diagnostics?: DiagnosticsRecorder },
+): RequestObserver {
+    type Live = {
+        requestBytes: number;
+        responseBytes: number;
+        httpStatus: number | null;
+        jobId: string | null;
+        source: string;
+        startedAt: number;
+        modelId: string | null;
+        provider: string | null;
+    };
+    const totals = new Map<string, Live>();
     return {
         begin(request) {
-            totals.set(request.requestId, { requestBytes: 0, responseBytes: 0, httpStatus: null });
+            totals.set(request.requestId, {
+                requestBytes: 0,
+                responseBytes: 0,
+                httpStatus: null,
+                jobId: request.jobId,
+                source: request.source,
+                startedAt: request.startedAt,
+                modelId: null,
+                provider: null,
+            });
             let content = false;
             try {
                 content = options.content();
@@ -40,6 +68,11 @@ export function createHistoryObserver(history: RequestHistory, options: { conten
             history.setPrompt(requestId, text);
         },
         describe(requestId, model) {
+            const total = totals.get(requestId);
+            if (total) {
+                total.modelId = model.modelId;
+                total.provider = model.provider;
+            }
             history.describe(requestId, model);
         },
         firstByte(requestId, at) {
@@ -66,6 +99,20 @@ export function createHistoryObserver(history: RequestHistory, options: { conten
                 httpStatus: total?.httpStatus ?? null,
                 requestBytes: total?.requestBytes ?? null,
                 responseBytes: total?.responseBytes ?? null,
+            });
+            recordSafely(options.diagnostics, {
+                kind: "request",
+                requestId,
+                jobId: total?.jobId,
+                source: total?.source,
+                status: end.status,
+                provider: total?.provider,
+                model: diagnosticModel(total?.modelId),
+                httpStatus: total?.httpStatus,
+                providerCode: detail?.providerCode,
+                durationMs: total ? Math.max(0, end.completedAt - total.startedAt) : undefined,
+                requestBytes: total?.requestBytes,
+                responseBytes: total?.responseBytes,
             });
         },
     };

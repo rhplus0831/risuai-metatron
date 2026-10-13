@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
@@ -7,12 +7,15 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { routePath } from "hono/route";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
+import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "./diagnostics/journal.ts";
+import { errorFields } from "./diagnostics/log.ts";
 import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
@@ -50,6 +53,8 @@ import { isClientRoutePath } from "../../shared/routes.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
+/** An answer slower than this is an `http` diagnostic event whatever its status. */
+const HTTP_SLOW_MS = 5_000;
 const headOpenTag = /<head(\s[^>]*)?>/i;
 
 export type ServerContext = ReturnType<typeof createServerContext>;
@@ -84,6 +89,34 @@ export function createServerContext(options: {
 
     const auth = createAuthStore(savePath);
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
+    let appVersion: string | null | undefined;
+    // The diagnostics folder (`docs/plan/request-history-diagnostics.md` slice 7): content-free events
+    // and `state.json`, which the developer pulls over sftp. Its state sources are read only after the
+    // context is built (the boot state below, the timers, an error event).
+    const diagnostics = createDiagnosticsJournal({
+        dir: process.env.RISU_DIAGNOSTICS_DIR
+            ? path.resolve(options.rootDir, process.env.RISU_DIAGNOSTICS_DIR)
+            : path.join(savePath, "diagnostics"),
+        maxBytes: parseDiagnosticsMaxBytes(process.env.RISU_DIAGNOSTICS_MAX_BYTES),
+        sources: {
+            appVersion: () => {
+                if (appVersion === undefined) {
+                    appVersion = readAppVersion(options.rootDir);
+                }
+                return appVersion;
+            },
+            settings: () => {
+                const providers = readProviders();
+                return {
+                    requestHistoryContent: providers?.requestHistoryContent !== false,
+                    requestHistoryLimit: clampRequestHistoryLimit(providers?.requestHistoryLimit),
+                };
+            },
+            history: () => requestHistory.stats(),
+            workers: () => scriptWorkers.stats(),
+            liveJobs: () => generationJobs.live(),
+        },
+    });
     // The store consults the lock on every write that could rewrite or remove a job's message.
     const generationLock = createGenerationLock();
     // Every committed change goes to the live-update sockets (Phase 6).
@@ -105,6 +138,14 @@ export function createServerContext(options: {
         dir: path.join(savePath, "backups"),
         intervalMs: options.snapshotIntervalMs,
     });
+    // Before every other maintenance listener, so its start is the first thing recorded; it never
+    // throws. Its end says whether the data was replaced (a new epoch).
+    snapshots.onMaintenance(async () => {
+        const epoch = resources.epoch();
+        diagnostics.record({ kind: "lifecycle", phase: "maintenanceStart" });
+        return () =>
+            diagnostics.record({ kind: "lifecycle", phase: "maintenanceEnd", replaced: resources.epoch() !== epoch });
+    });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
     // The server translations' maintenance listener is the first one (the runner is built below; a
     // maintenance runs only once the context exists): admission closes and every run ends (503)
@@ -124,6 +165,7 @@ export function createServerContext(options: {
         // The default runner is built below (it needs the request layer and the script workers);
         // a job starts only after the context exists.
         runner: options.generationRunner ?? ((job) => defaultRunner(job)),
+        diagnostics,
     });
     // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
@@ -164,6 +206,7 @@ export function createServerContext(options: {
         // Every admitted request writes its history row, with its content unless the setting is off.
         observer: createHistoryObserver(requestHistory, {
             content: () => readProviders()?.requestHistoryContent !== false,
+            diagnostics,
         }),
     });
     // The server translations (`POST /api/translate/message`) run through the request layer.
@@ -215,6 +258,7 @@ export function createServerContext(options: {
         lock: generationLock,
         translations: translationRunner,
         push,
+        diagnostics,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
@@ -251,6 +295,7 @@ export function createServerContext(options: {
             return;
         }
         shuttingDown = true;
+        diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
         // Time zero of every job's abort deadline; `dispose` waits for them to end.
         generationJobs.beginShutdown();
         translationRunner.beginShutdown();
@@ -278,6 +323,35 @@ export function createServerContext(options: {
         }
         console.error(error);
         return c.text("Internal Server Error", 500);
+    });
+
+    // An `http` diagnostic event for an error answer (400 and up) or a slow one (the time to the
+    // response, not to the end of a streamed body). The route is the template of the last registered
+    // handler that ran (a route's own auth or limiter included; `*` for a miss), never the URL.
+    let registeredRoutes: Set<string> | null = null;
+    app.use(async (c, next) => {
+        const started = performance.now();
+        let threw = false;
+        try {
+            await next();
+        } catch (error) {
+            threw = true;
+            throw error;
+        } finally {
+            const durationMs = Math.round(performance.now() - started);
+            const status = threw ? 500 : c.res.status;
+            if (status >= 400 || durationMs > HTTP_SLOW_MS) {
+                registeredRoutes ??= new Set(app.routes.map((route) => route.path));
+                const route = routePath(c);
+                diagnostics.record({
+                    kind: "http",
+                    method: c.req.method,
+                    route: registeredRoutes.has(route) ? route : "?",
+                    status,
+                    durationMs,
+                });
+            }
+        }
     });
 
     // Admit resource handlers before their first await (including body parsing and auth). Tracking
@@ -416,7 +490,11 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maxImportBytes,
+        diagnostics,
     });
+
+    diagnostics.record({ kind: "lifecycle", phase: "boot" });
+    diagnostics.writeState();
 
     return {
         app,
@@ -429,6 +507,7 @@ export function createServerContext(options: {
         translationRunner,
         push,
         eventSockets,
+        diagnostics,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -451,11 +530,14 @@ export function createServerContext(options: {
         startBackgroundTasks: () => {
             generationJobs.startGc();
             snapshots.start();
+            diagnostics.start();
         },
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
          * their abort deadline), disposes the script workers, waits for admitted resource handlers
-         * and backup operations, then closes the store. The HTTP entrypoint drains connections before
+         * and backup operations, then closes the store. The diagnostics' timers stop and its final
+         * `state.json` is written once the jobs and the admitted operations ended, while the stores it
+         * reads are open; a failure is a `runtime` event and another state. The HTTP entrypoint drains connections before
          * calling this; in-process callers can use it alone. Calling it again returns the same promise.
          */
         dispose: () => {
@@ -467,14 +549,26 @@ export function createServerContext(options: {
                 transforms.close(),
             ])
                 .then(() => generationJobs.dispose())
+                // Admitted resource handlers and backup operations end here (a restore or an import
+                // too), while every store is open: the diagnostics' final state follows them.
+                .then(() => snapshots.stop())
+                .then(() => {
+                    diagnostics.close();
+                    diagnostics.writeState();
+                })
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
                 .then(() => transformers.dispose())
                 .then(() => mcpRegistry.dispose())
                 .then(() => vectorCache.close())
                 .then(() => requestHistory.close())
-                .then(() => snapshots.stop())
-                .then(() => resources.close());
+                .then(() => resources.close())
+                .catch((error: unknown) => {
+                    diagnostics.close();
+                    diagnostics.record({ kind: "runtime", origin: "dispose", ...errorFields(error) });
+                    diagnostics.writeState();
+                    throw error;
+                });
             return disposing;
         },
     };
@@ -487,6 +581,27 @@ function parseMaxImportBytes(raw: string | undefined): number {
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new Error(`Invalid RISU_MAX_IMPORT_BYTES: ${raw}`);
+    }
+    return value;
+}
+
+/** `version.json`'s version, read once per context (`state.json`); null when it is missing. */
+function readAppVersion(rootDir: string): string | null {
+    try {
+        const parsed = JSON.parse(readFileSync(path.join(rootDir, "version.json"), "utf8")) as { version?: unknown };
+        return typeof parsed.version === "string" ? parsed.version : null;
+    } catch {
+        return null;
+    }
+}
+
+function parseDiagnosticsMaxBytes(raw: string | undefined): number {
+    if (raw === undefined || raw === "") {
+        return DIAGNOSTICS_MAX_BYTES;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`Invalid RISU_DIAGNOSTICS_MAX_BYTES: ${raw}`);
     }
     return value;
 }

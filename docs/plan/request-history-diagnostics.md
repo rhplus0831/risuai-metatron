@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 done (slices 1–6). Two phases.
+Status: Phase 1 done (slices 1–6); Phase 2 slice 7 done. Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -188,6 +188,7 @@ projection:
 - `request`: `requestId`, `jobId`, `source`, provider, model id, HTTP status,
   `providerCode`, duration, bytes.
 - `script`: a Lua, regex, or trigger failure: kind, stage, error class.
+  Deferred at slice 7 (see its "Settled at implementation").
 - `runtime`: an uncaught exception or unhandled rejection: name and sanitized
   stack.
 - `lifecycle`: boot, shutdown, maintenance start and end, restore and import
@@ -399,6 +400,28 @@ projection:
   lifecycle points in `app.ts`.
 - Tests: projection drops unknown keys and free text, rotation and pruning,
   `state.json` atomicity, a read-only folder does not break a job.
+- Settled at implementation:
+  - Each server context owns its journal and hands it to the job registry,
+    the runner, the history observer, and the backup routes. There is no
+    process-wide sink, so two contexts in one process (tests) never write
+    each other's folder.
+  - `model` is a built-in catalog id or `custom`, and `provider` an
+    `LLMFormat` name: a user-entered model id is a name (decision 9). An
+    `http` route is a registered template or `?`, never the URL.
+  - `script` events are deferred: a script failure that ends the job is a
+    `job` error with stage `script`. Failures a script reports as a result
+    and the run continues past (a trigger's Lua dispatch, a Lua edit) need
+    their own boundary, with its script kind, and come later.
+  - `state.json`'s last 20 job errors leave out owner aborts. The plan's
+    `state(update)` is `state()` (the state now, for slice 8's route) and
+    `writeState()`; the state is built from explicit checked fields, each
+    source read on its own.
+  - The process hook is `uncaughtExceptionMonitor`, which keeps Node's crash
+    behavior; an `unhandledRejection` listener would suppress it.
+  - Writes are synchronous, an accepted trade-off: every job transition,
+    request end, and HTTP answer of 400 or more blocks the event loop for one
+    small append, and a fatal fault's event and state land before the process
+    exits.
 
 #### 8. Server read route and browser collector
 
