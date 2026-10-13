@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 done (slices 1–6); Phase 2 slice 7 done. Two phases.
+Status: Phase 1 done (slices 1–6); Phase 2 slices 7–8 done. Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -441,6 +441,40 @@ projection:
 - The collector starts in `src/boot.ts`, before bootstrap.
 - Tests: the same projection rules on the client, the ring bound, and a
   `sessionStorage` throw.
+- Settled at implementation:
+  - The browser kinds are `jobLink` (attach, detach, attachFailed, reattach,
+    lost, resume), `feed` (connected, disconnected, connectFailed), `sync`
+    (conflict with counts by category, reload), `serviceWorker`, and `page`
+    (boot, visible, hidden, online, offline); errors are `runtime` events with
+    the origins `error` and `unhandledrejection`. A `jobLink` job id must be a
+    UUID, the shape the server issues.
+  - An `http` route is a member of `ROUTE_TEMPLATES` on both sides: the
+    server's registered templates, the service worker's `/sw/` routes, and
+    `?`. The client maps a path with `apiRouteTemplate` (literal templates
+    first) and records only `/api/`, `/sw/`, and proxy fetches: a failure
+    (400 and up, or a rejection that is not an abort; a timed-out signal is
+    `failure: "timeout"`), not a slow success.
+  - The fetch wrapper calls the original first, once, with the same
+    arguments, and returns a promise chained on it (same response, same
+    rejection, an unhandled rejection stays unhandled); it reads the
+    request's metadata after dispatch and never reads a body. Only the app's window is
+    watched; a plugin's iframe is another realm.
+  - Browser frames: V8 stacks keep the exact-header rule; Gecko and WebKit
+    stacks (no message in them) are read only when every line is a frame.
+    A frame must be a URL of this origin under `/src/`, `/shared/`, or
+    `/assets/` (a chunk with Vite's hash), from an `Error` of this window.
+    No build-time chunk list: code of this window that rewrites an error's
+    `stack` could still name an app-shaped file (nothing in the app does; a
+    plugin runs in another realm).
+  - The collector folds an event identical to one of the last 16, at most
+    10 minutes after its last occurrence, into it (`repeat`, `lastAt`), so a
+    retry loop (a 409 and its `sync conflict` every 5 s) does not flush the
+    ring. Restoring re-projects each stored entry with the browser's kinds
+    only, and the mirror is cut to the size the restore reads.
+  - `sync conflict` counts conflicts by category (`records`, `chats`,
+    `orders`), with `generating` the subset a running job blocked.
+  - `src/boot.ts` starts the collector and then imports `src/startApp.ts`, so
+    it runs before any app module loads.
 
 #### 9. The Diagnostics panel and report
 

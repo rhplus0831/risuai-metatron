@@ -42,6 +42,7 @@ import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { REQUEST_HISTORY_PATH, registerRequestHistoryRoutes } from "./routes/requestHistory.ts";
+import { DIAGNOSTICS_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
@@ -360,9 +361,12 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too.
         const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
-        // The request history: refused during shutdown (its store closes at dispose), and every answer
-        // is `no-store`, the limiter's 429 and the body limit's 413 included.
-        const history = c.req.path === REQUEST_HISTORY_PATH || c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`);
+        // The request history and the diagnostics: refused during shutdown (the history's store closes at
+        // dispose), and every answer is `no-store`, the limiter's 429 and the body limit's 413 included.
+        const history =
+            c.req.path === REQUEST_HISTORY_PATH ||
+            c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
+            c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH;
         if (shuttingDown) {
             c.header("Connection", "close");
         }
@@ -462,6 +466,7 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
     });
+    registerDiagnosticsRoutes(app, { journal: diagnostics, auth, limiter: authenticatedRouteLimiter.middleware });
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
     registerStorageRoutes(app, {
         savePath,

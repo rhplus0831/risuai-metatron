@@ -33,6 +33,7 @@ import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3
 import { startEventFeed } from "./network/eventFeed";
 import { registerModelDynamic } from "./model/modellist";
 import { initializeRecords, type RecordFields, type RecordKind } from "./storage/records.svelte";
+import { flushClientDiagnostics, recordClientEvent } from "./diagnostics/collector";
 
 /**
  * Loads the application data.
@@ -59,6 +60,7 @@ export async function loadData() {
                 setUsingSw(true);
                 await registerSw();
             } else {
+                recordClientEvent({ kind: "serviceWorker", phase: "unsupported" });
                 setUsingSw(false);
             }
             if (settings.ui.didFirstSetup) {
@@ -219,12 +221,27 @@ function watchRemoteRecords() {
  * Registers the service worker and initializes it.
  */
 async function registerSw() {
-    await navigator.serviceWorker.register("/sw.js", {
-        scope: "/",
-    });
+    try {
+        await navigator.serviceWorker.register("/sw.js", {
+            scope: "/",
+        });
+    } catch (error) {
+        recordClientEvent({ kind: "serviceWorker", phase: "registerFailed" });
+        throw error;
+    }
+    recordClientEvent({ kind: "serviceWorker", phase: "registered" });
     await sleep(100);
-    const da = await fetch("/sw/init");
+    let da: Response;
+    try {
+        da = await fetch("/sw/init");
+    } catch (error) {
+        recordClientEvent({ kind: "serviceWorker", phase: "initFailed" });
+        throw error;
+    }
     if (!(da.status >= 200 && da.status < 300)) {
+        recordClientEvent({ kind: "serviceWorker", phase: "initFailed" });
+        recordClientEvent({ kind: "sync", phase: "reload", reason: "serviceWorker" });
+        flushClientDiagnostics();
         location.reload();
     }
 }

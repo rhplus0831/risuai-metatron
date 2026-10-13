@@ -3,13 +3,14 @@
 ## Scope
 
 - Owns: boot sequence, top-level screen selection, the URL routes and the history, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
-- Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+- Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/startApp.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers → `settings-i18n.md`.
 
 ## Files
 
 - `src/main.ts`: entry. Imports `./ts/polyfill` and `core-js`, registers the `vite:preloadError` alert, then branches on `isNodeServer`: true → dynamic `import("./boot")` and `boot()`; false → mounts `NodeServerRequired` and removes `#preloading`. The app graph (App, bootstrap, stores, DB) is never imported without the server.
-- `src/boot.ts` `boot`: imports the database side effects, `mount(App)`, `loadData()` (not awaited), `initHotkey()`, and removes `#preloading`.
+- `src/boot.ts` `boot`: starts the diagnostics collector (`src/ts/diagnostics/collector.ts`, `global-api.md`) before any app module loads, then dynamically imports `src/startApp.ts`; a failure while the app's modules load is an unhandled rejection the collector records.
+- `src/startApp.ts` `startApp`: imports the database side effects, `mount(App)`, `loadData()` (not awaited), `initHotkey()`, and removes `#preloading`.
 - `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server (static hosting, a bare `vite build` output). English only (`language.nodeServerRequiredTitle`/`Desc`), since `changeLanguage` runs only after the DB loads.
 - `src/App.svelte`: the screen selection (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/router/routes.ts`: the route table (pure). The slugs (`SETTINGS_PAGES`: slug → `SettingsMenuIndex`; `PLAYGROUND_TOOLS`: slug → `PlaygroundStore` value) are the only place that maps the magic numbers to URLs; the `Route` union; `formatRoute` (ids with `encodeURIComponent`) and `parseRoute` (null for anything that names no route: unknown or prototype slugs, empty segments, bad encoding); `settingsPageOf`/`playgroundToolOf`. Settings indices 7, 8, and 9 have no slug.
@@ -43,7 +44,7 @@
 Boot:
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
-2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
+2. `boot.ts:boot` starts the diagnostics collector, then `startApp.ts:startApp` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
    1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrder`), and `initializeChats`.
@@ -148,7 +149,8 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Tests
 
-- None cover boot, screen precedence, platform detection, hotkeys, or `Mutex`.
+- `src/boot.test.ts`: the entry's order over stubbed modules (request history slice 8): importing `boot.ts` evaluates the collector only, and `boot()` starts it before `startApp.ts` is loaded and started.
+- None cover screen precedence, platform detection, hotkeys, or `Mutex`.
 - `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
 - Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked by hand).
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.

@@ -54,6 +54,7 @@ import {
     trackedCharacters,
     type RecordKind,
 } from "./records.svelte";
+import { flushClientDiagnostics, recordClientEvent } from "../diagnostics/collector";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     acceptRemoteCollection,
@@ -1174,6 +1175,8 @@ async function haltForRestore() {
     // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
     // user acknowledged it.
     await alertTerminal(language.resourceRestored);
+    recordClientEvent({ kind: "sync", phase: "reload", reason: "restore" });
+    flushClientDiagnostics();
     location.reload();
 }
 
@@ -1457,10 +1460,20 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     const conflictedOrders = new Set<string>();
     const generatingChats = new Set<string>();
     let generating = false;
+    // The diagnostics' counts by category; `generating` is a subset of them.
+    const counted = { records: 0, chats: 0, orders: 0, generating: 0 };
     for (const conflict of error.conflicts) {
+        if (isChatConflict(conflict)) {
+            counted.chats++;
+        } else if (isChatOrderConflict(conflict)) {
+            counted.orders++;
+        } else {
+            counted.records++;
+        }
         if ("reason" in conflict && conflict.reason === "generating") {
             // A server job owns a message this change touches: keep the work, retry after the job.
             generating = true;
+            counted.generating++;
             if (isChatConflict(conflict)) {
                 generatingChats.add(`${conflict.characterId}\u0000${conflict.id}`);
             } else if (!isChatOrderConflict(conflict)) {
@@ -1477,6 +1490,8 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
             refs.push({ kind: conflict.kind, id: conflict.id });
         }
     }
+    // Counts only: the conflicting records' ids stay here.
+    recordClientEvent({ kind: "sync", phase: "conflict", ...counted });
     let read: Awaited<ReturnType<typeof readRefs>>;
     try {
         read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };

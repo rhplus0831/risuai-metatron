@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
         noteRemoteChanges: vi.fn(),
         reconcileRemote: vi.fn(),
         EpochMismatch,
+        /** `recordClientEvent`: the feed's diagnostics (request history slice 8). */
+        record: vi.fn<(input: unknown) => void>(),
     };
 });
 
@@ -33,6 +35,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     noteRemoteChanges: mocks.noteRemoteChanges,
     reconcileRemote: mocks.reconcileRemote,
 }));
+vi.mock("../diagnostics/collector", () => ({ recordClientEvent: mocks.record }));
 
 class FakeSocket {
     static instances: FakeSocket[] = [];
@@ -198,5 +201,73 @@ describe("the live-update socket client", () => {
         expect(ws.closed).toBe(true);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(FakeSocket.instances).toHaveLength(1);
+    });
+});
+
+describe("the feed's diagnostics (request history slice 8)", () => {
+    const feedEvents = () => mocks.record.mock.calls.map(([input]) => input);
+
+    it("records `connected` once per socket with the attempt it was, `disconnected` with the close code, and `connectFailed` for a socket closed before its hello", async () => {
+        const first = await started();
+        first.frame({ type: "hello", epoch: "E1" });
+        first.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feedEvents()).toEqual([{ kind: "feed", phase: "connected", attempt: 0 }]);
+        first.closed = true;
+        first.emit("close", { code: 1006 });
+        expect(feedEvents()[1]).toEqual({ kind: "feed", phase: "disconnected", attempt: 0, code: 1006 });
+        // The first reconnect (attempt 1) closes before its hello: it never connected.
+        await vi.advanceTimersByTimeAsync(1000);
+        const second = FakeSocket.instances[1];
+        second.closed = true;
+        second.emit("close", { code: 1006 });
+        expect(feedEvents()[2]).toEqual({ kind: "feed", phase: "connectFailed", attempt: 1, code: 1006 });
+        // The next (attempt 2) connects; its events carry that attempt, even after the reset.
+        await vi.advanceTimersByTimeAsync(2000);
+        const third = FakeSocket.instances[2];
+        third.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feedEvents()[3]).toEqual({ kind: "feed", phase: "connected", attempt: 2 });
+        third.closed = true;
+        third.emit("close", { code: 1001 });
+        expect(feedEvents()[4]).toEqual({ kind: "feed", phase: "disconnected", attempt: 2, code: 1001 });
+        expect(feedEvents()).toHaveLength(5);
+    });
+
+    it("records `connectFailed` for a token failure (not after a stop) and for a socket that cannot be built, and nothing for the stop's own close", async () => {
+        const auth = (await import("../storage/serverAuth")).getNodeServerProxyAuth as ReturnType<typeof vi.fn>;
+        auth.mockRejectedValueOnce(new Error("no token"));
+        feed.startEventFeed();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feedEvents()).toEqual([{ kind: "feed", phase: "connectFailed", attempt: 0 }]);
+        vi.stubGlobal(
+            "WebSocket",
+            class {
+                constructor() {
+                    throw new Error("blocked");
+                }
+            },
+        );
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(feedEvents()[1]).toEqual({ kind: "feed", phase: "connectFailed", attempt: 1 });
+        vi.stubGlobal("WebSocket", FakeSocket);
+        let fail!: (error: unknown) => void;
+        auth.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+        await vi.advanceTimersByTimeAsync(2000);
+        feed.stopEventFeed();
+        fail(new Error("late"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feedEvents()).toHaveLength(2);
+
+        vi.resetModules();
+        mocks.record.mockClear();
+        FakeSocket.instances = [];
+        feed = await import("./eventFeed");
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        feed.stopEventFeed();
+        expect(ws.closed).toBe(true);
+        expect(feedEvents()).toEqual([{ kind: "feed", phase: "connected", attempt: 0 }]);
     });
 });

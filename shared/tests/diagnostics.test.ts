@@ -1,29 +1,37 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+    apiRouteTemplate,
     APP_FRAME,
+    CLIENT_FRAME,
     CUSTOM_MODEL,
     DIAGNOSTIC_EVENT_KINDS,
+    DIAGNOSTICS_PATH,
     type DiagnosticEvent,
     diagnosticModel,
     errorName,
+    isApiPath,
     isDiagnosticErrorEvent,
     isJobFailureEvent,
     isProviderCode,
+    isStackFrame,
     LIFECYCLE_PHASES,
     MAX_STACK_FRAMES,
     projectDiagnosticEvent,
+    ROUTE_TEMPLATES,
     RUNTIME_ORIGINS,
     sanitizeStack,
     UNKNOWN_ERROR_NAME,
 } from "../diagnostics.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
 
-// Request history slice 7 (`docs/plan/request-history-diagnostics.md`, "Diagnostics folder"): the
-// content-free projection of a diagnostic event (`shared/diagnostics.ts`). Every kind has an exact
-// key list, every field its own check, and a value that fails is dropped on its own (decision 9):
-// no free text, no URL, no path outside the application, no message. The tests feed each field
-// what an attacker or a bug would (names, paths, queries, forged frames) and look at what is kept.
+// Request history slices 7 and 8 (`docs/plan/request-history-diagnostics.md`, "Diagnostics folder"):
+// the content-free projection of a diagnostic event (`shared/diagnostics.ts`). Every kind has an
+// exact key list, every field its own check, and a value that fails is dropped on its own
+// (decision 9): no free text, no URL, no path outside the application, no message. The tests feed
+// each field what an attacker or a bug would (names, paths, queries, forged frames) and look at
+// what is kept. Slice 8 adds the browser's kinds, the route table (`ROUTE_TEMPLATES`,
+// `apiRouteTemplate`, `isApiPath`), the browser frames (`CLIENT_FRAME`), and the duck-typed name.
 
 const ID = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const AT = 1_700_000_000_000;
@@ -51,7 +59,18 @@ describe("projectDiagnosticEvent", () => {
         expect(projectDiagnosticEvent({ at: -1, kind: "http" })).toBeNull();
         expect(projectDiagnosticEvent({ at: "1700000000000", kind: "http" })).toBeNull();
         expect(projectDiagnosticEvent({ at: Number.MAX_SAFE_INTEGER + 2, kind: "http" })).toBeNull();
-        expect(DIAGNOSTIC_EVENT_KINDS).toEqual(["http", "job", "request", "runtime", "lifecycle"]);
+        expect(DIAGNOSTIC_EVENT_KINDS).toEqual([
+            "http",
+            "job",
+            "request",
+            "runtime",
+            "lifecycle",
+            "jobLink",
+            "feed",
+            "sync",
+            "serviceWorker",
+            "page",
+        ]);
     });
 
     it("keeps only the kind's listed keys, drops null and undefined, and returns a new object with a copied stack", () => {
@@ -84,7 +103,7 @@ describe("projectDiagnosticEvent", () => {
         });
     });
 
-    it("http: a listed method, a route template (never a URL with a query, a space, or an encoding), a status 100–599, an integer duration", () => {
+    it("http: a listed method, a route from `ROUTE_TEMPLATES` only (never a path, a URL, or a template of its own), a status 100–599, a failure, an integer duration", () => {
         const full = {
             at: AT,
             kind: "http",
@@ -94,10 +113,17 @@ describe("projectDiagnosticEvent", () => {
             durationMs: 12,
         };
         expect(projectDiagnosticEvent(full)).toEqual(full);
-        for (const route of ["?", "*", "/*", "/", "/api/generations/:id/ws", "/a/{b}/+c.d-e_f"]) {
+        for (const route of ROUTE_TEMPLATES) {
             expect(projectDiagnosticEvent({ at: AT, kind: "http", route }), route).toHaveProperty("route", route);
         }
+        expect(ROUTE_TEMPLATES).toContain(DIAGNOSTICS_PATH);
         const refusedRoutes = [
+            "*",
+            "/api/generations/:id/ws",
+            "/a/{b}/+c.d-e_f",
+            "/Alice/private-chat",
+            "/api/resources/characters/alice",
+            "/api/resources/:kind/",
             "/api/read?file=secret",
             "/api/x?a=1&b=2",
             "/api/x#frag",
@@ -105,14 +131,26 @@ describe("projectDiagnosticEvent", () => {
             "/api/%2e%2e",
             "api/x",
             "",
-            `/${"a".repeat(200)}`,
+            `/${"a".repeat(199)}`,
             "https://example.com/",
             42,
         ];
         for (const route of refusedRoutes) {
             expect(projectDiagnosticEvent({ at: AT, kind: "http", route }), String(route)).not.toHaveProperty("route");
         }
-        expect(projectDiagnosticEvent({ at: AT, kind: "http", route: `/${"a".repeat(199)}` })).toHaveProperty("route");
+        expect(projectDiagnosticEvent({ at: AT, kind: "http", failure: "timeout" })).toHaveProperty(
+            "failure",
+            "timeout",
+        );
+        expect(projectDiagnosticEvent({ at: AT, kind: "http", failure: "rejected" })).toHaveProperty(
+            "failure",
+            "rejected",
+        );
+        for (const failure of ["network", "aborted", true, ""]) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "http", failure }), String(failure)).not.toHaveProperty(
+                "failure",
+            );
+        }
         for (const method of ["PROPFIND", "get", "", 1]) {
             expect(projectDiagnosticEvent({ at: AT, kind: "http", method }), String(method)).not.toHaveProperty(
                 "method",
@@ -252,7 +290,6 @@ describe("projectDiagnosticEvent", () => {
             ["server/src/x.ts:1:2:3"],
             ["file:///srv/server/src/x.ts:1:1"],
             ["node_modules/hono/dist/x.js:1:1"],
-            ["src/ts/private.ts:1:1"],
             ["server/src/x.ts:12345678:1"],
             ["server/src/x.ts:1:1", 42],
             ["server/src/x.ts:1:1", "Alice said hi"],
@@ -278,6 +315,145 @@ describe("projectDiagnosticEvent", () => {
             stack: [],
         });
         expect(APP_FRAME.test("server/src/x.ts:1:1")).toBe(true);
+    });
+
+    it("runtime stacks: a browser frame (a dev source under `src/` or `shared/`, a built chunk with Vite's hash) is kept, a path of any other shape dropped", () => {
+        const accepted = [
+            "src/ts/private.ts:1:1",
+            "src/lib/ChatScreens/Chat.svelte:1:2",
+            "src/ts/storage/resourceSync.svelte.ts:3:4",
+            "src/ts/x.svelte.js:1:1",
+            "src/x.mjs:1:1",
+            "shared/cbs/parser.ts:5:6",
+            "assets/index-BZ0RKwIv.js:1:1",
+            "assets/index-client-BZ0RKwIv.js:1:1",
+            "assets/preload-helper-BFxt1TtF.js:1:1",
+            "assets/rolldown-runtime-DkW27tQK.js:1:1",
+            "assets/disclose-version-CPEFmoaC.js:1:1",
+            "assets/a.b.c-12345678.js:1234567:1234567",
+        ];
+        for (const frame of accepted) {
+            expect(isStackFrame(frame), frame).toBe(true);
+            expect(CLIENT_FRAME.test(frame), frame).toBe(true);
+            expect(projectDiagnosticEvent({ at: AT, kind: "runtime", stack: [frame] })).toHaveProperty("stack", [
+                frame,
+            ]);
+        }
+        const refused = [
+            "assets/index.js:1:1",
+            "assets/x-1234567.js:1:1",
+            "assets/x-123456789.js:1:1",
+            "assets/../src/x-12345678.js:1:1",
+            "assets/dir/x-12345678.js:1:1",
+            "assets/x-12345678.js.map:1:1",
+            "assets/x-12345678.css:1:1",
+            "assets/Alice Private-12345678.js:1:1",
+            "src/x.ts?t=1:1:1",
+            "src/Alice Private.ts:1:1",
+            "src/x.ts.bak:1:1",
+            "src/x.tsx:1:1",
+            "src/x.json:1:1",
+            "src/../server/src/x.ts:1:1",
+            "src/x.svelte.ts.map:1:1",
+            "public/sw.js:1:1",
+            "node_modules/.vite/deps/x.js:1:1",
+            "/src/x.ts:1:1",
+            "http://localhost:3000/src/x.ts:1:1",
+            "src/x.ts:1",
+            "src/x.ts:12345678:1",
+            `src/${"a".repeat(201)}.ts:1:1`,
+            "src/.ts:1:1",
+        ];
+        for (const frame of refused) {
+            expect(isStackFrame(frame), frame).toBe(false);
+            expect(projectDiagnosticEvent({ at: AT, kind: "runtime", stack: [frame] }), frame).toEqual({
+                at: AT,
+                kind: "runtime",
+            });
+        }
+        expect(isStackFrame(42)).toBe(false);
+    });
+
+    it("jobLink: the phase, a lowercase UUID job id (the server's shape, never the relaxed generation id), the attempt, a close code 1000–4999, `terminal`", () => {
+        const full = { at: AT, kind: "jobLink", phase: "reattach", jobId: ID, attempt: 3, code: 4001, terminal: true };
+        expect(projectDiagnosticEvent(full)).toEqual(full);
+        for (const jobId of ["job-1", "Alice", ID.toUpperCase(), `${ID}0`, ID.slice(1), "a".repeat(36)]) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "jobLink", jobId }), jobId).toEqual({
+                at: AT,
+                kind: "jobLink",
+            });
+        }
+        expect(
+            projectDiagnosticEvent({
+                at: AT,
+                kind: "jobLink",
+                phase: "opened",
+                attempt: -1,
+                code: 999,
+                terminal: 1,
+                reason: "x",
+            }),
+        ).toEqual({ at: AT, kind: "jobLink" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "jobLink", code: 5000 })).toEqual({ at: AT, kind: "jobLink" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "jobLink", code: 1000 })).toHaveProperty("code", 1000);
+    });
+
+    it("feed, sync, serviceWorker, page: the phases by their lists, counts, a close code; `repeat` and `lastAt` on every kind", () => {
+        const feed = { at: AT, kind: "feed", phase: "disconnected", attempt: 0, code: 1006 };
+        expect(projectDiagnosticEvent(feed)).toEqual(feed);
+        expect(projectDiagnosticEvent({ at: AT, kind: "feed", phase: "hello", attempt: "1", code: 1.5 })).toEqual({
+            at: AT,
+            kind: "feed",
+        });
+        const sync = { at: AT, kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 2, generating: 1 };
+        expect(projectDiagnosticEvent(sync)).toEqual(sync);
+        expect(projectDiagnosticEvent({ at: AT, kind: "sync", phase: "reload", reason: "serviceWorker" })).toEqual({
+            at: AT,
+            kind: "sync",
+            phase: "reload",
+            reason: "serviceWorker",
+        });
+        expect(
+            projectDiagnosticEvent({
+                at: AT,
+                kind: "sync",
+                phase: "halt",
+                reason: "Alice",
+                records: -1,
+                generating: true,
+                ids: [],
+            }),
+        ).toEqual({ at: AT, kind: "sync" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "serviceWorker", phase: "initFailed" })).toEqual({
+            at: AT,
+            kind: "serviceWorker",
+            phase: "initFailed",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "serviceWorker", phase: "updated", scope: "/" })).toEqual({
+            at: AT,
+            kind: "serviceWorker",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "page", phase: "offline" })).toEqual({
+            at: AT,
+            kind: "page",
+            phase: "offline",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "page", phase: "unload", url: "/x" })).toEqual({
+            at: AT,
+            kind: "page",
+        });
+        for (const kind of DIAGNOSTIC_EVENT_KINDS) {
+            expect(projectDiagnosticEvent({ at: AT, kind, repeat: 3, lastAt: AT + 1 }), kind).toEqual({
+                at: AT,
+                kind,
+                repeat: 3,
+                lastAt: AT + 1,
+            });
+            expect(projectDiagnosticEvent({ at: AT, kind, repeat: 0.5, lastAt: "later" }), kind).toEqual({
+                at: AT,
+                kind,
+            });
+        }
     });
 
     it("lifecycle: the phase by its list and `replaced` as a boolean only", () => {
@@ -390,7 +566,7 @@ describe("sanitizeStack", () => {
 });
 
 describe("errorName, diagnosticModel, and the error-event predicates", () => {
-    it("names only a known error class; a free-text name or a thrown non-error is `?`", () => {
+    it("names only a known error class of any object with that `name` (an Error, a DOMException, a plain object); a free-text or throwing name or a thrown primitive is `?`", () => {
         expect(errorName(new TypeError("x"))).toBe("TypeError");
         const custom = new Error("x");
         custom.name = "GenerationRunnerError";
@@ -398,8 +574,95 @@ describe("errorName, diagnosticModel, and the error-event predicates", () => {
         custom.name = "AliceError";
         expect(errorName(custom)).toBe("?");
         expect(errorName("TypeError")).toBe("?");
-        expect(errorName({ name: "TypeError" })).toBe("?");
+        expect(errorName({ name: "TypeError" })).toBe("TypeError");
+        expect(errorName({ name: "Alice's TypeError" })).toBe("?");
+        expect(errorName({ name: 42 })).toBe("?");
+        expect(errorName(Object.create(null))).toBe("?");
+        expect(
+            errorName({
+                get name(): string {
+                    throw new Error("no");
+                },
+            }),
+        ).toBe("?");
         expect(errorName(undefined)).toBe("?");
+        expect(errorName(null)).toBe("?");
+        for (const name of [
+            "AbortError",
+            "TimeoutError",
+            "NetworkError",
+            "QuotaExceededError",
+            "SecurityError",
+            "DataCloneError",
+        ]) {
+            expect(errorName(new DOMException("x", name)), name).toBe(name);
+        }
+        expect(errorName(new DOMException("x", "WrongDocumentError"))).toBe("?");
+    });
+
+    it("maps a same-origin path to its template, literal templates first, `:x` one segment, a trailing `*` the rest, `?` for none; `isApiPath` names what the browser records", () => {
+        const cases: [string, string][] = [
+            ["/api/resources/revisions", "/api/resources/revisions"],
+            ["/api/resources/read", "/api/resources/read"],
+            ["/api/resources/characters", "/api/resources/:kind"],
+            ["/api/resources/characters/alice", "/api/resources/:kind/:id"],
+            ["/api/resources/characters/alice/more", "/api/resources/*"],
+            ["/api/resources/", "/api/resources/*"],
+            ["/api/resources", "/api/resources"],
+            ["/api/generations", "/api/generations"],
+            ["/api/generations/alice-job", "/api/generations/:id"],
+            ["/api/generations/alice-job/ws", "/api/generations/*"],
+            ["/api/llm/request/r1/answer", "/api/llm/request/:id/answer"],
+            ["/api/llm/request", "/api/llm/request"],
+            ["/api/llm-secrets/credentials/alice", "/api/llm-secrets/*"],
+            ["/api/llm-secrets", "?"],
+            ["/api/backups/b1/restore", "/api/backups/:id/restore"],
+            ["/api/backups/b1", "?"],
+            ["/api/request-history/r1", "/api/request-history/:id"],
+            ["/api/diagnostics", "/api/diagnostics"],
+            ["/api/diagnostics/", "?"],
+            ["/api/nope", "?"],
+            ["/api/nope/alice", "?"],
+            ["/sw/init", "/sw/init"],
+            ["/sw/check/616c696365", "/sw/check/*"],
+            ["/sw/img/a/b", "/sw/img/*"],
+            ["/sw/register/x", "/sw/register/*"],
+            ["/sw/share/x", "/sw/share/*"],
+            ["/sw/other", "?"],
+            ["/hub-proxy/alice/card", "/hub-proxy/*"],
+            ["/hub-proxy/", "/hub-proxy/*"],
+            ["/proxy", "/proxy"],
+            ["/proxy2", "/proxy2"],
+            ["/", "/"],
+            ["/index.html", "/index.html"],
+            ["/assets/index-BZ0RKwIv.js", "?"],
+            ["/Alice/private-chat", "?"],
+            ["", "?"],
+        ];
+        for (const [pathname, template] of cases) {
+            expect(apiRouteTemplate(pathname), pathname).toBe(template);
+        }
+        // The answer is always a member of the table, never the path.
+        for (const [pathname] of cases) {
+            expect(ROUTE_TEMPLATES).toContain(apiRouteTemplate(pathname));
+        }
+        for (const pathname of ["/api/list", "/api/", "/sw/init", "/hub-proxy/x", "/proxy", "/proxy2"]) {
+            expect(isApiPath(pathname), pathname).toBe(true);
+        }
+        for (const pathname of [
+            "/",
+            "/api",
+            "/apix/list",
+            "/proxy3",
+            "/proxy/",
+            "/assets/x.js",
+            "/sw.js",
+            "/sw",
+            "api/list",
+            "/hub-proxy",
+        ]) {
+            expect(isApiPath(pathname), pathname).toBe(false);
+        }
     });
 
     it("names a model by its catalog id, any other model `custom`, and no model as null", () => {

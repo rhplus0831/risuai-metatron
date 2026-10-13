@@ -99,9 +99,25 @@ describe("formatLogEvent", () => {
         expect(formatLogEvent("generation.release", {}, "a thrown string with private text")).toBe(
             "[Generation] release error=?",
         );
+        // Any object with a listed `name` is named (a DOMException, an error of another realm); a free-text
+        // or throwing `name` is `?`.
         expect(formatLogEvent("generation.release", {}, { name: "Error", message: "m" })).toBe(
+            "[Generation] release error=Error",
+        );
+        expect(formatLogEvent("generation.release", {}, { name: "AliceError", message: "m" })).toBe(
             "[Generation] release error=?",
         );
+        expect(
+            formatLogEvent(
+                "generation.release",
+                {},
+                {
+                    get name(): string {
+                        throw new Error("no");
+                    },
+                },
+            ),
+        ).toBe("[Generation] release error=?");
         expect(formatLogEvent("generation.release", {}, null)).toBe("[Generation] release error=?");
         // No error argument: no error part.
         expect(formatLogEvent("generation.release", {}, undefined)).toBe("[Generation] release");

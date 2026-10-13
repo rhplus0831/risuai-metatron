@@ -23,6 +23,8 @@ const stubs = vi.hoisted(() => ({
     rememberHydration: vi.fn(),
     endJobChannel: vi.fn(),
     changeToPreset: vi.fn(),
+    /** `recordClientEvent`: the job link's diagnostics (request history slice 8). */
+    record: vi.fn<(input: unknown) => void>(),
 }));
 
 vi.mock("../storage/serverAuth", () => ({
@@ -45,6 +47,7 @@ vi.mock("./jobChannel", () => ({
 }));
 // A job's `preset` event applies the preset through the preset actions module (Phase 6 slice 10).
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
+vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");
@@ -516,5 +519,82 @@ describe("the event dispatcher and the resume", () => {
         );
         expect(seen).toEqual([["known", { chaId: "c", chatId: "k" }, "chunk"]]);
         follows[0].close();
+    });
+});
+
+describe("the job link's diagnostics (request history slice 8)", () => {
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+
+    it("records `attach` once when the socket opens, and `detach` with the close code when it closes before the job's end", async () => {
+        const follow = transport.followGenerationJob("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        const [socket] = FakeSocket.instances;
+        expect(links()).toEqual([]);
+        socket.open();
+        expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
+        socket.onclose!({ code: 1006 });
+        await expect(follow.closed).resolves.toEqual({ terminal: null });
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "detach", jobId: "j1", code: 1006 },
+        ]);
+    });
+
+    it("records no detach for the close after the terminal, the caller's close, or a superseding follow", async () => {
+        const first = transport.followGenerationJob("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        const a = FakeSocket.instances[0];
+        a.open();
+        a.message({ type: "done", epoch: EPOCH, revision: null });
+        await first.closed;
+        await flush();
+        expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
+
+        const second = transport.followGenerationJob("j1", () => {});
+        stubs.auth[1].resolve("jwt");
+        await flush();
+        FakeSocket.instances[1].open();
+        second.close();
+        await second.closed;
+        await flush();
+        expect(links()).toHaveLength(2);
+        expect(links()[1]).toEqual({ kind: "jobLink", phase: "attach", jobId: "j1" });
+
+        const third = transport.followGenerationJob("j1", () => {});
+        stubs.auth[2].resolve("jwt");
+        await flush();
+        FakeSocket.instances[2].open();
+        const fourth = transport.followGenerationJob("j1", () => {});
+        await third.closed;
+        await flush();
+        expect(links()).toHaveLength(3);
+        fourth.close();
+        stubs.auth[3].resolve("jwt");
+        await flush();
+        expect(links()).toHaveLength(3);
+    });
+
+    it("records `attachFailed` for a close before the socket opened (with the code) and for a failed authentication (without), never after a cancel", async () => {
+        const first = transport.followGenerationJob("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        FakeSocket.instances[0].onclose!({ code: 1006 });
+        await first.closed;
+        expect(links()).toEqual([{ kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 }]);
+        const second = transport.followGenerationJob("j2", () => {});
+        stubs.auth[1].reject(new Error("no auth"));
+        await second.closed;
+        await flush();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 },
+            { kind: "jobLink", phase: "attachFailed", jobId: "j2" },
+        ]);
+        const third = transport.followGenerationJob("j3", () => {});
+        third.close();
+        stubs.auth[2].reject(new Error("no auth"));
+        await flush();
+        expect(links()).toHaveLength(2);
     });
 });

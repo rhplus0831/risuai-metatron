@@ -12,6 +12,7 @@ import { authFetch, getNodeServerProxyAuth } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { applyHydration } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
+import { recordClientEvent } from "../diagnostics/collector";
 
 /**
  * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
@@ -285,6 +286,13 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             `&attach=${stamp}`;
         const socket = new WebSocket(url);
         ws = socket;
+        let opened = false;
+        socket.onopen = () => {
+            opened = true;
+            if (!cancelled) {
+                recordClientEvent({ kind: "jobLink", phase: "attach", jobId });
+            }
+        };
         socket.onmessage = (message) => {
             if (cancelled) {
                 return;
@@ -310,15 +318,28 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             }
         };
         socket.onerror = () => {};
-        socket.onclose = () => {
+        socket.onclose = (event) => {
+            // The tab's own close (a newer follow, the caller) and the close after the job's end are not
+            // a lost link; a close before the socket opened is an attach that failed.
+            if (!cancelled && !terminal) {
+                recordClientEvent({
+                    kind: "jobLink",
+                    phase: opened ? "detach" : "attachFailed",
+                    jobId,
+                    code: event.code,
+                });
+            }
             if (currentFollows.get(jobId) === handle) {
                 currentFollows.delete(jobId);
             }
             finish();
         };
     })().catch((error) => {
-        // Authentication failed: no socket; the follow is over.
+        // Authentication failed (or the socket could not be built): no socket; the follow is over.
         console.error("[Generation]", error);
+        if (!cancelled) {
+            recordClientEvent({ kind: "jobLink", phase: "attachFailed", jobId });
+        }
         if (currentFollows.get(jobId) === handle) {
             currentFollows.delete(jobId);
         }

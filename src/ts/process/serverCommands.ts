@@ -35,6 +35,7 @@ import {
     watchForRestore,
 } from "../storage/resourceSync.svelte";
 import { sleep } from "../util";
+import { recordClientEvent } from "../diagnostics/collector";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
 const MAX_ATTACHES = 5;
@@ -75,6 +76,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
             try {
                 const discovered = ref ?? (await discover(jobId));
                 if (discovered === "gone") {
+                    recordClientEvent({ kind: "jobLink", phase: "lost", jobId });
                     releaseGenerationJob(jobId);
                     return "lost";
                 }
@@ -87,6 +89,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 }
                 const end = target === "lost" ? "lost" : await followOnce(jobId, target);
                 if (end === "lost") {
+                    recordClientEvent({ kind: "jobLink", phase: "lost", jobId });
                     releaseGenerationJob(jobId);
                 }
                 reportEnd(end, jobId);
@@ -174,6 +177,7 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<GenerationTermin
     for (let attach = 0; attach < MAX_ATTACHES; attach++) {
         if (attach > 0) {
             await sleep(REATTACH_DELAY_MS);
+            recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
         const follow: GenerationFollow = followGenerationJob(jobId, (event) =>
             applyGenerationEvent(jobId, ref, event, follow),
@@ -219,7 +223,12 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
 
 /** Attaches again to this tab's saved server jobs after a reload (Phase 5 slice 8a), each through its one lifecycle. */
 export async function resumeServerJobs(): Promise<void> {
-    await Promise.all(savedGenerationJobIds().map((jobId) => followJobToEnd(jobId)));
+    await Promise.all(
+        savedGenerationJobIds().map((jobId) => {
+            recordClientEvent({ kind: "jobLink", phase: "resume", jobId });
+            return followJobToEnd(jobId);
+        }),
+    );
 }
 
 /**

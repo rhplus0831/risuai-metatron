@@ -2,6 +2,7 @@ import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts"
 import { epochMismatch, getResourceEpoch, listRevisions, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
+import { recordClientEvent } from "../diagnostics/collector";
 
 /**
  * The live-update socket (Phase 6, `server/src/routes/events.ts`): another tab's or device's
@@ -19,6 +20,8 @@ let stopped = false;
 let socket: WebSocket | null = null;
 let attempt = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+/** The socket that got its `hello` (recorded `connected` once), and the attempt it was. */
+let connectedSocket: WebSocket | null = null;
 
 function isFrame(value: unknown): value is EventFeedFrame {
     return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
@@ -52,13 +55,17 @@ async function reconcile(ws: WebSocket) {
     }
 }
 
-function receive(ws: WebSocket, frame: EventFeedFrame) {
+function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
     const loaded = getResourceEpoch();
     switch (frame.type) {
         case "hello":
             if (frame.epoch !== loaded) {
                 epochMismatch(frame.epoch);
                 return;
+            }
+            if (connectedSocket !== ws) {
+                connectedSocket = ws;
+                recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
             attempt = 0;
             void reconcile(ws);
@@ -82,11 +89,16 @@ async function connect() {
     if (stopped) {
         return;
     }
+    // The attempt this connection is (0 for the first after a `hello`), for its events.
+    const connectAttempt = attempt;
     let token: string;
     try {
         token = await getNodeServerProxyAuth();
     } catch (error) {
         console.error("[Live updates]", error);
+        if (!stopped) {
+            recordClientEvent({ kind: "feed", phase: "connectFailed", attempt: connectAttempt });
+        }
         scheduleReconnect();
         return;
     }
@@ -99,6 +111,7 @@ async function connect() {
         ws = new WebSocket(`${protocol}//${location.host}${EVENT_FEED_PATH}?risu-auth=${encodeURIComponent(token)}`);
     } catch (error) {
         console.error("[Live updates]", error);
+        recordClientEvent({ kind: "feed", phase: "connectFailed", attempt: connectAttempt });
         scheduleReconnect();
         return;
     }
@@ -114,12 +127,19 @@ async function connect() {
             return;
         }
         if (isFrame(frame)) {
-            receive(ws, frame);
+            receive(ws, frame, connectAttempt);
         }
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
         if (socket === ws) {
             socket = null;
+            // A socket that never got its `hello` did not connect.
+            recordClientEvent({
+                kind: "feed",
+                phase: connectedSocket === ws ? "disconnected" : "connectFailed",
+                attempt: connectAttempt,
+                code: event.code,
+            });
             scheduleReconnect();
         }
     });

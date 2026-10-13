@@ -16,7 +16,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiagnosticEvent, DiagnosticEventInput } from "../../../shared/diagnostics.ts";
+import { type DiagnosticEvent, type DiagnosticEventInput, ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
 import { BASE_LLM_MODELS } from "../../../shared/llm/models.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createRequestHistory } from "../data/requestHistory.ts";
@@ -1022,7 +1022,7 @@ describe("the server context", () => {
         });
     });
 
-    it("records an `http` event for an answer of 400 or more with the registered template of the last handler that ran (`/*` for a miss, the route for its own auth, the handler's for a 500), never for a success, never the URL", async () => {
+    it("records an `http` event for an answer of 400 or more with the registered template of the last handler that ran (`/*` for a miss, the route for its own auth, the handler's for a 500; a template outside `ROUTE_TEMPLATES` is left out), never for a success, never the URL", async () => {
         const s = createTestServer({ password: "pw" });
         cleanups.push(() => s.close());
         s.app.get("/boom/:secret", () => {
@@ -1040,7 +1040,8 @@ describe("the server context", () => {
             { kind: "http", method: "GET", route: "/*", status: 404 },
             { kind: "http", method: "GET", route: "/api/request-history/:id", status: 400 },
             { kind: "http", method: "POST", route: "/api/backups/:id/restore", status: 400 },
-            { kind: "http", method: "GET", route: "/boom/:secret", status: 500 },
+            // The test's own route is registered but not in the shared table (slice 8): no route.
+            { kind: "http", method: "GET", status: 500 },
             { kind: "http", route: "/*", status: 404 },
         ]);
         for (const event of events) {
@@ -1133,6 +1134,70 @@ describe("the server context", () => {
         expect(lines(path.join(dir, "events", file)).at(-1)).toMatchObject({ kind: "lifecycle", phase: "shutdown" });
         await context.dispose();
         expect(readState(dir).writtenAt).toBe(final.writtenAt);
+    });
+});
+
+describe("the read route and the route table (slice 8)", () => {
+    it("answers the ring and the state to a JWT with `no-store` (a trailing slash too), the server's 400 with `no-store` without one, and writes nothing", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const dir = path.join(s.savePath, "diagnostics");
+        const denied = await s.app.request("/api/diagnostics");
+        expect(denied.status).toBe(400);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+        // The 400 is an `http` event of the journal (a missing token is the server's 400 on every authenticated route); from here on nothing is written.
+        const folder = () => ({
+            state: readFileSync(path.join(dir, "state.json"), "utf8"),
+            events: sizes(path.join(dir, "events")),
+        });
+        const before = folder();
+        const res = await s.request("/api/diagnostics");
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        const body = (await res.json()) as { events: DiagnosticEvent[]; state: Record<string, unknown> };
+        expect(body.events).toEqual(s.context.diagnostics.recent());
+        expect(body.events[0]).toMatchObject({ kind: "lifecycle", phase: "boot" });
+        expect(body.events.at(-1)).toMatchObject({
+            kind: "http",
+            method: "GET",
+            route: "/api/diagnostics",
+            status: 400,
+        });
+        expect(Object.keys(body.state).sort()).toEqual(Object.keys(s.context.diagnostics.state()).sort());
+        expect(body.state.journal).toEqual({ eventBytes: expect.any(Number), writeFailures: 0 });
+        const slash = await s.request("/api/diagnostics/");
+        expect(slash.status).toBe(200);
+        expect(slash.headers.get("cache-control")).toBe("no-store");
+        expect(((await slash.json()) as { events: unknown[] }).events).toEqual(body.events);
+        expect(folder()).toEqual(before);
+    });
+
+    it("refuses the read with a 503 (`Retry-After`, `no-store`) once shutdown began, as the admission middleware does for the history", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        await s.context.dispose();
+        const res = await s.request("/api/diagnostics");
+        expect(res.status).toBe(503);
+        expect(res.headers.get("retry-after")).toBe("5");
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await res.json()).toEqual({ error: "The server is shutting down" });
+    });
+
+    it("has every registered route in `ROUTE_TEMPLATES`, so the browser's `apiRouteTemplate` and the server's `http` events name the same templates", () => {
+        const s = createTestServer({ password: "pw" });
+        cleanups.push(() => s.close());
+        const registered = [...new Set(s.app.routes.map((route) => route.path))];
+        expect(registered.length).toBeGreaterThan(30);
+        expect(registered.filter((route) => !(ROUTE_TEMPLATES as readonly string[]).includes(route))).toEqual([]);
+        // What the table holds beyond the server's routes: the service worker's, and `?`.
+        expect(ROUTE_TEMPLATES.filter((template) => !registered.includes(template))).toEqual([
+            "/sw/init",
+            "/sw/check/*",
+            "/sw/img/*",
+            "/sw/register/*",
+            "/sw/share/*",
+            "?",
+        ]);
     });
 });
 

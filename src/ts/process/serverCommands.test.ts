@@ -49,6 +49,8 @@ const stubs = vi.hoisted(() => ({
     entry: vi.fn<() => Record<string, unknown> | undefined>(() => ({})),
     /** `loadChat`: the runner reads the chat again after a binding mismatch. */
     loadChat: vi.fn<() => Promise<unknown>>(async () => ({})),
+    /** `recordClientEvent`: the follow's diagnostics (request history slice 8). */
+    record: vi.fn<(input: unknown) => void>(),
 }));
 /** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
 const BOUND = { modelPresetId: "preset", promptPresetId: "preset", bindedPersona: "selected" };
@@ -131,6 +133,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     watchForRestore: stubs.restored,
 }));
 vi.mock("../util", () => ({ sleep: async () => {} }));
+vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
 
 type Module = typeof import("./serverCommands");
 let commands: Module;
@@ -949,5 +952,62 @@ describe("the job's chat (Phase 6 slice 9b)", () => {
         // The follow's pin and the follow-ups' pin, both released.
         expect(stubs.pin).toHaveBeenCalledTimes(2);
         expect(pinsBalanced()).toBe(true);
+    });
+});
+
+describe("the follow's diagnostics (request history slice 8)", () => {
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+
+    it("records `reattach` with its attempt before every attach after the first, and `lost` once when the attaches run out", async () => {
+        stubs.read.mockResolvedValue(status);
+        const end = commands.followJobToEnd("j", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await flush();
+            await flush();
+            follows()[attach].end(null);
+        }
+        expect(await end).toBe("lost");
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 1 },
+            { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 2 },
+            { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 3 },
+            { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 4 },
+            { kind: "jobLink", phase: "lost", jobId: "j" },
+        ]);
+    });
+
+    it("records `lost` once for a job the server does not know and for a chat that cannot be loaded, and nothing for a job that ends", async () => {
+        stubs.read.mockResolvedValue(null);
+        expect(await commands.followJobToEnd("gone")).toBe("lost");
+        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "gone" }]);
+        stubs.record.mockClear();
+        stubs.load.mockResolvedValue(undefined);
+        expect(await commands.followJobToEnd("unloaded", ref)).toBe("lost");
+        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "unloaded" }]);
+        stubs.record.mockClear();
+        stubs.load.mockResolvedValue({});
+        const end = commands.followJobToEnd("fine", ref);
+        await flush();
+        endWith(follows().at(-1)!, failed);
+        expect(await end).toEqual(failed);
+        expect(links()).toEqual([]);
+    });
+
+    it("records `resume` per saved job before its follow starts", async () => {
+        stubs.saved.mockReturnValue(["a", "b"]);
+        stubs.read.mockResolvedValue(status);
+        const resumed = commands.resumeServerJobs();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "resume", jobId: "a" },
+            { kind: "jobLink", phase: "resume", jobId: "b" },
+        ]);
+        await flush();
+        await flush();
+        expect(follows()).toHaveLength(2);
+        for (const follow of follows()) {
+            endWith(follow, done);
+        }
+        await resumed;
+        expect(links()).toHaveLength(2);
     });
 });

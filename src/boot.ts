@@ -1,14 +1,12 @@
-import "./ts/storage/database.svelte";
-import App from "./App.svelte";
-import { loadData } from "./ts/bootstrap";
-import { initHotkey } from "./ts/hotkey";
-import { mount } from "svelte";
+import { startDiagnosticsCollector } from "./ts/diagnostics/collector";
 
-export function boot() {
-    mount(App, {
-        target: document.getElementById("app"),
-    });
-    loadData();
-    initHotkey();
-    document.getElementById("preloading").remove();
+/**
+ * The app's entry on the self-host server (`src/main.ts`): the diagnostics collector starts first,
+ * before the app's modules are even loaded (`docs/plan/request-history-diagnostics.md` slice 8), so
+ * a failure while they load or start is recorded too; then the app starts (`startApp.ts`).
+ */
+export async function boot() {
+    startDiagnosticsCollector();
+    const { startApp } = await import("./startApp");
+    startApp();
 }
