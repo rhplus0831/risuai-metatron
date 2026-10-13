@@ -4,8 +4,7 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
     import NumberInput from "../UI/GUI/NumberInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
-    import { getRequestLog } from "src/ts/globalApi.svelte";
-    import { alertMd, alertWait } from "src/ts/alert";
+    import { alertMd, alertRequestLogs, alertWait } from "src/ts/alert";
     import Accordion from "../UI/Accordion.svelte";
     import { getCharToken, getChatToken } from "src/ts/tokenizer";
     import { tokenizePreset } from "src/ts/process/prompt";
@@ -359,6 +358,6 @@
 <Button
     className="mt-2"
     onclick={() => {
-        alertMd(getRequestLog());
+        alertRequestLogs();
     }}>Request Log</Button
 >

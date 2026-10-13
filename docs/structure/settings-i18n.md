@@ -34,7 +34,7 @@ Declarative settings (`src/ts/setting/`):
 - `customComponents.ts` `customComponents`: maps component IDs to components for `type:'custom'`.
 - Data arrays:
   - `accessibilitySettingsData.ts` (also `acc.newChatBinding`, how a new chat starts, `docs/plan/chat-binding.md`: a segmented choice whose `getValue` reads anything but `empty` as `inherit`, as the creation does)
-  - `advancedSettingsData.ts`
+  - `advancedSettingsData.ts` (also `adv.requestHistoryContent` and `adv.requestHistoryLimit`, the server request history's `providers` settings, 10–10,000, `docs/plan/request-history-diagnostics.md`)
   - `botSettingsParamsData.ts` (`allBasicParameterItems`, sampling, penalty, model-specific)
   - `chatFormatSettingsData.ts`
   - `displaySettingsData.svelte.ts`

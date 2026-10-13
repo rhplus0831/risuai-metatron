@@ -286,6 +286,23 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "dynamicModelRegistry",
         classes: "mt-4",
     },
+    {
+        id: "adv.requestHistoryContent",
+        type: "check",
+        labelKey: "requestHistoryContent",
+        bindKey: "requestHistoryContent",
+        helpKey: "requestHistoryContent",
+        classes: "mt-4",
+    },
+    {
+        id: "adv.requestHistoryLimit",
+        type: "number",
+        labelKey: "requestHistoryLimit",
+        bindKey: "requestHistoryLimit",
+        helpKey: "requestHistoryLimit",
+        options: { min: 10, max: 10000 },
+        classes: "mt-4",
+    },
 
     // Experimental Section (visible when useExperimental is true)
     {

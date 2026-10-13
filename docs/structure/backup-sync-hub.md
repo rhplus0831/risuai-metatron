@@ -27,7 +27,7 @@
 - `UI/Realm/RealmMain.svelte`: browse via `characterCards.ts:getRisuHub`.
 - `RealmPopUp.svelte`: detail, copy link, and `downloadRisuHub`.
 - `RealmHubIcon.svelte`, `RealmLicense.svelte` (`CCLicenseData`).
-- `SettingsExportButtons.svelte`: a redacted settings report (strips characters, keys, `irisDialogue`, `googleSearchCredentials`, and `pluginCustomStorage`), request logs, and statistics.
+- `SettingsExportButtons.svelte`: a redacted settings report (strips characters, keys, `irisDialogue`, `googleSearchCredentials`, and `pluginCustomStorage`), the request logs popup (`alertRequestLogs`, `global-api.md`), and statistics.
 
 ## Flows
 

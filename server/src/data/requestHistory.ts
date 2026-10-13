@@ -2,6 +2,22 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { FetchLogEntry } from "../llm/transport.ts";
+import type {
+    RequestHistoryFieldCut,
+    RequestHistoryRecord,
+    RequestHistoryStatus,
+    RequestHistorySummary,
+    RequestHistoryTruncation,
+} from "../../../shared/requestHistory.ts";
+
+export type {
+    RequestHistoryExchange,
+    RequestHistoryFieldCut,
+    RequestHistoryRecord,
+    RequestHistoryStatus,
+    RequestHistorySummary,
+    RequestHistoryTruncation,
+} from "../../../shared/requestHistory.ts";
 
 /**
  * The durable LLM request history (`docs/plan/request-history-diagnostics.md`, slice 2): one row per
@@ -35,7 +51,6 @@ import type { FetchLogEntry } from "../llm/transport.ts";
  * (`deleteAll` then answers null). A transaction that cannot be rolled back closes the store.
  */
 
-export type RequestHistoryStatus = "pending" | "success" | "error" | "aborted" | "interrupted";
 export type RequestHistoryEndStatus = "success" | "error" | "aborted";
 
 export type RequestHistoryBegin = {
@@ -75,64 +90,6 @@ export type RequestHistoryOutcome = {
     error?: string | null;
     requestBytes?: number | null;
     responseBytes?: number | null;
-};
-
-export type RequestHistoryFieldCut = { originalBytes: number; storedBytes: number };
-
-/** Every cut field: `prompt`, `error`, a short field by name, or `exchange.<index>.<field>`. */
-export type RequestHistoryTruncation = Record<string, RequestHistoryFieldCut>;
-
-export type RequestHistorySummary = {
-    id: string;
-    jobId: string | null;
-    source: string;
-    mode: string;
-    chaId: string | null;
-    chatId: string | null;
-    messageId: string | null;
-    modelId: string | null;
-    profileId: string | null;
-    profileName: string | null;
-    provider: string | null;
-    startedAt: number;
-    firstByteAt: number | null;
-    completedAt: number | null;
-    status: RequestHistoryStatus;
-    httpStatus: number | null;
-    providerCode: string | null;
-    hasError: boolean;
-    requestBytes: number | null;
-    responseBytes: number | null;
-    content: boolean;
-    /** Exchanges offered to the row, kept or not. */
-    exchangeCount: number;
-    /** Exchanges kept (at most 32). */
-    storedExchanges: number;
-    /** Whether a field was cut or an exchange dropped. */
-    truncated: boolean;
-    sharedAt: number | null;
-    /** The bytes the row counts toward the byte cap. */
-    bytes: number;
-};
-
-export type RequestHistoryExchange = {
-    url: string;
-    header: string;
-    body: string;
-    response: string;
-    success: boolean;
-    status: number | null;
-    date: string;
-    responseType: string | null;
-};
-
-export type RequestHistoryRecord = RequestHistorySummary & {
-    error: string | null;
-    /** The prompt's JSON text (it may be cut), or null (content off, none given, or unserializable). */
-    prompt: string | null;
-    /** In order; null when content is off. */
-    exchanges: RequestHistoryExchange[] | null;
-    truncation: RequestHistoryTruncation;
 };
 
 export type RequestHistoryListQuery = {

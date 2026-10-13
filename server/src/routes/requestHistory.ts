@@ -1,11 +1,14 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import type { RequestHistory, RequestHistoryStatus } from "../data/requestHistory.ts";
+import {
+    REQUEST_HISTORY_PATH,
+    REQUEST_HISTORY_STATUSES,
+    type RequestHistoryStatus,
+} from "../../../shared/requestHistory.ts";
+import type { RequestHistory } from "../data/requestHistory.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
-export const REQUEST_HISTORY_PATH = "/api/request-history";
-
-const STATUSES: readonly RequestHistoryStatus[] = ["pending", "success", "error", "aborted", "interrupted"];
+export { REQUEST_HISTORY_PATH };
 /** The store's list cursor: a row's `seq` as a decimal string. */
 const CURSOR = /^[1-9][0-9]{0,15}$/;
 /** A page size; the store clamps it to 1–200. */
@@ -56,7 +59,7 @@ export function registerRequestHistoryRoutes(
             return c.json({ error: "Invalid limit" }, 400);
         }
         const status = param(c, "status");
-        if (status !== undefined && !STATUSES.includes(status as RequestHistoryStatus)) {
+        if (status !== undefined && !(REQUEST_HISTORY_STATUSES as readonly string[]).includes(status)) {
             return c.json({ error: "Invalid status" }, 400);
         }
         if (!history.available()) {

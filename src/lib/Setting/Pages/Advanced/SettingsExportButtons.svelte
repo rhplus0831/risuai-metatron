@@ -3,14 +3,14 @@
     import { buildSettingsReport } from "src/ts/storage/snapshots.svelte";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
-    import { alertMd, alertNormal } from "src/ts/alert";
-    import { downloadFile, getRequestLog } from "src/ts/globalApi.svelte";
+    import { alertMd, alertNormal, alertRequestLogs } from "src/ts/alert";
+    import { downloadFile } from "src/ts/globalApi.svelte";
 </script>
 
 <Button
     className="mt-4"
-    onclick={async () => {
-        alertMd(getRequestLog());
+    onclick={() => {
+        alertRequestLogs();
     }}
 >
     {language.ShowLog}
