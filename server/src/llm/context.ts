@@ -40,6 +40,17 @@ export type RequestContext = {
      * a request observer.
      */
     firstByte?: { mark(at?: number): void; now(): number };
+    /**
+     * The model the request runs on, once `requestChatDataMain` resolved its slot and format (the
+     * request history's row), before its credential is resolved; the request layer reports it to its
+     * observer.
+     */
+    describe?: (model: {
+        modelId: string | null;
+        profileId: string | null;
+        profileName: string | null;
+        provider: string | null;
+    }) => void;
     /** `alertError(message)` in the client's tab (an `Error` sends its message). */
     alertError: (message: string | Error) => void;
     /**

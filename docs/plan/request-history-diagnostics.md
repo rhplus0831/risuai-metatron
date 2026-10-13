@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 in progress (slices 1–2 done). Two phases.
+Status: Phase 1 in progress (slices 1–3 done). Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -118,8 +118,9 @@ share its `jobId`.
 - **Sizes:** request bytes and response bytes.
 - **Content** (null when capture is off): `prompt` (the `formated` the request
   layer received, 2 MiB) and `exchanges`. `exchanges` is every transport log
-  entry of the request in order (tool rounds, the Vertex token call, a batch's
-  submit, status, and results calls),
+  entry of the request in completion order (tool rounds, a batch's submit, its
+  final status poll, and results calls; the Vertex token call is not one: the
+  token cache fetches outside the transport and is shared between requests),
   each with URL, header, body, and response. Bounds: 32 exchanges, a body 2 MiB,
   a response 4 MiB, a header 64 KiB.
 - **Truncation:** which fields were cut, with original and stored bytes.
@@ -281,7 +282,15 @@ projection:
 - Horde: check `typeof json.id === "string"` inside the submit's `try`, so a
   malformed id ends the request through the existing `catch` and keeps its
   first byte (today it throws outside the `try` while building the poll URL).
-- The translation runner's `log` writes the history.
+- The translation runner's requests are `runInJob` requests, so the layer
+  captures them; it needs no `log` of its own (removed with `JobRequestSpec.log`).
+- The prompt is redacted like every other content field (serialized, then the
+  request's redactor), once the redactor exists, through the store's
+  `setPrompt`.
+- The provider error code stays null until slice 6.
+- Horde, local Ollama, OobaLegacy's WebSocket stream, WebLLM, and plugin
+  providers fetch outside the transport: their rows carry the prompt and
+  summary, no exchanges.
 - Remove the `requestLog` notice: the kind in `shared/jobs.ts`, the send in
   `bindings.ts`, and the client case.
 - Tests (server, injected fetch):

@@ -1116,3 +1116,67 @@ describe("the reads and the bulk writes", () => {
         expect(warn).not.toHaveBeenCalled();
     });
 });
+
+describe("setPrompt (request history slice 3)", () => {
+    // The request layer writes the prompt after the row began (its redactor exists only then):
+    // a pending row with content on and no prompt takes it once, bounded like `begin`'s prompt
+    // and counted in the row's bytes; every other row ignores it; the write prunes.
+    it("sets a pending row's prompt once, bounded at a character boundary with the cut recorded and its bytes counted; a row with a prompt, content off, a finished row, a missing row, and a non-string are ignored", () => {
+        const store = open();
+        store.begin(row("r"));
+        expect(store.get("r")?.prompt).toBeNull();
+        store.setPrompt("r", "[1]");
+        expect(store.get("r")).toMatchObject({ prompt: "[1]", bytes: beginBytes(row("r"), { prompt: "[1]" }) });
+        store.setPrompt("r", "[2]");
+        expect(store.get("r")?.prompt).toBe("[1]");
+
+        store.begin(row("p", { prompt: [0] }));
+        store.setPrompt("p", "[9]");
+        expect(store.get("p")?.prompt).toBe("[0]");
+
+        store.begin(row("off", { content: false }));
+        store.setPrompt("off", "[1]");
+        expect(store.get("off")).toMatchObject({ prompt: null, bytes: beginBytes(row("off", { content: false })) });
+
+        store.begin(row("done"));
+        store.finish("done", { status: "success" });
+        store.setPrompt("done", "[1]");
+        expect(store.get("done")?.prompt).toBeNull();
+
+        store.setPrompt("missing", "[1]");
+        store.begin(row("bad"));
+        store.setPrompt("bad", 5 as never);
+        expect(store.get("bad")?.prompt).toBeNull();
+
+        // 3-byte characters: the bound is not a multiple of 3, so the cut backs up to a boundary.
+        const chars = Math.ceil(REQUEST_HISTORY_BOUNDS.prompt / 3) + 1;
+        const storedBytes = REQUEST_HISTORY_BOUNDS.prompt - (REQUEST_HISTORY_BOUNDS.prompt % 3);
+        store.begin(row("big"));
+        store.setPrompt("big", "€".repeat(chars));
+        const big = store.get("big")!;
+        const cut = { originalBytes: chars * 3, storedBytes };
+        expect(big.prompt).toBe("€".repeat(storedBytes / 3));
+        expect(big.truncation).toEqual({ prompt: cut });
+        expect(big.truncated).toBe(true);
+        expect(big.bytes).toBe(
+            beginBytes(row("big"), { prompt: big.prompt, truncation: JSON.stringify({ prompt: cut }) }),
+        );
+        const rows = store.list({ limit: 200 }).items;
+        expect(store.stats()).toEqual({ rows: rows.length, bytes: rows.reduce((sum, item) => sum + item.bytes, 0) });
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("prunes after the write: a prompt that takes the history over its byte cap evicts the oldest row", () => {
+        const store = open({ maxBytes: 1000 });
+        store.begin(row("old"));
+        store.begin(row("new"));
+        const before = store.stats();
+        expect(before.rows).toBe(2);
+        store.setPrompt("new", "x".repeat(1000 - before.bytes + 1));
+        expect(store.get("old")).toBeNull();
+        expect(store.get("new")?.prompt).toHaveLength(1000 - before.bytes + 1);
+        expect(store.stats().rows).toBe(1);
+        expect(store.stats().bytes).toBeLessThanOrEqual(1000);
+        expect(warn).not.toHaveBeenCalled();
+    });
+});

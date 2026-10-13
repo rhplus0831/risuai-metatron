@@ -969,7 +969,6 @@ function jobSpec(
     } = {},
 ) {
     const loaded = loadRequestDb(fakeStore(records), kinds, ids);
-    const logs: unknown[] = [];
     const alerts: string[] = [];
     const ended: string[] = [];
     const spec: JobRequestSpec = {
@@ -993,30 +992,47 @@ function jobSpec(
             writeImage: async (image) => image.id,
             setAsset: async () => {},
         },
-        log: (entry) => logs.push(entry),
         alertError: (text) => alerts.push(text),
         endJob: (message) => ended.push(message),
         tools: options.tools ?? noTools(),
         toolCalls: { read: () => undefined, write: () => {} },
         signal: options.signal ?? new AbortController().signal,
     };
-    return { spec, logs, alerts, ended };
+    return { spec, alerts, ended };
 }
 
 describe("a job's in-process request (runInJob, slice 8a)", () => {
-    it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the logs", async () => {
-        const { registry, calls } = harness(makeRecords(), (_call, index) =>
-            index === 0 ? chat(`echo ${SECRET}`) : json({ error: { message: `bad key ${SECRET}` } }, 401),
+    it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the exchanges it reports (a job has no tab log)", async () => {
+        // The `requestLog` notice is gone (request history slice 3): a job's exchanges reach only
+        // the observer, redacted at the write.
+        const exchanges: Record<string, unknown>[] = [];
+        const observer: RequestObserver = {
+            begin() {},
+            firstByte() {},
+            exchange: (_id, entry) => void exchanges.push(entry),
+            finish() {},
+        };
+        const { registry, calls } = harness(
+            makeRecords(),
+            (_call, index) =>
+                index === 0 ? chat(`echo ${SECRET}`) : json({ error: { message: `bad key ${SECRET}` } }, 401),
+            { observer },
         );
-        const { spec, logs } = jobSpec(makeRecords());
+        const { spec } = jobSpec(makeRecords());
         const success = await registry.runInJob(spec);
         expect(success).toMatchObject({ type: "success", result: `echo ${SECRET}` });
         expect(calls[0].headers.authorization).toContain(SECRET);
         const failure = await registry.runInJob(spec);
         expect(failure.type).toBe("fail");
         expect(JSON.stringify(failure)).not.toContain(SECRET);
-        expect(logs.length).toBeGreaterThan(0);
-        expect(JSON.stringify(logs)).not.toContain(SECRET);
+        expect(exchanges).toHaveLength(2);
+        expect(JSON.stringify(exchanges)).not.toContain(SECRET);
+        expect(JSON.parse(exchanges[0].header as string)).toMatchObject({ Authorization: "[redacted]" });
+        expect(exchanges[1]).toMatchObject({
+            status: 401,
+            success: false,
+            response: expect.stringContaining("[redacted]"),
+        });
         expect(registry.liveIds()).toEqual([]);
         await registry.dispose();
     });
@@ -1165,7 +1181,6 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
                 writeImage: async (image) => image.id,
                 setAsset: async () => {},
             },
-            log: () => {},
             alertError: () => {},
             endJob: (message) => ended.push(message),
             tools,
@@ -1679,7 +1694,6 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
                 writeImage: async (image) => image.id,
                 setAsset: async () => {},
             },
-            log: () => {},
             alertError: () => {},
             endJob: (message) => ended.push(message),
             tools: noTools(),

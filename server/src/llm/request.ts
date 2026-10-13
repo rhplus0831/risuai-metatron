@@ -27,7 +27,7 @@ import { requestGoogleCloudVertex } from "./google.ts";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
-import { watchFirstByte } from "./transport.ts";
+import { deferFirstByte, watchFirstByte } from "./transport.ts";
 import { sleep } from "./util.ts";
 
 export type { StreamResponseChunk };
@@ -313,6 +313,16 @@ export function reformater(
     return formated;
 }
 
+/** An `LLMFormat` value's name (`OpenAICompatible`), or null for a value outside the list. */
+function formatName(format: LLMFormat): string | null {
+    for (const [name, value] of Object.entries(LLMFormat)) {
+        if (value === format) {
+            return name;
+        }
+    }
+    return null;
+}
+
 /**
  * `requestChatDataMain` on the server: shared slot resolution, a request-local profile overlay,
  * argument defaults, reverse-proxy/custom-model overrides, `reformater`, then the format's function.
@@ -397,6 +407,14 @@ export async function requestChatDataMain(
         const found = db.customModels.find((m) => m.id === targ.aiModel);
         targ.customURL = found?.url;
     }
+
+    // The request history's model (`docs/plan/request-history-diagnostics.md`), with its final format.
+    ctx.describe?.({
+        modelId: aiModel,
+        profileId: profile?.id ?? null,
+        profileName: profile?.name ?? null,
+        provider: formatName(targ.modelInfo.format),
+    });
 
     const credential = resolveCredential(db, targ.aiModel, targ.modelInfo, profile);
     switch (credential.kind) {
@@ -1478,22 +1496,7 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
      * reports it once that body ended the request. Nothing is reported for a body that failed
      * before its first chunk, nor after the request ended while it was being read (cancelled).
      */
-    const watchHorde = (response: Response) => {
-        let at: number | undefined;
-        const watched = hook
-            ? watchFirstByte(response, () => {
-                  at ??= hook.now();
-              })
-            : response;
-        return {
-            response: watched,
-            answered: () => {
-                if (at !== undefined) {
-                    hook?.mark(at);
-                }
-            },
-        };
-    };
+    const watchHorde = (response: Response) => deferFirstByte(response, hook);
 
     const submitResponse = await fetch("https://stablehorde.net/api/v2/generate/text/async", {
         body: JSON.stringify(finalBody),
@@ -1522,6 +1525,10 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
         json = (await submitted.response.json()) as any;
         if (json.message) {
             warnMessage = "with " + json.message;
+        }
+        // The poll URL is built from it: an id that is not one ends the request here, with its answer.
+        if (typeof json.id !== "string" || json.id === "") {
+            throw new Error("Horde did not return a request id");
         }
     } catch (error) {
         // An accepted submit whose body cannot be read ends the request.

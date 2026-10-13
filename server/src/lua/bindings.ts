@@ -843,7 +843,6 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                             );
                         },
                     },
-                    log: (entry) => job.channel.notice({ kind: "requestLog", payload: entry }),
                     alertError: (text) => job.channel.notice({ kind: "alertError", payload: { message: text } }),
                     endJob: (message) => {
                         latch(new LuaJobFatalError(message));

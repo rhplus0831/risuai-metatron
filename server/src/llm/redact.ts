@@ -51,6 +51,11 @@ export type Redactor = {
      * payload, a tool record, a body for an interceptor), which is refused rather than redacted.
      */
     carries(value: unknown): boolean;
+    /**
+     * `value` without a trailing start of a secret form: for a text cut at a bound (a captured stream
+     * body), where a credential cut in two would otherwise leave its first part. Run after `text`.
+     */
+    trimPartial(value: string): string;
 };
 
 export function collectSecrets(db: Partial<RequestDb>): string[] {
@@ -167,6 +172,23 @@ export function createRedactor(initial: string[]): Redactor {
         return value;
     }
 
+    function trimPartial(value: string): string {
+        let cut = value.length;
+        for (const form of forms) {
+            if (form.length < 2) {
+                continue;
+            }
+            // A proper prefix of the form that ends the text (the whole form is already replaced).
+            for (let i = Math.max(0, value.length - (form.length - 1)); i < cut; i++) {
+                if (value.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(value.slice(i))) {
+                    cut = i;
+                    break;
+                }
+            }
+        }
+        return value.slice(0, cut);
+    }
+
     for (const secret of initial) {
         add(secret);
     }
@@ -176,6 +198,7 @@ export function createRedactor(initial: string[]): Redactor {
         apply: <T>(value: T) => walk(value) as T,
         text,
         carries,
+        trimPartial,
     };
 }
 

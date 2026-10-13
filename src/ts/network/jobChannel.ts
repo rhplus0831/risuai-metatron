@@ -287,10 +287,6 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             }
             return;
         }
-        case "requestLog":
-            // Slice 7a defines the projection and where it is kept.
-            console.debug("[Channel] request log", notice.payload);
-            return;
         case "openURL": {
             // An MCP server's OAuth page (slice 12): only a web address is opened.
             const { url } = notice.payload;

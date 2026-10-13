@@ -148,6 +148,11 @@ export type RequestHistoryListQuery = {
 
 export type RequestHistory = {
     begin(summary: RequestHistoryBegin): void;
+    /**
+     * Sets the prompt of a pending row with content on and no prompt yet, as the given text (the
+     * request layer's redacted JSON text), bounded like `begin`'s.
+     */
+    setPrompt(id: string, text: string): void;
     /** Fills the model of a pending row (fields given only). */
     describe(id: string, model: RequestHistoryModel): void;
     /** The first byte of a pending row; the first one wins. */
@@ -439,12 +444,13 @@ export function createRequestHistory(options: {
             ),
             row: open.prepare(
                 "SELECT seq, status, content, exchange_count, exchanges_stored, truncation, bytes, " +
-                    "model_id, profile_id, profile_name, provider FROM requests WHERE id = ?",
+                    "model_id, profile_id, profile_name, provider, prompt IS NULL AS no_prompt FROM requests WHERE id = ?",
             ),
             describe: open.prepare(
                 "UPDATE requests SET model_id = :modelId, profile_id = :profileId, profile_name = :profileName, provider = :provider, " +
                     "truncation = :truncation, bytes = :bytes WHERE seq = :seq",
             ),
+            setPrompt: open.prepare("UPDATE requests SET prompt = ?, truncation = ?, bytes = ? WHERE seq = ?"),
             firstByte: open.prepare(
                 "UPDATE requests SET first_byte_at = ? WHERE id = ? AND status = 'pending' AND first_byte_at IS NULL",
             ),
@@ -626,6 +632,7 @@ export function createRequestHistory(options: {
         profile_id: string | null;
         profile_name: string | null;
         provider: string | null;
+        no_prompt: number | bigint;
     };
 
     return {
@@ -690,6 +697,35 @@ export function createRequestHistory(options: {
                 return true;
             });
             if (inserted) {
+                pruneAfterWrite();
+            }
+        },
+        setPrompt(id, text) {
+            const added = guard(null as number | null, () =>
+                transaction((s) => {
+                    const row = s.row.get(id) as StateRow | undefined;
+                    if (
+                        !row ||
+                        row.status !== "pending" ||
+                        Number(row.content) !== 1 ||
+                        Number(row.no_prompt) !== 1 ||
+                        typeof text !== "string"
+                    ) {
+                        return null;
+                    }
+                    const truncation = parseTruncation(row.truncation);
+                    const bounded = bound(text, REQUEST_HISTORY_BOUNDS.prompt);
+                    if (bounded.cut) {
+                        truncation.prompt = bounded.cut;
+                    }
+                    const truncationJson = truncationText(truncation);
+                    const added = bounded.bytes + utf8(truncationJson) - utf8(row.truncation);
+                    s.setPrompt.run(bounded.text, truncationJson, Number(row.bytes) + added, row.seq);
+                    return added;
+                }),
+            );
+            if (added !== null) {
+                totalBytes += added;
                 pruneAfterWrite();
             }
         },

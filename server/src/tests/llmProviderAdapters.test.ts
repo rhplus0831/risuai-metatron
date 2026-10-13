@@ -626,8 +626,10 @@ describe("the server provider adapters", () => {
             result: { type: "streaming" },
             // One chunk with the whole text: the canned body arrives in one read.
             chunks: [{ "0": "Hello" }],
-            // The transport's own entry and the adapter's "Streaming" entry, as on the client.
-            logs: [PROVIDER, PROVIDER],
+            // The transport's own pre-fetch entry only: the adapter's "Streaming" placeholder the
+            // client logged beside it is gone (request history slice 3: one entry per streamed
+            // call, the body itself recorded by the transport).
+            logs: [PROVIDER],
         });
     });
 
@@ -1090,7 +1092,8 @@ describe("the server provider adapters", () => {
                 { "0": thoughtful },
                 { "0": thoughtful },
             ],
-            logs: [RESPONSES_URL, RESPONSES_URL],
+            // The transport's pre-fetch entry only (no "Streaming" placeholder, slice 3).
+            logs: [RESPONSES_URL],
         });
     });
 

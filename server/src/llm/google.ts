@@ -1172,14 +1172,7 @@ function wrapToolStream(
                             });
 
                             if (resRec.status == 200) {
-                                arg.ctx.transport.addLog({
-                                    body: body,
-                                    response: "Streaming",
-                                    success: true,
-                                    url: url,
-                                    status: resRec.status,
-                                });
-
+                                // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
                                 break;
                             }

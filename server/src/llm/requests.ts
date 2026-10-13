@@ -30,7 +30,7 @@ import { messages } from "./messages.ts";
 import { collectSecrets, createRedactor, redactHeaderText, type Redactor } from "./redact.ts";
 import { requestChatDataMain, type requestDataResponse } from "./request.ts";
 import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./settings.ts";
-import { createTransport, type FetchLogEntry } from "./transport.ts";
+import { createTransport, type ExchangeDetail, type FetchLogEntry } from "./transport.ts";
 import type { VertexTokenCache } from "./vertexToken.ts";
 
 /** Live requests one client may hold at once. */
@@ -66,15 +66,38 @@ export type RequestBegin = {
 /** A fatal failure or a failed answer is an `error`; an end from outside (the job, the client, maintenance, shutdown) is `aborted`. */
 export type RequestEndStatus = "success" | "error" | "aborted";
 
+/** The model a request runs on, once its slot is resolved (`RequestContext.describe`). */
+export type RequestModel = {
+    modelId: string | null;
+    profileId: string | null;
+    profileName: string | null;
+    /** The `LLMFormat` name. */
+    provider: string | null;
+};
+
 /**
  * What the request layer reports about each request it admits: its start, the first byte of a
  * provider's answer (`TransportOptions.onFirstByte`, at most once), and its end (exactly once). An
  * observer's throw is logged; it never reaches the request.
+ *
+ * The request history's members (`docs/plan/request-history-diagnostics.md` slice 3) are optional:
+ * `prompt` once (the `formated` the layer received, as JSON text, redacted), `describe` once its model
+ * is resolved, `exchange` for every transport exchange (`TransportOptions.record`, redacted at the
+ * call; also after `finish`, for a body the request ended while it was read), and `finish`'s
+ * `detail.error` (a redacted text, for an end other than a success). Without `exchange`, the
+ * transport captures nothing.
  */
 export type RequestObserver = {
     begin(request: RequestBegin): void;
+    prompt?(requestId: string, text: string): void;
+    describe?(requestId: string, model: RequestModel): void;
     firstByte(requestId: string, at: number): void;
-    finish(requestId: string, end: { status: RequestEndStatus; completedAt: number }): void;
+    exchange?(requestId: string, entry: FetchLogEntry, detail: ExchangeDetail): void;
+    finish(
+        requestId: string,
+        end: { status: RequestEndStatus; completedAt: number },
+        detail?: { error?: string },
+    ): void;
 };
 
 export type LlmRequestsOptions = {
@@ -334,8 +357,6 @@ export type JobRequestSpec = {
     /** The chat the request is for, and its message where the caller knows it. */
     chatRef: { chaId: string; chatId: string } | null;
     messageId?: string | null;
-    /** A redacted request-log entry (the tab's `requestLog` notice). */
-    log: (entry: Record<string, unknown>) => void;
     /** A redacted `alertError` text for the tab. */
     alertError: (text: string) => void;
     /** Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. */
@@ -391,10 +412,20 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         hook: RequestContext["firstByte"];
         /** `at`: when the byte came (the layer's clock), if earlier than now. */
         firstByte(at?: number): void;
-        /** The request's end status; the first one set wins. */
-        settle(status: RequestEndStatus): void;
-        /** Reports the end once: the settled status, else `fallback`. */
-        finish(fallback: RequestEndStatus): void;
+        /** The transport's `record`: none without an observer that takes exchanges. */
+        exchange: ((entry: FetchLogEntry, detail: ExchangeDetail) => void) | undefined;
+        /** The transport's pending stream captures, flushed before the end is reported. */
+        captures: Set<() => void>;
+        /** The prompt (`formated`), serialized and redacted with `redactor`. */
+        prompt(formated: unknown, redactor: Redactor): void;
+        describe(model: RequestModel): void;
+        /** The request's end status and its (redacted) error text; the first one set wins. */
+        settle(status: RequestEndStatus, error?: string): void;
+        /**
+         * Reports the end once, after flushing the pending captures: the settled status, else
+         * `fallback`, with the settled error, else (for an end other than a success) `fallbackError`.
+         */
+        finish(fallback: RequestEndStatus, fallbackError?: string): void;
     };
 
     /** Reports one admitted request to the observer (`RequestObserver`). */
@@ -412,7 +443,9 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         };
         let firstByteSeen = false;
         let status: RequestEndStatus | null = null;
+        let error: string | undefined;
         let finished = false;
+        const captures = new Set<() => void>();
         report((o) => o.begin({ ...request, startedAt: now() }));
         const firstByte = (at?: number) => {
             if (firstByteSeen || finished) {
@@ -426,16 +459,48 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             onFirstByte: observer ? () => firstByte() : undefined,
             hook: observer ? { mark: firstByte, now } : undefined,
             firstByte,
-            settle(next) {
-                status ??= next;
+            exchange: observer?.exchange
+                ? (entry, detail) => report((o) => o.exchange?.(request.requestId, entry, detail))
+                : undefined,
+            captures,
+            prompt(formated, redactor) {
+                if (!observer?.prompt || formated === undefined) {
+                    return;
+                }
+                let text: string | undefined;
+                try {
+                    text = JSON.stringify(formated);
+                } catch {
+                    return;
+                }
+                if (text !== undefined) {
+                    const redacted = redactor.text(text);
+                    report((o) => o.prompt?.(request.requestId, redacted));
+                }
             },
-            finish(fallback) {
+            describe(model) {
+                if (!finished) {
+                    report((o) => o.describe?.(request.requestId, model));
+                }
+            },
+            settle(next, text) {
+                if (status === null) {
+                    status = next;
+                    error = text;
+                }
+            },
+            finish(fallback, fallbackError) {
                 if (finished) {
                     return;
                 }
+                // The bodies still being read are recorded first, so the end comes after its exchanges.
+                for (const flush of [...captures]) {
+                    flush();
+                }
                 finished = true;
                 const end = { status: status ?? fallback, completedAt: now() };
-                report((o) => o.finish(request.requestId, end));
+                const text = status !== null ? error : end.status === "success" ? undefined : fallbackError;
+                report((o) => o.finish(request.requestId, end, text !== undefined ? { error: text } : undefined));
             },
         };
     }
@@ -459,9 +524,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         extraModels: (modelId: string) => LLMModel[];
         /** A log entry, its header line already redacted. */
         log: (entry: FetchLogEntry) => void;
-        /** The first byte of a provider's answer: the transport's (`Tracker.onFirstByte`) and the hook (`Tracker.hook`). */
-        onFirstByte: Tracker["onFirstByte"];
-        firstByteHook: Tracker["hook"];
+        /** The request's tracker: the first byte, the exchanges, the model. */
+        tracker: Tracker;
         alertError: (text: string) => void;
         parseCbs: RequestContext["parseCbs"];
         tools: RequestContext["tools"];
@@ -496,12 +560,33 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             return model;
         };
         const tokenizeNum = (text: string) => options.tokens.encode(text, p.tokenScope);
+        const { tracker } = p;
+        const exchange = tracker.exchange;
         const transport = createTransport({
             signal: p.controller.signal,
             log: (entry: FetchLogEntry) => p.log({ ...entry, header: redactHeaderText(entry.header) }),
             intercept: p.intercept,
             redact: (text) => p.redactor().text(text),
-            ...(p.onFirstByte ? { onFirstByte: p.onFirstByte } : {}),
+            ...(tracker.onFirstByte ? { onFirstByte: tracker.onFirstByte } : {}),
+            // The history's copy, redacted now: the redactor as it is at the write (a Vertex token
+            // acquired mid-request is in it).
+            ...(exchange
+                ? {
+                      record: (entry: FetchLogEntry, detail: ExchangeDetail) => {
+                          const redactor = p.redactor();
+                          const redacted = redactLogEntry(
+                              { ...entry, header: redactHeaderText(entry.header) },
+                              redactor,
+                          ) as FetchLogEntry;
+                          if (detail.cuts?.response !== undefined && typeof redacted.response === "string") {
+                              // A body cut at the capture bound may end inside a credential.
+                              redacted.response = redactor.trimPartial(redacted.response);
+                          }
+                          exchange(redacted, detail);
+                      },
+                      captures: tracker.captures,
+                  }
+                : {}),
             fetchImpl: options.fetchImpl,
         });
         return {
@@ -511,7 +596,16 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             userName: p.loaded.userName,
             signal: p.controller.signal,
             transport,
-            ...(p.firstByteHook ? { firstByte: p.firstByteHook } : {}),
+            ...(tracker.hook ? { firstByte: tracker.hook } : {}),
+            describe: (model) => {
+                const redactor = p.redactor();
+                // A model id is protocol: one that carries a credential is left out, not rewritten.
+                tracker.describe({
+                    ...model,
+                    modelId: model.modelId !== null && redactor.carries(model.modelId) ? null : model.modelId,
+                    profileName: model.profileName === null ? null : redactor.text(model.profileName),
+                });
+            },
             alertError: (message) => {
                 let text: string;
                 if (typeof message === "string") {
@@ -607,7 +701,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             finalized = true;
             spec.signal.removeEventListener("abort", onJobAbort);
-            tracker.finish(controller.signal.aborted ? endStatus(controller.signal.reason) : "error");
+            tracker.finish(
+                controller.signal.aborted ? endStatus(controller.signal.reason) : "error",
+                controller.signal.aborted ? redactor.text(errorText(controller.signal.reason)) : undefined,
+            );
             if (!controller.signal.aborted) {
                 controller.abort(new Error("The request finished"));
             }
@@ -616,6 +713,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             resolveDrained();
         };
         const redactor = createRedactor(collectSecrets(spec.loaded.db));
+        tracker.prompt(spec.arg.formated, redactor);
         const fatal = (message: string) => {
             const error = new FatalRequestError(message);
             controller.abort(error);
@@ -634,9 +732,9 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             controller,
             redactor: () => redactor,
             extraModels: () => [],
-            log: (entry) => spec.log(redactLogEntry(entry, redactor)),
-            onFirstByte: tracker.onFirstByte,
-            firstByteHook: tracker.hook,
+            // A job's request has no tab log list: its exchanges go to the history (`tracker`).
+            log: () => {},
+            tracker,
             alertError: (text) => spec.alertError(redactor.text(text)),
             parseCbs: async (text, chatRef) => spec.parseCbs(text, chatRef),
             tools: {
@@ -851,7 +949,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         const failed = (error: unknown): requestDataResponse => {
             // The request's own reason first: a fatal failure that also ended the job is its error.
             const reason = controller.signal.aborted ? controller.signal.reason : error;
-            tracker.settle(controller.signal.aborted ? endStatus(reason) : spec.signal.aborted ? "aborted" : "error");
+            tracker.settle(
+                controller.signal.aborted ? endStatus(reason) : spec.signal.aborted ? "aborted" : "error",
+                redactor.text(errorText(reason)),
+            );
             if (spec.signal.aborted) {
                 throw spec.signal.reason ?? new Error("The job ended");
             }
@@ -879,16 +980,20 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
         }
         if (response.type !== "streaming") {
-            tracker.settle(response.type === "fail" ? "error" : "success");
+            if (response.type === "fail") {
+                tracker.settle("error", redactor.text(response.result));
+            } else {
+                tracker.settle("success");
+            }
             finalize();
             return response.type === "fail" || spec.arg.previewBody ? redactResponse(response, redactor) : response;
         }
         const reader = response.result.getReader();
         let output!: ReadableStreamDefaultController<StreamResponseChunk>;
         let settled = false;
-        const end = (status: RequestEndStatus) => {
+        const end = (status: RequestEndStatus, error?: string) => {
             settled = true;
-            tracker.settle(status);
+            tracker.settle(status, error);
             controller.signal.removeEventListener("abort", onAbort);
             finalize();
         };
@@ -900,7 +1005,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             const reason = new Error(redactor.text(errorText(controller.signal.reason)));
             reader.cancel(controller.signal.reason).catch(() => {});
-            end(endStatus(controller.signal.reason));
+            end(endStatus(controller.signal.reason), reason.message);
             try {
                 output.error(reason);
             } catch {}
@@ -928,13 +1033,14 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                             return;
                         }
                         const reason = controller.signal.aborted ? controller.signal.reason : error;
-                        end(controller.signal.aborted ? endStatus(reason) : "error");
-                        out.error(new Error(redactor.text(errorText(reason))));
+                        const text = redactor.text(errorText(reason));
+                        end(controller.signal.aborted ? endStatus(reason) : "error", text);
+                        out.error(new Error(text));
                     }
                 },
                 cancel(reason) {
                     reader.cancel(reason).catch(() => {});
-                    end("aborted");
+                    end("aborted", reason === undefined ? undefined : redactor.text(errorText(reason)));
                 },
             },
             { highWaterMark: 0 },
@@ -1106,7 +1212,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             finalized = true;
             signal.removeEventListener("abort", onClientAbort);
             parent?.unwatch();
-            tracker.finish(controller.signal.aborted ? endStatus(controller.signal.reason) : "error");
+            tracker.finish(
+                controller.signal.aborted ? endStatus(controller.signal.reason) : "error",
+                controller.signal.aborted ? redactor.text(errorText(controller.signal.reason)) : undefined,
+            );
             if (!controller.signal.aborted) {
                 controller.abort(new Error("The request finished"));
             } else if (!terminalSent) {
@@ -1196,13 +1305,14 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 });
             } catch (error) {
                 if (error instanceof RequestTargetGoneError) {
-                    tracker.settle("error");
+                    tracker.settle("error", error.message);
                     emit({ type: "result", response: { type: "fail", result: error.message, noRetry: true } });
                     return;
                 }
                 throw error;
             }
             redactor = createRedactor(collectSecrets(loaded.db));
+            tracker.prompt(body.arg.formated, redactor);
             // The client's `encode` scope, read in the tab when the request started (its main model,
             // whatever preset the request uses), with the stored Google key for a remote count.
             const tokenizer = body.context.tokenizer;
@@ -1253,8 +1363,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 redactor: () => redactor,
                 extraModels: (modelId) => dynamicModelFor(body, modelId),
                 log: (entry) => emitRedacted({ type: "log", entry }),
-                onFirstByte: tracker.onFirstByte,
-                firstByteHook: tracker.hook,
+                tracker,
                 alertError: (text) => emitRedacted({ type: "notice", kind: "alertError", message: text }),
                 parseCbs: async (text, chatRef) => {
                     let value: unknown;
@@ -1332,7 +1441,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 const exposesRequest = response.type === "fail" || !!body.arg.previewBody;
                 if (response.type === "fail") {
                     // The provider failed whether or not the client gets the result.
-                    tracker.settle("error");
+                    tracker.settle("error", redactor.text(response.result));
                 }
                 // A success counts once delivered: an answer the client never got is not one.
                 if ((exposesRequest ? emitRedacted : emit)({ type: "result", response })) {
@@ -1398,7 +1507,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 }
             } catch (error) {
                 if (!controller.signal.aborted) {
-                    tracker.settle("error");
+                    tracker.settle("error", redactor.text(errorText(error)));
                     emitRedacted({ type: "error", message: errorText(error) });
                 }
             } finally {
@@ -1411,7 +1520,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 if (!controller.signal.aborted) {
                     // A failure before any response: the client's adapters would have rejected; the
                     // transport turns it into a fail result.
-                    tracker.settle("error");
+                    tracker.settle("error", redactor.text(errorText(error)));
                     emitRedacted({ type: "error", message: errorText(error) });
                 }
             })

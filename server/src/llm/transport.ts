@@ -8,6 +8,14 @@
  *
  * Log entries are built as the client builds them (`addFetchLog` and `addFetchLogInGlobalFetch`)
  * and handed to `log`, which redacts them before they leave the server.
+ *
+ * `record` is the request history's sink (`docs/plan/request-history-diagnostics.md`): every
+ * exchange once, with the bytes sent and received before any redaction or cut. A buffered fetch is
+ * recorded when its answer is read or it fails; a streamed fetch (`logFetch` not false) when its
+ * body ends, fails, or is cancelled, or when the request ends (`captures`), with the first
+ * `STREAM_CAPTURE_BYTES` of its body; an adapter's `addLog` as it is. The tab's log keeps the
+ * pre-fetch "Streamed Fetch" entry, which is not recorded. A `record` failure never changes the
+ * provider's answer.
  */
 
 export type FetchLogEntry = {
@@ -55,7 +63,30 @@ export type StreamFetchArgs = {
     logFetch?: boolean;
     requestTimeoutMs?: number;
     networkRoute?: "auto" | "local_network";
+    /**
+     * Whether this call's answer can be the request's first byte (`TransportOptions.onFirstByte`);
+     * default true. An acknowledgement or a poll that is not the answer passes false.
+     */
+    firstByte?: boolean;
 };
+
+/** The original bytes of exchange fields the transport already cut (a streamed body's capture). */
+export type ExchangeCuts = Partial<Record<"url" | "header" | "body" | "response", number>>;
+
+/** One recorded exchange beside its log entry: sizes before any redaction or cut. */
+export type ExchangeDetail = {
+    cuts?: ExchangeCuts;
+    /** The body sent. */
+    requestBytes: number;
+    /** The body received; null when no answer came (a network failure). */
+    responseBytes: number | null;
+};
+
+/**
+ * The bytes of a streamed body the history keeps: its 4 MiB bound plus a margin, so a credential that
+ * crosses the bound is still whole when the redactor runs (the store cuts at 4 MiB after it).
+ */
+export const STREAM_CAPTURE_BYTES = 4 * 1024 * 1024 + 16 * 1024;
 
 export type LogInput = {
     body: any;
@@ -89,6 +120,10 @@ export type TransportOptions = {
      * the first.
      */
     onFirstByte?: () => void;
+    /** The request history's sink (see above); without it nothing is captured or wrapped. */
+    record?: (entry: FetchLogEntry, detail: ExchangeDetail) => void;
+    /** The request's pending stream captures: the request flushes them before it reports its end. */
+    captures?: Set<() => void>;
     fetchImpl?: typeof fetch;
 };
 
@@ -167,8 +202,117 @@ export function watchFirstByte(response: Response, mark: () => void): Response {
     return new Response(body, { headers: response.headers, status: response.status, statusText: response.statusText });
 }
 
+/**
+ * A response's first byte, kept until the caller knows the response ended the request: `response`
+ * notes when its first chunk (or its end, without one) came, and `answered()` reports that time to
+ * `hook`, if it came. Without a hook, `answered` does nothing.
+ */
+export function deferFirstByte(
+    response: Response,
+    hook: { mark(at?: number): void; now(): number } | undefined,
+): { response: Response; answered: () => void } {
+    if (!hook) {
+        return { response, answered: () => {} };
+    }
+    let at: number | undefined;
+    const watched = watchFirstByte(response, () => {
+        at ??= hook.now();
+    });
+    return {
+        response: watched,
+        answered: () => {
+            if (at !== undefined) {
+                hook.mark(at);
+            }
+        },
+    };
+}
+
+/**
+ * `response` whose body passes through unchanged while its first `limit` bytes are kept: `done` is
+ * called once with them and the total read so far, at the body's end, a read failure, a cancel, or
+ * a flush from `captures` (the request ended), whichever comes first. Bytes read after that pass
+ * through uncounted. Without a body, `done` runs at once.
+ */
+export function teeBody(
+    response: Response,
+    limit: number,
+    done: (kept: Uint8Array, total: number) => void,
+    captures?: Set<() => void>,
+): Response {
+    let chunks: Uint8Array[] = [];
+    let kept = 0;
+    let total = 0;
+    let flushed = false;
+    const flush = () => {
+        if (flushed) {
+            return;
+        }
+        flushed = true;
+        captures?.delete(flush);
+        const bytes = new Uint8Array(kept);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
+        chunks = [];
+        try {
+            done(bytes, total);
+        } catch (error) {
+            console.error("[LLM] request history capture:", error instanceof Error ? error.message : String(error));
+        }
+    };
+    if (!response.body) {
+        flush();
+        return response;
+    }
+    captures?.add(flush);
+    const reader = response.body.getReader();
+    const body = new ReadableStream<Uint8Array>(
+        {
+            async pull(controller) {
+                let result: Awaited<ReturnType<typeof reader.read>>;
+                try {
+                    result = await reader.read();
+                } catch (error) {
+                    flush();
+                    controller.error(error);
+                    return;
+                }
+                if (result.done) {
+                    flush();
+                    controller.close();
+                    return;
+                }
+                const value = result.value;
+                if (!flushed) {
+                    total += value.byteLength;
+                    if (kept < limit) {
+                        // A copy: the kept prefix holds no larger backing buffer.
+                        const part = value.slice(0, limit - kept);
+                        chunks.push(part);
+                        kept += part.byteLength;
+                    }
+                }
+                controller.enqueue(value);
+            },
+            cancel(reason) {
+                flush();
+                return reader.cancel(reason);
+            },
+        },
+        { highWaterMark: 0 },
+    );
+    return new Response(body, { headers: response.headers, status: response.status, statusText: response.statusText });
+}
+
 function stringify(value: unknown): string {
     return JSON.stringify(value, null, 2);
+}
+
+function utf8Bytes(value: unknown): number {
+    return typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
 }
 
 export function createTransport(options: TransportOptions): Transport {
@@ -177,8 +321,20 @@ export function createTransport(options: TransportOptions): Transport {
     const logError = (error: unknown) =>
         console.error("[LLM]", redact(error instanceof Error ? error.message : String(error)));
 
-    function addLog(arg: LogInput): number {
-        options.log({
+    /** Hands `entry` to the history's sink; a failure there is logged, never thrown. */
+    function record(entry: FetchLogEntry, detail: ExchangeDetail) {
+        if (!options.record) {
+            return;
+        }
+        try {
+            options.record(entry, detail);
+        } catch (error) {
+            logError(error);
+        }
+    }
+
+    function logEntry(arg: LogInput): FetchLogEntry {
+        return {
             body: typeof arg.body === "string" ? arg.body : stringify(arg.body),
             header: stringify(arg.headers ?? {}),
             response: typeof arg.response === "string" ? arg.response : stringify(arg.response),
@@ -188,19 +344,71 @@ export function createTransport(options: TransportOptions): Transport {
             url: arg.url,
             chatId: arg.chatId,
             status: arg.status,
-        });
+        };
+    }
+
+    /**
+     * One fetch's history entry, recorded exactly once: when the call settles, or, registered in
+     * `captures`, when the request ends first (with what is known by then: the status, if the
+     * headers came). A streamed body's capture takes it over (`handOver`) once the headers came.
+     */
+    function attempt(entry: FetchLogEntry, requestBytes: number) {
+        let open = !!options.record;
+        let status: number | undefined;
+        const flush = () => settle({ response: "The request ended before its answer was read", success: false }, null);
+        function settle(patch: Partial<FetchLogEntry>, responseBytes: number | null) {
+            if (!open) {
+                return;
+            }
+            open = false;
+            options.captures?.delete(flush);
+            record({ ...entry, status, ...patch }, { requestBytes, responseBytes });
+        }
+        if (open) {
+            options.captures?.add(flush);
+        }
+        return {
+            answered(next: number) {
+                status = next;
+            },
+            settle,
+            /** False when the request already ended (the entry is recorded): nothing to capture. */
+            handOver(): boolean {
+                if (!open) {
+                    return false;
+                }
+                open = false;
+                options.captures?.delete(flush);
+                return true;
+            },
+        };
+    }
+
+    /** An adapter's own entry: the tab's log and the history alike. */
+    function addLog(arg: LogInput): number {
+        const entry = logEntry(arg);
+        options.log(entry);
+        record(entry, { requestBytes: utf8Bytes(entry.body), responseBytes: utf8Bytes(entry.response) });
         return 0;
     }
 
     // `addFetchLogInGlobalFetch`.
-    function logBuffered(response: unknown, success: boolean, url: string, arg: BufferedFetchArgs, status?: number) {
+    function logBuffered(
+        response: unknown,
+        success: boolean,
+        url: string,
+        arg: BufferedFetchArgs,
+        status: number | undefined,
+        exchange: ReturnType<typeof attempt>,
+        responseBytes: number,
+    ) {
         let text: string;
         try {
             text = stringify(response);
         } catch {
             text = `${response}`;
         }
-        options.log({
+        const entry: FetchLogEntry = {
             body: stringify(arg.body),
             header: stringify(arg.headers ?? {}),
             response: text,
@@ -209,10 +417,14 @@ export function createTransport(options: TransportOptions): Transport {
             url,
             chatId: arg.chatId,
             status,
-        });
+        };
+        options.log(entry);
+        exchange.settle({ response: entry.response, success, status }, responseBytes);
     }
 
     async function fetchBuffered(url: string, arg: BufferedFetchArgs = {}): Promise<BufferedFetchResult> {
+        /** The history's entry, once the body is sent. */
+        let exchange: ReturnType<typeof attempt> | null = null;
         try {
             if (arg.abortSignal?.aborted || options.signal.aborted) {
                 return { ok: false, data: "aborted", headers: {}, status: 400 };
@@ -236,31 +448,48 @@ export function createTransport(options: TransportOptions): Transport {
                     ...arg.headers,
                 };
                 const method = arg.method ?? "POST";
+                const sent: string | undefined =
+                    method === "GET" ? undefined : isForm ? arg.body.toString() : JSON.stringify(arg.body);
+                const call = attempt(
+                    {
+                        body: stringify(arg.body),
+                        header: stringify(arg.headers ?? {}),
+                        response: "",
+                        success: false,
+                        date: new Date().toLocaleTimeString(),
+                        url,
+                        chatId: arg.chatId,
+                    },
+                    utf8Bytes(sent),
+                );
+                exchange = call;
                 const response = await fetchImpl(url, {
-                    body: method === "GET" ? undefined : isForm ? arg.body.toString() : JSON.stringify(arg.body),
+                    body: sent,
                     headers,
                     method,
                     signal: timeout.signal,
                 });
+                call.answered(response.status);
                 // The answer's first body byte, not its headers: read through the watched body.
                 const answer = options.onFirstByte ? watchFirstByte(response, options.onFirstByte) : response;
                 const isSuccess = response.ok && response.status >= 200 && response.status < 300;
                 const responseHeaders = Object.fromEntries(response.headers);
                 if (arg.rawResponse) {
                     const data = new Uint8Array(await answer.arrayBuffer());
-                    logBuffered("Uint8Array Response", isSuccess, url, arg, response.status);
+                    logBuffered("Uint8Array Response", isSuccess, url, arg, response.status, call, data.byteLength);
                     return { ok: isSuccess, data, headers: responseHeaders, status: response.status };
                 }
                 const text = await answer.text();
+                const received = utf8Bytes(text);
                 try {
                     const data = JSON.parse(text);
-                    logBuffered(data, isSuccess, url, arg, response.status);
+                    logBuffered(data, isSuccess, url, arg, response.status, call, received);
                     return { ok: isSuccess, data, headers: responseHeaders, status: response.status };
                 } catch {
                     const errorMsg = text.startsWith("<!DOCTYPE")
                         ? "Responded HTML. Is your URL, API key, and password correct?"
                         : text;
-                    logBuffered(text, false, url, arg, response.status);
+                    logBuffered(text, false, url, arg, response.status, call, received);
                     return { ok: false, data: errorMsg, headers: responseHeaders, status: response.status };
                 }
             } finally {
@@ -268,10 +497,11 @@ export function createTransport(options: TransportOptions): Transport {
             }
         } catch (error) {
             logError(error);
-            if (isAbort(error) || options.signal.aborted) {
-                return { ok: false, data: `${error}`, headers: {}, status: 400 };
-            }
-            return { ok: false, data: `${unreachable(url, error, redact).message}`, headers: {}, status: 400 };
+            const data =
+                isAbort(error) || options.signal.aborted ? `${error}` : `${unreachable(url, error, redact).message}`;
+            // Sent, but no answer was read: the history keeps the attempt (the tab's log never had it).
+            exchange?.settle({ response: data, success: false }, null);
+            return { ok: false, data, headers: {}, status: 400 };
         }
     }
 
@@ -306,33 +536,71 @@ export function createTransport(options: TransportOptions): Transport {
         }
 
         const timeout = timeoutSignal([arg.signal, options.signal], arg.requestTimeoutMs);
-        if (arg.logFetch ?? true) {
-            addLog({
-                body: new TextDecoder().decode(realBody),
-                headers: arg.headers,
-                response: "Streamed Fetch",
-                success: true,
-                url,
-                resType: "stream",
-                chatId: arg.chatId,
-            });
+        const logged = arg.logFetch ?? true;
+        // The tab's entry, before the fetch; the history records the exchange once it is known.
+        const pending = logged
+            ? logEntry({
+                  body: new TextDecoder().decode(realBody),
+                  headers: arg.headers,
+                  response: "Streamed Fetch",
+                  success: true,
+                  url,
+                  resType: "stream",
+                  chatId: arg.chatId,
+              })
+            : null;
+        if (pending) {
+            options.log(pending);
         }
+        const requestBytes = realBody?.byteLength ?? 0;
+        const exchange = pending ? attempt(pending, requestBytes) : null;
+        let response: Response;
         try {
-            const response = await fetchImpl(url, {
+            response = await fetchImpl(url, {
                 body: realBody as RequestInit["body"],
                 headers,
                 method: arg.method,
                 signal: timeout.signal,
             });
-            return options.onFirstByte ? watchFirstByte(response, options.onFirstByte) : response;
         } catch (error) {
-            if (isAbort(error) || timeout.signal.aborted) {
-                throw error;
-            }
-            throw unreachable(url, error, redact);
+            const thrown = isAbort(error) || timeout.signal.aborted ? error : unreachable(url, error, redact);
+            exchange?.settle(
+                { response: thrown instanceof Error ? thrown.message : String(thrown), success: false },
+                null,
+            );
+            throw thrown;
         } finally {
             timeout.cleanup();
         }
+        let out = response;
+        // The request may have ended while the headers came: then the entry is already recorded.
+        if (pending && exchange?.handOver()) {
+            const answered = response;
+            out = teeBody(
+                answered,
+                STREAM_CAPTURE_BYTES,
+                (kept, total) =>
+                    record(
+                        {
+                            ...pending,
+                            // A cut body may end inside a character: its incomplete bytes are left out.
+                            response: new TextDecoder().decode(kept, { stream: total > kept.byteLength }),
+                            success: answered.ok,
+                            status: answered.status,
+                        },
+                        {
+                            ...(total > kept.byteLength ? { cuts: { response: total } } : {}),
+                            requestBytes,
+                            responseBytes: total,
+                        },
+                    ),
+                options.captures,
+            );
+        }
+        if (options.onFirstByte && arg.firstByte !== false) {
+            out = watchFirstByte(out, options.onFirstByte);
+        }
+        return out;
     }
 
     return { fetchBuffered, fetchStream, addLog };

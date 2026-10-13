@@ -240,6 +240,20 @@ describe("POST /api/llm/request", () => {
         expect(got[2]).toEqual({ type: "result", response: { type: "success", result: "answer to hi" } });
         expect(upstreamRequests[0].headers.authorization).toBe(`Bearer ${SECRET.proxy}`);
         expect(JSON.stringify(got)).not.toContain(SECRET.proxy);
+        // The server context's request history got the row (request history slice 3), redacted.
+        const row = client.context.requestHistory.get((got[0] as { id: string }).id);
+        expect(row).toMatchObject({
+            source: "tab",
+            status: "success",
+            modelId: "reverse_proxy",
+            provider: "OpenAICompatible",
+            httpStatus: 200,
+            exchangeCount: 1,
+            prompt: JSON.stringify([{ role: "user", content: "hi" }]),
+        });
+        expect(JSON.parse(row!.exchanges![0].header)).toMatchObject({ Authorization: "[redacted]" });
+        expect(row!.exchanges![0].response).toContain("answer to hi");
+        expect(JSON.stringify(row)).not.toContain(SECRET.proxy);
 
         const unknown = await client.json("/api/llm/request/nope/answer", {
             clientId: "tab-1",

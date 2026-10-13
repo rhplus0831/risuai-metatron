@@ -659,13 +659,7 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
             };
         }
 
-        arg.ctx.transport.addLog({
-            body: body,
-            response: "Streaming",
-            success: true,
-            url: replacerURL,
-            status: da.status,
-        });
+        // `fetchStream` logged and records this call itself.
 
         const transtream = getTranStream(arg);
 
@@ -1337,14 +1331,7 @@ function wrapToolStream(
                                 resRec.status == 200 &&
                                 resRec.headers.get("Content-Type")!.includes("text/event-stream")
                             ) {
-                                arg.ctx.transport.addLog({
-                                    body: body,
-                                    response: "Streaming",
-                                    success: true,
-                                    url: replacerURL,
-                                    status: resRec.status,
-                                });
-
+                                // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
                                 break;
                             }

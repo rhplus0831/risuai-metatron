@@ -7,7 +7,7 @@ import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
 import { NANOGPT_MESSAGES_ENDPOINT } from "../../../shared/llm/providers/nanogpt.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import type { MultiModal } from "../../../shared/openai.ts";
-import { textifyReadableStream } from "./transport.ts";
+import { deferFirstByte, textifyReadableStream } from "./transport.ts";
 import { replaceAsync, simplifySchema, sleep } from "./util.ts";
 import { extractJSON } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
@@ -645,10 +645,30 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
             headers: headers,
             interceptor: "anthropic_batching",
             logFetch: false,
+            // The acknowledgement is not the answer: the request's first byte is the results'.
+            firstByte: false,
         });
+        // ...unless the submit ends the request: then its first byte is the answer's.
+        const submitted = deferFirstByte(resp, arg.ctx.firstByte);
 
         if (resp.status !== 200) {
-            const responseText = await textifyReadableStream(resp.body!);
+            let responseText: string;
+            try {
+                responseText = await textifyReadableStream(submitted.response.body!);
+            } catch (error) {
+                arg.ctx.transport.addLog({
+                    body: batchRequestBody,
+                    headers: headers,
+                    response: `The refused batch's answer could not be read: ${error instanceof Error ? error.message : String(error)}`,
+                    success: false,
+                    url: batchRequestUrl,
+                    chatId: arg.chatId,
+                    status: resp.status,
+                });
+                throw error;
+            } finally {
+                submitted.answered();
+            }
             arg.ctx.transport.addLog({
                 body: batchRequestBody,
                 headers: headers,
@@ -664,9 +684,26 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
             };
         }
 
-        const r: any = await resp.json();
+        let r: any;
+        try {
+            r = await submitted.response.json();
+        } catch (error) {
+            submitted.answered();
+            arg.ctx.transport.addLog({
+                body: batchRequestBody,
+                headers: headers,
+                response: `The batch acknowledgement could not be read: ${error instanceof Error ? error.message : String(error)}`,
+                success: false,
+                url: batchRequestUrl,
+                chatId: arg.chatId,
+                status: resp.status,
+            });
+            throw error;
+        }
 
-        if (!r.id) {
+        // The poll URLs are built from it: an acknowledgement without one ends the request here.
+        if (typeof r?.id !== "string" || r.id === "") {
+            submitted.answered();
             arg.ctx.transport.addLog({
                 body: batchRequestBody,
                 headers: headers,
@@ -717,6 +754,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                                     headers: headers,
                                     interceptor: "anthropic_batching_cancel",
                                     logFetch: false,
+                                    firstByte: false,
                                 });
                             } catch (e) {
                                 // ignore cancel request errors
@@ -733,12 +771,16 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                             signal: cancelRequested ? undefined : abortSignal,
                             interceptor: "anthropic_batching_status",
                             logFetch: false,
+                            firstByte: false,
                         });
 
                         if (statusRes.status !== 200) {
-                            const statusResponseText = await textifyReadableStream(statusRes.body!);
+                            // A refused poll ends the request: its first byte is the answer's.
+                            const refused = deferFirstByte(statusRes, arg.ctx.firstByte);
+                            const statusResponseText = await textifyReadableStream(refused.response.body!);
+                            refused.answered();
                             arg.ctx.transport.addLog({
-                                body: batchRequestBody,
+                                body: "",
                                 headers: headers,
                                 response: statusResponseText,
                                 success: false,
@@ -755,6 +797,16 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                         if (statusData.processing_status !== "ended") {
                             continue;
                         }
+                        // Only the poll that saw the end is logged (a batch can poll for a day).
+                        arg.ctx.transport.addLog({
+                            body: "",
+                            headers: headers,
+                            response: statusData,
+                            success: true,
+                            url: statusUrl,
+                            chatId: arg.chatId,
+                            status: statusRes.status,
+                        });
 
                         const batchRes = await arg.ctx.transport.fetchStream(resultsUrl, {
                             method: "GET",
@@ -767,7 +819,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                         if (batchRes.status !== 200) {
                             const resultResponseText = await textifyReadableStream(batchRes.body!);
                             arg.ctx.transport.addLog({
-                                body: batchRequestBody,
+                                body: "",
                                 headers: headers,
                                 response: resultResponseText,
                                 success: false,
@@ -830,7 +882,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
 
                                 controller.enqueue({ "0": resText });
                                 arg.ctx.transport.addLog({
-                                    body: batchRequestBody,
+                                    body: "",
                                     headers: headers,
                                     response: batchData,
                                     success: true,
@@ -851,7 +903,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                                 );
 
                                 arg.ctx.transport.addLog({
-                                    body: batchRequestBody,
+                                    body: "",
                                     headers: headers,
                                     response: batchData,
                                     success: false,
@@ -864,7 +916,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                             }
                             if (batchData?.result?.type === "canceled") {
                                 arg.ctx.transport.addLog({
-                                    body: batchRequestBody,
+                                    body: "",
                                     headers: headers,
                                     response: batchData,
                                     success: false,
@@ -877,7 +929,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
                             }
                             if (batchData?.result?.type === "expired") {
                                 arg.ctx.transport.addLog({
-                                    body: batchRequestBody,
+                                    body: "",
                                     headers: headers,
                                     response: batchData,
                                     success: false,

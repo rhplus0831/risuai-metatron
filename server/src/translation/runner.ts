@@ -236,7 +236,6 @@ export function createTranslationRunner(deps: {
                     throw new Error("A translation stores no inlay");
                 },
             },
-            log: () => {},
             alertError: () => {},
             endJob: (text) => controller.abort(new TranslationEnd(502, redactor.text(text))),
             tools: {

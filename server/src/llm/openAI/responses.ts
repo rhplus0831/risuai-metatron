@@ -821,14 +821,7 @@ function wrapResponsesToolStream(
                     return;
                 }
 
-                arg.ctx.transport.addLog({
-                    body: toExternalResponsesBody(body),
-                    response: "Streaming",
-                    success: true,
-                    url: requestURL,
-                    status: resRec.status,
-                });
-
+                // `fetchStream` logged and records this call itself.
                 const transtream = getResponsesTranStream(arg);
                 // An aborted or failed body errors the transform\'s readable side, which the reader sees;
                 // unhandled, the rejected pipe would end the server process.
@@ -888,14 +881,7 @@ export async function requestOpenAIResponseAPI(arg: RequestDataArgumentExtended)
             return { type: "fail", result: await textifyReadableStream(response.body!) };
         }
 
-        arg.ctx.transport.addLog({
-            body: toExternalResponsesBody(body),
-            response: "Streaming",
-            success: true,
-            url: requestURL,
-            status: response.status,
-        });
-
+        // `fetchStream` logged and records this call itself.
         const transtream = getResponsesTranStream(arg);
         // An aborted or failed body errors the transform\'s readable side, which the reader sees;
         // unhandled, the rejected pipe would end the server process.

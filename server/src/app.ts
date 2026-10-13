@@ -13,6 +13,7 @@ import { createResourceStore, ResourceStoreClosedError } from "./data/resourceSt
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
+import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
@@ -151,6 +152,8 @@ export function createServerContext(options: {
         localGeneration: (text, model, config, signal) => transformers.runTextGeneration(text, model, config, signal),
         parentCallback: (jobId, clientId, callbackId, onSettled) =>
             generationJobs.parentCallback(jobId, clientId, callbackId, onSettled),
+        // Every admitted request writes its history row (content always on until the setting, slice 4).
+        observer: createHistoryObserver(requestHistory, { content: () => true }),
     });
     // The server translations (`POST /api/translate/message`) run through the request layer.
     const translationRunner = createTranslationRunner({

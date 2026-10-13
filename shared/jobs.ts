@@ -242,9 +242,7 @@ export type GenerationNotice =
      * The send's messages handed to the translation runner (`docs/plan/translation.md` slice 2.3): the
      * tab shows them loading and follows their runs.
      */
-    | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } }
-    /** The secret-free request projection (`request-layer-and-llm-secrets`). */
-    | { kind: "requestLog"; payload: unknown };
+    | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } };
 
 export type GenerationQuestion =
     | { kind: "alertInput"; payload: { message: string; datalist?: [string, string][]; defaultValue?: string } }
