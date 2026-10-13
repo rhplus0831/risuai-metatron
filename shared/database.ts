@@ -545,6 +545,13 @@ export interface Database {
     blockquoteStyling?: boolean;
     dynamicModelRegistry?: boolean;
     saveSignatures?: boolean;
+    /**
+     * Whether the server's request history keeps each request's content (prompt, bodies, headers,
+     * responses); off keeps summary rows only. Read when a request begins.
+     */
+    requestHistoryContent?: boolean;
+    /** The request history's row cap, clamped to 10–10,000 where it is read (at every prune). */
+    requestHistoryLimit?: number;
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
     disableAprilFools?: boolean;

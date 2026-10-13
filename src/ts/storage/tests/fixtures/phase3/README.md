@@ -57,6 +57,8 @@ The Model menu regroup (2026-10-09) renamed the default profile by hand: `MODEL_
 is "New Connection" (was "New Model Profile"), as profiles are shown as connections.
 The stored translation's display (`docs/plan/translation.md` slice 1.4, 2026-10-12) added the
 `memoryTranslateMedia` default `llmTranslationTarget` `"message"` by hand.
+The request history settings (`docs/plan/request-history-diagnostics.md` slice 4, 2026-10-13) added
+the `providers` defaults `requestHistoryContent` `true` and `requestHistoryLimit` `1000` by hand.
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

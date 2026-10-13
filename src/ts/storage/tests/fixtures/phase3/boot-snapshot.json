@@ -628,6 +628,8 @@
   "hamburgerButtonBottom": false,
   "dynamicModelRegistry": true,
   "saveSignatures": false,
+  "requestHistoryContent": true,
+  "requestHistoryLimit": 1000,
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
   "moveInsteadOfCopyOnCMPConvert": false,

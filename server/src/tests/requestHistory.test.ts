@@ -35,7 +35,9 @@ import type { FetchLogEntry } from "../llm/transport.ts";
 // an oversized row evicting itself, and no prune at open. The lifecycle: a reopen sweeping `pending`
 // to `interrupted`, an unsupported version leaving the file byte-identical and the store inert, an
 // unopenable file inert, a locked database skipping the write with one warning, injected callbacks
-// that throw never escaping, `close` idempotent. The reads: `list` newest first with its exclusive
+// that throw never escaping (a throwing limit getter skips the prune and keeps every row), `close`
+// idempotent; `available()` true only while the database is open, and `deleteAll` null (not a
+// count) when the store is inert or closed or the delete failed. The reads: `list` newest first with its exclusive
 // `seq` cursor (an old cursor past every row begun after `deleteAll`), the page size clamped, the
 // filters combined; `get` with the exchanges in order; `deleteAll` cascading to the exchanges;
 // `setShared` atomic over a deduplicated id list.
@@ -843,7 +845,8 @@ describe("the lifecycle", () => {
         expect(store.stats()).toEqual({ rows: 0, bytes: 0 });
         expect(store.list()).toEqual({ items: [], next: null });
         expect(store.get("r1")).toBeNull();
-        expect(store.deleteAll()).toBe(0);
+        expect(store.available()).toBe(false);
+        expect(store.deleteAll()).toBeNull();
         expect(store.setShared(["r1"], 1)).toBe(0);
         store.prune(10);
         store.close();
@@ -890,21 +893,26 @@ describe("the lifecycle", () => {
         expect(inert.stats()).toEqual({ rows: 0, bytes: 0 });
         expect(inert.list()).toEqual({ items: [], next: null });
         expect(inert.get("r1")).toBeNull();
-        expect(inert.deleteAll()).toBe(0);
+        expect(inert.available()).toBe(false);
+        expect(inert.deleteAll()).toBeNull();
         expect(inert.setShared(["r1"], 1)).toBe(0);
         inert.prune();
         inert.close();
         inert.close();
+        expect(inert.available()).toBe(false);
         expect(warn).toHaveBeenCalledTimes(1);
         warn.mockClear();
         const store = open();
+        expect(store.available()).toBe(true);
         store.begin(row("r1"));
         store.close();
+        expect(store.available()).toBe(false);
         store.close();
         store.begin(row("r2"));
         expect(store.stats()).toEqual({ rows: 0, bytes: 0 });
         expect(store.get("r1")).toBeNull();
         expect(store.list()).toEqual({ items: [], next: null });
+        expect(store.deleteAll()).toBeNull();
         expect(warn).not.toHaveBeenCalled();
     });
 
@@ -921,7 +929,9 @@ describe("the lifecycle", () => {
             store.exchange("r1", entry());
             store.finish("r1", { status: "success" });
             expect(store.setShared(["r1"], 1)).toBe(0);
-            expect(store.deleteAll()).toBe(0);
+            // A failed delete is null, not a count, and the store stays open for the next one.
+            expect(store.deleteAll()).toBeNull();
+            expect(store.available()).toBe(true);
             store.prune(10);
             // The reads go on (WAL), and nothing changed.
             expect(ids(store)).toEqual(["r1"]);
@@ -963,6 +973,13 @@ describe("the lifecycle", () => {
         expect(store.get("r1")?.status).toBe("success");
         expect(() => store.prune()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
+        // A read of the cap that throws skips the prune: no row is removed on a fallback cap.
+        for (let i = 2; i <= REQUEST_HISTORY_MIN_LIMIT + 2; i++) {
+            store.begin(row(`r${i}`));
+        }
+        expect(store.stats().rows).toBe(REQUEST_HISTORY_MIN_LIMIT + 2);
+        expect(store.get("r1")?.status).toBe("success");
+        expect(store.available()).toBe(true);
         warn.mockClear();
         const clock = open({
             now: () => {

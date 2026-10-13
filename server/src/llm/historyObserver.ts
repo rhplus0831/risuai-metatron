@@ -6,7 +6,8 @@ import type { RequestObserver } from "./requests.ts";
  * slice 3): a row at admission, its prompt and model, every exchange, the first byte, and its end
  * with the error text, the last exchange's HTTP status, and the bytes sent and received (counted
  * before any redaction or cut, also when content is off). `content` is read at admission: with it
- * off, the store keeps a summary row (no prompt, no exchanges).
+ * off, the store keeps a summary row (no prompt, no exchanges). A `content` that throws counts as
+ * off, so the row is still written.
  *
  * What the layer hands over is already redacted. The per-request totals live only while the
  * request does: they are dropped at its end, so a late exchange (a body flushed after the end)
@@ -17,6 +18,12 @@ export function createHistoryObserver(history: RequestHistory, options: { conten
     return {
         begin(request) {
             totals.set(request.requestId, { requestBytes: 0, responseBytes: 0, httpStatus: null });
+            let content = false;
+            try {
+                content = options.content();
+            } catch (error) {
+                console.warn("[RequestHistory] Could not read the content setting:", error);
+            }
             history.begin({
                 id: request.requestId,
                 jobId: request.jobId,
@@ -26,7 +33,7 @@ export function createHistoryObserver(history: RequestHistory, options: { conten
                 chatId: request.chatRef?.chatId ?? null,
                 messageId: request.messageId,
                 startedAt: request.startedAt,
-                content: options.content(),
+                content,
             });
         },
         prompt(requestId, text) {

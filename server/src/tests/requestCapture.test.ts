@@ -820,6 +820,46 @@ describe("the history observer (createHistoryObserver)", () => {
             error: "bad",
         });
     });
+
+    it("a content getter that throws counts as off: the row is still written, as a summary, with a warning (slice 4)", () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            const history = openHistory();
+            let throws = true;
+            const observer = createHistoryObserver(history, {
+                content: () => {
+                    if (throws) {
+                        throw new Error("settings unreadable");
+                    }
+                    return true;
+                },
+            });
+            observer.begin(begin("r"));
+            observer.prompt!("r", "[]");
+            observer.exchange!("r", entry({ status: 200 }), { requestBytes: 3, responseBytes: 4 });
+            observer.finish("r", { status: "success", completedAt: 9 });
+            expect(history.get("r")).toMatchObject({
+                status: "success",
+                content: false,
+                prompt: null,
+                exchanges: null,
+                exchangeCount: 0,
+                httpStatus: 200,
+                requestBytes: 3,
+                responseBytes: 4,
+            });
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(String(warn.mock.calls[0][0])).toContain("Could not read the content setting");
+            // The getter is read at every begin: once it answers again, the next row has its content.
+            throws = false;
+            observer.begin(begin("s"));
+            observer.prompt!("s", "[]");
+            expect(history.get("s")).toMatchObject({ content: true, prompt: "[]" });
+            expect(history.get("r")).toMatchObject({ content: false, prompt: null });
+        } finally {
+            warn.mockRestore();
+        }
+    });
 });
 
 // ---------------------------------------------------------------------------------------------

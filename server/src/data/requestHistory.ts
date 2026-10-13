@@ -31,8 +31,8 @@ import type { FetchLogEntry } from "../llm/transport.ts";
  * `synchronous = NORMAL` can lose the last commits on a power failure.
  *
  * The store never throws to its caller: a failure to open leaves it inert (writes skipped, reads
- * empty), and a failed operation is skipped with one warning for the process. A transaction that
- * cannot be rolled back closes the store.
+ * empty, `available()` false), and a failed operation is skipped with one warning for the process
+ * (`deleteAll` then answers null). A transaction that cannot be rolled back closes the store.
  */
 
 export type RequestHistoryStatus = "pending" | "success" | "error" | "aborted" | "interrupted";
@@ -164,13 +164,18 @@ export type RequestHistory = {
     /** Summaries, newest first. */
     list(query?: RequestHistoryListQuery): { items: RequestHistorySummary[]; next: string | null };
     get(id: string): RequestHistoryRecord | null;
-    /** Removes every row, pending ones included; returns the count. */
-    deleteAll(): number;
+    /**
+     * Removes every row, pending ones included; returns the count, or null when nothing was removed
+     * because the store is unavailable or the delete failed.
+     */
+    deleteAll(): number | null;
     /** Sets or clears `sharedAt` on the rows; returns how many changed. */
     setShared(ids: readonly string[], at: number | null): number;
     /** Removes the oldest rows until both caps hold (`limit` defaults to the `limit` option). */
     prune(limit?: number): void;
     stats(): { rows: number; bytes: number };
+    /** Whether the database is open (false when it failed to open, after a failed rollback, or once closed). */
+    available(): boolean;
     close(): void;
 };
 
@@ -972,7 +977,7 @@ export function createRequestHistory(options: {
             });
         },
         deleteAll() {
-            return guard(0, () => {
+            return guard<number | null>(null, () => {
                 // The sequence is not reset: a cursor from before stays past every new row.
                 const changes = Number(transaction((s) => s.deleteAll.run().changes));
                 totalRows = 0;
@@ -1004,6 +1009,9 @@ export function createRequestHistory(options: {
         },
         stats() {
             return guard({ rows: 0, bytes: 0 }, () => ({ rows: totalRows, bytes: totalBytes }));
+        },
+        available() {
+            return db !== null && statements !== null;
         },
         close() {
             shutdown();

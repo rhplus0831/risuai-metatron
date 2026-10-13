@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 in progress (slices 1–3 done). Two phases.
+Status: Phase 1 in progress (slices 1–4 done). Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -312,12 +312,21 @@ projection:
   `Cache-Control: no-store`. It is not a resource: no epoch, no maintenance
   gate.
   - `GET /api/request-history?cursor&limit&chaId&chatId&jobId&status`:
-    summaries.
+    summaries. An empty parameter is absent; a malformed cursor, page size,
+    or status is a 400.
   - `GET /api/request-history/:id`: one row with its content.
-  - `DELETE /api/request-history`: deletes all rows. Answers 204.
+  - `DELETE /api/request-history`: deletes all rows. Answers 204, or 500 when
+    the delete failed (`deleteAll` answers null).
+  - Each answers 503 while the store is unavailable (`available()`), checked
+    after the JWT. The admission middleware refuses them during shutdown and
+    sets `no-store` on every answer, a 429 or 413 included.
 - Add `requestHistoryContent` and `requestHistoryLimit` with their normalizer
-  defaults and `shared/sections.ts` entries.
-- Tests: JWT required, paging, filters, a missing id (404), delete all.
+  defaults and `shared/sections.ts` entries. The server reads them where they
+  apply: content when a request begins (a read that throws counts as off), the
+  cap at every prune (a read that throws skips that prune). A record without
+  them reads as the defaults.
+- Tests: JWT required, paging, filters, a missing id (404), delete all, the
+  two settings, and the fresh-boot fixture.
 
 #### 5. The viewer
 

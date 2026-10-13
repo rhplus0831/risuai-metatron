@@ -11,7 +11,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from ".
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
-import { createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
+import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
 import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
@@ -38,6 +38,7 @@ import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
+import { REQUEST_HISTORY_PATH, registerRequestHistoryRoutes } from "./routes/requestHistory.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
@@ -135,10 +136,18 @@ export function createServerContext(options: {
     vectorCache.sync(resources.epoch());
     // The LLM request history (`docs/plan/request-history-diagnostics.md`): diagnostic data in a file of
     // its own, in no snapshot (they copy only `resources.sqlite`) or archive; a restore, an import,
-    // or a maintenance leaves it as it is.
+    // or a maintenance leaves it as it is. Its two settings are `providers` fields, read where they
+    // apply: the row cap at every prune (a read that throws skips that prune), content capture when a
+    // request begins. A record or field not there yet reads as its default.
+    const providersKind = resourceKinds.get(RESOURCE_KIND.providers);
+    const readProviders = (): Record<string, unknown> | undefined =>
+        providersKind
+            ? (resources.get(providersKind, SINGLETON_RESOURCE_ID)?.data as Record<string, unknown> | undefined)
+            : undefined;
     const requestHistory = createRequestHistory({
         file: path.join(savePath, "data", "request-history.sqlite"),
         maxBytes: parseRequestHistoryMaxBytes(process.env.RISU_REQUEST_HISTORY_MAX_BYTES),
+        limit: () => clampRequestHistoryLimit(readProviders()?.requestHistoryLimit),
     });
     const transformers = createTransformers({ cacheDir: path.join(savePath, "models", "transformers") });
     const embeddings = createEmbeddings({ cache: vectorCache, transformers });
@@ -152,8 +161,10 @@ export function createServerContext(options: {
         localGeneration: (text, model, config, signal) => transformers.runTextGeneration(text, model, config, signal),
         parentCallback: (jobId, clientId, callbackId, onSettled) =>
             generationJobs.parentCallback(jobId, clientId, callbackId, onSettled),
-        // Every admitted request writes its history row (content always on until the setting, slice 4).
-        observer: createHistoryObserver(requestHistory, { content: () => true }),
+        // Every admitted request writes its history row, with its content unless the setting is off.
+        observer: createHistoryObserver(requestHistory, {
+            content: () => readProviders()?.requestHistoryContent !== false,
+        }),
     });
     // The server translations (`POST /api/translate/message`) run through the request layer.
     const translationRunner = createTranslationRunner({
@@ -275,11 +286,14 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too.
         const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
+        // The request history: refused during shutdown (its store closes at dispose), and every answer
+        // is `no-store`, the limiter's 429 and the body limit's 413 included.
+        const history = c.req.path === REQUEST_HISTORY_PATH || c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`);
         if (shuttingDown) {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup)) {
+            if (shuttingDown && (resource || backup || history)) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
@@ -292,6 +306,9 @@ export function createServerContext(options: {
         } finally {
             if (shuttingDown) {
                 c.header("Connection", "close");
+            }
+            if (history) {
+                c.header("Cache-Control", "no-store");
             }
         }
     });
@@ -363,6 +380,11 @@ export function createServerContext(options: {
     registerLlmRoutes(app, {
         requests: llmRequests,
         store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+    });
+    registerRequestHistoryRoutes(app, {
+        history: requestHistory,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
     });

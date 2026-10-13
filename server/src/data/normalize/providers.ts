@@ -1,4 +1,5 @@
 import type { SectionResource } from "../../../../shared/resources.ts";
+import { REQUEST_HISTORY_DEFAULT_LIMIT } from "../requestHistory.ts";
 import { normalizeSection, type SectionSpec } from "./shared.ts";
 
 /** Global provider behavior; profile options and the retired model-to-key map are dropped. */
@@ -47,6 +48,8 @@ const spec: SectionSpec<"providers"> = {
     dynamicModelRegistry: ["boolean", true],
     saveSignatures: ["boolean", false],
     presetChain: ["string"],
+    requestHistoryContent: ["boolean", true],
+    requestHistoryLimit: ["number", REQUEST_HISTORY_DEFAULT_LIMIT],
 };
 
 export function normalizeProviders(input: unknown): SectionResource<"providers"> {

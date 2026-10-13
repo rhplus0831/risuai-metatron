@@ -85,6 +85,8 @@ export const SECTION_FIELDS = {
         "dynamicModelRegistry",
         "saveSignatures",
         "presetChain",
+        "requestHistoryContent",
+        "requestHistoryLimit",
     ],
     /** Write-only LLM provider defaults; named-key values live in the `credentials` entry map. */
     llmSecrets: [
