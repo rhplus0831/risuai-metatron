@@ -11,7 +11,7 @@ import {
 import { jobModules } from "../jobs/cbsHost.ts";
 import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
-import { moduleTriggers, type RunSetup, untilAborted } from "../jobs/runSetup.ts";
+import { asScript, moduleTriggers, type RunSetup, untilAborted } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { ScriptWorkerPool } from "../scripts/workerPool.ts";
 import { HypaProcesser } from "./embeddings.ts";
@@ -91,7 +91,7 @@ export async function runLuaEdit<T>(
         });
         if (outcome.error) {
             if (outcome.error.timedOut || outcome.error.failedAt === undefined) {
-                throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`);
+                throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`, { stage: "script" });
             }
             if (outcome.error.failedAt === "load") {
                 return content;
@@ -240,7 +240,7 @@ export async function runScriptTail(
     );
     setup.check();
     if ("error" in result) {
-        throw new GenerationRunnerError(500, `Regex scripts: ${result.error}`);
+        throw new GenerationRunnerError(500, `Regex scripts: ${result.error}`, { stage: "script" });
     }
     data = await applyDynamicAssets(setup, deps.assetMatches, char, result.data, mode);
     cache.set(hash, data);
@@ -304,7 +304,9 @@ export function createScriptProcessor(deps: {
                 );
             case "failed":
                 if (result.failure === "hook") {
-                    throw new GenerationRunnerError(500, `The ${mode} plugin hook failed: ${result.error}`);
+                    throw new GenerationRunnerError(500, `The ${mode} plugin hook failed: ${result.error}`, {
+                        stage: "script",
+                    });
                 }
                 throw services.latch(
                     new LuaJobFatalError(`The ${mode} callback failed (${result.failure}): ${result.error}`),
@@ -316,43 +318,54 @@ export function createScriptProcessor(deps: {
 
     return {
         editRequest: (char, formated) => runLuaEdit(setup, char, "editRequest", formated),
-        async process(char, input, mode, chatID = -1, cbsConditions = {}) {
-            let data = input;
-            let emoChanged = false;
-            // `@@inject` writes the message at `chatID`: resolved to its id before the awaits.
-            const injectMessageId = chatID === -1 ? undefined : services.liveChat()?.message[chatID]?.chatId;
-            const luaMode = luaModeOf[mode];
-            if (luaMode) {
-                data = await runLuaEdit(setup, char, luaMode, data, { index: chatID });
-            }
-            data = await pluginHook(mode, data);
-
-            const applyEffect = (effect: RegexScriptEffect) => {
-                if (effect.kind === "emotion") {
-                    const image = (char as character).emotionImages?.find((emo) => emo[0] === effect.name);
-                    if (image) {
-                        deps.showEmotion(char.chaId, image[0], image[1]);
-                        emoChanged = true;
-                    }
-                    return;
-                }
-                if (!injectMessageId) {
-                    return;
-                }
-                if (lock.holder(chatRef.chaId, chatRef.chatId, injectMessageId) !== null) {
-                    console.warn("[Script] @@inject skipped a message being generated");
-                    return;
-                }
-                services.writeChat(
-                    (chat) =>
-                        chat.message.some((message) => message.chatId === injectMessageId)
-                            ? [{ op: "setText", id: injectMessageId, text: effect.text }]
-                            : null,
-                    nativeCtx,
-                );
-            };
-            data = await runScriptTail(deps, char, data, mode, chatID, cbsConditions, applyEffect);
-            return { data, emoChanged };
-        },
+        // A failure anywhere in it (Lua, a plugin hook or its callback, the regex scripts and their
+        // host) is a script's, unless a write or a request inside named its own stage.
+        process: (char, input, mode, chatID = -1, cbsConditions = {}) =>
+            asScript(() => processScripts(char, input, mode, chatID, cbsConditions)),
     };
+
+    async function processScripts(
+        char: character | groupChat,
+        input: string,
+        mode: ServerScriptMode,
+        chatID: number,
+        cbsConditions: CbsConditions,
+    ): Promise<{ data: string; emoChanged: boolean }> {
+        let data = input;
+        let emoChanged = false;
+        // `@@inject` writes the message at `chatID`: resolved to its id before the awaits.
+        const injectMessageId = chatID === -1 ? undefined : services.liveChat()?.message[chatID]?.chatId;
+        const luaMode = luaModeOf[mode];
+        if (luaMode) {
+            data = await runLuaEdit(setup, char, luaMode, data, { index: chatID });
+        }
+        data = await pluginHook(mode, data);
+
+        const applyEffect = (effect: RegexScriptEffect) => {
+            if (effect.kind === "emotion") {
+                const image = (char as character).emotionImages?.find((emo) => emo[0] === effect.name);
+                if (image) {
+                    deps.showEmotion(char.chaId, image[0], image[1]);
+                    emoChanged = true;
+                }
+                return;
+            }
+            if (!injectMessageId) {
+                return;
+            }
+            if (lock.holder(chatRef.chaId, chatRef.chatId, injectMessageId) !== null) {
+                console.warn("[Script] @@inject skipped a message being generated");
+                return;
+            }
+            services.writeChat(
+                (chat) =>
+                    chat.message.some((message) => message.chatId === injectMessageId)
+                        ? [{ op: "setText", id: injectMessageId, text: effect.text }]
+                        : null,
+                nativeCtx,
+            );
+        };
+        data = await runScriptTail(deps, char, data, mode, chatID, cbsConditions, applyEffect);
+        return { data, emoChanged };
+    }
 }

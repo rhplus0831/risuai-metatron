@@ -10,6 +10,16 @@ export const REQUEST_HISTORY_STATUSES = ["pending", "success", "error", "aborted
 
 export type RequestHistoryStatus = (typeof REQUEST_HISTORY_STATUSES)[number];
 
+/**
+ * A provider's error code (OpenAI `error.code`, Anthropic `error.type`, Google `error.status`): the
+ * only provider text a content-free record may carry (decision 9).
+ */
+export const PROVIDER_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+
+export function isProviderCode(value: unknown): value is string {
+    return typeof value === "string" && PROVIDER_CODE_PATTERN.test(value);
+}
+
 export type RequestHistoryFieldCut = { originalBytes: number; storedBytes: number };
 
 /** Every cut field: `prompt`, `error`, a short field by name, or `exchange.<index>.<field>`. */

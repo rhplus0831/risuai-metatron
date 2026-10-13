@@ -3,7 +3,8 @@
     import { untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
-    import { alertGenerationInfoStore } from "../../ts/alert";
+    import { alertGenerationInfoStore, alertRequestLogs } from "../../ts/alert";
+    import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
 
     import { getCharImage } from "../../ts/characters";
     import { ParseMarkdown } from "../../ts/parser/parser.svelte";
@@ -290,6 +291,27 @@
                                 <pre class="stack-trace">{stackTraceCodeBlock}</pre>
                             </div>
                         {/if}
+                    </div>
+                {/if}
+
+                {#if $alertStore.type === "error" && $alertStore.jobFailure}
+                    {@const failure = $alertStore.jobFailure}
+                    <div class="mt-4 flex flex-wrap gap-2">
+                        <Button
+                            styled="outlined"
+                            size="sm"
+                            onclick={() => copyToClipboard(jobDebugInfo(failure, risuVersion), "job-debug")}
+                        >
+                            {#if copiedKey === "job-debug"}
+                                <CheckIcon size={14} class="inline mr-2 text-success-500" />
+                            {:else}
+                                <CopyIcon size={14} class="inline mr-2" />
+                            {/if}
+                            {language.copyDebugInfo}
+                        </Button>
+                        <Button styled="outlined" size="sm" onclick={() => alertRequestLogs({ jobId: failure.jobId })}>
+                            {language.openInRequestHistory}
+                        </Button>
                     </div>
                 {/if}
             {/if}

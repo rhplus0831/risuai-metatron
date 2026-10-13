@@ -516,33 +516,35 @@ describe("the bounds", () => {
         expect(store.stats().bytes).toBe(record.bytes);
     });
 
-    it("cuts the error at 64 KiB and the provider code at 1 KiB, recording both", () => {
+    it("cuts the error at 64 KiB, recording it; a provider code that is not one (over-long, spaced, or empty) is stored as null, never cut (slice 6)", () => {
         const store = open();
-        store.begin(row("e"));
-        const base = beginBytes(row("e"));
-        store.finish("e", {
-            status: "error",
-            error: "e".repeat(REQUEST_HISTORY_BOUNDS.error + 3),
-            providerCode: "c".repeat(REQUEST_HISTORY_BOUNDS.short + 1),
-        });
-        const record = store.get("e")!;
-        expect(utf8(record.error)).toBe(REQUEST_HISTORY_BOUNDS.error);
-        expect(utf8(record.providerCode)).toBe(REQUEST_HISTORY_BOUNDS.short);
-        expect(record.truncation).toEqual({
-            error: { originalBytes: REQUEST_HISTORY_BOUNDS.error + 3, storedBytes: REQUEST_HISTORY_BOUNDS.error },
-            providerCode: {
-                originalBytes: REQUEST_HISTORY_BOUNDS.short + 1,
-                storedBytes: REQUEST_HISTORY_BOUNDS.short,
-            },
-        });
-        expect(record.hasError).toBe(true);
-        expect(record.bytes).toBe(
-            base +
-                REQUEST_HISTORY_BOUNDS.error +
-                REQUEST_HISTORY_BOUNDS.short +
-                utf8(JSON.stringify(record.truncation)),
-        );
-        expect(store.stats().bytes).toBe(record.bytes);
+        for (const [id, providerCode] of [
+            ["e", "c".repeat(REQUEST_HISTORY_BOUNDS.short + 1)],
+            ["f", "rate limit exceeded"],
+            ["g", ""],
+        ] as const) {
+            store.begin(row(id));
+            const base = beginBytes(row(id));
+            store.finish(id, {
+                status: "error",
+                error: "e".repeat(REQUEST_HISTORY_BOUNDS.error + 3),
+                providerCode,
+            });
+            const record = store.get(id)!;
+            expect(utf8(record.error)).toBe(REQUEST_HISTORY_BOUNDS.error);
+            // Only a provider code (`isProviderCode`) is kept: a free text is not a truncated pseudo-code.
+            expect(record.providerCode).toBeNull();
+            expect(record.truncation).toEqual({
+                error: { originalBytes: REQUEST_HISTORY_BOUNDS.error + 3, storedBytes: REQUEST_HISTORY_BOUNDS.error },
+            });
+            expect(record.hasError).toBe(true);
+            expect(record.bytes).toBe(base + REQUEST_HISTORY_BOUNDS.error + utf8(JSON.stringify(record.truncation)));
+        }
+        // A code at the pattern's bound is kept as it is.
+        store.begin(row("h"));
+        store.finish("h", { status: "error", providerCode: "x".repeat(64), error: "e" });
+        expect(store.get("h")!.providerCode).toBe("x".repeat(64));
+        expect(store.get("h")!.truncation).toEqual({});
     });
 
     it("merges the caller's `cuts` as the larger original and ignores one smaller than the text", () => {

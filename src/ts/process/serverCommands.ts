@@ -13,7 +13,7 @@ import type {
     GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
-import { alertError } from "../alert";
+import { alertError, alertJobError } from "../alert";
 import {
     abortGenerationJob,
     applyGenerationEvent,
@@ -89,7 +89,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 if (end === "lost") {
                     releaseGenerationJob(jobId);
                 }
-                reportEnd(end);
+                reportEnd(end, jobId);
                 if (
                     end !== "lost" &&
                     end.type === "done" &&
@@ -201,17 +201,19 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<GenerationTermin
  * import ended (`maintenance`) shows the restore notice once the data is replaced
  * (`watchForRestore`), or its error when nothing was replaced.
  */
-function reportEnd(end: GenerationTerminalEvent | "lost") {
+function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     if (end === "lost") {
         alertError("The connection to the server job was lost; reload the chat to see its changes");
     } else if (end.type === "error" && end.reason === "maintenance") {
+        // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
+        const at = Date.now();
         void watchForRestore().then((restored) => {
             if (!restored) {
-                alertError(end.message);
+                alertJobError(jobId, end, at);
             }
         });
     } else if (end.type === "error" && end.reason !== "aborted") {
-        alertError(end.message);
+        alertJobError(jobId, end);
     }
 }
 

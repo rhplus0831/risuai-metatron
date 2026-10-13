@@ -18,13 +18,16 @@ import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { type CallbackResult, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
+import { failureOf } from "../jobs/generationJobs.ts";
 import {
     createLlmRequests,
+    JobRequestError,
     type JobRequestSpec,
     MAX_REQUESTS_PER_CLIENT,
     type LlmRequestsOptions,
     type RequestObserver,
 } from "../llm/requests.ts";
+import type { requestDataResponse } from "../llm/request.ts";
 import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { watchFirstByte } from "../llm/transport.ts";
@@ -41,6 +44,8 @@ import { sleep, waitFor } from "./testSupport.ts";
 
 const SECRET = "sk-proxy-SENTINEL-1111";
 const PROVIDER = "https://mock.test/v1/chat/completions";
+/** A request id as the layer makes them (`randomUUID`). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type Records = Record<string, unknown> & {
     characters?: Record<string, unknown>;
@@ -1158,9 +1163,11 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
         };
         return { tools, calls };
     }
-    function spec(records: Records, tools: JobRequestSpec["tools"], streaming = false) {
+    function spec(records: Records, tools: JobRequestSpec["tools"], streaming = false, signal?: AbortSignal) {
         const loaded = loadRequestDb(fakeStore(records), kinds, ids);
         const ended: string[] = [];
+        /** Each `endJob` with the request it names (slice 6). */
+        const endedWith: [string, { requestId: string } | undefined][] = [];
         const jobSpec: JobRequestSpec = {
             jobId: "job",
             loaded,
@@ -1182,12 +1189,15 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
                 setAsset: async () => {},
             },
             alertError: () => {},
-            endJob: (message) => ended.push(message),
+            endJob: (message, failure) => {
+                ended.push(message);
+                endedWith.push([message, failure]);
+            },
             tools,
             toolCalls: { read: () => undefined, write: () => {} },
-            signal: new AbortController().signal,
+            signal: signal ?? new AbortController().signal,
         };
-        return { spec: jobSpec, ended };
+        return { spec: jobSpec, ended, endedWith };
     }
     const toolMessages = (call: Upstream) =>
         (JSON.parse(call.body).messages as { role: string; content: string; tool_call_id?: string }[]).filter(
@@ -1232,8 +1242,15 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
         const plain = harness(buffered, () => chat("", { tool_calls: [toolCall("nope", {})] }));
         const spent = jobTools({ charge: () => false });
         const job = spec(buffered, spent.tools);
-        expect(await plain.registry.runInJob(job.spec)).toEqual({ type: "fail", result: limit, noRetry: true });
+        // The result names the admitted request (slice 6); without an observer no provider code is read.
+        expect(await plain.registry.runInJob(job.spec)).toEqual({
+            type: "fail",
+            result: limit,
+            noRetry: true,
+            request: { id: expect.stringMatching(UUID), providerCode: null },
+        });
         expect(job.ended).toEqual([limit]);
+        expect(job.endedWith).toEqual([[limit, { requestId: expect.stringMatching(UUID) }]]);
         expect(plain.calls).toHaveLength(1);
         expect(spent.calls).toEqual([]);
         expect(plain.registry.liveIds()).toEqual([]);
@@ -1277,8 +1294,14 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
             },
         });
         const failed = spec(records, failing.tools);
-        expect(await thrown.registry.runInJob(failed.spec)).toEqual({ type: "fail", result: fatal, noRetry: true });
+        expect(await thrown.registry.runInJob(failed.spec)).toEqual({
+            type: "fail",
+            result: fatal,
+            noRetry: true,
+            request: { id: expect.stringMatching(UUID), providerCode: null },
+        });
         expect(failed.ended).toEqual([fatal]);
+        expect(failed.endedWith).toEqual([[fatal, { requestId: expect.stringMatching(UUID) }]]);
         expect(failing.calls).toHaveLength(1);
         expect(thrown.calls).toHaveLength(1);
         expect(thrown.registry.liveIds()).toEqual([]);
@@ -1298,6 +1321,297 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
         ]);
         expect(ok.ended).toEqual([]);
         await text.registry.dispose();
+    });
+});
+
+describe("a job's request names its failure (request history slice 6)", () => {
+    // `runInJob`'s results carry `request: { id, providerCode }`, a stream that fails while read
+    // errors with `JobRequestError`, and a fatal end from inside the request names it: through
+    // `endJob(message, { requestId })` for a new fatal, and through `markFailure` on the job's abort
+    // reason for a failure latched before the request's own `endJob` (the already-latched case).
+    const ids = {
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        selectedPersonaId: "u",
+        selectedCharacterId: "c",
+        speakerId: null,
+    };
+    /** An observer that takes exchanges (the production history observer does), recording the ends. */
+    function observing() {
+        const begun: string[] = [];
+        const finished: [string, { status: string }, { error?: string; providerCode?: string | null } | undefined][] =
+            [];
+        const observer: RequestObserver = {
+            begin: (request) => void begun.push(request.requestId),
+            firstByte() {},
+            exchange() {},
+            finish: (id, end, detail) => void finished.push([id, end, detail]),
+        };
+        return { observer, begun, finished };
+    }
+    function spec(
+        records: Records,
+        options: {
+            streaming?: boolean;
+            signal?: AbortSignal;
+            tools?: JobRequestSpec["tools"];
+            parseCbs?: (text: string) => string;
+        } = {},
+    ) {
+        const loaded = loadRequestDb(fakeStore(records), kinds, ids);
+        const endedWith: [string, { requestId: string } | undefined][] = [];
+        const jobSpec: JobRequestSpec = {
+            jobId: "job",
+            loaded,
+            mode: "model",
+            arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: options.streaming === true },
+            source: "send",
+            chatRef: { chaId: "c", chatId: "k" },
+            tokenScope: tokenScopeFor(loaded.db),
+            mainModelImageInput: false,
+            channel: {
+                notice() {},
+                ask: async () => ({ outcome: "aborted" }),
+                callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+            },
+            parseCbs: options.parseCbs ?? ((text) => text),
+            inlays: {
+                saveSignature: async (id) => id,
+                writeImage: async (image) => image.id,
+                setAsset: async () => {},
+            },
+            alertError: () => {},
+            endJob: (message, failure) => void endedWith.push([message, failure]),
+            tools: options.tools ?? noTools(),
+            toolCalls: { read: () => undefined, write: () => {} },
+            signal: options.signal ?? new AbortController().signal,
+        };
+        return { spec: jobSpec, endedWith };
+    }
+    /** An SSE upstream whose body errors once its frames were read, as a dropped socket does. */
+    const breaking = (frames: string[]) => {
+        let next = 0;
+        return new Response(
+            new ReadableStream<Uint8Array>({
+                pull(controller) {
+                    if (next < frames.length) {
+                        controller.enqueue(new TextEncoder().encode(`data: ${frames[next++]}\n\n`));
+                    } else {
+                        controller.error(new Error("socket hang up"));
+                    }
+                },
+            }),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+    };
+    const readToEnd = async (response: requestDataResponse) => {
+        expect(response.type).toBe("streaming");
+        const reader = (response as { result: ReadableStream<StreamResponseChunk> }).result.getReader();
+        const chunks: StreamResponseChunk[] = [];
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+                return chunks;
+            }
+            chunks.push(value);
+        }
+    };
+
+    it("a buffered failure names its request and the provider's code from the answer body; the observer's end carries the code; without an observer that takes exchanges the code is null", async () => {
+        const records = makeRecords();
+        const refusal = json(
+            { error: { message: "Rate limit reached for gpt", type: "requests", code: "rate_limit_exceeded" } },
+            429,
+        );
+        const seen = observing();
+        const { registry } = harness(records, () => refusal.clone(), { observer: seen.observer });
+        const job = spec(records);
+        const result = await registry.runInJob(job.spec);
+        expect(result).toMatchObject({
+            type: "fail",
+            request: { id: seen.begun[0], providerCode: "rate_limit_exceeded" },
+        });
+        expect(seen.begun).toHaveLength(1);
+        expect(seen.finished).toEqual([
+            [
+                seen.begun[0],
+                expect.objectContaining({ status: "error" }),
+                { error: expect.stringContaining("Rate limit"), providerCode: "rate_limit_exceeded" },
+            ],
+        ]);
+        expect(job.endedWith).toEqual([]);
+        await registry.dispose();
+
+        // A code the pattern refuses is not a code; a success has none.
+        const texty = observing();
+        const text = harness(
+            records,
+            (_call, index) =>
+                index === 0 ? json({ error: { message: "m", code: "rate limit exceeded" } }, 429) : chat("ok"),
+            {
+                observer: texty.observer,
+            },
+        );
+        expect(await text.registry.runInJob(spec(records).spec)).toMatchObject({
+            type: "fail",
+            request: { providerCode: null },
+        });
+        expect(texty.finished[0][2]).toEqual({ error: expect.any(String) });
+        expect(await text.registry.runInJob(spec(records).spec)).toMatchObject({
+            type: "success",
+            request: { id: texty.begun[1], providerCode: null },
+        });
+        expect(texty.finished[1][2]).toBeUndefined();
+        await text.registry.dispose();
+
+        // The code is read from the exchanges the observer takes: an observer without `exchange`, or none, sees no body.
+        const blind: RequestObserver = { begin() {}, firstByte() {}, finish() {} };
+        const noExchange = harness(records, () => refusal.clone(), { observer: blind });
+        expect(await noExchange.registry.runInJob(spec(records).spec)).toMatchObject({
+            type: "fail",
+            request: { id: expect.stringMatching(UUID), providerCode: null },
+        });
+        await noExchange.registry.dispose();
+        const unobserved = harness(records, () => refusal.clone());
+        expect(await unobserved.registry.runInJob(spec(records).spec)).toMatchObject({
+            type: "fail",
+            request: { providerCode: null },
+        });
+        await unobserved.registry.dispose();
+    });
+
+    it("a stream that fails after its chunks errors with JobRequestError naming the request and the code of the error event the capture holds; a streamed success names the request with no code", async () => {
+        const records = makeRecords();
+        (records.providers as Record<string, unknown>).useStreaming = true;
+        const chunk = JSON.stringify({ choices: [{ delta: { content: "Hel" } }] });
+        const seen = observing();
+        const { registry } = harness(
+            records,
+            (_call, index) =>
+                index === 0
+                    ? breaking([chunk, JSON.stringify({ error: { message: "Overloaded", code: "server_overloaded" } })])
+                    : sse([chunk, "[DONE]"]),
+            { observer: seen.observer },
+        );
+        const broken = await registry.runInJob(spec(records, { streaming: true }).spec);
+        expect(broken.request).toEqual({ id: seen.begun[0], providerCode: null });
+        let caught: unknown;
+        try {
+            await readToEnd(broken);
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(JobRequestError);
+        expect(caught).toMatchObject({
+            requestId: seen.begun[0],
+            providerCode: "server_overloaded",
+            message: expect.stringContaining("socket hang up"),
+        });
+        await waitFor(() => seen.finished.length === 1);
+        expect(seen.finished[0]).toEqual([
+            seen.begun[0],
+            expect.objectContaining({ status: "error" }),
+            { error: expect.stringContaining("socket hang up"), providerCode: "server_overloaded" },
+        ]);
+
+        const fine = await registry.runInJob(spec(records, { streaming: true }).spec);
+        expect(fine.request).toEqual({ id: seen.begun[1], providerCode: null });
+        expect((await readToEnd(fine)).length).toBeGreaterThan(0);
+        await waitFor(() => seen.finished.length === 2);
+        expect(seen.finished[1][2]).toBeUndefined();
+        await waitFor(() => registry.liveIds().length === 0);
+        await registry.dispose();
+    });
+
+    it("a failure latched before the request's own endJob (an MCP tool's barrier failure that aborted the job) still names the request: the abort reason is marked with its id, and the request rejects with that reason", async () => {
+        // The production path: `tryCallback` latches a `LuaJobFatalError` (unannotated) and aborts the
+        // run signal before the tool call rejects; the request's `endWith` then calls `endJob` with
+        // the id, but the latch keeps the first error. Here the tool does what the latch does.
+        const records = makeRecords();
+        const controller = new AbortController();
+        const latched = new Error("The mcpTool callback failed (barrier): stale");
+        const tools: JobRequestSpec["tools"] = {
+            descriptors: [{ name: "echo", description: "d", inputSchema: { type: "object", properties: {} } }],
+            charge: () => true,
+            limit: 64,
+            call: async () => {
+                controller.abort(latched);
+                throw latched;
+            },
+        };
+        const seen = observing();
+        const { registry, calls } = harness(
+            records,
+            () =>
+                chat("", {
+                    tool_calls: [{ id: "call-1", type: "function", function: { name: "echo", arguments: "{}" } }],
+                }),
+            { observer: seen.observer },
+        );
+        const job = spec(records, { tools, signal: controller.signal });
+        await expect(registry.runInJob(job.spec)).rejects.toBe(latched);
+        expect(seen.begun).toHaveLength(1);
+        expect(failureOf(latched)).toEqual({ requestId: seen.begun[0] });
+        // The request's own end still names the request (the latch would keep the earlier error).
+        expect(job.endedWith).toEqual([[latched.message, { requestId: seen.begun[0] }]]);
+        expect(calls).toHaveLength(1);
+        expect(seen.finished).toEqual([
+            [
+                seen.begun[0],
+                expect.objectContaining({ status: "aborted" }),
+                { error: expect.stringContaining("barrier") },
+            ],
+        ]);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("a fatal latched directly by the job's CBS while the request evaluates its schema's CBS names the request the same way, before any provider call", async () => {
+        // The production path: the request's `parseCbs` is the job's evaluator, which latches a
+        // `CbsLimitError` as a fatal (`bindings.ts`) and aborts the run signal before it throws.
+        const schema = makeRecords({
+            preset: { jsonSchemaEnabled: true, jsonSchema: "interface A {\n    x: string\n}" },
+        });
+        const controller = new AbortController();
+        const latched = new Error("CBS limit reached (Ann)");
+        const seen = observing();
+        const { registry, calls } = harness(schema, () => chat("never"), { observer: seen.observer });
+        const job = spec(schema, {
+            signal: controller.signal,
+            parseCbs: () => {
+                controller.abort(latched);
+                throw latched;
+            },
+        });
+        await expect(registry.runInJob(job.spec)).rejects.toBe(latched);
+        expect(calls).toEqual([]);
+        expect(seen.begun).toHaveLength(1);
+        expect(failureOf(latched)).toEqual({ requestId: seen.begun[0] });
+        expect(job.endedWith).toEqual([]);
+        expect(seen.finished[0][1]).toMatchObject({ status: "aborted" });
+        await registry.dispose();
+    });
+
+    it("the job's own abort (a string reason) rejects without marking anything, and a request refused before admission names no request", async () => {
+        const records = makeRecords({
+            preset: { jsonSchemaEnabled: true, jsonSchema: "interface A {\n    x: string\n}" },
+        });
+        const controller = new AbortController();
+        const { registry } = harness(records, () => chat("x"));
+        const job = spec(records, {
+            signal: controller.signal,
+            parseCbs: (text) => {
+                controller.abort("aborted");
+                return text;
+            },
+        });
+        await expect(registry.runInJob(job.spec)).rejects.toBe("aborted");
+        registry.beginShutdown();
+        const refused = await registry.runInJob(spec(records).spec);
+        expect(refused).toEqual({ type: "fail", result: "The server is shutting down", noRetry: true });
+        expect("request" in refused).toBe(false);
+        await registry.dispose();
     });
 });
 

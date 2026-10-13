@@ -10,13 +10,17 @@ import {
     type GenerationCreateBody,
     type GenerationHooks,
     type HydrationReceipt,
+    GENERATION_ERROR_STAGES,
+    GENERATION_ID_PATTERN,
     type GenerationErrorReason,
+    type GenerationErrorStage,
     type GenerationEvent,
     type GenerationKind,
     type GenerationStatus,
     type GenerationTerminalEvent,
     HIDDEN_HYDRATION_KINDS,
 } from "../../../shared/jobs.ts";
+import { isProviderCode } from "../../../shared/requestHistory.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import {
@@ -26,6 +30,7 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
+import { logEvent } from "../diagnostics/log.ts";
 import { checkChatBinding, readChatBindingState } from "./chatBinding.ts";
 import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
@@ -43,14 +48,61 @@ const MAX_TRACKED_REFS = 256;
 
 const socketPath = /^\/api\/generations\/([^/]+)\/ws$/;
 
+/**
+ * Where a runner failed, for the terminal `error` event (`docs/plan/request-history-diagnostics.md`
+ * slice 6): the stage, the LLM request that failed when it was one, and its provider error code.
+ */
+export type GenerationFailure = { stage?: GenerationErrorStage; requestId?: string; providerCode?: string | null };
+
 /** A runner's failure with an HTTP-like status for the terminal `error` event. */
 export class GenerationRunnerError extends Error {
     readonly status: number;
-    constructor(status: number, message: string) {
+    /** Filled by `markFailure`: the site nearest the failure sets a field first. */
+    readonly failure: GenerationFailure = {};
+    constructor(status: number, message: string, failure?: GenerationFailure) {
         super(message);
         this.name = "GenerationRunnerError";
         this.status = status;
+        if (failure) {
+            markFailure(this, failure);
+        }
     }
+}
+
+/** The failure fields of any other thrown object (a `GenerationRunnerError` holds its own). */
+const foreignFailures = new WeakMap<object, GenerationFailure>();
+
+/**
+ * Adds to `error`'s failure fields each field of `failure` it does not have yet (a field is had when
+ * it holds a value: the site nearest the failure wins, and a later site only fills the gaps). A
+ * primitive thrown value takes none. Returns `error`, so a site can `throw markFailure(error, …)`.
+ */
+export function markFailure<E>(error: E, failure: GenerationFailure): E {
+    if (typeof error !== "object" || error === null) {
+        return error;
+    }
+    let target: GenerationFailure;
+    if (error instanceof GenerationRunnerError) {
+        target = error.failure;
+    } else {
+        target = foreignFailures.get(error) ?? {};
+        foreignFailures.set(error, target);
+    }
+    for (const key of ["stage", "requestId", "providerCode"] as const) {
+        const value = failure[key];
+        if ((target[key] === undefined || target[key] === null) && value !== undefined && value !== null) {
+            (target as Record<string, unknown>)[key] = value;
+        }
+    }
+    return error;
+}
+
+/** The failure fields `markFailure` gave `error` (a copy; empty for none), to carry to a replacement. */
+export function failureOf(error: unknown): GenerationFailure {
+    if (error instanceof GenerationRunnerError) {
+        return { ...error.failure };
+    }
+    return typeof error === "object" && error !== null ? { ...foreignFailures.get(error) } : {};
 }
 
 /** A job used a capability after it ended (its token is dead; nothing more is written or sent). */
@@ -243,7 +295,7 @@ export function createGenerationJobs(options: {
                     taken = true;
                 }
             } catch (error) {
-                console.error("[Generation]", error);
+                logEvent("generation.socketSend", { job: job.id }, error);
             }
         }
         return taken;
@@ -380,7 +432,7 @@ export function createGenerationJobs(options: {
         try {
             job.channelLink.close("The job has ended");
         } catch (error) {
-            console.error("[Generation]", error);
+            logEvent("generation.channelClose", { job: job.id }, error);
         }
         let terminal = { ...(job.abortReason ? abortTerminal(job.abortReason) : requested), epoch: job.epoch };
         let text: string;
@@ -397,6 +449,17 @@ export function createGenerationJobs(options: {
         job.ended = true;
         job.endedAt = Date.now();
         job.terminal = terminal as GenerationTerminalEvent;
+        if (terminal.type === "error" && terminal.reason !== "aborted") {
+            logEvent("generation.failed", {
+                job: job.id,
+                kind: job.kind,
+                reason: terminal.reason,
+                status: terminal.status,
+                stage: terminal.stage,
+                request: terminal.requestId,
+                providerCode: terminal.providerCode,
+            });
+        }
         if (job.abortTimer) {
             clearTimeout(job.abortTimer);
             job.abortTimer = null;
@@ -411,7 +474,7 @@ export function createGenerationJobs(options: {
             sendChat(job);
             sendText(job, text);
         } catch (error) {
-            console.error("[Generation]", error);
+            logEvent("generation.endDelivery", { job: job.id }, error);
         } finally {
             job.resolveFinished();
         }
@@ -424,11 +487,18 @@ export function createGenerationJobs(options: {
     function errorTerminal(error: unknown): TerminalInput {
         const status =
             error instanceof GenerationRunnerError && error.status >= 400 && error.status <= 599 ? error.status : 500;
+        // Only checked values: the event's failure fields are content-free (decision 9).
+        const failure = failureOf(error);
         return {
             type: "error",
             reason: "failed",
             status,
             message: error instanceof Error ? error.message : String(error),
+            ...(failure.stage && GENERATION_ERROR_STAGES.includes(failure.stage) ? { stage: failure.stage } : {}),
+            ...(typeof failure.requestId === "string" && GENERATION_ID_PATTERN.test(failure.requestId)
+                ? { requestId: failure.requestId }
+                : {}),
+            ...(isProviderCode(failure.providerCode) ? { providerCode: failure.providerCode } : {}),
         };
     }
 
@@ -613,7 +683,14 @@ export function createGenerationJobs(options: {
                 }
                 return receipts;
             },
-            write: (build, options) => writeAsJob(job, build, options?.covers),
+            write: (build, options) => {
+                try {
+                    return writeAsJob(job, build, options?.covers);
+                } catch (error) {
+                    // Every job write fails here: a conflict, a refused write, a storage failure.
+                    throw markFailure(error, { stage: "persist" });
+                }
+            },
             setCallbackPreset(presetId) {
                 job.targets.presetId = presetId;
             },
@@ -640,7 +717,7 @@ export function createGenerationJobs(options: {
                     message: "The job ended without a result",
                 }),
             (error) => finalize(job, errorTerminal(error)),
-        ).catch((error) => console.error("[Generation]", error));
+        ).catch((error) => logEvent("generation.runnerSettle", { job: job.id }, error));
     }
 
     function create(body: GenerationCreateBody, epoch: string | undefined): CreateResult {
@@ -814,7 +891,7 @@ export function createGenerationJobs(options: {
                 try {
                     listener(message);
                 } catch (error) {
-                    console.error("[Generation]", error);
+                    logEvent("generation.listener", { job: job.id }, error);
                 }
             }
         });

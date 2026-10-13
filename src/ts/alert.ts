@@ -4,6 +4,15 @@ import { sleep } from "./util";
 import { language } from "../lang";
 import { type MessageGenerationInfo } from "./storage/database.svelte";
 import { alertStore as alertStoreImported } from "./stores.svelte";
+import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
+
+/** A server job's failure as the tab received it, for the error alert's debug actions. */
+export type JobFailureInfo = {
+    jobId: string;
+    /** When the tab received the job's end (ms). */
+    at: number;
+    end: Extract<GenerationTerminalEvent, { type: "error" }>;
+};
 
 export interface alertData {
     type:
@@ -34,6 +43,10 @@ export interface alertData {
     datalist?: [string, string][];
     stackTrace?: string;
     defaultValue?: string;
+    /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
+    jobFailure?: JobFailureInfo;
+    /** `requestlogs`: the job the request history opens filtered to. */
+    jobId?: string;
 }
 
 type AlertGenerationInfoStoreData = {
@@ -48,6 +61,26 @@ export const alertStore = {
 };
 
 export function alertError(msg: string | Error) {
+    const data = errorAlert(msg);
+    if (data) {
+        alertStoreImported.set(data);
+    }
+}
+
+/**
+ * A server job's error (`docs/plan/request-history-diagnostics.md` slice 6): the message as
+ * `alertError` shows it, with the job's failure fields for the alert's debug actions. `at`: when the
+ * tab received the job's end.
+ */
+export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
+    const data = errorAlert(end.message);
+    if (data) {
+        alertStoreImported.set({ ...data, jobFailure: { jobId, at, end } });
+    }
+}
+
+/** The `error` alert of `msg` (known errors get their hint), or null for one that is not shown. */
+function errorAlert(msg: string | Error): alertData | null {
     console.error(msg);
 
     let stackTrace: string | undefined = undefined;
@@ -70,7 +103,7 @@ export function alertError(msg: string | Error) {
     const ignoredErrors = ["{}"];
 
     if (ignoredErrors.includes(msg)) {
-        return;
+        return null;
     }
 
     let submsg = "";
@@ -80,12 +113,12 @@ export function alertError(msg: string | Error) {
         submsg = settings.providers.usePlainFetch ? language.errors.networkFetchPlain : language.errors.networkFetch;
     }
 
-    alertStoreImported.set({
+    return {
         type: "error",
         msg: msg,
         submsg: submsg,
         stackTrace: stackTrace,
-    });
+    };
 }
 
 export async function waitAlert() {
@@ -311,9 +344,11 @@ export function showHypaV2Alert() {
     });
 }
 
-export function alertRequestLogs() {
+/** The request logs popup; `filter.jobId` opens the server's history filtered to that job. */
+export function alertRequestLogs(filter: { jobId?: string | null } = {}) {
     alertStoreImported.set({
         type: "requestlogs",
         msg: "",
+        ...(filter.jobId ? { jobId: filter.jobId } : {}),
     });
 }

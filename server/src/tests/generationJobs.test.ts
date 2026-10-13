@@ -10,11 +10,13 @@ import { createResourceStore, type ResourceStore } from "../data/resourceStore.t
 import { createSnapshotManager, type SnapshotManager } from "../data/snapshots.ts";
 import {
     createGenerationJobs,
+    failureOf,
     GenerationJobEndedError,
     GenerationRunnerError,
     type GenerationRunner,
     JOB_ABORT_GRACE_MS,
     JobWriteConflictError,
+    markFailure,
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -565,6 +567,147 @@ describe("the end of a job", () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(unhandled).not.toHaveBeenCalled();
         process.off("unhandledRejection", unhandled);
+    });
+});
+
+describe("the failure fields of the error terminal (request history slice 6)", () => {
+    const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+
+    it("markFailure fills only the fields the error does not hold yet (the nearest site wins), ignores null, undefined, and a primitive; failureOf copies; a GenerationRunnerError holds its own", () => {
+        const foreign = new Error("x");
+        expect(markFailure(foreign, { stage: "request", requestId: REQUEST })).toBe(foreign);
+        expect(failureOf(foreign)).toEqual({ stage: "request", requestId: REQUEST });
+        markFailure(foreign, { stage: "script", requestId: "other", providerCode: "rate_limit_exceeded" });
+        expect(failureOf(foreign)).toEqual({
+            stage: "request",
+            requestId: REQUEST,
+            providerCode: "rate_limit_exceeded",
+        });
+        // A copy: changing it changes nothing.
+        failureOf(foreign).stage = "tail";
+        expect(failureOf(foreign).stage).toBe("request");
+        const blank = new Error("y");
+        markFailure(blank, { stage: undefined, requestId: null as never, providerCode: null });
+        expect(failureOf(blank)).toEqual({});
+        markFailure(blank, { stage: "persist" });
+        expect(failureOf(blank)).toEqual({ stage: "persist" });
+        expect(markFailure("text", { stage: "script" })).toBe("text");
+        expect(failureOf("text")).toEqual({});
+        expect(failureOf(null)).toEqual({});
+        expect(failureOf(undefined)).toEqual({});
+        const own = new GenerationRunnerError(500, "m", { stage: "tail", providerCode: null });
+        expect(own.failure).toEqual({ stage: "tail" });
+        markFailure(own, { stage: "setup", requestId: REQUEST });
+        expect(own.failure).toEqual({ stage: "tail", requestId: REQUEST });
+        expect(failureOf(own)).toEqual({ stage: "tail", requestId: REQUEST });
+        // A replacement error takes the original's fields through failureOf.
+        const replacement = new GenerationRunnerError(500, "wrapped", failureOf(own));
+        expect(replacement.failure).toEqual({ stage: "tail", requestId: REQUEST });
+    });
+
+    it("copies the checked fields of a runner's failure to the terminal and logs one content-free `generation.failed` line; a value outside its pattern or list is left out", async () => {
+        const { jobs, create, run, ended } = setup();
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        cleanups.push(() => log.mockRestore());
+        const cases: [() => never, Record<string, unknown>, (jobId: string) => string][] = [
+            [
+                () => {
+                    throw new GenerationRunnerError(502, "Upstream broke: private text", {
+                        stage: "request",
+                        requestId: REQUEST,
+                        providerCode: "rate_limit_exceeded",
+                    });
+                },
+                { status: 502, stage: "request", requestId: REQUEST, providerCode: "rate_limit_exceeded" },
+                (jobId) =>
+                    `[Generation] failed job=${jobId} request=${REQUEST} kind=send stage=request reason=failed status=502 providerCode=rate_limit_exceeded`,
+            ],
+            [
+                () => {
+                    // A foreign error marked at a site: its fields reach the terminal too.
+                    throw markFailure(new Error("plain"), { stage: "persist" });
+                },
+                { status: 500, stage: "persist" },
+                (jobId) => `[Generation] failed job=${jobId} kind=send stage=persist reason=failed status=500`,
+            ],
+            [
+                () => {
+                    throw new GenerationRunnerError(500, "bad fields", {
+                        stage: "parsing" as never,
+                        requestId: "Private Character",
+                        providerCode: "rate limit exceeded",
+                    });
+                },
+                { status: 500 },
+                (jobId) => `[Generation] failed job=${jobId} kind=send reason=failed status=500`,
+            ],
+        ];
+        for (const [fn, expected, line] of cases) {
+            log.mockClear();
+            const outcome = run(async () => fn()).catch(() => {});
+            const jobId = create();
+            await outcome;
+            await ended(jobId);
+            const terminal = jobs.status(jobId, "tab")!.terminal as Record<string, unknown>;
+            expect(terminal).toMatchObject({ type: "error", reason: "failed", ...expected });
+            for (const field of ["stage", "requestId", "providerCode"]) {
+                if (!(field in expected)) {
+                    expect(field in terminal).toBe(false);
+                }
+            }
+            const lines = log.mock.calls.map((call) => call[0]).filter((text) => typeof text === "string");
+            expect(lines).toEqual([line(jobId)]);
+            expect(lines[0]).not.toContain("private");
+            expect(lines[0]).not.toContain("Private");
+        }
+    });
+
+    it("a failed job write (a conflict) is marked `persist` for the runner, which carries it to the terminal; an aborted job has no fields and no failed line", async () => {
+        const { jobs, create, run, ended, store } = setup();
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        cleanups.push(() => log.mockRestore());
+        log.mockClear();
+        const outcome = run(async (job) => {
+            // A resource write at a stale revision conflicts (a chat op by message id would still apply).
+            const stale = store.get(characters, "c")!.revision;
+            const changed = { chaId: "c", name: "Changed" };
+            store.applyChanges({ ops: [{ kind: characters, id: "c", baseRevision: stale, data: changed }] });
+            try {
+                job.write(() => ({
+                    ops: [{ kind: characters, id: "c", baseRevision: stale, data: { chaId: "c", name: "Late" } }],
+                }));
+            } catch (error) {
+                expect(error).toBeInstanceOf(JobWriteConflictError);
+                expect(failureOf(error)).toEqual({ stage: "persist" });
+                // The runner's conversion keeps the stage.
+                throw new GenerationRunnerError(409, "The send's write conflicted with another change", {
+                    ...failureOf(error),
+                    stage: "persist",
+                });
+            }
+            throw new Error("the stale write applied");
+        }).catch(() => {});
+        const jobId = create();
+        await outcome;
+        await ended(jobId);
+        expect(jobs.status(jobId, "tab")!.terminal).toMatchObject({ type: "error", status: 409, stage: "persist" });
+        expect(log.mock.calls.map((call) => call[0])).toEqual([
+            `[Generation] failed job=${jobId} kind=send stage=persist reason=failed status=409`,
+        ]);
+
+        log.mockClear();
+        const abortedRun = run(async (job) => {
+            await aborted(job);
+            throw markFailure(new Error("stopped"), { stage: "request", requestId: REQUEST });
+        }).catch(() => {});
+        const abortedId = create();
+        expect(jobs.abort(abortedId, "tab")).toBe(true);
+        await abortedRun;
+        await ended(abortedId);
+        const terminal = jobs.status(abortedId, "tab")!.terminal as Record<string, unknown>;
+        expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+        expect("stage" in terminal || "requestId" in terminal).toBe(false);
+        expect(log.mock.calls.filter((call) => String(call[0]).includes("failed"))).toEqual([]);
     });
 });
 

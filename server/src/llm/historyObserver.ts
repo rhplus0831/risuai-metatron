@@ -4,7 +4,7 @@ import type { RequestObserver } from "./requests.ts";
 /**
  * The request layer's observer that writes the request history (`docs/plan/request-history-diagnostics.md`
  * slice 3): a row at admission, its prompt and model, every exchange, the first byte, and its end
- * with the error text, the last exchange's HTTP status, and the bytes sent and received (counted
+ * with the error text, the provider's error code, the last exchange's HTTP status, and the bytes sent and received (counted
  * before any redaction or cut, also when content is off). `content` is read at admission: with it
  * off, the store keeps a summary row (no prompt, no exchanges). A `content` that throws counts as
  * off, so the row is still written.
@@ -62,6 +62,7 @@ export function createHistoryObserver(history: RequestHistory, options: { conten
                 status: end.status,
                 completedAt: end.completedAt,
                 error: detail?.error ?? null,
+                providerCode: detail?.providerCode ?? null,
                 httpStatus: total?.httpStatus ?? null,
                 requestBytes: total?.requestBytes ?? null,
                 responseBytes: total?.responseBytes ?? null,

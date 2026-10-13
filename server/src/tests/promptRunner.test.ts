@@ -29,7 +29,13 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
 
 // The provider: `mode` picks the next answer; `onRequest` runs when a request arrives.
-let mode: { chunks: string[]; delayMs: number; status?: number } = { chunks: ["Hel", "lo"], delayMs: 0 };
+let mode: {
+    chunks: string[];
+    delayMs: number;
+    status?: number;
+    /** The stream's socket is destroyed after this many chunks (a dropped connection). */
+    breakAfterChunks?: number;
+} = { chunks: ["Hel", "lo"], delayMs: 0 };
 let onRequest: (() => Promise<void>) | null = null;
 /** The text a non-streaming request (a translation's) gets instead of `mode.chunks` while set. */
 let plainAnswer: ((body: any) => string) | null = null;
@@ -51,7 +57,8 @@ const provider = http.createServer(async (req, res) => {
     }
     if (mode.status) {
         res.writeHead(mode.status, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: "upstream broke" } }));
+        // An OpenAI error envelope: the message (never stored on the event) and the code (slice 6).
+        res.end(JSON.stringify({ error: { message: "upstream broke", code: "upstream_broke" } }));
         return;
     }
     if (!body.stream) {
@@ -61,12 +68,17 @@ const provider = http.createServer(async (req, res) => {
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    let sent = 0;
     for (const chunk of mode.chunks) {
         if (res.destroyed) {
             return;
         }
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
         await sleep(mode.delayMs);
+        if (++sent === mode.breakAfterChunks) {
+            res.destroy();
+            return;
+        }
     }
     res.write("data: [DONE]\n\n");
     res.end();
@@ -340,6 +352,15 @@ async function job(
     };
 }
 const notices = (events: any[], kind: string) => events.filter((e) => e.type === "notice" && e.kind === kind);
+/** The request history rows of a job, newest first (slice 6: the error event names the failed one). */
+const historyOf = async (jobId: string) =>
+    (await api(`/api/request-history?jobId=${encodeURIComponent(jobId)}`)).body.items as {
+        id: string;
+        status: string;
+        providerCode: string | null;
+        source: string;
+    }[];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 beforeAll(async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -512,7 +533,13 @@ describe("a send", () => {
             expect(again.events.some((event) => event.type === "accepted" && event.userMessageId)).toBe(false);
             const replyId = chat.data.message[1].chatId;
             const clash = await job("send", chaId, { input: "hi", userMessageId: replyId });
-            expect(clash.terminal).toMatchObject({ type: "error", status: 409, message: /another message/ });
+            expect(clash.terminal).toMatchObject({
+                type: "error",
+                status: 409,
+                message: /another message/,
+                stage: "input",
+            });
+            expect("requestId" in clash.terminal!).toBe(false);
             expect(texts(await readChat(chaId))).toHaveLength(3);
         },
         SLOW,
@@ -728,6 +755,18 @@ describe("a send", () => {
             const failed = await job("send", chaId);
             expect(failed.terminal).toMatchObject({ type: "error", status: 500, message: /upstream broke|500/ });
             expect(texts(await readChat(chaId))).toEqual(["user:q"]);
+            // The error names where it failed (slice 6): the request stage, the last attempt's history
+            // row, and the provider's code, which the row holds too.
+            const rows = await historyOf(failed.body.jobId);
+            const errored = rows.filter((row) => row.status === "error");
+            expect(errored.length).toBeGreaterThanOrEqual(1);
+            expect(rows.every((row) => row.source === "send")).toBe(true);
+            expect(failed.terminal).toMatchObject({
+                stage: "request",
+                requestId: errored[0].id,
+                providerCode: "upstream_broke",
+            });
+            expect(errored[0].providerCode).toBe("upstream_broke");
             await patchProviders({ inlayErrorResponse: true });
             try {
                 const inlaid = await job("send", chaId);
@@ -775,7 +814,12 @@ describe("a send", () => {
             });
             const before = bodies.length;
             const { terminal } = await job("send", chaId, { input: "hi", userMessageId: "u" });
-            expect(terminal).toMatchObject({ type: "error", message: /more than 100000 trigger effects/ });
+            expect(terminal).toMatchObject({
+                type: "error",
+                message: /more than 100000 trigger effects/,
+                stage: "script",
+            });
+            expect("requestId" in terminal!).toBe(false);
             expect(bodies.length).toBe(before);
             // The input stage's message stays; no reply was appended.
             expect(texts(await readChat(chaId))).toEqual(["user:hello"]);
@@ -870,8 +914,99 @@ describe("a send", () => {
                 type: "error",
                 status: 500,
                 message: /plugin hook failed.*plugin broke/,
+                stage: "script",
             });
             expect(texts(await readChat(chaId))).toHaveLength(2);
+            // A failure of the callback itself (a barrier, a timeout, a disconnect) is latched as the
+            // job's fatal failure: still the script's stage, not the input stage's.
+            const barrier = await job(
+                "send",
+                chaId,
+                { input: "hi once more", userMessageId: "u3" },
+                {
+                    hooks,
+                    answerCallback: () => ({ outcome: "failed", failure: "barrier", error: "local changes discarded" }),
+                },
+            );
+            expect(barrier.terminal).toMatchObject({
+                type: "error",
+                status: 500,
+                message: /editinput callback failed \(barrier\)/,
+                stage: "script",
+            });
+            expect("requestId" in barrier.terminal!).toBe(false);
+            expect(texts(await readChat(chaId))).toHaveLength(2);
+        },
+        SLOW,
+    );
+
+    it(
+        "a stream that breaks after its chunks ends the job as the request's failure, naming the request, with the text so far stored and the lock released",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
+            mode = { chunks: ["First.", " Never."], delayMs: 150, breakAfterChunks: 1 };
+            try {
+                const { body, events, terminal } = await job("send", chaId);
+                expect(terminal).toMatchObject({ type: "error", status: 500, reason: "failed", stage: "request" });
+                const rows = await historyOf(body.jobId);
+                const errored = rows.filter((row) => row.status === "error");
+                expect(errored).toHaveLength(1);
+                expect((terminal as any).requestId).toBe(errored[0].id);
+                // No error event in the body: no code on the event nor on the row.
+                expect("providerCode" in terminal!).toBe(false);
+                expect(errored[0].providerCode).toBeNull();
+                expect(events.filter((event) => event.type === "chunk").map((event) => event.text)).toEqual(["First."]);
+                const chat = await readChat(chaId);
+                expect(texts(chat)).toEqual(["user:q", "char:First."]);
+                expect(await clientSetText(chaId, chat.data.message.at(-1).chatId, "tab edit")).toBe(200);
+            } finally {
+                mode = { chunks: ["x"], delayMs: 0 };
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a group send whose second member's request fails names that request (a later speaker's own stage), after the first member's reply was stored",
+        async () => {
+            const bob = await seedCharacter({ name: "Bob" });
+            const cid = await seedCharacter({ name: "Cid" });
+            const grp = await seedCharacter({
+                name: "Grp",
+                type: "group",
+                members: [bob, cid],
+                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+            });
+            mode = { chunks: ["Reply."], delayMs: 0 };
+            let requests = 0;
+            onRequest = async () => {
+                if (++requests === 2) {
+                    mode = { chunks: [], delayMs: 0, status: 500 };
+                }
+            };
+            try {
+                const { body, events, terminal } = await job("group", grp);
+                expect(terminal).toMatchObject({
+                    type: "error",
+                    status: 500,
+                    stage: "request",
+                    requestId: expect.stringMatching(UUID),
+                    providerCode: "upstream_broke",
+                });
+                expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
+                const rows = await historyOf(body.jobId);
+                expect(rows.filter((row) => row.status === "success")).toHaveLength(1);
+                const errored = rows.filter((row) => row.status === "error");
+                expect(errored.length).toBeGreaterThanOrEqual(1);
+                expect((terminal as any).requestId).toBe(errored[0].id);
+                const chat = await readChat(grp);
+                expect(texts(chat)).toEqual(["user:hello all", "char:Reply."]);
+                expect(chat.data.message[1].saying).toBe(bob);
+                expect(await clientSetText(grp, chat.data.message[1].chatId, "tab edit")).toBe(200);
+            } finally {
+                onRequest = null;
+                mode = { chunks: ["x"], delayMs: 0 };
+            }
         },
         SLOW,
     );

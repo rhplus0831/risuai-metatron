@@ -128,7 +128,21 @@ export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
 /** 409: the chat changed since the revision the client sent. */
 export type GenerationStaleBody = { error: "stale" };
 
-export type GenerationErrorReason = "failed" | "aborted" | "shutdown" | "maintenance" | "timeout";
+export const GENERATION_ERROR_REASONS = ["failed", "aborted", "shutdown", "maintenance", "timeout"] as const;
+
+export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
+
+/**
+ * Where a job failed (`docs/plan/request-history-diagnostics.md`, slice 6): the job's setup (its
+ * scope, bindings, and speakers), the input stage, prompt assembly, an LLM request, a script (Lua, a
+ * trigger, a regex script, a plugin hook), a write, or the tail after the reply.
+ */
+export const GENERATION_ERROR_STAGES = ["setup", "input", "assembly", "request", "script", "persist", "tail"] as const;
+
+export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
+
+/** A job's or a request's id as the server makes them (`randomUUID`). */
+export const GENERATION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 
 /** `accepted`: a reply the job writes (a command job emits one without a message). */
 export type GenerationAcceptedEvent = {
@@ -205,7 +219,21 @@ export type GenerationTerminalEvent =
            */
           followUps?: GenerationFollowUp[];
       }
-    | { type: "error"; epoch: string; message: string; status: number; reason: GenerationErrorReason };
+    | {
+          type: "error";
+          epoch: string;
+          message: string;
+          status: number;
+          reason: GenerationErrorReason;
+          /**
+           * A runner's failure only (an abort, a timeout, shutdown, or maintenance has none): where
+           * it failed, the LLM request that failed when it was one (the request history's id), and
+           * the provider's error code (`isProviderCode`).
+           */
+          stage?: GenerationErrorStage;
+          requestId?: string;
+          providerCode?: string;
+      };
 
 /** One `/multisend` of a command job: the texts to send in turn. */
 export type GenerationFollowUp = { clear: boolean; parts: string[] };

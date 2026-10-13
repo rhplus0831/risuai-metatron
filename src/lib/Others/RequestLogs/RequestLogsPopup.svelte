@@ -1,5 +1,6 @@
 <script lang="ts">
     import { XIcon } from "@lucide/svelte";
+    import { untrack } from "svelte";
     import { language } from "src/lang";
     import { alertStore } from "src/ts/stores.svelte";
     import ServerRequestHistory from "./ServerRequestHistory.svelte";
@@ -10,6 +11,8 @@
      * request log for what only the browser saw.
      */
     let tab: "server" | "tab" = $state("server");
+    /** The history's job filter: the job the popup was opened for (`alertRequestLogs`), kept across tabs. */
+    let jobId: string | null = $state(untrack(() => $alertStore.jobId ?? null));
 </script>
 
 <div class="fixed inset-0 z-50 bg-black/80 flex justify-center items-start overflow-y-auto p-4">
@@ -39,7 +42,7 @@
         </div>
         <div class="flex-1 overflow-y-auto p-4">
             {#if tab === "server"}
-                <ServerRequestHistory />
+                <ServerRequestHistory bind:jobId />
             {:else}
                 <TabRequestLogs />
             {/if}

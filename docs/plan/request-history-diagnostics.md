@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 in progress (slices 1–5 done). Two phases.
+Status: Phase 1 done (slices 1–6). Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -366,6 +366,19 @@ projection:
   - "Open in request history": the viewer, filtered to the job.
 - Tests: each stage reaches the error event, and the copied block holds no
   message text.
+- Settled at implementation:
+  - `requestId` names the send's main request (a buffered failure, a stream
+    that failed while read, a fatal end from inside a request). A memory
+    request's failure is `assembly` without a request id: the memory layer
+    returns its error as text. The viewer's job filter shows that request.
+  - The provider code is read from the captured body, so an error event past
+    the stream capture bound is not seen. OpenAI Responses turns a streamed
+    error event into answer text (as the client does): that request succeeds
+    and has no code.
+  - The code needs the history observer (the request layer reads it from the
+    exchanges the observer takes), which production always installs.
+  - `logEvent` never prints an error's message, only its name and first
+    application frame.
 
 ### Phase 2: diagnostics folder and report
 

@@ -753,7 +753,8 @@ describe("the command runner", () => {
     it("refuses a button in a group chat with a 400 terminal", async () => {
         const chaId = await seedCharacter({ codes: [button(`addChat(id, "char", "ran")`)], type: "group" });
         const { terminal } = await runButton(chaId);
-        expect(terminal).toMatchObject({ type: "error", status: 400, message: /group chat/ });
+        // A command job's failure names its stage (request history slice 6): its setup here.
+        expect(terminal).toMatchObject({ type: "error", status: 400, message: /group chat/, stage: "setup" });
         expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:hi there"]);
     });
 
@@ -762,7 +763,7 @@ describe("the command runner", () => {
         async () => {
             const broken = await seedCharacter({ codes: ["this is not lua"] });
             const { terminal } = await runButton(broken);
-            expect(terminal).toMatchObject({ type: "error", message: /^Lua: / });
+            expect(terminal).toMatchObject({ type: "error", message: /^Lua: /, stage: "script" });
 
             const throwing = await seedCharacter({
                 codes: [button(`error("boom")`), button(`addChat(id, "char", "second ran")`)],
@@ -790,7 +791,9 @@ describe("the command runner", () => {
             expect(terminal).toMatchObject({
                 type: "error",
                 message: /generateImage callback failed \(barrier\)/,
+                stage: "script",
             });
+            expect("requestId" in terminal!).toBe(false);
             expect(notice(events, "alertNormal")).toBeUndefined();
             expect((await readCharacter(chaId)).data.name).toBe("Lua Char");
             expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:hi there"]);

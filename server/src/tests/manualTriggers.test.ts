@@ -414,6 +414,8 @@ describe("a manual trigger job", () => {
             expect(unanswered.terminal).toMatchObject({
                 type: "error",
                 message: /Trigger: .*alertInput question ended: cancelled/,
+                // A command job's trigger failure is the script's (request history slice 6).
+                stage: "script",
             });
             const chat = await readChat(chaId);
             expect(texts(chat)).toHaveLength(3);
@@ -677,6 +679,7 @@ describe("a manual trigger job", () => {
                 type: "error",
                 status: 500,
                 message: /^Trigger: more than 100000 trigger effects/,
+                stage: "script",
             });
         },
     );

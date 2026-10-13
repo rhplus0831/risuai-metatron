@@ -808,7 +808,7 @@ describe("the history observer (createHistoryObserver)", () => {
         observer.begin(begin("r"));
         observer.prompt!("r", "[]");
         observer.exchange!("r", entry({ status: 200 }), { requestBytes: 3, responseBytes: 4 });
-        observer.finish("r", { status: "error", completedAt: 9 }, { error: "bad" });
+        observer.finish("r", { status: "error", completedAt: 9 }, { error: "bad", providerCode: "overloaded_error" });
         expect(history.get("r")).toMatchObject({
             content: false,
             prompt: null,
@@ -818,7 +818,15 @@ describe("the history observer (createHistoryObserver)", () => {
             requestBytes: 3,
             responseBytes: 4,
             error: "bad",
+            providerCode: "overloaded_error",
         });
+        // The provider code of the end (slice 6): stored when it is one, null otherwise or when absent.
+        observer.begin(begin("s"));
+        observer.finish("s", { status: "error", completedAt: 9 }, { error: "bad", providerCode: "not a code" });
+        expect(history.get("s")).toMatchObject({ error: "bad", providerCode: null });
+        observer.begin(begin("t"));
+        observer.finish("t", { status: "error", completedAt: 9 }, { error: "bad" });
+        expect(history.get("t")).toMatchObject({ error: "bad", providerCode: null });
     });
 
     it("a content getter that throws counts as off: the row is still written, as a summary, with a warning (slice 4)", () => {
@@ -910,8 +918,15 @@ describe("a request's row (slice 3, over the request layer)", () => {
         await registry.dispose();
     });
 
-    it("with content off the row is a summary with the totals; a request refused before its settings load ends as an error with no prompt", async () => {
-        const off = harness(makeRecords(), () => chat("x"), { content: false });
+    it("with content off the row is a summary with the totals (and a failure's provider code, read from the exchange the store does not keep); a request refused before its settings load ends as an error with no prompt", async () => {
+        const off = harness(
+            makeRecords(),
+            (_call, index) =>
+                index === 0
+                    ? chat("x")
+                    : json({ error: { message: "Overloaded, try later", type: "overloaded_error" } }, 529),
+            { content: false },
+        );
         const { id } = await run(off.registry, body());
         expect(off.history.get(id)).toMatchObject({
             content: false,
@@ -921,6 +936,16 @@ describe("a request's row (slice 3, over the request layer)", () => {
             httpStatus: 200,
             requestBytes: utf8(off.calls[0].body),
             modelId: "reverse_proxy",
+            providerCode: null,
+        });
+        const failed = await run(off.registry, body());
+        expect(off.history.get(failed.id)).toMatchObject({
+            content: false,
+            exchanges: null,
+            status: "error",
+            httpStatus: 529,
+            providerCode: "overloaded_error",
+            error: expect.stringContaining("Overloaded"),
         });
         const gone = harness(makeRecords(), () => chat("x"));
         const missing = await run(gone.registry, { ...body(), context: { ...body().context, presetId: "missing" } });

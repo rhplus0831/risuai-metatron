@@ -16,7 +16,15 @@ import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
 import type { OwnedGeneration } from "../jobs/chatResult.ts";
-import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
+import {
+    failureOf,
+    type GenerationFailure,
+    GenerationRunnerError,
+    JobWriteConflictError,
+    markFailure,
+    type RunningJob,
+} from "../jobs/generationJobs.ts";
+import { logEvent } from "../diagnostics/log.ts";
 import {
     admitProviderModels,
     type JobScope,
@@ -37,6 +45,7 @@ import {
     untilAborted,
 } from "../jobs/runSetup.ts";
 import { messages } from "../llm/messages.ts";
+import { JobRequestError } from "../llm/requests.ts";
 import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { readStorageFile } from "../routes/storage.ts";
@@ -206,8 +215,8 @@ const INPUT_KINDS = new Set(["send", "continue", "reroll", "group"]);
 
 /** The error a send's `throwError` shows when `inlayErrorResponse` is off. */
 class SendError extends GenerationRunnerError {
-    constructor(message: string) {
-        super(500, message);
+    constructor(message: string, failure?: GenerationFailure) {
+        super(500, message, failure);
         this.name = "SendError";
     }
 }
@@ -241,6 +250,10 @@ class SendError extends GenerationRunnerError {
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
  * it the job ends with the error.
+ *
+ * A failure names its stage (`docs/plan/request-history-diagnostics.md` slice 6): the site nearest
+ * it names one where it knows it (a script, a write, a request, with the request's id and provider
+ * code), else the stage the run was in (`JobRunState.stage`: setup, input, assembly, request, tail).
  */
 export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
     const state = createJobRunState(job);
@@ -250,14 +263,18 @@ export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps):
             setup = next;
         });
     } catch (error) {
+        const stage = { stage: state.stage };
         const fatal = (setup as RunSetup | null)?.bindings.fatal();
         if (fatal) {
-            throw fatal;
+            throw markFailure(fatal, stage);
         }
         if (job.signal.aborted || error instanceof GenerationRunnerError || error instanceof LuaJobFatalError) {
-            throw error;
+            throw markFailure(error, stage);
         }
-        throw new GenerationRunnerError(500, error instanceof Error ? error.message : String(error));
+        throw markFailure(
+            new GenerationRunnerError(500, error instanceof Error ? error.message : String(error), failureOf(error)),
+            stage,
+        );
     }
 }
 
@@ -319,6 +336,7 @@ async function runSend(
     let sentUserMessageId: string | null = null;
     // The input stage, on the admitted preset.
     if (INPUT_KINDS.has(job.kind) && job.context.input !== "") {
+        state.stage = "input";
         const userMessageId = job.context.userMessageId ?? randomUUID();
         const existing = scopeChat(scope)?.message.find((message) => message.chatId === userMessageId);
         if (!existing || existing.role !== "user") {
@@ -361,6 +379,7 @@ async function runSend(
             job.emit({ type: "accepted", jobId: job.id, userMessageId, revision: scope.chatRevision, text: "" });
         }
         sentUserMessageId = userMessageId;
+        state.stage = "setup";
     }
 
     if (chain && "missing" in chain) {
@@ -556,6 +575,8 @@ async function runSpeaker(arg: {
 }): Promise<SpeakerResult> {
     const { job, deps, state, scope, owner, speakerId, writeOwn } = arg;
     const { store, kinds } = deps;
+    // Every speaker and every round of one starts over: its setup, then assembly, request, tail.
+    state.stage = "setup";
     const { characterId, chatId } = job.context;
     const db = scope.db;
 
@@ -635,14 +656,17 @@ async function runSpeaker(arg: {
         }
     }
 
-    /** `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the job's error. */
-    function throwError(error: string): SpeakerResult {
+    /**
+     * `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the
+     * job's error, with `failure` (a failed request's id and provider code).
+     */
+    function throwError(error: string, failure?: GenerationFailure): SpeakerResult {
         if (!db.inlayErrorResponse) {
-            throw new SendError(error);
+            throw new SendError(error, failure);
         }
         const chat = chatNow();
         if (!chat) {
-            throw new SendError(error);
+            throw new SendError(error, failure);
         }
         const lastMessage = chat.message[chat.message.length - 1];
         const suffix = `\n\`\`\`risuerror\n${error}\n\`\`\``;
@@ -778,7 +802,9 @@ async function runSpeaker(arg: {
                 : undefined,
         );
         if (outcomes.at(-1) === "ignored") {
-            throw new GenerationRunnerError(409, "The reply was closed by another write before it was finished");
+            throw new GenerationRunnerError(409, "The reply was closed by another write before it was finished", {
+                stage: "persist",
+            });
         }
     };
 
@@ -910,6 +936,7 @@ async function runSpeaker(arg: {
             fence: () => setup.check(),
             signal: nativeCtx.signal,
         };
+        state.stage = "assembly";
         const assembled: AssembledPrompt = await assemblePrompt(
             {
                 db,
@@ -1030,6 +1057,7 @@ async function runSpeaker(arg: {
         }
 
         const stage3Start = Date.now();
+        state.stage = "request";
         const req = await services.request(
             {
                 formated,
@@ -1066,7 +1094,10 @@ async function runSpeaker(arg: {
         const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
 
         if (req.type === "fail") {
-            return throwError(req.result);
+            return throwError(req.result, {
+                stage: "request",
+                ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+            });
         }
 
         // ---- The tail (`post-generation-and-plugin-callbacks`, slice 11a): what `sendChatInner` does
@@ -1251,12 +1282,22 @@ async function runSpeaker(arg: {
             if (stream.error !== undefined || job.signal.aborted) {
                 // An abort or a read failure: the final write carries the text so far; nothing after
                 // the stream runs.
+                // A failure of that write is the job's error instead.
                 finalize(stream.text, stream.seq);
                 if (stream.error !== undefined && !job.signal.aborted) {
-                    throw new GenerationRunnerError(500, stream.error);
+                    const failure = stream.failure ?? {};
+                    // A read failure is the request's; a checkpoint's is the write's.
+                    throw new GenerationRunnerError(
+                        500,
+                        stream.error,
+                        failure.stage === "request" && req.request
+                            ? { requestId: req.request.id, ...failure }
+                            : failure,
+                    );
                 }
                 return { type: "stop" };
             }
+            state.stage = "tail";
             // The completed raw text is stored before any hook runs: a failure in the tail keeps it.
             // Every later write of the reply claims the stream's last chunk.
             coverSeq = stream.seq;
@@ -1289,6 +1330,7 @@ async function runSpeaker(arg: {
             await runChatOutputListeners(messageId);
             sayTTS(result);
         } else {
+            state.stage = "tail";
             // Non-streaming: the first text is the reply; every text is a reroll alternative.
             const msgs: readonly (readonly ["user" | "char", string])[] =
                 req.type === "success" ? [["char", req.result]] : req.type === "multiline" ? req.result : [];
@@ -1579,7 +1621,10 @@ async function runSpeaker(arg: {
         return reply();
     } catch (error) {
         if (error instanceof JobWriteConflictError) {
-            throw new GenerationRunnerError(409, "The send's write conflicted with another change");
+            throw new GenerationRunnerError(409, "The send's write conflicted with another change", {
+                ...failureOf(error),
+                stage: "persist",
+            });
         }
         throw error;
     } finally {
@@ -1588,7 +1633,7 @@ async function runSpeaker(arg: {
             try {
                 finalize();
             } catch (error) {
-                console.error("[Generation]", error);
+                logEvent("generation.release", { job: job.id }, error);
             }
         }
     }
@@ -1611,7 +1656,15 @@ async function readReply(
         emitChunk: (text: string, seq: number) => void;
         checkpoint: (text: string, seq: number) => void;
     },
-): Promise<{ text: string; result: string; seq: number; lastChunk: StreamResponseChunk; error?: string }> {
+): Promise<{
+    text: string;
+    result: string;
+    seq: number;
+    lastChunk: StreamResponseChunk;
+    error?: string;
+    /** The failure's stage: a checkpoint's (`persist`) or the read's (`request`, with its provider code). */
+    failure?: GenerationFailure;
+}> {
     const reader = stream.getReader();
     let text = options.prefix.trim();
     /** The client's `result`: the newest chunk's first value (trimmed to punctuation), without the prefix. */
@@ -1669,12 +1722,19 @@ async function readReply(
             ? { text, result: chunkResult, seq, lastChunk, error: "request aborted" }
             : { text, result: chunkResult, seq, lastChunk };
     } catch (error) {
+        const failure: GenerationFailure =
+            error === checkpointError
+                ? { ...failureOf(error), stage: "persist" }
+                : error instanceof JobRequestError
+                  ? { stage: "request", requestId: error.requestId, providerCode: error.providerCode }
+                  : { stage: "request" };
         return {
             text,
             result: chunkResult,
             seq,
             lastChunk,
             error: error instanceof Error ? error.message : String(error),
+            failure,
         };
     } finally {
         clearInterval(timer);

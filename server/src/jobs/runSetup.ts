@@ -1,5 +1,10 @@
 import type { CbsUsage } from "../../../shared/cbs/limits.ts";
-import { type GenerationFollowUp, MAX_FOLLOW_UP_PART_CHARS, MAX_FOLLOW_UP_PARTS } from "../../../shared/jobs.ts";
+import {
+    type GenerationErrorStage,
+    type GenerationFollowUp,
+    MAX_FOLLOW_UP_PART_CHARS,
+    MAX_FOLLOW_UP_PARTS,
+} from "../../../shared/jobs.ts";
 import type { character, Chat, groupChat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
@@ -24,7 +29,7 @@ import type { RegexOp } from "../scripts/worker.ts";
 import { createLuaBudget, type HostContext, type LuaBudget, type ScriptWorkerPool } from "../scripts/workerPool.ts";
 import { jobModules } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
-import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
+import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
@@ -112,7 +117,24 @@ export type JobRunState = {
     rounds: { count: number; noticed?: boolean };
     /** The job's MCP tool sets and the tool calls its models asked for (slice 12). */
     tools: JobToolState;
+    /**
+     * Where the send runner is (`docs/plan/request-history-diagnostics.md` slice 6): the stage a
+     * failure that names none gets (`runPromptJob`).
+     */
+    stage: GenerationErrorStage;
 };
+
+/**
+ * Runs a script (Lua, a trigger, a plugin hook): a failure that names no stage yet is the script's.
+ * A failure inside it that already names one (a write, a request) keeps it.
+ */
+export async function asScript<T>(run: () => Promise<T>): Promise<T> {
+    try {
+        return await run();
+    } catch (error) {
+        throw markFailure(error, { stage: "script" });
+    }
+}
 
 /** The auto-continue and resend rounds one job may run beyond its speakers' own turns. */
 export const MAX_SEND_ROUNDS = 8;
@@ -154,6 +176,7 @@ export function createJobRunState(job: RunningJob): JobRunState {
         followUps: [],
         rounds: { count: 0 },
         tools: createJobToolState(),
+        stage: "setup",
     };
 }
 
@@ -280,7 +303,7 @@ export function createRunSetup(
                     : {}),
             };
         };
-        return options.working ? await bindings.withWorking(options.working, run) : await run();
+        return asScript(() => (options.working ? bindings.withWorking(options.working, run) : run()));
     };
 
     const charactersKind = kinds.get(RESOURCE_KIND.characters)!;
@@ -292,7 +315,7 @@ export function createRunSetup(
             return undefined;
         }
         const baseline = { chat: structuredClone(scopeChat(scope)!) as Chat, revision: scope.chatRevision };
-        const result = await runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat });
+        const result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat }));
         services.fence(nativeCtx);
         if (result) {
             applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
@@ -345,7 +368,7 @@ export function createRunSetup(
                 // A failure inside the handler is the script's own (logged, as `runScripted` catches
                 // it); a load failure, a spent budget, or a pool failure ends the job.
                 if (outcome.error.failedAt !== "dispatch" || outcome.error.timedOut) {
-                    throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`);
+                    throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`, { stage: "script" });
                 }
                 console.error("[Lua]", outcome.error.message);
             }
@@ -374,6 +397,7 @@ export function createRunSetup(
                 displayData: JSON.stringify(formated),
             });
         } catch (error) {
+            markFailure(error, { stage: "script" });
             // The effect limit is the job's, not the script's: it ends the job (latched, so the request
             // and everything after it stop).
             if (error instanceof TriggerEffectLimitError) {
@@ -394,7 +418,7 @@ export function createRunSetup(
         bindings,
         nativeCtx,
         runLua,
-        runTrigger: (char, mode, arg) => runtime.runTrigger(char, mode, arg),
+        runTrigger: (char, mode, arg) => asScript(() => runtime.runTrigger(char, mode, arg)),
         runOnCopy,
         check,
     };

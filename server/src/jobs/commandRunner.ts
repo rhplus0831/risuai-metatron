@@ -2,7 +2,13 @@ import type { character } from "../../../shared/database.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runPromptJob } from "../prompt/runner.ts";
-import { type GenerationRunner, GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
+import {
+    failureOf,
+    type GenerationRunner,
+    GenerationRunnerError,
+    markFailure,
+    type RunningJob,
+} from "./generationJobs.ts";
 import { admitProviderModels, loadJobScope } from "./jobScope.ts";
 import {
     createJobRunState,
@@ -38,6 +44,17 @@ function prepare(
     job: RunningJob,
     deps: GenerationRunnerDeps,
 ): { setup: RunSetup; state: JobRunState; character: character } {
+    try {
+        return prepareRun(job, deps);
+    } catch (error) {
+        throw markFailure(error, { stage: "setup" });
+    }
+}
+
+function prepareRun(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+): { setup: RunSetup; state: JobRunState; character: character } {
     const { characterId } = job.context;
     const scope = loadJobScope(deps.store, deps.kinds, job.context);
     admitProviderModels(scope, job.hooks.providers);
@@ -61,17 +78,27 @@ function prepare(
     return { setup, state, character: found };
 }
 
+/**
+ * A command job's failure names its stage (`docs/plan/request-history-diagnostics.md` slice 6): its
+ * setup (`prepare`), else the script it runs, unless a site nearer the failure named one (a write,
+ * a request).
+ */
 async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
     const command = job.command;
-    if (command?.type === "button") {
-        await runButton(job, deps, command.data);
-        return;
+    if (command?.type !== "button" && command?.type !== "manual") {
+        throw new GenerationRunnerError(400, "A command job needs a button or a manual trigger command", {
+            stage: "setup",
+        });
     }
-    if (command?.type === "manual") {
-        await runManualTrigger(job, deps, command.name);
-        return;
+    try {
+        if (command.type === "button") {
+            await runButton(job, deps, command.data);
+        } else {
+            await runManualTrigger(job, deps, command.name);
+        }
+    } catch (error) {
+        throw markFailure(error, { stage: "script" });
     }
-    throw new GenerationRunnerError(400, "A command job needs a button or a manual trigger command");
 }
 
 /**
@@ -169,7 +196,11 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
         if (job.signal.aborted || error instanceof GenerationRunnerError || error instanceof LuaJobFatalError) {
             throw error;
         }
-        throw new GenerationRunnerError(500, `Trigger: ${error instanceof Error ? error.message : String(error)}`);
+        throw new GenerationRunnerError(
+            500,
+            `Trigger: ${error instanceof Error ? error.message : String(error)}`,
+            failureOf(error),
+        );
     }
     setup.check();
     job.emit({

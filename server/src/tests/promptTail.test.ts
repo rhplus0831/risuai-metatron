@@ -789,6 +789,44 @@ describe("rounds", () => {
     );
 
     it(
+        "a continue round whose request fails ends the job as that request's failure (the round's own request stage and id), with the first round's text stored",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            await withSettings({ autoContinueChat: true }, async () => {
+                // The request layer retries a 500: every attempt of the round fails.
+                answers = [
+                    { chunks: ["Hello there"] },
+                    ...Array.from({ length: 6 }, () => ({ chunks: [], status: 500 })),
+                ];
+                const before = bodies.length;
+                const { body, terminal } = await job("send", chaId);
+                answers = [];
+                expect(terminal, JSON.stringify(terminal)).toMatchObject({
+                    type: "error",
+                    status: 500,
+                    reason: "failed",
+                    stage: "request",
+                });
+                // The send, then the continue round's attempts (the request layer retries a 500).
+                expect(bodies.length).toBeGreaterThanOrEqual(before + 2);
+                const rows = (await api(`/api/request-history?jobId=${encodeURIComponent(body.jobId)}`)).body.items as {
+                    id: string;
+                    status: string;
+                }[];
+                expect(rows.filter((row) => row.status === "success")).toHaveLength(1);
+                const errored = rows.filter((row) => row.status === "error");
+                expect(errored.length).toBeGreaterThanOrEqual(1);
+                // Newest first: the last attempt is the one the event names.
+                expect((terminal as any).requestId).toBe(errored[0].id);
+                const chat = await readChat(chaId);
+                expect(texts(chat)).toEqual(["user:q", "char:Hello there"]);
+                expect(await clientSetText(chaId, chat.data.message[1].chatId, "edited by the tab")).toBe(200);
+            });
+        },
+        SLOW,
+    );
+
+    it(
         "an igp prompt that is not ChatML is an error notice and no request",
         async () => {
             const chaId = await seedCharacter({ name: "Ann" });

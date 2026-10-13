@@ -1731,6 +1731,8 @@ export const languageEnglish = {
     noRequestLogs: "No request logs available.",
     requestHistoryServerTab: "Server history",
     requestHistoryThisTab: "This tab",
+    copyDebugInfo: "Copy debug info",
+    openInRequestHistory: "Open in request history",
     requestHistoryThisChat: "This chat only",
     requestHistorySameJob: "Job",
     requestHistoryShowJob: "Show every attempt of this job",

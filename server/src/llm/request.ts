@@ -55,14 +55,21 @@ export interface RequestDataArgumentExtended extends RequestArgs {
     escape?: boolean;
 }
 
-export type requestDataResponse =
+/**
+ * A job's admitted request (`runInJob`, `docs/plan/request-history-diagnostics.md` slice 6): its id
+ * in the request history and, for a failure, the provider's error code. Plain data.
+ */
+export type JobRequestInfo = { id: string; providerCode: string | null };
+
+export type requestDataResponse = (
     | BufferedResponse
     | {
           type: "streaming";
           result: ReadableStream<StreamResponseChunk>;
           special?: RequestSpecial;
           model?: string;
-      };
+      }
+) & { request?: JobRequestInfo };
 
 /** `OobaParams` of `src/ts/process/prompt.ts`. */
 const OobaParams = [

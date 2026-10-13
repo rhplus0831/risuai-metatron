@@ -20,7 +20,7 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
-import { JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
+import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
 import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
@@ -281,7 +281,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         const fatal =
             error instanceof LuaJobFatalError
                 ? error
-                : new LuaJobFatalError(error instanceof Error ? error.message : String(error));
+                : // The replacement keeps the failure's stage and request (`markFailure`).
+                  markFailure(
+                      new LuaJobFatalError(error instanceof Error ? error.message : String(error)),
+                      failureOf(error),
+                  );
         if (!fatalError) {
             fatalError = fatal;
             deps.onFatal?.(fatal);
@@ -743,8 +747,23 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */
     let requestTrigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null = null;
 
-    /** A request of the job: the client's outer `requestChatData` around the server request layer. */
-    const request = async (
+    /**
+     * A request of the job: the client's outer `requestChatData` around the server request layer. A
+     * failure it throws that names no stage yet is the request's (its tool list included); a script's
+     * (a replacer, the `request` trigger) or a write's keeps its own.
+     */
+    const request = (
+        arg: RequestArgs,
+        mode: ModelModeExtended,
+        ctx: HostContext,
+        source: RequestSource,
+        meta?: { messageId?: string },
+    ): Promise<requestDataResponse> =>
+        runRequest(arg, mode, ctx, source, meta).catch((error: unknown) => {
+            throw markFailure(error, { stage: "request" });
+        });
+
+    const runRequest = async (
         arg: RequestArgs,
         mode: ModelModeExtended,
         ctx: HostContext,
@@ -756,11 +775,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             name: N,
             payload: CallbackPayloads[N],
         ) => {
-            const value = await callback(name, payload, ctx);
+            let value: unknown;
+            try {
+                value = await callback(name, payload, ctx);
+            } catch (error) {
+                throw markFailure(error, { stage: "script" });
+            }
             if (value === null) {
                 // Registered when the job started, gone now (the hook threw or was removed): the
                 // browser path's invokeHook rejects, so the request does too.
-                throw new Error(`The ${name} hook failed`);
+                throw markFailure(new Error(`The ${name} hook failed`), { stage: "script" });
             }
             return value;
         };
@@ -844,8 +868,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                         },
                     },
                     alertError: (text) => job.channel.notice({ kind: "alertError", payload: { message: text } }),
-                    endJob: (message) => {
-                        latch(new LuaJobFatalError(message));
+                    endJob: (message, failure) => {
+                        latch(markFailure(new LuaJobFatalError(message), { stage: "request", ...failure }));
                     },
                     tools,
                     toolCalls: {
@@ -865,7 +889,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                           const value = await replacer("replacerbeforeRequest", { messages: formated, model });
                           if (!Array.isArray(value)) {
                               throw latch(
-                                  new LuaJobFatalError("The replacerbeforeRequest answer is not a message list"),
+                                  markFailure(
+                                      new LuaJobFatalError("The replacerbeforeRequest answer is not a message list"),
+                                      { stage: "script" },
+                                  ),
                               );
                           }
                           return value as OpenAIChat[];
@@ -877,7 +904,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                       afterRequest: async (text: string, model: string) => {
                           const value = await replacer("replacerafterRequest", { text, model });
                           if (typeof value !== "string") {
-                              throw latch(new LuaJobFatalError("The replacerafterRequest answer is not a string"));
+                              throw latch(
+                                  markFailure(new LuaJobFatalError("The replacerafterRequest answer is not a string"), {
+                                      stage: "script",
+                                  }),
+                              );
                           }
                           return value;
                       },

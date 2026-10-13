@@ -30,6 +30,8 @@ const stubs = vi.hoisted(() => ({
     saved: vi.fn<() => string[]>(() => []),
     apply: vi.fn(),
     alertError: vi.fn(),
+    /** `alertJobError`: a job's error terminal with its failure fields (request history slice 6). */
+    alertJobError: vi.fn(),
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
     notices: vi.fn<() => number>(() => 0),
@@ -95,7 +97,7 @@ vi.mock("src/lang", () => ({
         },
     },
 }));
-vi.mock("../alert", () => ({ alertError: stubs.alertError }));
+vi.mock("../alert", () => ({ alertError: stubs.alertError, alertJobError: stubs.alertJobError }));
 vi.mock("../network/generationJobs", () => ({
     abortGenerationJob: (jobId: string) => stubs.abort(jobId),
     applyGenerationEvent: stubs.apply,
@@ -211,8 +213,10 @@ describe("followJobToEnd", () => {
         expect(follows()).toHaveLength(3);
         endWith(follows()[2], failed);
         expect(await end).toEqual(failed);
-        expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError).toHaveBeenCalledWith("boom");
+        // A job's error goes through `alertJobError` with its id and terminal (the alert's debug actions).
+        expect(stubs.alertJobError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
+        expect(stubs.alertError).not.toHaveBeenCalled();
         expect(stubs.release).not.toHaveBeenCalled();
     });
 
@@ -238,6 +242,7 @@ describe("followJobToEnd", () => {
         endWith(follows()[2], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
         await aborted;
         expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
     });
 
     it("gives up after the bounded number of attaches and releases the job", async () => {
@@ -253,7 +258,7 @@ describe("followJobToEnd", () => {
         expect(stubs.release).toHaveBeenCalledWith("j");
     });
 
-    it("leaves a job a restore or import ended (`maintenance`) to the restore watch: no alert when the data was replaced, its error once when nothing was", async () => {
+    it("leaves a job a restore or import ended (`maintenance`) to the restore watch: no alert when the data was replaced, its error once when nothing was, timed at the terminal's receipt", async () => {
         const maintenance: GenerationTerminalEvent = {
             type: "error",
             epoch: EPOCH,
@@ -274,19 +279,37 @@ describe("followJobToEnd", () => {
         expect(stubs.restored).toHaveBeenCalledTimes(1);
         // The watch is still reading: nothing is shown yet, and nothing once the data was replaced.
         expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
         answer(true);
         await flush();
         expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
 
-        stubs.restored.mockResolvedValueOnce(false);
-        const unchanged = commands.followJobToEnd("j2", ref);
-        await flush();
-        endWith(follows()[1], maintenance);
-        await unchanged;
-        await flush();
-        expect(stubs.restored).toHaveBeenCalledTimes(2);
-        expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError).toHaveBeenCalledWith("The server is under maintenance");
+        // Nothing replaced: the job's error, with the time the terminal arrived, not the time the
+        // restore watch (up to minutes) gave up.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try {
+            vi.setSystemTime(1_000_000);
+            let giveUp!: (replaced: boolean) => void;
+            stubs.restored.mockReturnValueOnce(
+                new Promise<boolean>((resolve) => {
+                    giveUp = resolve;
+                }),
+            );
+            const unchanged = commands.followJobToEnd("j2", ref);
+            await flush();
+            endWith(follows()[1], maintenance);
+            await unchanged;
+            vi.setSystemTime(1_120_000);
+            giveUp(false);
+            await flush();
+            expect(stubs.restored).toHaveBeenCalledTimes(2);
+            expect(stubs.alertJobError).toHaveBeenCalledTimes(1);
+            expect(stubs.alertJobError).toHaveBeenCalledWith("j2", maintenance, 1_000_000);
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -454,7 +477,7 @@ describe("runServerManualTrigger", () => {
         expect("triggerId" in body.context).toBe(false);
         endWith(follows()[0], failed);
         expect(await run).toBe("started");
-        expect(stubs.alertError).toHaveBeenCalledWith("boom");
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
     });
 
     it("reports `refused` without onStart for a group, a discarding or rejected flush, a chat gone meanwhile, an unsaved chat, or another owner's busy job", async () => {

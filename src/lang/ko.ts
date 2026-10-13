@@ -1649,6 +1649,8 @@ export const languageKorean = {
     noRequestLogs: "요청 로그가 없습니다.",
     requestHistoryServerTab: "서버 기록",
     requestHistoryThisTab: "이 탭",
+    copyDebugInfo: "디버그 정보 복사",
+    openInRequestHistory: "요청 기록에서 보기",
     requestHistoryThisChat: "이 채팅만",
     requestHistorySameJob: "작업",
     requestHistoryShowJob: "이 작업의 모든 시도 보기",

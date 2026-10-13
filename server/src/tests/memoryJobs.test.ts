@@ -764,6 +764,10 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
             const failing = await seedCharacter();
             const failed = await job("send", failing, { input: "Hello", userMessageId: "u1" });
             expect(failed.terminal).toMatchObject({ type: "error", message: expect.stringContaining("[HypaV2]") });
+            // The memory layer answers its failure as text: the error is the assembly's, naming no
+            // request (request history slice 6, settled at implementation).
+            expect((failed.terminal as any).stage).toBe("assembly");
+            expect("requestId" in failed.terminal!).toBe(false);
             expect(mains()).toHaveLength(0);
             expect((await readChat(failing)).data.hypaV2Data).toBeUndefined();
         },
@@ -778,6 +782,11 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
             state.mainStatus = 500;
             const { terminal } = await job("send", chaId, { input: "Hello Supa", userMessageId: "u1" });
             expect(terminal).toMatchObject({ type: "error", status: 500 });
+            // The main request's failure names the request stage and the request (slice 6).
+            expect(terminal).toMatchObject({
+                stage: "request",
+                requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+            });
             expect(summaries().length).toBeGreaterThan(0);
             // The failing main request is retried by the request layer; every attempt is after the write.
             expect(mains().length).toBeGreaterThanOrEqual(1);

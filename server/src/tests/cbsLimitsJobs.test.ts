@@ -269,12 +269,22 @@ async function job(
 }
 const terminals = (events: any[]) => events.filter((event) => event.type === "done" || event.type === "error");
 
-/** The send fails with the limit error naming `owner`, made no provider request, and wrote nothing after. */
-function expectLimitTerminal(result: { events: any[]; terminal: any }, owner: string, providerBefore: number) {
+/**
+ * The send fails with the limit error naming `owner`, made no provider request, and wrote nothing
+ * after; the error names `stage` (request history slice 6) and no request (none was admitted).
+ */
+function expectLimitTerminal(
+    result: { events: any[]; terminal: any },
+    owner: string,
+    providerBefore: number,
+    stage: "assembly" | "script",
+) {
     expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("error");
     const match = LIMIT.exec(result.terminal.message);
     expect(match, result.terminal.message).not.toBeNull();
     expect(match![1]).toBe(owner);
+    expect(result.terminal.stage, JSON.stringify(result.terminal)).toBe(stage);
+    expect("requestId" in result.terminal).toBe(false);
     expect(terminals(result.events)).toHaveLength(1);
     expect(bodies.length).toBe(providerBefore);
 }
@@ -359,7 +369,7 @@ describe("a send whose card text reaches the CBS limit", () => {
             const before = bodies.length;
             const started = Date.now();
             const failed = await job("send", chaId, { input: "hi there", userMessageId: "u1" });
-            expectLimitTerminal(failed, "Ann", before);
+            expectLimitTerminal(failed, "Ann", before, "assembly");
             expect(Date.now() - started).toBeLessThan(20_000);
             // The input stage's write stays (termination, not rollback); no reply was appended.
             expect(texts(await readChat(chaId))).toEqual(["user:hi there"]);
@@ -396,10 +406,10 @@ describe("a send whose card text reaches the CBS limit", () => {
             await patchProviders({ inlayErrorResponse: true });
             try {
                 const before = bodies.length;
-                expectLimitTerminal(await job("send", chaId), "Ann", before);
+                expectLimitTerminal(await job("send", chaId), "Ann", before, "assembly");
                 expect(texts(await readChat(chaId))).toEqual(["user:q"]);
-                expectLimitTerminal(await job("preview", chaId), "Ann", before);
-                expectLimitTerminal(await job("previewPrompt", chaId), "Ann", before);
+                expectLimitTerminal(await job("preview", chaId), "Ann", before, "assembly");
+                expectLimitTerminal(await job("previewPrompt", chaId), "Ann", before, "assembly");
                 expect(texts(await readChat(chaId))).toEqual(["user:q"]);
             } finally {
                 await patchProviders({ inlayErrorResponse: false });
@@ -417,13 +427,13 @@ describe("a send whose card text reaches the CBS limit", () => {
                 messages: [{ role: "user", data: "q", chatId: "u1" }],
             });
             const before = bodies.length;
-            expectLimitTerminal(await job("send", withLore), "Lora", before);
+            expectLimitTerminal(await job("send", withLore), "Lora", before, "assembly");
             expect(texts(await readChat(withLore))).toEqual(["user:q"]);
 
             const plain = await seedCharacter({ name: "Pat", messages: [{ role: "user", data: "q", chatId: "u1" }] });
             await patchPersonaPrompt(`I am ${STUCK}`);
             try {
-                expectLimitTerminal(await job("send", plain), "Pat", before);
+                expectLimitTerminal(await job("send", plain), "Pat", before, "assembly");
             } finally {
                 await patchPersonaPrompt("");
             }
@@ -443,7 +453,7 @@ describe("a send whose card text reaches the CBS limit", () => {
                 messages: [{ role: "user", data: "q", chatId: "u1" }],
             });
             const before = bodies.length;
-            expectLimitTerminal(await job("send", chaId), "Trig", before);
+            expectLimitTerminal(await job("send", chaId), "Trig", before, "script");
             const chat = await readChat(chaId);
             expect(chat.data.scriptstate).toEqual({ $first: "1" });
             expect(texts(chat)).toEqual(["user:q"]);
@@ -460,10 +470,10 @@ describe("a send whose card text reaches the CBS limit", () => {
                 messages: [{ role: "user", data: "q", chatId: "u1" }],
             });
             const before = bodies.length;
-            expectLimitTerminal(await job("send", chaId), "Req", before);
+            expectLimitTerminal(await job("send", chaId), "Req", before, "script");
             await patchProviders({ inlayErrorResponse: true });
             try {
-                expectLimitTerminal(await job("send", chaId), "Req", before);
+                expectLimitTerminal(await job("send", chaId), "Req", before, "script");
             } finally {
                 await patchProviders({ inlayErrorResponse: false });
             }
@@ -491,7 +501,7 @@ describe("a send whose card text reaches the CBS limit", () => {
                 messages: [{ role: "user", data: "q", chatId: "u1" }],
             });
             const before = bodies.length;
-            expectLimitTerminal(await job("send", chaId), "Lua", before);
+            expectLimitTerminal(await job("send", chaId), "Lua", before, "script");
             const chat = await readChat(chaId);
             expect(chat.data.scriptstate ?? {}).toEqual({});
             expect(texts(chat)).toEqual(["user:q"]);
@@ -510,7 +520,7 @@ describe("a send whose card text reaches the CBS limit", () => {
                 messages: [{ role: "user", data: "q", chatId: "u1" }],
             });
             const before = bodies.length;
-            expectLimitTerminal(await job("send", chaId), "Rex", before);
+            expectLimitTerminal(await job("send", chaId), "Rex", before, "script");
             expect(texts(await readChat(chaId))).toEqual(["user:q"]);
             // The worker is reusable: a send of a character without the script answers.
             const plain = await seedCharacter({ name: "Pat", messages: [{ role: "user", data: "q", chatId: "u1" }] });
@@ -538,6 +548,7 @@ describe("a send whose card text reaches the CBS limit", () => {
             const message = (result.terminal as { message: string }).message;
             expect(message).toMatch(LIMIT);
             expect(LIMIT.exec(message)![1]).toBe("Grp");
+            expect((result.terminal as any).stage).toBe("assembly");
             expect(terminals(result.events)).toHaveLength(1);
             // Bob's reply was requested and stored; Cid's card ended the job before its request.
             expect(bodies.length).toBe(before + 1);
@@ -569,7 +580,7 @@ describe("a command job whose text reaches the CBS limit", () => {
             });
             const before = bodies.length;
             const failed = await job("command", chaId, {}, { type: "button", data: "go" });
-            expectLimitTerminal(failed, "Btn", before);
+            expectLimitTerminal(failed, "Btn", before, "script");
             const chat = await readChat(chaId);
             expect(chat.data.scriptstate ?? {}).toEqual({});
             expect(texts(chat)).toEqual(["user:q"]);
@@ -606,7 +617,7 @@ describe("a command job whose text reaches the CBS limit", () => {
             });
             const before = bodies.length;
             const failed = await job("command", chaId, {}, { type: "manual", name: "go" });
-            expectLimitTerminal(failed, "Man", before);
+            expectLimitTerminal(failed, "Man", before, "script");
             const chat = await readChat(chaId);
             // The variable writes are immediate (kept up to the failure); the message of the copy is not applied.
             expect(chat.data.scriptstate).toEqual({ $first: "1" });

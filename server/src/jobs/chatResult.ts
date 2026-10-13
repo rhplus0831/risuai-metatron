@@ -97,7 +97,9 @@ export function applyTriggerChat(
                 error instanceof JobWriteConflictError &&
                 error.conflicts.some((conflict) => conflict.kind === "chat" && conflict.reason === "generating")
             ) {
-                throw new GenerationRunnerError(409, "The trigger changed a message that is being generated");
+                throw new GenerationRunnerError(409, "The trigger changed a message that is being generated", {
+                    stage: "persist",
+                });
             }
             throw error;
         }

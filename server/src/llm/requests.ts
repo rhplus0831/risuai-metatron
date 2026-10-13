@@ -22,12 +22,14 @@ import {
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { JobChannel } from "../jobs/channel.ts";
+import { markFailure } from "../jobs/generationJobs.ts";
 import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
 import type { TokenCounter, TokenCountScope } from "../prompt/tokens.ts";
 import type { ClaudeObserver } from "./claudeObserver.ts";
 import type { PluginProviderAnswer, RequestContext } from "./context.ts";
 import { messages } from "./messages.ts";
 import { collectSecrets, createRedactor, redactHeaderText, type Redactor } from "./redact.ts";
+import { providerCodeOf } from "./providerCode.ts";
 import { requestChatDataMain, type requestDataResponse } from "./request.ts";
 import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./settings.ts";
 import { createTransport, type ExchangeDetail, type FetchLogEntry } from "./transport.ts";
@@ -84,8 +86,9 @@ export type RequestModel = {
  * `prompt` once (the `formated` the layer received, as JSON text, redacted), `describe` once its model
  * is resolved, `exchange` for every transport exchange (`TransportOptions.record`, redacted at the
  * call; also after `finish`, for a body the request ended while it was read), and `finish`'s
- * `detail.error` (a redacted text, for an end other than a success). Without `exchange`, the
- * transport captures nothing.
+ * `detail.error` (a redacted text, for an end other than a success) and `detail.providerCode` (an
+ * `error` end's provider error code, read from its last exchange: `providerCodeOf`). Without
+ * `exchange`, the transport captures nothing, and no provider code is read.
  */
 export type RequestObserver = {
     begin(request: RequestBegin): void;
@@ -96,7 +99,7 @@ export type RequestObserver = {
     finish(
         requestId: string,
         end: { status: RequestEndStatus; completedAt: number },
-        detail?: { error?: string },
+        detail?: { error?: string; providerCode?: string | null },
     ): void;
 };
 
@@ -147,6 +150,18 @@ export type StartResult =
     | { ok: false; status: 400 | 404 | 409 | 429 | 503; error: string; problems?: ChatBindingProblem[] };
 
 export type AnswerResult = "accepted" | "ignored" | "missing";
+
+/** A job's streamed answer failed while it was read (`runInJob`): the request and its provider code. */
+export class JobRequestError extends Error {
+    readonly requestId: string;
+    readonly providerCode: string | null;
+    constructor(message: string, requestId: string, providerCode: string | null) {
+        super(message);
+        this.name = "JobRequestError";
+        this.requestId = requestId;
+        this.providerCode = providerCode;
+    }
+}
 
 class CallbackFailedError extends Error {
     constructor(message: string) {
@@ -359,8 +374,11 @@ export type JobRequestSpec = {
     messageId?: string | null;
     /** A redacted `alertError` text for the tab. */
     alertError: (text: string) => void;
-    /** Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. */
-    endJob: (message: string) => void;
+    /**
+     * Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. `failure`
+     * names the request that ended it, for the job's error event.
+     */
+    endJob: (message: string, failure?: { requestId: string }) => void;
     /**
      * The job's MCP tools (slice 12): what the request offers, the job's budget (`charge` is false
      * once the `limit` calls are spent, which ends the job), and a tool's call. A tool's own failure
@@ -422,6 +440,12 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         /** The request's end status and its (redacted) error text; the first one set wins. */
         settle(status: RequestEndStatus, error?: string): void;
         /**
+         * The provider error code of the last exchange recorded so far (`providerCodeOf`), or null;
+         * none without an observer that takes exchanges. Read once the captures are flushed (after
+         * `finish`) to see a streamed body's end.
+         */
+        providerCode(): string | null;
+        /**
          * Reports the end once, after flushing the pending captures: the settled status, else
          * `fallback`, with the settled error, else (for an end other than a success) `fallbackError`.
          */
@@ -446,6 +470,16 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         let error: string | undefined;
         let finished = false;
         const captures = new Set<() => void>();
+        /** The last exchange's answer (one reference, replaced by each exchange), and its parsed code. */
+        let lastResponse: string | null = null;
+        let parsedCode: { code: string | null } | null = null;
+        const providerCode = () => {
+            if (lastResponse === null) {
+                return null;
+            }
+            parsedCode ??= { code: providerCodeOf(lastResponse) };
+            return parsedCode.code;
+        };
         report((o) => o.begin({ ...request, startedAt: now() }));
         const firstByte = (at?: number) => {
             if (firstByteSeen || finished) {
@@ -460,7 +494,13 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             hook: observer ? { mark: firstByte, now } : undefined,
             firstByte,
             exchange: observer?.exchange
-                ? (entry, detail) => report((o) => o.exchange?.(request.requestId, entry, detail))
+                ? (entry, detail) => {
+                      if (!finished) {
+                          lastResponse = typeof entry.response === "string" ? entry.response : null;
+                          parsedCode = null;
+                      }
+                      report((o) => o.exchange?.(request.requestId, entry, detail));
+                  }
                 : undefined,
             captures,
             prompt(formated, redactor) {
@@ -500,8 +540,21 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 finished = true;
                 const end = { status: status ?? fallback, completedAt: now() };
                 const text = status !== null ? error : end.status === "success" ? undefined : fallbackError;
-                report((o) => o.finish(request.requestId, end, text !== undefined ? { error: text } : undefined));
+                const code = end.status === "error" ? providerCode() : null;
+                report((o) =>
+                    o.finish(
+                        request.requestId,
+                        end,
+                        text !== undefined || code !== null
+                            ? {
+                                  ...(text !== undefined ? { error: text } : {}),
+                                  ...(code !== null ? { providerCode: code } : {}),
+                              }
+                            : undefined,
+                    ),
+                );
             },
+            providerCode,
         };
     }
 
@@ -693,7 +746,12 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         });
         draining.add(drained);
         let finalized = false;
-        const onJobAbort = () => controller.abort(spec.signal.reason ?? new Error("The job ended"));
+        const onJobAbort = () => {
+            // The job ended while this request ran (a fatal failure of its own tool, interceptor, or
+            // CBS, latched before it got here): the failure names it, unless it named a request already.
+            markFailure(spec.signal.reason, { requestId: id });
+            controller.abort(spec.signal.reason ?? new Error("The job ended"));
+        };
         spec.signal.addEventListener("abort", onJobAbort, { once: true });
         const finalize = () => {
             if (finalized) {
@@ -722,7 +780,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         const endWith = (message: string, endsJob: boolean) => {
             const error = fatal(message);
             if (endsJob) {
-                spec.endJob(redactor.text(message));
+                spec.endJob(redactor.text(message), { requestId: id });
             }
             return error;
         };
@@ -958,26 +1016,28 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             return { type: "fail", result: redactor.text(errorText(reason)), noRetry: true };
         };
+        /** `failed`, then the cleanup; the provider code is read once the captures are flushed. */
+        const failedAndFinalized = (error: unknown): requestDataResponse => {
+            let result: requestDataResponse;
+            try {
+                // Classified before the cleanup, whose own abort would otherwise become the reason.
+                result = failed(error);
+            } finally {
+                finalize();
+            }
+            return { ...result, request: { id, providerCode: tracker.providerCode() } };
+        };
         let response: requestDataResponse;
         try {
             response = await requestChatDataMain({ ...spec.arg, tools: spec.tools.descriptors }, spec.mode, ctx);
         } catch (error) {
-            // Classified before the cleanup, whose own abort would otherwise become the reason.
-            try {
-                return failed(error);
-            } finally {
-                finalize();
-            }
+            return failedAndFinalized(error);
         }
         if (controller.signal.aborted) {
             if (response.type === "streaming") {
                 await response.result.cancel(controller.signal.reason).catch(() => {});
             }
-            try {
-                return failed(controller.signal.reason);
-            } finally {
-                finalize();
-            }
+            return failedAndFinalized(controller.signal.reason);
         }
         if (response.type !== "streaming") {
             if (response.type === "fail") {
@@ -986,7 +1046,12 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 tracker.settle("success");
             }
             finalize();
-            return response.type === "fail" || spec.arg.previewBody ? redactResponse(response, redactor) : response;
+            const out =
+                response.type === "fail" || spec.arg.previewBody ? redactResponse(response, redactor) : response;
+            return {
+                ...out,
+                request: { id, providerCode: response.type === "fail" ? tracker.providerCode() : null },
+            };
         }
         const reader = response.result.getReader();
         let output!: ReadableStreamDefaultController<StreamResponseChunk>;
@@ -1034,8 +1099,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                         }
                         const reason = controller.signal.aborted ? controller.signal.reason : error;
                         const text = redactor.text(errorText(reason));
-                        end(controller.signal.aborted ? endStatus(reason) : "error", text);
-                        out.error(new Error(text));
+                        const status = controller.signal.aborted ? endStatus(reason) : "error";
+                        end(status, text);
+                        // After `end`: the captures are flushed, so the body's error event is seen.
+                        out.error(new JobRequestError(text, id, status === "error" ? tracker.providerCode() : null));
                     }
                 },
                 cancel(reason) {
@@ -1045,7 +1112,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             },
             { highWaterMark: 0 },
         );
-        return { ...response, result: stream };
+        return { ...response, result: stream, request: { id, providerCode: null } };
     }
 
     /**

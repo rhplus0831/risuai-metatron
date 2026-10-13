@@ -2,12 +2,13 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { FetchLogEntry } from "../llm/transport.ts";
-import type {
-    RequestHistoryFieldCut,
-    RequestHistoryRecord,
-    RequestHistoryStatus,
-    RequestHistorySummary,
-    RequestHistoryTruncation,
+import {
+    isProviderCode,
+    type RequestHistoryFieldCut,
+    type RequestHistoryRecord,
+    type RequestHistoryStatus,
+    type RequestHistorySummary,
+    type RequestHistoryTruncation,
 } from "../../../shared/requestHistory.ts";
 
 export type {
@@ -85,6 +86,7 @@ export type RequestHistoryOutcome = {
     status: RequestHistoryEndStatus;
     completedAt?: number;
     httpStatus?: number | null;
+    /** The provider's error code; a value that is not one (`isProviderCode`) is stored as null. */
     providerCode?: string | null;
     /** The redacted error message. */
     error?: string | null;
@@ -836,7 +838,11 @@ export function createRequestHistory(options: {
                         return null;
                     }
                     const truncation = parseTruncation(row.truncation);
-                    const providerCode = short(outcome.providerCode, "providerCode", truncation);
+                    const providerCode = short(
+                        isProviderCode(outcome.providerCode) ? outcome.providerCode : null,
+                        "providerCode",
+                        truncation,
+                    );
                     let error: string | null = null;
                     if (outcome.error !== undefined && outcome.error !== null) {
                         const bounded = bound(asText(outcome.error), REQUEST_HISTORY_BOUNDS.error);

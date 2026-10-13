@@ -33,7 +33,8 @@
     let loading = $state(false);
     let loadError: string | null = $state(null);
     let thisChat = $state(false);
-    let jobId: string | null = $state(null);
+    /** The job filter, owned by the popup (it opens filtered to a failed job, and keeps it across tabs). */
+    let { jobId = $bindable(null) }: { jobId?: string | null } = $props();
     let expanded: Set<string> = $state(new Set());
     /**
      * The detail of each expanded row only: a row's detail is read again each time it is expanded
@@ -129,7 +130,7 @@
                 return;
             }
         }
-        alertRequestLogs();
+        alertRequestLogs({ jobId });
     }
 
     function chatLabel(item: RequestHistorySummary): string {
