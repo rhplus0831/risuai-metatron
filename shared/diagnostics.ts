@@ -34,6 +34,9 @@ export const DIAGNOSTIC_EVENT_KINDS = [
 /** `GET`: the server's ring and state (`server/src/routes/diagnostics.ts`). */
 export const DIAGNOSTICS_PATH = "/api/diagnostics";
 
+/** `POST`: a report the Diagnostics panel saves to the folder's `reports/` (`shared/diagnosticsReport.ts`). */
+export const DIAGNOSTICS_REPORT_PATH = "/api/diagnostics/report";
+
 export type DiagnosticEventKind = (typeof DIAGNOSTIC_EVENT_KINDS)[number];
 
 export type DiagnosticValue = string | number | boolean | string[];
@@ -245,6 +248,7 @@ export const ROUTE_TEMPLATES = [
     "/api/request-history",
     "/api/request-history/:id",
     "/api/diagnostics",
+    "/api/diagnostics/report",
     "/api/test_auth",
     "/api/login",
     "/api/crypto",
@@ -460,3 +464,75 @@ export function isDiagnosticErrorEvent(event: DiagnosticEvent): boolean {
             return false;
     }
 }
+
+/** The kinds and runtime origins the browser's collector writes; the server writes the others. */
+const BROWSER_KINDS: ReadonlySet<string> = new Set([
+    "http",
+    "runtime",
+    "jobLink",
+    "feed",
+    "sync",
+    "serviceWorker",
+    "page",
+]);
+const BROWSER_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
+const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle"]);
+
+/**
+ * The browser's projection: `projectDiagnosticEvent`, then only the browser's kinds and runtime
+ * origins, without a server-only field (a `runtime` event's `jobId`). The collector records and
+ * restores with it; the report reads the browser's events with it.
+ */
+export function projectBrowserEvent(input: unknown): DiagnosticEvent | null {
+    const event = projectDiagnosticEvent(input);
+    if (!event || !BROWSER_KINDS.has(event.kind)) {
+        return null;
+    }
+    if (event.kind === "runtime") {
+        if (!BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
+            return null;
+        }
+        delete event.jobId;
+    }
+    return event;
+}
+
+/** The server's projection: `projectDiagnosticEvent`, then only the server's kinds and runtime origins. */
+export function projectServerEvent(input: unknown): DiagnosticEvent | null {
+    const event = projectDiagnosticEvent(input);
+    if (!event || !SERVER_KINDS.has(event.kind)) {
+        return null;
+    }
+    if (event.kind === "runtime" && BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
+        return null;
+    }
+    return event;
+}
+
+/**
+ * `state.json`'s fields, and the `state` of `GET /api/diagnostics` (`server/src/diagnostics/journal.ts`
+ * builds it; the report reads it with `projectDiagnosticsState`). A section is null when its source
+ * is missing or failed, a leaf when its value was not what it should be.
+ */
+export type DiagnosticsState = {
+    version: 1;
+    writtenAt: string;
+    app: { version: string | null };
+    node: string;
+    platform: string;
+    arch: string;
+    startedAt: string;
+    uptimeSec: number;
+    settings: { requestHistoryContent: boolean | null; requestHistoryLimit: number | null } | null;
+    history: { rows: number | null; bytes: number | null } | null;
+    journal: { eventBytes: number; writeFailures: number };
+    workers: {
+        workers: number | null;
+        busy: number | null;
+        queued: number | null;
+        spawned: number | null;
+        terminated: number | null;
+    } | null;
+    jobs: { live: number | null } | null;
+    recentJobFailures: DiagnosticEvent[];
+};

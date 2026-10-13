@@ -22,6 +22,12 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createRequestHistory } from "../data/requestHistory.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
+import {
+    buildDiagnosticReport,
+    canonicalDiagnosticReport,
+    MAX_DIAGNOSTIC_REPORT_BYTES,
+    REPORT_FILE_PATTERN,
+} from "../../../shared/diagnosticsReport.ts";
 import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "../diagnostics/journal.ts";
 import { type DiagnosticsRecorder, errorFields, logEvent, recordSafely } from "../diagnostics/log.ts";
 import { createGenerationJobs, GenerationRunnerError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
@@ -42,12 +48,23 @@ import { createResourceTestClient, createTestServer, sleep, TEST_INDEX_HTML, wai
 // (a broken folder never fails a job), the `request` events from the history observer, the
 // `runtime` events from `logEvent`, the lifecycle events (boot, shutdown, maintenance, restore),
 // and the final state at dispose while the stores are open. The crash hooks of `main.ts` run in a
-// fresh process in `diagnosticsCrash.test.ts`.
+// fresh process in `diagnosticsCrash.test.ts`. Slice 9: `saveReport` and `reports/` (the name, the
+// modes, the temp file and rename with a taken name drawn again and a temp name never created never
+// cleaned up, the newest 50 kept by name with the one just saved always retained and other entries
+// left alone, at creation too, a symlinked or non-directory `reports/` refused, a failed prune
+// leaving the save in place), and `POST /api/diagnostics/report` (the canonical check before the
+// write, the body limit by declared and by actual bytes, the shutdown recheck after the body read,
+// a failed save, `no-store` on every answer, the text never logged).
 
-const { fsOverrides } = vi.hoisted(() => ({
-    fsOverrides: { writeSync: null as null | ((fd: number, buffer: Buffer, offset: number, length: number) => number) },
+const { fsOverrides, randomQueue } = vi.hoisted(() => ({
+    fsOverrides: {
+        writeSync: null as null | ((fd: number, buffer: Buffer, offset: number, length: number) => number),
+        unlinkSync: null as null | ((file: string) => void),
+    },
+    /** Hex values `randomBytes` answers next (the temp and report names), then the real ones. */
+    randomQueue: [] as string[],
 }));
-// `node:fs` as it is, except a `writeSync` a test may replace for one journal operation.
+// `node:fs` as it is, except a `writeSync` or an `unlinkSync` a test may replace for one journal operation.
 vi.mock("node:fs", async (importOriginal) => {
     const actual = await importOriginal<typeof import("node:fs")>();
     return {
@@ -56,6 +73,18 @@ vi.mock("node:fs", async (importOriginal) => {
             fsOverrides.writeSync
                 ? fsOverrides.writeSync(fd, buffer, offset, length)
                 : actual.writeSync(fd, buffer, offset, length),
+        unlinkSync: (file: string) => (fsOverrides.unlinkSync ? fsOverrides.unlinkSync(file) : actual.unlinkSync(file)),
+    };
+});
+// `node:crypto` as it is, except `randomBytes` answering the queued values first (the journal's names).
+vi.mock("node:crypto", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:crypto")>();
+    return {
+        ...actual,
+        randomBytes: (size: number) => {
+            const next = randomQueue.shift();
+            return next === undefined ? actual.randomBytes(size) : Buffer.from(next, "hex");
+        },
     };
 });
 /** The real `node:fs`, outside the mock. */
@@ -89,6 +118,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
     fsOverrides.writeSync = null;
+    fsOverrides.unlinkSync = null;
+    randomQueue.length = 0;
     vi.useRealTimers();
     for (const cleanup of cleanups.splice(0).reverse()) {
         await cleanup();
@@ -445,8 +476,8 @@ describe("the journal's refusals and failures", () => {
         expect(journal.stats().writeFailures).toBe(2);
         expect(() => journal.writeState()).not.toThrow();
         expect(journal.recent()).toHaveLength(1);
-        // The state's open and the cleanup of its temp name (not an absence) are two failures.
-        expect(journal.stats().writeFailures).toBe(4);
+        // The state's open is one failure; a temp name the open never created is not cleaned up (not a second one).
+        expect(journal.stats().writeFailures).toBe(3);
         expect(readFileSync(asFile, "utf8")).toBe("a file");
         expect(warnings()).toHaveLength(1);
         expect(["EEXIST", "ENOTDIR"]).toContain(warnedCodes()[0]);
@@ -1198,6 +1229,431 @@ describe("the read route and the route table (slice 8)", () => {
             "/sw/share/*",
             "?",
         ]);
+    });
+});
+
+/** A report-named regular file in `reports/`: the stamp of `at` and `hex` (the save of that clock). */
+const reportName = (at: number, hex: string) => `${new Date(at).toISOString().replace(/[-:.]/g, "")}-${hex}.txt`;
+const reportInput = (server: unknown) => ({
+    meta: {
+        version: "2026.8.250",
+        browser: "Chrome",
+        os: "Linux",
+        online: true,
+        viewport: { width: 1280, height: 720 },
+        exportedAt: DAY_ONE,
+    },
+    server: server as { state: unknown; events: unknown } | null,
+    browser: [{ at: DAY_ONE - 1000, kind: "page", phase: "boot" }] as unknown[],
+});
+/** The report of a journal's own state and ring: what the panel would build from `GET /api/diagnostics`. */
+const reportOf = (journal: ReturnType<typeof createDiagnosticsJournal>) =>
+    buildDiagnosticReport(reportInput({ state: journal.state(), events: journal.recent() }));
+const PRIVATE = "Private Character said hello";
+
+describe("the report journal (slice 9)", () => {
+    it("saves a report as `reports/<UTC stamp>-<8 hex>.txt` (the folder 0750, the file 0640), whole, with no temp file left, and keeps the state's shape", () => {
+        const { dir, journal } = openJournal();
+        const reports = path.join(dir, "reports");
+        expect(existsSync(reports)).toBe(false);
+        const text = reportOf(journal);
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+        const saved = journal.saveReport(text);
+        expect(saved).toEqual({ ok: true, name: expect.stringMatching(REPORT_FILE_PATTERN) });
+        const name = (saved as { name: string }).name;
+        expect(name.startsWith(reportName(DAY_ONE, "").slice(0, -4))).toBe(true);
+        expect(readdirSync(reports)).toEqual([name]);
+        expect(readFileSync(path.join(reports, name), "utf8")).toBe(text);
+        if (posix) {
+            expect(mode(reports)).toBe(0o750);
+            expect(mode(path.join(reports, name))).toBe(0o640);
+        }
+        const again = journal.saveReport(text) as { ok: true; name: string };
+        expect(again.ok).toBe(true);
+        expect(again.name).not.toBe(name);
+        expect(readdirSync(reports).sort()).toEqual([name, again.name].sort());
+        expect(journal.stats().writeFailures).toBe(0);
+        expect(Object.keys(journal.state())).not.toContain("reports");
+        expect(readdirSync(dir).sort()).toEqual(["events", "reports"]);
+    });
+
+    it("refuses a non-string or a text over 1 MiB without touching the folder or counting a write failure", () => {
+        const { dir, journal } = openJournal();
+        expect(journal.saveReport(undefined as unknown as string)).toEqual({ ok: false });
+        expect(journal.saveReport("x".repeat(MAX_DIAGNOSTIC_REPORT_BYTES + 1))).toEqual({ ok: false });
+        // Under the limit in characters, over it in bytes.
+        expect(journal.saveReport("é".repeat(MAX_DIAGNOSTIC_REPORT_BYTES / 2 + 1))).toEqual({ ok: false });
+        expect(existsSync(path.join(dir, "reports"))).toBe(false);
+        expect(journal.stats().writeFailures).toBe(0);
+        expect(journal.saveReport("x".repeat(MAX_DIAGNOSTIC_REPORT_BYTES))).toMatchObject({ ok: true });
+    });
+
+    it("keeps the newest 50 reports by name after a save, never the one just saved (a clock set back), and leaves every other entry alone", () => {
+        const { dir, journal } = openJournal();
+        const reports = path.join(dir, "reports");
+        mkdirSync(reports);
+        const older = Array.from({ length: 50 }, (_, i) =>
+            reportName(DAY_ONE - (100 - i) * 60_000, "0000000" + i.toString(16).slice(-1)),
+        );
+        for (const name of older) {
+            writeFileSync(path.join(reports, name), "old");
+        }
+        const noise = [
+            "notes.txt",
+            ".report-deadbeef.tmp",
+            reportName(DAY_ONE - 200 * 60_000, "aaaaaaaa").replace(".txt", ".log"),
+        ];
+        for (const name of noise) {
+            writeFileSync(path.join(reports, name), "mine");
+        }
+        const dirLike = reportName(DAY_ONE - 300 * 60_000, "bbbbbbbb");
+        mkdirSync(path.join(reports, dirLike));
+        const linkLike = reportName(DAY_ONE - 400 * 60_000, "cccccccc");
+        symlinkSync(path.join(reports, older[49]), path.join(reports, linkLike));
+        const fifoLike = reportName(DAY_ONE - 500 * 60_000, "dddddddd");
+        if (posix) {
+            execFileSync("mkfifo", [path.join(reports, fifoLike)]);
+        }
+        const untouched = () => [...noise, dirLike, linkLike, ...(posix ? [fifoLike] : [])];
+        const regular = () =>
+            readdirSync(reports, { withFileTypes: true })
+                .filter((entry) => entry.isFile() && REPORT_FILE_PATTERN.test(entry.name))
+                .map((entry) => entry.name)
+                .sort();
+
+        const first = journal.saveReport(reportOf(journal)) as { ok: true; name: string };
+        expect(first.ok).toBe(true);
+        expect(regular()).toEqual([...older.slice(1), first.name]);
+        for (const name of untouched()) {
+            expect(existsSync(path.join(reports, name)) || lstatSync(path.join(reports, name)).isSymbolicLink()).toBe(
+                true,
+            );
+        }
+        expect(readFileSync(path.join(reports, "notes.txt"), "utf8")).toBe("mine");
+        expect(readFileSync(path.join(reports, older[49]), "utf8")).toBe("old");
+
+        // The clock set back: the new report's name sorts before every other, and it is the one kept.
+        clock = DAY_ONE - 1000 * 60_000;
+        const early = journal.saveReport(reportOf(journal)) as { ok: true; name: string };
+        expect(early.ok).toBe(true);
+        expect(readFileSync(path.join(reports, early.name), "utf8")).toBe(reportOf(journal));
+        expect(regular()).toEqual([early.name, ...older.slice(2), first.name]);
+        expect(journal.stats().writeFailures).toBe(0);
+        for (const name of untouched()) {
+            expect(lstatSync(path.join(reports, name))).toBeTruthy();
+        }
+    });
+
+    it("prunes `reports/` at creation to the newest 50 regular report files, leaving other entries alone, and makes no `reports/` when there is none", () => {
+        const root = tempDir();
+        const dir = path.join(root, "diag");
+        const reports = path.join(dir, "reports");
+        mkdirSync(reports, { recursive: true });
+        const names = Array.from({ length: 55 }, (_, i) => reportName(DAY_ONE + i * 1000, "00000000"));
+        for (const name of names) {
+            writeFileSync(path.join(reports, name), "old");
+        }
+        writeFileSync(path.join(reports, "keep.txt"), "mine");
+        const link = reportName(DAY_ONE - 1000, "ffffffff");
+        symlinkSync(path.join(reports, "keep.txt"), path.join(reports, link));
+        const journal = createDiagnosticsJournal({ dir, now: () => clock });
+        cleanups.push(() => journal.close());
+        expect(readdirSync(reports).sort()).toEqual([...names.slice(5), "keep.txt", link].sort());
+        expect(readFileSync(path.join(reports, "keep.txt"), "utf8")).toBe("mine");
+        expect(journal.stats().writeFailures).toBe(0);
+
+        const fresh = openJournal();
+        expect(readdirSync(fresh.dir)).toEqual(["events"]);
+        expect(fresh.journal.stats().writeFailures).toBe(0);
+    });
+
+    it("refuses a symlinked `reports/` or a regular file in its place: nothing is written or pruned through it, the failure counted and warned once with its code", () => {
+        const { root, dir, journal } = openJournal();
+        const elsewhere = path.join(root, "elsewhere");
+        mkdirSync(elsewhere);
+        for (let i = 0; i < 60; i++) {
+            writeFileSync(path.join(elsewhere, reportName(DAY_ONE + i * 1000, "00000000")), "theirs");
+        }
+        symlinkSync(elsewhere, path.join(dir, "reports"), "dir");
+        expect(journal.saveReport(reportOf(journal))).toEqual({ ok: false });
+        expect(journal.stats().writeFailures).toBe(1);
+        expect(readdirSync(elsewhere)).toHaveLength(60);
+        expect(lstatSync(path.join(dir, "reports")).isSymbolicLink()).toBe(true);
+        expect(warnings()).toEqual([[WARNING, "ESYMLINK"]]);
+        // At creation too (the startup prune), and a regular file in its place.
+        const linked = createDiagnosticsJournal({ dir, now: () => clock });
+        cleanups.push(() => linked.close());
+        expect(linked.stats().writeFailures).toBe(1);
+        expect(readdirSync(elsewhere)).toHaveLength(60);
+
+        const asFile = openJournal();
+        writeFileSync(path.join(asFile.dir, "reports"), "not a directory");
+        expect(asFile.journal.saveReport(reportOf(asFile.journal))).toEqual({ ok: false });
+        expect(asFile.journal.stats().writeFailures).toBe(1);
+        expect(readFileSync(path.join(asFile.dir, "reports"), "utf8")).toBe("not a directory");
+        // `state.json` is still written beside it.
+        asFile.journal.writeState();
+        expect(readState(asFile.dir)).toMatchObject({ journal: { writeFailures: 1 } });
+    });
+
+    it("never deletes an entry it did not create: a temp name already taken fails the write (one counted failure), the entry kept as it was; for `state.json` too", () => {
+        const { dir, journal } = openJournal();
+        const reports = path.join(dir, "reports");
+        mkdirSync(reports);
+        writeFileSync(path.join(reports, ".report-0badf00d.tmp"), "theirs");
+        randomQueue.push("01234567", "0badf00d");
+        expect(journal.saveReport(reportOf(journal))).toEqual({ ok: false });
+        expect(randomQueue).toEqual([]);
+        expect(readdirSync(reports)).toEqual([".report-0badf00d.tmp"]);
+        expect(readFileSync(path.join(reports, ".report-0badf00d.tmp"), "utf8")).toBe("theirs");
+        expect(journal.stats().writeFailures).toBe(1);
+        expect(warnings()).toEqual([[WARNING, "EEXIST"]]);
+
+        writeFileSync(path.join(dir, ".state-0badf00d.tmp"), "theirs");
+        randomQueue.push("0badf00d");
+        journal.writeState();
+        expect(readFileSync(path.join(dir, ".state-0badf00d.tmp"), "utf8")).toBe("theirs");
+        expect(existsSync(path.join(dir, "state.json"))).toBe(false);
+        expect(journal.stats().writeFailures).toBe(2);
+        // A name that is free works, and the stray temp files stay.
+        journal.writeState();
+        expect(readState(dir)).toMatchObject({ journal: { writeFailures: 2 } });
+        expect(readdirSync(dir).sort()).toEqual([".state-0badf00d.tmp", "events", "reports", "state.json"]);
+    });
+
+    it("draws a report name again when it is taken (a symlink there too), up to three times, then counts one `EEXIST` failure; nothing taken is replaced", () => {
+        const { dir, journal } = openJournal();
+        const reports = path.join(dir, "reports");
+        mkdirSync(reports);
+        const taken = ["aaaaaaaa", "bbbbbbbb", "cccccccc"].map((hex) => reportName(DAY_ONE, hex));
+        writeFileSync(path.join(reports, taken[0]), "theirs");
+        symlinkSync(path.join(dir, "events"), path.join(reports, taken[1]));
+        randomQueue.push("aaaaaaaa", "bbbbbbbb", "cccccccc");
+        const text = reportOf(journal);
+        expect(journal.saveReport(text)).toEqual({ ok: true, name: taken[2] });
+        expect(readFileSync(path.join(reports, taken[2]), "utf8")).toBe(text);
+        expect(readFileSync(path.join(reports, taken[0]), "utf8")).toBe("theirs");
+        expect(lstatSync(path.join(reports, taken[1])).isSymbolicLink()).toBe(true);
+        expect(journal.stats().writeFailures).toBe(0);
+
+        randomQueue.push("aaaaaaaa", "bbbbbbbb", "cccccccc");
+        expect(journal.saveReport(text)).toEqual({ ok: false });
+        expect(randomQueue).toEqual([]);
+        expect(journal.stats().writeFailures).toBe(1);
+        expect(warnings()).toEqual([[WARNING, "EEXIST"]]);
+        expect(readdirSync(reports).sort()).toEqual([...taken].sort());
+        expect(readFileSync(path.join(reports, taken[2]), "utf8")).toBe(text);
+        expect(readFileSync(path.join(reports, taken[0]), "utf8")).toBe("theirs");
+    });
+
+    it("keeps a save whose prune failed (the failure counted) and prunes the excess at the next save", () => {
+        const { dir, journal } = openJournal();
+        const reports = path.join(dir, "reports");
+        mkdirSync(reports);
+        const older = Array.from({ length: 50 }, (_, i) => reportName(DAY_ONE - (100 - i) * 60_000, "00000000"));
+        for (const name of older) {
+            writeFileSync(path.join(reports, name), "old");
+        }
+        fsOverrides.unlinkSync = () => {
+            throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" });
+        };
+        const text = reportOf(journal);
+        const saved = journal.saveReport(text) as { ok: true; name: string };
+        fsOverrides.unlinkSync = null;
+        expect(saved.ok).toBe(true);
+        expect(readFileSync(path.join(reports, saved.name), "utf8")).toBe(text);
+        expect(readdirSync(reports)).toHaveLength(51);
+        expect(journal.stats().writeFailures).toBe(1);
+        expect(warnings()).toEqual([[WARNING, "EPERM"]]);
+        const next = journal.saveReport(text) as { ok: true; name: string };
+        expect(next.ok).toBe(true);
+        // The two saves share a stamp (the test clock): their order is the random suffix's.
+        expect(readdirSync(reports).sort()).toEqual([...older.slice(2), saved.name, next.name].sort());
+        expect(journal.stats().writeFailures).toBe(1);
+    });
+});
+
+describe("the report route (slice 9)", () => {
+    const post = (
+        s: Awaited<ReturnType<typeof createResourceTestClient>>,
+        body: RequestInit["body"],
+        init: RequestInit = {},
+    ) =>
+        s.request("/api/diagnostics/report", {
+            method: "POST",
+            headers: { "content-type": "text/plain; charset=utf-8", ...(init.headers as Record<string, string>) },
+            ...init,
+            body,
+        });
+    /** The report the panel would build from the server's own `GET /api/diagnostics`. */
+    const reportFrom = async (s: Awaited<ReturnType<typeof createResourceTestClient>>) => {
+        const res = await s.request("/api/diagnostics");
+        expect(res.status).toBe(200);
+        return buildDiagnosticReport(reportInput(await res.json()));
+    };
+    const reportsDir = (s: { savePath: string }) => path.join(s.savePath, "diagnostics", "reports");
+    /** Every console line since the test began (all three are spied). */
+    const logged = () =>
+        [warn, ...(["error", "log"] as const).map((name) => console[name] as unknown as ReturnType<typeof vi.spyOn>)]
+            .flatMap((spy) => spy.mock.calls as unknown[][])
+            .map((call) => call.map(String).join(" "));
+
+    it("saves a canonical report to `reports/` and answers its name with `no-store` (a trailing slash too); the file holds the text as sent", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const text = await reportFrom(s);
+        expect(text).toContain("\nServer: current\n");
+        const res = await post(s, text);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        const { name } = (await res.json()) as { name: string };
+        expect(name).toMatch(REPORT_FILE_PATTERN);
+        expect(readdirSync(reportsDir(s))).toEqual([name]);
+        expect(readFileSync(path.join(reportsDir(s), name), "utf8")).toBe(text);
+        if (posix) {
+            expect(mode(reportsDir(s))).toBe(0o750);
+            expect(mode(path.join(reportsDir(s), name))).toBe(0o640);
+        }
+        // A report built by hand in the format passes too (the check is of shape); a content type is not required.
+        const browserOnly = buildDiagnosticReport(reportInput(null));
+        const slash = await s.request("/api/diagnostics/report/", { method: "POST", body: browserOnly });
+        expect(slash.status).toBe(200);
+        expect(slash.headers.get("cache-control")).toBe("no-store");
+        const second = ((await slash.json()) as { name: string }).name;
+        expect(readFileSync(path.join(reportsDir(s), second), "utf8")).toBe(browserOnly);
+        expect(s.context.diagnostics.stats().writeFailures).toBe(0);
+    });
+
+    it("refuses a body that is not the report's canonical text with a 400 (`no-store`), writes nothing, and never logs the text", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const text = await reportFrom(s);
+        const refused = async (body: string) => {
+            const res = await post(s, body);
+            expect(res.status).toBe(400);
+            expect(res.headers.get("cache-control")).toBe("no-store");
+            expect(await res.json()).toEqual({ error: "Not a diagnostic report" });
+        };
+        await refused(`${PRIVATE}\n`);
+        await refused("");
+        await refused(text.replace("Online: true", `Online: true ${PRIVATE}`));
+        await refused(text.replace(/\n/g, "\r\n"));
+        await refused(text.replace('"phase":"boot"', `"phase":"boot","message":"${PRIVATE}"`));
+        await refused(text.slice(0, -1));
+        expect(existsSync(reportsDir(s))).toBe(false);
+        expect(logged().some((line) => line.includes(PRIVATE) || line.includes("Metatron diagnostic"))).toBe(false);
+        // The refusals are `http` events with the route's template, never the text.
+        const events = s.context.diagnostics.recent().filter((event) => event.route === "/api/diagnostics/report");
+        expect(events).toHaveLength(6);
+        expect(events[0]).toMatchObject({ kind: "http", method: "POST", status: 400 });
+        expect(JSON.stringify(s.context.diagnostics.recent())).not.toContain(PRIVATE);
+        // Without a JWT: the server's own 400, and nothing written.
+        const denied = await s.app.request("/api/diagnostics/report", { method: "POST", body: text });
+        expect(denied.status).toBe(400);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+        expect(existsSync(reportsDir(s))).toBe(false);
+    });
+
+    it("refuses a body over 1 MiB with a 413 (`no-store`): by its declared length, by its streamed bytes, and by its actual bytes under a wrong declared length; one of 1 MiB passes", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const over = "x".repeat(MAX_DIAGNOSTIC_REPORT_BYTES + 1);
+        const tooLarge = async (res: Response) => {
+            expect(res.status).toBe(413);
+            expect(res.headers.get("cache-control")).toBe("no-store");
+            expect(await res.json()).toEqual({ error: "Request body too large" });
+        };
+        await tooLarge(await post(s, over, { headers: { "content-length": String(over.length) } }));
+        const chunks = [over.slice(0, 1000), over.slice(1000)];
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                for (const chunk of chunks) {
+                    controller.enqueue(new TextEncoder().encode(chunk));
+                }
+                controller.close();
+            },
+        });
+        await tooLarge(await post(s, stream, { duplex: "half" } as RequestInit));
+        // A declared length the limiter trusts, with more bytes behind it: the body read is measured again.
+        await tooLarge(await post(s, over, { headers: { "content-length": "1" } }));
+        // Under the limit in characters, over it in bytes.
+        await tooLarge(
+            await post(s, "é".repeat(MAX_DIAGNOSTIC_REPORT_BYTES / 2 + 1), { headers: { "content-length": "1" } }),
+        );
+        expect(existsSync(reportsDir(s))).toBe(false);
+        // A report the builder cut to the cap is at most 1 MiB and passes.
+        const stack = Array.from({ length: 8 }, (_, i) => `shared/${"a".repeat(195)}${i}.ts:1234567:1234567`);
+        const answer = (await (await s.request("/api/diagnostics")).json()) as { state: unknown };
+        const input = reportInput({
+            state: answer.state,
+            events: Array.from({ length: 300 }, (_, i) => ({
+                at: DAY_ONE + i,
+                kind: "runtime",
+                origin: "dispose",
+                stack,
+            })),
+        });
+        input.browser = Array.from({ length: 300 }, (_, i) => ({
+            at: DAY_ONE + i,
+            kind: "runtime",
+            origin: "error",
+            stack,
+        }));
+        const text = buildDiagnosticReport(input);
+        expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(MAX_DIAGNOSTIC_REPORT_BYTES);
+        expect(text).not.toContain("Omitted events: 0\n");
+        const res = await post(s, text);
+        expect(res.status).toBe(200);
+        const { name } = (await res.json()) as { name: string };
+        expect(readFileSync(path.join(reportsDir(s), name), "utf8")).toBe(text);
+    });
+
+    it("refuses the save with a 503 once shutdown began: at admission, and again after a body read that outlasted the admission, with nothing saved", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const text = await reportFrom(s);
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        let pulled = false;
+        const stream = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+                if (pulled) {
+                    controller.close();
+                    return;
+                }
+                pulled = true;
+                await released;
+                controller.enqueue(new TextEncoder().encode(text));
+            },
+        });
+        const pending = post(s, stream, { duplex: "half" } as RequestInit);
+        await waitFor(() => pulled);
+        s.context.beginShutdown();
+        release();
+        const res = await pending;
+        expect(res.status).toBe(503);
+        expect(res.headers.get("retry-after")).toBe("5");
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await res.json()).toEqual({ error: "The server is shutting down" });
+        expect(existsSync(reportsDir(s))).toBe(false);
+        const admission = await post(s, text);
+        expect(admission.status).toBe(503);
+        expect(admission.headers.get("cache-control")).toBe("no-store");
+        expect(existsSync(reportsDir(s))).toBe(false);
+    });
+
+    it("answers 500 (`no-store`) when the report cannot be written (a file in place of `reports/`), the failure counted", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        writeFileSync(reportsDir(s), "not a directory");
+        const text = await reportFrom(s);
+        const res = await post(s, text);
+        expect(res.status).toBe(500);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await res.json()).toEqual({ error: "Could not save the report" });
+        expect(readFileSync(reportsDir(s), "utf8")).toBe("not a directory");
+        expect(s.context.diagnostics.stats().writeFailures).toBe(1);
+        expect(logged().some((line) => line.includes("Metatron diagnostic"))).toBe(false);
     });
 });
 

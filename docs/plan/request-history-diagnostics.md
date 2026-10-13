@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 done (slices 1–6); Phase 2 slices 7–8 done. Two phases.
+Status: Phase 1 done (slices 1–6); Phase 2 slices 7–9 done. Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -493,6 +493,32 @@ projection:
 - Add the English and Korean strings.
 - Tests: the report holds no free text from any event, and the route refuses
   a body over the bound or without the header.
+- Settled at implementation:
+  - The format is `shared/diagnosticsReport.ts` (v1, strict): the header, the
+    metadata lines, the policy line, `Server: current|unavailable` with the
+    server's state as one compact JSON line, `Omitted events: <n>`, a blank
+    line, then one line per event (`<ISO> server|browser <kind> <JSON>`),
+    LF-separated with one final LF. The server keeps a text only when reading
+    it back into the builder's input and building it again gives the same
+    text (`canonicalDiagnosticReport`), so nothing a projection drops reaches
+    the folder; the check is of shape, not of provenance. v1 only grows: a
+    later change may add a kind, field, or value, never remove one; a catalog
+    model that leaves the catalog is the exception.
+  - The report's rules on top of the event projections: each side's own kinds
+    (`projectServerEvent`, `projectBrowserEvent`, the collector's projection
+    moved to shared), four-digit-year times, ids of the server's shapes only
+    (a `requestId` a UUID, a `jobId` a UUID or, on a `request` event, a
+    translation run's `translate-<UUID>`), and the state through
+    `projectDiagnosticsState` (the app version numeric, Node `x.y.z`, the
+    platform and architecture from Node's lists; `DiagnosticsState` moved to
+    shared). Each source keeps its newest 300 events and the oldest are left
+    out past 1 MiB, counted in `Omitted events`.
+  - The server's diagnostics are read with a 10 s bound; without them the
+    report holds the tab's side and says `Server: unavailable`.
+  - `reports/` keeps the newest 50 by name (the save's UTC time), never the
+    one just saved, pruned after a save and at creation; a failed prune keeps
+    the save. The route checks shutdown again right before the write; a
+    maintenance does not stop it. `state.json` does not count the reports.
 
 #### 10. Sharing to the folder
 

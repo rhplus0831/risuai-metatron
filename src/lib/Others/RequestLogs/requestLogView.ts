@@ -24,17 +24,26 @@ export function highlightJson(code: string): string {
     }
 }
 
-/** Copies text, with the `execCommand` fallback for a context without the clipboard API. */
-export async function copyText(text: string): Promise<void> {
+/**
+ * Copies text, with the `execCommand` fallback for a context without the clipboard API. Whether it
+ * was copied (the fallback can refuse).
+ */
+export async function copyText(text: string): Promise<boolean> {
     try {
         await navigator.clipboard.writeText(text);
+        return true;
     } catch {
         const textarea = document.createElement("textarea");
         textarea.value = text;
         document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
+        try {
+            textarea.select();
+            return document.execCommand("copy");
+        } catch {
+            return false;
+        } finally {
+            textarea.remove();
+        }
     }
 }
 

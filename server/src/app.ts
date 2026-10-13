@@ -42,7 +42,7 @@ import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { REQUEST_HISTORY_PATH, registerRequestHistoryRoutes } from "./routes/requestHistory.ts";
-import { DIAGNOSTICS_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
+import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
@@ -366,7 +366,8 @@ export function createServerContext(options: {
         const history =
             c.req.path === REQUEST_HISTORY_PATH ||
             c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
-            c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH;
+            c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
+            c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
         if (shuttingDown) {
             c.header("Connection", "close");
         }
@@ -396,14 +397,15 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    // The script transform's, the translation's, and the push subscription's routes authenticate
-    // first and cap their bodies themselves (8 MiB, 16 KiB, 16 KiB).
+    // The script transform's, the translation's, the push subscription's, and the diagnostic report's
+    // routes authenticate first and cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
             (c.req.method === "POST" &&
                 (route === BACKUP_IMPORT_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
+                    route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH);
         return ownLimit ? next() : limitBody(c, next);
@@ -466,7 +468,12 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
     });
-    registerDiagnosticsRoutes(app, { journal: diagnostics, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerDiagnosticsRoutes(app, {
+        journal: diagnostics,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        shuttingDown: () => shuttingDown,
+    });
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
     registerStorageRoutes(app, {
         savePath,

@@ -495,4 +495,14 @@ export const advancedSettingsItems: SettingItem[] = [
     { type: "custom", id: "adv.banChar", componentId: "BanCharacterSetSettings" },
     { type: "custom", id: "adv.customModels", componentId: "CustomModelsSettings" },
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },
+
+    // Diagnostics (docs/plan/request-history-diagnostics.md slice 9)
+    { type: "header", id: "adv.diagnostics", labelKey: "diagnostics", options: { level: "h2" }, classes: "mt-8" },
+    {
+        type: "custom",
+        id: "adv.diagnosticsPanel",
+        labelKey: "diagnostics",
+        componentId: "DiagnosticsPanel",
+        keywords: ["diagnostics", "report", "debug", "support", "진단", "보고서"],
+    },
 ];

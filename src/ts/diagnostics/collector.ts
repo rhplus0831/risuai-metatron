@@ -6,7 +6,7 @@ import {
     isApiPath,
     isStackFrame,
     MAX_STACK_FRAMES,
-    projectDiagnosticEvent,
+    projectBrowserEvent,
     sanitizeStack,
 } from "../../../shared/diagnostics.ts";
 
@@ -42,40 +42,16 @@ const MAX_STACK_CHARS = 64 * 1024;
 const FOLD_EVENTS = 16;
 const FOLD_MS = 10 * 60_000;
 
-/** The kinds the browser writes; the server's (`job`, `request`, `lifecycle`) are never the tab's. */
-const CLIENT_KINDS: ReadonlySet<string> = new Set([
-    "http",
-    "runtime",
-    "jobLink",
-    "feed",
-    "sync",
-    "serviceWorker",
-    "page",
-]);
-const CLIENT_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
-
 let ring: DiagnosticEvent[] = [];
 let started = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * The browser's projection: `projectDiagnosticEvent`, then only the browser's kinds and runtime
- * origins, without a server-only field (a `runtime` event's `jobId`). Used when recording and when
- * restoring the stored ring (storage is not trusted).
+ * The browser's projection (`shared/diagnostics.ts` `projectBrowserEvent`): only the browser's kinds
+ * and runtime origins, without a server-only field. Used when recording and when restoring the stored
+ * ring (storage is not trusted).
  */
-export function projectClientEvent(input: unknown): DiagnosticEvent | null {
-    const event = projectDiagnosticEvent(input);
-    if (!event || !CLIENT_KINDS.has(event.kind)) {
-        return null;
-    }
-    if (event.kind === "runtime") {
-        if (!CLIENT_RUNTIME_ORIGINS.has(event.origin)) {
-            return null;
-        }
-        delete event.jobId;
-    }
-    return event;
-}
+export const projectClientEvent: (input: unknown) => DiagnosticEvent | null = projectBrowserEvent;
 
 /** The fields that make two events the same for folding: all but the times, the duration, and the count. */
 function sameEvent(a: DiagnosticEvent, b: DiagnosticEvent): boolean {

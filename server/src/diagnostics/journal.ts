@@ -19,10 +19,12 @@ import path from "node:path";
 import {
     type DiagnosticEvent,
     type DiagnosticEventInput,
+    type DiagnosticsState,
     isDiagnosticErrorEvent,
     isJobFailureEvent,
     projectDiagnosticEvent,
 } from "../../../shared/diagnostics.ts";
+import { MAX_DIAGNOSTIC_REPORT_BYTES, REPORT_FILE_PATTERN } from "../../../shared/diagnosticsReport.ts";
 import type { DiagnosticsRecorder } from "./log.ts";
 
 /** `RISU_DIAGNOSTICS_MAX_BYTES`' default: the cap of `events/`. */
@@ -34,6 +36,7 @@ const STATE_INTERVAL_MS = 10 * 60_000;
 const STATE_DELAY_MS = 5_000;
 const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const STATE_FILE = "state.json";
+const REPORTS_KEPT = 50;
 const DIR_MODE = 0o750;
 const FILE_MODE = 0o640;
 /** Not defined on Windows: there the open does not protect the final component (the `lstat` before it remains). */
@@ -49,29 +52,6 @@ export type DiagnosticsStateSources = {
     liveJobs?: () => unknown;
 };
 
-export type DiagnosticsState = {
-    version: 1;
-    writtenAt: string;
-    app: { version: string | null };
-    node: string;
-    platform: string;
-    arch: string;
-    startedAt: string;
-    uptimeSec: number;
-    settings: { requestHistoryContent: boolean | null; requestHistoryLimit: number | null } | null;
-    history: { rows: number | null; bytes: number | null } | null;
-    journal: { eventBytes: number; writeFailures: number };
-    workers: {
-        workers: number | null;
-        busy: number | null;
-        queued: number | null;
-        spawned: number | null;
-        terminated: number | null;
-    } | null;
-    jobs: { live: number | null } | null;
-    recentJobFailures: DiagnosticEvent[];
-};
-
 export type DiagnosticsJournal = DiagnosticsRecorder & {
     /** The ring (the last 300 events), oldest first, as copies. */
     recent(): DiagnosticEvent[];
@@ -84,7 +64,11 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
     /** Stops the timers and the state writes they would make; `record` and `writeState` still work. Idempotent. */
     close(): void;
     stats(): { eventBytes: number; writeFailures: number };
+    /** Saves a checked report to `reports/` (newest 50 kept). Never throws: a failure is counted. */
+    saveReport(text: string): SaveReportResult;
 };
+
+export type SaveReportResult = { ok: true; name: string } | { ok: false };
 
 const APP_VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
 const ERROR_CODE = /^E[A-Z0-9]{1,15}$/;
@@ -111,8 +95,8 @@ class RefusedPathError extends Error {
 
 /**
  * The server's diagnostics folder (`docs/plan/request-history-diagnostics.md` "Diagnostics folder",
- * slice 7): `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC day of its time) and
- * `state.json`. Content-free: every event goes through `projectDiagnosticEvent`, and the state is
+ * slices 7 and 9): `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC day of its time),
+ * `state.json`, and `reports/`. Content-free: every event goes through `projectDiagnosticEvent`, and the state is
  * built from explicit, checked fields.
  *
  * - `events/` is capped at `maxBytes`: past it, the oldest day file is deleted, the current one too
@@ -131,6 +115,10 @@ class RefusedPathError extends Error {
  *   regular file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`), and a symlink at
  *   `state.json` is replaced by the rename, not followed. The folder itself may be a symlink (a
  *   mount). This guards against a stray entry, not against a writer racing the server in its own folder.
+ * - `reports/` holds the reports the Diagnostics panel saves (`saveReport`, slice 9): each written
+ *   whole (temp file, then rename), the newest 50 kept (after a save, and at creation). The same
+ *   refusals apply: a symlinked or non-directory `reports/` is not used, and only report-named
+ *   regular files are counted and deleted.
  * - A failed write never fails the caller: it is counted (`writeFailures`, in the next state that
  *   lands) and the first one is logged with its error code only.
  */
@@ -144,6 +132,7 @@ export function createDiagnosticsJournal(options: {
 }): DiagnosticsJournal {
     const dir = options.dir;
     const eventsDir = path.join(dir, "events");
+    const reportsDir = path.join(dir, "reports");
     const maxBytes = options.maxBytes ?? DIAGNOSTICS_MAX_BYTES;
     const now = options.now ?? Date.now;
     const sources = options.sources ?? {};
@@ -186,13 +175,13 @@ export function createDiagnosticsJournal(options: {
     }
 
     /**
-     * Whether `events/` can be used: a real directory, created (0750) when missing and `create` says
-     * so. A symlink or any other entry there is refused, and nothing below it is touched (no append,
-     * no resync, no prune).
+     * Whether a folder of the journal (`events/`, `reports/`) can be used: a real directory, created
+     * (0750) when missing and `create` says so. A symlink or any other entry there is refused, and
+     * nothing below it is touched (no append, no resync, no prune, no save).
      */
-    function eventsReady(create: boolean): boolean {
+    function folderReady(folder: string, create: boolean): boolean {
         try {
-            const stat = lstatSync(eventsDir);
+            const stat = lstatSync(folder);
             if (stat.isSymbolicLink() || !stat.isDirectory()) {
                 fail(new RefusedPathError("Not a directory"));
                 return false;
@@ -208,14 +197,16 @@ export function createDiagnosticsJournal(options: {
             return false;
         }
         try {
-            mkdirSync(eventsDir, { mode: DIR_MODE });
-            chmodSync(eventsDir, DIR_MODE);
+            mkdirSync(folder, { mode: DIR_MODE });
+            chmodSync(folder, DIR_MODE);
             return true;
         } catch (error) {
             fail(error);
             return false;
         }
     }
+
+    const eventsReady = (create: boolean) => folderReady(eventsDir, create);
 
     /** Writes all of `bytes` to `fd`; a write that makes no progress is a failure. */
     function writeAll(fd: number, bytes: Buffer) {
@@ -342,25 +333,144 @@ export function createDiagnosticsJournal(options: {
             fail(error);
             return;
         }
-        if (!eventsReady(true)) {
-            return;
-        }
-        try {
-            for (const entry of readdirSync(eventsDir, { withFileTypes: true })) {
-                if (entry.isFile() && DAY_FILE.test(entry.name)) {
-                    try {
-                        setFileBytes(entry.name, lstatSync(path.join(eventsDir, entry.name)).size);
-                    } catch (error) {
-                        if (!isMissing(error)) {
-                            fail(error);
+        if (eventsReady(true)) {
+            try {
+                for (const entry of readdirSync(eventsDir, { withFileTypes: true })) {
+                    if (entry.isFile() && DAY_FILE.test(entry.name)) {
+                        try {
+                            setFileBytes(entry.name, lstatSync(path.join(eventsDir, entry.name)).size);
+                        } catch (error) {
+                            if (!isMissing(error)) {
+                                fail(error);
+                            }
                         }
                     }
                 }
+            } catch (error) {
+                fail(error);
             }
+            prune();
+        }
+        // A save cut short between its rename and its prune leaves one too many.
+        pruneReports(null);
+    }
+
+    /**
+     * Deletes the oldest reports (by name, so by save time) past the newest `REPORTS_KEPT`, never
+     * `keep` (the report just saved, whatever the clock did). Only `REPORT_FILE_PATTERN` regular files
+     * count; nothing is opened. Stops at a deletion that fails (one already gone counts as deleted).
+     */
+    function pruneReports(keep: string | null) {
+        if (!folderReady(reportsDir, false)) {
+            return;
+        }
+        let names: string[];
+        try {
+            names = readdirSync(reportsDir, { withFileTypes: true })
+                .filter((entry) => entry.isFile() && REPORT_FILE_PATTERN.test(entry.name))
+                .map((entry) => entry.name)
+                .sort();
         } catch (error) {
             fail(error);
+            return;
         }
-        prune();
+        let excess = names.length - REPORTS_KEPT;
+        for (const name of names) {
+            if (excess <= 0) {
+                break;
+            }
+            if (name === keep) {
+                continue;
+            }
+            try {
+                unlinkSync(path.join(reportsDir, name));
+            } catch (error) {
+                if (!isMissing(error)) {
+                    fail(error);
+                    return;
+                }
+            }
+            excess--;
+        }
+    }
+
+    /**
+     * Writes `text` to `target` in `folder`: a temp file there (`O_EXCL | O_NOFOLLOW`, 0640), then a
+     * rename. Whether it landed; a failure is counted, and the temp file removed when this call made it.
+     */
+    function writeAtomic(folder: string, target: string, text: string, tempPrefix: string): boolean {
+        let temp: string | null = null;
+        let fd = -1;
+        try {
+            const name = path.join(folder, `.${tempPrefix}-${randomBytes(4).toString("hex")}.tmp`);
+            fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
+            temp = name;
+            fchmodSync(fd, FILE_MODE);
+            writeAll(fd, Buffer.from(text, "utf8"));
+            const opened = fd;
+            fd = -1;
+            closeSync(opened);
+            renameSync(temp, target);
+            temp = null;
+            return true;
+        } catch (error) {
+            fail(error);
+            return false;
+        } finally {
+            if (fd >= 0) {
+                closeFd(fd);
+            }
+            if (temp !== null) {
+                try {
+                    unlinkSync(temp);
+                } catch (error) {
+                    if (!isMissing(error)) {
+                        fail(error);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Saves a report (the caller checked it: `canonicalDiagnosticReport`) as
+     * `reports/<UTC stamp>-<8 hex>.txt`, then keeps the newest 50. A name already taken is drawn
+     * again (a stray entry, not a racing writer: the rename would replace one created between the
+     * check and the rename). A prune that fails after the save does not undo it. Never throws.
+     */
+    function saveReport(text: string): SaveReportResult {
+        try {
+            if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_DIAGNOSTIC_REPORT_BYTES) {
+                return { ok: false };
+            }
+            if (!folderReady(reportsDir, true)) {
+                return { ok: false };
+            }
+            const stamp = new Date(now()).toISOString().replace(/[-:.]/g, "");
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const name = `${stamp}-${randomBytes(4).toString("hex")}.txt`;
+                const file = path.join(reportsDir, name);
+                try {
+                    lstatSync(file);
+                    continue;
+                } catch (error) {
+                    if (!isMissing(error)) {
+                        fail(error);
+                        return { ok: false };
+                    }
+                }
+                if (!REPORT_FILE_PATTERN.test(name) || !writeAtomic(reportsDir, file, text, "report")) {
+                    return { ok: false };
+                }
+                pruneReports(name);
+                return { ok: true, name };
+            }
+            fail(Object.assign(new Error("Every name drawn was taken"), { code: "EEXIST" }));
+            return { ok: false };
+        } catch (error) {
+            fail(error);
+            return { ok: false };
+        }
     }
 
     function state(): DiagnosticsState {
@@ -403,34 +513,10 @@ export function createDiagnosticsJournal(options: {
             clearTimeout(stateTimer);
             stateTimer = null;
         }
-        let temp: string | null = null;
-        let fd = -1;
         try {
-            const text = `${JSON.stringify(state(), null, 2)}\n`;
-            temp = path.join(dir, `.state-${randomBytes(4).toString("hex")}.tmp`);
-            fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
-            fchmodSync(fd, FILE_MODE);
-            writeAll(fd, Buffer.from(text, "utf8"));
-            const opened = fd;
-            fd = -1;
-            closeSync(opened);
-            renameSync(temp, path.join(dir, STATE_FILE));
-            temp = null;
+            writeAtomic(dir, path.join(dir, STATE_FILE), `${JSON.stringify(state(), null, 2)}\n`, "state");
         } catch (error) {
             fail(error);
-        } finally {
-            if (fd >= 0) {
-                closeFd(fd);
-            }
-            if (temp !== null) {
-                try {
-                    unlinkSync(temp);
-                } catch (error) {
-                    if (!isMissing(error)) {
-                        fail(error);
-                    }
-                }
-            }
         }
     }
 
@@ -496,6 +582,7 @@ export function createDiagnosticsJournal(options: {
             }
         },
         stats: () => ({ eventBytes, writeFailures }),
+        saveReport,
     };
 }
 
