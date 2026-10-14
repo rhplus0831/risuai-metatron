@@ -1207,3 +1207,96 @@ describe("message translations (translation slice 1.1)", () => {
         expect(stored(server, "n", "v")).toEqual(m("v", "V"));
     });
 });
+
+describe("stream updates per frame", () => {
+    // The frames the chat module asked for, run by hand (the timers are fake: the fallback waits).
+    let frames: FrameRequestCallback[] = [];
+
+    beforeEach(() => {
+        frames = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    const update = (seq: number, text: string, generationId = "g") => ({
+        jobId: "J",
+        messageId: "a",
+        generationId,
+        text,
+        seq,
+    });
+
+    it("writes a generation's first update at once, holds the later ones, and writes the newest at the next frame", async () => {
+        const { chat, ref } = await boot();
+        const text = () => chat.findChat(ref)!.message[0].data;
+        expect(chat.applyServerGeneration(ref, update(0, "one"))).toBe(true);
+        expect(text()).toBe("one");
+        expect(chat.applyServerGeneration(ref, update(1, "one two"))).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(2, "one two three"))).toBe(true);
+        expect(text()).toBe("one");
+        expect(frames).toHaveLength(1);
+
+        frames[0](0);
+        expect(text()).toBe("one two three");
+        // A frame that wrote asks for the next one; a frame with nothing held ends the window.
+        expect(frames).toHaveLength(2);
+        frames[1](0);
+        expect(frames).toHaveLength(2);
+
+        // With no frame pending, an update is written at once again.
+        chat.applyServerGeneration(ref, update(3, "one two three four"));
+        expect(text()).toBe("one two three four");
+        expect(frames).toHaveLength(3);
+    });
+
+    it("writes a new generation's first update at once even inside a frame window", async () => {
+        const { chat, ref } = await boot();
+        const text = () => chat.findChat(ref)!.message[0].data;
+        chat.applyServerGeneration(ref, update(0, "old"));
+        chat.applyServerGeneration(ref, update(1, "old more"));
+        chat.applyServerGeneration(ref, update(0, "continued", "g2"));
+        expect(text()).toBe("continued");
+        // The old generation's held update is not written over it.
+        frames[0](0);
+        expect(text()).toBe("continued");
+    });
+
+    it("keeps a held update through another chat's hydration and writes it before its job's end releases the lock", async () => {
+        const { chat, ref } = await boot();
+        const text = () => chat.findChat(ref)!.message[0].data;
+        chat.applyServerGeneration(ref, update(0, "one"));
+        chat.applyServerGeneration(ref, update(1, "one two"));
+        chat.hydrateChat({
+            characterId: "c",
+            id: "other",
+            revision: "r",
+            data: { id: "other", message: [] } as any,
+        });
+        expect(text()).toBe("one");
+
+        chat.endServerJob("J");
+        expect(text()).toBe("one two");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        // The frame that was asked for finds nothing held.
+        frames[0](0);
+        expect(text()).toBe("one two");
+        expect(frames).toHaveLength(1);
+    });
+
+    it("writes a held update by the timer when no frame runs (a hidden tab)", async () => {
+        const { chat, ref } = await boot();
+        const text = () => chat.findChat(ref)!.message[0].data;
+        chat.applyServerGeneration(ref, update(0, "one"));
+        chat.applyServerGeneration(ref, update(1, "one two"));
+        vi.advanceTimersByTime(249);
+        expect(text()).toBe("one");
+        vi.advanceTimersByTime(1);
+        expect(text()).toBe("one two");
+        // The frame that never ran does nothing when it finally does.
+        frames[0](0);
+        expect(text()).toBe("one two");
+    });
+});

@@ -834,6 +834,71 @@ function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[
     }
 }
 
+/**
+ * Streamed messages whose newest text waits for the next frame: the mirror takes at most one
+ * stream update per frame, so the chat screen parses a streaming message once per frame, not once
+ * per chunk. The text itself is the message's stream buffer (`serverGenerations`).
+ */
+const heldStreamText = new Map<string, ChatRef & { messageId: string }>();
+/** A frame flush is scheduled: until it runs, a stream update after the first is held. */
+let streamFrameScheduled = false;
+
+function scheduleStreamFrame() {
+    streamFrameScheduled = true;
+    let ran = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = () => {
+        if (ran) {
+            return;
+        }
+        ran = true;
+        clearTimeout(timer);
+        streamFrameScheduled = false;
+        if (heldStreamText.size > 0) {
+            flushStreamText();
+            scheduleStreamFrame();
+        }
+    };
+    // A hidden tab (also one hidden after this frame was asked for) runs no frames: the timer, which
+    // the browser throttles there, still shows the text. Without frames the timer is the frame.
+    const hasFrames = typeof requestAnimationFrame === "function";
+    if (hasFrames) {
+        requestAnimationFrame(run);
+    }
+    timer = setTimeout(run, hasFrames ? 250 : 16);
+}
+
+/** Writes a streamed message's buffer into the mirror, unless its lock is gone or a copy covers it. */
+function showStreamText(target: ChatRef & { messageId: string }) {
+    const messageKey = messageKeyOf(target, target.messageId);
+    const entry = serverGenerations.get(messageKey);
+    if (!entry || entry.seq < 0 || retiredGenerations.has(entry.generationId)) {
+        return;
+    }
+    const mark = serverWatermarks.get(messageKey);
+    if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
+        return;
+    }
+    const message = heldChat(target)?.message.find((candidate) => candidate.chatId === target.messageId);
+    if (message && message.data !== entry.text) {
+        message.data = entry.text;
+        changed(keyOf(target.chaId, target.chatId));
+    }
+}
+
+/**
+ * Writes the held stream updates `which` selects (all by default) now: before a hydration of their
+ * chat or their job's end, which came after them. The others stay held for the frame.
+ */
+function flushStreamText(which?: (target: ChatRef & { messageId: string }, messageKey: string) => boolean) {
+    for (const [messageKey, target] of [...heldStreamText]) {
+        if (!which || which(target, messageKey)) {
+            heldStreamText.delete(messageKey);
+            showStreamText(target);
+        }
+    }
+}
+
 /** Clears `streamingState` when it shows `generationId` (its lock was released). */
 function releaseStreaming(generationId: string) {
     if (streamingGeneration === generationId) {
@@ -846,8 +911,11 @@ function releaseStreaming(generationId: string) {
  * the job and writes `text` into the mirror. Nothing is queued and the chat's revision does not
  * move: only a whole-chat hydration (`hydrateChat`) advances it. A chunk older than the last one
  * of its generation (`seq`) is dropped. The generation's first stream update makes its message the
- * streaming one (`streamingState`, with the configured display optimization mode). Returns false
- * when the chat or message is not in the mirror (its hydration comes first) or the chunk is old.
+ * streaming one (`streamingState`, with the configured display optimization mode). The mirror takes
+ * at most one stream update per frame: the generation's first update, and one when no frame flush is
+ * pending, are written at once; a later one stays in the stream buffer until the frame flush
+ * (`heldStreamText`). Returns false when the chat or message is not in the mirror (its hydration
+ * comes first) or the chunk is old.
  */
 export function applyServerGeneration(
     ref: ChatRef,
@@ -894,8 +962,16 @@ export function applyServerGeneration(
     if (older) {
         return false;
     }
+    if (streamFrameScheduled && !firstUpdate) {
+        heldStreamText.set(messageKey, { ...ref, messageId: update.messageId });
+        return true;
+    }
+    heldStreamText.delete(messageKey);
     message.data = update.text;
     changed(keyOf(ref.chaId, ref.chatId));
+    if (!streamFrameScheduled) {
+        scheduleStreamFrame();
+    }
     return true;
 }
 
@@ -905,6 +981,7 @@ export function applyServerGeneration(
  * instead of the stored final, so its chat is marked for an idle refresh.
  */
 export function endServerJob(jobId: string) {
+    flushStreamText((_, messageKey) => serverGenerations.get(messageKey)?.jobId === jobId);
     let released = false;
     for (const [messageKey, entry] of [...serverGenerations]) {
         if (entry.jobId === jobId) {
@@ -944,6 +1021,8 @@ export function hydrateChat(
     server: { characterId: string; id: string; revision: string; data: Chat },
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): boolean {
+    // The chat's stream updates held for the next frame came before this event.
+    flushStreamText((target) => target.chaId === server.characterId && target.chatId === server.id);
     const key = keyOf(server.characterId, server.id);
     const prefix = `${key}\u0000`;
     const outcome = applyChatHydration(server);

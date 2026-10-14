@@ -421,7 +421,8 @@ describe("a job's reply in the mirror", () => {
         apply("J", chunk("g1", 1, "RAW ONE"));
         apply("J", chunk("g1", 2, "RAW TWO"));
         apply("J", chunk("g1", 1, "RAW ONE again"));
-        expect(text("b")).toBe("RAW TWO");
+        // The mirror takes one stream update per frame: the newest chunk shows at the next one.
+        await vi.waitFor(() => expect(text("b")).toBe("RAW TWO"));
         // A processed checkpoint that holds chunk 2: shown, still locked.
         let revision = bumped(fake.chat("c", "k")!.revision, 1);
         apply(
@@ -536,7 +537,7 @@ describe("a job's reply in the mirror", () => {
         apply("A", accepted("A", "g4", "b", 0));
         apply("A", chunk("g2", 5, "OLD GENERATION", "b"));
         apply("A", chunk("g4", 1, "NEW GENERATION", "b"));
-        expect(text("b")).toBe("NEW GENERATION");
+        await vi.waitFor(() => expect(text("b")).toBe("NEW GENERATION"));
         expect(locked("b")).toBe(true);
         // Metadata ordering while the chat is busy (a local edit pends): a revision-12 copy still
         // listing b is consumed; a delayed revision-11 copy with an empty list changes nothing.
@@ -707,7 +708,7 @@ describe("a reply locked by its job's chat event, before its stream", () => {
         expect(text("b")).toBe("FIRST REPLY");
         apply("J", withText(accepted("J", "g2", "b", 0), "FIRST REPLY"));
         apply("J", chunk("g2", 1, "FIRST REPLY, CONTINUED"));
-        expect(text("b")).toBe("FIRST REPLY, CONTINUED");
+        await vi.waitFor(() => expect(text("b")).toBe("FIRST REPLY, CONTINUED"));
         expect(locked("b")).toBe(true);
     });
 });
