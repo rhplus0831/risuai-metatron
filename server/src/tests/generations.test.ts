@@ -205,6 +205,17 @@ describe("generation jobs over HTTP and WebSocket", () => {
     }
     const types = (events: GenerationEvent[]) => events.map((event) => event.type);
     const until = (followed: Followed, count: number) => waitFor(() => followed.events.length >= count);
+    /** The stored text of message `id` as a `chatPatch` carries it (undefined when the patch lacks the row). */
+    const rowText = (event: unknown, id: string): string | undefined =>
+        (event as { messages?: { message: { chatId: string; data: string } }[] }).messages?.find(
+            (row) => row.message.chatId === id,
+        )?.message.data;
+    /** A `chatPatch`'s rows as `[id, after, text]`. */
+    const rows = (event: unknown) =>
+        (
+            (event as { messages?: { after: string | null; message: { chatId: string; data: string } }[] }).messages ??
+            []
+        ).map((row) => [row.message.chatId, row.after, row.message.data]);
 
     it("validates the body and needs a JWT (never the password) on every route", async () => {
         await listen();
@@ -307,33 +318,51 @@ describe("generation jobs over HTTP and WebSocket", () => {
         const code = await owner.closed;
         expect(code).not.toBe(4001);
         // The attach snapshot, then the hydration that precedes every `accepted`, then the stream,
-        // then the terminal hydration and the result.
+        // then the terminal hydration and the result. The job chat's events are `chatPatch`es: the
+        // change since the copy a socket last took.
         expect(types(owner.events)).toEqual([
-            "resource",
-            "resource",
+            "chatPatch",
+            "chatPatch",
             "accepted",
             "chunk",
             "chunk",
             "preset",
             "progress",
-            "resource",
+            "chatPatch",
             "done",
         ]);
         expect(owner.events.every((event) => "epoch" in event && event.epoch === epoch)).toBe(true);
         const [snapshot, hydration, accepted, , second, , , finalChat, done] = owner.events as any[];
-        expect(snapshot).toMatchObject({ kind: "chats", characterId: "c", id: "k", streaming: [] });
-        expect(hydration).toMatchObject({
-            kind: "chats",
+        // The attach snapshot: from the admission copy (the revision the owner named) to itself.
+        expect(snapshot).toMatchObject({
+            type: "chatPatch",
             characterId: "c",
             id: "k",
+            baseRevision: ctx.chatRevision,
+            revision: ctx.chatRevision,
+            count: 2,
+            streaming: [],
+        });
+        expect(snapshot).not.toHaveProperty("messages");
+        expect(snapshot).not.toHaveProperty("meta");
+        expect(snapshot).not.toHaveProperty("removed");
+        // The hydration before `accepted`: the reply's row (the job began its generation on it), after `u`.
+        expect(hydration).toMatchObject({
+            type: "chatPatch",
+            characterId: "c",
+            id: "k",
+            baseRevision: ctx.chatRevision,
+            revision: accepted.revision,
+            count: 2,
             streaming: [{ messageId: "r", generationId: "g1", seq: 0 }],
         });
-        expect(hydration.data.message.map((x: { chatId: string }) => x.chatId)).toEqual(["u", "r"]);
+        expect(rows(hydration)).toEqual([["r", "u", ""]]);
         expect(accepted).toMatchObject({ messageId: "r", userMessageId: "u", generationId: "g1", seq: 0, text: "" });
         expect(second).toMatchObject({ text: "one two", seq: 2 });
-        // The terminal hydration: the reply is final, so nothing is streaming any more.
-        expect(finalChat).toMatchObject({ kind: "chats", streaming: [] });
-        expect(finalChat.data.message[1].data).toBe("one two");
+        // The terminal hydration: the reply is final, so nothing is streaming any more; its stored
+        // text comes along (a generated row is always carried).
+        expect(finalChat).toMatchObject({ type: "chatPatch", baseRevision: hydration.revision, streaming: [] });
+        expect(rowText(finalChat, "r")).toBe("one two");
         expect(done).toMatchObject({ type: "done", messageId: "r", revision: finalChat.revision });
         expect(await (await request(`/api/generations/${jobId}?clientId=tab`)).json()).toMatchObject({
             state: "ended",
@@ -362,7 +391,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "progress", payload: 2 });
         });
         await until(a, 2);
-        expect(types(a.events)).toEqual(["resource", "progress"]);
+        expect(types(a.events)).toEqual(["chatPatch", "progress"]);
         // A newer stamp supersedes: `a` is closed with 4001 and `c` gets the fresh snapshot.
         const c = await follow(jobId, { attach: 6 });
         expect(await a.closed).toBe(4001);
@@ -371,7 +400,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "progress", payload: 3 });
         });
         await until(c, 2);
-        expect(types(c.events)).toEqual(["resource", "progress"]);
+        expect(types(c.events)).toEqual(["chatPatch", "progress"]);
         expect(a.events).toHaveLength(2);
         c.ws.close();
         await c.closed;
@@ -428,12 +457,15 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         let events = await snapshot();
-        expect(types(events)).toEqual(["resource", "resource", "accepted"]);
+        // The job chat as a patch (the events while no socket was open did not move its base: the
+        // admission copy), the record whole, the current reply.
+        expect(types(events)).toEqual(["chatPatch", "resource", "accepted"]);
         expect(events[0]).toMatchObject({
-            kind: "chats",
+            type: "chatPatch",
             streaming: [{ messageId: "r", generationId: "g1", seq: 10 }],
         });
-        expect(events[0].data.message[1].data).toBe("processed ten");
+        expect(rowText(events[0], "r")).toBe("processed ten");
+        let handed = events[0].revision as string;
         expect(events[1]).toMatchObject({ kind: "characters", id: "c", data: { chaId: "c", name: "C" } });
         expect(events[2]).toMatchObject({ type: "accepted", text: "ten", seq: 10 });
         // A replacement without `covers` claims 0; a lower claim replaces a higher one. The tracked
@@ -449,6 +481,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await sleep(50);
         events = await snapshot();
         expect(events[0].streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 0 }]);
+        // Each attach's patch is based on the copy the previous attach handed over.
+        expect(events[0].baseRevision).toBe(handed);
+        expect(rowText(events[0], "r")).toBe("uncovered");
+        handed = events[0].revision;
         expect(events[1]).toMatchObject({ kind: "characters", data: { name: "C renamed" } });
         step((job) => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(3, "captured five")])] }), {
@@ -458,6 +494,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await sleep(50);
         events = await snapshot();
         expect(events[0].streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 5 }]);
+        expect(events[0].baseRevision).toBe(handed);
+        handed = events[0].revision;
         // An ignored write (a foreign generation) publishes nothing.
         step((job) => {
             expect(
@@ -476,11 +514,12 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         events = await snapshot();
-        expect(types(events)).toEqual(["resource", "resource"]);
+        expect(types(events)).toEqual(["chatPatch", "resource"]);
         expect(events[0].streaming).toEqual([]);
-        expect(events[0].data.message[1].data).toBe("final text");
+        expect(rowText(events[0], "r")).toBe("final text");
         expect(await (await request(`/api/generations/${jobId}?clientId=tab`)).json()).not.toHaveProperty("messageId");
-        // After the end: the fresh records and the terminal event.
+        // After the end: the job chat whole (no patch base is kept for an ended job), the fresh
+        // records, and the terminal event.
         step((job) => {
             job.emit({ type: "done", revision: null, messageId: "r", alternatives: ["alt"] });
             return "end" as never;
@@ -488,6 +527,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await sleep(50);
         events = await snapshot();
         expect(types(events)).toEqual(["resource", "resource", "done"]);
+        expect(events[0]).toMatchObject({ kind: "chats", characterId: "c", id: "k", streaming: [] });
+        expect(events[0].data.message[1].data).toBe("final text");
         expect(events[2]).toMatchObject({ messageId: "r", alternatives: ["alt"], epoch });
     });
 
@@ -544,8 +585,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         const last = owner.events.at(-1)!;
         expect(last).toMatchObject({ type: "error", reason: "aborted", status: 499, epoch });
         const terminalChat = owner.events.at(-2) as any;
-        expect(terminalChat).toMatchObject({ type: "resource", kind: "chats", streaming: [] });
-        expect(terminalChat.data.message[1].data).toBe("t3 stopped");
+        expect(terminalChat).toMatchObject({ type: "chatPatch", characterId: "c", id: "k", streaming: [] });
+        expect(rowText(terminalChat, "r")).toBe("t3 stopped");
         expect(await (await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" })).json()).toEqual({
             aborted: false,
         });
@@ -554,7 +595,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             terminal: { type: "error", reason: "aborted" },
         });
         const after = await revision();
-        expect(after.data.message[1].data).toBe(terminalChat.data.message[1].data);
+        expect(after.data.message[1].data).toBe(rowText(terminalChat, "r"));
         const edit = await request(
             "/api/resources/batch",
             json({ chats: [group(after.revision, [{ op: "setText", id: "r", text: "mine" }])] }),
@@ -573,10 +614,233 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events)).toEqual(["resource", "resource", "accepted", "resource", "done"]);
+        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chatPatch", "done"]);
+        // A job that writes nothing transfers no message: each patch is the count alone.
+        for (const index of [0, 1, 3]) {
+            expect(owner.events[index]).toMatchObject({ count: 2, streaming: [] });
+            expect(owner.events[index]).not.toHaveProperty("messages");
+            expect(owner.events[index]).not.toHaveProperty("meta");
+            expect(owner.events[index]).not.toHaveProperty("removed");
+        }
         expect(owner.events[2]).not.toHaveProperty("messageId");
         expect(owner.events[2]).toMatchObject({ seq: 0 });
         expect(owner.events[4]).not.toHaveProperty("messageId");
+    });
+
+    it("sends the job chat as a patch from the copy a socket last took (rows with their anchor, removed ids, the meta when it changed), whole on `resync`, on a reorder, and after the end; an event no socket took does not move the base", async () => {
+        await listen();
+        const chatRef = { characterId: "c", id: "k" };
+        const jobId = await createOk();
+        const admitted = (await revision()).revision;
+        let owner = await follow(jobId);
+        await until(owner, 1);
+        expect(owner.events[0]).toMatchObject({
+            type: "chatPatch",
+            baseRevision: admitted,
+            revision: admitted,
+            count: 2,
+            streaming: [],
+        });
+        expect(owner.events[0]).not.toHaveProperty("messages");
+        // A write the runner publishes: the new message and the reply the job began, each after its
+        // predecessor in stored order; the meta did not change. The receipt names the patch's revision.
+        const receipts: unknown[] = [];
+        step((job) => {
+            job.write(() => ({
+                chats: [
+                    group(job.context.chatRevision, [
+                        { op: "append", messages: [m("u2", "second")], anchor: { after: "u" } },
+                        { op: "begin", id: "r", generationId: "g1" },
+                    ]),
+                ],
+            }));
+            receipts.push(...job.emitRecords({ chats: [chatRef] }));
+        });
+        await until(owner, 2);
+        const first = owner.events[1] as any;
+        expect(first).toMatchObject({
+            type: "chatPatch",
+            characterId: "c",
+            id: "k",
+            baseRevision: admitted,
+            count: 3,
+            streaming: [{ messageId: "r", generationId: "g1", seq: 0 }],
+        });
+        expect(rows(first)).toEqual([
+            ["u2", "u", "second"],
+            ["r", "u2", ""],
+        ]);
+        expect(first).not.toHaveProperty("meta");
+        expect(first).not.toHaveProperty("removed");
+        expect(receipts).toEqual([{ kind: "chats", id: "k", characterId: "c", revision: first.revision }]);
+        // The meta, whole, only when it changed; the generated reply's row comes along every time.
+        step((job) => {
+            job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "meta", set: { note: "noted" } }])] }));
+            job.emitRecords({ chats: [chatRef] });
+        });
+        await until(owner, 3);
+        const second = owner.events[2] as any;
+        expect(second).toMatchObject({
+            type: "chatPatch",
+            baseRevision: first.revision,
+            count: 3,
+            meta: { id: "k", name: "K", note: "noted" },
+        });
+        expect(second.meta).not.toHaveProperty("message");
+        expect(rows(second)).toEqual([["r", "u2", ""]]);
+        // A removal: the id, and the reply's anchor moves to its surviving predecessor.
+        step((job) => {
+            job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "remove", ids: ["u2"] }])] }));
+            job.emitRecords({ chats: [chatRef] });
+        });
+        await until(owner, 4);
+        const third = owner.events[3] as any;
+        expect(third).toMatchObject({ type: "chatPatch", baseRevision: second.revision, removed: ["u2"], count: 2 });
+        expect(rows(third)).toEqual([["r", "u", ""]]);
+        expect(third).not.toHaveProperty("meta");
+        // No socket: the checkpoint's event is lost and the base stays at the last copy a socket
+        // took, so the next attach's patch carries the checkpoint.
+        owner.ws.close();
+        await owner.closed;
+        step((job) => {
+            job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(1, "one")])] }), {
+                covers: [{ messageId: "r", generationId: "g1", seq: 1 }],
+            });
+            job.emitRecords({ chats: [chatRef] });
+        });
+        await sleep(50);
+        owner = await follow(jobId);
+        await until(owner, 1);
+        const reattached = owner.events[0] as any;
+        expect(reattached).toMatchObject({
+            type: "chatPatch",
+            baseRevision: third.revision,
+            count: 2,
+            streaming: [{ messageId: "r", generationId: "g1", seq: 1 }],
+        });
+        expect(rows(reattached)).toEqual([["r", "u", "one"]]);
+        // `resync` from the current socket: the chat whole, and the next patch is based on that copy.
+        owner.ws.send(JSON.stringify({ type: "resync" }));
+        await until(owner, 2);
+        const whole = owner.events[1] as any;
+        expect(whole).toMatchObject({
+            type: "resource",
+            kind: "chats",
+            characterId: "c",
+            id: "k",
+            revision: reattached.revision,
+            streaming: [{ messageId: "r", generationId: "g1", seq: 1 }],
+        });
+        expect(whole.data.message.map((x: any) => [x.chatId, x.data])).toEqual([
+            ["u", "hi"],
+            ["r", "one"],
+        ]);
+        expect(whole.data.note).toBe("noted");
+        step((job) => {
+            job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(2, "one two")])] }), {
+                covers: [{ messageId: "r", generationId: "g1", seq: 2 }],
+            });
+            job.emitRecords({ chats: [chatRef] });
+        });
+        await until(owner, 3);
+        expect(owner.events[2]).toMatchObject({ type: "chatPatch", baseRevision: whole.revision, count: 2 });
+        expect(rows(owner.events[2])).toEqual([["r", "u", "one two"]]);
+        // A reorder of the surviving messages (a trigger's `replace`): the chat goes whole.
+        step(async (job) => {
+            const current = await revision();
+            const reordered = { ...current.data, message: [current.data.message[1], current.data.message[0]] };
+            job.write(() => ({ chats: [group(current.revision, [{ op: "replace", chat: reordered as never }])] }));
+            job.emitRecords({ chats: [chatRef] });
+        });
+        await until(owner, 4);
+        const reorder = owner.events[3] as any;
+        expect(reorder).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
+        expect(reorder.data.message.map((x: any) => x.chatId)).toEqual(["r", "u"]);
+        // The end: the terminal patch from that whole copy, then the result. An attach after the end
+        // gets the chat whole.
+        step((job) => {
+            job.emit({ type: "done", revision: null });
+            return "end" as never;
+        });
+        await owner.closed;
+        expect(types(owner.events.slice(4))).toEqual(["chatPatch", "done"]);
+        expect(owner.events[4]).toMatchObject({
+            type: "chatPatch",
+            baseRevision: reorder.revision,
+            revision: reorder.revision,
+            count: 2,
+            streaming: [],
+        });
+        const after = await follow(jobId);
+        await after.closed;
+        expect(types(after.events)).toEqual(["resource", "done"]);
+        expect(after.events[0]).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
+    });
+
+    it("answers `resync` with the chat whole and then the current reply while its generation still owns the message (a command job's `accepted` too), and with the chat alone once the reply is final", async () => {
+        await listen();
+        const jobId = await createOk();
+        const owner = await follow(jobId);
+        step((job) => {
+            job.write(() => ({
+                chats: [group(job.context.chatRevision, [{ op: "begin", id: "r", generationId: "g1" }])],
+            }));
+            job.emit({
+                type: "accepted",
+                jobId: job.id,
+                messageId: "r",
+                generationId: "g1",
+                revision: job.context.chatRevision,
+                text: "",
+            });
+            job.emit({ type: "chunk", messageId: "r", generationId: "g1", text: "so far", seq: 2 });
+        });
+        await until(owner, 4);
+        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chunk"]);
+        owner.ws.send(JSON.stringify({ type: "resync" }));
+        await until(owner, 6);
+        expect(types(owner.events.slice(4))).toEqual(["resource", "accepted"]);
+        expect(owner.events[4]).toMatchObject({
+            kind: "chats",
+            streaming: [{ messageId: "r", generationId: "g1", seq: 0 }],
+        });
+        // The newest chunk's text and sequence, as an attach replays it.
+        expect(owner.events[5]).toMatchObject({ messageId: "r", generationId: "g1", text: "so far", seq: 2 });
+        // The reply's final write releases it: a resync brings the chat alone.
+        step((job) => {
+            job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(3, "final", true)])] }));
+        });
+        await sleep(50);
+        owner.ws.send(JSON.stringify({ type: "resync" }));
+        await until(owner, 7);
+        await sleep(50);
+        expect(types(owner.events.slice(6))).toEqual(["resource"]);
+        expect((owner.events[6] as any).streaming).toEqual([]);
+        expect((owner.events[6] as any).data.message[1].data).toBe("final");
+        // A resync of another client's socket, or after the end, is ignored.
+        step((job) => {
+            job.emit({ type: "done", revision: null, messageId: "r" });
+            return "end" as never;
+        });
+        await owner.closed;
+        expect(types(owner.events.slice(7))).toEqual(["chatPatch", "done"]);
+
+        // A command job: its `accepted` has no message, and comes back after the whole chat.
+        const command = await createOk("command");
+        const commander = await follow(command);
+        step((job) => {
+            job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" });
+        });
+        await until(commander, 3);
+        commander.ws.send(JSON.stringify({ type: "resync" }));
+        await until(commander, 5);
+        expect(types(commander.events)).toEqual(["chatPatch", "chatPatch", "accepted", "resource", "accepted"]);
+        expect(commander.events[4]).not.toHaveProperty("messageId");
+        step((job) => {
+            job.emit({ type: "done", revision: null });
+            return "end" as never;
+        });
+        await commander.closed;
     });
 
     it("dispatches upgrades by path: an unknown path is destroyed, the live-update socket works beside the generation socket, and shutdown removes the listener", async () => {

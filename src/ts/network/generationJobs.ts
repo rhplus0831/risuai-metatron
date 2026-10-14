@@ -1,16 +1,23 @@
 import { v4 as uuidv4 } from "uuid";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import {
+    type ChatResyncRequest,
     type GenerationCreateBody,
     type GenerationEvent,
     type GenerationStatus,
     type GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
-import { applyServerGeneration, type ChatRef, endServerJob } from "../storage/chatStore.svelte";
+import {
+    applyServerGeneration,
+    type ChatRef,
+    chatHydrationHold,
+    endServerJob,
+    isChatStale,
+} from "../storage/chatStore.svelte";
 import { authFetch, getNodeServerProxyAuth } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
-import { applyHydration } from "../storage/resourceSync.svelte";
+import { applyHydration, applyPatchHydration, flushResources } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
 import { recordClientEvent } from "../diagnostics/collector";
 
@@ -345,7 +352,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         }
         finish();
     });
-    return {
+    const follow: GenerationFollow = {
         send(message) {
             const socket = ws as WebSocket | null;
             if (cancelled || !socket || socket.readyState !== WebSocket.OPEN) {
@@ -362,12 +369,114 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         },
         closed,
     };
+    // A closed or superseded follow asks nothing more of its job.
+    void closed.then(() => endFollowRecovery(follow));
+    return follow;
+}
+
+/**
+ * The follows that asked their job for its chat whole (`resync`) and have not received it yet: one
+ * request at a time per follow (a new follow starts without one).
+ */
+const resyncing = new WeakSet<ChannelTransport>();
+
+/** The follows whose job ended or that closed: nothing more is asked through them. */
+const endedFollows = new WeakSet<ChannelTransport>();
+
+/** The first wait before a recovery tries again (doubled each time, up to `MAX_RESYNC_WAIT_MS`). */
+const RESYNC_RETRY_MS = 1000;
+const MAX_RESYNC_WAIT_MS = 15_000;
+
+/** A follow's recovery of its chat after a copy refused for local work (`resyncAfterLocalWork`). */
+type Recovery = { ref: ChatRef; attempt: number; timer: ReturnType<typeof setTimeout> | null };
+
+/** One recovery per follow, from a refused copy until it asks for the chat whole or gives way. */
+const recoveries = new WeakMap<ChannelTransport, Recovery>();
+
+/** Ends a follow's recovery and its asking: its job ended, or the follow closed. */
+function endFollowRecovery(transport: ChannelTransport) {
+    const recovery = recoveries.get(transport);
+    if (recovery?.timer) {
+        clearTimeout(recovery.timer);
+    }
+    recoveries.delete(transport);
+    endedFollows.add(transport);
+}
+
+/**
+ * Asks the follow's job for its chat whole, once at a time, while the chat is still stale and
+ * nothing local would refuse the copy (`chatHydrationHold`).
+ */
+function requestResync(transport: ChannelTransport, ref: ChatRef) {
+    if (
+        endedFollows.has(transport) ||
+        resyncing.has(transport) ||
+        !isChatStale(ref) ||
+        chatHydrationHold(ref) !== "none"
+    ) {
+        return;
+    }
+    const request: ChatResyncRequest = { type: "resync" };
+    if (transport.send(request)) {
+        resyncing.add(transport);
+    }
+}
+
+/**
+ * A job chat copy refused for local work (`busy`): once the chat's queued or in-flight work is saved
+ * (`flushResources`), the chat still stale asks for its chat whole, since a stalled stream may send
+ * no other patch. A failed save, or new local work meanwhile, is tried again with a growing wait,
+ * for as long as the follow lasts; one recovery per follow at a time. A chat held by work no save
+ * settles (deferred, quarantined, refused for a generating message) asks nothing: the job's end
+ * (the idle refresh) or the next send reads it.
+ */
+function resyncAfterLocalWork(transport: ChannelTransport, ref: ChatRef) {
+    if (recoveries.has(transport) || endedFollows.has(transport) || chatHydrationHold(ref) === "held") {
+        return;
+    }
+    const recovery: Recovery = { ref, attempt: 0, timer: null };
+    recoveries.set(transport, recovery);
+    runRecovery(transport, recovery);
+}
+
+function runRecovery(transport: ChannelTransport, recovery: Recovery) {
+    recovery.timer = null;
+    const again = () => {
+        recovery.timer = setTimeout(
+            () => runRecovery(transport, recovery),
+            Math.min(RESYNC_RETRY_MS * 2 ** recovery.attempt, MAX_RESYNC_WAIT_MS),
+        );
+        recovery.attempt += 1;
+    };
+    void flushResources().then(
+        () => {
+            if (recoveries.get(transport) !== recovery) {
+                return;
+            }
+            const hold = isChatStale(recovery.ref) ? chatHydrationHold(recovery.ref) : null;
+            if (hold === "saving") {
+                again();
+                return;
+            }
+            recoveries.delete(transport);
+            if (hold === "none") {
+                requestResync(transport, recovery.ref);
+            }
+        },
+        () => {
+            if (recoveries.get(transport) === recovery) {
+                again();
+            }
+        },
+    );
 }
 
 /**
  * Mirrors one event of a job on `ref`'s chat: the reply's text and lock (`accepted`, `chunk`), the
- * records the job changed (`resource`, through `applyHydration`), and the end (`done`, `error`:
- * every lock of the job is released and the saved job is forgotten). Nothing is sent back.
+ * records the job changed (`resource`, through `applyHydration`; the job chat's changes as
+ * `chatPatch`, through `applyPatchHydration`), and the end (`done`, `error`: every lock of the job
+ * is released and the saved job is forgotten). A patch the mirror cannot take asks the job for its
+ * chat whole through `transport` (`resync`); nothing else is sent back.
  */
 export function applyGenerationEvent(
     jobId: string,
@@ -405,9 +514,38 @@ export function applyGenerationEvent(
                 data: event.data,
                 ...("streaming" in event && event.streaming ? { job: { jobId, streaming: event.streaming } } : {}),
             };
-            applyHydration(record);
+            const applied = applyHydration(record);
             // Kept for a later callback's barrier, which applies it again after local work settles.
             onChannel((channel) => channel.rememberHydration(record));
+            if (transport && event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId) {
+                resyncing.delete(transport);
+                if (!applied && isChatStale(ref)) {
+                    // A whole copy refused for local work: asked for again once that work is saved.
+                    resyncAfterLocalWork(transport, ref);
+                }
+            }
+            return;
+        }
+        case "chatPatch": {
+            // Not kept for the barrier: a patch fits only the copy it was made against.
+            const outcome = applyPatchHydration(
+                {
+                    characterId: event.characterId,
+                    id: event.id,
+                    baseRevision: event.baseRevision,
+                    revision: event.revision,
+                    meta: event.meta,
+                    removed: event.removed,
+                    messages: event.messages,
+                    count: event.count,
+                },
+                { jobId, streaming: event.streaming },
+            );
+            if (transport && outcome === "mismatch") {
+                requestResync(transport, ref);
+            } else if (transport && outcome === "busy") {
+                resyncAfterLocalWork(transport, ref);
+            }
             return;
         }
         case "notice":
@@ -424,6 +562,9 @@ export function applyGenerationEvent(
             return;
         case "done":
         case "error":
+            if (transport) {
+                endFollowRecovery(transport);
+            }
             releaseGenerationJob(jobId);
             return;
     }

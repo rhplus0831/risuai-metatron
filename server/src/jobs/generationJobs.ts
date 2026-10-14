@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { Chat } from "../../../shared/database.ts";
 import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
 import {
     type CallbackTargets,
+    type ChatResyncRequest,
+    type GenerationChatPatchEvent,
     type GenerationCommand,
     type GenerationContext,
     type GenerationCreateBody,
@@ -21,7 +24,7 @@ import {
     HIDDEN_HYDRATION_KINDS,
 } from "../../../shared/jobs.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
-import type { BatchConflict } from "../../../shared/resources.ts";
+import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import {
     type AppliedChanges,
@@ -133,7 +136,7 @@ export type JobChanges = {
 
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
 /** An event as a runner emits it: the registry adds the epoch. */
-export type JobEventInput = Distribute<Exclude<GenerationEvent, { type: "ping" }>>;
+export type JobEventInput = Distribute<Exclude<GenerationEvent, { type: "ping" } | { type: "chatPatch" }>>;
 type TerminalInput = Distribute<GenerationTerminalEvent>;
 
 /** What the injected runner gets for one job. */
@@ -163,7 +166,8 @@ export type RunningJob = {
     emit(event: JobEventInput): void;
     /**
      * Reads the named records and chats and sends them as `resource` events (missing ones are
-     * skipped); returns what was sent, at the revisions sent.
+     * skipped; the job chat goes as a `chatPatch` when one can express its change); returns what
+     * was sent, at the revisions sent.
      */
     emitRecords(records: {
         refs?: readonly { kind: string; id: string }[];
@@ -233,6 +237,14 @@ type Job = {
     targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
+    /**
+     * The job chat as last handed to an owner socket (a stored state, read at its `revision`): the
+     * base of the next `chatPatch`. Null once the job ended. It is not what the owner holds: the
+     * owner applies a patch only at exactly its base or its revision, and asks for a resync otherwise.
+     */
+    sentChat: ChatBaseline | null;
+    /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
+    generated: Set<string>;
     terminal: GenerationTerminalEvent | null;
     listeners: Set<(message: unknown) => void>;
     finished: Promise<void>;
@@ -240,6 +252,80 @@ type Job = {
 };
 
 const chatKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
+
+function isResyncRequest(message: unknown): message is ChatResyncRequest {
+    return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resync";
+}
+
+/** A stored chat as a patch base: its revision, its fields without `message`, and its messages by id. */
+export type ChatBaseline = { revision: string; meta: string; ids: string[]; texts: Map<string, string> };
+
+/** The fields of a stored chat without `message`. */
+function chatMeta(data: Chat): Record<string, unknown> {
+    const { message: _message, ...meta } = data as Chat & Record<string, unknown>;
+    return meta;
+}
+
+export function chatBaseline(revision: string, data: Chat): ChatBaseline {
+    const texts = new Map<string, string>();
+    const ids: string[] = [];
+    for (const message of data.message ?? []) {
+        const id = message.chatId!;
+        ids.push(id);
+        texts.set(id, JSON.stringify(message));
+    }
+    return { revision, meta: JSON.stringify(chatMeta(data)), ids, texts };
+}
+
+/**
+ * The change from `base` to the stored chat `data` (`next` is its baseline), as a `chatPatch` body, or null when
+ * a patch cannot express it and the chat goes whole: another incarnation or epoch, an older revision,
+ * a message without an id or with a repeated one, or surviving messages in another order (a `replace`
+ * that reordered them). `generated` messages are always carried (see `GenerationChatPatchEvent`).
+ */
+export function diffChat(
+    base: ChatBaseline,
+    next: ChatBaseline,
+    data: Chat,
+    generated: ReadonlySet<string>,
+): Pick<GenerationChatPatchEvent, "meta" | "removed" | "messages" | "count"> | null {
+    const from = parseRevisionToken(base.revision);
+    const to = parseRevisionToken(next.revision);
+    if (!from || !to || from.epoch !== to.epoch || from.seq !== to.seq || from.revision > to.revision) {
+        return null;
+    }
+    const messages = data.message ?? [];
+    const ids: string[] = [];
+    const present = new Set<string>();
+    for (const message of messages) {
+        const id = message.chatId;
+        if (typeof id !== "string" || present.has(id)) {
+            return null;
+        }
+        ids.push(id);
+        present.add(id);
+    }
+    const removed = base.ids.filter((id) => !present.has(id));
+    // The surviving messages in the same relative order: a patch never moves a message.
+    const survivorsBefore = base.ids.filter((id) => present.has(id));
+    const survivorsAfter = ids.filter((id) => base.texts.has(id));
+    if (survivorsBefore.some((id, index) => survivorsAfter[index] !== id)) {
+        return null;
+    }
+    const changed: { after: string | null; message: unknown }[] = [];
+    messages.forEach((message, index) => {
+        const id = ids[index];
+        if (generated.has(id) || base.texts.get(id) !== next.texts.get(id)) {
+            changed.push({ after: index > 0 ? ids[index - 1] : null, message });
+        }
+    });
+    return {
+        ...(next.meta !== base.meta ? { meta: chatMeta(data) } : {}),
+        ...(removed.length > 0 ? { removed } : {}),
+        ...(changed.length > 0 ? { messages: changed } : {}),
+        count: messages.length,
+    };
+}
 
 const abortMessages: Record<GenerationErrorReason, { status: number; message: string }> = {
     aborted: { status: 499, message: "The generation was aborted" },
@@ -307,43 +393,126 @@ export function createGenerationJobs(options: {
         return taken;
     }
 
-    /** The chat's current server copy as a `resource` event, or null (gone, or another epoch). */
-    function chatEvent(job: Job, characterId: string, id: string): GenerationEvent | null {
+    /** The chat as stored now, or null (gone, another epoch, or the store closed during shutdown). */
+    function readChat(job: Job, characterId: string, id: string): { revision: string; data: Chat } | null {
         try {
             if (store.epoch() !== job.epoch) {
                 return null;
             }
             const chat = store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
-            if (!chat || chat.revision === null) {
-                return null;
-            }
-            // The job's messages still generating in this chat: the client keeps their streamed text
-            // over this copy, and takes the stored text of every other message of the job.
-            const streaming = lock
-                .ownedBy(job.token)
-                .filter((ref) => ref.characterId === characterId && ref.chatId === id)
-                .map((ref) => {
-                    const mark = job.watermarks.get(ref.messageId);
-                    return {
-                        messageId: ref.messageId,
-                        generationId: ref.generationId,
-                        seq: mark?.generationId === ref.generationId ? mark.seq : 0,
-                    };
-                });
-            return {
-                type: "resource",
-                epoch: job.epoch,
-                kind: "chats",
-                characterId,
-                id,
-                revision: chat.revision,
-                data: chat.data,
-                streaming,
-            };
+            return chat && chat.revision !== null ? { revision: chat.revision, data: chat.data as Chat } : null;
         } catch {
             // The store closed during shutdown: nothing more to hydrate.
             return null;
         }
+    }
+
+    /**
+     * The job's messages still generating in a chat: the client keeps their streamed text over a
+     * copy, and takes the stored text of every other message of the job.
+     */
+    function streamingIn(job: Job, characterId: string, id: string) {
+        return lock
+            .ownedBy(job.token)
+            .filter((ref) => ref.characterId === characterId && ref.chatId === id)
+            .map((ref) => {
+                const mark = job.watermarks.get(ref.messageId);
+                return {
+                    messageId: ref.messageId,
+                    generationId: ref.generationId,
+                    seq: mark?.generationId === ref.generationId ? mark.seq : 0,
+                };
+            });
+    }
+
+    /** The chat's current server copy as a `resource` event, or null (gone, or another epoch). */
+    function chatEvent(job: Job, characterId: string, id: string): GenerationEvent | null {
+        const chat = readChat(job, characterId, id);
+        return chat ? wholeChatEvent(job, characterId, id, chat) : null;
+    }
+
+    function wholeChatEvent(
+        job: Job,
+        characterId: string,
+        id: string,
+        chat: { revision: string; data: Chat },
+    ): GenerationEvent {
+        return {
+            type: "resource",
+            epoch: job.epoch,
+            kind: "chats",
+            characterId,
+            id,
+            revision: chat.revision,
+            data: chat.data,
+            streaming: streamingIn(job, characterId, id),
+        };
+    }
+
+    /**
+     * The job chat as an event, with the baseline it becomes once a socket takes it: a `chatPatch`
+     * from `sentChat` when `mode` is `patch` and a patch can express the change (`diffChat`), else
+     * the whole chat. Null when the chat is gone.
+     */
+    function jobChatEvent(
+        job: Job,
+        mode: "patch" | "whole",
+    ): { event: GenerationEvent; baseline: ChatBaseline } | null {
+        const { characterId, chatId } = job.context;
+        const chat = readChat(job, characterId, chatId);
+        if (!chat) {
+            return null;
+        }
+        const baseline = chatBaseline(chat.revision, chat.data);
+        const base = mode === "patch" ? job.sentChat : null;
+        const diff = base ? diffChat(base, baseline, chat.data, job.generated) : null;
+        const event: GenerationEvent =
+            base && diff
+                ? {
+                      type: "chatPatch",
+                      epoch: job.epoch,
+                      characterId,
+                      id: chatId,
+                      baseRevision: base.revision,
+                      revision: chat.revision,
+                      ...diff,
+                      streaming: streamingIn(job, characterId, chatId),
+                  }
+                : wholeChatEvent(job, characterId, chatId, chat);
+        return { event, baseline };
+    }
+
+    /**
+     * The current `accepted` with the newest chunk's text, while its generation still owns the message
+     * (a final reply is in the job chat, and its streamed text would be older); a command job's,
+     * which has no message; null once the job ended.
+     */
+    function currentReply(job: Job): GenerationEvent | null {
+        const current = job.current;
+        if (!current || job.ended) {
+            return null;
+        }
+        if (!current.messageId) {
+            return current;
+        }
+        const owner = lock.ownerOf({
+            characterId: job.context.characterId,
+            chatId: job.context.chatId,
+            messageId: current.messageId,
+        });
+        return owner?.token === job.token && owner.generationId === current.generationId ? current : null;
+    }
+
+    /** Sends the job chat (`jobChatEvent`); a socket taking it makes its copy the next patch's base. */
+    function deliverJobChat(job: Job, mode: "patch" | "whole"): GenerationEvent | null {
+        const built = jobChatEvent(job, mode);
+        if (!built) {
+            return null;
+        }
+        if (send(job, built.event)) {
+            job.sentChat = built.baseline;
+        }
+        return built.event;
     }
 
     function recordEvent(job: Job, kindName: string, id: string): GenerationEvent | null {
@@ -377,13 +546,13 @@ export function createGenerationJobs(options: {
     }
 
     function sendChat(job: Job) {
-        const event = chatEvent(job, job.context.characterId, job.context.chatId);
-        if (event) {
-            send(job, event);
-        }
+        deliverJobChat(job, "patch");
     }
 
     function receiptOf(event: GenerationEvent): HydrationReceipt {
+        if (event.type === "chatPatch") {
+            return { kind: "chats", id: event.id, characterId: event.characterId, revision: event.revision };
+        }
         const resource = event as Extract<GenerationEvent, { type: "resource" }>;
         return {
             kind: resource.kind,
@@ -393,10 +562,12 @@ export function createGenerationJobs(options: {
         };
     }
 
-    /** The job chat and every other record the job sent, read now (attach and the callback barrier). */
+    /**
+     * Every record the job sent other than its chat, read now (attach and the callback barrier send
+     * them after the job chat).
+     */
     function freshRecords(job: Job): GenerationEvent[] {
-        const chat = chatEvent(job, job.context.characterId, job.context.chatId);
-        const events: GenerationEvent[] = chat ? [chat] : [];
+        const events: GenerationEvent[] = [];
         for (const ref of job.refs.values()) {
             if (ref.kind === "chats" && ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
                 continue;
@@ -410,13 +581,18 @@ export function createGenerationJobs(options: {
         return events;
     }
 
-    /** Sends `freshRecords` and returns their receipts (synchronously: each receipt names the copy sent). */
+    /**
+     * The callback barrier: the job chat whole (the client's barrier applies a remembered whole copy
+     * again once its local work settled; a patch cannot be applied that late) and `freshRecords`.
+     * Returns their receipts (synchronously: each receipt names the copy sent).
+     */
     function hydrateAll(job: Job): HydrationReceipt[] {
+        const chat = deliverJobChat(job, "whole");
         const events = freshRecords(job);
         for (const event of events) {
             send(job, event);
         }
-        return events.map(receiptOf);
+        return (chat ? [chat, ...events] : events).map(receiptOf);
     }
 
     function assertLive(job: Job) {
@@ -498,6 +674,8 @@ export function createGenerationJobs(options: {
         } catch (error) {
             logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
         } finally {
+            // An attach after the end gets the chat whole: the base is no longer needed.
+            job.sentChat = null;
             job.resolveFinished();
         }
     }
@@ -570,6 +748,14 @@ export function createGenerationJobs(options: {
                 (changes.chats ?? []).forEach((group, index) => {
                     const outcomes = applied.chats[index]?.checkpoints ?? [];
                     let checkpoint = 0;
+                    if (group.characterId === job.context.characterId && group.chatId === job.context.chatId) {
+                        for (const op of group.ops) {
+                            if (op.op === "begin") {
+                                // The client's copy of it can hold streamed text: patches carry its row.
+                                job.generated.add(op.id);
+                            }
+                        }
+                    }
                     for (const op of group.ops) {
                         if ((op.op === "setText" || op.op === "setMessage") && op.generation) {
                             const outcome = outcomes[checkpoint];
@@ -696,8 +882,16 @@ export function createGenerationJobs(options: {
                     }
                 }
                 for (const ref of records.chats ?? []) {
-                    const event = chatEvent(job, ref.characterId, ref.id);
                     track(job, `chats\u0000${ref.characterId}\u0000${ref.id}`, { kind: "chats", ...ref });
+                    if (ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
+                        // The job chat: what changed since the last copy a socket took.
+                        const event = deliverJobChat(job, "patch");
+                        if (event) {
+                            receipts.push(receiptOf(event));
+                        }
+                        continue;
+                    }
+                    const event = chatEvent(job, ref.characterId, ref.id);
                     if (event) {
                         send(job, event);
                         receipts.push(receiptOf(event));
@@ -740,6 +934,12 @@ export function createGenerationJobs(options: {
                 }),
             (error) => finalize(job, errorTerminal(error)),
         ).catch((error) => logEvent("generation.runnerSettle", { job: job.id }, error, diagnostics));
+    }
+
+    /** The chat as stored now, as a patch base (null when it cannot be read). */
+    function admittedChat(characterId: string, chatId: string): ChatBaseline | null {
+        const chat = store.readRefs([], { chats: [{ characterId, id: chatId }] }).chats[0];
+        return chat && chat.revision !== null ? chatBaseline(chat.revision, chat.data as Chat) : null;
     }
 
     function create(body: GenerationCreateBody, epoch: string | undefined): CreateResult {
@@ -804,6 +1004,9 @@ export function createGenerationJobs(options: {
                 personaId: body.context.personaId ?? "",
             },
             refs: new Map(),
+            // The chat at the revision the owner named (checked above): the first patch's base.
+            sentChat: admittedChat(characterId, chatId),
+            generated: new Set(),
             terminal: null,
             listeners: new Set(),
             finished,
@@ -859,26 +1062,18 @@ export function createGenerationJobs(options: {
         }
         job.sockets.clear();
         job.sockets.add(ws);
-        // What the owner needs to resume: the job chat and every record the job sent, read fresh,
-        // the chosen preset, the current reply with its text, and the result if it ended.
-        const events: GenerationEvent[] = freshRecords(job);
+        // What the owner needs to resume: the job chat (what changed since the last copy a socket
+        // took while the job runs: the owner applies it only at exactly that copy's revision or the
+        // current one, and asks for the chat whole otherwise; whole once it ended) and every record
+        // the job sent, read fresh, the chosen preset, the current reply with its text, and the
+        // result if it ended.
+        const chat = jobChatEvent(job, job.ended ? "whole" : "patch");
+        const events: GenerationEvent[] = [...(chat ? [chat.event] : []), ...freshRecords(job)];
         if (job.preset) {
             events.push(job.preset);
         }
-        // Only a reply still generating: a final one is in the fresh chat above, and its streamed
-        // text would be older.
-        const current = job.current;
-        if (current?.messageId && !job.ended) {
-            const owner = lock.ownerOf({
-                characterId: job.context.characterId,
-                chatId: job.context.chatId,
-                messageId: current.messageId,
-            });
-            if (owner?.token === job.token && owner.generationId === current.generationId) {
-                events.push(current);
-            }
-        } else if (current && !job.ended) {
-            // A command job's `accepted` has no message.
+        const current = currentReply(job);
+        if (current) {
             events.push(current);
         }
         if (job.terminal) {
@@ -888,6 +1083,9 @@ export function createGenerationJobs(options: {
         }
         for (const event of events) {
             ws.send(JSON.stringify(event));
+        }
+        if (chat && !job.ended) {
+            job.sentChat = chat.baseline;
         }
         if (!job.ended) {
             // Then every request still waiting for an answer, marked as a replay.
@@ -907,6 +1105,17 @@ export function createGenerationJobs(options: {
             try {
                 message = JSON.parse(String(data));
             } catch {
+                return;
+            }
+            if (isResyncRequest(message)) {
+                // A `chatPatch` did not apply on the owner: the job chat whole, as the next base, and
+                // the current reply again (its stream update may have been dropped for a missing message).
+                if (!job.ended && deliverJobChat(job, "whole")) {
+                    const current = currentReply(job);
+                    if (current) {
+                        send(job, current);
+                    }
+                }
                 return;
             }
             job.channelLink.handleMessage(message);

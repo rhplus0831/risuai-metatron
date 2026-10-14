@@ -2,7 +2,7 @@ import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
-import type { ChannelChunk } from "../../../shared/jobs.ts";
+import type { ChannelChunk, ChatResyncRequest } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
     CallbackTargets,
@@ -91,7 +91,7 @@ import {
  */
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
-export type ChannelTransport = { send(message: ChannelAnswer | ChannelChunk): boolean };
+export type ChannelTransport = { send(message: ChannelAnswer | ChannelChunk | ChatResyncRequest): boolean };
 
 type Outstanding = {
     jobId: string;

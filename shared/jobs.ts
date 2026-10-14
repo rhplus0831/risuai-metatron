@@ -198,6 +198,33 @@ export type GenerationResourceEvent =
           data: unknown;
       };
 
+/**
+ * The job chat's change since the last copy the server handed the owner's socket (`baseRevision`),
+ * up to `revision`: a diff of two stored states, applied by the client only when it holds exactly
+ * one of the two revisions. `messages`, in stored order, holds every message that is new or changed
+ * since `baseRevision`, plus every message the job has begun a generation on (changed or not: the
+ * client's copy of those can hold streamed text), each with the id of the message right before it
+ * (`after`, null at the start). `meta` (the chat's fields without `message`) is present only when
+ * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
+ * event. A client that cannot apply it sends `ChatResyncRequest`.
+ */
+export type GenerationChatPatchEvent = {
+    type: "chatPatch";
+    epoch: string;
+    characterId: string;
+    id: string;
+    baseRevision: string;
+    revision: string;
+    meta?: Record<string, unknown>;
+    removed?: string[];
+    messages?: { after: string | null; message: unknown }[];
+    count: number;
+    streaming: StreamingMessage[];
+};
+
+/** The owner asks for the job chat whole (client to server): a `chatPatch` did not apply. */
+export type ChatResyncRequest = { type: "resync" };
+
 export type GenerationTerminalEvent =
     | {
           type: "done";
@@ -448,6 +475,7 @@ export type GenerationEvent =
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
     | GenerationResourceEvent
+    | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }
     | GenerationChannelEvent
     | GenerationTerminalEvent

@@ -385,8 +385,20 @@ const notices = (events: any[], kind: string) => events.filter((e) => e.type ===
 const callbacks = (events: any[], name?: string) =>
     events.filter((e) => e.type === "callback" && (name === undefined || e.name === name));
 const indexOf = (events: any[], predicate: (event: any) => boolean) => events.findIndex(predicate);
-/** The chat's `resource` events (the job's hydration of its records). */
-const chatRecords = (events: any[]) => events.filter((e) => e.type === "resource" && e.kind === "chats");
+/**
+ * The job chat's events (the job's hydration of its chat): whole `resource` events (the callback
+ * barrier) and `chatPatch` events (every other job chat event). Both carry `streaming`.
+ */
+const chatRecords = (events: any[]) =>
+    events.filter((e) => (e.type === "resource" && e.kind === "chats") || e.type === "chatPatch");
+/**
+ * The stored text of message `id` as a job chat event carries it: the whole copy's row, or the
+ * patch's row (undefined when the patch does not carry that message).
+ */
+const storedText = (event: any, id: string): string | undefined =>
+    event.type === "resource"
+        ? event.data.message.find((entry: any) => entry.chatId === id)?.data
+        : event.messages?.find((row: any) => row.message.chatId === id)?.message.data;
 
 beforeAll(async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -655,7 +667,9 @@ describe("the streaming tail", () => {
                     .map((entry) => entry.seq);
                 expect(claims.length).toBeGreaterThanOrEqual(2);
                 expect(claims.every((seq) => seq === lastSeq)).toBe(true);
-                expect(chatRecords(after).some((event) => event.data.message[1]?.data === "Rewritten.")).toBe(true);
+                // The rewritten reply reaches the tab as stored (a patch carries the reply's row on
+                // every event: the job began its generation).
+                expect(chatRecords(after).some((event) => storedText(event, reply.chatId) === "Rewritten.")).toBe(true);
                 expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
             });
         },
@@ -983,7 +997,7 @@ describe("inlays and the image view", () => {
             const chat = await readChat(chaId);
             expect(texts(chat)).toEqual(["user:q", "char:A {{inlay::inlay-cat}} and  end."]);
             // The placeholder text was stored before the images were asked for.
-            const generating = chatRecords(events).map((event) => event.data.message[1]?.data);
+            const generating = chatRecords(events).map((event) => storedText(event, chat.data.message[1].chatId));
             expect(generating).toContain("A [Generating...] and [Generating...] end.");
             expect(await clientSetText(chaId, chat.data.message[1].chatId, "edited by the tab")).toBe(200);
         },

@@ -57,6 +57,7 @@ import {
 import { flushClientDiagnostics, recordClientEvent } from "../diagnostics/collector";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
+    type ChatRef,
     acceptRemoteCollection,
     ackChatWork,
     applyRemoteCollection,
@@ -76,6 +77,9 @@ import {
     forgetCharacter,
     hasChatWork,
     hydrateChat,
+    hydrateChatPatch,
+    isChatBehind,
+    type ChatPatch,
     JOB_RETRY_MS,
     hasUnsavedChatWork,
     isCharacterGenerating,
@@ -1614,7 +1618,28 @@ async function refreshIdleChats() {
     if (halted) {
         return;
     }
-    const refs = idleChatRefreshes().slice(0, MAX_REMOTE_READS);
+    await readIdleChats(idleChatRefreshes().slice(0, MAX_REMOTE_READS));
+}
+
+/**
+ * Reads `ref` whole now when it is a stale or noticed loaded chat that is idle (`idleChatRefreshes`),
+ * as the save cycle's idle refresh would: a job is then created on the revision the server holds,
+ * not on one this tab knows is old (a job chat patch that did not fit). Returns whether the chat is
+ * then not known to be behind the server (`isChatBehind`): false when it was not idle, or the read
+ * was not taken (a local change or a newer notice meanwhile).
+ */
+export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
+    if (halted) {
+        return false;
+    }
+    await readIdleChats(
+        idleChatRefreshes().filter((entry) => entry.chaId === ref.chaId && entry.chatId === ref.chatId),
+    );
+    return !halted && !isChatBehind(ref);
+}
+
+/** The whole-chat reads of `refreshIdleChats`, for the given idle chats. */
+async function readIdleChats(refs: readonly ChatRef[]) {
     if (refs.length === 0) {
         return;
     }
@@ -2187,6 +2212,20 @@ export function applyHydration(record: HydrationRecord): boolean {
         }
     }
     return true;
+}
+
+/**
+ * Applies a job's `chatPatch` as `applyHydration` applies a whole chat (never an outgoing write),
+ * through `hydrateChatPatch`: `"mismatch"` asks the caller to request the chat whole.
+ */
+export function applyPatchHydration(
+    patch: ChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): "applied" | "busy" | "mismatch" | "old" {
+    if (halted || parseRevisionToken(patch.revision)?.epoch !== getResourceEpoch()) {
+        return "old";
+    }
+    return hydrateChatPatch(patch, job);
 }
 
 /**

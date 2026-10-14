@@ -33,6 +33,8 @@ const stubs = vi.hoisted(() => ({
     /** `alertJobError`: a job's error terminal with its failure fields (request history slice 6). */
     alertJobError: vi.fn(),
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
+    /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
+    refresh: vi.fn<(ref: unknown) => Promise<boolean>>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
     notices: vi.fn<() => number>(() => 0),
     /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
@@ -128,6 +130,7 @@ vi.mock("../storage/chatStore.svelte", () => ({
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
+    refreshStaleChat: stubs.refresh,
     GenerationBlockedError: BlockedError,
     generatingNoticeCount: stubs.notices,
     watchForRestore: stubs.restored,
@@ -161,6 +164,7 @@ beforeEach(async () => {
     stubs.entry.mockReset().mockReturnValue({ ...BOUND });
     stubs.loadChat.mockReset().mockResolvedValue({});
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.refresh.mockReset().mockResolvedValue(true);
     stubs.notices.mockReset().mockReturnValue(0);
     stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
@@ -397,6 +401,57 @@ describe("runServerButton", () => {
         endWith(follows()[0], done);
         await run;
         expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("reads a chat this tab knows is behind the server after the flush and before the create, saving and reading once more when the first read did not bring it current, and goes on after two attempts; a failed read runs nothing", async () => {
+        const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) =>
+            fn.mock.invocationCallOrder[index];
+        stubs.create.mockResolvedValue("j");
+        // Behind after the first read (a change landed meanwhile): saved and read once more.
+        stubs.refresh.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+        let run = commands.runServerButton(char, "go", ref);
+        await flush();
+        expect(stubs.refresh.mock.calls).toEqual([[ref], [ref]]);
+        expect(stubs.flush).toHaveBeenCalledTimes(2);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        expect(order(stubs.flush, 0)).toBeLessThan(order(stubs.refresh, 0));
+        expect(order(stubs.refresh, 0)).toBeLessThan(order(stubs.flush, 1));
+        expect(order(stubs.flush, 1)).toBeLessThan(order(stubs.refresh, 1));
+        expect(order(stubs.refresh, 1)).toBeLessThan(order(stubs.load));
+        expect(order(stubs.load)).toBeLessThan(order(stubs.create));
+        endWith(follows()[0], done);
+        await run;
+        // Current after the first read: one flush, one read.
+        stubs.flush.mockClear();
+        stubs.refresh.mockClear();
+        stubs.create.mockClear();
+        run = commands.runServerButton(char, "go", ref);
+        await flush();
+        expect(stubs.flush).toHaveBeenCalledTimes(1);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        endWith(follows()[1], done);
+        await run;
+        // Still behind after two attempts: the job goes as it is (the server refuses an old revision).
+        stubs.flush.mockClear();
+        stubs.refresh.mockClear();
+        stubs.create.mockClear();
+        stubs.refresh.mockResolvedValue(false);
+        run = commands.runServerButton(char, "go", ref);
+        await flush();
+        expect(stubs.flush).toHaveBeenCalledTimes(2);
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        endWith(follows()[2], done);
+        await run;
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        // A failed read: alerted, nothing created.
+        stubs.create.mockClear();
+        stubs.refresh.mockReset().mockRejectedValueOnce(new Error("offline"));
+        await commands.runServerButton(char, "go", ref);
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertError).toHaveBeenLastCalledWith(expect.stringMatching(/could not be loaded.*offline/));
     });
 
     it("runs nothing for a group, a discarding or rejected flush, a chat gone meanwhile, or an unsaved chat", async () => {

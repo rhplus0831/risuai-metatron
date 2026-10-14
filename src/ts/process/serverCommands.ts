@@ -32,6 +32,7 @@ import {
     flushResources,
     GenerationBlockedError,
     generatingNoticeCount,
+    refreshStaleChat,
     watchForRestore,
 } from "../storage/resourceSync.svelte";
 import { sleep } from "../util";
@@ -303,23 +304,39 @@ async function runPinnedServerJob(
         browserLanguage: navigator.language,
     };
     const notices = generatingNoticeCount();
-    try {
-        const { discarded } = await flushResources();
-        if (discarded.length > 0) {
-            alertError(`A conflict discarded local changes; the ${request.label} did not run`);
-            return refused;
-        }
-    } catch (error) {
-        if (error instanceof GenerationBlockedError) {
-            // The chat or character is being generated (another tab's job): the same notice as a
-            // busy chat, unless this flush's conflict recovery has just shown it.
-            if (generatingNoticeCount() === notices) {
-                alertError(language.chatGenerating);
+    // Saved first; then a chat this tab knows is behind the server (a job's chat patch that did not
+    // fit, a stale acknowledgement, a live notice) is read whole, so the job is not created on its
+    // old revision. A change made while that read was in flight is saved and the read tried once
+    // more; a chat still behind then goes as it is, and the server refuses its old revision.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const { discarded } = await flushResources();
+            if (discarded.length > 0) {
+                alertError(`A conflict discarded local changes; the ${request.label} did not run`);
+                return refused;
             }
+        } catch (error) {
+            if (error instanceof GenerationBlockedError) {
+                // The chat or character is being generated (another tab's job): the same notice as a
+                // busy chat, unless this flush's conflict recovery has just shown it.
+                if (generatingNoticeCount() === notices) {
+                    alertError(language.chatGenerating);
+                }
+                return refused;
+            }
+            alertError(`Local changes could not be saved: ${errorText(error)}`);
             return refused;
         }
-        alertError(`Local changes could not be saved: ${errorText(error)}`);
-        return refused;
+        let current: boolean;
+        try {
+            current = await refreshStaleChat(ref);
+        } catch (error) {
+            alertError(`The chat could not be loaded: ${errorText(error)}`);
+            return refused;
+        }
+        if (current) {
+            break;
+        }
     }
     let target;
     try {

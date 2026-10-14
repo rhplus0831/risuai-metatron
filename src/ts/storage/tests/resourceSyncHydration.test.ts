@@ -197,7 +197,51 @@ async function boot() {
         text: "",
         seq,
     });
+    /** The server's stored row of message `id` of `k` (what a patch carries for it). */
+    const row = (id: string, chatId = "k") =>
+        JSON.parse(JSON.stringify(fake.chat("c", chatId)!.data.message.find((entry) => entry.chatId === id)));
+    /** The server's chat `k` without its messages (a patch's `meta`). */
+    const metaNow = (chatId = "k") => {
+        const { message: _message, ...meta } = JSON.parse(JSON.stringify(fake.chat("c", chatId)!.data)) as Chat;
+        return meta as Record<string, unknown>;
+    };
+    /** A `chatPatch` event of job `jobId` on `k` (`revision` defaults to the server's current one). */
+    const patchEvent = (
+        jobId: string,
+        streaming: { messageId: string; generationId: string; seq: number }[],
+        body: {
+            baseRevision: string;
+            revision?: string;
+            meta?: Record<string, unknown>;
+            removed?: string[];
+            messages?: { after: string | null; message: unknown }[];
+            count: number;
+            id?: string;
+        },
+    ): GenerationEvent => {
+        const { id, ...rest } = body;
+        return {
+            type: "chatPatch",
+            epoch,
+            characterId: "c",
+            id: id ?? "k",
+            revision: body.revision ?? fake.chat("c", id ?? "k")!.revision,
+            ...rest,
+            streaming,
+        } as GenerationEvent;
+    };
+    /** A server write on `k` as another writer or the job makes it; returns the new revision. */
+    const serverWrite = (ops: any[], chatId = "k") => {
+        fake.chatBatch([{ characterId: "c", chatId, baseRevision: fake.chat("c", chatId)!.revision, ops }]);
+        return fake.chat("c", chatId)!.revision;
+    };
+    const ids = (chatId = "k") => mirrorChat(chatId)!.message.map((entry) => entry.chatId);
     return {
+        row,
+        metaNow,
+        patchEvent,
+        serverWrite,
+        ids,
         fake,
         sync,
         chat,
@@ -953,5 +997,646 @@ describe("a refusal for a generating message", () => {
         fake.lock!.endJob("T");
         await vi.advanceTimersByTimeAsync(5500);
         expect(fake.texts("c", "k")).toEqual(["A", "edited", "C"]);
+    });
+});
+
+// The job chat's `chatPatch` (`hydrateChatPatch`, through `applyPatchHydration` and the transport's
+// `applyGenerationEvent`): the change between two stored revisions, applied only to a mirror that
+// holds exactly the patch's base or its revision and has no local work, with the job's lock handling
+// of a whole hydration; otherwise the chat is marked for an idle refresh (`busy`, `mismatch`).
+describe("a job's chat patch", () => {
+    /** The same record's token from a later incarnation (`seq` one higher). */
+    const laterIncarnation = (token: string) => {
+        const [epoch, seq, revision] = token.split(":");
+        return `${epoch}:${Number(seq) + 1}:${revision}`;
+    };
+
+    it("applies at its base: inserts and replaces its rows as owned copies after their anchors, keeps every other message's object, replaces the meta, moves the held revision, and echoes nothing", async () => {
+        const { fake, sync, chat, mirrorChat, text, apply, patchEvent, row, metaNow, serverWrite, ids } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        expect(chat.heldChatRevision(refK)).toBe(base);
+        const before = chat.findChat(refK)!;
+        const [keepA, , keepC] = before.message;
+        const revision = serverWrite([
+            { op: "append", messages: [m("d", "D", "char")], anchor: { end: true } },
+            { op: "setText", id: "b", text: "B by the job" },
+            { op: "meta", set: { note: "noted by the job" } },
+        ]);
+        apply(
+            "J",
+            patchEvent("J", [], {
+                baseRevision: base,
+                revision,
+                meta: metaNow(),
+                messages: [
+                    { after: "a", message: row("b") },
+                    { after: "c", message: row("d") },
+                ],
+                count: 4,
+            }),
+        );
+        expect(ids()).toEqual(["a", "b", "c", "d"]);
+        expect(text("b")).toBe("B by the job");
+        expect(text("d")).toBe("D");
+        expect(mirrorChat()!.note).toBe("noted by the job");
+        const after = chat.findChat(refK)!;
+        expect(after.message[0]).toBe(keepA);
+        expect(after.message[2]).toBe(keepC);
+        expect(chat.heldChatRevision(refK)).toBe(revision);
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        // Nothing went out for the patch; a local edit afterwards saves on the patched revision.
+        await tick();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+        chat.setMessageText(refK, "a", "mine");
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.texts("c", "k")).toEqual(["mine", "B by the job", "C", "D"]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("applies a removal, keeping the surviving messages' objects, and a patch spanning several server revisions from the held base", async () => {
+        const { fake, chat, text, apply, patchEvent, row, metaNow, serverWrite, ids } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        const [keepA, , keepC] = chat.findChat(refK)!.message;
+        serverWrite([{ op: "remove", ids: ["b"] }]);
+        serverWrite([{ op: "meta", set: { name: "Renamed" } }]);
+        const revision = serverWrite([{ op: "setText", id: "c", text: "C later" }]);
+        apply(
+            "J",
+            patchEvent("J", [], {
+                baseRevision: base,
+                revision,
+                meta: metaNow(),
+                removed: ["b"],
+                messages: [{ after: "a", message: row("c") }],
+                count: 2,
+            }),
+        );
+        expect(ids()).toEqual(["a", "c"]);
+        expect(text("c")).toBe("C later");
+        expect(chat.findChat(refK)!.name).toBe("Renamed");
+        expect(chat.findChat(refK)!.message[0]).toBe(keepA);
+        expect(chat.findChat(refK)!.message[1]).not.toBe(keepC);
+        expect(chat.heldChatRevision(refK)).toBe(revision);
+    });
+
+    it("installs the job's generated row under the streamed text at a new and at an equal revision, honours the claim as a watermark, and releases the reply at the terminal patch", async () => {
+        const { fake, sync, text, locked, apply, chunk, accepted, patchEvent, row, serverWrite } = await boot();
+        apply("J", accepted("J", "g1"));
+        apply("J", chunk("g1", 1, "RAW ONE"));
+        apply("J", chunk("g1", 2, "RAW TWO"));
+        await vi.waitFor(() => expect(text("b")).toBe("RAW TWO"));
+        // The job's processed checkpoint covering chunk 2: the stored row shows over the raw text.
+        const r0 = fake.chat("c", "k")!.revision;
+        const r1 = serverWrite([{ op: "setText", id: "b", text: "PROCESSED TWO" }]);
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "b", generationId: "g1", seq: 2 }], {
+                baseRevision: r0,
+                revision: r1,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        expect(text("b")).toBe("PROCESSED TWO");
+        expect(locked("b")).toBe(true);
+        expect(fake.texts("c", "k")).toEqual(["A", "PROCESSED TWO", "C"]);
+        // A newer chunk shows over it. An equal-revision patch (nothing stored changed) still carries
+        // the generated row and claims 0: the stored text is installed and the newer stream put back.
+        apply("J", chunk("g1", 3, "RAW THREE"));
+        expect(text("b")).toBe("RAW THREE");
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "b", generationId: "g1", seq: 0 }], {
+                baseRevision: r1,
+                revision: r1,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        expect(text("b")).toBe("RAW THREE");
+        expect(locked("b")).toBe(true);
+        // An equal-revision patch claiming chunk 3 shows the stored text over the raw one.
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "b", generationId: "g1", seq: 3 }], {
+                baseRevision: r1,
+                revision: r1,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        expect(text("b")).toBe("PROCESSED TWO");
+        expect(locked("b")).toBe(true);
+        // The terminal patch lists nothing streaming: the stored final shows and the lock goes; the
+        // terminal event is a no-op and a late chunk of the ended generation is dropped.
+        const r2 = serverWrite([{ op: "setText", id: "b", text: "FINAL" }]);
+        apply(
+            "J",
+            patchEvent("J", [], {
+                baseRevision: r1,
+                revision: r2,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        expect(text("b")).toBe("FINAL");
+        expect(locked("b")).toBe(false);
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: r2, messageId: "b" });
+        apply("J", chunk("g1", 9, "LATE"));
+        expect(text("b")).toBe("FINAL");
+        await tick();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("locks a reply the patch lists before its stream (a reply appended with `begin`), as a whole copy does", async () => {
+        const { fake, chat, text, locked, apply, chunk, accepted, patchEvent, row, serverWrite, ids } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        const revision = serverWrite([{ op: "append", messages: [m("r", "", "char")], anchor: { end: true } }]);
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "r", generationId: "g1", seq: 0 }], {
+                baseRevision: base,
+                revision,
+                messages: [{ after: "c", message: row("r") }],
+                count: 4,
+            }),
+        );
+        expect(ids()).toEqual(["a", "b", "c", "r"]);
+        expect(locked("r")).toBe(true);
+        expect(() => chat.setMessageText(refK, "r", "mine")).toThrow(/being generated/);
+        apply("J", accepted("J", "g1", "r", 0));
+        apply("J", chunk("g1", 1, "RAW ONE", "r"));
+        expect(text("r")).toBe("RAW ONE");
+    });
+
+    it("refuses a patch whose base is not the held revision (a missed change), even when its revision is newer, marks the chat for a refresh, and refuses every patch while it is marked; the whole copy then applies and clears the mark", async () => {
+        const { fake, sync, chat, apply, patchEvent, row, metaNow, serverWrite, ids } = await boot();
+        const r0 = fake.chat("c", "k")!.revision;
+        const r1 = serverWrite([{ op: "meta", set: { note: "missed" } }]);
+        const r2 = serverWrite([{ op: "append", messages: [m("d", "D")], anchor: { end: true } }]);
+        const intermediate = {
+            characterId: "c",
+            id: "k",
+            baseRevision: r1,
+            revision: r2,
+            messages: [{ after: "c", message: row("d") }],
+            count: 4,
+        };
+        expect(sync.applyPatchHydration(intermediate, { jobId: "J", streaming: [] })).toBe("mismatch");
+        expect(ids()).toEqual(["a", "b", "c"]);
+        expect(chat.findChat(refK)!.note).toBe("");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.idleChatRefreshes()).toEqual([refK]);
+        // Marked: even the patch from the held base is refused (the mirror may not match it any more).
+        const exact = { ...intermediate, baseRevision: r0, meta: metaNow() };
+        expect(sync.applyPatchHydration(exact, { jobId: "J", streaming: [] })).toBe("mismatch");
+        expect(ids()).toEqual(["a", "b", "c"]);
+        // The whole copy (what the resync brings) applies and ends the mark.
+        apply("J", {
+            ...(fake.chat("c", "k") as any),
+            type: "resource",
+            epoch: fake.store.epoch(),
+            kind: "chats",
+            streaming: [],
+        });
+        expect(ids()).toEqual(["a", "b", "c", "d"]);
+        expect(chat.findChat(refK)!.note).toBe("missed");
+        expect(chat.heldChatRevision(refK)).toBe(r2);
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        // And the next patch from that copy applies.
+        const r3 = serverWrite([{ op: "setText", id: "d", text: "D later" }]);
+        expect(
+            sync.applyPatchHydration(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision: r2,
+                    revision: r3,
+                    messages: [{ after: "c", message: row("d") }],
+                    count: 4,
+                },
+                { jobId: "J", streaming: [] },
+            ),
+        ).toBe("applied");
+        expect(chat.heldChatRevision(refK)).toBe(r3);
+    });
+
+    it("keeps local work over a patch (`busy`, marked for a refresh) while releasing the locks the copy no longer lists; the refresh reads the chat whole once the work settled", async () => {
+        const { fake, sync, chat, text, locked, apply, accepted, patchEvent, row, serverWrite } = await boot();
+        apply("J", accepted("J", "g1"));
+        chat.setChatMeta(refK, { note: "local note" });
+        const r0 = fake.chat("c", "k")!.revision;
+        const r1 = serverWrite([{ op: "setText", id: "b", text: "FINAL" }]);
+        expect(
+            sync.applyPatchHydration(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision: r0,
+                    revision: r1,
+                    messages: [{ after: "a", message: row("b") }],
+                    count: 3,
+                },
+                { jobId: "J", streaming: [] },
+            ),
+        ).toBe("busy");
+        expect(text("b")).toBe("");
+        expect(locked("b")).toBe(false);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        // The local note lands on an older revision (a stale acknowledgement keeps the held revision
+        // and the mark), and the same cycle's idle refresh then reads the chat whole: the job's text
+        // arrives with the note kept. (A flush with nothing to send runs no cycle: see the DEFECTS below.)
+        await sync.flushResources();
+        expect(fake.chat("c", "k")!.data.note).toBe("local note");
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
+        expect(text("b")).toBe("FINAL");
+        expect(chat.findChat(refK)!.note).toBe("local note");
+        expect(chat.heldChatRevision(refK)).toBe(fake.chat("c", "k")!.revision);
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        expect(fake.texts("c", "k")).toEqual(["A", "FINAL", "C"]);
+    });
+
+    it("ignores a patch of another epoch, one older than the held revision, one of an earlier incarnation, or an inverted one (`old`), and refuses one of a later incarnation (`mismatch`)", async () => {
+        const { fake, sync, chat, ids } = await boot();
+        const r0 = fake.chat("c", "k")!.revision;
+        const job = { jobId: "J", streaming: [] };
+        const body = { characterId: "c", id: "k", count: 3 };
+        const otherEpoch = (token: string) => `22222222-2222-4333-8444-555555555555${token.slice(token.indexOf(":"))}`;
+        expect(sync.applyPatchHydration({ ...body, baseRevision: otherEpoch(r0), revision: otherEpoch(r0) }, job)).toBe(
+            "old",
+        );
+        expect(sync.applyPatchHydration({ ...body, baseRevision: bumped(r0, -1), revision: bumped(r0, -1) }, job)).toBe(
+            "old",
+        );
+        expect(
+            sync.applyPatchHydration(
+                { ...body, baseRevision: earlierIncarnation(r0), revision: earlierIncarnation(r0) },
+                job,
+            ),
+        ).toBe("old");
+        expect(sync.applyPatchHydration({ ...body, baseRevision: bumped(r0, 2), revision: bumped(r0, 1) }, job)).toBe(
+            "old",
+        );
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        // The chat was recreated on the server (a later incarnation): the mirror's copy is obsolete.
+        expect(
+            sync.applyPatchHydration(
+                { ...body, baseRevision: laterIncarnation(r0), revision: laterIncarnation(r0) },
+                job,
+            ),
+        ).toBe("mismatch");
+        expect(chat.idleChatRefreshes()).toEqual([refK]);
+        expect(ids()).toEqual(["a", "b", "c"]);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+    });
+
+    it("refuses a patch that does not fit the mirror as a whole, changing nothing: an unknown anchor, a wrong count, a repeated row, a row of a removed id, or a row that would move a message", async () => {
+        const { fake, sync, chat, ids } = await boot();
+        const r0 = fake.chat("c", "k")!.revision;
+        const job = { jobId: "J", streaming: [] };
+        const d = m("d", "D");
+        const bad = [
+            { messages: [{ after: "zz", message: d }], count: 4 },
+            { messages: [{ after: "c", message: d }], count: 5 },
+            {
+                messages: [
+                    { after: "c", message: d },
+                    { after: "d", message: d },
+                ],
+                count: 4,
+            },
+            { removed: ["b"], messages: [{ after: "a", message: m("b", "B") }], count: 3 },
+            { messages: [{ after: "c", message: m("a", "A moved") }], count: 3 },
+            { messages: [{ after: "a", message: { role: "user", data: "no id" } }], count: 4 },
+        ];
+        for (const body of bad) {
+            const before = [...chat.findChat(refK)!.message];
+            expect(chat.idleChatRefreshes()).toEqual([]);
+            expect(
+                sync.applyPatchHydration(
+                    { characterId: "c", id: "k", baseRevision: r0, revision: r0, ...body } as any,
+                    job,
+                ),
+                JSON.stringify(body),
+            ).toBe("mismatch");
+            expect(ids()).toEqual(["a", "b", "c"]);
+            expect([...chat.findChat(refK)!.message]).toEqual(before);
+            before.forEach((message, index) => expect(chat.findChat(refK)!.message[index]).toBe(message));
+            expect(chat.heldChatRevision(refK)).toBe(r0);
+            expect(chat.idleChatRefreshes()).toEqual([refK]);
+            // Reset the mark with the whole copy (what the resync brings).
+            expect(
+                sync.applyHydration({
+                    kind: "chats",
+                    id: "k",
+                    characterId: "c",
+                    revision: r0,
+                    data: fake.chat("c", "k")!.data,
+                }),
+            ).toBe(true);
+        }
+    });
+});
+
+// The fix round of the `chatPatch` change (Astra's challenge points 1 to 4): the recovery after a
+// patch the mirror could not take. The send path (`runServerJob`: `flushResources`, then
+// `refreshStaleChat`) brings a chat this tab knows is behind current before a job is created; a
+// stale mark wakes the save loop even without a lock to release; a very large chat takes a patch
+// without the list being read or rewritten whole. The transport's recovery (a `busy` copy saved,
+// then `resync`) is covered in `src/ts/network/generationJobs.test.ts` over stubs; here the events
+// are applied without a follow, so the send path is exercised alone.
+describe("recovery after a refused chat patch", () => {
+    /**
+     * A reply streams while a local edit pends; the checkpoint patch is `busy`, the edit then lands on
+     * an older revision (the held one stays), and the provider stalls: no further patch arrives. At the
+     * end, the terminal patch is based on the refused checkpoint's copy, which the mirror never took:
+     * a mismatch, and the job has ended.
+     */
+    async function stalledThenEnded() {
+        const b = await boot();
+        const { fake, sync, chat, apply, accepted, patchEvent, row, serverWrite } = b;
+        apply("J", accepted("J", "g1"));
+        const r0 = fake.chat("c", "k")!.revision;
+        chat.setChatMeta(refK, { note: "local note" });
+        const r1 = serverWrite([{ op: "setText", id: "b", text: "ONE" }]);
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "b", generationId: "g1", seq: 1 }], {
+                baseRevision: r0,
+                revision: r1,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        await sync.flushResources();
+        expect(fake.chat("c", "k")!.data.note).toBe("local note");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(chat.isMessageLocked(refK, "b")).toBe(true);
+        // A stalled provider: no checkpoint for a long while, and nothing reads the chat meanwhile
+        // (the generation blocks the idle refresh).
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toEqual([]);
+        // The end: the final write, the terminal patch from the last copy handed over, the result.
+        const r3 = serverWrite([{ op: "setText", id: "b", text: "FINAL" }]);
+        apply(
+            "J",
+            patchEvent("J", [], {
+                baseRevision: r1,
+                revision: r3,
+                messages: [{ after: "a", message: row("b") }],
+                count: 3,
+            }),
+        );
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: r3, messageId: "b" });
+        expect(chat.isMessageLocked(refK, "b")).toBe(false);
+        return { ...b, r0, r3 };
+    }
+
+    it("the send path brings the chat current after a terminal mismatch: the flush alone has nothing to wait for, and `refreshStaleChat` then reads the chat whole, so the job names the server's revision", async () => {
+        const { fake, sync, chat, text, r0, r3 } = await stalledThenEnded();
+        // What `runServerJob` does before creating the job: the flush (nothing is owed: it runs no
+        // cycle and the chat stays as it is), then the read of a chat known to be behind.
+        await sync.flushResources();
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatBehind(refK)).toBe(true);
+        expect(await sync.refreshStaleChat(refK)).toBe(true);
+        expect(chat.heldChatRevision(refK)).toBe(r3);
+        expect(text("b")).toBe("FINAL");
+        expect(chat.findChat(refK)!.note).toBe("local note");
+        expect(chat.isChatBehind(refK)).toBe(false);
+        expect(chat.isChatStale(refK)).toBe(false);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
+        // Current: another call reads nothing.
+        expect(await sync.refreshStaleChat(refK)).toBe(true);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
+    });
+
+    it("without a send, the lock release at the end scheduled the idle refresh, which runs after the save loop's debounce", async () => {
+        const { fake, chat, text, r3 } = await stalledThenEnded();
+        expect(chat.heldChatRevision(refK)).not.toBe(r3);
+        expect(text("b")).not.toBe("FINAL");
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(chat.heldChatRevision(refK)).toBe(r3);
+        expect(text("b")).toBe("FINAL");
+        expect(fake.requests.some((request) => request.path === "/api/resources/read")).toBe(true);
+    });
+
+    it("`refreshStaleChat` reads nothing and answers false while the chat generates, answers false when a local change arrives during its read (the read is not taken), and true once the next read is taken", async () => {
+        const { fake, sync, chat, text, apply, accepted, serverWrite } = await boot();
+        const r0 = fake.chat("c", "k")!.revision;
+        // Behind by a mismatched patch (which still lists the reply streaming: its lock stays), and
+        // generating: not idle, so no read; still behind.
+        apply("J", accepted("J", "g1"));
+        const r1 = serverWrite([{ op: "setText", id: "a", text: "A1" }]);
+        expect(
+            sync.applyPatchHydration(
+                { characterId: "c", id: "k", baseRevision: r1, revision: r1, count: 3 },
+                { jobId: "J", streaming: [{ messageId: "b", generationId: "g1", seq: 0 }] },
+            ),
+        ).toBe("mismatch");
+        expect(chat.isMessageLocked(refK, "b")).toBe(true);
+        fake.requests.length = 0;
+        expect(await sync.refreshStaleChat(refK)).toBe(false);
+        expect(fake.requests).toEqual([]);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        // The job ends: idle. A change typed while the read is in flight keeps the read out (local
+        // work is never overwritten): false, and the chat is still behind.
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: r1 });
+        const reading = sync.refreshStaleChat(refK);
+        chat.setChatMeta(refK, { note: "typed meanwhile" });
+        expect(await reading).toBe(false);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
+        expect(text("a")).toBe("A");
+        expect(chat.isChatBehind(refK)).toBe(true);
+        // The second attempt of the send path: the change saved, then the read taken.
+        await sync.flushResources();
+        expect(await sync.refreshStaleChat(refK)).toBe(true);
+        expect(text("a")).toBe("A1");
+        expect(chat.findChat(refK)!.note).toBe("typed meanwhile");
+        expect(chat.heldChatRevision(refK)).toBe(fake.chat("c", "k")!.revision);
+        expect(chat.isChatBehind(refK)).toBe(false);
+    });
+
+    it("`refreshStaleChat` answers an unanswered live notice too: the noticed chat is read whole", async () => {
+        const { fake, sync, chat, serverWrite } = await boot();
+        const refJ = { chaId: "c", chatId: "j" };
+        const revision = serverWrite([{ op: "meta", set: { name: "J renamed" } }], "j");
+        expect(chat.noteRemoteChat(refJ, revision)).toBe("noticed");
+        expect(chat.isChatStale(refJ)).toBe(false);
+        expect(chat.isChatBehind(refJ)).toBe(true);
+        expect(await sync.refreshStaleChat(refJ)).toBe(true);
+        expect(chat.findChat(refJ)!.name).toBe("J renamed");
+        expect(chat.heldChatRevision(refJ)).toBe(revision);
+        expect(chat.isChatBehind(refJ)).toBe(false);
+    });
+
+    it("`chatHydrationHold` tells queued or in-flight work (saved by a flush) from work no save settles (a refusal for a generating message), and `isChatStale` a stale acknowledgement", async () => {
+        const { fake, sync, chat, apply, accepted, serverWrite } = await boot();
+        expect(chat.chatHydrationHold(refK)).toBe("none");
+        expect(chat.isChatStale(refK)).toBe(false);
+        chat.setChatMeta(refK, { note: "mine" });
+        expect(chat.chatHydrationHold(refK)).toBe("saving");
+        await sync.flushResources();
+        expect(chat.chatHydrationHold(refK)).toBe("none");
+        expect(chat.isChatStale(refK)).toBe(false);
+        // A write landing on an older revision while the chat generates: a stale acknowledgement keeps
+        // the held revision and marks the chat (nothing holds it: a save settled it).
+        apply("J", accepted("J", "g1"));
+        const r0 = fake.chat("c", "k")!.revision;
+        serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
+        chat.setChatMeta(refK, { note: "later" });
+        await sync.flushResources();
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(chat.chatHydrationHold(refK)).toBe("none");
+        // A message edit refused for a generating message: held until the job ends.
+        fake.lock!.addToken("T");
+        fake.lock!.acquire({ ...B, messageId: "c" }, { jobId: "J", generationId: "g1", token: "T" });
+        chat.setMessageText(refK, "c", "edited");
+        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
+        expect(chat.chatHydrationHold(refK)).toBe("held");
+        fake.lock!.endJob("T");
+        await vi.advanceTimersByTimeAsync(5500);
+        expect(fake.texts("c", "k")).toEqual(["theirs", "B", "edited"]);
+        expect(chat.chatHydrationHold(refK)).toBe("none");
+    });
+
+    it("the end of a job that locked nothing wakes the save loop: the idle refresh reads a chat a terminal mismatch marked stale", async () => {
+        const { fake, sync, chat, text, apply, serverWrite } = await boot();
+        const r0 = fake.chat("c", "k")!.revision;
+        // Another writer's change this tab has not seen (its live feed is down): the mirror holds r0.
+        const r1 = serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
+        expect(
+            sync.applyPatchHydration(
+                { characterId: "c", id: "k", baseRevision: r1, revision: r1, count: 3 },
+                { jobId: "J", streaming: [] },
+            ),
+        ).toBe("mismatch");
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: r1 });
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.idleChatRefreshes()).toEqual([refK]);
+        fake.requests.length = 0;
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
+        expect(text("a")).toBe("theirs");
+        expect(chat.heldChatRevision(refK)).toBe(r1);
+        expect(chat.isChatStale(refK)).toBe(false);
+    });
+
+    it("applies an empty equal-revision patch and an append on a very large chat without reading or rewriting the list: the earlier messages keep their objects", async () => {
+        const { fake, sync, chat, serverWrite } = await boot();
+        const count = 150_000;
+        const big = Array.from({ length: count }, (_, index) => m(`m${index}`, "x"));
+        const revision = serverWrite([{ op: "append", messages: big, anchor: { end: true } }], "j");
+        const refJ = { chaId: "c", chatId: "j" };
+        expect(
+            sync.applyHydration({
+                kind: "chats",
+                id: "j",
+                characterId: "c",
+                revision,
+                data: fake.chat("c", "j")!.data,
+            }),
+        ).toBe(true);
+        const held = chat.findChat(refJ)!;
+        expect(held.message).toHaveLength(count);
+        const [first] = held.message;
+        const last = held.message[count - 1];
+        expect(
+            sync.applyPatchHydration(
+                { characterId: "c", id: "j", baseRevision: revision, revision, count },
+                { jobId: "J", streaming: [] },
+            ),
+        ).toBe("applied");
+        const next = bumped(revision, 1);
+        expect(
+            sync.applyPatchHydration(
+                {
+                    characterId: "c",
+                    id: "j",
+                    baseRevision: revision,
+                    revision: next,
+                    messages: [{ after: `m${count - 1}`, message: m("z", "Z", "char") }],
+                    count: count + 1,
+                },
+                { jobId: "J", streaming: [] },
+            ),
+        ).toBe("applied");
+        expect(chat.findChat(refJ)!.message).toHaveLength(count + 1);
+        expect(chat.findChat(refJ)!.message[0]).toBe(first);
+        expect(chat.findChat(refJ)!.message[count - 1]).toBe(last);
+        expect(chat.findChat(refJ)!.message[count].chatId).toBe("z");
+        expect(chat.heldChatRevision(refJ)).toBe(next);
+    });
+
+    it("places rows by their anchors (an insertion chain, a row after a replaced one, a removal before the anchor, a start insertion), takes removed ids the mirror lacks, and refuses a null anchor on a later row", async () => {
+        const { fake, sync, chat, ids } = await boot();
+        const job = { jobId: "J", streaming: [] };
+        let held = fake.chat("c", "k")!.revision;
+        /** A patch from the held revision to the next synthetic one (the planner reads only the mirror). */
+        const step = (body: Partial<Parameters<typeof sync.applyPatchHydration>[0]> & { count: number }) => {
+            const next = bumped(held, 1);
+            const outcome = sync.applyPatchHydration(
+                { characterId: "c", id: "k", baseRevision: held, revision: next, ...body },
+                job,
+            );
+            if (outcome === "applied") {
+                held = next;
+            }
+            return outcome;
+        };
+        const [a, b, c] = chat.findChat(refK)!.message;
+        // A chain: e after the inserted d.
+        expect(
+            step({
+                messages: [
+                    { after: "c", message: m("d", "D") },
+                    { after: "d", message: m("e", "E") },
+                ],
+                count: 5,
+            }),
+        ).toBe("applied");
+        expect(ids()).toEqual(["a", "b", "c", "d", "e"]);
+        expect(chat.findChat(refK)!.message.slice(0, 3)).toEqual([a, b, c]);
+        // A replaced row and an insertion anchored on it; the messages before it keep their objects.
+        expect(
+            step({
+                messages: [
+                    { after: "a", message: m("b", "B2") },
+                    { after: "b", message: m("x", "X") },
+                ],
+                count: 6,
+            }),
+        ).toBe("applied");
+        expect(ids()).toEqual(["a", "b", "x", "c", "d", "e"]);
+        expect(chat.findChat(refK)!.message[0]).toBe(a);
+        expect(chat.findChat(refK)!.message[3]).toBe(c);
+        expect(chat.findChat(refK)!.message[1].data).toBe("B2");
+        // A removal before the row's anchor, and one the mirror lacks (an equal-revision replay).
+        expect(step({ removed: ["x", "gone"], messages: [{ after: "d", message: m("e", "E2") }], count: 5 })).toBe(
+            "applied",
+        );
+        expect(ids()).toEqual(["a", "b", "c", "d", "e"]);
+        expect(chat.findChat(refK)!.message[4].data).toBe("E2");
+        // A start insertion (the first row's null anchor); a null anchor on a later row does not fit.
+        expect(step({ messages: [{ after: null, message: m("s", "S") }], count: 6 })).toBe("applied");
+        expect(ids()).toEqual(["s", "a", "b", "c", "d", "e"]);
+        expect(
+            step({
+                messages: [
+                    { after: "e", message: m("f", "F") },
+                    { after: null, message: m("t", "T") },
+                ],
+                count: 8,
+            }),
+        ).toBe("mismatch");
+        expect(ids()).toEqual(["s", "a", "b", "c", "d", "e"]);
+        expect(chat.heldChatRevision(refK)).toBe(held);
     });
 });

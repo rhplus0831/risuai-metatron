@@ -18,6 +18,12 @@ const stubs = vi.hoisted(() => ({
     applyServerGeneration: vi.fn(() => true),
     endServerJob: vi.fn(),
     applyHydration: vi.fn(() => true),
+    applyPatchHydration: vi.fn<() => "applied" | "busy" | "mismatch" | "old">(() => "applied"),
+    /** `flushResources`: the recovery's save of the local work that kept a job chat copy out. */
+    flushResources: vi.fn<() => Promise<{ discarded: string[] }>>(async () => ({ discarded: [] })),
+    /** `isChatStale` and `chatHydrationHold`: what the recovery reads of the chat module. */
+    isChatStale: vi.fn<() => boolean>(() => false),
+    chatHydrationHold: vi.fn<() => "none" | "saving" | "held">(() => "none"),
     registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
@@ -37,8 +43,14 @@ vi.mock("../storage/serverAuth", () => ({
 vi.mock("../storage/chatStore.svelte", () => ({
     applyServerGeneration: stubs.applyServerGeneration,
     endServerJob: stubs.endServerJob,
+    isChatStale: stubs.isChatStale,
+    chatHydrationHold: stubs.chatHydrationHold,
 }));
-vi.mock("../storage/resourceSync.svelte", () => ({ applyHydration: stubs.applyHydration }));
+vi.mock("../storage/resourceSync.svelte", () => ({
+    applyHydration: stubs.applyHydration,
+    applyPatchHydration: stubs.applyPatchHydration,
+    flushResources: stubs.flushResources,
+}));
 vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
@@ -112,9 +124,15 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    stubs.isChatStale.mockReset().mockReturnValue(false);
+    stubs.chatHydrationHold.mockReset().mockReturnValue("none");
+    stubs.flushResources.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.applyPatchHydration.mockReset().mockReturnValue("applied");
+    stubs.applyHydration.mockReset().mockReturnValue(true);
 });
 
 describe("the tab's identity and saved jobs", () => {
@@ -407,6 +425,325 @@ describe("the event dispatcher and the resume", () => {
         });
         expect(stubs.endServerJob).toHaveBeenCalledWith("j1");
         expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
+    it("applies a `chatPatch` through the save adapter without remembering it for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
+        const follow = { send: vi.fn(() => true) };
+        const streaming = [{ messageId: "r", generationId: "g", seq: 1 }];
+        const patch = {
+            type: "chatPatch" as const,
+            epoch: EPOCH,
+            characterId: "c",
+            id: "k",
+            baseRevision: "b",
+            revision: "x",
+            meta: { name: "K" },
+            removed: ["z"],
+            messages: [{ after: "a", message: { chatId: "r", data: "R" } }],
+            count: 2,
+            streaming,
+        };
+        const whole = (id: string) => ({
+            type: "resource" as const,
+            epoch: EPOCH,
+            kind: "chats" as const,
+            characterId: "c",
+            id,
+            revision: "y",
+            data: { id },
+            streaming: [],
+        });
+        // The earlier tests' resource events reach the lazily loaded dispatcher after they ended.
+        await flush();
+        stubs.rememberHydration.mockClear();
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        expect(stubs.applyPatchHydration.mock.calls).toEqual([
+            [
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision: "b",
+                    revision: "x",
+                    meta: { name: "K" },
+                    removed: ["z"],
+                    messages: [{ after: "a", message: { chatId: "r", data: "R" } }],
+                    count: 2,
+                },
+                { jobId: "j1", streaming },
+            ],
+        ]);
+        await flush();
+        expect(stubs.rememberHydration).not.toHaveBeenCalled();
+        expect(follow.send).not.toHaveBeenCalled();
+        // Local work kept it out (`busy`) and nothing saves that work (the chat is held): nothing is
+        // asked now, and no recovery saves anything (the recovery itself is covered below).
+        stubs.applyPatchHydration.mockReturnValue("busy");
+        stubs.chatHydrationHold.mockReturnValue("held");
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        expect(follow.send).not.toHaveBeenCalled();
+        expect(stubs.flushResources).not.toHaveBeenCalled();
+        stubs.chatHydrationHold.mockReturnValue("none");
+        // A mismatch of a stale chat asks once; a second mismatch on the same follow does not ask again.
+        stubs.isChatStale.mockReturnValue(true);
+        stubs.applyPatchHydration.mockReturnValue("mismatch");
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        expect(follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+        // A whole copy of another chat does not answer the request; the job chat's does, so a later
+        // mismatch asks again.
+        transport.applyGenerationEvent("j1", ref, whole("j"), follow);
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        expect(follow.send).toHaveBeenCalledTimes(1);
+        transport.applyGenerationEvent("j1", ref, whole("k"), follow);
+        transport.applyGenerationEvent("j1", ref, patch, follow);
+        expect(follow.send).toHaveBeenCalledTimes(2);
+        // A request the follow could not send (its socket is not open) is not counted as outstanding.
+        const broken = { send: vi.fn(() => false) };
+        transport.applyGenerationEvent("j1", ref, patch, broken);
+        transport.applyGenerationEvent("j1", ref, patch, broken);
+        expect(broken.send).toHaveBeenCalledTimes(2);
+        // Another follow of the job asks on its own; without a follow there is nothing to ask.
+        const other = { send: vi.fn(() => true) };
+        transport.applyGenerationEvent("j1", ref, patch, other);
+        expect(other.send.mock.calls).toEqual([[{ type: "resync" }]]);
+        expect(() => transport.applyGenerationEvent("j1", ref, patch)).not.toThrow();
+        expect(follow.send).toHaveBeenCalledTimes(2);
+        // A mismatch of a chat that is not stale any more (a copy arrived meanwhile), or one whose
+        // local work would refuse the copy, asks nothing.
+        stubs.isChatStale.mockReturnValue(false);
+        transport.applyGenerationEvent("j1", ref, patch, other);
+        stubs.isChatStale.mockReturnValue(true);
+        stubs.chatHydrationHold.mockReturnValue("saving");
+        transport.applyGenerationEvent("j1", ref, patch, other);
+        expect(other.send).toHaveBeenCalledTimes(1);
+        // Nothing is asked through a follow whose job ended.
+        stubs.chatHydrationHold.mockReturnValue("none");
+        transport.applyGenerationEvent("j1", ref, { type: "done", epoch: EPOCH, revision: null }, other);
+        transport.applyGenerationEvent("j1", ref, patch, other);
+        expect(other.send).toHaveBeenCalledTimes(1);
+    });
+
+    // The fix round of the `chatPatch` change: a copy refused for local work (`busy`, or a whole job
+    // chat `resource` that did not apply while the chat is stale) starts one recovery per follow,
+    // which saves the local work and then asks for the chat whole, since a stalled stream may send no
+    // other patch; it retries a failed save or new local work with a growing wait while the follow lasts.
+    describe("the recovery after a copy refused for local work", () => {
+        const streaming: { messageId: string; generationId: string; seq: number }[] = [];
+        const patch = {
+            type: "chatPatch" as const,
+            epoch: EPOCH,
+            characterId: "c",
+            id: "k",
+            baseRevision: "b",
+            revision: "x",
+            count: 2,
+            streaming,
+        };
+        const whole = {
+            type: "resource" as const,
+            epoch: EPOCH,
+            kind: "chats" as const,
+            characterId: "c",
+            id: "k",
+            revision: "y",
+            data: { id: "k" },
+            streaming,
+        };
+        /** A `flushResources` the test settles. */
+        const pendingFlush = () => {
+            let settle!: { resolve: () => void; reject: (error: unknown) => void };
+            stubs.flushResources.mockImplementationOnce(
+                () =>
+                    new Promise<{ discarded: string[] }>((resolve, reject) => {
+                        settle = { resolve: () => resolve({ discarded: [] }), reject };
+                    }),
+            );
+            return () => settle;
+        };
+        const microtasks = async () => {
+            for (let round = 0; round < 4; round += 1) {
+                await Promise.resolve();
+            }
+        };
+
+        beforeEach(() => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            stubs.isChatStale.mockReturnValue(true);
+            stubs.applyPatchHydration.mockReturnValue("busy");
+        });
+
+        it("saves once for every busy copy of the follow (coalesced), then asks for the chat whole when the chat is still stale and nothing local holds it", async () => {
+            const follow = { send: vi.fn(() => true) };
+            stubs.chatHydrationHold.mockReturnValue("saving");
+            const settle = pendingFlush();
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            expect(follow.send).not.toHaveBeenCalled();
+            stubs.chatHydrationHold.mockReturnValue("none");
+            settle().resolve();
+            await microtasks();
+            expect(follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+            // One request at a time: the recovery ended, a later busy copy starts a new one, and its
+            // request waits for the whole copy of the first one.
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(2);
+            expect(follow.send).toHaveBeenCalledTimes(1);
+            stubs.applyHydration.mockReturnValue(true);
+            transport.applyGenerationEvent("j1", ref, whole, follow);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(follow.send).toHaveBeenCalledTimes(2);
+        });
+
+        it("asks nothing and saves nothing for a chat held by work no save settles, or one no longer stale after the save", async () => {
+            const follow = { send: vi.fn(() => true) };
+            stubs.chatHydrationHold.mockReturnValue("held");
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).not.toHaveBeenCalled();
+            expect(follow.send).not.toHaveBeenCalled();
+            // Saved, and a copy applied meanwhile (not stale any more): nothing to ask; the recovery
+            // ended, so a later busy copy starts a new one.
+            stubs.chatHydrationHold.mockReturnValue("none");
+            stubs.isChatStale.mockReturnValue(false);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            expect(follow.send).not.toHaveBeenCalled();
+            stubs.isChatStale.mockReturnValue(true);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(2);
+            expect(follow.send).toHaveBeenCalledTimes(1);
+            // The save settled but the chat is held now: the recovery gives way without asking.
+            stubs.applyHydration.mockReturnValue(true);
+            transport.applyGenerationEvent("j1", ref, whole, follow);
+            stubs.chatHydrationHold.mockReturnValue("held");
+            stubs.chatHydrationHold.mockReturnValueOnce("saving");
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(3);
+            expect(follow.send).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("tries again with a doubling wait, capped at 15 s, while the chat still has work after the save or the save failed, as long as the follow lasts", async () => {
+            const follow = { send: vi.fn(() => true) };
+            stubs.chatHydrationHold.mockReturnValue("saving");
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            // Still saving after each save: 1 s, 2 s, 4 s, 8 s, 15 s, 15 s.
+            for (const [wait, calls] of [
+                [999, 1],
+                [1, 2],
+                [2000, 3],
+                [4000, 4],
+                [8000, 5],
+                [15_000, 6],
+                [15_000, 7],
+            ] as const) {
+                await vi.advanceTimersByTimeAsync(wait);
+                expect(stubs.flushResources, `after ${wait} ms`).toHaveBeenCalledTimes(calls);
+            }
+            expect(follow.send).not.toHaveBeenCalled();
+            // A failed save is tried again too; a busy copy meanwhile joins the running recovery.
+            stubs.flushResources.mockRejectedValueOnce(new Error("offline"));
+            await vi.advanceTimersByTimeAsync(15_000);
+            expect(stubs.flushResources).toHaveBeenCalledTimes(8);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(8);
+            expect(vi.getTimerCount()).toBe(1);
+            // The work settled: the next try asks.
+            stubs.chatHydrationHold.mockReturnValue("none");
+            await vi.advanceTimersByTimeAsync(15_000);
+            expect(stubs.flushResources).toHaveBeenCalledTimes(9);
+            expect(follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("ends with the job (`done`, `error`): a pending save asks nothing, a waiting try is dropped, and later copies start nothing", async () => {
+            const follow = { send: vi.fn(() => true) };
+            const settle = pendingFlush();
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            transport.applyGenerationEvent("j1", ref, { type: "done", epoch: EPOCH, revision: null }, follow);
+            settle().resolve();
+            await microtasks();
+            expect(follow.send).not.toHaveBeenCalled();
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            stubs.applyPatchHydration.mockReturnValue("mismatch");
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            expect(follow.send).not.toHaveBeenCalled();
+            // A waiting try is dropped by the end.
+            const other = { send: vi.fn(() => true) };
+            stubs.applyPatchHydration.mockReturnValue("busy");
+            stubs.flushResources.mockRejectedValueOnce(new Error("offline"));
+            transport.applyGenerationEvent("j2", ref, patch, other);
+            await microtasks();
+            expect(vi.getTimerCount()).toBe(1);
+            transport.applyGenerationEvent(
+                "j2",
+                ref,
+                { type: "error", epoch: EPOCH, message: "x", status: 500, reason: "failed" },
+                other,
+            );
+            expect(vi.getTimerCount()).toBe(0);
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(stubs.flushResources).toHaveBeenCalledTimes(2);
+            expect(other.send).not.toHaveBeenCalled();
+        });
+
+        it("ends when the follow closes (a superseded or closed socket): its waiting try is dropped and nothing more is asked through it", async () => {
+            const follow = transport.followGenerationJob("j1", () => {});
+            stubs.flushResources.mockRejectedValueOnce(new Error("offline"));
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(1);
+            follow.close();
+            await follow.closed;
+            await microtasks();
+            expect(vi.getTimerCount()).toBe(0);
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            stubs.applyPatchHydration.mockReturnValue("mismatch");
+            transport.applyGenerationEvent("j1", ref, patch, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            // A new follow of the same job recovers on its own.
+            const next = transport.followGenerationJob("j1", () => {});
+            stubs.applyPatchHydration.mockReturnValue("busy");
+            transport.applyGenerationEvent("j1", ref, patch, next);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(2);
+            next.close();
+        });
+
+        it("starts a recovery for a whole job chat copy that did not apply while the chat is stale (local work kept it out), not for one of another chat or an applied one", async () => {
+            const follow = { send: vi.fn(() => true) };
+            stubs.applyHydration.mockReturnValue(false);
+            transport.applyGenerationEvent("j1", ref, { ...whole, id: "j" }, follow);
+            stubs.isChatStale.mockReturnValue(false);
+            transport.applyGenerationEvent("j1", ref, whole, follow);
+            await microtasks();
+            expect(stubs.flushResources).not.toHaveBeenCalled();
+            stubs.isChatStale.mockReturnValue(true);
+            stubs.applyHydration.mockReturnValue(true);
+            transport.applyGenerationEvent("j1", ref, whole, follow);
+            await microtasks();
+            expect(stubs.flushResources).not.toHaveBeenCalled();
+            stubs.applyHydration.mockReturnValue(false);
+            transport.applyGenerationEvent("j1", ref, whole, follow);
+            await microtasks();
+            expect(stubs.flushResources).toHaveBeenCalledTimes(1);
+            expect(follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+        });
     });
 
     it("leaves the selection alone on a job's `preset` event: a presetChain pick is the job's own (`docs/plan/chat-binding.md`, decision 9)", async () => {

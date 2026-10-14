@@ -835,10 +835,12 @@ describe("the registry over a real socket", () => {
         const callback = await owner.next("callback");
         expect(callback.replay).toBeUndefined();
         expect(callback).toMatchObject({ jobId, name: "editoutput", payload: { text: "early" } });
-        // The attach snapshot (the chat and the character the job sent), then the barrier's fresh
-        // hydration of both, then the callback carrying their receipts.
+        // The attach snapshot (the job chat as a `chatPatch` while the job runs, and the character the
+        // job sent), then the barrier's fresh hydration of both (the chat whole: the client's barrier
+        // re-applies a remembered whole copy once its local work settled), then the callback carrying
+        // their receipts.
         const index = owner.events.indexOf(callback);
-        expect(types(owner.events.slice(0, index))).toEqual(["resource", "resource", "resource", "resource"]);
+        expect(types(owner.events.slice(0, index))).toEqual(["chatPatch", "resource", "resource", "resource"]);
         const hydrated = owner.events.slice(index - 2, index) as Extract<GenerationEvent, { type: "resource" }>[];
         expect(callback.revisions).toEqual(
             hydrated.map((event) => ({
@@ -915,7 +917,8 @@ describe("the registry over a real socket", () => {
         expect(cancel.id).toBe(q3.id);
         await second.next("done");
         expect(outcome.second).toMatchObject({ outcome: "timedOut" });
-        expect(types(second.events)).toEqual(["resource", "question", "question", "cancel", "resource", "done"]);
+        // The job chat on the attach and at the end goes as a `chatPatch` (the job's own chat events).
+        expect(types(second.events)).toEqual(["chatPatch", "question", "question", "cancel", "chatPatch", "done"]);
     });
 
     it("reports a disconnect for a question nobody could answer", async () => {
@@ -945,7 +948,7 @@ describe("the registry over a real socket", () => {
         expect((await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" })).status).toBe(200);
         await owner.next("error");
         expect(outcome.question).toMatchObject({ outcome: "aborted" });
-        expect(types(owner.events)).toEqual(["resource", "question", "cancel", "resource", "error"]);
+        expect(types(owner.events)).toEqual(["chatPatch", "question", "cancel", "chatPatch", "error"]);
         expect((owner.events[2] as { id: string }).id).toBe(question.id);
 
         // A runner that ends while its callback waits (once the owner has it): the callback is
@@ -967,7 +970,8 @@ describe("the registry over a real socket", () => {
         release();
         await next.next("done");
         expect(outcome.callback).toMatchObject({ outcome: "aborted" });
-        expect(types(next.events)).toEqual(["resource", "resource", "callback", "cancel", "resource", "done"]);
+        // The attach's `chatPatch`, the barrier's whole chat before the callback, the terminal `chatPatch`.
+        expect(types(next.events)).toEqual(["chatPatch", "resource", "callback", "cancel", "chatPatch", "done"]);
         expect((next.events[3] as { id: string }).id).toBe(callback.id);
     });
 });

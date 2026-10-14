@@ -15,7 +15,7 @@ import type {
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
-import { compareRevision } from "../../../shared/resources.ts";
+import { compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -999,6 +999,10 @@ export function endServerJob(jobId: string) {
     if (released) {
         lockState.version += 1;
         notifyWork();
+    } else if (staleChats.size > 0) {
+        // A job that locked nothing (a command job) can still leave its chat stale (a patch that did
+        // not fit): its end lets the idle refresh read it.
+        notifyWork();
     }
 }
 
@@ -1023,12 +1027,89 @@ export function hydrateChat(
 ): boolean {
     // The chat's stream updates held for the next frame came before this event.
     flushStreamText((target) => target.chaId === server.characterId && target.chatId === server.id);
-    const key = keyOf(server.characterId, server.id);
-    const prefix = `${key}\u0000`;
     const outcome = applyChatHydration(server);
     if (outcome === "old") {
         return false;
     }
+    settleJobHydration(server, outcome, job);
+    return outcome === "applied";
+}
+
+/**
+ * Applies a job's `chatPatch` (`GenerationChatPatchEvent`): the change from `baseRevision` to
+ * `revision` of a loaded chat, applied only when the mirror holds exactly one of the two revisions,
+ * the chat is not marked stale, and it has no local work. Its messages are the stored rows (each
+ * replaces the mirror's message of its id, or is inserted after `after`); every other message keeps
+ * its object. Then `job` is handled as for `hydrateChat`. `"busy"`: local work (marked stale, as
+ * `hydrateChat`); `"mismatch"`: the mirror cannot take it (marked stale: the caller asks the job for
+ * the chat whole); `"old"`: older than the held revision, another epoch, or a chat this client lacks.
+ */
+export function hydrateChatPatch(
+    patch: ChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): "applied" | "busy" | "mismatch" | "old" {
+    flushStreamText((target) => target.chaId === patch.characterId && target.chatId === patch.id);
+    const outcome = applyChatPatch(patch);
+    if (outcome === "old") {
+        return outcome;
+    }
+    // The locks of a copy that did not apply: as for local work.
+    settleJobHydration(patch, outcome === "applied" ? "applied" : "busy", job);
+    if (outcome !== "applied") {
+        // Marked stale: the save loop runs its idle refresh once the chat is idle (after the job).
+        notifyWork();
+    }
+    return outcome;
+}
+
+/** Whether a chat is marked to be read whole (a stale acknowledgement or a hydration that did not apply). */
+export function isChatStale(ref: ChatRef): boolean {
+    return staleChats.has(keyOf(ref.chaId, ref.chatId));
+}
+
+/** Whether the mirror knows a chat is behind the server: marked stale, or a live notice not yet answered. */
+export function isChatBehind(ref: ChatRef): boolean {
+    dropAnsweredNotices();
+    const key = keyOf(ref.chaId, ref.chatId);
+    return staleChats.has(key) || noticedChats.has(key);
+}
+
+/**
+ * What keeps a job's whole chat from applying (`applyChatHydration`): `"saving"` (queued or in-flight
+ * work, which a save settles), `"held"` (deferred behind a generation, quarantined, or refused for a
+ * generating message: no save settles it), or `"none"`.
+ */
+export function chatHydrationHold(ref: ChatRef): "none" | "saving" | "held" {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (deferred.has(key) || quarantined.has(key) || jobBlocked.has(key)) {
+        return "held";
+    }
+    return pending.has(key) || inflight.has(key) ? "saving" : "none";
+}
+
+/** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
+export type ChatPatch = {
+    characterId: string;
+    id: string;
+    baseRevision: string;
+    revision: string;
+    meta?: Record<string, unknown>;
+    removed?: readonly string[];
+    messages?: readonly { after: string | null; message: unknown }[];
+    count: number;
+};
+
+/**
+ * The job-lock part of a chat hydration (`hydrateChat`, `hydrateChatPatch`) after its copy was
+ * applied (`applied`: the mirror holds the stored rows of the job's messages) or not (`busy`).
+ */
+function settleJobHydration(
+    server: { characterId: string; id: string; revision: string },
+    outcome: "applied" | "busy",
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+) {
+    const key = keyOf(server.characterId, server.id);
+    const prefix = `${key}\u0000`;
     let released = false;
     let locked = false;
     const metadataHeld = jobMetadataRevisions.get(key);
@@ -1115,7 +1196,6 @@ export function hydrateChat(
         }
         notifyWork();
     }
-    return outcome === "applied";
 }
 
 /**
@@ -1153,6 +1233,211 @@ function applyChatHydration(server: {
     changed(key);
     remoteListener?.(ref);
     return "applied";
+}
+
+/**
+ * `hydrateChatPatch`'s copy step. A patch is a diff of two stored states, so it fits a mirror that
+ * holds exactly its base revision or its revision (its rows are their values at `revision`, which a
+ * mirror already at `revision` holds too). Another held revision of the same incarnation (the
+ * mirror missed changes), a held revision of an older incarnation, a chat marked stale or not
+ * loaded, or a patch whose messages do not fit the mirror's is a mismatch. Nothing changes before
+ * the whole result is checked.
+ */
+function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "old" {
+    const key = keyOf(patch.characterId, patch.id);
+    const ref = { chaId: patch.characterId, chatId: patch.id };
+    const heldRevision = chatRevisions.get(key);
+    if (!findCharacter(patch.characterId) || !isMember(ref) || heldRevision === undefined) {
+        return "old";
+    }
+    const held = parseRevisionToken(heldRevision);
+    const base = parseRevisionToken(patch.baseRevision);
+    const next = parseRevisionToken(patch.revision);
+    if (
+        !held ||
+        !base ||
+        !next ||
+        base.epoch !== next.epoch ||
+        held.epoch !== next.epoch ||
+        base.seq !== next.seq ||
+        base.revision > next.revision
+    ) {
+        return "old";
+    }
+    if (held.seq > next.seq || (held.seq === next.seq && held.revision > next.revision)) {
+        return "old";
+    }
+    if (pending.has(key) || inflight.has(key) || deferred.has(key) || quarantined.has(key) || jobBlocked.has(key)) {
+        staleChats.add(key);
+        return "busy";
+    }
+    const fits = held.seq === next.seq && (held.revision === base.revision || held.revision === next.revision);
+    const chat = isLoaded(ref) ? heldChat(ref) : undefined;
+    let patched: { start: number; tail: Message[] } | null = null;
+    try {
+        patched = fits && chat && !staleChats.has(key) ? patchedTail(chat.message, patch) : null;
+    } catch (error) {
+        // Anything unexpected in a server copy: read whole instead of failing the event.
+        console.error("[Save]", error);
+    }
+    if (!chat || !patched) {
+        staleChats.add(key);
+        return "mismatch";
+    }
+    // Only the positions that changed are written (an append writes one; a removal or insertion
+    // writes the positions after it), never the whole list as call arguments.
+    const { start, tail } = patched;
+    for (let index = 0; index < tail.length; index++) {
+        if (chat.message[start + index] !== tail[index]) {
+            chat.message[start + index] = tail[index];
+        }
+    }
+    if (chat.message.length !== start + tail.length) {
+        chat.message.length = start + tail.length;
+    }
+    if (patch.meta) {
+        // The chat's fields become the stored ones, as a whole copy replaces them.
+        const fields = chat as unknown as Record<string, unknown>;
+        for (const field of Object.keys(fields)) {
+            if (field !== "message" && !Object.hasOwn(patch.meta, field)) {
+                delete fields[field];
+            }
+        }
+        for (const [field, value] of Object.entries(patch.meta)) {
+            if (field !== "message") {
+                fields[field] = clone(value);
+            }
+        }
+    }
+    holdChatRevision(key, patch.revision);
+    staleChats.delete(key);
+    changed(key);
+    remoteListener?.(ref);
+    return "applied";
+}
+
+/**
+ * The mirror's messages from `start` on with a patch applied (the messages before `start` stay), or
+ * null when it does not fit. Only the end of the list is read: back from the last message to the
+ * first one the patch touches (its first row's `after`, or a removed message), since a patch's rows
+ * come in stored order and never move a message. Not fitting: no first anchor in the list, a
+ * message without an id or with a repeated one in the part read, a null `after` on a row other
+ * than the first, a patch row that is not a message,
+ * names a removed id, or comes twice, an `after` that is neither a message kept nor an earlier
+ * inserted row, a row of an existing message that is not right after its `after`, or a length that
+ * is not the patch's `count`. Rows are owned copies of the stored messages; every other message
+ * keeps its object. The part before `start` is the held copy at the patch's base, which the patch
+ * says is unchanged.
+ */
+function patchedTail(current: readonly Message[], patch: ChatPatch): { start: number; tail: Message[] } | null {
+    const rows = patch.messages ?? [];
+    const removed = new Set(patch.removed ?? []);
+    if (rows.length === 0 && removed.size === 0) {
+        return current.length === patch.count ? { start: current.length, tail: [] } : null;
+    }
+    if (rows.some((entry, index) => index > 0 && entry.after === null)) {
+        // Only the first row of the stored order can be the chat's first message.
+        return null;
+    }
+    // Back from the end to the first row's anchor (the start for a null one) and every removed id
+    // the list holds.
+    const anchor = rows.length > 0 ? rows[0].after : undefined;
+    let start = anchor === null ? 0 : current.length;
+    let anchorFound = anchor === undefined || anchor === null;
+    let missing = removed.size;
+    for (let index = current.length - 1; index >= 0 && (!anchorFound || missing > 0); index--) {
+        const id = current[index].chatId;
+        if (id === anchor) {
+            anchorFound = true;
+            start = Math.min(start, index);
+        }
+        if (typeof id === "string" && removed.has(id)) {
+            missing -= 1;
+            start = Math.min(start, index);
+        }
+    }
+    if (!anchorFound) {
+        return null;
+    }
+    const tail = patchedMessages(current.slice(start), rows, removed);
+    return tail && start + tail.length === patch.count ? { start, tail } : null;
+}
+
+/** `patchedTail` on the part read: linear in its length. */
+function patchedMessages(
+    current: readonly Message[],
+    rows: NonNullable<ChatPatch["messages"]>,
+    removed: ReadonlySet<string>,
+): Message[] | null {
+    const seen = new Set<string>();
+    const kept: Message[] = [];
+    for (const message of current) {
+        const id = message.chatId;
+        if (typeof id !== "string" || seen.has(id)) {
+            return null;
+        }
+        seen.add(id);
+        if (!removed.has(id)) {
+            kept.push(message);
+        }
+    }
+    const keptIds = new Set(kept.map((message) => message.chatId!));
+    /** Replacement rows of kept messages, with the `after` each must follow. */
+    const replaced = new Map<string, { after: string | null; row: Message }>();
+    /** Inserted rows by the id they follow (null: the start), in patch order. */
+    const inserted = new Map<string | null, Message[]>();
+    const placed = new Set<string>();
+    for (const entry of rows) {
+        const row = entry.message as Message | null;
+        const id = row && typeof row === "object" ? row.chatId : undefined;
+        if (typeof id !== "string" || removed.has(id) || placed.has(id)) {
+            return null;
+        }
+        if (entry.after !== null && !keptIds.has(entry.after) && !placed.has(entry.after)) {
+            // An anchor must be a kept message or a row placed before this one.
+            return null;
+        }
+        placed.add(id);
+        if (keptIds.has(id)) {
+            replaced.set(id, { after: entry.after, row: clone<Message>(row!) });
+        } else {
+            const group = inserted.get(entry.after) ?? [];
+            group.push(clone<Message>(row!));
+            inserted.set(entry.after, group);
+        }
+    }
+    const result: Message[] = [];
+    // Each inserted row is followed by the rows anchored on it (iterative, any chain length).
+    const emit = (anchor: string | null) => {
+        const stack = [...(inserted.get(anchor) ?? [])].reverse();
+        while (stack.length > 0) {
+            const row = stack.pop()!;
+            result.push(row);
+            const next = inserted.get(row.chatId!);
+            if (next) {
+                for (let index = next.length - 1; index >= 0; index--) {
+                    stack.push(next[index]);
+                }
+            }
+        }
+    };
+    emit(null);
+    for (const message of kept) {
+        result.push(replaced.get(message.chatId!)?.row ?? message);
+        emit(message.chatId!);
+    }
+    const positions = new Map(result.map((message, index) => [message.chatId!, index]));
+    if (positions.size !== result.length) {
+        return null;
+    }
+    for (const [id, { after }] of replaced) {
+        // A null `after` is the chat's start: only a part read from the start can hold it.
+        const expected = after === null ? 0 : (positions.get(after) ?? -2) + 1;
+        if (positions.get(id) !== expected) {
+            return null;
+        }
+    }
+    return result;
 }
 
 /** The chat's revision this client holds (its saved base), or null when it has none (read only). */
