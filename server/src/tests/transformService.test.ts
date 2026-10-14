@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TransformRequest, TransformResponse } from "../../../shared/transform.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
+import { ChatBindingError } from "../jobs/jobScope.ts";
 import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
 import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
@@ -17,9 +18,10 @@ import { createTransformCache } from "../prompt/transformCache.ts";
 // snapshot, an abort before or right after a slot is granted (a cached or plugin-failure-only answer
 // included), the one absolute deadline from the first call's admission (the snapshot's expiry, a
 // second call waiting for a slot, the clock read even when the timer was held back), the snapshot
-// caps, and the cache's generation fence against an older fill (a "Re-render" while an earlier
-// two-call render waits; the forgotten generations of the floor). The route and the real workers
-// are `transform.test.ts`.
+// caps, the cache's generation fence against an older fill (a "Re-render" while an earlier
+// two-call render waits; the forgotten generations of the floor), and the cache probe (an all-cached
+// request answered without loading the scope, only while the load's checks would still pass). The
+// route and the real workers are `transform.test.ts`.
 
 type Held = { task: { data: string }; release: (suffix?: string) => void };
 
@@ -465,5 +467,146 @@ describe("the transform cache", () => {
         expect(cache.size).toBe(0);
         expect(cache.set("x", entry("stale"), beforeClear)).toBe(false);
         expect(cache.set("x", entry("ok"), cache.generation("x"))).toBe(true);
+    });
+});
+
+describe("the transform cache probe", () => {
+    const signal = () => new AbortController().signal;
+    /** The first result's cache key (it rendered). */
+    const keyOf = (response: TransformResponse) => {
+        const result = response.results[0];
+        if (!result.ok) {
+            throw new Error(result.error);
+        }
+        return result.key;
+    };
+    const character = (chaId: string, fields: Record<string, unknown> = {}) => ({
+        chaId,
+        type: "character",
+        name: chaId.toUpperCase(),
+        firstMessage: "hi",
+        desc: "",
+        globalLore: [],
+        customscript: [],
+        triggerscript: [],
+        ...fields,
+    });
+    const touch = (h: Harness, chaId: string) => {
+        const kind = h.kinds.get("characters")!;
+        const stored = h.store.get(kind, chaId)!;
+        h.store.put(
+            kind,
+            chaId,
+            { ...(stored.data as object), desc: `${Date.now()}-${Math.random()}` },
+            stored.revision,
+        );
+    };
+
+    it("answers an all-cached request without loading the scope, and loads it when any target must run", async () => {
+        const h = open();
+        h.setHold(false);
+        const service = createTransformService(h.deps);
+        const first = await service.transform(h.request("c"), signal());
+        expect(first.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: false });
+        const loads = vi.spyOn(h.store, "readKinds");
+
+        const again = await service.transform(h.request("c"), signal());
+        expect(again.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: true, key: keyOf(first) });
+        expect(loads).not.toHaveBeenCalled();
+        expect(h.counts.regex).toBe(1);
+
+        // One target to run: the request loads, and its cached target is still answered from the cache.
+        const mixed = await service.transform(
+            h.request("c", { targets: [...h.request("c").targets, ...h.request("d").targets] }),
+            signal(),
+        );
+        expect(mixed.results).toMatchObject([
+            { id: "c", ok: true, cached: true },
+            { id: "d", ok: true, text: "Xd!", cached: false },
+        ]);
+        expect(loads).toHaveBeenCalledTimes(1);
+
+        // `noCache` always loads and renders again.
+        const fresh = await service.transform(
+            h.request("c", { targets: [{ ...h.request("c").targets[0], noCache: true }] }),
+            signal(),
+        );
+        expect(fresh.results[0]).toMatchObject({ ok: true, cached: false });
+        expect(loads).toHaveBeenCalledTimes(2);
+        expect(h.counts.regex).toBe(3);
+        await service.close();
+    });
+
+    it("does not answer from the cache once the chat is bound to another existing prompt preset: the load refuses it", async () => {
+        const h = open();
+        h.setHold(false);
+        const presets = h.kinds.get("presets")!;
+        const stored = h.store.get(presets, "main")!;
+        const list = stored.data as { id: string }[];
+        h.store.put(presets, "main", [...list, { ...list[0], id: "other-preset" }], stored.revision);
+        const service = createTransformService(h.deps);
+        const first = await service.transform(h.request("c"), signal());
+        expect(first.results[0]).toMatchObject({ ok: true, cached: false });
+
+        // Only the chat's binding changes: every record the key names keeps its revision.
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId: "k",
+                    baseRevision: h.store.chatRevision("a", "k"),
+                    ops: [{ op: "meta", set: { promptPresetId: "other-preset" } }],
+                },
+            ],
+        });
+        await expect(service.transform(h.request("c"), signal())).rejects.toBeInstanceOf(ChatBindingError);
+        expect(h.counts.regex).toBe(1);
+        await service.close();
+    });
+
+    it("keys a group's chat by its members: a member's change renders again, another character's does not load", async () => {
+        const h = open();
+        h.setHold(false);
+        const characters = h.kinds.get("characters")!;
+        h.store.put(characters, "b", character("b"), null);
+        h.store.put(characters, "outsider", character("outsider"), null);
+        h.store.put(
+            characters,
+            "g",
+            { chaId: "g", type: "group", name: "G", firstMessage: "", desc: "", characters: ["a", "b"] },
+            null,
+        );
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "g",
+                    chatId: "gk",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "gk", name: "GK", message: [] } }],
+                },
+            ],
+        });
+        const base = h.request("c");
+        const request = { ...base, context: { ...base.context, characterId: "g", chatId: "gk" } };
+        const service = createTransformService(h.deps);
+        const first = await service.transform(request, signal());
+        expect(first.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: false });
+        const loads = vi.spyOn(h.store, "readKinds");
+
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({ cached: true });
+        touch(h, "outsider");
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({
+            cached: true,
+            key: keyOf(first),
+        });
+        expect(loads).not.toHaveBeenCalled();
+
+        // `b` is a member but not the target's source: only the group's key names it.
+        touch(h, "b");
+        const after = await service.transform(request, signal());
+        expect(after.results[0]).toMatchObject({ ok: true, cached: false });
+        expect(keyOf(after)).not.toBe(keyOf(first));
+        expect(loads).toHaveBeenCalledTimes(1);
+        await service.close();
     });
 });

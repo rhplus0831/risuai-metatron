@@ -1603,3 +1603,76 @@ describe("the fences", () => {
         expect(h.metaWrites).toEqual([{ scriptstate: { $x: "1" } }]);
     });
 });
+
+describe("the run's character copy", () => {
+    it("shares the asset lists with the source and copies every other field, so the run's edits leave the source alone", async () => {
+        const additionalAssets: [string, string, string][] = [["a", "assets/a.png", "png"]];
+        const emotionImages: [string, string][] = [["happy", "assets/happy.png"]];
+        const ccAssets = [{ type: "x-risu-asset", uri: "assets/b.png", name: "b", ext: "png" }];
+        const h = harness({
+            triggers: [
+                trig([
+                    ef("v2SetCharacterDesc", v("desc1")),
+                    ef("v2CreateLorebook", {
+                        name: "L1",
+                        nameType: "value",
+                        key: "k",
+                        keyType: "value",
+                        content: "c",
+                        contentType: "value",
+                        insertOrder: "5",
+                        insertOrderType: "value",
+                    }),
+                    out("v2GetLorebookCountNew", "n"),
+                ]),
+            ],
+            char: { additionalAssets, emotionImages, ccAssets } as Partial<character>,
+        });
+        const source = structuredClone(h.stored);
+        source.additionalAssets = additionalAssets;
+        source.emotionImages = emotionImages;
+        source.ccAssets = ccAssets;
+        const keys = Object.keys(source);
+        let seen: character | undefined;
+        const parse = h.services.parse;
+        h.services.parse = (text, chara) => {
+            seen = chara as character;
+            return parse(text, chara);
+        };
+        const result = await h.runtime.runTrigger(source, "manual", {
+            chat: structuredClone(h.live),
+            manualName: "go",
+        });
+        expect(result?.chat.scriptstate).toMatchObject({ $n: "1" });
+        expect(seen).toBeDefined();
+        expect(seen).not.toBe(source);
+        expect(Object.keys(seen!)).toEqual(keys);
+        // The asset lists are the source's own arrays (no effect writes them).
+        expect(seen!.additionalAssets).toBe(additionalAssets);
+        expect(seen!.emotionImages).toBe(emotionImages);
+        expect(seen!.ccAssets).toBe(ccAssets);
+        // Every other field is the run's: its lore, description, and trigger flags never reach the source.
+        expect(seen!.globalLore).toHaveLength(1);
+        expect(source.globalLore).toEqual([]);
+        expect(seen!.desc).toBe("desc1");
+        expect(source.desc).toBe("d0");
+        expect(seen!.triggerscript).not.toBe(source.triggerscript);
+        expect(source.triggerscript[0].lowLevelAccess).toBeUndefined();
+    });
+
+    it("keeps a stored own `__proto__` field as an own field of the copy", async () => {
+        const h = harness({ triggers: [trig([setVar("x", "=", "1")])] });
+        const source = Object.assign(JSON.parse('{"__proto__":{"x":1}}'), structuredClone(h.stored)) as character;
+        let seen: character | undefined;
+        const parse = h.services.parse;
+        h.services.parse = (text, chara) => {
+            seen = chara as character;
+            return parse(text, chara);
+        };
+        await h.runtime.runTrigger(source, "manual", { chat: structuredClone(h.live), manualName: "go" });
+        expect(seen).toBeDefined();
+        expect(Object.hasOwn(seen!, "__proto__")).toBe(true);
+        expect((seen as unknown as Record<string, unknown>)["__proto__"]).toEqual({ x: 1 });
+        expect(Object.getPrototypeOf(seen)).toBe(Object.prototype);
+    });
+});

@@ -109,6 +109,18 @@ export class ChatBindingError extends GenerationRunnerError {
     }
 }
 
+/** The resource kinds `loadJobScope` reads: every record of them has its revision in `JobScope.revisions`. */
+export function jobScopeKinds(kinds: ResourceKindRegistry): ResourceKind[] {
+    const kind = (name: string) => kindOf(kinds, name);
+    return [
+        ...Object.values(SECTION_KIND).map(kind),
+        ...Object.values(COLLECTION_KIND).map(kind),
+        kind(RESOURCE_KIND.presets),
+        kind(RESOURCE_KIND.modules),
+        kind(RESOURCE_KIND.characters),
+    ];
+}
+
 /**
  * Reads the job's scope in consecutive synchronous store reads (no await between them, so one
  * committed state). The ids are the ones the client sent: they are checked against the chat's
@@ -122,16 +134,7 @@ export function loadJobScope(
     context: GenerationContext,
     options: { binding?: ChatBindingMode } = {},
 ): JobScope {
-    const kind = (name: string) => kindOf(kinds, name);
-    const sectionKinds = Object.values(SECTION_KIND).map(kind);
-    const collectionKinds = Object.values(COLLECTION_KIND).map(kind);
-    const read = store.readKinds([
-        ...sectionKinds,
-        ...collectionKinds,
-        kind(RESOURCE_KIND.presets),
-        kind(RESOURCE_KIND.modules),
-        kind(RESOURCE_KIND.characters),
-    ]);
+    const read = store.readKinds(jobScopeKinds(kinds));
     const chatRead = store.readRefs([], { chats: [{ characterId: context.characterId, id: context.chatId }] });
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 

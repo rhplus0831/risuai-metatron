@@ -14,7 +14,7 @@ import {
     type TransformTarget,
 } from "../../../shared/transform.ts";
 import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
+import { type JobScope, jobScopeKinds, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { createLuaBudget, type LuaBudget } from "../scripts/workerPool.ts";
@@ -46,6 +46,8 @@ const MAX_SNAPSHOTS_PER_CLIENT = 4;
 const MAX_SNAPSHOTS = 16;
 /** What one snapshot keeps of its targets: their texts and the variables their Lua wrote. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+/** Owners whose group members the cache probe remembers (`ownerMembers`). */
+const MAX_OWNER_MEMBERS = 256;
 
 /** What every target of one request shares: one Lua budget and CBS time. */
 type Shared = {
@@ -124,13 +126,13 @@ function retainedBytes(run: TargetRun): number {
 
 /**
  * The script transform (Phase 5 slice 13): `processScriptFull`'s `editdisplay` and `editprocess`
- * stages for targets the tab sends, read-only. One `loadJobScope` per request (the ids the tab
- * captured; a missing record fails the request, 404), then per target an isolated run on a copy of
- * that snapshot: its own chat object (`scriptstate` copied: a Lua or CBS variable write changes it
- * for the target's later stages and is never stored), its own owner object and character list, its
- * own regex and dynamic-asset caches, and a setup built as a job's (`createRunSetup`) on a job that
- * cannot write, ask, or call the tab, with frozen bindings (no character or chat re-read, chat
- * writes refused). The targets share one Lua budget and CBS time.
+ * stages for targets the tab sends, read-only. One `loadJobScope` per request the cache does not
+ * answer whole (the ids the tab captured; a missing record fails the request, 404), then per target
+ * an isolated run on a copy of that snapshot: its own chat object (`scriptstate` copied: a Lua or
+ * CBS variable write changes it for the target's later stages and is never stored), its own owner
+ * object and character list, its own regex and dynamic-asset caches, and a setup built as a job's
+ * (`createRunSetup`) on a job that cannot write, ask, or call the tab, with frozen bindings (no
+ * character or chat re-read, chat writes refused). The targets share one Lua budget and CBS time.
  *
  * `editdisplay`, in the client's order: Lua `editDisplay` on the source character (the speaking
  * member in a group) with `meta.index`; the `display` trigger on the chat's owner and chat, groups
@@ -145,9 +147,10 @@ function retainedBytes(run: TargetRun): number {
  * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
  * the handler set, the revisions the load read (every section and collection, the presets, the
  * modules, the owner, the source, a group's members), and the chat's variables, author's note,
- * local lore, name, modules, bound persona, and greeting index; not the viewport or the other
- * messages (Decision 5). `noCache` replaces the entry. A cached result keeps its emotions; the tab
- * applies a key's emotions once.
+ * local lore, name, modules, bound persona, bound presets, and greeting index; not the viewport or
+ * the other messages (Decision 5). `noCache` replaces the entry. A cached result keeps its emotions;
+ * the tab applies a key's emotions once. A request whose every target has an entry is answered
+ * before the load (`cachedResults`: revisions and the chat's metadata only, no record parsed).
  *
  * Lifecycle: a request is registered (its controller, its deadline, the epoch, the maintenance
  * count) when it is admitted, before it waits for one of `MAX_ACTIVE` slots (`MAX_QUEUED` may wait;
@@ -318,31 +321,60 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         onClientMessage: () => () => {},
     });
 
-    /** The key parts every target of a request shares. */
-    const baseKey = (request: TransformRequest, scope: JobScope, epoch: string, chat: Chat): unknown[] => {
+    /**
+     * The members of a chat's owner as a load read them, by the owner's id and revision (none for a
+     * character): the cache probe keys a request without reading the owner's record.
+     */
+    const ownerMembers = new Map<string, readonly string[]>();
+    const membersKey = (characterId: string, revision: string) => `${characterId}\0${revision}`;
+
+    /** The owner's members of a loaded scope (none for a character), remembered for the probe. */
+    const scopeMembers = (scope: JobScope): readonly string[] => {
         const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
-        const characterIds = new Set<string>([scope.characterId]);
-        if (owner?.type === "group") {
-            for (const member of owner.characters ?? []) {
-                characterIds.add(member);
+        const members = owner?.type === "group" ? [...(owner.characters ?? [])] : [];
+        const revision = scope.revisions?.get(`characters/${scope.characterId}`);
+        if (revision !== undefined) {
+            const key = membersKey(scope.characterId, revision);
+            ownerMembers.delete(key);
+            ownerMembers.set(key, members);
+            if (ownerMembers.size > MAX_OWNER_MEMBERS) {
+                ownerMembers.delete(ownerMembers.keys().next().value!);
             }
         }
-        const revisions: [string, string][] = [];
-        for (const [name, revision] of scope.revisions ?? []) {
+        return members;
+    };
+
+    /**
+     * The key parts every target of a request shares: what decides the render besides the target,
+     * and what decides the load's checks (the chat's binding, the records it names), so an entry
+     * answers only a request whose load would have passed.
+     */
+    const baseKey = (
+        request: TransformRequest,
+        revisions: ReadonlyMap<string, string> | undefined,
+        characterId: string,
+        members: readonly string[],
+        epoch: string,
+        chat: Chat,
+    ): unknown[] => {
+        const characterIds = new Set<string>([characterId, ...members]);
+        const included: [string, string][] = [];
+        for (const [name, revision] of revisions ?? []) {
             const slash = name.indexOf("/");
             if (name.slice(0, slash) !== "characters" || characterIds.has(name.slice(slash + 1))) {
-                revisions.push([name, revision]);
+                included.push([name, revision]);
             }
         }
-        revisions.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        included.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
         return [
             epoch,
             request.mode,
             request.context,
             request.client?.browserLanguage ?? "",
             request.handlers ?? null,
-            revisions,
-            // What a render reads of the chat besides its messages (the history stays as first rendered).
+            included,
+            // What a render reads of the chat besides its messages (the history stays as first
+            // rendered), and its binding (the load's check).
             sha256(
                 canonical({
                     scriptstate: chat.scriptstate ?? {},
@@ -353,13 +385,19 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                     name: chat.name ?? "",
                     modules: chat.modules ?? [],
                     bindedPersona: chat.bindedPersona ?? null,
+                    promptPresetId: chat.promptPresetId ?? null,
+                    modelPresetId: chat.modelPresetId ?? null,
                     fmIndex: chat.fmIndex ?? -1,
                 }),
             ),
         ];
     };
 
-    const targetKey = (base: unknown[], scope: JobScope, target: TransformTarget): string =>
+    const targetKey = (
+        base: unknown[],
+        revisions: ReadonlyMap<string, string> | undefined,
+        target: TransformTarget,
+    ): string =>
         sha256(
             canonical([
                 ...base,
@@ -367,11 +405,53 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 target.kind === "message" ? (target.messageId ?? null) : null,
                 target.chatIndex,
                 target.sourceId,
-                scope.revisions?.get(`characters/${target.sourceId}`) ?? null,
+                revisions?.get(`characters/${target.sourceId}`) ?? null,
                 target.cbsConditions ?? {},
                 sha256(target.source),
             ]),
         );
+
+    /**
+     * The request's results from the cache alone, when every target has an entry: it reads the
+     * revisions and the chat's metadata (no record's data, no message), so a render the cache
+     * answers never loads the job scope (every character and module parsed). Null when a target
+     * must run, the owner's members are not known for its revision, or the chat is gone: the
+     * request then loads as before (and its load reports a missing record or a binding refusal).
+     */
+    const cachedResults = (request: TransformRequest, epoch: string): TransformResult[] | null => {
+        if (request.targets.length === 0 || request.targets.some((target) => target.noCache)) {
+            return null;
+        }
+        const { characterId, chatId } = request.context;
+        const read = store.readKindRevisions(jobScopeKinds(kinds));
+        const chatRecord = store.chatMeta(characterId, chatId);
+        if (read.epoch !== epoch || !chatRecord) {
+            return null;
+        }
+        const revisions = new Map<string, string>();
+        for (const [kindName, records] of Object.entries(read.kinds)) {
+            for (const record of records) {
+                revisions.set(`${kindName}/${record.id}`, record.revision);
+            }
+        }
+        const ownerRevision = revisions.get(`characters/${characterId}`);
+        const members =
+            ownerRevision === undefined ? undefined : ownerMembers.get(membersKey(characterId, ownerRevision));
+        if (!members) {
+            return null;
+        }
+        const base = baseKey(request, revisions, characterId, members, epoch, chatRecord.data as Chat);
+        const results: TransformResult[] = [];
+        for (const target of request.targets) {
+            const key = targetKey(base, revisions, target);
+            const hit = cache.get(key);
+            if (!hit) {
+                return null;
+            }
+            results.push({ id: target.id, ok: true, text: hit.text, emotions: hit.emotions, key, cached: true });
+        }
+        return results;
+    };
 
     /** A target's own copy of the snapshot and its run. */
     const prepare = (
@@ -505,6 +585,12 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         try {
             release = await acquire(life);
             stillValid(life);
+            // Answered from the cache without a load when it can be.
+            const answered = cachedResults(request, life.epoch);
+            stillValid(life);
+            if (answered) {
+                return { results: answered };
+            }
             const context: GenerationContext = {
                 characterId: request.context.characterId,
                 chatId: request.context.chatId,
@@ -522,12 +608,12 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             const scope = loadJobScope(store, kinds, context, { binding: "display" });
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: createLuaBudget(), cbsUsage: { usedMs: 0 } };
-            const base = baseKey(request, scope, life.epoch, chat);
+            const base = baseKey(request, scope.revisions, scope.characterId, scopeMembers(scope), life.epoch, chat);
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];
             let retained = 0;
             for (const target of request.targets) {
-                const key = targetKey(base, scope, target);
+                const key = targetKey(base, scope.revisions, target);
                 if (target.noCache) {
                     cache.invalidate(key);
                 } else {

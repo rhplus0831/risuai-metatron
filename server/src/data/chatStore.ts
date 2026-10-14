@@ -1004,6 +1004,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? chatSummary(characterId, { ...row, id }) : null;
         },
 
+        /** A chat's metadata with an empty `message` list (its messages are not read), or null when it does not exist. */
+        readChatMeta(characterId: string, id: string): ChatRecord | null {
+            const row = selectChat.get(characterId, id) as ChatRow | undefined;
+            return row ? chatRecord(characterId, { ...row, id }, []) : null;
+        },
+
         /**
          * Deletes a character's chats, their messages, and its order (inside the character's delete).
          * Returns the ids of the chats it deleted and whether an order existed.

@@ -233,6 +233,7 @@ export function createResourceStore(options: {
     const selectOne = db.prepare("SELECT seq, revision, data FROM resources WHERE kind = ? AND id = ?");
     const selectKind = db.prepare("SELECT id, seq, revision, data FROM resources WHERE kind = ? ORDER BY seq");
     const selectRevisions = db.prepare("SELECT kind, id, seq, revision FROM resources ORDER BY seq");
+    const selectKindRevisions = db.prepare("SELECT id, seq, revision FROM resources WHERE kind = ? ORDER BY seq");
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -889,6 +890,30 @@ export function createResourceStore(options: {
         chatSummary(characterId: string, id: string): ChatSummary | null {
             assertOpen();
             return chatTables.readChatSummary(characterId, id);
+        },
+
+        /** A chat's metadata and revision with an empty `message` list (its messages are not read), or null when it does not exist. */
+        chatMeta(characterId: string, id: string): ChatRecord | null {
+            assertOpen();
+            return chatTables.readChatMeta(characterId, id);
+        },
+
+        /**
+         * The revision of every record of several kinds, without data (nothing is parsed), in one
+         * synchronous read: the same tokens `readKinds` returns for them, in creation order.
+         */
+        readKindRevisions(kindList: readonly ResourceKind[]): {
+            epoch: string;
+            kinds: Record<string, { id: string; revision: string }[]>;
+        } {
+            assertOpen();
+            const result: Record<string, { id: string; revision: string }[]> = Object.create(null);
+            for (const kind of kindList) {
+                assertKind(kind);
+                const rows = selectKindRevisions.all(kind.name) as { id: string; seq: number; revision: number }[];
+                result[kind.name] = rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision) }));
+            }
+            return { epoch, kinds: result };
         },
 
         /** `applyChanges` with resource operations only; returns their tokens in operation order. */

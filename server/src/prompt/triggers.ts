@@ -228,6 +228,22 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     });
 }
 
+/**
+ * Character fields no trigger effect writes, shared with the source instead of copied: a card's
+ * asset lists can hold 100,000 entries, and a render copies the character for every message.
+ */
+const SHARED_CHARACTER_FIELDS: ReadonlySet<string> = new Set(["additionalAssets", "emotionImages", "ccAssets"]);
+
+/** A run's copy of a character: deep, except the shared fields (the source's arrays), in the source's key order. */
+function triggerCopy(source: character): character {
+    const entries = Object.entries(source as unknown as Record<string, unknown>);
+    // `Object.fromEntries` defines own properties, so a stored `__proto__` field is copied as one.
+    const copied = structuredClone(Object.fromEntries(entries.filter(([key]) => !SHARED_CHARACTER_FIELDS.has(key))));
+    return Object.fromEntries(
+        entries.map(([key, value]) => [key, SHARED_CHARACTER_FIELDS.has(key) ? value : copied[key]]),
+    ) as unknown as character;
+}
+
 /** One turn of the event loop, so a long run or a deep recursion lets other work in. */
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -278,7 +294,7 @@ export function createTriggerRuntime(host: TriggerHost) {
         await yieldTurn();
         services.fence(ctx);
         // Always a copy: display and request runs edit their lore effects on it, not on a stored record.
-        const char = structuredClone(sourceChar);
+        const char = triggerCopy(sourceChar);
         // A Lua setter of this run (or a nested one) writes the record; the run's copy follows it.
         const unobserve = host.observeCharacterPatches((characterId, patch) => {
             if (characterId === char.chaId) {
