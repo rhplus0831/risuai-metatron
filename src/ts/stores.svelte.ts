@@ -52,7 +52,15 @@ export {
     PROMPT_SETTINGS_MENU,
 } from "./settingsMenu";
 export const ReloadGUIPointer = writable(0);
-export const ReloadChatPointer = writable({} as Record<number, number>);
+/** Re-render counters of chat rows, by `reloadChatKey` (the message id, so an index shift keeps them). */
+export const ReloadChatPointer = writable({} as Record<string, number>);
+/**
+ * A row's key in `ReloadChatPointer`: its message id, or its index for a row without one (the
+ * greeting). Prefixed, so the two never meet and no id reads an `Object.prototype` member.
+ */
+export function reloadChatKey(messageId: string | undefined, idx: number): string {
+    return messageId !== undefined ? `m:${messageId}` : `i:${idx}`;
+}
 export const ScrollToMessageStore = $state({ value: -1 });
 export const OpenRealmStore = writable(false);
 export const PlaygroundStore = writable(0);

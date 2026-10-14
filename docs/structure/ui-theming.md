@@ -33,9 +33,9 @@ Chat:
 - `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, the closed chat (`ClosedChatScreen.svelte`, while `selection.chatOpen` is false), or chat.
   - The `metatron` theme adds `metatron-chat-theme` to the chat scroller; `src/styles.css` styles each message (`.risu-chat`) as a card under it. Any other non-`waifu` theme keeps the classic layout.
   - The chat scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`. The transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around them carry `chat-screen-content-width` (`src/styles.css`): one centered column of `min(--chat-screen-width, 100%)`. A new row in the chat scroller gets the class too.
-- `Chats.svelte`: mounts `Chat` instances imperatively, keyed by message hash.
-  - `updateChatBody` diffs mount, update, and remove, keeping reverse-chronological DOM order.
-  - Streaming instances are updated through `Chat.updateStreamingDisplay`.
+- `Chats.svelte`: mounts `Chat` instances imperatively, keyed by the chat and the message id (`Message.chatId`).
+  - `updateChatBody` diffs mount, update, and remove, keeping reverse-chronological DOM order (it moves only rows out of place).
+  - Adding or removing a message mounts only that row: the others keep theirs and take a new index through `Chat.updateRow`. A row mounts again (resetting its state: an open editor, the translation toggle, the cached-only auto-translate check) when its text changes, its message starts or stops streaming, or its portrait, disabled state, or `ReloadChatPointer` entry changes. While its message streams, its text goes through `Chat.updateRow` in every mode (`off` too).
 - `Chat.svelte`: one message. Controls, bookmarks (`toggleBookmark`), TTS button, `displaya`, partial edit, and `renderGuiHtmlPart` for custom GUI HTML. Message theme branches are `mobilechat`, `cardboard`, `customHTML`, and classic.
 - `ChatBody.svelte`: `markParsing`, which handles translation and parsing, then `{@html}`.
   - While a render is pending it shows `lastParsed`; only the newest render (`parseRun`, kept by its retries) writes it, so an older render that settles later does not show again (`ChatBody.svelte.test.ts`).
@@ -105,7 +105,7 @@ Theme and GUI helpers:
 - Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the characters through the character module's records (`selectedCharacter()`, `characterList()`), and rely on the records' write-through saves: each write queues the record it changed (`persistence.md`).
 - Invalidation signals:
   - `ReloadGUIPointer`: structural changes.
-  - `ReloadChatPointer`: message re-render.
+  - `ReloadChatPointer`: message re-render, by `reloadChatKey` (`m:` and the message id; the greeting `i:` and its index), so a row keeps its counter when messages before it are added or removed.
   - Reassigning an array after an in-place mutation, e.g. `chat.bookmarks = [...]`.
 - Theme DB fields: `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`, `textAreaSize`, `sideBarSize`, `textAreaTextSize`.
 
@@ -118,7 +118,7 @@ Theme and GUI helpers:
 ## Invariants
 
 - Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field, `updateColorScheme`, and presets.
-- Message identity: `Chats` hashes data, `chatId`, index, portrait, disabled, and the reload pointer. The text of an actively streaming message is excluded from the hash.
+- Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see `updateChatBody` above for what mounts it again and what `Chat.updateRow` passes.
 - Chat structure operations go through the chat module (`createChat`, `deleteChat`, `reorderChats`, `setChatMeta` for `folderId`; `persistence.md`) and select with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab selected chat id and is never assigned. Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing copy. A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
 - HTML boundaries:
   - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
@@ -129,7 +129,7 @@ Theme and GUI helpers:
 
 ## Recipes
 
-- Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
+- Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (row key, mount key, and `Chat.updateRow` fields) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
 - Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write through the chat module, open a chat with `changeChatTo` (or only select it with `selectChat`), and bump `ReloadGUIPointer`.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.

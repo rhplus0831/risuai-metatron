@@ -67,6 +67,7 @@ import {
     hypaV3ProgressStore,
     ReloadChatPointer,
     ReloadGUIPointer,
+    reloadChatKey,
 } from "../stores.svelte";
 
 /**
@@ -231,7 +232,8 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             const index = chat ? (chat.message?.findIndex((m) => m.chatId === messageId) ?? -1) : -1;
             if (index !== -1) {
                 ReloadChatPointer.update((value) => {
-                    value[index] = (value[index] ?? 0) + 1;
+                    const key = reloadChatKey(messageId, index);
+                    value[key] = (value[key] ?? 0) + 1;
                     return value;
                 });
             }

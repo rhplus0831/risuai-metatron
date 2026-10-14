@@ -92,7 +92,9 @@ vi.mock("../stores.svelte", async () => {
     return {
         alertStore: writable({ type: "none", msg: "" }),
         ReloadGUIPointer: writable(0),
-        ReloadChatPointer: writable({} as Record<number, number>),
+        ReloadChatPointer: writable({} as Record<string, number>),
+        reloadChatKey: (messageId: string | undefined, idx: number) =>
+            messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
         CharEmotion: writable({} as Record<string, [string, string, number][]>),
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),
         bodyIntercepterStore: [] as { id: string; callback: (body: unknown, type: string) => Promise<unknown> }[],
@@ -382,7 +384,7 @@ describe("notices and questions", () => {
         send(notice("reloadChat", { chaId: "c", chatId: "k", messageId: "m2" }));
         send(notice("reloadChat", { chaId: "c", chatId: "other", messageId: "m2" }));
         send(notice("reloadChat", { chaId: "c", chatId: "k", messageId: "gone" }));
-        expect(get(stores.ReloadChatPointer)).toEqual({ 1: 1 });
+        expect(get(stores.ReloadChatPointer)).toEqual({ "m:m2": 1 });
         send(notice("emotion", { chaId: "c", name: "joy", image: "img" }));
         expect(get(stores.CharEmotion).c).toEqual([["joy", "img", expect.any(Number)]]);
         send(notice("progress", { open: true, miniMsg: "a", msg: "b", subMsg: "c" }));

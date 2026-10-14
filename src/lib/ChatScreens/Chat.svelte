@@ -47,7 +47,7 @@
     import { getModelInfo } from "src/ts/model/modellist";
     import { runServerButton, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
-    import { ReloadChatPointer, CurrentTriggerIdStore, popupStore } from "src/ts/stores.svelte";
+    import { ReloadChatPointer, CurrentTriggerIdStore, popupStore, reloadChatKey } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
     import { onDestroy, onMount, untrack } from "svelte";
     import { type Unsubscriber } from "svelte/store";
@@ -251,14 +251,23 @@
             (storedPath && !editTranslationMode && (storedFresh === null || storedPending)),
     );
 
-    export function updateStreamingDisplay(state: {
-        isOptimizedStreamingMessage: boolean;
-        streamingOptimizationMode: StreamingDisplayOptimizationMode;
-        rawStreamingText: string;
+    /**
+     * `Chats` keys a row by its message id and passes these here instead of mounting the row again: a
+     * new position (a message before it was added or removed), and the text while it streams. Only
+     * the fields given change.
+     */
+    export function updateRow(update: {
+        message?: string;
+        idx?: number;
+        isOptimizedStreamingMessage?: boolean;
+        streamingOptimizationMode?: StreamingDisplayOptimizationMode;
+        rawStreamingText?: string;
     }) {
-        isOptimizedStreamingMessage = state.isOptimizedStreamingMessage;
-        streamingOptimizationMode = state.streamingOptimizationMode;
-        rawStreamingText = state.rawStreamingText;
+        if ("message" in update) message = update.message;
+        if ("idx" in update) idx = update.idx;
+        if ("isOptimizedStreamingMessage" in update) isOptimizedStreamingMessage = update.isOptimizedStreamingMessage;
+        if ("streamingOptimizationMode" in update) streamingOptimizationMode = update.streamingOptimizationMode;
+        if ("rawStreamingText" in update) rawStreamingText = update.rawStreamingText;
     }
 
     // A row rendered before its chat's first save had no transform context (the script stage was
@@ -700,7 +709,7 @@
                 });
                 if (outcome === "started") {
                     ReloadChatPointer.update((v) => {
-                        v[idx] = (v[idx] ?? 0) + 1;
+                        v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                         return v;
                     });
                 }
@@ -719,7 +728,7 @@
         if (btnEvent) {
             await runServerButton(currentChar, btnEvent, ref);
             ReloadChatPointer.update((v) => {
-                v[idx] = (v[idx] ?? 0) + 1;
+                v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                 return v;
             });
         }
@@ -921,7 +930,7 @@
             {language.noMessage}
         </div>
     {:else}
-        {@const chatReloadPointer = $ReloadGUIPointer + ($ReloadChatPointer[idx] ?? 0)}
+        {@const chatReloadPointer = $ReloadGUIPointer + ($ReloadChatPointer[reloadChatKey(messageId, idx)] ?? 0)}
         {@const totalLengthPointer = idx > totalLength - 6 ? totalLength : 0}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1441,7 +1450,7 @@
                 }
                 rerenderMessage(target.ref, target.id);
                 ReloadChatPointer.update((v) => {
-                    v[idx] = (v[idx] ?? 0) + 1;
+                    v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                     return v;
                 });
             }}
@@ -1878,7 +1887,7 @@
                                         });
                                     }
                                     ReloadChatPointer.update((v) => {
-                                        v[idx] = (v[idx] ?? 0) + 1;
+                                        v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                                         return v;
                                     });
                                 }}><ArrowLeftRightIcon size="18" /></button

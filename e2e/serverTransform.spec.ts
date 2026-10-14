@@ -386,7 +386,7 @@ test("a locked message that is not the last row renders raw while locked and tra
                 { chaId, chatId },
                 { jobId: "e2e-job", messageId: "m-u2", generationId: "e2e-lock", text: "Hello u2", seq: 0 },
             );
-            ReloadChatPointer.update((v: Record<number, number>) => ({ ...v, 2: (v[2] ?? 0) + 1 }));
+            ReloadChatPointer.update((v: Record<string, number>) => ({ ...v, "m:m-u2": (v["m:m-u2"] ?? 0) + 1 }));
         },
         { chaId, chatId },
     );
@@ -468,7 +468,7 @@ test("a render answered after a chat switch does not land in the new chat, which
     const from = s.posts.length;
     await page.evaluate(async () => {
         const { ReloadChatPointer } = await import("/src/ts/stores.svelte.ts");
-        ReloadChatPointer.update((v: Record<number, number>) => ({ ...v, 1: (v[1] ?? 0) + 1 }));
+        ReloadChatPointer.update((v: Record<string, number>) => ({ ...v, "m:m-rnd": (v["m:m-rnd"] ?? 0) + 1 }));
     });
     await expect.poll(() => held.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
     await selectChat(page, chaId, chatB);

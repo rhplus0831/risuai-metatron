@@ -5,7 +5,7 @@
     import { mount, onDestroy, unmount } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
-    import { createSimpleCharacter, ReloadChatPointer } from "src/ts/stores.svelte";
+    import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
     import { currentChatRef, selectedChatId, streamingState } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { get } from "svelte/store";
@@ -35,37 +35,35 @@
     } = $props();
 
     let chatBody: HTMLDivElement;
-    let hashes: Set<number> = new Set();
-    type ChatInstance = {
-        updateStreamingDisplay?: (state: {
-            isOptimizedStreamingMessage: boolean;
-            streamingOptimizationMode: StreamingDisplayOptimizationMode;
-            rawStreamingText: string;
-        }) => void;
+    /** What `Chat.updateRow` changes on a mounted row: its position, and its text while it streams. */
+    type RowUpdate = {
+        message: string;
+        idx: number;
+        isOptimizedStreamingMessage: boolean;
+        streamingOptimizationMode: StreamingDisplayOptimizationMode;
+        rawStreamingText: string;
     };
-    let mountInstances: Map<number, ChatInstance> = new Map();
-
-    //Non-cryptographic hash function to generate a unique hash for each message
-    function hashCode(str: string): number {
-        let hash = 0;
-        for (let i = 0, len = str.length; i < len; i++) {
-            let chr = str.charCodeAt(i);
-            hash = (hash << 5) - hash + chr;
-            hash |= 0; // Convert to 32bit integer
-        }
-        if (hash == 0) {
-            hash = 1; // Ensure hash is not zero
-        }
-        return hash;
-    }
+    type Row = {
+        instance: { updateRow?: (update: Partial<RowUpdate>) => void };
+        element: HTMLDivElement;
+        /** What mounts the row again when it changes (the text, unless the message streams). */
+        mountKey: string;
+        sent: RowUpdate;
+    };
+    /**
+     * The mounted rows by key: the chat and the message's id (`Message.chatId`), so a message keeps its
+     * row when messages before it are added or removed (its new index goes through `Chat.updateRow`).
+     * A row mounts again, resetting its state (an open editor, the translation toggle), when its text
+     * changes, its message starts or stops streaming, or its portrait, disabled state, or reload
+     * pointer changes. While it streams, its text goes through `Chat.updateRow` in every mode.
+     */
+    let rows: Map<string, Row> = new Map();
 
     const updateChatBody = () => {
         if (!chatBody) {
             return;
         }
 
-        let nextHash = 0;
-        let currentHashes: Set<number> = new Set();
         const charImage = getCharImage(currentCharacter.image, "css");
         const userImage = getCharImage(userIcon, "css");
         const simpleChar = createSimpleCharacter(currentCharacter);
@@ -90,6 +88,10 @@
         }
 
         const reloadPointerMap = get(ReloadChatPointer);
+        const chatKey = `${currentCharacter.chaId}\u0000${currentChatId}`;
+        /** The rows to show, newest first (the DOM order: the list's flex direction reverses it). */
+        const shown: Row[] = [];
+        const shownKeys = new Set<string>();
 
         for (let i = loadStart; i >= loadEnd; i--) {
             if (i < 0) break; // Prevent out of bounds
@@ -98,87 +100,102 @@
                 message.role === "user"
                     ? (userIconPortrait ?? false)
                     : ((currentCharacter as ClientCharacter).largePortrait ?? false);
-            const reloadPointer = reloadPointerMap[i] ?? 0;
-            const activeStreamingMessage = i === activeStreamingIndex && message.role === "char";
-            const hashMessageData = activeStreamingMessage ? "" : message.data;
-            let hashd =
-                hashMessageData +
-                (message.chatId ?? "") +
-                i.toString() +
-                messageLargePortrait.toString() +
-                message.disabled?.toString() +
-                reloadPointer.toString();
-            const currentHash = hashCode(hashd);
-            currentHashes.add(currentHash);
-            if (!hashes.has(currentHash)) {
-                const b = document.createElement("div");
-                b.setAttribute("x-hashed", currentHash.toString());
-                b.classList.add("chat-message-container");
-                const inst = mount(Chat, {
-                    target: b,
-                    props: {
-                        message: message.data,
-                        isLastMemory: false,
-                        idx: i,
-                        messageId: message.chatId,
-                        totalLength: messages.length,
-                        img: message.role === "user" ? userImage : charImage,
-                        onReroll: onReroll,
-                        unReroll: unReroll,
-                        rerollIcon: "dynamic",
-                        character: simpleChar,
-                        largePortrait: messageLargePortrait,
-                        messageGenerationInfo: message.generationInfo,
-                        role: message.role,
-                        name: message.role === "user" ? currentUsername : currentCharacter.name,
-                        isComment: message.isComment ?? false,
-                        disabled: message.disabled ?? false,
-                        isOptimizedStreamingMessage: activeStreamingMessage,
-                        streamingOptimizationMode: performanceMode,
-                        rawStreamingText: message.data,
-                    },
-                });
-                mountInstances.set(currentHash, inst);
-                const nextElement = nextHash === 0 ? null : chatBody.querySelector(`[x-hashed="${nextHash}"]`);
-                if (nextElement) {
-                    chatBody.insertBefore(b, nextElement?.nextSibling);
-                } else {
-                    chatBody.prepend(b);
-                }
-            } else {
-                mountInstances.get(currentHash)?.updateStreamingDisplay?.({
-                    isOptimizedStreamingMessage: activeStreamingMessage,
-                    streamingOptimizationMode: performanceMode,
-                    rawStreamingText: message.data,
-                });
+            const reloadPointer = reloadPointerMap[reloadChatKey(message.chatId, i)] ?? 0;
+            const streamingMessage =
+                streaming && message.role === "char" && message.chatId === streamingState.messageId;
+            const activeStreamingMessage = streamingMessage && i === activeStreamingIndex;
+            let key = `${chatKey}\u0000${message.chatId ?? `#${i}`}`;
+            if (shownKeys.has(key)) {
+                // A repeated id (not expected in a saved chat) gets a row of its own.
+                key = `${key}\u0000#${i}`;
             }
-            nextHash = currentHash;
+            shownKeys.add(key);
+            const mountKey = JSON.stringify([
+                streamingMessage ? null : message.data,
+                messageLargePortrait,
+                message.disabled ?? false,
+                reloadPointer,
+            ]);
+            const sent: RowUpdate = {
+                message: message.data,
+                idx: i,
+                isOptimizedStreamingMessage: activeStreamingMessage,
+                streamingOptimizationMode: performanceMode,
+                rawStreamingText: message.data,
+            };
+            const existing = rows.get(key);
+            if (existing && existing.mountKey === mountKey) {
+                const update: Partial<RowUpdate> = {};
+                let changed = false;
+                for (const field of Object.keys(sent) as (keyof RowUpdate)[]) {
+                    if (existing.sent[field] !== sent[field]) {
+                        (update as Record<string, unknown>)[field] = sent[field];
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    existing.instance.updateRow?.(update);
+                    existing.sent = sent;
+                }
+                shown.push(existing);
+                continue;
+            }
+            if (existing) {
+                unmount(existing.instance);
+                existing.element.remove();
+            }
+            const element = document.createElement("div");
+            element.classList.add("chat-message-container");
+            const instance = mount(Chat, {
+                target: element,
+                props: {
+                    ...sent,
+                    isLastMemory: false,
+                    messageId: message.chatId,
+                    totalLength: messages.length,
+                    img: message.role === "user" ? userImage : charImage,
+                    onReroll: onReroll,
+                    unReroll: unReroll,
+                    rerollIcon: "dynamic",
+                    character: simpleChar,
+                    largePortrait: messageLargePortrait,
+                    messageGenerationInfo: message.generationInfo,
+                    role: message.role,
+                    name: message.role === "user" ? currentUsername : currentCharacter.name,
+                    isComment: message.isComment ?? false,
+                    disabled: message.disabled ?? false,
+                },
+            });
+            const row: Row = { instance, element, mountKey, sent };
+            rows.set(key, row);
+            shown.push(row);
         }
 
-        //@ts-expect-error Set<T> requires type arg, and Set.difference needs 'esnext' lib (polyfilled by Core-js)
-        const toRemove: Set = hashes.difference(currentHashes);
-        toRemove.forEach((hash) => {
-            const inst = mountInstances.get(hash);
-            if (inst) {
-                unmount(inst);
-                mountInstances.delete(hash);
+        for (const [key, row] of rows) {
+            if (!shownKeys.has(key)) {
+                unmount(row.instance);
+                row.element.remove();
+                rows.delete(key);
             }
-            const element = chatBody.querySelector(`[x-hashed="${hash}"]`);
-            if (element) {
-                chatBody.removeChild(element);
-            }
-        });
+        }
 
-        hashes = currentHashes;
+        // Put the rows in order, moving only the ones out of place.
+        let previous: Element | null = null;
+        for (const row of shown) {
+            const expected: Element | null = previous ? previous.nextElementSibling : chatBody.firstElementChild;
+            if (expected !== row.element) {
+                chatBody.insertBefore(row.element, expected);
+            }
+            previous = row.element;
+        }
     };
 
     onDestroy(() => {
         console.log("Unmounting Chats");
-        hashes.clear();
-        mountInstances.forEach((inst) => {
-            unmount(inst);
+        rows.forEach((row) => {
+            unmount(row.instance);
         });
-        mountInstances.clear();
+        rows.clear();
     });
 
     function checkIfAtBottom() {

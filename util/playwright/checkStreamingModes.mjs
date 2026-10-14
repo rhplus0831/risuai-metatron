@@ -3,8 +3,8 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // owner decision 3): for each `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a
 // server send makes its reply the streaming message (`streamingState`, with the configured mode) from
 // its first chunk until the job ends. While it streams, "strong" renders the reply raw (no markdown)
-// and the others render it parsed; "balanced" and "strong" keep the reply's row mounted across
-// chunks, "off" remounts it. At the end the state is cleared and the final reply renders parsed.
+// and the others render it parsed; every mode keeps the reply's row mounted across chunks (rows are
+// keyed by message id). At the end the state is cleared and the final reply renders parsed.
 //
 // Usage: node util/playwright/checkStreamingModes.mjs   (dev only: it reads the tab's state through
 // the dev server's modules).
@@ -251,15 +251,7 @@ try {
         } else {
             check(`${mode}: renders the streaming reply parsed`, later?.parsed === true && later?.raw === false, later);
         }
-        if (mode === "off") {
-            check(`off: remounts the streaming reply's row on a chunk`, later?.sameContainer === false, later);
-        } else {
-            check(
-                `${mode}: keeps the streaming reply's row mounted across chunks`,
-                later?.sameContainer === true,
-                later,
-            );
-        }
+        check(`${mode}: keeps the streaming reply's row mounted across chunks`, later?.sameContainer === true, later);
 
         // The end clears the state, and the final reply renders parsed.
         const cleared = await waitFor(async () => (await streaming()).messageId === null, 30000);
