@@ -52,6 +52,7 @@ import {
     type CbsParseArg,
 } from "../../../shared/cbs/evaluator.ts";
 import type { CbsConditions, CbsDatabase } from "../../../shared/cbs/types.ts";
+import { maxContextOverrideOf } from "../../../shared/sections.ts";
 import cssSelectorParser from "postcss-selector-parser";
 
 const markdownItOptions = {
@@ -1215,15 +1216,24 @@ const CBS_SETTING_KEYS = [
  * preset, else its section), or, with `presetField`, a preset field from that function. `characters`
  * is the character list, whose wrappers carry the chat module's compatibility `chats`/`chatPage`
  * view (`setCharacterChatView`), the shape shared CBS reads; the client type has no chats, hence
- * the cast.
+ * the cast. `maxContext` is the main model's effective size, the prompt preset's override applied
+ * as the server's job database has it (`forwardPresetRoots`); the settings root stays the profile's.
  */
 function cbsDatabase(presetField?: (rootKey: string) => unknown): CbsDatabase {
+    const read = (key: SettingsRootKey) =>
+        presetField !== undefined && isForwardedPresetRoot(key) ? presetField(key) : readSettingsRoot(key);
     const view = {};
     for (const key of CBS_SETTING_KEYS) {
-        const fromPreset = presetField !== undefined && isForwardedPresetRoot(key);
         Object.defineProperty(view, key, {
             enumerable: true,
-            get: fromPreset ? () => presetField(key) : () => readSettingsRoot(key),
+            get:
+                key === "maxContext"
+                    ? () =>
+                          maxContextOverrideOf({
+                              maxContextOverride: read("maxContextOverride"),
+                              maxContextOverrideSize: read("maxContextOverrideSize"),
+                          }) ?? read(key)
+                    : () => read(key),
         });
     }
     Object.defineProperty(view, "characters", {

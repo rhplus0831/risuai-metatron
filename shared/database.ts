@@ -103,6 +103,8 @@ export interface Database {
     askRemoval: boolean;
     maxContext: number;
     maxResponse: number;
+    maxContextOverride: boolean;
+    maxContextOverrideSize: number;
     frequencyPenalty: number;
     PresensePenalty: number;
     formatingOrder: FormatingOrderItem[];
@@ -879,6 +881,10 @@ export interface botPreset {
     temperature: number;
     maxContext?: number;
     maxResponse: number;
+    /** When true, a `maxContextOverrideSize` above 0 replaces the main profile's `maxContext` (`maxContextOverrideOf`). */
+    maxContextOverride?: boolean;
+    /** The overriding context size; 0 is unset. */
+    maxContextOverrideSize?: number;
     frequencyPenalty: number;
     PresensePenalty: number;
     formatingOrder: FormatingOrderItem[];

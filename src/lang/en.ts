@@ -42,6 +42,8 @@ export const languageEnglish = {
         autoSuggest: "Prompts used to generate options when automatically suggesting user responses.",
         formatOrder: "Formating order of prompt. Lower blocks does more effect to the model.",
         forceUrl: "If it is not blank, the request will go to the url that you had inputed.",
+        maxContextOverride:
+            "When on, this prompt preset's max context size replaces the main model connection's. Sub and auxiliary models keep their own. Turning it on while the size is 0 (unset) copies the main connection's size. Exported presets carry the size other RisuAI versions read.",
         tempature:
             "Lower values make character follow prompts closely, but it will more likely to response like a machine.\nHigher values will result in creative behavior, but the character's response can break down more easily.",
         frequencyPenalty:
@@ -755,6 +757,7 @@ export const languageEnglish = {
     autoSuggest: "Auto Suggest",
     tokens: "Tokens",
     maxContextSize: "Max Context Size",
+    maxContextOverride: "Override Max Context Size",
     maxResponseSize: "Max Response Size",
     temperature: "Temperature",
     frequencyPenalty: "Frequency Penalty",

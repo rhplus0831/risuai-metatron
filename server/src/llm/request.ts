@@ -7,7 +7,7 @@
 import { Ollama } from "ollama";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
-import { forwardProfileRoots } from "../../../shared/sections.ts";
+import { forwardProfileRoots, maxContextOverrideOf } from "../../../shared/sections.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type {
     BufferedResponse,
@@ -366,6 +366,16 @@ export async function requestChatDataMain(
     const profile = resolved.kind === "profile" ? resolved.profile : undefined;
     const db = { ...ctx.db, aiModel: resolved.modelId };
     forwardProfileRoots(db, profile);
+    // The prompt preset's context size override is the main slot's only: a named profile, the sub
+    // and auxiliary slots (even on the main profile), and another static model keep their own.
+    if (
+        model === "model" &&
+        arg.profileId === undefined &&
+        profile !== undefined &&
+        profile.id === ctx.db.modelPreset.mainSlot.profileId
+    ) {
+        db.maxContext = maxContextOverrideOf(ctx.db as unknown as Record<string, unknown>) ?? db.maxContext;
+    }
     const getModelInfo = ctx.getModelInfo;
     ctx = {
         ...ctx,

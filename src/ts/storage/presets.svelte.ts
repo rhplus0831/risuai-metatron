@@ -12,6 +12,7 @@ import {
     normalizePreset,
     normalizePromptTemplate,
     plainClone,
+    PRESET_DEFAULTS,
     PRESET_RECORD_FIELDS,
     presetTemplate,
     PROMPT_PRESET_FIELDS,
@@ -20,7 +21,8 @@ import type { botPreset } from "../../../shared/database.ts";
 import { safeStructuredClone } from "../polyfill";
 import { addPreset } from "./collectionStore.svelte";
 import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
-import { currentPresetRecord, settings } from "./settingsViews.svelte";
+import { activeMainProfile, currentPresetRecord, settings } from "./settingsViews.svelte";
+import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
 /*
  * The preset actions of the preset lists and the welcome screen (Phase 6 slice 10, out of
@@ -104,6 +106,11 @@ export function applyPresetTemplate(template: Omit<botPreset, "id">) {
     );
 }
 
+/** A context size that takes effect: a finite number above 0. */
+function isPositiveSize(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
     const source = settings.presets.find((preset) => preset.id === id);
     if (!source) {
@@ -113,11 +120,16 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
     // A prompt preset file (`docs/plan/split-preset.md`): `name`, `image`, and every prompt field,
     // an unset one as an explicit `undefined`, as the pre-Phase 3 export did (the JSON copy drops
     // them): an importer spreads `presetTemplate` under the file, so an absent key would take the
-    // template's value instead (`promptPreprocess: false`). No id (D5), no model field, no credential.
+    // template's value instead (`promptPreprocess: false`). No id (D5), no credential, and one model
+    // field: `maxContext`, which upstream RisuAI applies on a preset switch, as the main model's
+    // effective size (the override, else the main profile's; never 0, which caps every prompt).
     const pres: Record<string, unknown> = {};
     for (const field of [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS]) {
         pres[field] = stored[field];
     }
+    const profileContext = activeMainProfile.maxContext;
+    pres.maxContext =
+        maxContextOverrideOf(stored) ?? (isPositiveSize(profileContext) ? profileContext : PRESET_DEFAULTS.maxContext);
     const fileName = typeof pres.name === "string" ? pres.name : "";
 
     if (type === "json") {
@@ -312,6 +324,12 @@ export async function importPreset(
         return;
     }
     pre.name ??= "Imported";
+    // The context size override keeps the file's own size, else takes the compatibility `maxContext`
+    // (every upstream RisuAI preset has one; the template gives 4000 when a file lacks it). Only a
+    // file's own `maxContextOverride` turns it on.
+    if (!isPositiveSize(pre.maxContextOverrideSize) && isPositiveSize(pre.maxContext)) {
+        pre.maxContextOverrideSize = pre.maxContext;
+    }
     // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). It is
     // a prompt preset: the model fields and a `proxyKey` the file carries are ignored
     // (`docs/plan/split-preset.md`). Normalized first, as before: a converted value the file lacks (a

@@ -23,6 +23,7 @@
     import { alertError, alertInput, alertConfirm, alertNormal } from "src/ts/alert";
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+    import { maxContextOverrideOf } from "../../../../shared/sections.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
@@ -77,7 +78,9 @@
         const maxResponse = activePreset.maxResponse;
         const requiredToken =
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;
-        const maxContext = activeMainProfile.maxContext;
+        // The size the server's prompt assembly uses: the prompt preset's override, else the main profile's.
+        const maxContext =
+            maxContextOverrideOf(activePreset as unknown as Record<string, unknown>) ?? activeMainProfile.maxContext;
 
         if (maxContext === 0) {
             return 0;

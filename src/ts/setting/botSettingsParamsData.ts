@@ -21,6 +21,30 @@ export const basicParameterItems: SettingItem[] = [
         options: { min: 0, max: 2048 },
         keywords: ["response", "size", "output", "length"],
     },
+    {
+        id: "params.maxContextOverride",
+        type: "check",
+        labelKey: "maxContextOverride",
+        helpKey: "maxContextOverride",
+        getValue: (ctx) => ctx.preset.maxContextOverride,
+        // Ticking an unset (0) size seeds it with the main profile's context size.
+        setValue: (value, ctx) => {
+            if (value === true && !((ctx.preset.maxContextOverrideSize ?? 0) > 0)) {
+                ctx.preset.maxContextOverrideSize = ctx.modelProfile.maxContext;
+            }
+            ctx.preset.maxContextOverride = value;
+        },
+        keywords: ["context", "size", "token", "limit", "override"],
+    },
+    {
+        id: "params.maxContextOverrideSize",
+        type: "number",
+        labelKey: "maxContextSize",
+        bindKey: "maxContextOverrideSize",
+        options: { min: 0 },
+        condition: (ctx) => ctx.preset.maxContextOverride === true,
+        keywords: ["context", "size", "token", "limit", "override"],
+    },
 ];
 
 /**

@@ -309,6 +309,52 @@ describe("the legacy formats on the server", () => {
     });
 });
 
+// The prompt preset's context size override (`maxContextOverride`, `maxContextOverrideSize`;
+// `maxContextOverrideOf` in `shared/sections.ts`) reaches the provider through the request database
+// (`loadRequestDb` → `forwardPresetRoots`) and `requestChatDataMain`, which re-applies it after the
+// request-local profile overlay (`forwardProfileRoots`) for a main-slot request only. Kobold's
+// `max_context_length` is `db.maxContext` as the adapter sees it. The harness's sub slot names the
+// main profile, so a sub or auxiliary request shares the profile and must still get its own size.
+describe("the prompt preset's context size override on the server", () => {
+    async function koboldContextLength(
+        preset: Record<string, unknown>,
+        request: { mode?: LlmRequestBody["mode"]; arg?: Record<string, unknown> } = {},
+    ): Promise<number> {
+        const { registry, calls } = harness(
+            { aiModel: "kobold", koboldURL: "http://kobold.test/", maxContext: 4000, ...preset },
+            {},
+            () => json({ results: [{ text: "kobold says" }] }),
+        );
+        const result = await run(registry, { ...body(request.arg), ...(request.mode ? { mode: request.mode } : {}) });
+        expect(result).toEqual({ type: "result", response: { type: "success", result: "kobold says" } });
+        expect(calls).toHaveLength(1);
+        await registry.dispose();
+        return (calls[0].body as { max_context_length: number }).max_context_length;
+    }
+    const on = { maxContextOverride: true, maxContextOverrideSize: 12000 };
+
+    it("a main request gets the override, including a main-mode static request on the main profile", async () => {
+        expect(await koboldContextLength(on)).toBe(12000);
+        expect(await koboldContextLength(on, { arg: { staticModel: "kobold" } })).toBe(12000);
+    });
+
+    it("a sub or auxiliary request and a named-profile request keep the profile's size even on the main profile", async () => {
+        expect(await koboldContextLength(on, { mode: "submodel" })).toBe(4000);
+        expect(await koboldContextLength(on, { mode: "memory" })).toBe(4000);
+        expect(await koboldContextLength(on, { mode: "translate" })).toBe(4000);
+        expect(await koboldContextLength(on, { arg: { profileId: "main" } })).toBe(4000);
+    });
+
+    it("the override is off, 0 (unset), negative, or not finite: the profile's size", async () => {
+        expect(await koboldContextLength({})).toBe(4000);
+        expect(await koboldContextLength({ maxContextOverride: false, maxContextOverrideSize: 12000 })).toBe(4000);
+        expect(await koboldContextLength({ maxContextOverride: true, maxContextOverrideSize: 0 })).toBe(4000);
+        expect(await koboldContextLength({ maxContextOverride: true, maxContextOverrideSize: -3 })).toBe(4000);
+        // The stored record is normalized: a non-finite size is the default 0.
+        expect(await koboldContextLength({ maxContextOverride: true, maxContextOverrideSize: Infinity })).toBe(4000);
+    });
+});
+
 describe("Horde's first byte (request history slice 1)", () => {
     // Horde answers only in a response that ends the request (`requestHorde`'s `watchHorde`): a
     // refused submit at its first chunk; an impossible or finished poll, or a submit or poll whose

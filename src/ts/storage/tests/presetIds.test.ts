@@ -139,6 +139,25 @@ function promptOnly(value: Record<string, unknown>): Record<string, unknown> {
     return Object.fromEntries(EXPORTED_KEYS.map((key) => [key, value[key]]));
 }
 
+/**
+ * The stored preset an import of a file from before the context size override gives: the file's
+ * prompt fields, the override off (only a file's own `maxContextOverride: true` turns it on), and
+ * `maxContextOverrideSize` seeded from the file's upstream `maxContext` (the file has no size of its
+ * own). The two fields are the only additions the normalizer and the importer make.
+ */
+function storedOf(fixture: Record<string, unknown>): Record<string, unknown> {
+    return { ...promptOnly(fixture), maxContextOverride: false, maxContextOverrideSize: fixture.maxContext };
+}
+
+/**
+ * The export of that stored preset: its prompt fields and the one compatibility model key, upstream
+ * RisuAI's `maxContext`, holding the main model's effective size (the override when on and above 0,
+ * else the current main profile's `maxContext`).
+ */
+function exportOf(fixture: Record<string, unknown>, maxContext: number = activeMainProfile.maxContext) {
+    return { ...storedOf(fixture), maxContext };
+}
+
 describe("the selected preset over a normalized list", () => {
     beforeEach(() => {
         // The selection store is module state: an empty id makes the installation select the first preset.
@@ -354,22 +373,30 @@ describe(".risup round trip against the step-0 fixtures", () => {
             const exported = await downloadPreset(imported.id, "return");
             expect(exported.buf).toBeInstanceOf(Uint8Array);
             expect(ownKeys(exported.data)).not.toContain("id");
-            // A prompt preset file (`docs/plan/split-preset.md`): no credential, no model field.
-            for (const key of ["openAIKey", "proxyKey", "forceReplaceUrl", "aiModel", "maxContext"]) {
+            // A prompt preset file (`docs/plan/split-preset.md`): no credential, and no model field
+            // but the compatibility `maxContext`: the main model's effective size, here the main
+            // profile's since the override is off.
+            for (const key of ["openAIKey", "proxyKey", "forceReplaceUrl", "aiModel"]) {
                 expect(Object.hasOwn(exported.data, key), key).toBe(false);
             }
+            expect(exported.data.maxContext).toBe(activeMainProfile.maxContext);
 
             const decoded = await decodeRisup(exported.buf as Uint8Array);
             expect(ownKeys(decoded)).not.toContain("id");
-            expect(decoded).toEqual(promptOnly(fixture));
+            expect(decoded).toEqual(exportOf(fixture));
             // The import itself, apart from the id, is the fixture preset's prompt fields: the
-            // normalizer changed nothing the pre-phase reader wrote (no default was added, no explicit
-            // value replaced), and the record carries no model field and no credential.
+            // normalizer changed nothing the pre-phase reader wrote (no explicit value replaced), and
+            // the record carries no model field (not the file's `maxContext`) and no credential. The
+            // only additions are the two override fields the fixture predates: the flag off, the size
+            // seeded from the file's `maxContext`.
             const { id, ...importedWithoutId } = imported as botPreset & Record<string, unknown>;
             expect(id).toMatch(UUID_V4);
             expect(Object.hasOwn(importedWithoutId, "proxyKey")).toBe(false);
             expect(Object.hasOwn(importedWithoutId, "aiModel")).toBe(false);
-            expect(importedWithoutId).toEqual(promptOnly(fixture));
+            expect(Object.hasOwn(importedWithoutId, "maxContext")).toBe(false);
+            expect(importedWithoutId).toEqual(storedOf(fixture));
+            expect(importedWithoutId.maxContextOverride).toBe(false);
+            expect(importedWithoutId.maxContextOverrideSize).toBe(fixture.maxContext);
             // The fixture does carry model fields, so the comparison is not vacuous.
             expect(fixture).toHaveProperty("aiModel");
             expect(fixture).toHaveProperty("maxContext");
@@ -419,14 +446,19 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
                 expect.arrayContaining(["promptPreprocess", "koboldURL", "proxyRequestModel", "localStopStrings"]),
             );
 
+            // The current main profile's size is what the export carries as `maxContext`; a value
+            // the legacy template does not have, so the old-reader check below is not vacuous.
+            activeMainProfile.maxContext = 12345;
+            expect(presetTemplate.maxContext).toBe(4000);
+
             await importPreset({ name, data: readFixture(name) });
             const first = await downloadPreset(settings.presets[1].id, "return");
             const decodedFirst = await decodeRisup(first.buf as Uint8Array);
-            // The export carries exactly the prompt keys (`name`, `image`, `PROMPT_PRESET_FIELDS`),
-            // an unset one as an explicit `undefined`. `toStrictEqual` distinguishes a missing key
-            // from an `undefined` one (`toEqual` does not).
-            expect(ownKeys(decodedFirst)).toEqual([...EXPORTED_KEYS].sort());
-            expect(decodedFirst).toStrictEqual(promptOnly(fixture));
+            // The export carries exactly the prompt keys (`name`, `image`, `PROMPT_PRESET_FIELDS`)
+            // and the compatibility `maxContext`, an unset one as an explicit `undefined`.
+            // `toStrictEqual` distinguishes a missing key from an `undefined` one (`toEqual` does not).
+            expect(ownKeys(decodedFirst)).toEqual([...EXPORTED_KEYS, "maxContext"].sort());
+            expect(decodedFirst).toStrictEqual(exportOf(fixture, 12345));
             for (const key of unsetInFixture.filter((key) => EXPORTED_KEYS.includes(key))) {
                 expect(Object.hasOwn(decodedFirst, key), key).toBe(true);
                 expect(decodedFirst[key], key).toBeUndefined();
@@ -434,22 +466,30 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
             expect(Object.hasOwn(first.data, "proxyKey")).toBe(false);
             expect(Object.hasOwn(first.data, "openAIKey")).toBe(false);
 
-            // A second import/export cycle of the new export is a fixed point.
+            // A second import/export cycle of the new export is a fixed point: the export's own
+            // size (seeded on the first import) is kept, the flag stays off.
             await importPreset({ name, data: first.buf as Uint8Array });
             expect(settings.presets).toHaveLength(3);
             const second = await downloadPreset(settings.presets[2].id, "return");
-            expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(promptOnly(fixture));
+            expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(exportOf(fixture, 12345));
 
             // The pre-phase reader stores the same prompt fields from the new export as from the
             // fixture: in particular `promptPreprocess` stays `undefined` (its working value kept),
-            // not the template's `false` an absent key would have given it. The model fields the
-            // export no longer carries come from that reader's template (the upstream contract of
-            // `docs/plan/split-preset.md`, "Import / export").
+            // not the template's `false` an absent key would have given it. The two override fields
+            // are the one addition (that reader's template has neither). The model fields the export
+            // no longer carries come from that reader's template (the upstream contract of
+            // `docs/plan/split-preset.md`, "Import / export"), except `maxContext`, which the export
+            // carries so that upstream's `setPreset` applies the size the preset was used with.
             const fromExport = legacyImportPreset(decodedFirst);
-            expect(promptOnly(fromExport)).toStrictEqual(promptOnly(legacyImportPreset(fixture)));
-            for (const key of ["aiModel", "subModel", "maxContext", "forceReplaceUrl"]) {
+            expect(promptOnly(fromExport)).toStrictEqual({
+                ...promptOnly(legacyImportPreset(fixture)),
+                maxContextOverride: false,
+                maxContextOverrideSize: fixture.maxContext,
+            });
+            for (const key of ["aiModel", "subModel", "forceReplaceUrl"]) {
                 expect(fromExport[key], key).toStrictEqual((presetTemplate as Record<string, unknown>)[key]);
             }
+            expect(fromExport.maxContext).toBe(12345);
             expect(presetTemplate.promptPreprocess).toBe(false);
             expect(Object.hasOwn(fromExport, "promptPreprocess")).toBe(true);
             expect(fromExport.promptPreprocess).toBeUndefined();
@@ -466,6 +506,109 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
         expect(JSON.parse(text)).not.toHaveProperty("promptPreprocess");
         expect(JSON.parse(text)).not.toHaveProperty("id");
         expect(JSON.parse(text)).not.toHaveProperty("aiModel");
+        expect(JSON.parse(text).maxContext).toBe(activeMainProfile.maxContext);
+    });
+});
+
+// The prompt preset's context size override in the files (`maxContextOverride`,
+// `maxContextOverrideSize`; `maxContextOverrideOf` in `shared/sections.ts`): an import turns it on
+// only from a file's own flag and takes the file's own size when that is a finite number above 0,
+// else the file's upstream `maxContext` (the template's 4000 when the file lacks it); an export of
+// either format carries upstream's `maxContext` as the effective size, never 0.
+describe("the context size override in import and export", () => {
+    beforeEach(() => {
+        selectPreset("");
+        selectModelPreset("");
+    });
+
+    async function importJson(file: Record<string, unknown>): Promise<botPreset & Record<string, unknown>> {
+        const before = settings.presets.length;
+        await importPreset({ name: "p.json", data: new TextEncoder().encode(JSON.stringify({ name: "f", ...file })) });
+        expect(settings.presets).toHaveLength(before + 1);
+        return settings.presets[before] as botPreset & Record<string, unknown>;
+    }
+
+    it("an import keeps a file's own flag and positive size, and never stores the file's maxContext", async () => {
+        bootWith();
+        const on = await importJson({ maxContextOverride: true, maxContextOverrideSize: 9000, maxContext: 5000 });
+        expect(on.maxContextOverride).toBe(true);
+        expect(on.maxContextOverrideSize).toBe(9000);
+        expect(Object.hasOwn(on, "maxContext")).toBe(false);
+        // The flag as the file has it: off stays off with a size, and a non-boolean is off.
+        const off = await importJson({ maxContextOverride: false, maxContextOverrideSize: 9000, maxContext: 5000 });
+        expect(off.maxContextOverride).toBe(false);
+        expect(off.maxContextOverrideSize).toBe(9000);
+        const invalid = await importJson({ maxContextOverride: "yes", maxContextOverrideSize: 9000 });
+        expect(invalid.maxContextOverride).toBe(false);
+        expect(invalid.maxContextOverrideSize).toBe(9000);
+    });
+
+    it("an import seeds an unset or invalid size from the file's maxContext, else from the template's 4000, with the flag off unless the file turns it on", async () => {
+        bootWith();
+        // A metatron export with an unset size (0) and the compatibility `maxContext`.
+        const unset = await importJson({ maxContextOverrideSize: 0, maxContext: 5000 });
+        expect(unset.maxContextOverride).toBe(false);
+        expect(unset.maxContextOverrideSize).toBe(5000);
+        // An upstream file: no override fields at all.
+        const upstream = await importJson({ maxContext: 6000 });
+        expect(upstream.maxContextOverride).toBe(false);
+        expect(upstream.maxContextOverrideSize).toBe(6000);
+        // Not finite, negative, or not a number: the file's `maxContext` instead (Astra point 6).
+        for (const size of [Infinity, -1, "9000", null]) {
+            const seeded = await importJson({
+                maxContextOverride: true,
+                maxContextOverrideSize: size,
+                maxContext: 7000,
+            });
+            expect(seeded.maxContextOverride, String(size)).toBe(true);
+            expect(seeded.maxContextOverrideSize, String(size)).toBe(7000);
+        }
+        // A file without `maxContext` takes the import template's 4000 (accepted).
+        expect(presetTemplate.maxContext).toBe(4000);
+        const bare = await importJson({});
+        expect(bare.maxContextOverride).toBe(false);
+        expect(bare.maxContextOverrideSize).toBe(4000);
+        // A file whose `maxContext` is not a positive size either leaves the default 0.
+        const zero = await importJson({ maxContext: 0 });
+        expect(zero.maxContextOverrideSize).toBe(0);
+    });
+
+    it("an export of either format carries the effective size as maxContext: the override when on and above 0, else the current main profile's, else 4000; the settings root stays the profile's", async () => {
+        bootWith({
+            botPresets: [
+                { id: "on", name: "on", maxContextOverride: true, maxContextOverrideSize: 9000 },
+                { id: "zero", name: "zero", maxContextOverride: true, maxContextOverrideSize: 0 },
+                { id: "off", name: "off", maxContextOverride: false, maxContextOverrideSize: 9000 },
+            ],
+        });
+        changeToPreset("on");
+        activeMainProfile.maxContext = 7000;
+        // The plugin root (`getDatabase` → `setDatabase` round trip) keeps the stored profile size.
+        expect(readSettingsRoot("maxContext")).toBe(7000);
+        expect(activeMainProfile.maxContext).toBe(7000);
+
+        const json = async (id: string) => JSON.parse(JSON.stringify((await downloadPreset(id, "json")).data));
+        const risup = async (id: string) => decodeRisup((await downloadPreset(id, "return")).buf as Uint8Array);
+
+        expect((await json("on")).maxContext).toBe(9000);
+        expect((await risup("on")).maxContext).toBe(9000);
+        expect((await json("on")).maxContextOverride).toBe(true);
+        expect((await json("on")).maxContextOverrideSize).toBe(9000);
+        // The export of a preset that is not the selected one still reads the current main profile.
+        expect((await json("zero")).maxContext).toBe(7000);
+        expect((await risup("zero")).maxContext).toBe(7000);
+        expect((await json("off")).maxContext).toBe(7000);
+        expect((await risup("off")).maxContext).toBe(7000);
+
+        // Never 0: a profile whose size is 0 (the editor allows it) exports the schema default.
+        activeMainProfile.maxContext = 0;
+        expect((await json("off")).maxContext).toBe(PRESET_DEFAULTS.maxContext);
+        expect((await risup("zero")).maxContext).toBe(PRESET_DEFAULTS.maxContext);
+        expect(PRESET_DEFAULTS.maxContext).toBe(4000);
+        expect((await json("on")).maxContext).toBe(9000);
+        // The export never writes the profile.
+        expect(activeMainProfile.maxContext).toBe(0);
+        expect(settings.presets.find((preset) => preset.id === "zero")!.maxContextOverrideSize).toBe(0);
     });
 });
 

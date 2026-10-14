@@ -434,6 +434,8 @@ export function modelPresetRootValue(
  * auxiliary toggle, and its main profile's options (`presetFieldValue`'s defaults when missing).
  * A dangling or unset slot reads as an empty model id; auxiliary roots describe the stored choices
  * regardless of the toggle. The server's job projection and request settings share these rules.
+ * The prompt preset's context size override (`maxContextOverrideOf`) replaces the main profile's
+ * `maxContext`.
  */
 export function forwardPresetRoots(
     target: Record<string, unknown>,
@@ -447,6 +449,24 @@ export function forwardPresetRoots(
     for (const rootKey of FORWARDED_MODEL_PRESET_KEYS) {
         target[rootKey] = plainClone(modelPresetRootValue(modelPreset, profiles, rootKey));
     }
+    const override = maxContextOverrideOf(promptPreset);
+    if (override !== undefined) {
+        target.maxContext = override;
+    }
+}
+
+/**
+ * The prompt preset's main-model context size (`maxContextOverride` on and a finite
+ * `maxContextOverrideSize` above 0, which is unset), or `undefined` when the main profile's
+ * `maxContext` applies. Reads a prompt preset record or any object carrying the two fields under
+ * their root names (a job or request database).
+ */
+export function maxContextOverrideOf(promptPreset: Record<string, unknown> | undefined): number | undefined {
+    if (presetFieldValue(promptPreset, "maxContextOverride") !== true) {
+        return undefined;
+    }
+    const size = presetFieldValue(promptPreset, "maxContextOverrideSize");
+    return typeof size === "number" && Number.isFinite(size) && size > 0 ? size : undefined;
 }
 
 /** Root fields that mirror the selected persona (`PERSONA_ROOT_ALIASES`). */

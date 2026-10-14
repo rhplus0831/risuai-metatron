@@ -59,6 +59,9 @@ The stored translation's display (`docs/plan/translation.md` slice 1.4, 2026-10-
 `memoryTranslateMedia` default `llmTranslationTarget` `"message"` by hand.
 The request history settings (`docs/plan/request-history-diagnostics.md` slice 4, 2026-10-13) added
 the `providers` defaults `requestHistoryContent` `true` and `requestHistoryLimit` `1000` by hand.
+The prompt preset's context size override (2026-10-14) added the two prompt preset defaults
+`maxContextOverride` `false` and `maxContextOverrideSize` `0` to the root by hand (they are forwarded
+prompt fields; the stored `botPresets[0]` keeps the pre-split template payload, which never had them).
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

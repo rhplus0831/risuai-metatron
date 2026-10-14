@@ -36,7 +36,7 @@ import { characterList } from "../../storage/characterStore.svelte";
 import { chatBindingPatch } from "../../storage/chatBinding.svelte";
 import { selectChat } from "../../storage/chatStore.svelte";
 import { selectCharacterAt, selectModelPreset, selectPersona, selectPreset } from "../../storage/selection.svelte";
-import { settings } from "../../storage/settingsViews.svelte";
+import { readSettingsRoot, settings } from "../../storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "../../storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 
@@ -177,6 +177,35 @@ describe("risuChatParserScoped", () => {
         );
         // The plain parser is unaffected.
         expect(risuChatParser("{{user}}")).toBe("Sel Persona");
+    });
+
+    it("reads `{{maxcontext}}` as the main model's effective size: the scope's prompt preset's override when on and above 0, else its model preset's main profile; the settings root stays the profile's", () => {
+        const ctxPreset = settings.presets.find((preset) => preset.id === "p-ctx")!;
+        ctxPreset.maxContextOverride = true;
+        ctxPreset.maxContextOverrideSize = 5555;
+        // The scope's prompt preset carries the override: it replaces the main profile's size of
+        // whichever model preset the scope names (the server's request database reads the same).
+        expect(risuChatParserScoped("{{maxcontext}}", {}, scope)).toBe("5555");
+        expect(risuChatParserScoped("{{maxcontext}}", {}, { ...scope, modelPresetId: "p-sel" })).toBe("5555");
+        // A scope whose prompt preset has no override reads the model preset's profile.
+        expect(risuChatParserScoped("{{maxcontext}}", {}, { ...scope, presetId: "p-sel" })).toBe("1111");
+        // The plain parser follows the selection: `p-sel` has no override; `p-ctx` does, over the
+        // selected model preset's profile (`p-sel`, 2222), while the settings root, which the plugin
+        // `getDatabase`/`setDatabase` round trip reads and writes back, keeps the profile's size.
+        expect(risuChatParser("{{maxcontext}}")).toBe("2222");
+        selectPreset("p-ctx");
+        expect(risuChatParser("{{maxcontext}}")).toBe("5555");
+        expect(readSettingsRoot("maxContext")).toBe(2222);
+        expect(settings.modelProfiles.map((profile) => profile.maxContext)).toEqual([1111, 2222]);
+        // 0 is unset and a flag that is off leaves the profile's size, in both parsers (the getters
+        // are live: the cached scoped evaluator sees the edit).
+        ctxPreset.maxContextOverrideSize = 0;
+        expect(risuChatParser("{{maxcontext}}")).toBe("2222");
+        expect(risuChatParserScoped("{{maxcontext}}", {}, scope)).toBe("1111");
+        ctxPreset.maxContextOverrideSize = 5555;
+        ctxPreset.maxContextOverride = false;
+        expect(risuChatParser("{{maxcontext}}")).toBe("2222");
+        expect(risuChatParserScoped("{{maxcontext}}", {}, scope)).toBe("1111");
     });
 });
 

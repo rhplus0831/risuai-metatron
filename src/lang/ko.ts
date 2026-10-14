@@ -40,6 +40,8 @@ export const languageKorean = {
         autoSuggest: "자동으로 유저의 응답을 제안할 때 선택지를 생성하기 위해 사용되는 프롬프트입니다.",
         formatOrder: "프롬프트의 배치 순서입니다. 아래쪽에 있을 수록 더 큰 영향을 줍니다.",
         forceUrl: "공백이 아닐 경우. 리퀘스트가 다음 URL로 갑니다.",
+        maxContextOverride:
+            "켜면 이 프롬프트 프리셋의 최대 컨텍스트 크기가 메인 모델 연결의 값을 대신합니다. 서브 모델과 보조 모델은 각자의 값을 그대로 씁니다. 크기가 0(미설정)일 때 켜면 메인 연결의 크기를 복사합니다. 내보낸 프리셋에는 다른 RisuAI 버전이 읽는 크기가 함께 들어갑니다.",
         tempature:
             "값이 낮을수록 캐릭터가 프롬프트를 잘 따르지만 기계처럼 반응할 가능성이 높아집니다.\n값이 높을수록 창의적인 동작이 가능하지만 캐릭터의 반응이 이상해질 수 있습니다.",
         frequencyPenalty:
@@ -669,6 +671,7 @@ export const languageKorean = {
     autoSuggest: "자동 제안",
     tokens: "토큰",
     maxContextSize: "최대 컨텍스트 크기",
+    maxContextOverride: "최대 컨텍스트 크기 덮어쓰기",
     maxResponseSize: "최대 응답 크기",
     temperature: "온도",
     frequencyPenalty: "빈도 패널티",

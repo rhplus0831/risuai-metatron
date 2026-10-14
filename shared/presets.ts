@@ -124,6 +124,8 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     temperature: 80,
     maxContext: 4000,
     maxResponse: 500,
+    maxContextOverride: false,
+    maxContextOverrideSize: 0,
     frequencyPenalty: 70,
     PresensePenalty: 70,
     formatingOrder: defaultFormatingOrder,

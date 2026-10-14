@@ -20,6 +20,7 @@ import {
     normalizePresets,
     PERSONA_ROOT_ALIASES,
     PRESET_DEFAULTS,
+    PRESET_FIELD_KINDS,
     PRESET_FIELDS,
     PRESET_NULLABLE_FIELDS,
     PRESET_RECORD_FIELDS,
@@ -42,6 +43,7 @@ import {
     FORWARDED_PRESET_KEYS,
     FORWARDED_ROOT_KEYS,
     forwardPresetRoots,
+    maxContextOverrideOf,
     MODEL_PROFILE_ROOT_FIELDS,
     PERSONA_ROOT_KEYS,
     PHASE1_FIELDS,
@@ -783,9 +785,9 @@ describe("field-to-resource partition", () => {
         expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 4 - 36 - 2);
     });
 
-    it("derives the forwarded lists from the owners: 45 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the owners: 47 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
-        expect(FORWARDED_PRESET_KEYS).toHaveLength(45);
+        expect(FORWARDED_PRESET_KEYS).toHaveLength(47);
         // The profile's options at root, without its record metadata (`modelId`, `credentialId`).
         expect(MODEL_PROFILE_ROOT_FIELDS).toEqual(
             MODEL_PROFILE_FIELDS.filter((field) => field !== "modelId" && field !== "credentialId"),
@@ -832,7 +834,7 @@ describe("field-to-resource partition", () => {
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 38 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(47 + 38 + 4 + 3);
         expect(FORWARDED_ROOT_KEYS).not.toContain("proxyKey");
         expect(DROPPED_FIELDS).toEqual(expect.arrayContaining(["proxyKey", "apiType", "proxyCredentialId"]));
     });
@@ -884,6 +886,95 @@ describe("field-to-resource partition", () => {
         for (const key of ["name", "image", "id", "proxyKey", "mainSlot", "subSlot", "auxSlots", "modelId"]) {
             expect(Object.hasOwn(target, key), key).toBe(false);
         }
+    });
+
+    // The prompt preset's context size override: two prompt fields (`maxContextOverride`,
+    // `maxContextOverrideSize`, default off and 0 = unset) that replace the main profile's
+    // `maxContext` in the forwarded roots only when the flag is on and the size is a finite number
+    // above 0 (`maxContextOverrideOf`). The profile record itself is never written.
+    describe("the context size override", () => {
+        const model = {
+            id: "m",
+            name: "M",
+            mainSlot: { profileId: "main" },
+            subSlot: { profileId: "main" },
+            auxSlots: {},
+            seperateModelsForAxModels: false,
+        } as unknown as ModelPreset;
+        const profiles = [
+            { id: "main", name: "Main", modelId: "model-x", maxContext: 9000 },
+        ] as unknown as ModelProfile[];
+        const forwarded = (prompt: Record<string, unknown>) => {
+            const target: Record<string, unknown> = {};
+            forwardPresetRoots(target, prompt, model, profiles);
+            return target;
+        };
+
+        it("is off by default, a prompt field of both the schema and the forwarded roots", () => {
+            expect(PRESET_DEFAULTS.maxContextOverride).toBe(false);
+            expect(PRESET_DEFAULTS.maxContextOverrideSize).toBe(0);
+            expect(presetFieldOwner("maxContextOverride")).toBe("prompt");
+            expect(presetFieldOwner("maxContextOverrideSize")).toBe("prompt");
+            expect(PRESET_FIELD_KINDS.maxContextOverride).toBe("boolean");
+            expect(PRESET_FIELD_KINDS.maxContextOverrideSize).toBe("number");
+            expect(FORWARDED_PRESET_KEYS).toEqual(
+                expect.arrayContaining(["maxContextOverride", "maxContextOverrideSize"]),
+            );
+            expect(maxContextOverrideOf(undefined)).toBeUndefined();
+            expect(maxContextOverrideOf({})).toBeUndefined();
+        });
+
+        it("takes effect only with the flag on and a finite size above 0", () => {
+            expect(maxContextOverrideOf({ maxContextOverride: true, maxContextOverrideSize: 12000 })).toBe(12000);
+            expect(maxContextOverrideOf({ maxContextOverride: true, maxContextOverrideSize: 1 })).toBe(1);
+            // Off, or the flag not exactly `true`.
+            expect(maxContextOverrideOf({ maxContextOverride: false, maxContextOverrideSize: 12000 })).toBeUndefined();
+            expect(maxContextOverrideOf({ maxContextOverride: "true", maxContextOverrideSize: 12000 })).toBeUndefined();
+            expect(maxContextOverrideOf({ maxContextOverride: 1, maxContextOverrideSize: 12000 })).toBeUndefined();
+            // 0 is unset; a negative, non-finite, or non-numeric size never takes effect.
+            for (const size of [0, -1, -12000, Infinity, -Infinity, NaN, "12000", null, undefined]) {
+                expect(
+                    maxContextOverrideOf({ maxContextOverride: true, maxContextOverrideSize: size }),
+                    String(size),
+                ).toBeUndefined();
+            }
+        });
+
+        it("replaces the forwarded `maxContext` root, and nothing else, exactly when it takes effect", () => {
+            const base = forwarded({ id: "p", name: "P", temperature: 7 });
+            expect(base.maxContext).toBe(9000);
+            expect(base.maxContextOverride).toBe(false);
+            expect(base.maxContextOverrideSize).toBe(0);
+
+            const on = forwarded({
+                id: "p",
+                name: "P",
+                temperature: 7,
+                maxContextOverride: true,
+                maxContextOverrideSize: 12000,
+            });
+            expect(on.maxContext).toBe(12000);
+            expect(on.maxContextOverride).toBe(true);
+            expect(on.maxContextOverrideSize).toBe(12000);
+            expect({
+                ...on,
+                maxContext: base.maxContext,
+                maxContextOverride: false,
+                maxContextOverrideSize: 0,
+            }).toEqual(base);
+            // The profile keeps its own size.
+            expect(profiles[0].maxContext).toBe(9000);
+
+            for (const prompt of [
+                { maxContextOverride: false, maxContextOverrideSize: 12000 },
+                { maxContextOverride: true, maxContextOverrideSize: 0 },
+                { maxContextOverride: true, maxContextOverrideSize: -5 },
+                { maxContextOverride: true, maxContextOverrideSize: Infinity },
+                { maxContextOverride: true },
+            ]) {
+                expect(forwarded({ id: "p", name: "P", ...prompt }).maxContext, JSON.stringify(prompt)).toBe(9000);
+            }
+        });
     });
 
     it("places the review corrections: the former keep-on-switch group in the presets, auto-suggest in ui, supaMemoryKey in llmSecrets, hypaMemoryKey dropped", () => {
