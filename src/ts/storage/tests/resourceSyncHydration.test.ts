@@ -943,8 +943,8 @@ describe("a refusal for a generating message", () => {
         // Undo: the character is back, nothing is owed for it any more. Added back through the
         // character module, it also enters the character order (the fixture's order is `[]`), and it is
         // prepared as a creation (Phase 6 slice 5b), which stamps the `creation_date` the fixture's
-        // record lacks: those two are the writes the undo sends, the character's a put of the server's
-        // record plus that stamp on its held revision, no delete.
+        // record lacks: those two are the writes the undo sends, the character's a field patch (audit
+        // item A1) of that one stamp on the server's record at its held revision, no delete.
         const stored = fake.record("characters", "c")!;
         characterStore.addCharacter(removed);
         await tick();
@@ -957,13 +957,13 @@ describe("a refusal for a generating message", () => {
                     kind: "characters",
                     id: "c",
                     baseRevision: stored.revision,
-                    data: { ...stored.data, creation_date: expect.any(Number) },
+                    patch: { set: { creation_date: expect.any(Number) }, remove: [] },
                 },
             ],
             chats: [],
             chatOrders: [],
         });
-        expect(fake.record("characters", "c")).not.toBeNull();
+        expect(fake.record("characters", "c")!.data).toEqual({ ...stored.data, creation_date: expect.any(Number) });
         await sync.flushResources();
         expect({
             chatWork: chat.hasUnsavedChatWork(),

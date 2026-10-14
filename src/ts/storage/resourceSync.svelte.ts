@@ -9,7 +9,7 @@ import {
     parseRevisionToken,
     RESOURCE_KIND,
     type ChangeSet,
-    type RecordFieldPatch,
+    type RecordPatch,
     type ResourceBatchResult,
     type ResourceReadKindsResult,
     type ResourceRevisionListing,
@@ -42,6 +42,7 @@ import {
 import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { applyItemPatch, type CheckedItemPatch, checkItemPatch, itemIds } from "../../../shared/recordPatch.ts";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import { reconcileSelection } from "./settingsViews.svelte";
 import {
@@ -169,6 +170,25 @@ import {
 type Phase1Collection = "presets" | "modules" | "plugins" | "pluginStorage";
 type Collection = Phase1Collection | SectionKind | CollectionKind;
 
+/** A top-level field of a record's text: its name, and where its value's JSON text is in that text. */
+type FieldSpan = [key: string, start: number, end: number];
+/**
+ * A record's JSON text in parts, what a save diffs to send a patch: a character's top-level fields,
+ * or the `modules` items by id (each item's span and fields), as spans of `source`, the text they
+ * were built with (a projection's own text, so the parts hold no copy of it).
+ */
+type RecordParts =
+    | { type: "fields"; source: string; fields: FieldSpan[] }
+    | { type: "items"; source: string; items: { id: string; start: number; end: number; fields: FieldSpan[] }[] };
+/** A record's text with its parts (null: it has none, it is saved whole). */
+type Projection = { text: string; parts: RecordParts | null };
+/**
+ * What this client holds as the server's copy of a record: its revision and text, and `parts` once
+ * computed for that text (`baseParts`; null when the record has none). An entry is replaced, never
+ * changed, when its text changes, so cached parts always belong to its text.
+ */
+type Persisted = { revision: string; text: string; parts?: RecordParts | null };
+
 const SECTIONS: readonly SectionKind[] = Object.values(SECTION_KIND);
 const SETTINGS_COLLECTIONS: readonly CollectionKind[] = Object.values(COLLECTION_KIND);
 const COLLECTIONS: readonly Collection[] = [
@@ -201,7 +221,7 @@ const characterPrefix = recordKey(RESOURCE_KIND.characters, "");
 const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
 
 /** What the server holds for each record this client knows: `<kind>\0<id>` → revision and JSON text. */
-const persisted = new Map<string, { revision: string; text: string }>();
+const persisted = new Map<string, Persisted>();
 /** Dirty record keys → the generation of their latest mark. */
 const dirty = new Map<string, number>();
 /** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
@@ -254,12 +274,12 @@ const remoteChangeListeners = new Set<RemoteChangeListener>();
  * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
  * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
  * held unsent when the server's siblings had changed too; the entry waits for that local text to
- * change (its save or a conflict settles it). `patch`: the notice's field patch, applied without a
+ * change (its save or a conflict settles it). `patch`: the notice's record patch, applied without a
  * read if this client still holds its base when the cycle runs (`applyRemotePatch`).
  */
 const remoteRecords = new Map<
     string,
-    { kind: string; id: string; revision: string | null; blockedLocal?: string; patch?: RecordFieldPatch }
+    { kind: string; id: string; revision: string | null; blockedLocal?: string; patch?: RecordPatch }
 >();
 /**
  * Characters whose chat list (chats created, deleted, or reordered elsewhere) waits to be read and
@@ -407,6 +427,9 @@ function projectCollection(collection: Collection): string | undefined {
         }
         return JSON.stringify(ordered);
     }
+    if (collection === RESOURCE_KIND.modules) {
+        return itemProjection(record).text;
+    }
     // User-chosen keys (plugin storage, a preset's `seperateParameters.overrides`, the credential
     // maps): serialized straight from the live record; `$state.snapshot` would drop an own
     // `__proto__` key.
@@ -414,10 +437,128 @@ function projectCollection(collection: Collection): string | undefined {
 }
 
 /**
+ * Whether `JSON.stringify` would call a `toJSON` hook of `value` that may answer by its key (a Date's
+ * ignores it). A record holding one is serialized whole, without parts: a value serialized on its own
+ * gets the key `""` instead of its field name or index.
+ */
+function hasJsonHook(value: unknown): boolean {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+        return false;
+    }
+    const hook = (value as { toJSON?: unknown }).toJSON;
+    return typeof hook === "function" && hook !== Date.prototype.toJSON;
+}
+
+/**
+ * The fields of an object with the JSON text of each value, in `JSON.stringify`'s order; a field
+ * whose value has no JSON text (`undefined`, a function) is left out, as `JSON.stringify` does. Null
+ * when the object or a value has a `toJSON` hook (`hasJsonHook`).
+ */
+function fieldTexts(record: Record<string, unknown>): [string, string][] | null {
+    if (hasJsonHook(record)) {
+        return null;
+    }
+    const fields: [string, string][] = [];
+    for (const key of Object.keys(record)) {
+        const value = record[key];
+        if (hasJsonHook(value)) {
+            return null;
+        }
+        const text = JSON.stringify(value);
+        if (text !== undefined) {
+            fields.push([key, text]);
+        }
+    }
+    return fields;
+}
+
+/** JSON text written piece by piece, with the offset of what was written (`objectSpans`). */
+type JsonWriter = { pieces: string[]; length: number };
+
+function write(writer: JsonWriter, piece: string) {
+    writer.pieces.push(piece);
+    writer.length += piece.length;
+}
+
+/** Writes an object from its fields' texts (`fieldTexts`): `JSON.stringify`'s text. Returns their spans. */
+function objectSpans(writer: JsonWriter, fields: readonly [string, string][]): FieldSpan[] {
+    const spans: FieldSpan[] = [];
+    write(writer, "{");
+    fields.forEach(([key, text], index) => {
+        write(writer, `${index > 0 ? "," : ""}${JSON.stringify(key)}:`);
+        spans.push([key, writer.length, writer.length + text.length]);
+        write(writer, text);
+    });
+    write(writer, "}");
+    return spans;
+}
+
+/**
+ * An object record's text and its top-level field parts; built from the parts, the text is
+ * `JSON.stringify(record)`. One with a `toJSON` hook is its plain text without parts.
+ */
+function objectProjection(record: Record<string, unknown>): Projection {
+    const fields = fieldTexts(record);
+    if (!fields) {
+        return { text: JSON.stringify(record), parts: null };
+    }
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    const spans = objectSpans(writer, fields);
+    const text = writer.pieces.join("");
+    return { text, parts: { type: "fields", source: text, fields: spans } };
+}
+
+/**
+ * An item list's text and its parts by item id (`itemIds`: plain-object items with unique non-empty
+ * string ids); built from the parts, the text is `JSON.stringify(list)`. Any other list, or one with a
+ * `toJSON` hook on it, an item, or an item's value, is its plain text without parts.
+ */
+function itemProjection(list: unknown): Projection {
+    const ids = itemIds(list);
+    const items = list as Record<string, unknown>[];
+    const texts = ids && !hasJsonHook(list) ? items.map(fieldTexts) : null;
+    if (!ids || !texts || texts.some((fields) => fields === null)) {
+        return { text: JSON.stringify(list), parts: null };
+    }
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    write(writer, "[");
+    const parts = ids.map((id, index) => {
+        if (index > 0) {
+            write(writer, ",");
+        }
+        const start = writer.length;
+        const fields = objectSpans(writer, texts[index]!);
+        return { id, start, end: writer.length, fields };
+    });
+    write(writer, "]");
+    const text = writer.pieces.join("");
+    return { text, parts: { type: "items", source: text, items: parts } };
+}
+
+/** A collection's text, with the `modules` parts (`itemProjection`); undefined when the record is absent. */
+function collectionProjection(collection: Collection): Projection | undefined {
+    if (collection === RESOURCE_KIND.modules) {
+        const record = recordData(collection);
+        return record === undefined ? undefined : itemProjection(record);
+    }
+    const text = projectCollection(collection);
+    return text === undefined ? undefined : { text, parts: null };
+}
+
+/**
  * A character as stored: its own fields in their order, without `CHARACTER_LOCAL_KEYS` (the chats
  * are saved on their own; the selection and the render key are client-only).
  */
 function projectCharacter(character: character | groupChat): string {
+    return characterProjection(character).text;
+}
+
+/**
+ * A character's text (`projectCharacter`) and its top-level field parts (`objectProjection`). The
+ * fields are taken from an ordinary object (`JSON.stringify` puts integer keys first there, not where
+ * a `$state` proxy has them), so the text is `JSON.stringify` of that object.
+ */
+function characterProjection(character: character | groupChat): Projection {
     // Own keys defined, never assigned, and the values serialized straight from the record (not
     // `$state.snapshot`, which assigns keys): an own `__proto__` key survives at any depth.
     const copy: Record<string, unknown> = {};
@@ -432,7 +573,7 @@ function projectCharacter(character: character | groupChat): string {
             });
         }
     }
-    return JSON.stringify(copy);
+    return objectProjection(copy);
 }
 
 /**
@@ -443,25 +584,34 @@ function projectCharacter(character: character | groupChat): string {
  * against the record the server really has. A character whose shape the helper refuses is sent as it
  * is (the server refuses it, and the record is quarantined as any refused write).
  */
-function canonicalCharacterText(id: string, text: string): string {
+function canonicalCharacter(id: string, projection: Projection): Projection {
     let own: Record<string, unknown>;
     let canonical: Record<string, unknown>;
     try {
-        own = JSON.parse(text) as Record<string, unknown>;
+        own = JSON.parse(projection.text) as Record<string, unknown>;
         canonical = normalizeCharacter(own);
     } catch {
-        return text;
+        return projection;
     }
     const changes = Object.keys(canonical)
         // The helper keeps every unchanged value by reference: only a default or a rebuilt group array differs.
         .filter((field) => !Object.hasOwn(own, field) || !Object.is(own[field], canonical[field]))
         .map((field) => [field, canonical[field]] as const);
     if (changes.length === 0) {
-        return text;
+        return projection;
     }
     patchRawCharacter(id, changes);
     const character = findMirrorCharacter(id);
-    return character ? projectCharacter(character) : text;
+    return character ? characterProjection(character) : projection;
+}
+
+/** A record's mirror text with its parts (`projectRecord`), or undefined when the mirror has none. */
+function projectEntry(kind: string, id: string): Projection | undefined {
+    if (kind === RESOURCE_KIND.characters) {
+        const character = findMirrorCharacter(id);
+        return character ? characterProjection(character) : undefined;
+    }
+    return COLLECTIONS.includes(kind as Collection) ? collectionProjection(kind as Collection) : undefined;
 }
 
 /** The text a record has after a server copy was written into the mirror (its key order, not the server's). */
@@ -578,8 +728,11 @@ type PendingOp = {
     kind: string;
     id: string;
     baseRevision: string | null;
+    /** The whole record's text (null: a deletion), held as saved once the op is acknowledged. */
     text: string | null;
-    /** The operation's JSON inside the batch body. */
+    /** The parts of `text` (`RecordParts`), cached with it once acknowledged. */
+    parts?: RecordParts | null;
+    /** The operation's JSON inside the batch body: the whole data, a deletion, or a record patch. */
     part: string;
     /** UTF-8 size of `part`. */
     bytes: number;
@@ -604,10 +757,148 @@ export function utf8ByteLength(text: string): number {
     return bytes;
 }
 
-function pendingOp(op: Omit<PendingOp, "part" | "bytes">): PendingOp {
+/** An op sending the whole record (or, with `patch`, the JSON of a record patch of it). */
+function pendingOp(op: Omit<PendingOp, "part" | "bytes">, patch?: string): PendingOp {
     const head = `{"kind":${JSON.stringify(op.kind)},"id":${JSON.stringify(op.id)},"baseRevision":${JSON.stringify(op.baseRevision)}`;
-    const part = op.text === null ? `${head},"delete":true}` : `${head},"data":${op.text}}`;
+    const part =
+        patch !== undefined
+            ? `${head},"patch":${patch}}`
+            : op.text === null
+              ? `${head},"delete":true}`
+              : `${head},"data":${op.text}}`;
     return { ...op, part, bytes: utf8ByteLength(part) };
+}
+
+/**
+ * The parts of a held record's text (`RecordParts`), computed once from the text and cached on the
+ * entry; null when it has none (not a character or `modules`, a list without unique item ids, a
+ * `toJSON` hook). Parts rebuilt from a parse are spans of the held text when the rebuilt text equals
+ * it, else of the rebuilt text: a parse may order nested integer keys differently from the live
+ * record, and such a field only reads as changed and is sent again, never the reverse.
+ */
+function baseParts(kind: string, entry: Persisted): RecordParts | null {
+    if (entry.parts !== undefined) {
+        return entry.parts;
+    }
+    let projection: Projection | null = null;
+    try {
+        const data: unknown = JSON.parse(entry.text);
+        if (kind === RESOURCE_KIND.characters && isPlainObject(data)) {
+            projection = objectProjection(data);
+        } else if (kind === RESOURCE_KIND.modules) {
+            projection = itemProjection(data);
+        }
+    } catch {}
+    const parts = projection?.parts ?? null;
+    if (parts && projection!.text === entry.text) {
+        parts.source = entry.text;
+    }
+    entry.parts = parts;
+    return parts;
+}
+
+/** The text of a span of `source`, compared without a copy (a slice). */
+const spanText = (source: string, start: number, end: number) => source.slice(start, end);
+
+/**
+ * The fields that differ from `base` to `local` by their text: `set` (new or changed, with the local
+ * text), `remove` (fields `local` lacks). Null when `__proto__` is among them (a patch never names it:
+ * such a record or item is saved whole).
+ */
+function diffFieldSpans(
+    baseSource: string,
+    base: readonly FieldSpan[],
+    localSource: string,
+    local: readonly FieldSpan[],
+): { set: [string, string][]; remove: string[] } | null {
+    const before = new Map(base.map(([key, start, end]) => [key, [start, end] as const]));
+    const after = new Set(local.map(([key]) => key));
+    const set: [string, string][] = [];
+    for (const [key, start, end] of local) {
+        const span = before.get(key);
+        const text = spanText(localSource, start, end);
+        if (!span || span[1] - span[0] !== end - start || spanText(baseSource, span[0], span[1]) !== text) {
+            set.push([key, text]);
+        }
+    }
+    const remove = base.filter(([key]) => !after.has(key)).map(([key]) => key);
+    return set.some(([key]) => key === "__proto__") || remove.includes("__proto__") ? null : { set, remove };
+}
+
+/** A field patch's members (`"set":{...},"remove":[...]`) from field texts. */
+function fieldPatchText(set: readonly [string, string][], remove: readonly string[]): string {
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    objectSpans(writer, set);
+    return `"set":${writer.pieces.join("")},"remove":${JSON.stringify(remove)}`;
+}
+
+/**
+ * The JSON of the record patch from `base` to `local` (`RecordFieldPatch` or `RecordItemPatch`
+ * without its revision), `""` when nothing differs but key order, or null when a whole write is
+ * needed (a changed `__proto__` field of a character).
+ */
+function recordPatchText(base: RecordParts, local: RecordParts): string | null {
+    if (base.type === "fields" && local.type === "fields") {
+        const fields = diffFieldSpans(base.source, base.fields, local.source, local.fields);
+        if (!fields) {
+            return null;
+        }
+        return fields.set.length === 0 && fields.remove.length === 0
+            ? ""
+            : `{${fieldPatchText(fields.set, fields.remove)}}`;
+    }
+    if (base.type !== "items" || local.type !== "items") {
+        return null;
+    }
+    const before = new Map(base.items.map((item) => [item.id, item.fields]));
+    const items: string[] = [];
+    const changes: string[] = [];
+    for (const item of local.items) {
+        const baseFields = before.get(item.id);
+        const fields = baseFields ? diffFieldSpans(base.source, baseFields, local.source, item.fields) : null;
+        if (!fields) {
+            // A new item, or one whose `__proto__` changed: sent whole.
+            items.push(spanText(local.source, item.start, item.end));
+        } else if (fields.set.length > 0 || fields.remove.length > 0) {
+            changes.push(`{"id":${JSON.stringify(item.id)},${fieldPatchText(fields.set, fields.remove)}}`);
+        }
+    }
+    const reordered =
+        base.items.length !== local.items.length || base.items.some((item, index) => item.id !== local.items[index].id);
+    if (items.length === 0 && changes.length === 0 && !reordered) {
+        return "";
+    }
+    const order = reordered ? `,"order":${JSON.stringify(local.items.map((item) => item.id))}` : "";
+    return `{"items":[${items.join(",")}],"changes":[${changes.join(",")}]${order}}`;
+}
+
+/**
+ * The save of a held record whose text changed: a record patch against the saved base when both have
+ * parts (a character's changed fields, the changed `modules` items), unless it is not smaller in UTF-8
+ * bytes than the whole data; otherwise the whole record. Null when only key order differs: the local
+ * text is held as the saved one (the same JSON values at the same revision), and nothing is sent.
+ */
+function updateOperation(
+    key: string,
+    kind: string,
+    id: string,
+    current: Persisted,
+    local: Projection,
+): PendingOp | null {
+    const op = { key, kind, id, baseRevision: current.revision, text: local.text, parts: local.parts };
+    const base = local.parts ? baseParts(kind, current) : null;
+    const patch = base && local.parts ? recordPatchText(base, local.parts) : null;
+    if (patch === "") {
+        persisted.set(key, { revision: current.revision, text: local.text, parts: local.parts });
+        return null;
+    }
+    if (patch === null) {
+        return pendingOp(op);
+    }
+    // At most 3 UTF-8 bytes per UTF-16 unit, at least 1: only a close call is measured. `"patch":`
+    // is one byte longer than `"data":`.
+    const smaller = 3 * patch.length + 1 < local.text.length || utf8ByteLength(patch) + 1 < utf8ByteLength(local.text);
+    return smaller ? pendingOp(op, patch) : pendingOp(op);
 }
 
 /**
@@ -638,19 +929,16 @@ function collectOperations(): {
         if (!captured.has(key)) {
             continue;
         }
-        const text = projectCollection(collection);
+        const projection = collectionProjection(collection);
         const current = persisted.get(key);
         // An absent collection (e.g. no plugin storage yet) has no record to write.
-        if (text !== undefined && text !== current?.text) {
-            addOperation(
-                pendingOp({
-                    key,
-                    kind: collection,
-                    id: SINGLETON_RESOURCE_ID,
-                    baseRevision: current?.revision ?? null,
-                    text,
-                }),
-            );
+        if (projection !== undefined && projection.text !== current?.text) {
+            const op = current
+                ? updateOperation(key, collection, SINGLETON_RESOURCE_ID, current, projection)
+                : pendingOp({ key, kind: collection, id: SINGLETON_RESOURCE_ID, baseRevision: null, ...projection });
+            if (op) {
+                addOperation(op);
+            }
         }
     }
 
@@ -667,14 +955,17 @@ function collectOperations(): {
         if (current && !captured.has(key)) {
             continue;
         }
-        let text = projectCharacter(character);
-        if (text !== current?.text) {
-            text = canonicalCharacterText(id, text);
+        let projection = characterProjection(character);
+        if (projection.text !== current?.text) {
+            projection = canonicalCharacter(id, projection);
         }
-        if (text !== current?.text) {
-            addOperation(
-                pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current?.revision ?? null, text }),
-            );
+        if (projection.text !== current?.text) {
+            const op = current
+                ? updateOperation(key, RESOURCE_KIND.characters, id, current, projection)
+                : pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: null, ...projection });
+            if (op) {
+                addOperation(op);
+            }
         }
     }
     const creating = new Set<string>();
@@ -913,7 +1204,7 @@ async function cycle() {
                 if (op.text === null || revision === null || revision === undefined) {
                     persisted.delete(op.key);
                 } else {
-                    persisted.set(op.key, { revision, text: op.text });
+                    persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                 }
             });
             for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
@@ -1458,13 +1749,28 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     return true;
 }
 
+/** Whether two JSON texts hold the same value, key order aside (same-length texts are compared parsed). */
+function sameJson(a: string, b: string): boolean {
+    if (a === b) {
+        return true;
+    }
+    if (a.length !== b.length) {
+        return false;
+    }
+    try {
+        return isEqual(JSON.parse(a), JSON.parse(b));
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Another tab or device wrote records this batch was based on. Reads them back and puts the server
  * version into the mirror, unless the server already holds exactly what this client sent (a retry
  * after a lost response). The rest of the batch goes out in the next cycle.
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
-    const sent = new Map(batch.map((op) => [op.key, op.text]));
+    const sent = new Map(batch.map((op) => [op.key, op]));
     const refs: { kind: string; id: string }[] = [];
     const chatRefs: { characterId: string; id: string }[] = [];
     const conflictedChats = new Set<string>();
@@ -1529,8 +1835,11 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
         const text = item.revision === null ? null : recordText(item.kind, item.data);
-        if (text !== null && sent.get(key) === text) {
-            persisted.set(key, { revision: item.revision!, text });
+        const op = sent.get(key);
+        if (text !== null && op?.text != null && sameJson(op.text, text)) {
+            // A retry after a lost response: the server holds what was sent (a patch's result keeps
+            // the server's key order, so the text may differ in order only).
+            persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
             continue;
         }
         if (mergeConcurrentChange(item, key)) {
@@ -1944,25 +2253,32 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
 }
 
 /**
- * Applies a live update's field patch (`RecordFieldPatch`) without reading the record: a character
- * this client holds at exactly the patch's base revision (of the loaded epoch, the same incarnation,
- * one write before the update) and has no local change of (`canApplyRemote`) takes the changed fields
- * raw (`patchRawCharacter`: no mark, no echo) and the new revision; its saved text is the mirror's
- * projection afterwards, as for a whole update. A waiting notice the update covers is settled. The
- * remote-change listeners hear of it unless only `lastInteraction` changed (a send job's stamp, as
- * `mergeConcurrentChange` treats it). Returns false, changing nothing, for anything else (another
- * kind, another base, a local change, a malformed patch or one naming a field twice, a fixed or
- * client-only field, a field the mirror object only inherits): the update is then read whole as before.
+ * Applies a live update's record patch without reading the record, when this client holds the record
+ * at exactly the patch's base revision (of the loaded epoch, the same incarnation, one write before
+ * the update) and has no local change of it (`canApplyRemote`): a character's field patch
+ * (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); a `modules` item patch
+ * (`RecordItemPatch`) is applied to a detached copy of the held text and the result goes in through
+ * the mirror's whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's
+ * projection afterwards, as for a whole update, and a waiting notice the update covers is settled.
+ * The remote-change listeners hear of it unless only a character's `lastInteraction` changed (a send
+ * job's stamp, as `mergeConcurrentChange` treats it). Returns false, changing nothing, for anything
+ * else (another kind or patch form, another base, a local change, a malformed patch or one naming a
+ * field twice, a character's fixed or client-only field or one the mirror object only inherits, an
+ * item patch that does not fit the held list): the update is then read whole as before.
  */
 function applyRemotePatch(ref: {
     kind: string;
     id: string;
     revision: string | null;
     blockedLocal?: string;
-    patch?: RecordFieldPatch;
+    patch?: RecordPatch;
 }): boolean {
     const patch = ref.patch;
-    if (!patch || ref.kind !== RESOURCE_KIND.characters || ref.revision === null) {
+    if (
+        !patch ||
+        (ref.kind !== RESOURCE_KIND.characters && ref.kind !== RESOURCE_KIND.modules) ||
+        ref.revision === null
+    ) {
         return false;
     }
     const base = parseRevisionToken(patch.baseRevision);
@@ -1978,15 +2294,46 @@ function applyRemotePatch(ref: {
         return false;
     }
     const key = recordKey(ref.kind, ref.id);
-    if (persisted.get(key)?.revision !== patch.baseRevision || !canApplyRemote(key, ref)) {
+    const held = persisted.get(key);
+    if (held?.revision !== patch.baseRevision || !canApplyRemote(key, ref)) {
         return false;
     }
-    const character = findMirrorCharacter(ref.id);
-    if (!character || !isPlainObject(patch.set) || !Array.isArray(patch.remove)) {
+    const changed =
+        ref.kind === RESOURCE_KIND.characters
+            ? applyCharacterPatch(ref.id, patch)
+            : applyModulesPatch(ref.id, held.text, patch);
+    if (changed === null) {
         return false;
     }
-    const setFields = Object.keys(patch.set);
-    const fields = [...setFields, ...patch.remove];
+    const projection = projectEntry(ref.kind, ref.id)!;
+    persisted.set(key, { revision: ref.revision, ...projection });
+    const waiting = remoteRecords.get(key);
+    if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
+        remoteRecords.delete(key);
+    }
+    if (changed) {
+        notifyRemoteListeners(ref.kind, ref.id);
+    }
+    return true;
+}
+
+/**
+ * A character's field patch into the mirror raw (`applyRemotePatch`). Returns null when it does not
+ * apply, else whether a field other than `lastInteraction` changed.
+ */
+function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
+    const character = findMirrorCharacter(id);
+    if (
+        !character ||
+        Object.hasOwn(patch, "items") ||
+        !isPlainObject((patch as { set?: unknown }).set) ||
+        !Array.isArray((patch as { remove?: unknown }).remove)
+    ) {
+        return null;
+    }
+    const { set, remove } = patch as { set: Record<string, unknown>; remove: unknown[] };
+    const setFields = Object.keys(set);
+    const fields = [...setFields, ...remove];
     if (
         new Set(fields).size !== fields.length ||
         fields.some(
@@ -1995,28 +2342,40 @@ function applyRemotePatch(ref: {
         ) ||
         setFields.some((field) => assignsInherited(character, field))
     ) {
-        return false;
+        return null;
     }
     let changes: (readonly [string, unknown])[];
     try {
         changes = [
-            ...setFields.map((field) => [field, structuredClone(patch.set[field])] as const),
-            ...patch.remove.map((field) => [field, REMOVE_FIELD] as const),
+            ...setFields.map((field) => [field, structuredClone(set[field])] as const),
+            ...(remove as string[]).map((field) => [field, REMOVE_FIELD] as const),
         ];
     } catch {
-        return false;
+        return null;
     }
-    if (!patchRawCharacter(ref.id, changes)) {
-        return false;
+    if (!patchRawCharacter(id, changes)) {
+        return null;
     }
-    persisted.set(key, { revision: ref.revision, text: projectRecord(ref.kind, ref.id)! });
-    const waiting = remoteRecords.get(key);
-    if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
-        remoteRecords.delete(key);
+    return fields.some((field) => field !== "lastInteraction");
+}
+
+/**
+ * A `modules` item patch (`applyRemotePatch`): applied to a parse of the held text (the mirror equals
+ * it), and the detached result replaces the record as a whole read's would. Returns null when it does
+ * not apply, else true.
+ */
+function applyModulesPatch(id: string, heldText: string, patch: RecordPatch): boolean | null {
+    if (!Object.hasOwn(patch, "items") || Object.hasOwn(patch, "set") || Object.hasOwn(patch, "remove")) {
+        return null;
     }
-    if (fields.some((field) => field !== "lastInteraction")) {
-        notifyRemoteListeners(ref.kind, ref.id);
+    let list: Record<string, unknown>[];
+    try {
+        const checked: CheckedItemPatch = checkItemPatch(structuredClone(patch) as Record<string, unknown>);
+        list = applyItemPatch(JSON.parse(heldText), checked);
+    } catch {
+        return null;
     }
+    applyToMirror(RESOURCE_KIND.modules, id, list);
     return true;
 }
 

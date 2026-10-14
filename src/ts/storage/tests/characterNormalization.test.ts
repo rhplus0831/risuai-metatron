@@ -46,6 +46,20 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+/** A JSON value's text with every object's keys sorted (array order kept): equal texts, equal values. */
+const canonicalJson = (value: unknown): string => {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(",")}]`;
+    }
+    if (value !== null && typeof value === "object") {
+        const record = value as Record<string, unknown>;
+        return `{${Object.keys(record)
+            .sort()
+            .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value);
+};
 const LOCAL = new Set(["chats", "chatPage", "reloadKeys"]);
 const opsOf = (fake: StoreBackedServer) => fake.batchBodies().flatMap((batch: any) => batch.ops ?? []);
 const characterOps = (fake: StoreBackedServer) => opsOf(fake).filter((op: any) => op.kind === "characters");
@@ -137,9 +151,13 @@ async function boot() {
     /** The character as the save loop projects it (own fields in their order, no local fields), as text. */
     const projected = (id: string) =>
         JSON.stringify(Object.fromEntries(Object.entries(plain(character(id))).filter(([key]) => !LOCAL.has(key))));
-    /** Mirror and server hold the same character text, the server's text is its normalized form, and the held revision is the server's. */
+    /**
+     * Mirror and server hold the same character (as JSON values: a field patch's result keeps the
+     * server's key order, audit item A1), the server's text is its normalized form, and the held
+     * revision is the server's.
+     */
     const agree = (id: string) => {
-        expect(projected(id), `${id}: mirror and server`).toBe(JSON.stringify(record(id)));
+        expect(canonicalJson(JSON.parse(projected(id))), `${id}: mirror and server`).toBe(canonicalJson(record(id)));
         expect(JSON.stringify(normalizeCharacter(record(id))), `${id}: server text is canonical`).toBe(
             JSON.stringify(record(id)),
         );
@@ -362,7 +380,16 @@ describe("canonical character text", () => {
         expect(character("c").chats).toEqual(chats);
         character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         await settle();
-        expect(characterOps(fake)).toHaveLength(1);
+        // The save is a field patch of the held record (audit item A1): the replaced name and the new
+        // field; the defaults the replacement got are the base's values, so they are not sent.
+        expect(characterOps(fake)).toEqual([
+            {
+                kind: "characters",
+                id: "c",
+                baseRevision: expect.any(String),
+                patch: { set: { name: "Replaced", extra: 1 }, remove: [] },
+            },
+        ]);
         agree("c");
         noNotice();
     });
@@ -457,12 +484,11 @@ describe("canonical character text", () => {
         element.scenario = "with a real change";
         const flushing = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        // The held save is the canonical record (the default written back), without the edit below.
-        expect(fake.batchBodies()[0].ops[0].data).toMatchObject({
-            desc: "",
-            scenario: "with a real change",
-            personality: "",
-        });
+        // The held save is a field patch of the canonical record (audit item A1): the real change
+        // only; the default written back equals the base's value (its key moved, which a patch does
+        // not carry), and the edit below is not in it.
+        expect(fake.batchBodies()[0].ops[0].patch).toEqual({ set: { scenario: "with a real change" }, remove: [] });
+        expect(fake.batchBodies()[0].ops[0]).not.toHaveProperty("data");
         element.personality = "typed during the save";
         fake.releaseBatch!();
         expect(await flushing).toEqual({ discarded: [] });

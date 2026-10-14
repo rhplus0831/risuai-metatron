@@ -919,9 +919,18 @@ describe("field patches", () => {
                 "a patch has no data and no deletion",
             ],
             [{ kind: root, id: "a", baseRevision: null, patch: { set: { n: 2 } } }, "a patch needs a base revision"],
-            [{ kind: root, id: "a", baseRevision: base, patch: null }, "a patch is { set?, remove? }"],
-            [{ kind: root, id: "a", baseRevision: base, patch: undefined }, "a patch is { set?, remove? }"],
-            [{ kind: root, id: "a", baseRevision: base, patch: [] }, "a patch is { set?, remove? }"],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: null },
+                "a patch is { set?, remove? } or { items?, changes?, order? }",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: undefined },
+                "a patch is { set?, remove? } or { items?, changes?, order? }",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: [] },
+                "a patch is { set?, remove? } or { items?, changes?, order? }",
+            ],
             [
                 { kind: root, id: "a", baseRevision: base, patch: { set: [1] } },
                 "a patch is { set?: object, remove?: string[] }",
@@ -1005,11 +1014,11 @@ describe("field patches", () => {
         for (const [op, message] of [
             [
                 { kind: root, id: "n", baseRevision: number, patch: { set: { x: 1 } } },
-                "ops[1]: a patch needs an object record",
+                "ops[1]: a field patch needs an object record",
             ],
             [
                 { kind: root, id: "l", baseRevision: list, patch: { set: { x: 1 } } },
-                "ops[1]: a patch needs an object record",
+                "ops[1]: a field patch needs an object record",
             ],
             [{ kind: strict, id: "s", baseRevision: ok, patch: { set: { bad: true } } }, "ops[1]: bad is not allowed"],
             [
@@ -1039,5 +1048,220 @@ describe("field patches", () => {
         expect(() => store.revisionOf(root, "")).toThrow(ResourceValidationError);
         store.close();
         expect(() => store.revisionOf(root, "a")).toThrow();
+    });
+});
+
+// Audit item A1: a batch op may carry an item `patch` of an array record whose items are objects
+// with unique non-empty string ids (`modules`): `items` put whole by id, `changes` as field patches
+// of base items, and `order` the exact id sequence. Checked before the transaction
+// (`checkItemPatch`), applied at the base revision inside it (`applyItemPatch`), normalized and
+// stored like a write. A kind with `project` or `prepareWrite` takes no patch of either form.
+describe("item patches", () => {
+    const list: ResourceKind = { name: "list", schemaVersion: 1, normalize: (input) => input };
+    /** A normalizer that refuses an item named `bad` (the modules normalizer refusing a shape). */
+    const strictList: ResourceKind = {
+        name: "strictList",
+        schemaVersion: 1,
+        normalize: (input) => {
+            if ((input as { name?: unknown }[]).some((item) => item.name === "bad")) {
+                throw new ResourceValidationError("bad is not allowed");
+            }
+            return input;
+        },
+    };
+    const masked: ResourceKind = {
+        name: "masked",
+        schemaVersion: 1,
+        normalize: (input) => input,
+        project: (data) => data,
+    };
+    const prepared: ResourceKind = {
+        name: "prepared",
+        schemaVersion: 1,
+        normalize: (input) => input,
+        prepareWrite: (incoming) => incoming,
+    };
+    const item = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, ...extra });
+    function itemStore() {
+        const store = createResourceStore({
+            file: ":memory:",
+            kinds: createKindRegistry([root, list, strictList, masked, prepared]),
+        });
+        stores.push(store);
+        return store;
+    }
+    const patch = (store: ResourceStore, kind: ResourceKind, id: string, body: unknown) =>
+        store.applyBatch([{ kind, id, baseRevision: store.revisionOf(kind, id), patch: body }])[0].revision!;
+
+    it("replaces items by id, patches their fields, adds, reorders, and removes with an explicit order, and clears with an empty one", () => {
+        const store = itemStore();
+        const base = store.put(list, "l", [item("a", { n: 1 }), item("b"), item("c")], null).revision;
+        const before = store.writeCount();
+        // A whole item by id and a field patch of another, no order: the id sequence is the base's.
+        const first = patch(store, list, "l", {
+            items: [{ id: "c", replaced: true }],
+            changes: [{ id: "a", set: { n: 2, added: [1] }, remove: ["name", "never-there"] }],
+        });
+        expect(first).toBe(base.replace(/:1$/, ":2"));
+        expect(store.get(list, "l")!.data).toEqual([
+            { id: "a", n: 2, added: [1] },
+            item("b"),
+            { id: "c", replaced: true },
+        ]);
+        expect(store.writeCount()).toBe(before + 1);
+        // A new item needs an order; the order moves, keeps, and drops items.
+        patch(store, list, "l", { items: [item("d")], order: ["d", "c", "a"] });
+        expect(store.get(list, "l")!.data).toEqual([
+            item("d"),
+            { id: "c", replaced: true },
+            { id: "a", n: 2, added: [1] },
+        ]);
+        // An order alone reorders; a change and an order together.
+        patch(store, list, "l", { order: ["a", "d", "c"] });
+        expect((store.get(list, "l")!.data as { id: string }[]).map((entry) => entry.id)).toEqual(["a", "d", "c"]);
+        patch(store, list, "l", { changes: [{ id: "d", set: { name: "D" } }], order: ["d"] });
+        expect(store.get(list, "l")!.data).toEqual([{ id: "d", name: "D" }]);
+        // Ids named like `Object.prototype` members are values, not keys: they work as any other.
+        patch(store, list, "l", {
+            items: [item("__proto__"), item("constructor")],
+            order: ["constructor", "__proto__", "d"],
+        });
+        expect((store.get(list, "l")!.data as { id: string }[]).map((entry) => entry.id)).toEqual([
+            "constructor",
+            "__proto__",
+            "d",
+        ]);
+        patch(store, list, "l", { changes: [{ id: "__proto__", set: { n: 1 } }] });
+        expect((store.get(list, "l")!.data as unknown[])[1]).toEqual({ id: "__proto__", name: "__proto__", n: 1 });
+        // An empty order clears the record (a valid patch: `order` is present).
+        const cleared = patch(store, list, "l", { order: [] });
+        expect(store.get(list, "l")).toEqual({ revision: cleared, data: [] });
+        // A list kind's normalizer runs on the result: a refused result rolls the batch back.
+        const ok = store.put(strictList, "s", [item("a")], null).revision;
+        const count = store.writeCount();
+        expect(() =>
+            store.applyBatch([
+                { kind: root, id: "r", baseRevision: null, data: 1 },
+                {
+                    kind: strictList,
+                    id: "s",
+                    baseRevision: ok,
+                    patch: { changes: [{ id: "a", set: { name: "bad" } }] },
+                },
+            ]),
+        ).toThrow(new ResourceValidationError("ops[1]: bad is not allowed"));
+        expect(store.get(strictList, "s")).toEqual({ revision: ok, data: [item("a")] });
+        expect(store.get(root, "r")).toBeNull();
+        expect(store.writeCount()).toBe(count);
+    });
+
+    it("refuses a malformed item patch before writing anything, naming the op", () => {
+        const store = itemStore();
+        const base = store.put(list, "l", [item("a"), item("b")], null).revision;
+        const before = store.writeCount();
+        const op = (body: unknown) => ({ kind: list, id: "l", baseRevision: base, patch: body });
+        const refused: [unknown, string][] = [
+            [op({ items: [item("a")], set: { x: 1 } }), "a patch is either a field patch or an item patch"],
+            [op({ order: [], remove: ["x"] }), "a patch is either a field patch or an item patch"],
+            [op({ items: {} }), "an item patch is { items?: object[], changes?: object[], order?: string[] }"],
+            [op({ changes: "a" }), "an item patch is { items?: object[], changes?: object[], order?: string[] }"],
+            [op({ items: [], changes: [] }), "an item patch changes nothing"],
+            [op({ items: [1] }), "items[0] is not an object with an id"],
+            [op({ items: [{ name: "no id" }] }), "items[0] is not an object with an id"],
+            [op({ items: [{ id: "" }] }), "items[0] has no id"],
+            [op({ items: [{ id: 1 }] }), "items[0] has no id"],
+            [op({ changes: [1] }), "changes[0] is { id, set?, remove? }"],
+            [op({ changes: [{ set: { n: 1 } }] }), "changes[0] has no id"],
+            [op({ changes: [{ id: "a" }] }), "changes[0] names no field"],
+            [op({ changes: [{ id: "a", set: 1 }] }), "changes[0] is { set?: object, remove?: string[] }"],
+            [
+                op({ changes: [{ id: "a", set: { n: 1 }, remove: ["n"] }] }),
+                "changes[0] names a field twice or names __proto__",
+            ],
+            [
+                op({ changes: [{ id: "a", set: JSON.parse('{"__proto__":1}') }] }),
+                "changes[0] names a field twice or names __proto__",
+            ],
+            [op({ changes: [{ id: "a", set: { id: "z" } }] }), "changes[0] names id"],
+            [op({ changes: [{ id: "a", remove: ["id"] }] }), "changes[0] names id"],
+            [
+                op({ items: [item("a")], changes: [{ id: "a", set: { n: 1 } }] }),
+                'an item patch names the item "a" twice',
+            ],
+            [op({ items: [item("a"), item("a")] }), 'an item patch names the item "a" twice'],
+            [op({ order: "a" }), "an item patch's order is a list of ids"],
+            [op({ order: [1] }), "an item patch's order is a list of ids"],
+            [op({ order: ["a", "a"] }), "an item patch's order names an id twice"],
+        ];
+        for (const [entry, message] of refused) {
+            expect(() =>
+                store.applyBatch([{ kind: root, id: "r", baseRevision: null, data: 1 }, entry as never]),
+            ).toThrow(new ResourceValidationError(`ops[1]: ${message}`));
+        }
+        // A kind whose data does not reach clients as stored takes no patch of either form.
+        for (const kind of [masked, prepared]) {
+            const revision = store.put(kind, "k", { n: 1 }, null).revision;
+            for (const body of [{ set: { n: 2 } }, { order: [] }]) {
+                expect(() =>
+                    store.applyBatch([
+                        { kind: root, id: "r", baseRevision: null, data: 1 },
+                        { kind, id: "k", baseRevision: revision, patch: body },
+                    ]),
+                ).toThrow(new ResourceValidationError(`ops[1]: ${kind.name} takes no patch`));
+            }
+        }
+        expect(store.get(list, "l")).toEqual({ revision: base, data: [item("a"), item("b")] });
+        expect(store.get(root, "r")).toBeNull();
+        expect(store.writeCount()).toBe(before + 2);
+    });
+
+    it("rolls back an item patch that does not fit the stored record, with the other ops", () => {
+        const store = itemStore();
+        const base = store.put(list, "l", [item("a"), item("b")], null).revision;
+        const object = store.put(list, "o", { id: "a" }, null).revision;
+        const dupes = store.put(list, "d", [item("a"), item("a")], null).revision;
+        const noIds = store.put(list, "n", [item("a"), { name: "no id" }], null).revision;
+        const before = store.writeCount();
+        const op = (body: unknown, id = "l", revision = base) => ({
+            kind: list,
+            id,
+            baseRevision: revision,
+            patch: body,
+        });
+        for (const [entry, message] of [
+            [op({ order: [] }, "o", object), "the record's items have no unique ids"],
+            [op({ changes: [{ id: "a", set: { n: 1 } }] }, "d", dupes), "the record's items have no unique ids"],
+            [op({ order: ["a"] }, "n", noIds), "the record's items have no unique ids"],
+            [op({ changes: [{ id: "zz", set: { n: 1 } }] }), 'the item "zz" is not in the record'],
+            [op({ items: [item("zz")] }), 'the item "zz" is not in the record'],
+            [op({ items: [item("zz")], order: ["a", "b"] }), 'the patched item "zz" is not in the order'],
+            [op({ changes: [{ id: "a", set: { n: 1 } }], order: ["b"] }), 'the patched item "a" is not in the order'],
+            [op({ order: ["a", "zz"] }), 'the order names the unknown item "zz"'],
+        ] as const) {
+            expect(() => store.applyBatch([{ kind: root, id: "r", baseRevision: null, data: 1 }, entry])).toThrow(
+                new ResourceValidationError(`ops[1]: ${message}`),
+            );
+        }
+        // A field patch of a list, and an item patch of an object, are refused the same way.
+        expect(() => store.applyBatch([op({ set: { n: 1 } })])).toThrow(
+            new ResourceValidationError("ops[0]: a field patch needs an object record"),
+        );
+        expect(() => store.applyBatch([op({ set: { n: 1 } }, "o", object)])).not.toThrow();
+        expect(store.get(list, "l")).toEqual({ revision: base, data: [item("a"), item("b")] });
+        expect(store.get(root, "r")).toBeNull();
+        expect(store.writeCount()).toBe(before + 1);
+        // A stale base is the usual batch conflict, applying nothing.
+        let error: unknown;
+        try {
+            store.applyBatch([
+                { kind: root, id: "r", baseRevision: null, data: 1 },
+                op({ order: [] }, "l", base.replace(/:1$/, ":9")),
+            ]);
+        } catch (e) {
+            error = e;
+        }
+        expect(error).toBeInstanceOf(ResourceBatchConflictError);
+        expect((error as ResourceBatchConflictError).conflicts).toEqual([{ kind: "list", id: "l", revision: base }]);
+        expect(store.get(root, "r")).toBeNull();
     });
 });

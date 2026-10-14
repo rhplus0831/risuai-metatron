@@ -189,24 +189,44 @@ export type ResourceReadRefsResult = {
  * The top-level field change of one write of an object record (a field patch): the record at the
  * entry's revision equals the record at `baseRevision` (the same incarnation, one write earlier) with
  * every `set` field assigned its stored value and every `remove` field deleted. Values compare as
- * JSON values; top-level key order is not part of it. The store writes one with a `patch` batch op
- * (store-internal for now; a send job's `lastInteraction` stamp). Array records (`modules`) have
- * none; a later variant would name its items by id.
+ * JSON values; top-level key order is not part of it. A client saves a changed character with one
+ * (a `patch` batch op), and a send job stamps `lastInteraction` with one.
  */
 export type RecordFieldPatch = { baseRevision: string; set: Record<string, unknown>; remove: string[] };
 
-/** The largest field patch (UTF-8 bytes of its JSON) a change-feed entry carries; a larger one is a plain ref. */
+/** One item's top-level field change inside a `RecordItemPatch` (the item keeps its `id`). */
+export type RecordItemFieldPatch = { id: string; set: Record<string, unknown>; remove: string[] };
+
+/**
+ * The item change of one write of an array record whose items are objects with unique non-empty
+ * string `id`s (`modules`): the record at the entry's revision is the record at `baseRevision` with
+ * every `items` element put whole in place of the item of its id (or added), and every `changes`
+ * entry applied to the base item of its id as a field patch. With `order` (also `[]`) the result is
+ * exactly the items of `order` in that order (a base id it leaves out is removed); without it the ids
+ * and their order are the base's. Values compare as JSON values; an item's key order is not part of it.
+ */
+export type RecordItemPatch = {
+    baseRevision: string;
+    items: Record<string, unknown>[];
+    changes: RecordItemFieldPatch[];
+    order?: string[];
+};
+
+/** A record patch: by top-level field (object records) or by item id (array records). */
+export type RecordPatch = RecordFieldPatch | RecordItemPatch;
+
+/** The largest record patch (UTF-8 bytes of its JSON) a change-feed entry carries; a larger one is a plain ref. */
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
 /**
  * What one committed write changed (Phase 6 live updates): refs and their new revisions, and data
- * only as a field patch. A `null` revision is a deletion. A record that changed more than once in the
- * write appears once, with its final revision and no patch. `patch`: the write was a field patch (see
- * `RecordFieldPatch`); a client holding exactly its base revision may apply it instead of reading the
- * record, any other client reads the record as for a plain ref.
+ * only as a record patch. A `null` revision is a deletion. A record that changed more than once in the
+ * write appears once, with its final revision and no patch. `patch`: the write was a record patch (see
+ * `RecordFieldPatch`, `RecordItemPatch`); a client holding exactly its base revision may apply it
+ * instead of reading the record, any other client reads the record as for a plain ref.
  */
 export type ChangeSet = {
-    resources: { kind: string; id: string; revision: string | null; patch?: RecordFieldPatch }[];
+    resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];
     chats: { characterId: string; id: string; revision: string | null }[];
     chatOrders: { characterId: string; revision: string | null }[];
 };

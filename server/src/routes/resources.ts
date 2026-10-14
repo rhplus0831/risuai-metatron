@@ -28,7 +28,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * send it in `x-resource-epoch` (412 otherwise, so nothing based on data from before a restore can
  * land), is refused with 503 while a restore or import runs, and names the revision it was based on
  * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
- * record is gone). The batch also carries chat groups and reorders, and the reads chats and chat
+ * record is gone). A batch op may be a record patch instead of whole data (`patch`, with a string
+ * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
  * collections (`shared/chats.ts`). An edit of a message a generation job owns is a 409 whose entry
  * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
  */
@@ -206,9 +207,10 @@ export function registerResourceRoutes(
         }
         try {
             assertMutable(c);
-            // Every write-only record of the batch is prepared before anything is applied.
+            // Every write-only record of the batch is prepared before anything is applied (a patch
+            // of such a kind is refused by the store).
             for (const operation of operations) {
-                if (operation.kind.prepareWrite && !operation.delete) {
+                if (operation.kind.prepareWrite && !operation.delete && !Object.hasOwn(operation, "patch")) {
                     operation.data = prepare(operation.kind, operation.id, operation.data);
                 }
             }
@@ -349,8 +351,16 @@ function parseBatchOperation(op: unknown, kinds: ResourceKindRegistry): Resource
         return "baseRevision must be a string or null";
     }
     const isDelete = Object.hasOwn(op, "delete");
-    if (isDelete === Object.hasOwn(op, "data")) {
-        return "must have exactly one of data and delete";
+    const isPatch = Object.hasOwn(op, "patch");
+    if (Number(isDelete) + Number(isPatch) + Number(Object.hasOwn(op, "data")) !== 1) {
+        return "must have exactly one of data, delete, and patch";
+    }
+    if (isPatch) {
+        if (typeof op.baseRevision !== "string") {
+            return "a patch needs a string baseRevision";
+        }
+        // Its shape is checked by the store, which names this op.
+        return { kind, id: op.id, baseRevision: op.baseRevision, patch: op.patch };
     }
     if (isDelete) {
         if (op.delete !== true || typeof op.baseRevision !== "string") {

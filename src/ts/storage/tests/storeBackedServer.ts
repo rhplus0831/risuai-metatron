@@ -371,7 +371,9 @@ export class StoreBackedServer {
             try {
                 const resolved = ops.map((op) => ({ ...op, kind: this.kind(op.kind) }));
                 for (const op of resolved) {
-                    if (!op.delete) {
+                    // A patch op (audit item A1) goes to the store as sent; the store refuses one
+                    // of a kind with `prepareWrite`, as the real route leaves it to.
+                    if (!op.delete && !Object.hasOwn(op, "patch")) {
                         op.data = this.prepareWrite(op.kind, op.id, op.data);
                     }
                 }

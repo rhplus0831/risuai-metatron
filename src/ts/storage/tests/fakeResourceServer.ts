@@ -5,7 +5,15 @@ import {
     withStoredSecrets,
     writeSecret,
 } from "../../../../shared/llmSecrets.ts";
+import {
+    applyItemPatch,
+    checkFields,
+    checkItemPatch,
+    RecordPatchError,
+    withFields,
+} from "../../../../shared/recordPatch.ts";
 import { RESOURCE_EPOCH_HEADER, type ResourceConflict } from "../../../../shared/resources.ts";
+import { isPlainObject } from "../../../../shared/valueKinds.ts";
 
 /**
  * An in-memory stand-in for the server's `/api/resources` routes, with the same contract the client
@@ -13,9 +21,13 @@ import { RESOURCE_EPOCH_HEADER, type ResourceConflict } from "../../../../shared
  * single-record conflicts as `{ revision }`, and a body limit (413). The write-only `llmSecrets`
  * record (Phase 5 slice 7b) follows the server's contract too: it is stored as plaintext (what a
  * test puts in it, or what `/api/llm-secrets/*` writes) and answered masked on every read; a plain
- * write may carry no credential path (400) and keeps the stored credentials. Tests plug it in as
- * `authFetch` and use the hooks to hold a batch, drop a response after it was applied, or fail
- * requests.
+ * write may carry no credential path (400) and keeps the stored credentials. A batch op may be a
+ * record patch (audit item A1): a field patch `{ set?, remove? }` of an object record or an item
+ * patch `{ items?, changes?, order? }` of a list with unique item ids, applied with the shared
+ * helpers (`shared/recordPatch.ts`) to the record at its base revision and refused (400 naming the
+ * op) as the store refuses it; the fake has no normalizers, so the patch's result is stored as it
+ * is. Tests plug it in as `authFetch` and use the hooks to hold a batch, drop a response after it
+ * was applied, or fail requests.
  */
 export class FakeResourceServer {
     epoch = "epoch-1";
@@ -102,6 +114,43 @@ export class FakeResourceServer {
             data as Record<string, unknown>,
             (this.data(kind, id) ?? {}) as Record<string, unknown>,
         );
+    }
+
+    /**
+     * A patch op's result over the stored record (the store's `preparePatch` + `writePatch`, without
+     * a normalizer): a field patch of an object record, or an item patch of a list with unique ids;
+     * never for `llmSecrets` (a kind with `project`/`prepareWrite`), never mixed with `data`/`delete`.
+     */
+    private applyPatch(op: { kind: string; id: string; patch?: unknown; data?: unknown; delete?: unknown }): unknown {
+        if (Object.hasOwn(op, "data") || Object.hasOwn(op, "delete")) {
+            throw new FakeValidationError("a patch has no data and no deletion");
+        }
+        if (op.kind === "llmSecrets") {
+            throw new FakeValidationError(`${op.kind} takes no patch`);
+        }
+        const patch = op.patch;
+        if (!isPlainObject(patch)) {
+            throw new FakeValidationError("a patch is { set?, remove? } or { items?, changes?, order? }");
+        }
+        const old: unknown = JSON.parse(JSON.stringify(this.data(op.kind, op.id)));
+        try {
+            if (["items", "changes", "order"].some((field) => Object.hasOwn(patch, field))) {
+                if (Object.hasOwn(patch, "set") || Object.hasOwn(patch, "remove")) {
+                    throw new RecordPatchError("a patch is either a field patch or an item patch");
+                }
+                return applyItemPatch(old, checkItemPatch(patch));
+            }
+            const fields = checkFields(patch.set, patch.remove, "a patch");
+            if (!isPlainObject(old)) {
+                throw new RecordPatchError("a field patch needs an object record");
+            }
+            return withFields(old, fields.set, fields.remove);
+        } catch (error) {
+            if (error instanceof RecordPatchError) {
+                throw new FakeValidationError(error.message);
+            }
+            throw error;
+        }
     }
 
     /** `/api/llm-secrets/*`: one credential write on the record's revision, answered masked. */
@@ -204,6 +253,7 @@ export class FakeResourceServer {
                 baseRevision: string | null;
                 data?: unknown;
                 delete?: true;
+                patch?: unknown;
             }[];
             const conflicts: ResourceConflict[] = [];
             for (const op of ops) {
@@ -215,10 +265,27 @@ export class FakeResourceServer {
             if (conflicts.length > 0) {
                 return Response.json({ error: "Revision conflict", conflicts }, { status: 409 });
             }
-            // Prepared apart from the recorded body, which stays what the client sent.
+            // Prepared apart from the recorded body, which stays what the client sent; a refusal
+            // applies nothing (the batch is one unit). As on the server, a refused patch names its
+            // op (`ops[i]: ...`), a refused plain write of `llmSecrets` does not.
             let prepared: unknown[];
             try {
-                prepared = ops.map((op) => (op.delete ? undefined : this.prepareWrite(op.kind, op.id, op.data)));
+                prepared = ops.map((op, index) => {
+                    if (!Object.hasOwn(op, "patch")) {
+                        return op.delete ? undefined : this.prepareWrite(op.kind, op.id, op.data);
+                    }
+                    try {
+                        if (typeof op.baseRevision !== "string") {
+                            throw new FakeValidationError("a patch needs a base revision");
+                        }
+                        return this.applyPatch(op);
+                    } catch (error) {
+                        if (error instanceof FakeValidationError) {
+                            throw new FakeValidationError(`ops[${index}]: ${error.message}`);
+                        }
+                        throw error;
+                    }
+                });
             } catch (error) {
                 if (error instanceof FakeValidationError) {
                     return Response.json({ error: error.message }, { status: 400 });

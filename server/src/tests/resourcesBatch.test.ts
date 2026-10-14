@@ -148,12 +148,47 @@ describe("POST /api/resources/batch", () => {
             [
                 "both",
                 [{ kind: "characters", id: "x", baseRevision: null, data: 1, delete: true }],
-                "ops[0]: must have exactly one of data and delete",
+                "ops[0]: must have exactly one of data, delete, and patch",
             ],
             [
                 "neither",
                 [{ kind: "characters", id: "x", baseRevision: null }],
-                "ops[0]: must have exactly one of data and delete",
+                "ops[0]: must have exactly one of data, delete, and patch",
+            ],
+            [
+                "patch and data",
+                [{ kind: "characters", id: "x", baseRevision: "t", data: 1, patch: { set: {} } }],
+                "ops[0]: must have exactly one of data, delete, and patch",
+            ],
+            [
+                "patch and delete",
+                [{ kind: "characters", id: "x", baseRevision: "t", delete: true, patch: { set: {} } }],
+                "ops[0]: must have exactly one of data, delete, and patch",
+            ],
+            [
+                "patch null base",
+                [{ kind: "characters", id: "x", baseRevision: null, patch: { set: { name: "x" } } }],
+                "ops[0]: a patch needs a string baseRevision",
+            ],
+            [
+                "patch of a projecting kind",
+                [{ kind: "llmSecrets", id: "main", baseRevision: "t", patch: { set: { openAIKey: "sk" } } }],
+                "ops[0]: llmSecrets takes no patch",
+            ],
+            [
+                "patch of a singleton's other id",
+                [{ kind: "modules", id: "other", baseRevision: "t", patch: { order: [] } }],
+                "ops[0]: modules has only the record main",
+            ],
+            [
+                "malformed patch",
+                [{ kind: "characters", id: "x", baseRevision: "t", patch: "name" }],
+                "ops[0]: a patch is { set?, remove? } or { items?, changes?, order? }",
+            ],
+            [
+                "mixed patch",
+                [{ kind: "characters", id: "x", baseRevision: "t", patch: { set: { name: "x" }, order: [] } }],
+                "ops[0]: a patch is either a field patch or an item patch",
             ],
             [
                 "delete false",
@@ -211,6 +246,135 @@ describe("POST /api/resources/batch", () => {
         expect(state.kinds.characters).toEqual([]);
         expect(state.kinds.presets).toEqual(freshPresets);
         expect(state.kinds.presets).toMatchObject([{ id: "main", revision: expect.stringMatching(/:1$/) }]);
+    });
+
+    // Audit item A1: a batch op may be a record patch (`patch` with a string `baseRevision`): a
+    // field patch of a character, an item patch of `modules`; the store checks its shape and applies
+    // it at the base revision, normalized like a write; a stale base is the usual 409.
+    it("applies field and item patches at their base revision, normalized, and conflicts or refuses them like writes", async () => {
+        const s = await defaultServer();
+        const a = await s.create("characters", "a", character("a", { name: "A", desc: "d" }));
+        // `modules` is a singleton the store does not materialize: the batch creates it.
+        const seeded = await s.batch([
+            create("modules", "main", [
+                { id: "m1", name: "one", lorebook: [] },
+                { id: "m2", name: "two" },
+            ]),
+        ]);
+        expect(seeded.status).toBe(200);
+        const m = ((await seeded.json()) as BatchResult).results[0].revision!;
+
+        const patched = await s.batch([
+            {
+                kind: "characters",
+                id: "a",
+                baseRevision: a,
+                patch: { set: { name: "A2", extra: [1] }, remove: ["desc"] },
+            },
+            {
+                kind: "modules",
+                id: "main",
+                baseRevision: m,
+                patch: {
+                    items: [{ id: "m3", name: "three" }],
+                    changes: [{ id: "m1", set: { name: "ONE" } }],
+                    order: ["m3", "m1"],
+                },
+            },
+        ]);
+        expect(patched.status).toBe(200);
+        const result = (await patched.json()) as BatchResult;
+        expect(result.results).toEqual([
+            { kind: "characters", id: "a", revision: a.replace(/:1$/, ":2") },
+            { kind: "modules", id: "main", revision: m.replace(/:1$/, ":2") },
+        ]);
+        const read = (await (
+            await s.readRefs([
+                { kind: "characters", id: "a" },
+                { kind: "modules", id: "main" },
+            ])
+        ).json()) as ReadRefs;
+        // The character's result is normalized: `desc` comes back as its default.
+        expect(read.items[0]).toEqual({
+            kind: "characters",
+            id: "a",
+            revision: result.results[0].revision,
+            data: stored("a", { name: "A2", extra: [1] }),
+        });
+        expect(read.items[1]).toEqual({
+            kind: "modules",
+            id: "main",
+            revision: result.results[1].revision,
+            data: [
+                { id: "m3", name: "three" },
+                { id: "m1", name: "ONE", lorebook: [] },
+            ],
+        });
+
+        // A stale base: the 409 lists it with the current revision, and the valid op beside it is not applied.
+        const stale = await s.batch([
+            { kind: "characters", id: "a", baseRevision: a, patch: { set: { name: "A3" } } },
+            { kind: "modules", id: "main", baseRevision: result.results[1].revision, patch: { order: [] } },
+        ]);
+        expect(stale.status).toBe(409);
+        expect(await stale.json()).toEqual({
+            error: "Revision conflict",
+            conflicts: [{ kind: "characters", id: "a", revision: result.results[0].revision }],
+        } satisfies BatchConflict);
+        // A patch the stored record does not fit, or whose result the normalizer refuses: a 400 naming the op.
+        for (const [label, op, error] of [
+            [
+                "item patch of an object",
+                { kind: "characters", id: "a", baseRevision: result.results[0].revision, patch: { order: [] } },
+                "ops[0]: the record's items have no unique ids",
+            ],
+            [
+                "field patch of a list",
+                { kind: "modules", id: "main", baseRevision: result.results[1].revision, patch: { set: { x: 1 } } },
+                "ops[0]: a field patch needs an object record",
+            ],
+            [
+                "unknown item",
+                {
+                    kind: "modules",
+                    id: "main",
+                    baseRevision: result.results[1].revision,
+                    patch: { changes: [{ id: "zz", set: { name: "z" } }] },
+                },
+                'ops[0]: the item "zz" is not in the record',
+            ],
+            [
+                "refused module",
+                {
+                    kind: "modules",
+                    id: "main",
+                    baseRevision: result.results[1].revision,
+                    patch: { changes: [{ id: "m1", set: { lorebook: "no" } }] },
+                },
+                "ops[0]: modules[1]: a module's lorebook must be a list",
+            ],
+            [
+                "refused character",
+                {
+                    kind: "characters",
+                    id: "a",
+                    baseRevision: result.results[0].revision,
+                    patch: { set: { chaId: "b" } },
+                },
+                "ops[0]: character.chaId must equal the resource id",
+            ],
+        ] as [string, unknown, string][]) {
+            const res = await s.batch([op]);
+            expect(res.status, label).toBe(400);
+            expect(await res.json(), label).toEqual({ error });
+        }
+        const after = (await (
+            await s.readRefs([
+                { kind: "characters", id: "a" },
+                { kind: "modules", id: "main" },
+            ])
+        ).json()) as ReadRefs;
+        expect(after.items).toEqual(read.items);
     });
 
     it("takes 5,000 operations in one batch", async () => {

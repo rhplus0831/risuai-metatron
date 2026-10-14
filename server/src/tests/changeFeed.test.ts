@@ -496,15 +496,23 @@ describe("field patches in the feed", () => {
         expect(store.get(counted, "c")!.data).toEqual({ x: 1, count: 2, y: 2 });
     });
 
-    it("publishes a plain ref for a kind that projects, a hidden hydration kind, or a changed __proto__, without the data", () => {
-        const { store, published } = patchSetup();
-        for (const kind of [masked, hidden]) {
-            store.put(kind, "r", { secret: "value", n: 1 }, null);
-            published();
-            const next = patch(store, kind, "r", { set: { n: 2, secret: "changed" } });
-            expect(published()).toEqual([{ kind: kind.name, id: "r", revision: next }]);
-            expect(store.get(kind, "r")!.data).toEqual({ secret: "changed", n: 2 });
-        }
+    it("publishes a plain ref for a hidden hydration kind or a changed __proto__, without the data; a kind that projects takes no patch (audit item A1)", () => {
+        const { store, published, events } = patchSetup();
+        store.put(hidden, "r", { secret: "value", n: 1 }, null);
+        published();
+        const next = patch(store, hidden, "r", { set: { n: 2, secret: "changed" } });
+        expect(published()).toEqual([{ kind: hidden.name, id: "r", revision: next }]);
+        expect(store.get(hidden, "r")!.data).toEqual({ secret: "changed", n: 2 });
+        // A projecting kind's stored data never reaches a client, so a client could not patch it
+        // against what it holds: the store refuses the op (clients send patches since A1), and
+        // nothing is published.
+        const masking = store.put(masked, "r", { secret: "value", n: 1 }, null).revision;
+        published();
+        expect(() => patch(store, masked, "r", { set: { n: 2 } })).toThrow(
+            new ResourceValidationError("ops[0]: masked takes no patch"),
+        );
+        expect(events).toEqual([]);
+        expect(store.get(masked, "r")).toEqual({ revision: masking, data: { secret: "value", n: 1 } });
         store.put(proto, "p", { n: 1 }, null);
         published();
         const added = patch(store, proto, "p", { set: { addProto: true } });
@@ -616,6 +624,233 @@ describe("field patches in the feed", () => {
                     chats: [],
                     chatOrders: [],
                 },
+            },
+        ]);
+    });
+});
+
+// Audit item A1: an item `patch` op (`RecordItemPatch`, an array record with unique item ids such as
+// `modules`) publishes what `diffItems` finds between the old and the stored list: a new item, or
+// one whose `__proto__` changed, whole in `items`; another changed item's fields in `changes`; the
+// id sequence in `order` when it changed. A plain ref over `MAX_FEED_PATCH_BYTES`; nothing for a
+// batch the kind's normalizer refuses.
+describe("item patches in the feed", () => {
+    const list: ResourceKind = { name: "list", schemaVersion: 1, normalize: (input) => input };
+    /** A normalizer with a side effect outside the patch: every item gets `count` = its field count. */
+    const counted: ResourceKind = {
+        name: "countedList",
+        schemaVersion: 1,
+        normalize: (input) =>
+            (input as Record<string, unknown>[]).map((item) => ({
+                ...item,
+                count: Object.keys(item).filter((key) => key !== "count").length,
+            })),
+    };
+    /** A normalizer that gives an item an own `__proto__` key when asked to. */
+    const proto: ResourceKind = {
+        name: "protoList",
+        schemaVersion: 1,
+        normalize: (input) =>
+            (input as Record<string, unknown>[]).map((item) => {
+                const out = { ...item };
+                if (out.addProto === true) {
+                    Object.defineProperty(out, "__proto__", {
+                        value: 1,
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
+                return out;
+            }),
+    };
+    const item = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, ...extra });
+    function itemSetup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({
+            file: ":memory:",
+            kinds: createKindRegistry([list, counted, proto, modules]),
+            feed,
+        });
+        stores.push(store);
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        const published = () => {
+            expect(events).toHaveLength(1);
+            const [event] = events.splice(0);
+            expect(event.type).toBe("change");
+            return (event as Extract<ChangeFeedEvent, { type: "change" }>).changes.resources;
+        };
+        return { store, events, published };
+    }
+    const patch = (store: ResourceStore, kind: ResourceKind, id: string, body: unknown) =>
+        store.applyBatch([{ kind, id, baseRevision: store.revisionOf(kind, id), patch: body }])[0].revision!;
+
+    it("carries a changed item's fields, a new or __proto__-changed item whole, and the order when it changed, with the base one write earlier", () => {
+        const { store, published } = itemSetup();
+        const base = store.put(list, "l", [item("a", { n: 1 }), item("b"), item("c")], null).revision;
+        published();
+        // A field patch of one item, the same value set on another: only the changed field is carried.
+        const first = patch(store, list, "l", {
+            changes: [
+                { id: "a", set: { n: 2, name: "a" }, remove: ["never-there"] },
+                { id: "b", set: { name: "b" } },
+            ],
+        });
+        expect(first).toBe(base.replace(/:1$/, ":2"));
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "l",
+                revision: first,
+                patch: { baseRevision: base, items: [], changes: [{ id: "a", set: { n: 2 }, remove: [] }] },
+            },
+        ]);
+        // A whole item sent for an existing id is carried as its changed fields (the stored
+        // difference, not the op's form); a new item whole; a dropped item only through the order.
+        const second = patch(store, list, "l", {
+            items: [{ id: "c", name: "c", replaced: true }, item("d")],
+            order: ["d", "a", "c"],
+        });
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "l",
+                revision: second,
+                patch: {
+                    baseRevision: first,
+                    items: [item("d")],
+                    changes: [{ id: "c", set: { replaced: true }, remove: [] }],
+                    order: ["d", "a", "c"],
+                },
+            },
+        ]);
+        // An order alone; a removal of a field; the same id sequence after a patch carries no order.
+        const third = patch(store, list, "l", { order: ["a", "c", "d"] });
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "l",
+                revision: third,
+                patch: { baseRevision: second, items: [], changes: [], order: ["a", "c", "d"] },
+            },
+        ]);
+        const fourth = patch(store, list, "l", { changes: [{ id: "c", remove: ["replaced"] }] });
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "l",
+                revision: fourth,
+                patch: { baseRevision: third, items: [], changes: [{ id: "c", set: {}, remove: ["replaced"] }] },
+            },
+        ]);
+        // A patch that changes nothing still advances the revision: an empty patch.
+        const unchanged = patch(store, list, "l", { changes: [{ id: "a", set: { n: 2 } }] });
+        expect(published()).toEqual([
+            { kind: "list", id: "l", revision: unchanged, patch: { baseRevision: fourth, items: [], changes: [] } },
+        ]);
+        // A cleared list.
+        const cleared = patch(store, list, "l", { order: [] });
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "l",
+                revision: cleared,
+                patch: { baseRevision: unchanged, items: [], changes: [], order: [] },
+            },
+        ]);
+
+        // The normalizer's side effects are in the patch: a new item with its `count`, a changed
+        // item's `count` beside the changed field.
+        const c = store.put(counted, "c", [item("a")], null).revision;
+        published();
+        const countedNext = patch(store, counted, "c", {
+            items: [item("b")],
+            changes: [{ id: "a", set: { extra: 1 } }],
+            order: ["a", "b"],
+        });
+        expect(published()).toEqual([
+            {
+                kind: "countedList",
+                id: "c",
+                revision: countedNext,
+                patch: {
+                    baseRevision: c,
+                    items: [{ id: "b", name: "b", count: 2 }],
+                    changes: [{ id: "a", set: { extra: 1, count: 3 }, remove: [] }],
+                    order: ["a", "b"],
+                },
+            },
+        ]);
+
+        // An item whose own `__proto__` changed goes whole (a field patch never names it); the whole
+        // record still carries a patch, unlike a changed top-level `__proto__` of an object record.
+        const p = store.put(proto, "p", [item("a"), item("b")], null).revision;
+        published();
+        const added = patch(store, proto, "p", { changes: [{ id: "a", set: { addProto: true } }] });
+        const [entry] = published();
+        expect(entry).toMatchObject({ kind: "protoList", id: "p", revision: added });
+        const carried = (entry as { patch: { baseRevision: string; items: object[]; changes: unknown[] } }).patch;
+        expect(carried.baseRevision).toBe(p);
+        expect(carried.changes).toEqual([]);
+        expect(carried.items).toHaveLength(1);
+        expect(Object.hasOwn(carried.items[0], "__proto__")).toBe(true);
+        expect(carried.items[0]).toMatchObject({ id: "a", addProto: true });
+        // Unchanged afterwards: the own `__proto__` is kept, so a later change names only its field.
+        const kept = patch(store, proto, "p", { changes: [{ id: "a", set: { n: 2 } }] });
+        expect(published()).toEqual([
+            {
+                kind: "protoList",
+                id: "p",
+                revision: kept,
+                patch: { baseRevision: added, items: [], changes: [{ id: "a", set: { n: 2 }, remove: [] }] },
+            },
+        ]);
+    });
+
+    it("carries an item patch up to 64 KiB and a plain ref above it, and publishes nothing for a modules patch the normalizer refuses", () => {
+        const { store, published, events } = itemSetup();
+        store.put(list, "big", [item("a")], null);
+        published();
+        const base = store.revisionOf(list, "big")!;
+        const overhead = Buffer.byteLength(
+            JSON.stringify({ baseRevision: base, items: [], changes: [{ id: "a", set: { blob: "" }, remove: [] }] }),
+        );
+        const atLimit = "a".repeat(MAX_FEED_PATCH_BYTES - overhead);
+        const limit = patch(store, list, "big", { changes: [{ id: "a", set: { blob: atLimit } }] });
+        expect(published()).toEqual([
+            {
+                kind: "list",
+                id: "big",
+                revision: limit,
+                patch: { baseRevision: base, items: [], changes: [{ id: "a", set: { blob: atLimit }, remove: [] }] },
+            },
+        ]);
+        const over = patch(store, list, "big", { changes: [{ id: "a", set: { blob: `${atLimit}b` } }] });
+        expect(published()).toEqual([{ kind: "list", id: "big", revision: over }]);
+        expect(store.get(list, "big")!.data).toEqual([{ id: "a", name: "a", blob: `${atLimit}b` }]);
+
+        // The real `modules` kind: a patched module with a non-string name is refused inside the
+        // transaction, with the other op, and nothing is published.
+        const m = store.put(modules, "main", [item("a"), item("b")], null).revision;
+        published();
+        expect(() =>
+            store.applyBatch([
+                { kind: list, id: "other", baseRevision: null, data: [] },
+                { kind: modules, id: "main", baseRevision: m, patch: { changes: [{ id: "a", set: { name: 1 } }] } },
+            ]),
+        ).toThrow(new ResourceValidationError("ops[1]: modules[0]: a module's name must be a string"));
+        expect(events).toEqual([]);
+        expect(store.get(modules, "main")).toEqual({ revision: m, data: [item("a"), item("b")] });
+        expect(store.get(list, "other")).toBeNull();
+        // The same kind, a valid patch: carried as the changed fields.
+        const renamed = patch(store, modules, "main", { changes: [{ id: "b", set: { name: "B" } }] });
+        expect(published()).toEqual([
+            {
+                kind: "modules",
+                id: "main",
+                revision: renamed,
+                patch: { baseRevision: m, items: [], changes: [{ id: "b", set: { name: "B" }, remove: [] }] },
             },
         ]);
     });
