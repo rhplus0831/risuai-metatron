@@ -91,6 +91,12 @@
     /** The chat's `autoTranslate` the row last started from: a change starts it again. */
     let lastAutoTranslate: boolean | null = null;
     let lastRenderedRevision: number | null = null;
+    /**
+     * The newest render's run. Only that render writes `lastParsed` and `lastRenderedRevision`: an
+     * older one that settles later would otherwise put its text back as the body shown while the
+     * next render is pending.
+     */
+    let parseRun = 0;
 
     function getCbsCondition() {
         try {
@@ -116,6 +122,8 @@
         charArg: string | simpleCharacterArgument,
         chatID: number,
         requestedRevision: number,
+        /** The render's run (`parseRun` when it began); its retries keep it. */
+        run: number,
         tries?: number,
         /** A retry's: the operation's own capture (a retry keeps the chat, preset, and persona it began with). */
         retryTransform?: CapturedTransform | null,
@@ -204,7 +212,7 @@
                 }
             }
             if (retranslate || translated) {
-                if (settings.ui.showTranslationLoading && !preservePendingContent) {
+                if (settings.ui.showTranslationLoading && !preservePendingContent && run === parseRun) {
                     lastParsed = LOADING_HTML;
                 }
 
@@ -266,19 +274,30 @@
                 alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`);
                 return data;
             }
-            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1, transform, {
-                stored,
-                shownStored,
-                pairing,
-            });
+            const retried = await markParsing(
+                data,
+                charArg,
+                chatID,
+                requestedRevision,
+                run,
+                (tries ?? 0) + 1,
+                transform,
+                {
+                    stored,
+                    shownStored,
+                    pairing,
+                },
+            );
             if (retried !== undefined) {
                 lastParsedQueue = retried;
             }
             return retried;
         } finally {
             //since trimMarkdown is fast, we don't need to cache it
-            lastParsed = lastParsedQueue;
-            lastRenderedRevision = requestedRevision;
+            if (run === parseRun) {
+                lastParsed = lastParsedQueue;
+                lastRenderedRevision = requestedRevision;
+            }
         }
     };
 
@@ -357,7 +376,7 @@
         }
     };
 
-    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision));
+    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++parseRun));
 
     $effect(() => {
         if (shouldRenderRawStreaming) {

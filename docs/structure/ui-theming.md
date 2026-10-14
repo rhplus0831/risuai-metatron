@@ -38,6 +38,7 @@ Chat:
   - Streaming instances are updated through `Chat.updateStreamingDisplay`.
 - `Chat.svelte`: one message. Controls, bookmarks (`toggleBookmark`), TTS button, `displaya`, partial edit, and `renderGuiHtmlPart` for custom GUI HTML. Message theme branches are `mobilechat`, `cardboard`, `customHTML`, and classic.
 - `ChatBody.svelte`: `markParsing`, which handles translation and parsing, then `{@html}`.
+  - While a render is pending it shows `lastParsed`; only the newest render (`parseRun`, kept by its retries) writes it, so an older render that settles later does not show again (`ChatBody.svelte.test.ts`).
 - `Suggestion.svelte`: reply suggestions through `requestChatData`.
 - Also: `TransitionImage.svelte`, `EmotionBox.svelte`, `ResizeBox.svelte`, `BackgroundDom.svelte`, `CreatorQuote.svelte`. `Message.svelte` is dead (TODO rewrite).
 
