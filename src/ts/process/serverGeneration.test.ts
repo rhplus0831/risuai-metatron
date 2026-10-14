@@ -4,9 +4,9 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // Phase 5 slice 9: `sendChatOnServer`, the flag branch's adapter over `runServerJob`: the job kind
 // from the send (`preview`, `previewPrompt`, `group` for a group chat, `continue`, else `send`), the
 // context (the input with its user message id, an explicit continue target; a preview carries no
-// input), a plugin call's identity, the two per-send fields written before the job (`statics.messages`
-// through `incrementStatic`, the target's `lastInteraction` through `updateCharacter` by its id, which
-// queues the save of a character whether or not it is selected, Phase 6 slice 5), and the result
+// input), a plugin call's identity, the one per-send field written before the job (`statics.messages`
+// through `incrementStatic`; the target's `lastInteraction` is the server job's to stamp (audit item
+// A2), so the tab touches no character record and uploads none before the job), and the result
 // mapping (`refused` and `followed` are a definite refusal, `unknown` an ambiguous one, an error or
 // lost terminal neither; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls`
 // under its generation, none for a continue; a preview's `result` comes back).
@@ -21,7 +21,6 @@ const stubs = vi.hoisted(() => ({
     members: new Set<string>(),
     currentChatRef: vi.fn<() => unknown>(() => null),
     incrementStatic: vi.fn(),
-    updateCharacter: vi.fn<(chaId: string, patch: Record<string, unknown>) => boolean>(),
     addRerolls: vi.fn(),
     db: { characters: [] as Record<string, unknown>[] },
 }));
@@ -35,9 +34,9 @@ vi.mock("../storage/chatStore.svelte", () => ({
     pinChat: () => () => {},
 }));
 vi.mock("../storage/collectionStore.svelte", () => ({ incrementStatic: stubs.incrementStatic }));
-// The character list as the real module serves it (the records' list, here the stub list).
+// The character list as the real module serves it (the records' list, here the stub list). No
+// write of the module is stubbed: the send is not expected to call one.
 vi.mock("../storage/characterStore.svelte", () => ({
-    updateCharacter: stubs.updateCharacter,
     characterList: () => stubs.db.characters,
 }));
 // `stores.svelte` runs module effects; the module under test reads the records through the stubs above.
@@ -65,15 +64,6 @@ beforeEach(async () => {
     stubs.members.clear();
     stubs.members.add("c/k").add("g/k");
     stubs.currentChatRef.mockReset().mockReturnValue(null);
-    // The character module's write by id, applied to the stub list as the real one applies it to the record.
-    stubs.updateCharacter.mockReset().mockImplementation((chaId, patch) => {
-        const char = stubs.db.characters.find((entry) => entry.chaId === chaId);
-        if (!char) {
-            return false;
-        }
-        Object.assign(char, patch);
-        return true;
-    });
     stubs.db.characters = [
         { chaId: "other", type: "character" },
         { chaId: "c", type: "character", lastInteraction: 1 },
@@ -86,10 +76,16 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
+/** The character records as the test seeded them: a send changes none of them (the server stamps). */
+const seededCharacters = () => [
+    { chaId: "other", type: "character" },
+    { chaId: "c", type: "character", lastInteraction: 1 },
+    { chaId: "g", type: "group" },
+];
+
 describe("sendChatOnServer", () => {
-    it("posts a send with the input and its user message id after writing the per-send fields of the target", async () => {
+    it("posts a send with the input and its user message id after counting the send, without touching the target record", async () => {
         started(done({ messageId: "r1" }));
-        const before = Date.now();
         const result = await send({ target: ref, input: "hi", userMessageId: "u1", continueMessageId: "ignored" });
         expect(result).toEqual({ ok: true, outcome: "started", result: undefined });
         const [char, target, request, options] = stubs.run.mock.calls[0];
@@ -97,12 +93,11 @@ describe("sendChatOnServer", () => {
         expect(target).toEqual(ref);
         expect(request).toEqual({ kind: "send", label: "send", context: { input: "hi", userMessageId: "u1" } });
         expect(options).toEqual({ signal: undefined });
+        expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledWith("messages");
-        expect(stubs.db.characters[1].lastInteraction as number).toBeGreaterThanOrEqual(before);
-        expect(stubs.updateCharacter).toHaveBeenCalledTimes(1);
-        expect(stubs.updateCharacter).toHaveBeenCalledWith("c", {
-            lastInteraction: stubs.db.characters[1].lastInteraction,
-        });
+        // A2: the stamp is the job's (a server field patch), so no character record becomes dirty and
+        // none is uploaded before the job: the target keeps its seeded stamp, the others are untouched.
+        expect(stubs.db.characters).toEqual(seededCharacters());
         expect(stubs.addRerolls).not.toHaveBeenCalled();
     });
 
@@ -120,7 +115,8 @@ describe("sendChatOnServer", () => {
         started(done());
         await send({ target: { chaId: "g", chatId: "k" }, input: "all", userMessageId: "u3", continue: true });
         expect(lastRequest()).toMatchObject({ kind: "group", context: { input: "all", userMessageId: "u3" } });
-        expect(stubs.updateCharacter).toHaveBeenLastCalledWith("g", { lastInteraction: expect.any(Number) });
+        // The group record is not stamped by the tab either.
+        expect(stubs.db.characters).toEqual(seededCharacters());
 
         for (const [arg, kind] of [
             [{ preview: true }, "preview"],
@@ -131,6 +127,8 @@ describe("sendChatOnServer", () => {
             expect(lastRequest()).toEqual({ kind, label: "send", context: { input: "" } });
             expect(result).toEqual({ ok: true, outcome: "started", result: ["x"] });
         }
+        expect(stubs.incrementStatic).toHaveBeenCalledTimes(5);
+        expect(stubs.db.characters).toEqual(seededCharacters());
     });
 
     it("uses the selected chat without a target, and refuses a missing target or chat before writing anything", async () => {

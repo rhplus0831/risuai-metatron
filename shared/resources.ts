@@ -186,12 +186,27 @@ export type ResourceReadRefsResult = {
 };
 
 /**
- * What one committed write changed (Phase 6 live updates): refs and their new revisions only, never
- * data. A `null` revision is a deletion. A record that changed more than once in the write appears
- * once, with its final revision.
+ * The top-level field change of one write of an object record (a field patch): the record at the
+ * entry's revision equals the record at `baseRevision` (the same incarnation, one write earlier) with
+ * every `set` field assigned its stored value and every `remove` field deleted. Values compare as
+ * JSON values; top-level key order is not part of it. The store writes one with a `patch` batch op
+ * (store-internal for now; a send job's `lastInteraction` stamp). Array records (`modules`) have
+ * none; a later variant would name its items by id.
+ */
+export type RecordFieldPatch = { baseRevision: string; set: Record<string, unknown>; remove: string[] };
+
+/** The largest field patch (UTF-8 bytes of its JSON) a change-feed entry carries; a larger one is a plain ref. */
+export const MAX_FEED_PATCH_BYTES = 64 * 1024;
+
+/**
+ * What one committed write changed (Phase 6 live updates): refs and their new revisions, and data
+ * only as a field patch. A `null` revision is a deletion. A record that changed more than once in the
+ * write appears once, with its final revision and no patch. `patch`: the write was a field patch (see
+ * `RecordFieldPatch`); a client holding exactly its base revision may apply it instead of reading the
+ * record, any other client reads the record as for a plain ref.
  */
 export type ChangeSet = {
-    resources: { kind: string; id: string; revision: string | null }[];
+    resources: { kind: string; id: string; revision: string | null; patch?: RecordFieldPatch }[];
     chats: { characterId: string; id: string; revision: string | null }[];
     chatOrders: { characterId: string; revision: string | null }[];
 };

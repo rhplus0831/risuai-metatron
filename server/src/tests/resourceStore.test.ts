@@ -830,3 +830,214 @@ describe("transaction", () => {
         expect(store.transaction(() => {})).toBeUndefined();
     });
 });
+
+// Audit item A2: a batch op may carry a field `patch` of an object record (store-internal; the send
+// job's `lastInteraction` stamp). It is checked before the transaction, applied at its base revision
+// inside it, normalized and stored like a write, and counted as one. What the feed carries for it is
+// in `changeFeed.test.ts`.
+describe("field patches", () => {
+    /** A normalizer with side effects outside the patch: `temp` is dropped, `count` is derived. */
+    const counted: ResourceKind = {
+        name: "counted",
+        schemaVersion: 1,
+        normalize: (input) => {
+            const out = { ...(input as Record<string, unknown>) };
+            delete out.temp;
+            out.count = Object.keys(out).filter((key) => key !== "count").length;
+            return out;
+        },
+    };
+    /** A normalizer that refuses a result (the character normalizer refusing a changed `chaId`). */
+    const strict: ResourceKind = {
+        name: "strict",
+        schemaVersion: 1,
+        normalize: (input) => {
+            if ((input as Record<string, unknown>).bad !== undefined) {
+                throw new ResourceValidationError("bad is not allowed");
+            }
+            return input;
+        },
+    };
+    function patchStore() {
+        const store = createResourceStore({ file: ":memory:", kinds: createKindRegistry([root, counted, strict]) });
+        stores.push(store);
+        return store;
+    }
+
+    it("assigns and deletes top-level fields at the base revision, normalizes the result, and advances the revision by one", () => {
+        const store = patchStore();
+        const base = store.put(root, "a", { keep: 1, change: 2, drop: 3 }, null).revision;
+        expect(store.revisionOf(root, "a")).toBe(base);
+        expect(store.revisionOf(root, "missing")).toBeNull();
+        const before = store.writeCount();
+        const [result] = store.applyBatch([
+            {
+                kind: root,
+                id: "a",
+                baseRevision: base,
+                patch: { set: { change: 20, added: { nested: true } }, remove: ["drop"] },
+            },
+        ]);
+        expect(result).toEqual({ kind: "root", id: "a", revision: base.replace(/:1$/, ":2") });
+        expect(store.get(root, "a")).toEqual({
+            revision: result.revision,
+            data: { keep: 1, change: 20, added: { nested: true } },
+        });
+        expect(store.revisionOf(root, "a")).toBe(result.revision);
+        expect(store.writeCount()).toBe(before + 1);
+
+        // A set-only and a remove-only patch; a set of `undefined` stores nothing for the field.
+        const setOnly = store.applyBatch([
+            { kind: root, id: "a", baseRevision: result.revision, patch: { set: { keep: undefined, more: "x" } } },
+        ])[0].revision!;
+        expect(store.get(root, "a")!.data).toEqual({ change: 20, added: { nested: true }, more: "x" });
+        const removeOnly = store.applyBatch([
+            { kind: root, id: "a", baseRevision: setOnly, patch: { remove: ["added", "never-there"] } },
+        ])[0].revision!;
+        expect(store.get(root, "a")).toEqual({ revision: removeOnly, data: { change: 20, more: "x" } });
+
+        // The normalizer runs on the patched record: its side effects are stored with the patch.
+        const c = store.put(counted, "c", { x: 1, temp: "gone" }, null);
+        expect(c.data).toEqual({ x: 1, count: 1 });
+        const patched = store.applyBatch([
+            { kind: counted, id: "c", baseRevision: c.revision, patch: { set: { temp: "again", y: 2 } } },
+        ])[0].revision!;
+        expect(store.get(counted, "c")).toEqual({ revision: patched, data: { x: 1, count: 2, y: 2 } });
+    });
+
+    it("refuses an invalid patch op before writing anything, naming the op", () => {
+        const store = patchStore();
+        const base = store.put(root, "a", { n: 1 }, null).revision;
+        const before = store.writeCount();
+        const refused: [unknown, string][] = [
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { set: { n: 2 } }, data: { n: 2 } },
+                "a patch has no data and no deletion",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { set: { n: 2 } }, delete: false },
+                "a patch has no data and no deletion",
+            ],
+            [{ kind: root, id: "a", baseRevision: null, patch: { set: { n: 2 } } }, "a patch needs a base revision"],
+            [{ kind: root, id: "a", baseRevision: base, patch: null }, "a patch is { set?, remove? }"],
+            [{ kind: root, id: "a", baseRevision: base, patch: undefined }, "a patch is { set?, remove? }"],
+            [{ kind: root, id: "a", baseRevision: base, patch: [] }, "a patch is { set?, remove? }"],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { set: [1] } },
+                "a patch is { set?: object, remove?: string[] }",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { remove: "n" } },
+                "a patch is { set?: object, remove?: string[] }",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { remove: [1] } },
+                "a patch is { set?: object, remove?: string[] }",
+            ],
+            [{ kind: root, id: "a", baseRevision: base, patch: {} }, "a patch names no field"],
+            [{ kind: root, id: "a", baseRevision: base, patch: { set: {}, remove: [] } }, "a patch names no field"],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { set: { n: 2 }, remove: ["n"] } },
+                "a patch names a field twice or names __proto__",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { remove: ["n", "n"] } },
+                "a patch names a field twice or names __proto__",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { set: JSON.parse('{"__proto__": 1}') } },
+                "a patch names a field twice or names __proto__",
+            ],
+            [
+                { kind: root, id: "a", baseRevision: base, patch: { remove: ["__proto__"] } },
+                "a patch names a field twice or names __proto__",
+            ],
+        ];
+        for (const [op, message] of refused) {
+            expect(() => store.applyBatch([{ kind: root, id: "b", baseRevision: null, data: 1 }, op as never])).toThrow(
+                new ResourceValidationError(`ops[1]: ${message}`),
+            );
+        }
+        // A patch op may not share the batch with another op on the same record.
+        expect(() =>
+            store.applyBatch([
+                { kind: root, id: "a", baseRevision: base, data: { n: 3 } },
+                { kind: root, id: "a", baseRevision: base, patch: { set: { n: 2 } } },
+            ]),
+        ).toThrow(new ResourceValidationError("ops[1]: duplicate kind and id"));
+        expect(store.get(root, "a")).toEqual({ revision: base, data: { n: 1 } });
+        expect(store.get(root, "b")).toBeNull();
+        expect(store.writeCount()).toBe(before);
+    });
+
+    it("conflicts on a stale or missing base, all or none with the other ops, and lists the current revision", () => {
+        const store = patchStore();
+        const first = store.put(root, "a", { n: 1 }, null).revision;
+        const second = store.put(root, "a", { n: 2 }, first).revision;
+        const before = store.writeCount();
+        for (const [op, current] of [
+            [{ kind: root, id: "a", baseRevision: first, patch: { set: { n: 3 } } }, second],
+            [{ kind: root, id: "gone", baseRevision: first, patch: { set: { n: 3 } } }, null],
+            [{ kind: root, id: "a", baseRevision: "not-a-token", patch: { set: { n: 3 } } }, second],
+        ] as const) {
+            let error: unknown;
+            try {
+                store.applyBatch([{ kind: root, id: "b", baseRevision: null, data: 1 }, op]);
+            } catch (e) {
+                error = e;
+            }
+            expect(error).toBeInstanceOf(ResourceBatchConflictError);
+            expect((error as ResourceBatchConflictError).conflicts).toEqual([
+                { kind: "root", id: op.id, revision: current },
+            ]);
+        }
+        expect(store.get(root, "a")).toEqual({ revision: second, data: { n: 2 } });
+        expect(store.get(root, "b")).toBeNull();
+        expect(store.writeCount()).toBe(before);
+    });
+
+    it("rolls back a patch of a record that is not an object, or whose result the kind refuses, with the other ops", () => {
+        const store = patchStore();
+        const number = store.put(root, "n", 1, null).revision;
+        const list = store.put(root, "l", [1, 2], null).revision;
+        const ok = store.put(strict, "s", { good: 1 }, null).revision;
+        const before = store.writeCount();
+        for (const [op, message] of [
+            [
+                { kind: root, id: "n", baseRevision: number, patch: { set: { x: 1 } } },
+                "ops[1]: a patch needs an object record",
+            ],
+            [
+                { kind: root, id: "l", baseRevision: list, patch: { set: { x: 1 } } },
+                "ops[1]: a patch needs an object record",
+            ],
+            [{ kind: strict, id: "s", baseRevision: ok, patch: { set: { bad: true } } }, "ops[1]: bad is not allowed"],
+            [
+                { kind: strict, id: "s", baseRevision: ok, patch: { set: { x: NaN } } },
+                "ops[1]: Resource data contains a non-finite number",
+            ],
+        ] as const) {
+            expect(() => store.applyBatch([{ kind: root, id: "b", baseRevision: null, data: 1 }, op])).toThrow(
+                new ResourceValidationError(message),
+            );
+        }
+        expect(store.get(root, "n")).toEqual({ revision: number, data: 1 });
+        expect(store.get(root, "l")).toEqual({ revision: list, data: [1, 2] });
+        expect(store.get(strict, "s")).toEqual({ revision: ok, data: { good: 1 } });
+        expect(store.get(root, "b")).toBeNull();
+        expect(store.writeCount()).toBe(before);
+        // The store is usable after the rollback.
+        expect(
+            store.applyBatch([{ kind: strict, id: "s", baseRevision: ok, patch: { set: { good: 2 } } }])[0].revision,
+        ).toBe(ok.replace(/:1$/, ":2"));
+    });
+
+    it("revisionOf checks the kind and the id like a read", () => {
+        const store = patchStore();
+        const foreign: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
+        expect(() => store.revisionOf(foreign, "a")).toThrow("Unregistered resource kind: root");
+        expect(() => store.revisionOf(root, "")).toThrow(ResourceValidationError);
+        store.close();
+        expect(() => store.revisionOf(root, "a")).toThrow();
+    });
+});

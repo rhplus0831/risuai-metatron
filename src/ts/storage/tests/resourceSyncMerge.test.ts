@@ -10,6 +10,9 @@ import { materialize } from "./serverKinds";
 // `resourceSync.svelte.ts`) is merged into the mirror and written again on the server's revision,
 // with no discard and no reload notice. Any other remote change conflicts as before. The save
 // adapter runs for real (fresh module graph per test, Svelte runes) against the in-memory fake.
+// The `lastInteraction` rule (audit item A2: a send job stamps it on the server with the server's
+// clock): the server's finite stamp is taken whenever this client left the field as saved, even an
+// earlier one; the later of two only when both sides moved it.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -142,25 +145,52 @@ describe("a character another tab only opened or sent to", () => {
         expect(fake.batchCount()).toBe(2);
     });
 
-    it("keeps the local stamp when it is the later one (either direction), and takes the server's when the local copy has none", async () => {
-        const { fake, sync, mirror, remote } = await boot();
+    it("takes the server's stamp, even an earlier one, when this client left the field as saved; keeps the later of two when both moved it; takes the server's when the local copy has none", async () => {
+        const { fake, sync, mirror, remote, changed } = await boot();
+        // Both sides moved the stamp (the local copy from 100 to 300): the later one stays.
         remote("characters", "a", (data) => (data.lastInteraction = 90));
         mirror("a").lastInteraction = 300;
         mirror("a").desc = "local";
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "a").lastInteraction).toBe(300);
 
-        // Only the server moved the stamp backwards (an older clock): the local, later stamp stays.
+        // A2: the server stamps with its own clock. A tab that only edited `desc` (its stamp is still
+        // the saved 300) takes the server's 50 even though it is earlier (the server corrected a
+        // future stamp an older client clock wrote): the unrelated edit survives, the corrected stamp
+        // is what the merged write persists, and the dirty tab does not restore the old value.
         remote("characters", "a", (data) => (data.lastInteraction = 50));
         mirror("a").desc = "local 2";
         expect((await sync.flushResources()).discarded).toEqual([]);
-        expect(fake.data("characters", "a")).toMatchObject({ lastInteraction: 300, desc: "local 2" });
+        expect(fake.data("characters", "a")).toMatchObject({ lastInteraction: 50, desc: "local 2" });
+        expect(mirror("a")).toMatchObject({ lastInteraction: 50, desc: "local 2" });
+        expect(sync.heldRecordRevision("characters", "a")).toBe(fake.get("characters", "a")!.revision);
+        // Idle afterwards: the merged write was the last one, no echo of the server's stamp.
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.data("characters", "a")).toMatchObject({ lastInteraction: 50, desc: "local 2" });
+        // The stamp alone is never announced to the listeners.
+        expect(changed).toEqual([]);
 
         remote("characters", "b", (data) => (data.lastInteraction = 400));
         delete mirror("b").lastInteraction;
         mirror("b").name = "Bob local";
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "b")).toMatchObject({ lastInteraction: 400, name: "Bob local" });
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("keeps a later local stamp over an earlier server stamp only when this client changed the stamp itself", async () => {
+        const { fake, sync, mirror, remote } = await boot();
+        // Saved 100, local 300 (changed here), server 50: the later of the two.
+        remote("characters", "a", (data) => (data.lastInteraction = 50));
+        mirror("a").lastInteraction = 300;
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("characters", "a").lastInteraction).toBe(300);
+        // Saved 300, local 300 (unchanged), server 200: the server's.
+        remote("characters", "a", (data) => (data.lastInteraction = 200));
+        mirror("a").desc = "edited";
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("characters", "a")).toMatchObject({ lastInteraction: 200, desc: "edited" });
         expect(alerts.normal).not.toHaveBeenCalled();
     });
 

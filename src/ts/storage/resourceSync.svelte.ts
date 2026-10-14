@@ -9,6 +9,7 @@ import {
     parseRevisionToken,
     RESOURCE_KIND,
     type ChangeSet,
+    type RecordFieldPatch,
     type ResourceBatchResult,
     type ResourceReadKindsResult,
     type ResourceRevisionListing,
@@ -39,7 +40,8 @@ import {
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertTerminal } from "../alert";
-import { assignsInherited } from "./mutationValidation";
+import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import { reconcileSelection } from "./settingsViews.svelte";
 import {
@@ -252,9 +254,13 @@ const remoteChangeListeners = new Set<RemoteChangeListener>();
  * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
  * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
  * held unsent when the server's siblings had changed too; the entry waits for that local text to
- * change (its save or a conflict settles it).
+ * change (its save or a conflict settles it). `patch`: the notice's field patch, applied without a
+ * read if this client still holds its base when the cycle runs (`applyRemotePatch`).
  */
-const remoteRecords = new Map<string, { kind: string; id: string; revision: string | null; blockedLocal?: string }>();
+const remoteRecords = new Map<
+    string,
+    { kind: string; id: string; revision: string | null; blockedLocal?: string; patch?: RecordFieldPatch }
+>();
 /**
  * Characters whose chat list (chats created, deleted, or reordered elsewhere) waits to be read and
  * applied → the sequence of the latest notice; a read settles only the notice it was issued for.
@@ -1303,8 +1309,9 @@ const STATIC_COUNTS = new Set(["imports", "messages"]);
  * - a field the server holds as this client does (both made the same change);
  * - a field the base did not have and this client does not have either (another tab filled it in,
  *   such as a default its character screen binds); the server's value is taken;
- * - a character's `lastInteraction`: the later of two finite stamps (another tab sent to the
- *   character);
+ * - a character's `lastInteraction` (a send job stamped it while this client had an unsaved change):
+ *   the server's finite stamp when this client left the field as saved (the server's clock wins, even
+ *   over a later stamp an earlier client clock wrote), else the later of two finite stamps;
  * - a `statics` count: best effort, the server's count plus this client's increments since the
  *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
  *   already holds, may be off by those increments).
@@ -1322,7 +1329,7 @@ function benignChanges(
     for (const field of new Set([...Object.keys(saved), ...Object.keys(remote), ...Object.keys(local)])) {
         const [base, theirs, ours] = [fieldOf(saved, field), fieldOf(remote, field), fieldOf(local, field)];
         if (kind === RESOURCE_KIND.characters && field === "lastInteraction") {
-            if (isEqual(theirs, ours) || (isStamp(theirs) && ours === ABSENT)) {
+            if (isEqual(theirs, ours) || (isStamp(theirs) && (ours === ABSENT || isEqual(ours, base)))) {
                 if (!isEqual(theirs, ours)) {
                     changes.set(field, theirs);
                 }
@@ -1366,7 +1373,7 @@ function benignChanges(
 
 /**
  * A conflicting character or `statics` record whose server change this client can take
- * (`benignChanges`): another tab sent to the character (its `lastInteraction` stamp), filled in a
+ * (`benignChanges`): a send job stamped the character (its `lastInteraction`), filled in a
  * default its screen binds, or counted a send. The changes go into the mirror, the base moves
  * to the server's revision, and the key stays dirty, so the next cycle writes the merged record.
  * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
@@ -1797,7 +1804,8 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
 /**
  * A live update: the refs and revisions one committed write changed (the change feed). Each is
  * compared with what this client holds when it arrives, and one that is not newer is dropped (this
- * client's own save, or a job event that applied it first). A newer record waits for the cycle,
+ * client's own save, or a job event that applied it first). A field patch this client can take now
+ * is applied at once (`applyRemotePatch`), with no read. A newer record waits for the cycle,
  * which reads and applies it while this client has no unsent change of it (`applyRemoteUpdates`); a
  * chat goes to the chat module's idle refresh; a new chat or a changed chat order reads the
  * character's chat list (also for a character still waiting to be inserted). Never an outgoing
@@ -1830,6 +1838,9 @@ export function noteRemoteChanges(changes: ChangeSet) {
             // Singletons are seeded at boot; one this client does not hold is not its data.
             continue;
         }
+        if (ref.patch && applyRemotePatch(ref)) {
+            continue;
+        }
         const waiting = remoteRecords.get(key);
         if (
             waiting &&
@@ -1837,9 +1848,18 @@ export function noteRemoteChanges(changes: ChangeSet) {
             ref.revision !== null &&
             (compareRevision(ref.revision, waiting.revision) ?? 0) <= 0
         ) {
+            // A revision listing may have named this revision first: keep the patch for the cycle.
+            if (ref.patch && !waiting.patch && waiting.revision === ref.revision) {
+                waiting.patch = ref.patch;
+            }
             continue;
         }
-        remoteRecords.set(key, { kind: ref.kind, id: ref.id, revision: ref.revision });
+        remoteRecords.set(key, {
+            kind: ref.kind,
+            id: ref.id,
+            revision: ref.revision,
+            ...(ref.patch ? { patch: ref.patch } : {}),
+        });
         woke = true;
     }
     for (const chat of changes.chats) {
@@ -1921,6 +1941,83 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
         });
     }
     noteRemoteChanges(changes);
+}
+
+/**
+ * Applies a live update's field patch (`RecordFieldPatch`) without reading the record: a character
+ * this client holds at exactly the patch's base revision (of the loaded epoch, the same incarnation,
+ * one write before the update) and has no local change of (`canApplyRemote`) takes the changed fields
+ * raw (`patchRawCharacter`: no mark, no echo) and the new revision; its saved text is the mirror's
+ * projection afterwards, as for a whole update. A waiting notice the update covers is settled. The
+ * remote-change listeners hear of it unless only `lastInteraction` changed (a send job's stamp, as
+ * `mergeConcurrentChange` treats it). Returns false, changing nothing, for anything else (another
+ * kind, another base, a local change, a malformed patch or one naming a field twice, a fixed or
+ * client-only field, a field the mirror object only inherits): the update is then read whole as before.
+ */
+function applyRemotePatch(ref: {
+    kind: string;
+    id: string;
+    revision: string | null;
+    blockedLocal?: string;
+    patch?: RecordFieldPatch;
+}): boolean {
+    const patch = ref.patch;
+    if (!patch || ref.kind !== RESOURCE_KIND.characters || ref.revision === null) {
+        return false;
+    }
+    const base = parseRevisionToken(patch.baseRevision);
+    const next = parseRevisionToken(ref.revision);
+    if (
+        !base ||
+        !next ||
+        base.epoch !== getResourceEpoch() ||
+        next.epoch !== base.epoch ||
+        next.seq !== base.seq ||
+        next.revision !== base.revision + 1
+    ) {
+        return false;
+    }
+    const key = recordKey(ref.kind, ref.id);
+    if (persisted.get(key)?.revision !== patch.baseRevision || !canApplyRemote(key, ref)) {
+        return false;
+    }
+    const character = findMirrorCharacter(ref.id);
+    if (!character || !isPlainObject(patch.set) || !Array.isArray(patch.remove)) {
+        return false;
+    }
+    const setFields = Object.keys(patch.set);
+    const fields = [...setFields, ...patch.remove];
+    if (
+        new Set(fields).size !== fields.length ||
+        fields.some(
+            (field) =>
+                typeof field !== "string" || CHARACTER_FIXED_FIELDS.has(field) || CHARACTER_LOCAL_KEYS.has(field),
+        ) ||
+        setFields.some((field) => assignsInherited(character, field))
+    ) {
+        return false;
+    }
+    let changes: (readonly [string, unknown])[];
+    try {
+        changes = [
+            ...setFields.map((field) => [field, structuredClone(patch.set[field])] as const),
+            ...patch.remove.map((field) => [field, REMOVE_FIELD] as const),
+        ];
+    } catch {
+        return false;
+    }
+    if (!patchRawCharacter(ref.id, changes)) {
+        return false;
+    }
+    persisted.set(key, { revision: ref.revision, text: projectRecord(ref.kind, ref.id)! });
+    const waiting = remoteRecords.get(key);
+    if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
+        remoteRecords.delete(key);
+    }
+    if (fields.some((field) => field !== "lastInteraction")) {
+        notifyRemoteListeners(ref.kind, ref.id);
+    }
+    return true;
 }
 
 /** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
@@ -2019,7 +2116,8 @@ function applyRemoteRecord(
 
 /**
  * Reads and applies the waiting live updates (part of the cycle, before its batch, so it never races
- * this client's own write): the records this client can take now and the chat lists of characters
+ * this client's own write): first every waiting field patch this client can now take without a read
+ * (`applyRemotePatch`), then the records this client can take now and the chat lists of characters
  * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
  * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
  * issued for, or a later one its answer covers. A deletion applies only if the held revision is
@@ -2027,6 +2125,11 @@ function applyRemoteRecord(
  */
 async function applyRemoteUpdates() {
     settleRemoteRecords();
+    for (const entry of [...remoteRecords.values()]) {
+        if (entry.patch) {
+            applyRemotePatch(entry);
+        }
+    }
     const records = [...remoteRecords].filter(([key, entry]) => canApplyRemote(key, entry)).slice(0, MAX_REMOTE_READS);
     const newCharacters = new Set(
         records

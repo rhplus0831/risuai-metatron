@@ -2,7 +2,7 @@ import type { GenerationKind } from "../../../shared/jobs.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { type ChatRef, chatEntry, currentChatRef, findChat, pinChat } from "../storage/chatStore.svelte";
 import { incrementStatic } from "../storage/collectionStore.svelte";
-import { updateCharacter, characterList } from "../storage/characterStore.svelte";
+import { characterList } from "../storage/characterStore.svelte";
 import { addRerolls } from "./prereroll";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
@@ -29,15 +29,17 @@ export type ServerSendArg = {
 export type ServerSendRefusal = "definite" | "ambiguous";
 
 /**
- * `sendChat` as a server job (Phase 5 slice 9; the only send path since the cutover): the tab writes the
- * two per-send fields (`statics.messages`, the target's `lastInteraction`), then `runServerJob`
- * flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for a group chat, else
- * `send`) with the input and the message ids, and follows it to its end. A preview's `done.result` is
- * returned for `previewFormated`/`previewBody`; a reply's reroll alternatives go to `addRerolls`
- * under the reply's generation (a continue keeps none, as its alternatives are never looked up on the
- * client either). `ok` is the browser path's result: the job ended with `done` and counted as sent
- * (not `stopped`). `refusal` says why a send did not run. The target chat needs to be listed, not
- * loaded: `runServerJob` loads it, and it stays pinned until the reply's alternatives are read here.
+ * `sendChat` as a server job (Phase 5 slice 9; the only send path since the cutover): the tab counts
+ * the send (`statics.messages`), then `runServerJob` flushes, creates the job (`preview`,
+ * `previewPrompt`, `continue`, `group` for a group chat, else `send`) with the input and the message
+ * ids, and follows it to its end. The target's `lastInteraction` is the job's to stamp (a field patch
+ * on the server, so the character record is not uploaded before every send). A preview's
+ * `done.result` is returned for `previewFormated`/`previewBody`; a reply's reroll alternatives go to
+ * `addRerolls` under the reply's generation (a continue keeps none, as its alternatives are never
+ * looked up on the client either). `ok` is the browser path's result: the job ended with `done` and
+ * counted as sent (not `stopped`). `refusal` says why a send did not run. The target chat needs to be
+ * listed, not loaded: `runServerJob` loads it, and it stays pinned until the reply's alternatives are
+ * read here.
  */
 export async function sendChatOnServer(
     arg: ServerSendArg,
@@ -61,7 +63,6 @@ async function sendPinned(
     char: NonNullable<ReturnType<typeof characterList>[number]>,
 ): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
     incrementStatic("messages");
-    updateCharacter(ref.chaId, { lastInteraction: Date.now() });
 
     const kind: GenerationKind = arg.preview
         ? "preview"

@@ -346,3 +346,22 @@ describe("a send while another tab's job holds the chat (C2)", () => {
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
     });
 });
+
+describe("a send on a clean tab (audit item A2)", () => {
+    it("uploads no character record before the job is created: the `lastInteraction` stamp is the server job's", async () => {
+        const { fake, character } = await boot();
+        const commands = await import("../../process/serverCommands");
+        const before = fake.record("characters", "c")!;
+        expect(before.data.lastInteraction).toBeUndefined();
+        // The store-backed server has no job route: the create fails after the flush, which is the
+        // request this case is about.
+        const result = await commands
+            .runServerJob(character(), refK, { kind: "send", label: "send", context: { input: "x" } } as any)
+            .catch(() => null);
+        expect(result?.outcome).not.toBe("started");
+        expect(fake.requests.filter((r) => r.method === "POST" && r.path === "/api/generations")).toHaveLength(1);
+        expect(fake.batchCount()).toBe(0);
+        expect(fake.record("characters", "c")).toEqual(before);
+        expect(fake.requests.filter((r) => r.path === "/api/resources/batch")).toEqual([]);
+    });
+});

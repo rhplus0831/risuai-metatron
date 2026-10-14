@@ -23,7 +23,8 @@ export function makeCharacterAgoText(
     if (time === 0) {
         return unknownText;
     }
-    const diff = now - time;
+    // The stamp is the server's clock: a client clock behind it reads as "0 minutes ago", not "in 1 minute".
+    const diff = Math.max(0, now - time);
     if (diff < 3600000) {
         const min = Math.floor(diff / 60000);
         return agoFormatter.format(-min, "minute");

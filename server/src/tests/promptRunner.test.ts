@@ -1227,3 +1227,118 @@ describe("automatic translation of a send's messages (docs/plan/translation.md s
         SLOW,
     );
 });
+
+// Audit item A2: the owner record's `lastInteraction` is the job's to stamp (`stampInteraction` in
+// `runner.ts`): a field patch with the server clock, published on the change feed with only that
+// field, never a character record on the job socket; a preview stamps nothing.
+describe("the lastInteraction stamp", () => {
+    const readCharacter = async (id: string) =>
+        (await api(`/api/resources/characters/${encodeURIComponent(id)}`)).body as {
+            revision: string;
+            data: Record<string, any>;
+        };
+    /** The live-update socket (`/api/events/ws`), collecting every frame after `hello`. */
+    async function feedSocket() {
+        const ws = new WebSocket(
+            `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
+        );
+        const frames: any[] = [];
+        ws.onmessage = (message) => frames.push(JSON.parse(String(message.data)));
+        await new Promise<void>((resolve, reject) => {
+            ws.onopen = () => resolve();
+            ws.onerror = () => reject(new Error("the feed socket did not open"));
+        });
+        await waitFor(() => frames.some((frame) => frame.type === "hello"));
+        return { frames, close: () => ws.close() };
+    }
+    const stampEntries = (frames: any[], id: string) =>
+        frames
+            .filter((frame) => frame.type === "change")
+            .flatMap((frame) => frame.changes.resources as any[])
+            .filter((entry) => entry.kind === "characters" && entry.id === id);
+    const next = (revision: string) => revision.replace(/:(\d+)$/, (_, n: string) => `:${Number(n) + 1}`);
+    /** Runs a job and checks the owner's stamp: server time, one revision, nothing else of the record changed. */
+    async function stamps(kind: string, owner: string, extra: Record<string, unknown>, frames: any[]) {
+        const before = await readCharacter(owner);
+        const started = Date.now();
+        const result = await job(kind, owner, extra);
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        const after = await readCharacter(owner);
+        expect(after.data.lastInteraction).toBeGreaterThanOrEqual(started);
+        expect(after.data.lastInteraction).toBeLessThanOrEqual(Date.now());
+        expect(after.revision).toBe(next(before.revision));
+        expect({ ...after.data, lastInteraction: before.data.lastInteraction }).toEqual(before.data);
+        await waitFor(() => stampEntries(frames, owner).some((entry) => entry.revision === after.revision));
+        expect(stampEntries(frames, owner).filter((entry) => entry.revision === after.revision)).toEqual([
+            {
+                kind: "characters",
+                id: owner,
+                revision: after.revision,
+                patch: {
+                    baseRevision: before.revision,
+                    set: { lastInteraction: after.data.lastInteraction },
+                    remove: [],
+                },
+            },
+        ]);
+        // No character record reaches the job socket for the stamp (no receipt, no whole-record hydration).
+        expect(result.events.filter((event) => event.type === "resource" && event.kind === "characters")).toEqual([]);
+        return { before, after, result };
+    }
+
+    it(
+        "send, continue, and group stamp the owner once with the server clock as a field patch on the feed; a future stamp is replaced",
+        async () => {
+            mode = { chunks: ["Ok."], delayMs: 0 };
+            // A stamp an older client clock wrote in the future is overwritten with the server's time.
+            const future = Date.now() + 86_400_000;
+            const ann = await seedCharacter({ name: "Ann", extra: { lastInteraction: future } });
+            const bob = await seedCharacter({ name: "Bob" });
+            const grp = await seedCharacter({
+                name: "Grp",
+                type: "group",
+                members: [bob],
+                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+            });
+            // The feed opens after the seeds: every character entry it sees from here on is a job's.
+            const feed = await feedSocket();
+            try {
+                expect((await readCharacter(ann)).data.lastInteraction).toBe(future);
+                const sent = await stamps("send", ann, { input: "hi", userMessageId: "u1" }, feed.frames);
+                expect(sent.after.data.lastInteraction).toBeLessThan(future);
+                // One stamp per job: the one character change the send made.
+                expect(stampEntries(feed.frames, ann)).toHaveLength(1);
+                await stamps("continue", ann, {}, feed.frames);
+                expect(stampEntries(feed.frames, ann)).toHaveLength(2);
+
+                const bobBefore = await readCharacter(bob);
+                await stamps("group", grp, {}, feed.frames);
+                expect(await readCharacter(bob)).toEqual(bobBefore);
+                expect(stampEntries(feed.frames, bob)).toEqual([]);
+            } finally {
+                feed.close();
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a preview or a prompt preview stamps nothing",
+        async () => {
+            const ann = await seedCharacter({ name: "Ann", extra: { lastInteraction: 5 } });
+            const feed = await feedSocket();
+            try {
+                const before = await readCharacter(ann);
+                for (const kind of ["preview", "previewPrompt"]) {
+                    const { terminal } = await job(kind, ann);
+                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                }
+                expect(await readCharacter(ann)).toEqual(before);
+                expect(stampEntries(feed.frames, ann)).toEqual([]);
+            } finally {
+                feed.close();
+            }
+        },
+        SLOW,
+    );
+});

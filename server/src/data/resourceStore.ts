@@ -11,10 +11,14 @@ import type {
     ChatRecord,
     ChatSummary,
 } from "../../../shared/chats.ts";
+import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
 import {
     type BatchConflict,
     type ChangeSet,
+    MAX_FEED_PATCH_BYTES,
     RESOURCE_KIND,
+    type RecordFieldPatch,
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
@@ -137,13 +141,19 @@ export function nextRevision(current: number, increment: number): number {
     return next;
 }
 
-/** One operation of `applyBatch`: a write (`data`) or, with `delete: true`, a deletion. */
+/**
+ * One operation of `applyBatch`: a write (`data`), with `delete: true` a deletion, or with `patch` a
+ * field patch of an object record (`RecordFieldPatch`): `set` fields are assigned and `remove` fields
+ * deleted on the record as stored at `baseRevision` (a string), and the result is normalized and stored
+ * like any write. Patches are store-internal for now (the routes accept `data` and `delete` only).
+ */
 export type ResourceBatchOperation = {
     kind: ResourceKind;
     id: string;
     baseRevision: string | null;
     data?: unknown;
     delete?: boolean;
+    patch?: { set?: Record<string, unknown>; remove?: readonly string[] };
 };
 
 /** Rows of a snapshot file that passed every check of `readSnapshot`, ready for `replaceAll`. */
@@ -161,6 +171,15 @@ export type AppliedChanges = {
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
 /** The refs one write changed, keyed so a record written twice keeps its final revision. */
+/** A patch op's fields, checked before the transaction (`preparePatch`). */
+type PreparedPatch = { set: [string, unknown][]; remove: string[] };
+
+/** A batch op after the checks that need no stored row; a `patch` op is applied inside the transaction. */
+type PreparedOperation =
+    | { operation: ResourceBatchOperation; mode: "write"; text: string }
+    | { operation: ResourceBatchOperation; mode: "delete" }
+    | { operation: ResourceBatchOperation; mode: "patch"; patch: PreparedPatch; index: number };
+
 type ChangeAccumulator = {
     resources: Map<string, ChangeSet["resources"][number]>;
     chats: Map<string, ChangeSet["chats"][number]>;
@@ -234,6 +253,7 @@ export function createResourceStore(options: {
     const selectKind = db.prepare("SELECT id, seq, revision, data FROM resources WHERE kind = ? ORDER BY seq");
     const selectRevisions = db.prepare("SELECT kind, id, seq, revision FROM resources ORDER BY seq");
     const selectKindRevisions = db.prepare("SELECT id, seq, revision FROM resources WHERE kind = ? ORDER BY seq");
+    const selectRevision = db.prepare("SELECT seq, revision FROM resources WHERE kind = ? AND id = ?");
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -334,8 +354,16 @@ export function createResourceStore(options: {
      */
     let changes: ChangeAccumulator | null = null;
 
-    function recordResource(kind: string, id: string, revision: string | null) {
-        changes?.resources.set(`${kind}\u0000${id}`, { kind, id, revision });
+    /**
+     * `patch`: the write was a field patch whose changes the feed may carry. A record already written
+     * in this scope loses it: its base would be a revision no client was told about.
+     */
+    function recordResource(kind: string, id: string, revision: string | null, patch?: RecordFieldPatch) {
+        const key = `${kind}\u0000${id}`;
+        changes?.resources.set(
+            key,
+            patch && !changes.resources.has(key) ? { kind, id, revision, patch } : { kind, id, revision },
+        );
     }
 
     function recordChat(characterId: string, id: string, revision: string | null) {
@@ -456,6 +484,40 @@ export function createResourceStore(options: {
         }
     }
 
+    /**
+     * Applies a patch op inside the batch transaction, at its base revision (checked current), and
+     * returns the change feed's field patch (`feedPatch`). A record that is not an object, or a result
+     * the kind refuses, throws `ResourceValidationError` (the batch rolls back).
+     */
+    function writePatch(
+        entry: Extract<PreparedOperation, { mode: "patch" }>,
+        base: { seq: number; revision: number },
+    ): RecordFieldPatch | undefined {
+        const { kind, id } = entry.operation;
+        try {
+            const row = selectOne.get(kind.name, id) as { data: string };
+            const old: unknown = JSON.parse(row.data);
+            if (!isPlainObject(old)) {
+                throw new ResourceValidationError("a patch needs an object record");
+            }
+            const next: Record<string, unknown> = { ...old };
+            for (const [field, value] of entry.patch.set) {
+                next[field] = value;
+            }
+            for (const field of entry.patch.remove) {
+                delete next[field];
+            }
+            const { text, stored } = serialize(normalizeInput(kind, next, id));
+            update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
+            return feedPatch(kind, token(base.seq, base.revision), old, stored);
+        } catch (error) {
+            if (error instanceof ResourceValidationError) {
+                throw new ResourceValidationError(`ops[${entry.index}]: ${error.message}`);
+            }
+            throw error;
+        }
+    }
+
     function assertDeletable(kind: ResourceKind) {
         if (kind.singleton) {
             throw new ResourceValidationError(`${kind.name} cannot be deleted`);
@@ -471,7 +533,7 @@ export function createResourceStore(options: {
     }
 
     function currentToken(kind: ResourceKind, id: string): string | null {
-        const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
+        const row = selectRevision.get(kind.name, id) as { seq: number; revision: number } | undefined;
         return row ? token(row.seq, row.revision) : null;
     }
 
@@ -511,7 +573,7 @@ export function createResourceStore(options: {
         }
         const operations = batch.ops ?? [];
         const seen = new Set<string>();
-        const prepared = operations.map((operation, index) => {
+        const prepared = operations.map((operation, index): PreparedOperation => {
             try {
                 const { kind, id } = operation;
                 assertKind(kind);
@@ -521,14 +583,23 @@ export function createResourceStore(options: {
                     throw new ResourceValidationError("duplicate kind and id");
                 }
                 seen.add(key);
+                if (Object.hasOwn(operation, "patch")) {
+                    if (Object.hasOwn(operation, "delete") || Object.hasOwn(operation, "data")) {
+                        throw new ResourceValidationError("a patch has no data and no deletion");
+                    }
+                    if (typeof operation.baseRevision !== "string") {
+                        throw new ResourceValidationError("a patch needs a base revision");
+                    }
+                    return { operation, mode: "patch", patch: preparePatch(operation.patch), index };
+                }
                 if (operation.delete) {
                     assertDeletable(kind);
                     if (typeof operation.baseRevision !== "string") {
                         throw new ResourceValidationError("a deletion needs a base revision");
                     }
-                    return { operation, text: null };
+                    return { operation, mode: "delete" };
                 }
-                return { operation, text: serialize(normalizeInput(kind, operation.data, id)).text };
+                return { operation, mode: "write", text: serialize(normalizeInput(kind, operation.data, id)).text };
             } catch (error) {
                 if (error instanceof ResourceValidationError) {
                     throw new ResourceValidationError(`ops[${index}]: ${error.message}`);
@@ -540,7 +611,7 @@ export function createResourceStore(options: {
         const chatOrders = prepareChatOrders(batch.chatOrders);
         const deletedCharacters = new Set(
             prepared
-                .filter(({ operation, text }) => text === null && isCharacterKind(operation.kind))
+                .filter((entry) => entry.mode === "delete" && isCharacterKind(entry.operation.kind))
                 .map(({ operation }) => operation.id),
         );
         for (const entry of [...chatGroups, ...chatOrders]) {
@@ -555,10 +626,10 @@ export function createResourceStore(options: {
         let committed = false;
         try {
             const conflicts: BatchConflict[] = [];
-            const bases = prepared.map(({ operation: { kind, id, baseRevision }, text }) => {
-                const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
+            const bases = prepared.map(({ operation: { kind, id, baseRevision }, mode }) => {
+                const row = selectRevision.get(kind.name, id) as { seq: number; revision: number } | undefined;
                 const base = baseRevision === null ? null : parseToken(baseRevision);
-                if (text === null && isCharacterKind(kind) && chatTables.characterLocked(id, options.jobToken)) {
+                if (mode === "delete" && isCharacterKind(kind) && chatTables.characterLocked(id, options.jobToken)) {
                     conflicts.push({
                         kind: kind.name,
                         id,
@@ -579,18 +650,29 @@ export function createResourceStore(options: {
             // With a stale resource op nothing will be written, but chat entries are still
             // checked so the 409 lists every conflict.
             const orderBases = chatTables.orderBases(chatOrders);
+            const patches = new Map<number, RecordFieldPatch>();
             const results =
                 conflicts.length > 0
                     ? []
-                    : prepared.map(({ operation: { kind, id }, text }, index) => {
+                    : prepared.map((entry, index) => {
+                          const { kind, id } = entry.operation;
                           const base = bases[index];
-                          if (text === null) {
+                          if (entry.mode === "delete") {
                               remove.run(kind.name, id, base!.seq, base!.revision);
                               if (isCharacterKind(kind)) {
                                   recordCharacterCascade(id, chatTables.deleteCharacter(id));
                               }
                               return { kind: kind.name, id, revision: null };
                           }
+                          if (entry.mode === "patch") {
+                              const revision = nextRevision(base!.revision, 1);
+                              const patch = writePatch(entry, base!);
+                              if (patch) {
+                                  patches.set(index, patch);
+                              }
+                              return { kind: kind.name, id, revision: token(base!.seq, revision) };
+                          }
+                          const { text } = entry;
                           if (base === null) {
                               const result = insert.run(kind.name, id, kind.schemaVersion, text);
                               if (isCharacterKind(kind)) {
@@ -619,8 +701,8 @@ export function createResourceStore(options: {
             db.exec("COMMIT");
             committed = true;
             writeCount += prepared.length + chatOutcome.applied;
-            for (const result of results) {
-                recordResource(result.kind, result.id, result.revision);
+            for (const [index, result] of results.entries()) {
+                recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
             for (const chat of chatOutcome.results) {
                 recordChat(chat.characterId, chat.id, chat.revision);
@@ -699,6 +781,15 @@ export function createResourceStore(options: {
          */
         assertEpoch(expected: string | undefined): void {
             assertEpochNow(expected);
+        },
+
+        /** A record's current revision token, or null when it does not exist; its data is not read. */
+        revisionOf(kind: ResourceKind, id: string): string | null {
+            assertOpen();
+            assertKind(kind);
+            assertId(kind, id);
+            const row = selectRevision.get(kind.name, id) as { seq: number; revision: number } | undefined;
+            return row ? token(row.seq, row.revision) : null;
         },
 
         get<T>(kind: ResourceKind<T>, id: string): { revision: string; data: T } | null {
@@ -1127,6 +1218,67 @@ export function createResourceStore(options: {
         },
     };
     return store;
+}
+
+/**
+ * Checks a patch op's `patch`: an object with an optional `set` object and an optional `remove` array
+ * of field names, naming at least one field, none twice and none `__proto__`.
+ */
+function preparePatch(patch: unknown): PreparedPatch {
+    if (!isPlainObject(patch)) {
+        throw new ResourceValidationError("a patch is { set?, remove? }");
+    }
+    const set = patch.set ?? {};
+    const remove = patch.remove ?? [];
+    if (!isPlainObject(set) || !Array.isArray(remove) || !remove.every((field) => typeof field === "string")) {
+        throw new ResourceValidationError("a patch is { set?: object, remove?: string[] }");
+    }
+    const entries = Object.entries(set);
+    const fields = [...entries.map(([field]) => field), ...remove];
+    if (fields.length === 0) {
+        throw new ResourceValidationError("a patch names no field");
+    }
+    if (new Set(fields).size !== fields.length || fields.includes("__proto__")) {
+        throw new ResourceValidationError("a patch names a field twice or names __proto__");
+    }
+    return { set: entries, remove: [...remove] };
+}
+
+/**
+ * What the change feed carries for a patch op that stored `stored` over `old`: every top-level field
+ * whose stored JSON value differs (normalization included), or none (a plain ref) for a kind whose
+ * data does not reach clients as stored, for a record that is not an object, for a changed
+ * `__proto__`, or for a patch over `MAX_FEED_PATCH_BYTES`.
+ */
+function feedPatch(
+    kind: ResourceKind,
+    baseRevision: string,
+    old: Record<string, unknown>,
+    stored: unknown,
+): RecordFieldPatch | undefined {
+    if (kind.project || HIDDEN_HYDRATION_KINDS.includes(kind.name) || !isPlainObject(stored)) {
+        return undefined;
+    }
+    const set: Record<string, unknown> = {};
+    const remove: string[] = [];
+    for (const field of new Set([...Object.keys(old), ...Object.keys(stored)])) {
+        if (!Object.hasOwn(stored, field)) {
+            remove.push(field);
+            continue;
+        }
+        if (Object.hasOwn(old, field) && JSON.stringify(old[field]) === JSON.stringify(stored[field])) {
+            continue;
+        }
+        if (field === "__proto__") {
+            return undefined;
+        }
+        set[field] = stored[field];
+    }
+    if (remove.includes("__proto__")) {
+        return undefined;
+    }
+    const patch = { baseRevision, set, remove };
+    return Buffer.byteLength(JSON.stringify(patch)) <= MAX_FEED_PATCH_BYTES ? patch : undefined;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
