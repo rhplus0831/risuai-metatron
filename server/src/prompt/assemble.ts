@@ -20,6 +20,7 @@ import { hypaMemoryV2 } from "./memory/hypav2.ts";
 import { hypaMemoryV3 } from "./memory/hypav3.ts";
 import { supaMemory } from "./memory/supaMemory.ts";
 import type { ScriptProcessor } from "./scripts.ts";
+import { stripThoughtsBlock } from "./thoughts.ts";
 import { parseChatML, type TriggerResult } from "./triggers.ts";
 
 /**
@@ -965,12 +966,13 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
         const thoughts: string[] = [];
         const maxThoughtDepth = db.promptSettings?.maxThoughtTagDepth ?? -1;
-        formatedChat = formatedChat.replace(/<Thoughts>(.+)<\/Thoughts>/gms, (match, p1) => {
+        const stripped = stripThoughtsBlock(formatedChat);
+        formatedChat = stripped.text;
+        for (const p1 of stripped.thoughts) {
             if (maxThoughtDepth === -1 || maxThoughtDepth - ms.length <= index) {
                 thoughts.push(p1);
             }
-            return "";
-        });
+        }
 
         const assetPromises: Promise<void>[] = [];
         formatedChat = formatedChat.replace(/\{\{asset_?prompt::(.+?)\}\}/gimsu, (match, p1) => {

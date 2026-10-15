@@ -16,6 +16,7 @@ import {
 } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import type { RegexMatch, RegexOp } from "../scripts/worker.ts";
+import { stripThoughtsBlock } from "./thoughts.ts";
 
 export { displayAllowList, requestAllowList };
 
@@ -170,10 +171,11 @@ export function parseChatML(data: string, parse: (text: string) => string): Open
             }
 
             const thoughts: string[] = [];
-            v = v.replace(/<Thoughts>(.+)<\/Thoughts>/gms, (_, p1: string) => {
+            const stripped = stripThoughtsBlock(v);
+            v = stripped.text;
+            for (const p1 of stripped.thoughts) {
                 thoughts.push(p1);
-                return "";
-            });
+            }
 
             return {
                 role: role,
