@@ -1,6 +1,7 @@
 import type { Database } from "../../../../shared/database.ts";
 import type { OpenAIChat } from "../../../../shared/openai.ts";
 import type { requestDataResponse } from "../../llm/request.ts";
+import type { RegexOp, RegexOpResult } from "../../scripts/worker.ts";
 import type { EmbeddingEnv } from "../embeddings.ts";
 
 /**
@@ -37,6 +38,8 @@ export type MemoryHost = {
     summarizer(text: string): Promise<string>;
     /** The job's embeddings, for `new HypaProcesser(...)` and `new HypaProcessorV2(...)`. */
     embeddings: EmbeddingEnv;
+    /** A user regex on a script worker, under a per-task deadline and the run's abort signal. */
+    regex(op: RegexOp, opts?: { deadlineMs?: number }): Promise<RegexOpResult>;
     /** `parseChatML` with the job's CBS (the job's chat and its owner). */
     parseChatML(text: string): OpenAIChat[] | null;
     /** `getUserName()`: the job's effective persona. */

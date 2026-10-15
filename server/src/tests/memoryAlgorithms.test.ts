@@ -13,6 +13,7 @@ import type { MemoryHost } from "../prompt/memory/host.ts";
 import { hypaMemoryV2 } from "../prompt/memory/hypav2.ts";
 import { hypaMemoryV3, LOCAL_SUMMARIZATION_UNSUPPORTED } from "../prompt/memory/hypav3.ts";
 import { supaMemory } from "../prompt/memory/supaMemory.ts";
+import { runRegexOp } from "../scripts/worker.ts";
 import {
     countTokens,
     createWorld,
@@ -90,6 +91,7 @@ function hostOf(
         completions: (body) => world.completions(body),
         summarizer: (text) => world.summarizer(text),
         embeddings,
+        regex: async (op) => runRegexOp(op),
         parseChatML: options.parseChatML ?? (() => null),
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),

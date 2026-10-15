@@ -3,6 +3,7 @@ import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type { HypaV3Data, HypaV3Preset, SerializableHypaV3Data, Summary } from "../../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { TaskRateLimiter } from "../../../../shared/taskRateLimiter.ts";
+import { DEFAULT_REGEX_DEADLINE_MS } from "../../scripts/workerPool.ts";
 import {
     type EmbeddingResult,
     type EmbeddingText,
@@ -23,8 +24,8 @@ import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 //   client would call the engine, so a send that needs no new summary still works.
 // - The progress store's writes are `progress` notices to the job's tab.
 // - The random selection's shuffle draws from the host's random source.
-// - `summaryChunkSeparator` is the owner's setting; its regular expression runs on the main thread, as
-//   in the tab.
+// - `summaryChunkSeparator` is the owner's setting; valid regular expressions run on script workers
+//   with per-task deadlines and a cumulative chunking budget. Invalid patterns keep the tab's fallback.
 
 interface SummaryChunk {
     text: string;
@@ -45,18 +46,38 @@ const inlayTokenRegex = /{{(inlay|inlayed|inlayeddata)::(.+?)}}/g;
 export const LOCAL_SUMMARIZATION_UNSUPPORTED = "Local summarization models are unsupported on the server";
 const memoryPromptTag = "Past Events Summary";
 const summarySeparator = "\n\n";
+const SEPARATOR_BUDGET_MS = 5000;
 
-function splitBySeparator(text: string, separator: string): string[] {
+async function splitBySeparator(
+    host: MemoryHost,
+    text: string,
+    separator: string,
+    chunkingStartedAt: number,
+): Promise<string[]> {
+    const remaining = SEPARATOR_BUDGET_MS - (performance.now() - chunkingStartedAt);
+    if (remaining <= 0) {
+        throw new Error(`Summary chunk separator timed out: ${SEPARATOR_BUDGET_MS} ms chunking budget exhausted`);
+    }
+    let pattern = separator;
+    let flags = "";
     try {
         const regexMatch = separator.match(/^\/(.+)\/([gimuy]*)$/);
         if (regexMatch) {
-            const [, pattern, flags] = regexMatch;
-            return text.split(new RegExp(pattern, flags));
+            [, pattern, flags] = regexMatch;
         }
-        return text.split(new RegExp(separator));
+        new RegExp(pattern, flags);
     } catch {
         return text.split("\n\n");
     }
+    const result = await host.regex(
+        { op: "split", pattern, flags, input: text },
+        { deadlineMs: Math.min(DEFAULT_REGEX_DEADLINE_MS, remaining) },
+    );
+    host.fence();
+    if ("error" in result) {
+        throw new Error(result.error);
+    }
+    return result.value as string[];
 }
 
 export async function hypaMemoryV3(
@@ -226,6 +247,15 @@ async function hypaMemoryV3MainExp(
             currentIndex++;
         }
 
+        if (currentIndex <= startIdx) {
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summarization made no progress at start index ${startIdx} with maxChatsPerSummary ${settings.maxChatsPerSummary}.`,
+                memory: toSerializableHypaV3Data(data),
+            };
+        }
+
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
         if (currentTokens <= maxContextTokens && currentTokens - toSummarizeTokens < targetTokens) {
             break;
@@ -391,17 +421,31 @@ async function hypaMemoryV3MainExp(
         const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Dynamically generate embedding texts
-        const ebdTexts: EmbeddingText<Summary>[] = unusedSummaries.flatMap((summary, summaryIndex) => {
-            const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator).filter(
-                (e) => e.trim().length > 0,
-            );
+        const ebdTexts: EmbeddingText<Summary>[] = [];
+        const chunkingStartedAt = performance.now();
+        try {
+            for (const [summaryIndex, summary] of unusedSummaries.entries()) {
+                const splitted = (
+                    await splitBySeparator(host, summary.text, settings.summaryChunkSeparator, chunkingStartedAt)
+                ).filter((e) => e.trim().length > 0);
 
-            return splitted.map((chunk, chunkIndex) => ({
-                id: `${summaryIndex}-${chunkIndex}`,
-                content: chunk.trim(),
-                metadata: summary,
-            }));
-        });
+                ebdTexts.push(
+                    ...splitted.map((chunk, chunkIndex) => ({
+                        id: `${summaryIndex}-${chunkIndex}`,
+                        content: chunk.trim(),
+                        metadata: summary,
+                    })),
+                );
+            }
+        } catch (error) {
+            host.fence();
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summary chunk separator failed: ${error}`,
+                memory: toSerializableHypaV3Data(data),
+            };
+        }
 
         // Initialize embedding processor
         const processor = new HypaProcessorV2<Summary>(host.embeddings, {
@@ -718,6 +762,15 @@ async function hypaMemoryV3Main(
             toSummarize.push(chat);
         }
 
+        if (endIdx <= startIdx) {
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summarization made no progress at start index ${startIdx} with maxChatsPerSummary ${settings.maxChatsPerSummary}.`,
+                memory: toSerializableHypaV3Data(data),
+            };
+        }
+
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
         if (currentTokens <= maxContextTokens && currentTokens - toSummarizeTokens < targetTokens) {
             break;
@@ -843,19 +896,29 @@ async function hypaMemoryV3Main(
 
         // Dynamically generate summary chunks
         const summaryChunks: SummaryChunk[] = [];
+        const chunkingStartedAt = performance.now();
+        try {
+            for (const summary of unusedSummaries) {
+                const splitted = (
+                    await splitBySeparator(host, summary.text, settings.summaryChunkSeparator, chunkingStartedAt)
+                ).filter((e) => e.trim().length > 0);
 
-        unusedSummaries.forEach((summary) => {
-            const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator).filter(
-                (e) => e.trim().length > 0,
-            );
-
-            summaryChunks.push(
-                ...splitted.map((e) => ({
-                    text: e.trim(),
-                    summary,
-                })),
-            );
-        });
+                summaryChunks.push(
+                    ...splitted.map((e) => ({
+                        text: e.trim(),
+                        summary,
+                    })),
+                );
+            }
+        } catch (error) {
+            host.fence();
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summary chunk separator failed: ${error}`,
+                memory: toSerializableHypaV3Data(data),
+            };
+        }
 
         // Initialize embedding processor
         const processor = new HypaProcesserEx(host.embeddings, db.hypaModel);

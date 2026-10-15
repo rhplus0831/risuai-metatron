@@ -967,6 +967,7 @@ async function runSpeaker(arg: {
                 }
             },
             embeddings: embeddingEnv,
+            regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
             parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
             userName: () => scope.effectivePersona.name,
             progress: (payload) => {

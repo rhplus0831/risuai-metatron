@@ -2,9 +2,10 @@ import { isRecordId, newId } from "./ids.ts";
 import type { HypaV3Preset, HypaV3Settings } from "./memory.ts";
 
 /**
- * A HypaV3 preset with every setting filled: known keys of `existingSettings` with the right type
- * are kept, the rest take their defaults. `id` is kept when it is a valid record id, otherwise a new
- * one is assigned (a copy or an import passes none, so it gets a fresh id).
+ * A HypaV3 preset with every setting filled: own, known keys of `existingSettings` with the right
+ * type are kept. Numbers must also be finite, and `maxChatsPerSummary` and `queryChatCount` must be
+ * integers >= 1. Invalid values take their defaults. `id` is kept when it is a valid record id,
+ * otherwise a new one is assigned (a copy or an import passes none, so it gets a fresh id).
  */
 export function createHypaV3Preset(name = "New Preset", existingSettings = {}, id?: unknown): HypaV3Preset {
     const settings: HypaV3Settings = {
@@ -36,6 +37,17 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
         for (const [key, value] of Object.entries(existingSettings)) {
             // Own keys only: `in` also matches `__proto__`, whose assignment would swap the prototype.
             if (Object.hasOwn(target, key) && typeof value === typeof target[key]) {
+                if (typeof value === "number") {
+                    if (!Number.isFinite(value)) {
+                        continue;
+                    }
+                    if (
+                        (key === "maxChatsPerSummary" || key === "queryChatCount") &&
+                        (!Number.isInteger(value) || value < 1)
+                    ) {
+                        continue;
+                    }
+                }
                 target[key] = value;
             }
         }

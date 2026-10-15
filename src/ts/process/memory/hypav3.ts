@@ -268,6 +268,15 @@ async function hypaMemoryV3MainExp(
             currentIndex++;
         }
 
+        if (currentIndex <= startIdx) {
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summarization made no progress at start index ${startIdx} with maxChatsPerSummary ${settings.maxChatsPerSummary}.`,
+                memory: toSerializableHypaV3Data(data),
+            };
+        }
+
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
         if (currentTokens <= maxContextTokens && currentTokens - toSummarizeTokens < targetTokens) {
             console.log(
@@ -957,6 +966,15 @@ async function hypaMemoryV3Main(
             }
 
             toSummarize.push(chat);
+        }
+
+        if (endIdx <= startIdx) {
+            return {
+                currentTokens,
+                chats,
+                error: `${logPrefix} Summarization made no progress at start index ${startIdx} with maxChatsPerSummary ${settings.maxChatsPerSummary}.`,
+                memory: toSerializableHypaV3Data(data),
+            };
         }
 
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
