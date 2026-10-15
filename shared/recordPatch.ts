@@ -201,7 +201,8 @@ export function applyItemPatch(base: unknown, patch: CheckedItemPatch): Record<s
 }
 
 /**
- * The top-level fields whose JSON value differs from `old` to `next` (own keys only): `set` holds
+ * The top-level fields whose JSON value differs from `old` to `next` (own keys only; the same value
+ * by reference is equal without serializing it): `set` holds
  * `next`'s values, `remove` the fields `next` lacks. Null when `__proto__` changed (a patch never
  * names it).
  */
@@ -216,7 +217,10 @@ export function diffFields(
             remove.push(field);
             continue;
         }
-        if (Object.hasOwn(old, field) && JSON.stringify(old[field]) === JSON.stringify(next[field])) {
+        if (
+            Object.hasOwn(old, field) &&
+            (Object.is(old[field], next[field]) || JSON.stringify(old[field]) === JSON.stringify(next[field]))
+        ) {
             continue;
         }
         if (field === "__proto__") {

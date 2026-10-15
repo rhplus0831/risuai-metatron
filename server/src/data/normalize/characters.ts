@@ -7,6 +7,7 @@ import { requireObject } from "./shared.ts";
  * resource id and which holds no chats (they live in the chat tables, Phase 2), with the shared
  * deterministic defaults filled in (`normalizeCharacter`, `shared/characters.ts`; idempotent, so the
  * startup pass rewrites a stored character once). A group whose `characters` is not a list is refused.
+ * The kind is `shallowNormalize`: nothing given is changed, and every field not replaced is kept by reference.
  */
 export function normalizeCharacterRecord(input: unknown, id: string): Record<string, unknown> {
     const character = requireObject(input, "character");

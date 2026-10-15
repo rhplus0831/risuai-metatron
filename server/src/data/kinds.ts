@@ -52,6 +52,12 @@ export interface ResourceKind<T = unknown> {
     readonly singleton?: boolean;
     readonly materialize?: true;
     normalize(input: unknown, context: { id: string }): T;
+    /**
+     * The normalizer changes neither its input nor anything reachable from it, and every top-level field
+     * (an object record) or item (an array record) of its result that it did not replace is the input's,
+     * by reference: a patch then serializes only what changed (`writePatch`'s fast path).
+     */
+    readonly shallowNormalize?: true;
     project?(data: unknown): unknown;
     prepareWrite?(incoming: unknown, stored: unknown | null): unknown;
 }
@@ -129,6 +135,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.modules,
         schemaVersion: 1,
         singleton: true,
+        shallowNormalize: true,
         normalize: (input) => normalizeModules(input),
     },
     {
@@ -163,6 +170,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     {
         name: RESOURCE_KIND.characters,
         schemaVersion: 1,
+        shallowNormalize: true,
         normalize(input, { id }) {
             return normalizeCharacterRecord(input, id);
         },

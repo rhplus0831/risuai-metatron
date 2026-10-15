@@ -62,6 +62,13 @@ const RETIRED_KINDS: ReadonlySet<string> = new Set(["customSidebarItems"]);
 const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
+/**
+ * `writePatch`'s cache of the last patched records cut into parts (`PatchBase`): at most this many, and
+ * this many UTF-16 units counting each record's text twice (the text and its parts; the value read from
+ * it, often a few times the text in memory, is not counted). A record over that alone is not kept.
+ */
+const PATCH_BASES_MAX = 4;
+const PATCH_BASES_MAX_UNITS = 64 * 1024 * 1024;
 
 const MAX_RESOURCE_ID_LENGTH = 512;
 const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
@@ -184,6 +191,15 @@ export type ResourceStore = ReturnType<typeof createResourceStore>;
 
 /** A patch op, checked before the transaction (`preparePatch`). */
 type PreparedPatch = ({ type: "fields" } & CheckedFields) | ({ type: "items" } & CheckedItemPatch);
+
+/**
+ * A record's stored text cut into its top-level parts for `writePatch`'s fast path: the value read from
+ * it and the text of each field (an object record) or of each item (an array record, by the item). Only
+ * made when the text is exactly its parts joined as `JSON.stringify` joins them (`cutRecord`).
+ */
+type PatchBase =
+    | { text: string; value: Record<string, unknown>; fields: Map<string, string> }
+    | { text: string; value: unknown[]; items: Map<unknown, string> };
 
 /** A batch op after the checks that need no stored row; a `patch` op is applied inside the transaction. */
 type PreparedOperation =
@@ -508,8 +524,17 @@ export function createResourceStore(options: {
         const { kind, id } = entry.operation;
         try {
             const row = selectOne.get(kind.name, id) as { data: string };
-            const old: unknown = JSON.parse(row.data);
             const { patch } = entry;
+            if (kind.shallowNormalize) {
+                const cut = patchBase(kind, id, row.data);
+                const written = cut && patchParts(kind, id, cut, patch);
+                if (written) {
+                    update.run(kind.schemaVersion, written.text, kind.name, id, base.seq, base.revision);
+                    rememberPatchBase(kind, id, written);
+                    return feedPatch(kind, token(base.seq, base.revision), cut.value, written.value);
+                }
+            }
+            const old: unknown = JSON.parse(row.data);
             let next: unknown;
             if (patch.type === "fields") {
                 if (!isPlainObject(old)) {
@@ -527,6 +552,38 @@ export function createResourceStore(options: {
                 throw new ResourceValidationError(`ops[${entry.index}]: ${error.message}`);
             }
             throw error;
+        }
+    }
+
+    /** `writePatch`'s cut records by kind and id (`PatchBase`), least recently used first. */
+    const patchBases = new Map<string, PatchBase>();
+
+    /**
+     * The record `text` cut into parts: the cached cut when it was made from this very text (a write
+     * the transaction rolled back, a restore, or any other write leaves a different text), else a new
+     * one (`cutRecord`). Null when the text cannot be cut.
+     */
+    function patchBase(kind: ResourceKind, id: string, text: string): PatchBase | null {
+        const key = `${kind.name}\u0000${id}`;
+        const cached = patchBases.get(key);
+        patchBases.delete(key);
+        return cached && cached.text === text ? cached : cutRecord(text);
+    }
+
+    function rememberPatchBase(kind: ResourceKind, id: string, cut: PatchBase) {
+        const key = `${kind.name}\u0000${id}`;
+        patchBases.delete(key);
+        patchBases.set(key, cut);
+        let units = 0;
+        for (const entry of patchBases.values()) {
+            units += entry.text.length * 2;
+        }
+        for (const [oldest, entry] of patchBases) {
+            if (patchBases.size <= PATCH_BASES_MAX && units <= PATCH_BASES_MAX_UNITS) {
+                break;
+            }
+            patchBases.delete(oldest);
+            units -= entry.text.length * 2;
         }
     }
 
@@ -1216,6 +1273,7 @@ export function createResourceStore(options: {
             }
             epoch = nextEpoch;
             writeCount += 1;
+            patchBases.clear();
             // Every client reloads: their tokens are of the old epoch.
             feed?.publish({ type: "epoch", epoch: nextEpoch });
             return nextEpoch;
@@ -1226,6 +1284,7 @@ export function createResourceStore(options: {
                 return;
             }
             closed = true;
+            patchBases.clear();
             db.close();
         },
     };
@@ -1262,6 +1321,179 @@ function preparePatch(kind: ResourceKind, patch: unknown): PreparedPatch {
 }
 
 /**
+ * `text` (a stored record) cut into its top-level parts, or null when it is neither an object nor an
+ * array, or when its parts joined as `JSON.stringify` joins them are not exactly `text`.
+ */
+function cutRecord(text: string): PatchBase | null {
+    const value: unknown = JSON.parse(text);
+    if (Array.isArray(value)) {
+        const items = new Map<unknown, string>();
+        const parts = value.map((item) => {
+            const part = JSON.stringify(item);
+            items.set(item, part);
+            return part;
+        });
+        return `[${parts.join(",")}]` === text ? { text, value, items } : null;
+    }
+    if (isPlainObject(value)) {
+        const fields = new Map<string, string>();
+        const parts: string[] = [];
+        for (const field of Object.keys(value)) {
+            const part = JSON.stringify(value[field]);
+            fields.set(field, part);
+            parts.push(`${JSON.stringify(field)}:${part}`);
+        }
+        return `{${parts.join(",")}}` === text ? { text, value, fields } : null;
+    }
+    return null;
+}
+
+/**
+ * A patch applied to a cut record for a `shallowNormalize` kind, serializing only the parts the patch or
+ * the normalizer replaced: the stored text, value, and parts that `serialize(normalizeInput(...))` of
+ * the whole patched record would give. As there, the patched parts are serialized and read back in the
+ * record's order before the normalizer gets the record (`storedParts`), their final text and value are
+ * those of the value read back (`canonicalPart`), and the parts the normalizer replaced are serialized
+ * in the result's order. Null when the patch does not fit this path (the record's shape, a field named
+ * `toJSON`, a result of another shape); the caller then takes the whole-record path, which also reports
+ * the errors of a patch that does not fit the record.
+ */
+function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: PreparedPatch): PatchBase | null {
+    if (patch.type === "fields") {
+        if (!("fields" in cut) || patch.set.some(([field]) => field === "toJSON")) {
+            return null;
+        }
+        const input = withFields(cut.value, patch.set, patch.remove);
+        const named = new Set(patch.set.map(([field]) => field));
+        const order = Object.keys(input).filter((field) => named.has(field));
+        const read = storedParts(order.map((field) => [field, input[field]]));
+        const patched = new Map<string, { text: string; stored: unknown }>();
+        order.forEach((field, index) => {
+            const part = read[index];
+            if (part) {
+                defineField(input, field, part.stored);
+                patched.set(field, canonicalPart(part));
+            } else {
+                delete input[field];
+            }
+        });
+        const normalized = kind.normalize(input, { id });
+        if (!isPlainObject(normalized) || typeof normalized.toJSON === "function") {
+            return null;
+        }
+        const keys = Object.keys(normalized);
+        const members = keys.map((field) => normalized[field]);
+        const texts = keys.map((field, index) => {
+            const member = members[index];
+            const part = patched.get(field);
+            if (part) {
+                if (!Object.is(member, input[field])) {
+                    return undefined;
+                }
+                members[index] = part.stored;
+                return part.text;
+            }
+            return Object.hasOwn(cut.value, field) && Object.is(member, cut.value[field])
+                ? cut.fields.get(field)
+                : undefined;
+        });
+        const replaced = keys.flatMap((field, index) =>
+            texts[index] === undefined ? [[field, members[index]] as const] : [],
+        );
+        const replacedRead = storedParts(replaced);
+        const replacedParts = new Map(replaced.map(([field], index) => [field, replacedRead[index]]));
+        const value: Record<string, unknown> = {};
+        const fields = new Map<string, string>();
+        const parts: string[] = [];
+        keys.forEach((field, index) => {
+            let text = texts[index];
+            let stored = members[index];
+            if (text === undefined) {
+                const part = replacedParts.get(field);
+                if (!part) {
+                    return;
+                }
+                ({ text, stored } = part);
+            }
+            defineField(value, field, stored);
+            fields.set(field, text);
+            parts.push(`${JSON.stringify(field)}:${text}`);
+        });
+        return { text: `{${parts.join(",")}}`, value, fields };
+    }
+    if (!("items" in cut)) {
+        return null;
+    }
+    const input: unknown[] = applyItemPatch(cut.value, patch);
+    const fresh = input.flatMap((item, index) => (cut.items.has(item) ? [] : [[String(index), item] as const]));
+    const read = storedParts(fresh);
+    const patched = new Map<unknown, { text: string; stored: unknown }>();
+    fresh.forEach(([key], index) => {
+        const part = read[index] ?? { text: "null", stored: null };
+        input[Number(key)] = part.stored;
+        patched.set(part.stored, canonicalPart(part));
+    });
+    const normalized = kind.normalize(input, { id });
+    if (!Array.isArray(normalized) || typeof (normalized as { toJSON?: unknown }).toJSON === "function") {
+        return null;
+    }
+    const list = normalized as unknown[];
+    const members = Array.from({ length: list.length }, (_, index) => list[index]);
+    const texts = members.map((item, index) => {
+        const part = patched.get(item);
+        if (part) {
+            members[index] = part.stored;
+            return part.text;
+        }
+        return cut.items.get(item);
+    });
+    const replaced = members.flatMap((item, index) =>
+        texts[index] === undefined ? [[String(index), item] as const] : [],
+    );
+    const replacedParts = storedParts(replaced);
+    replaced.forEach(([key], index) => {
+        const part = replacedParts[index];
+        texts[Number(key)] = part ? part.text : "null";
+        members[Number(key)] = part ? part.stored : null;
+    });
+    const items = new Map<unknown, string>();
+    members.forEach((item, index) => items.set(item, texts[index]!));
+    return { text: `[${texts.join(",")}]`, value: members, items };
+}
+
+/**
+ * A patched part as the old path's second serialization stores it: the text of the value read back
+ * (`JSON.stringify` of it), and that text read again when it differs (a `JSON.rawJSON` such as `-0` or
+ * `1e2` reads back as a number whose own text is another), so the cached value is the stored text's.
+ */
+function canonicalPart(part: { text: string; stored: unknown }): { text: string; stored: unknown } {
+    const text = JSON.stringify(part.stored);
+    return text === part.text ? part : { text, stored: JSON.parse(text) };
+}
+
+/**
+ * Parts of a record (fields by name, items by index, in the record's order) as `serialize` of the whole
+ * record treats them: each stringified as its key's member of a holder (the replacer; a `toJSON` gets its
+ * own key), all of them before any is read back and checked from the record's root (`readStored`), so
+ * hooks run and refusals come in the whole record's order. Per part its text and the value read back,
+ * or null for a part `JSON.stringify` leaves out (an item that has no JSON is `null`, as in a list).
+ */
+function storedParts(parts: readonly (readonly [string, unknown])[]): ({ text: string; stored: unknown } | null)[] {
+    const texts = parts.map(([key, value]) => stringifyStored({ [key]: value }));
+    return texts.map((text, index) => {
+        const key = parts[index][0];
+        const holder = readStored(text) as Record<string, unknown>;
+        return Object.hasOwn(holder, key)
+            ? { text: text.slice(JSON.stringify(key).length + 2, -1), stored: holder[key] }
+            : null;
+    });
+}
+
+function defineField(target: Record<string, unknown>, field: string, value: unknown) {
+    Object.defineProperty(target, field, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * What the change feed carries for a patch op that stored `stored` over `old`: for an object record
  * every top-level field whose stored JSON value differs (`diffFields`, normalization included), for
  * an item list the changed items (`diffItems`). None (a plain ref) for a kind whose data does not
@@ -1280,7 +1512,12 @@ function feedPatch(kind: ResourceKind, baseRevision: string, old: unknown, store
         const items = diffItems(old, stored);
         patch = items ? { baseRevision, ...items } : undefined;
     }
-    return patch && Buffer.byteLength(JSON.stringify(patch)) <= MAX_FEED_PATCH_BYTES ? patch : undefined;
+    if (!patch) {
+        return undefined;
+    }
+    // A copy: the values it names are the store's own (`patchBases`), which a listener must not reach.
+    const text = JSON.stringify(patch);
+    return Buffer.byteLength(text) <= MAX_FEED_PATCH_BYTES ? (JSON.parse(text) as RecordPatch) : undefined;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -1339,6 +1576,12 @@ function normalizeInput(kind: ResourceKind, input: unknown, id: string): unknown
  * the text and the value parsed back from it, which is what a read returns.
  */
 export function serialize(value: unknown): { text: string; stored: unknown } {
+    const text = stringifyStored(value);
+    return { text, stored: readStored(text) };
+}
+
+/** `serialize`'s first half: the text, or the refusal of a value `JSON.stringify` cannot store. */
+function stringifyStored(value: unknown): string {
     let text: string | undefined;
     try {
         text = JSON.stringify(value, rejectNonFiniteNumber);
@@ -1351,9 +1594,14 @@ export function serialize(value: unknown): { text: string; stored: unknown } {
     if (typeof text !== "string") {
         throw new ResourceValidationError("Resource data is not JSON");
     }
+    return text;
+}
+
+/** `serialize`'s second half: the value read back from the text, checked (`assertStoredJson`). */
+function readStored(text: string): unknown {
     const stored: unknown = JSON.parse(text);
     assertStoredJson(stored, 0);
-    return { text, stored };
+    return stored;
 }
 
 /**

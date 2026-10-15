@@ -6,7 +6,7 @@ import { requireArrayOfObjects } from "./shared.ts";
  * The `modules` record (Phase 6 slice 4): a list of module objects, each with the shape the client's
  * mutations check too (`normalizeModule`, `shared/modules.ts`; the client assigns ids). A malformed
  * module (a non-string name or description, a non-list lorebook, regex, or trigger) refuses the
- * write; nothing is dropped, and a valid list is returned unchanged.
+ * write; nothing is dropped, and a valid list is returned unchanged (the kind is `shallowNormalize`).
  */
 export function normalizeModules(input: unknown): unknown[] {
     const list = requireArrayOfObjects(input, "modules");
