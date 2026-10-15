@@ -128,7 +128,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - PNG text size is capped at 5 MiB. CRC is checked only in non-stream reads.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
 - Cards and modules with low-level access require confirmation on import.
-- The `getModules` cache (`lastModules`) is keyed by the enabled IDs and the bound persona's linked IDs, kept apart (`JSON.stringify([ids, [...personaIds]])`), and only `refreshModules` clears it (`moduleUpdate` reads through it). After editing module contents in place, call `refreshModules`.
+- The `getModules` cache (`lastModules`) is keyed by the enabled IDs and the bound persona's linked IDs, kept apart (`JSON.stringify([ids, [...personaIds]])`), and only `refreshModules` clears it. `moduleUpdate` resolves the selected chat's modules uncached (so its root effect in `stores.svelte.ts` tracks module ids, namespaces, and MCP links, never a whole-list snapshot) and stores the result as the cache; it sets its stores untracked. After editing module contents in place, call `refreshModules`.
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
 - `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.

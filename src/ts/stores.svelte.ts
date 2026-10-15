@@ -183,9 +183,11 @@ ReloadGUIPointer.subscribe(() => {
     resetTransformEffects();
 });
 
+// `moduleUpdate` resolves the enabled modules itself, uncached: it reads each module's id,
+// namespace, and MCP link to match, then the matched modules' `hideIcon` and `backgroundEmbedding`.
+// So an edit elsewhere in a module (a lorebook entry, an asset) does not rerun this.
 $effect.root(() => {
     $effect(() => {
-        $state.snapshot(settings.modules);
         settings.enabledModules;
         settings.enabledModules?.length;
         selectedChat()?.modules?.length;

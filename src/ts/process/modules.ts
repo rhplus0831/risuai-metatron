@@ -23,6 +23,7 @@ import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
 import { get } from "svelte/store";
+import { untrack } from "svelte";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
 import { upgradeLorebook, type RisuModule } from "../../../shared/modules.ts";
@@ -630,8 +631,20 @@ export async function applyModule() {
 
 let lastModuleIds: string = "";
 
+/**
+ * Publishes the selected chat's enabled modules' icon and background settings, and reloads the GUI
+ * when their ids change. It resolves the modules uncached, so the root effect that runs it
+ * (`stores.svelte.ts`) tracks the reads that match them (the list, each module's id, namespace, and
+ * MCP link) and a module added, removed, or renamed under the same enabled ids counts; it then
+ * stores that list as the `getModules` cache, so the cache follows the selected chat. The stores are
+ * set untracked: their subscribers (the chat's GUI reload parses CBS over module lore and assets) run
+ * synchronously and must not become the effect's dependencies.
+ */
 export function moduleUpdate() {
-    const m = getModules();
+    const { ids: enabledIds, personaIds } = enabledModuleIds(undefined, undefined);
+    const m = getModuleByIds(enabledIds, personaIds);
+    lastModules = JSON.stringify([enabledIds, [...personaIds]]);
+    lastModuleData = m;
 
     const ids = m.map((m) => m.id).join("-");
 
@@ -649,15 +662,18 @@ export function moduleUpdate() {
             backgroundEmbedding += "\n" + module.backgroundEmbedding + "\n";
         }
     });
+    const hideIcon = selectedCharacter()?.hideChatIcon || moduleHideIcon;
 
-    // Also when empty: unlinking the last module with a background clears it.
-    moduleBackgroundEmbedding.set(backgroundEmbedding);
-    HideIconStore.set(selectedCharacter()?.hideChatIcon || moduleHideIcon);
+    untrack(() => {
+        // Also when empty: unlinking the last module with a background clears it.
+        moduleBackgroundEmbedding.set(backgroundEmbedding);
+        HideIconStore.set(hideIcon);
 
-    if (lastModuleIds !== ids) {
-        ReloadGUIPointer.set(get(ReloadGUIPointer) + 1);
-        lastModuleIds = ids;
-    }
+        if (lastModuleIds !== ids) {
+            ReloadGUIPointer.set(get(ReloadGUIPointer) + 1);
+            lastModuleIds = ids;
+        }
+    });
 }
 
 export function refreshModules() {
