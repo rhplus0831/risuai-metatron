@@ -481,6 +481,57 @@ describe("projectDiagnosticsState", () => {
         });
     });
 
+    it("keeps the optional `shared` section (slice 10) only when the input owns the key, after `journal`, as `{ files }` checked or null, so a report an older tab built without it stays canonical", () => {
+        // A state from before slice 10 (or an older tab's projection): no key, not even an explicit absence.
+        const old = projectDiagnosticsState(state())!;
+        expect(Object.hasOwn(old, "shared")).toBe(false);
+        expect(Object.keys(projectDiagnosticsState(state({ shared: { files: 2 } }))!)).toEqual([
+            "version",
+            "writtenAt",
+            "app",
+            "node",
+            "platform",
+            "arch",
+            "startedAt",
+            "uptimeSec",
+            "settings",
+            "history",
+            "journal",
+            "shared",
+            "workers",
+            "jobs",
+            "recentJobFailures",
+        ]);
+        expect(projectDiagnosticsState(state({ shared: { files: 2 } }))).toMatchObject({ shared: { files: 2 } });
+        expect(projectDiagnosticsState(state({ shared: { files: 0, names: [PRIVATE] } }))).toMatchObject({
+            shared: { files: 0 },
+        });
+        expect(
+            JSON.stringify(projectDiagnosticsState(state({ shared: { files: 0, names: [PRIVATE] } }))),
+        ).not.toContain(PRIVATE);
+        expect(projectDiagnosticsState(state({ shared: { files: null } }))).toMatchObject({ shared: { files: null } });
+        expect(projectDiagnosticsState(state({ shared: { files: -1 } }))).toMatchObject({ shared: { files: null } });
+        expect(projectDiagnosticsState(state({ shared: { files: "1" } }))).toMatchObject({ shared: { files: null } });
+        expect(projectDiagnosticsState(state({ shared: {} }))).toMatchObject({ shared: { files: null } });
+        expect(projectDiagnosticsState(state({ shared: null }))).toMatchObject({ shared: null });
+        expect(projectDiagnosticsState(state({ shared: "x" }))).toMatchObject({ shared: null });
+        expect(projectDiagnosticsState(state({ shared: undefined }))).toMatchObject({ shared: null });
+        // Both an old report and a new one are their own canonical text.
+        for (const over of [{}, { shared: { files: 1 } }, { shared: null }]) {
+            const text = buildDiagnosticReport(input({ server: { state: state(over), events: [serverJob] } }));
+            expect(canonicalDiagnosticReport(text)).toBe(text);
+        }
+        const withShared = buildDiagnosticReport(
+            input({ server: { state: state({ shared: { files: 1 } }), events: [] } }),
+        );
+        expect(withShared).toContain('"journal":{"eventBytes":128,"writeFailures":0},"shared":{"files":1},"workers"');
+        const without = buildDiagnosticReport(input({ server: { state: state(), events: [] } }));
+        expect(without).not.toContain('"shared"');
+        expect(canonicalDiagnosticReport(withShared.replace('"shared":{"files":1},', ""))).toBe(
+            withShared.replace('"shared":{"files":1},', ""),
+        );
+    });
+
     it("is null for anything but a v1 state object, or one whose times, uptime, or journal counts fail", () => {
         expect(projectDiagnosticsState(null)).toBeNull();
         expect(projectDiagnosticsState([])).toBeNull();

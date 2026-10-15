@@ -8,6 +8,7 @@ import { FORWARDED_MODEL_PRESET_KEYS, forwardPresetRoots, SECTION_FIELDS } from 
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { TokenCountScope } from "../prompt/tokens.ts";
+import { collectSecrets } from "./redact.ts";
 
 type ProvidersField = (typeof SECTION_FIELDS)["providers"][number];
 type LlmSecretsField = (typeof SECTION_FIELDS)["llmSecrets"][number];
@@ -196,6 +197,71 @@ export function loadRequestDb(
         speakerName: nameOf(ids.speakerId),
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
+}
+
+/**
+ * Every LLM credential the store holds now (`collectSecrets`' fields of the `providers` and
+ * `llmSecrets` sections), for a second redaction pass over captured content (the request history's
+ * shared copies, `docs/plan/request-history-diagnostics.md` slice 10). Unlike `loadRequestDb`, a
+ * named key is taken from the `llmSecrets.credentials` map itself, whether or not the `credentials`
+ * collection still names it; the collection adds the client emails. Throws when a record is missing
+ * or unreadable, so a caller never redacts with an empty set by mistake.
+ */
+export function loadStoredSecrets(store: ResourceStore, kinds: ResourceKindRegistry): string[] {
+    const kind = (name: string) => {
+        const found = kinds.get(name);
+        if (!found) {
+            throw new Error(`Unknown resource kind ${name}`);
+        }
+        return found;
+    };
+    const read = store.readRefs([
+        { kind: kind(RESOURCE_KIND.providers), id: SINGLETON_RESOURCE_ID },
+        { kind: kind(RESOURCE_KIND.llmSecrets), id: SINGLETON_RESOURCE_ID },
+        { kind: kind(RESOURCE_KIND.credentials), id: SINGLETON_RESOURCE_ID },
+    ]);
+    const [providers, llmSecrets, credentials] = read.items.map((item) => item.data as any);
+    if (
+        !providers ||
+        typeof providers !== "object" ||
+        !llmSecrets ||
+        typeof llmSecrets !== "object" ||
+        !Array.isArray(credentials)
+    ) {
+        throw new Error("The server has no settings records yet");
+    }
+    const db: Record<string, unknown> = {};
+    for (const field of SECTION_FIELDS.providers) {
+        if (Object.hasOwn(providers, field)) {
+            db[field] = providers[field];
+        }
+    }
+    for (const field of SECTION_FIELDS.llmSecrets) {
+        if (Object.hasOwn(llmSecrets, field)) {
+            db[field] = llmSecrets[field];
+        }
+    }
+    const emails = new Map<string, unknown>(
+        (credentials as Credential[]).map((credential) => [credential?.id, credential?.clientEmail]),
+    );
+    const entries =
+        llmSecrets.credentials && typeof llmSecrets.credentials === "object"
+            ? (llmSecrets.credentials as Record<string, { key?: unknown }>)
+            : {};
+    const named: Record<string, { key?: string; clientEmail?: string }> = Object.create(null);
+    for (const [id, entry] of Object.entries(entries)) {
+        named[id] = {
+            ...(typeof entry?.key === "string" ? { key: entry.key } : {}),
+            ...(typeof emails.get(id) === "string" ? { clientEmail: emails.get(id) as string } : {}),
+        };
+    }
+    for (const [id, email] of emails) {
+        if (typeof id === "string" && typeof email === "string" && !Object.hasOwn(named, id)) {
+            named[id] = { clientEmail: email };
+        }
+    }
+    db.credentials = named;
+    return collectSecrets(db as Partial<RequestDb>);
 }
 
 /** The main model (`db.aiModel`) in the catalogue, the custom models, and the custom flags. */

@@ -1,14 +1,19 @@
 import {
     REQUEST_HISTORY_PATH,
+    REQUEST_HISTORY_SHARE_PATH,
+    REQUEST_HISTORY_SHARES_PATH,
     type RequestHistoryPage,
     type RequestHistoryRecord,
+    type RequestHistoryShareBody,
+    type RequestHistoryShareList,
+    type RequestHistoryShareResult,
     type RequestHistoryStatus,
 } from "../../../shared/requestHistory.ts";
 import { authFetch } from "../storage/serverAuth";
 
 /**
- * The server's LLM request history (`docs/plan/request-history-diagnostics.md` slice 5): the
- * viewer's reads and its "Delete all". Each call throws `RequestHistoryError` for an answer that is
+ * The server's LLM request history (`docs/plan/request-history-diagnostics.md` slices 5 and 10): the
+ * viewer's reads, its "Delete all", and sharing for support. Each call throws `RequestHistoryError` for an answer that is
  * not a success, with the server's message when it sent one.
  */
 
@@ -78,4 +83,26 @@ export async function deleteRequestHistory(): Promise<void> {
     if (!response.ok) {
         throw await failure(response);
     }
+}
+
+/** Shares a job's requests to the server's diagnostics folder, or withdraws the share. */
+export async function shareRequestHistory(body: RequestHistoryShareBody): Promise<RequestHistoryShareResult> {
+    const response = await authFetch(REQUEST_HISTORY_SHARE_PATH, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+        throw await failure(response);
+    }
+    return (await response.json()) as RequestHistoryShareResult;
+}
+
+/** The shares the diagnostics folder holds, newest first. */
+export async function listRequestHistoryShares(): Promise<RequestHistoryShareList> {
+    const response = await authFetch(REQUEST_HISTORY_SHARES_PATH, { cache: "no-store" });
+    if (!response.ok) {
+        throw await failure(response);
+    }
+    return (await response.json()) as RequestHistoryShareList;
 }

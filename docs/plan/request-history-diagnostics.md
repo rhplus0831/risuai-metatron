@@ -1,6 +1,6 @@
 # Request History and Diagnostics Plan
 
-Status: Phase 1 done (slices 1–6); Phase 2 slices 7–9 done. Two phases.
+Status: Phase 1 done (slices 1–6); Phase 2 done (slices 7–10). Two phases.
 
 - **Phase 1** (slices 1–6): the server keeps every LLM request in a durable
   history, and a failed job says where it failed.
@@ -535,6 +535,51 @@ projection:
 - `state.json` counts the shared files.
 - Tests: the job grouping, withdrawal deletes the file, a second redaction
   pass, and no write outside `shared/`.
+- Settled at implementation:
+  - Routes: `PUT /api/request-history/share` takes exactly `{ jobId, shared }`
+    or `{ requestId, shared }` (JSON, 4 KiB, its own limit after the auth;
+    a job id a UUID or a translation run's `translate-<UUID>`, a request id a
+    UUID) and answers `{ jobId, requestId, shared, sharedAt, ids }`.
+    `GET /api/request-history/shares` lists the folder's shares, so a share
+    whose rows the caps removed can still be withdrawn from the viewer. Both
+    check shutdown again right before they write.
+  - Files: `shared/<UTC stamp>-job-<jobId>.json` or
+    `<stamp>-request-<requestId>.json` (the kind in the name, so a listing
+    needs no read). A share is a snapshot: requests the job makes later, and
+    rows already pruned, are not in it; sharing again ("Update shared copy")
+    replaces it. The new copy is written beside the old one, the rows are
+    marked, then the old one is removed; a mark that fails removes the new
+    copy. If an older copy cannot be removed, the new copy and marks stay,
+    and the response is 500; withdrawal removes every copy. A withdrawal
+    removes the files first, then clears the marks. A temp
+    file left by a process that ended mid-write is removed at boot.
+  - The copy: `{ format: "metatron-request-share", version: 1, sharedAt,`
+    `app: { version }, jobId, requestId, failure, eventsPartial, events,`
+    `requests }`.
+    The app version is the checked value from the journal state. A row
+    stored with content off is its summary only (no error text). `events`
+    are the journal's server events with the job's id or one of its request
+    ids (the day files from an hour before the first request on, read in
+    bounded chunks, plus the ring), `failure` the last `job` error's fields
+    (a translation run has none). `eventsPartial` says a day file could not
+    be read whole (including refused entries, oversized or malformed lines,
+    and unterminated tails).
+  - The second redaction: every string of the copy, with a redactor built
+    from every LLM credential stored now (`loadStoredSecrets`: the
+    `providers` and `llmSecrets` fields, every named key in the
+    `llmSecrets.credentials` map whether or not the collection names it).
+    Exchange headers are masked by name first; every response and every
+    field recorded as cut lose a trailing start of a credential. It cannot
+    catch a credential no longer stored or an expired transient token; the
+    auxiliary credentials (`secrets` section) are not LLM requests and are
+    not added. Credentials that cannot be read refuse the share.
+  - A share's rows may hold at most 32 MiB of stored bytes (413 otherwise,
+    never cut); the work is synchronous like the journal's other writes.
+  - "Delete all" removes every shared copy first and deletes nothing when
+    one stays; pruning by the caps leaves the copies.
+  - `state.json` gains `shared: { files }` (null when `shared/` cannot be
+    read), written after every change. The report's v1 state keeps it only
+    when the input has it, so a report an older tab built stays canonical.
 
 ## Tests
 

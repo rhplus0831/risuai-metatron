@@ -23,8 +23,15 @@ import {
     isDiagnosticErrorEvent,
     isJobFailureEvent,
     projectDiagnosticEvent,
+    projectServerEvent,
 } from "../../../shared/diagnostics.ts";
 import { MAX_DIAGNOSTIC_REPORT_BYTES, REPORT_FILE_PATTERN } from "../../../shared/diagnosticsReport.ts";
+import {
+    type RequestHistoryShareEntry,
+    type RequestHistoryShareTarget,
+    SHARE_JOB_ID,
+    SHARE_REQUEST_ID,
+} from "../../../shared/requestHistory.ts";
 import type { DiagnosticsRecorder } from "./log.ts";
 
 /** `RISU_DIAGNOSTICS_MAX_BYTES`' default: the cap of `events/`. */
@@ -37,6 +44,13 @@ const STATE_DELAY_MS = 5_000;
 const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const STATE_FILE = "state.json";
 const REPORTS_KEPT = 50;
+/** A shared copy (slice 10): `<UTC stamp to the ms>-job-<job id>.json` or `<stamp>-request-<request id>.json`. */
+const SHARE_FILE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-(job|request)-([A-Za-z0-9-]{1,80})\.json$/;
+/** A shared copy being written: `.share-<kind>-<id>-<8 hex>.tmp`. */
+const SHARE_TEMP = /^\.share-(job|request)-([A-Za-z0-9-]{1,80})-[0-9a-f]{8}\.tmp$/;
+/** The longest event line `eventsFor` reads; a longer one is skipped (no event the journal writes is near it). */
+const MAX_EVENT_LINE = 64 * 1024;
+const READ_CHUNK = 64 * 1024;
 const DIR_MODE = 0o750;
 const FILE_MODE = 0o640;
 /** Not defined on Windows: there the open does not protect the final component (the `lstat` before it remains). */
@@ -66,9 +80,73 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
     stats(): { eventBytes: number; writeFailures: number };
     /** Saves a checked report to `reports/` (newest 50 kept). Never throws: a failure is counted. */
     saveReport(text: string): SaveReportResult;
+    /**
+     * The server events `match` accepts, from the day files of `fromMs`'s UTC day (an hour before it)
+     * on, and the ring; oldest first. `partial` when a day file or `events/` could not be read or a
+     * line was skipped. Never throws.
+     */
+    eventsFor(
+        match: (event: DiagnosticEvent) => boolean,
+        fromMs: number,
+    ): { events: DiagnosticEvent[]; partial: boolean };
+    /**
+     * Writes a shared copy (`chunks`, in order) to `shared/` as a new file of the target, beside its
+     * older ones (`commitShare` removes those once the share is recorded, `discardShare` this one when
+     * it is not), named by `at` (default now). Never throws: a failure is counted.
+     */
+    saveShare(target: RequestHistoryShareTarget, chunks: Iterable<string>, at?: number): SaveReportResult;
+    /** Removes the target's other copies (and abandoned temp files), keeping `keep`. Whether every one is gone. */
+    commitShare(target: RequestHistoryShareTarget, keep: string): boolean;
+    /** Removes one copy `saveShare` wrote. Whether it is gone. */
+    discardShare(name: string): boolean;
+    /** Removes every copy (and temp file) of the target. Whether every one is gone (an absent `shared/` is). */
+    removeShares(target: RequestHistoryShareTarget): boolean;
+    /** Removes every copy and temp file in `shared/`. Whether every one is gone. */
+    removeAllShares(): boolean;
+    /** The targets with a copy, newest first (the newest copy's time), or null when `shared/` could not be read. */
+    listShares(): RequestHistoryShareEntry[] | null;
 };
 
 export type SaveReportResult = { ok: true; name: string } | { ok: false };
+
+type ShareFile = { name: string; target: RequestHistoryShareTarget; at: number };
+
+/** The target of a share kind and id, or null when the id is not of the server's shapes. */
+function shareTarget(kind: string, id: string): RequestHistoryShareTarget | null {
+    if (kind === "job") {
+        return SHARE_JOB_ID.test(id) ? { jobId: id, requestId: null } : null;
+    }
+    return kind === "request" && SHARE_REQUEST_ID.test(id) ? { jobId: null, requestId: id } : null;
+}
+
+/** The file-name part of a target (`job-<id>` or `request-<id>`), or null when its id is not of the server's shapes. */
+function shareKey(target: RequestHistoryShareTarget): string | null {
+    if (target.jobId !== null) {
+        return SHARE_JOB_ID.test(target.jobId) ? `job-${target.jobId}` : null;
+    }
+    return typeof target.requestId === "string" && SHARE_REQUEST_ID.test(target.requestId)
+        ? `request-${target.requestId}`
+        : null;
+}
+
+function sameTarget(a: RequestHistoryShareTarget, b: RequestHistoryShareTarget): boolean {
+    return a.jobId === b.jobId && a.requestId === b.requestId;
+}
+
+function parseShareFile(name: string): ShareFile | null {
+    const match = SHARE_FILE.exec(name);
+    if (!match) {
+        return null;
+    }
+    const target = shareTarget(match[8], match[9]);
+    const at = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6], +match[7]);
+    return target && Number.isFinite(at) ? { name, target, at } : null;
+}
+
+function parseShareTemp(name: string): RequestHistoryShareTarget | null {
+    const match = SHARE_TEMP.exec(name);
+    return match ? shareTarget(match[1], match[2]) : null;
+}
 
 const APP_VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
 const ERROR_CODE = /^E[A-Z0-9]{1,15}$/;
@@ -95,8 +173,8 @@ class RefusedPathError extends Error {
 
 /**
  * The server's diagnostics folder (`docs/plan/request-history-diagnostics.md` "Diagnostics folder",
- * slices 7 and 9): `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC day of its time),
- * `state.json`, and `reports/`. Content-free: every event goes through `projectDiagnosticEvent`, and the state is
+ * slices 7, 9, and 10): `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC day of its
+ * time), `state.json`, `reports/`, and `shared/`. Content-free: every event goes through `projectDiagnosticEvent`, and the state is
  * built from explicit, checked fields.
  *
  * - `events/` is capped at `maxBytes`: past it, the oldest day file is deleted, the current one too
@@ -119,6 +197,19 @@ class RefusedPathError extends Error {
  *   whole (temp file, then rename), the newest 50 kept (after a save, and at creation). The same
  *   refusals apply: a symlinked or non-directory `reports/` is not used, and only report-named
  *   regular files are counted and deleted.
+ * - `shared/` holds the copies a user shared for support (slice 10, `diagnostics/share.ts`): the only
+ *   content in the folder, there because the user asked. `saveShare` writes a copy whole (temp file
+ *   `.share-<kind>-<id>-<8 hex>.tmp`, then a rename to `<UTC stamp>-<kind>-<id>.json`) beside the
+ *   target's older ones, which `commitShare` removes once the share is recorded; `removeShares` and
+ *   `removeAllShares` remove copies and their temp files. Only regular files of those two name
+ *   patterns, with an id of the server's shapes, are counted, listed, or deleted; a temp file left by
+ *   a process that ended mid-write is removed at creation. The same trust model and refusals as
+ *   `reports/` apply (a symlinked or non-directory `shared/` is refused, and nothing is removed
+ *   through it). The state counts the copies (`shared.files`, null when `shared/` cannot be read)
+ *   and is written after every change of them.
+ * - `eventsFor` reads the day files back (bounded chunks, a line over 64 KiB skipped, each line
+ *   projected again) for a share's events. Refused entries, failed reads, oversized or malformed
+ *   lines, and unterminated tails mark the result partial.
  * - A failed write never fails the caller: it is counted (`writeFailures`, in the next state that
  *   lands) and the first one is logged with its error code only.
  */
@@ -133,6 +224,7 @@ export function createDiagnosticsJournal(options: {
     const dir = options.dir;
     const eventsDir = path.join(dir, "events");
     const reportsDir = path.join(dir, "reports");
+    const sharedDir = path.join(dir, "shared");
     const maxBytes = options.maxBytes ?? DIAGNOSTICS_MAX_BYTES;
     const now = options.now ?? Date.now;
     const sources = options.sources ?? {};
@@ -143,6 +235,8 @@ export function createDiagnosticsJournal(options: {
     const files = new Map<string, number>();
     let eventBytes = 0;
     let writeFailures = 0;
+    /** The copies in `shared/`, null when it could not be read. */
+    let sharedFiles: number | null = 0;
     let warned = false;
     let closed = false;
     let stateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -353,6 +447,8 @@ export function createDiagnosticsJournal(options: {
         }
         // A save cut short between its rename and its prune leaves one too many.
         pruneReports(null);
+        // A share cut short (the process ended while it wrote) leaves its temp file.
+        removeShareEntries(() => false, true);
     }
 
     /**
@@ -395,10 +491,11 @@ export function createDiagnosticsJournal(options: {
     }
 
     /**
-     * Writes `text` to `target` in `folder`: a temp file there (`O_EXCL | O_NOFOLLOW`, 0640), then a
-     * rename. Whether it landed; a failure is counted, and the temp file removed when this call made it.
+     * Writes `text` (or its chunks, in order) to `target` in `folder`: a temp file there
+     * (`O_EXCL | O_NOFOLLOW`, 0640), then a rename. Whether it landed; a failure (a chunk that throws
+     * included) is counted, and the temp file removed when this call made it.
      */
-    function writeAtomic(folder: string, target: string, text: string, tempPrefix: string): boolean {
+    function writeAtomic(folder: string, target: string, text: string | Iterable<string>, tempPrefix: string): boolean {
         let temp: string | null = null;
         let fd = -1;
         try {
@@ -406,7 +503,9 @@ export function createDiagnosticsJournal(options: {
             fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
             temp = name;
             fchmodSync(fd, FILE_MODE);
-            writeAll(fd, Buffer.from(text, "utf8"));
+            for (const chunk of typeof text === "string" ? [text] : text) {
+                writeAll(fd, Buffer.from(chunk, "utf8"));
+            }
             const opened = fd;
             fd = -1;
             closeSync(opened);
@@ -473,6 +572,315 @@ export function createDiagnosticsJournal(options: {
         }
     }
 
+    /**
+     * `shared/`'s copies and temp files (regular files of their name patterns only): an empty
+     * listing when it does not exist, null when it is refused (a symlink, not a directory) or
+     * unreadable (counted).
+     */
+    function shareEntries(): {
+        files: ShareFile[];
+        temps: { name: string; target: RequestHistoryShareTarget }[];
+    } | null {
+        try {
+            const stat = lstatSync(sharedDir);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) {
+                fail(new RefusedPathError("Not a directory"));
+                return null;
+            }
+        } catch (error) {
+            if (isMissing(error)) {
+                return { files: [], temps: [] };
+            }
+            fail(error);
+            return null;
+        }
+        try {
+            const files: ShareFile[] = [];
+            const temps: { name: string; target: RequestHistoryShareTarget }[] = [];
+            for (const entry of readdirSync(sharedDir, { withFileTypes: true })) {
+                if (!entry.isFile()) {
+                    continue;
+                }
+                const file = parseShareFile(entry.name);
+                if (file) {
+                    files.push(file);
+                    continue;
+                }
+                const temp = parseShareTemp(entry.name);
+                if (temp) {
+                    temps.push({ name: entry.name, target: temp });
+                }
+            }
+            return { files, temps };
+        } catch (error) {
+            fail(error);
+            return null;
+        }
+    }
+
+    /** Counts the copies again (null when `shared/` could not be read). */
+    function recountShares(listing = shareEntries()) {
+        sharedFiles = listing ? listing.files.length : null;
+    }
+
+    /** Deletes one entry of `shared/`; whether it is gone. */
+    function unlinkShare(name: string): boolean {
+        try {
+            unlinkSync(path.join(sharedDir, name));
+            return true;
+        } catch (error) {
+            if (isMissing(error)) {
+                return true;
+            }
+            fail(error);
+            return false;
+        }
+    }
+
+    /**
+     * Deletes the copies `drop` accepts, and the temp files `temps` accepts (every one when
+     * `allTemps`). Whether every one is gone (none can be when `shared/` is refused or unreadable);
+     * the count is taken again.
+     */
+    function removeShareEntries(
+        drop: (file: ShareFile) => boolean,
+        allTemps: boolean,
+        temps?: (target: RequestHistoryShareTarget) => boolean,
+    ): boolean {
+        const listing = shareEntries();
+        if (!listing) {
+            sharedFiles = null;
+            return false;
+        }
+        let ok = true;
+        for (const file of listing.files) {
+            if (drop(file) && !unlinkShare(file.name)) {
+                ok = false;
+            }
+        }
+        for (const temp of listing.temps) {
+            if (allTemps || temps?.(temp.target)) {
+                if (!unlinkShare(temp.name)) {
+                    ok = false;
+                }
+            }
+        }
+        recountShares();
+        return ok;
+    }
+
+    /**
+     * Saves a shared copy as `shared/<UTC stamp>-<kind>-<id>.json` (temp file `.share-<kind>-<id>-<8
+     * hex>.tmp`, then a rename). A name already taken (a share of the same target in the same
+     * millisecond) moves the stamp on, so an older copy is never replaced before the new one is
+     * recorded. Never throws.
+     */
+    function saveShare(target: RequestHistoryShareTarget, chunks: Iterable<string>, time?: number): SaveReportResult {
+        try {
+            const key = shareKey(target);
+            if (key === null || !folderReady(sharedDir, true)) {
+                return { ok: false };
+            }
+            let at = typeof time === "number" && Number.isSafeInteger(time) && time >= 0 ? time : now();
+            for (let attempt = 0; attempt < 3; attempt++, at++) {
+                const name = `${new Date(at).toISOString().replace(/[-:.]/g, "")}-${key}.json`;
+                const file = path.join(sharedDir, name);
+                try {
+                    lstatSync(file);
+                    continue;
+                } catch (error) {
+                    if (!isMissing(error)) {
+                        fail(error);
+                        return { ok: false };
+                    }
+                }
+                const parsed = parseShareFile(name);
+                if (!parsed || !sameTarget(parsed.target, target)) {
+                    return { ok: false };
+                }
+                const landed = writeAtomic(sharedDir, file, chunks, `share-${key}`);
+                recountShares();
+                writeState();
+                return landed ? { ok: true, name } : { ok: false };
+            }
+            fail(Object.assign(new Error("Every name drawn was taken"), { code: "EEXIST" }));
+            return { ok: false };
+        } catch (error) {
+            fail(error);
+            return { ok: false };
+        }
+    }
+
+    /** Runs a removal and writes `state.json` after it. Never throws. */
+    function removal(work: () => boolean): boolean {
+        let ok = false;
+        try {
+            ok = work();
+        } catch (error) {
+            fail(error);
+        }
+        writeState();
+        return ok;
+    }
+
+    function listShares(): RequestHistoryShareEntry[] | null {
+        try {
+            const listing = shareEntries();
+            if (!listing) {
+                return null;
+            }
+            const newest = new Map<string, RequestHistoryShareEntry>();
+            for (const file of listing.files) {
+                const key = shareKey(file.target)!;
+                const known = newest.get(key);
+                if (!known || known.sharedAt < file.at) {
+                    newest.set(key, { ...file.target, sharedAt: file.at });
+                }
+            }
+            return [...newest.values()].sort((a, b) => b.sharedAt - a.sharedAt);
+        } catch (error) {
+            fail(error);
+            return null;
+        }
+    }
+
+    /**
+     * The lines of one day file, in order, through `onLine`. Whether it was read whole: a refused
+     * entry (not a regular file), a failed read, a line over `MAX_EVENT_LINE` (skipped), or an
+     * unterminated tail is not.
+     */
+    function readDayFile(name: string, onLine: (line: string) => void): boolean {
+        const file = path.join(eventsDir, name);
+        let fd = -1;
+        try {
+            if (!lstatSync(file).isFile()) {
+                return false;
+            }
+            fd = openSync(file, constants.O_RDONLY | NOFOLLOW | NONBLOCK);
+            if (!fstatSync(fd).isFile()) {
+                return false;
+            }
+            let whole = true;
+            let pending: Buffer[] = [];
+            let pendingBytes = 0;
+            let skipping = false;
+            const chunk = Buffer.alloc(READ_CHUNK);
+            for (;;) {
+                const read = readSync(fd, chunk, 0, chunk.length, null);
+                if (read <= 0) {
+                    break;
+                }
+                let start = 0;
+                for (let i = 0; i < read; i++) {
+                    if (chunk[i] !== 0x0a) {
+                        continue;
+                    }
+                    if (!skipping) {
+                        if (pendingBytes + i - start > MAX_EVENT_LINE) {
+                            whole = false;
+                        } else {
+                            pending.push(Buffer.from(chunk.subarray(start, i)));
+                            onLine(Buffer.concat(pending).toString("utf8"));
+                        }
+                    }
+                    pending = [];
+                    pendingBytes = 0;
+                    skipping = false;
+                    start = i + 1;
+                }
+                if (start < read && !skipping) {
+                    pendingBytes += read - start;
+                    if (pendingBytes > MAX_EVENT_LINE) {
+                        skipping = true;
+                        whole = false;
+                        pending = [];
+                    } else {
+                        pending.push(Buffer.from(chunk.subarray(start, read)));
+                    }
+                }
+            }
+            // A tail without its newline is an append cut short (or one in progress): not an event yet.
+            return whole && pendingBytes === 0 && !skipping;
+        } catch (error) {
+            if (!isMissing(error)) {
+                fail(error);
+                return false;
+            }
+            return true;
+        } finally {
+            if (fd >= 0) {
+                closeFd(fd);
+            }
+        }
+    }
+
+    function eventsFor(match: (event: DiagnosticEvent) => boolean, fromMs: number) {
+        const found: { event: DiagnosticEvent; text: string }[] = [];
+        let partial = false;
+        try {
+            const first = `${new Date(Math.max(0, fromMs - 60 * 60_000)).toISOString().slice(0, 10)}.jsonl`;
+            const ready = (() => {
+                try {
+                    const stat = lstatSync(eventsDir);
+                    return !stat.isSymbolicLink() && stat.isDirectory();
+                } catch (error) {
+                    // No `events/` yet: nothing was written to disk, the ring holds what there is.
+                    return isMissing(error) ? null : false;
+                }
+            })();
+            if (ready === false) {
+                partial = true;
+            } else if (ready) {
+                const names = readdirSync(eventsDir, { withFileTypes: true })
+                    .filter((entry) => DAY_FILE.test(entry.name) && entry.name >= first)
+                    .map((entry) => entry.name)
+                    .sort();
+                for (const name of names) {
+                    const whole = readDayFile(name, (line) => {
+                        let parsed: unknown;
+                        try {
+                            parsed = JSON.parse(line);
+                        } catch {
+                            partial = true;
+                            return;
+                        }
+                        const event = projectServerEvent(parsed);
+                        if (event && match(event)) {
+                            found.push({ event, text: JSON.stringify(event) });
+                        }
+                    });
+                    if (!whole) {
+                        partial = true;
+                    }
+                }
+            }
+        } catch (error) {
+            fail(error);
+            partial = true;
+        }
+        // The ring's events the files hold are not added again: one ring copy per disk copy is passed over.
+        const onDisk = new Map<string, number>();
+        for (const { text } of found) {
+            onDisk.set(text, (onDisk.get(text) ?? 0) + 1);
+        }
+        for (const event of ring) {
+            if (event.at < fromMs - 60 * 60_000 || !match(event)) {
+                continue;
+            }
+            const copied = copy(event);
+            const text = JSON.stringify(copied);
+            const left = onDisk.get(text) ?? 0;
+            if (left > 0) {
+                onDisk.set(text, left - 1);
+            } else {
+                found.push({ event: copied, text });
+            }
+        }
+        // Stable: equal times keep the file order, then the ring's.
+        const events = found.map((entry) => entry.event).sort((a, b) => a.at - b.at);
+        return { events, partial };
+    }
+
     function state(): DiagnosticsState {
         const version = section(sources.appVersion);
         const settings = section(sources.settings);
@@ -495,6 +903,7 @@ export function createDiagnosticsJournal(options: {
             },
             history: history && { rows: countOrNull(history.rows), bytes: countOrNull(history.bytes) },
             journal: { eventBytes, writeFailures },
+            shared: { files: sharedFiles },
             workers: workers && {
                 workers: countOrNull(workers.workers),
                 busy: countOrNull(workers.busy),
@@ -583,6 +992,39 @@ export function createDiagnosticsJournal(options: {
         },
         stats: () => ({ eventBytes, writeFailures }),
         saveReport,
+        eventsFor,
+        saveShare,
+        commitShare(target, keep) {
+            return removal(() =>
+                removeShareEntries(
+                    (file) => file.name !== keep && sameTarget(file.target, target),
+                    false,
+                    (temp) => sameTarget(temp, target),
+                ),
+            );
+        },
+        discardShare(name) {
+            return removal(() => {
+                const ok = parseShareFile(name) !== null && unlinkShare(name);
+                recountShares();
+                return ok;
+            });
+        },
+        removeShares(target) {
+            return removal(
+                () =>
+                    shareKey(target) !== null &&
+                    removeShareEntries(
+                        (file) => sameTarget(file.target, target),
+                        false,
+                        (temp) => sameTarget(temp, target),
+                    ),
+            );
+        },
+        removeAllShares() {
+            return removal(() => removeShareEntries(() => true, true));
+        },
+        listShares,
     };
 }
 

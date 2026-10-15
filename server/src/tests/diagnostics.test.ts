@@ -526,6 +526,8 @@ describe("state.json", () => {
             settings: { requestHistoryContent: false, requestHistoryLimit: 250 },
             history: { rows: 3, bytes: 4096 },
             journal: { eventBytes: journal.stats().eventBytes, writeFailures: 0 },
+            // Slice 10: the copies in `shared/` (none yet; the folder is made by the first share).
+            shared: { files: 0 },
             workers: { workers: 2, busy: 1, queued: 0, spawned: 5, terminated: 3 },
             jobs: { live: 1 },
             recentJobFailures: [{ at: DAY_ONE, kind: "job", phase: "error", jobId: ID, reason: "failed" }],

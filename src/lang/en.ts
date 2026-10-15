@@ -1742,7 +1742,8 @@ export const languageEnglish = {
     requestHistoryEmpty: "The request history is empty.",
     requestHistoryLoadMore: "Load more",
     requestHistoryDeleteAll: "Delete all",
-    requestHistoryDeleteConfirm: "Delete every request in the server's request history? This cannot be undone.",
+    requestHistoryDeleteConfirm:
+        "Delete every request in the server's request history, and every copy shared for support? This cannot be undone.",
     requestHistoryLoadFailed: "Could not load the request history: {{error}}",
     requestHistoryRetry: "Retry",
     requestHistoryGone: "This request is no longer in the history.",
@@ -1751,6 +1752,18 @@ export const languageEnglish = {
     requestHistoryDropped: "{{count}} more exchanges were not stored.",
     requestHistoryContent: "Store request content",
     requestHistoryLimit: "Request history size",
+    requestHistoryShare: "Share for support",
+    requestHistoryShareUpdate: "Update shared copy",
+    requestHistoryShareWithdraw: "Withdraw share",
+    requestHistoryShared: "Shared",
+    requestHistorySharedAt: "Shared for support at {{time}}.",
+    requestHistoryShareHelp:
+        "Sharing copies every request of this job that the history still holds, with its stored content (prompt, request and response bodies, errors; credentials stored on the server are removed again), to the server's diagnostics folder, which the developer can read. It is a copy of now: later requests of the job are not in it until you update it. It stays when the history removes these requests. Withdrawing deletes the server's copy; it cannot recall one already downloaded.",
+    requestHistoryShares: "Shared copies",
+    requestHistorySharesLoadFailed: "Could not load the shared copies: {{error}}",
+    requestHistoryShareOlderCopiesRemain:
+        "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+    requestHistoryShareFailed: "Could not change the share: {{error}}",
     diagnostics: "Diagnostics",
     diagnosticsDesc:
         "A report of this tab's and the server's recent diagnostic events, to help find what went wrong. It holds no message or prompt text, bodies, credentials, URLs, or names. Opening this panel reads the server's diagnostics; the report leaves this device only when you copy, download, or save it to the server.",

@@ -2,12 +2,21 @@
     import { ChevronDownIcon, ChevronUpIcon, XIcon } from "@lucide/svelte";
     import { untrack } from "svelte";
     import { language } from "src/lang";
+    import { languageEnglish } from "src/lang/en";
     import { alertConfirm, alertError, alertRequestLogs } from "src/ts/alert";
-    import { deleteRequestHistory, listRequestHistory, readRequestHistory } from "src/ts/network/requestHistory";
+    import {
+        deleteRequestHistory,
+        listRequestHistory,
+        listRequestHistoryShares,
+        readRequestHistory,
+        shareRequestHistory,
+    } from "src/ts/network/requestHistory";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { chatEntry, currentChatRef } from "src/ts/storage/chatStore.svelte";
     import type {
         RequestHistoryRecord,
+        RequestHistoryShareBody,
+        RequestHistoryShareEntry,
         RequestHistoryStatus,
         RequestHistorySummary,
     } from "../../../../shared/requestHistory.ts";
@@ -21,6 +30,11 @@
      * request the server made, newest first, a page at a time. "This chat only" filters by the chat
      * open when the viewer opened; a row's job filter shows a retried request's attempts together.
      * A row loads its content when it is expanded.
+     *
+     * Sharing for support (slice 10): an expanded row shares its job (every request of it the history
+     * still holds, as a snapshot) to the server's diagnostics folder, updates that copy, or withdraws
+     * it; a shared row is marked. "Shared copies" lists the folder's shares, also those whose rows
+     * are gone, so each can still be withdrawn.
      */
 
     type Detail =
@@ -50,6 +64,83 @@
 
     const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+    /** The folder's last loaded shares; null until a read succeeds. */
+    let shares: RequestHistoryShareEntry[] | null = $state(null);
+    let sharesLoadError: string | null = $state(null);
+    /** A share's key (`job:<id>` or `request:<id>`) while a share or withdrawal of it runs. */
+    let pendingShares: Set<string> = $state(new Set());
+    /**
+     * `sharedAt` of each row a share or withdrawal of this viewer answered for. It wins over the row's
+     * listed value, which a list read that was under way at the time can bring back stale.
+     */
+    let sharedRows: Record<string, number | null> = $state({});
+
+    const shareKey = (target: { jobId: string | null; requestId: string | null }) =>
+        target.jobId !== null ? `job:${target.jobId}` : `request:${target.requestId}`;
+    const rowShareKey = (item: RequestHistorySummary) =>
+        item.jobId !== null ? `job:${item.jobId}` : `request:${item.id}`;
+    const sharedAt = (item: RequestHistorySummary) =>
+        Object.hasOwn(sharedRows, item.id) ? sharedRows[item.id] : item.sharedAt;
+
+    let sharesToken = 0;
+    async function loadShares() {
+        const token = ++sharesToken;
+        try {
+            const list = await listRequestHistoryShares();
+            if (token === sharesToken) {
+                shares = list.items;
+                sharesLoadError = null;
+            }
+        } catch (error) {
+            if (token === sharesToken) {
+                sharesLoadError = errorText(error);
+            }
+        }
+    }
+
+    async function setShare(body: RequestHistoryShareBody, key: string) {
+        if (pendingShares.has(key)) {
+            return;
+        }
+        pendingShares = new Set(pendingShares).add(key);
+        try {
+            const result = await shareRequestHistory(body);
+            const next = { ...sharedRows };
+            for (const id of result.ids) {
+                next[id] = result.sharedAt;
+            }
+            sharedRows = next;
+        } catch (error) {
+            const message = errorText(error);
+            alertError(
+                message === languageEnglish.requestHistoryShareOlderCopiesRemain
+                    ? language.requestHistoryShareOlderCopiesRemain
+                    : language.requestHistoryShareFailed.replace("{{error}}", message),
+            );
+        } finally {
+            const left = new Set(pendingShares);
+            left.delete(key);
+            pendingShares = left;
+            void loadShares();
+        }
+    }
+
+    function shareRow(record: RequestHistorySummary, shared: boolean) {
+        void setShare(
+            record.jobId !== null ? { jobId: record.jobId, shared } : { requestId: record.id, shared },
+            rowShareKey(record),
+        );
+    }
+
+    function withdrawShare(entry: RequestHistoryShareEntry) {
+        void setShare(
+            entry.jobId !== null
+                ? { jobId: entry.jobId, shared: false }
+                : { requestId: entry.requestId, shared: false },
+            shareKey(entry),
+        );
+    }
+
     async function load(reset: boolean) {
         const token = ++loadToken;
         loading = true;
@@ -60,6 +151,8 @@
             expanded = new Set();
             details = {};
             detailReads.clear();
+            sharedRows = {};
+            void loadShares();
         }
         try {
             const page = await listRequestHistory({
@@ -208,6 +301,37 @@
     <Button size="sm" styled="danger" onclick={deleteAll}>{language.requestHistoryDeleteAll}</Button>
 </div>
 
+{#if sharesLoadError || (shares && shares.length > 0)}
+    <div class="border border-darkborderc rounded-lg p-3 mb-3 flex flex-col gap-2">
+        <span class="text-textcolor text-sm font-semibold">{language.requestHistoryShares}</span>
+        {#if sharesLoadError}
+            <div class="text-draculared text-sm flex items-center gap-3">
+                <span class="break-all"
+                    >{language.requestHistorySharesLoadFailed.replace("{{error}}", sharesLoadError)}</span
+                >
+                <Button size="sm" onclick={loadShares}>{language.requestHistoryRetry}</Button>
+            </div>
+        {/if}
+        {#each shares ?? [] as entry (shareKey(entry))}
+            {@const key = shareKey(entry)}
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <span class="text-textcolor font-mono">
+                    {entry.jobId !== null ? language.requestHistorySameJob : language.requestHistoryLabels.request}:
+                    {(entry.jobId ?? entry.requestId ?? "").slice(0, 8)}
+                </span>
+                <span class="text-textcolor2">{new Date(entry.sharedAt).toLocaleString()}</span>
+                <div class="flex-1"></div>
+                {#if entry.jobId !== null && entry.jobId !== jobId}
+                    <Button size="sm" onclick={() => (jobId = entry.jobId)}>{language.requestHistoryShowJob}</Button>
+                {/if}
+                <Button size="sm" disabled={pendingShares.has(key)} onclick={() => withdrawShare(entry)}>
+                    {language.requestHistoryShareWithdraw}
+                </Button>
+            </div>
+        {/each}
+    </div>
+{/if}
+
 {#if loadError}
     <div class="text-draculared text-sm mb-3 flex items-center gap-3">
         <span class="break-all">{language.requestHistoryLoadFailed.replace("{{error}}", loadError)}</span>
@@ -249,6 +373,11 @@
                                 >{language.requestHistoryLabels.cut}</span
                             >
                         {/if}
+                        {#if sharedAt(item) !== null}
+                            <span class="px-1.5 py-0.5 rounded text-xs bg-primary-700 text-neutral-50"
+                                >{language.requestHistoryShared}</span
+                            >
+                        {/if}
                     </div>
                     <div class="ml-2 text-textcolor">
                         {#if isExpanded}
@@ -270,6 +399,8 @@
                             <div class="text-textcolor2 text-sm">{language.requestHistoryGone}</div>
                         {:else}
                             {@const record = detail.record}
+                            {@const shareTime = sharedAt(item)}
+                            {@const sharePending = pendingShares.has(rowShareKey(item))}
                             <div class="space-y-4">
                                 <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
                                     {#each meta(record) as [label, value]}
@@ -282,6 +413,43 @@
                                         {language.requestHistoryShowJob}
                                     </Button>
                                 {/if}
+                                <div class="flex flex-col gap-2 border border-darkborderc rounded p-3">
+                                    {#if shareTime !== null}
+                                        <span class="text-textcolor text-sm">
+                                            {language.requestHistorySharedAt.replace(
+                                                "{{time}}",
+                                                new Date(shareTime).toLocaleString(),
+                                            )}
+                                        </span>
+                                        <div class="flex flex-wrap gap-2">
+                                            <Button
+                                                size="sm"
+                                                disabled={sharePending}
+                                                onclick={() => shareRow(item, true)}
+                                            >
+                                                {language.requestHistoryShareUpdate}
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                disabled={sharePending}
+                                                onclick={() => shareRow(item, false)}
+                                            >
+                                                {language.requestHistoryShareWithdraw}
+                                            </Button>
+                                        </div>
+                                    {:else}
+                                        <div>
+                                            <Button
+                                                size="sm"
+                                                disabled={sharePending}
+                                                onclick={() => shareRow(item, true)}
+                                            >
+                                                {language.requestHistoryShare}
+                                            </Button>
+                                        </div>
+                                    {/if}
+                                    <span class="text-textcolor2 text-xs">{language.requestHistoryShareHelp}</span>
+                                </div>
                                 {#if record.error !== null}
                                     <LogField
                                         label={language.requestHistoryLabels.error}

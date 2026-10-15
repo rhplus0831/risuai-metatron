@@ -15,6 +15,7 @@ import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
 import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "./diagnostics/journal.ts";
+import { createRequestShares } from "./diagnostics/share.ts";
 import { errorFields } from "./diagnostics/log.ts";
 import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
@@ -25,6 +26,7 @@ import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJo
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
+import { loadStoredSecrets } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
@@ -41,7 +43,11 @@ import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
-import { REQUEST_HISTORY_PATH, registerRequestHistoryRoutes } from "./routes/requestHistory.ts";
+import {
+    REQUEST_HISTORY_PATH,
+    REQUEST_HISTORY_SHARE_PATH,
+    registerRequestHistoryRoutes,
+} from "./routes/requestHistory.ts";
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
@@ -397,8 +403,9 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    // The script transform's, the translation's, the push subscription's, and the diagnostic report's
-    // routes authenticate first and cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB).
+    // The script transform's, the translation's, the push subscription's, the diagnostic report's, and
+    // the request history share's routes authenticate first and cap their bodies themselves (8 MiB,
+    // 16 KiB, 16 KiB, 1 MiB, 4 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -407,7 +414,8 @@ export function createServerContext(options: {
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
-            ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH);
+            ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
+            (c.req.method === "PUT" && route === REQUEST_HISTORY_SHARE_PATH);
         return ownLimit ? next() : limitBody(c, next);
     });
 
@@ -465,8 +473,16 @@ export function createServerContext(options: {
     });
     registerRequestHistoryRoutes(app, {
         history: requestHistory,
+        // Slice 10: a job's requests shared to the diagnostics folder, redacted again with every
+        // credential stored now.
+        shares: createRequestShares({
+            history: requestHistory,
+            journal: diagnostics,
+            secrets: () => loadStoredSecrets(resources, resourceKinds),
+        }),
         auth,
         limiter: authenticatedRouteLimiter.middleware,
+        shuttingDown: () => shuttingDown,
     });
     registerDiagnosticsRoutes(app, {
         journal: diagnostics,

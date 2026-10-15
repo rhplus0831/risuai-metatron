@@ -1660,7 +1660,7 @@ export const languageKorean = {
     requestHistoryEmpty: "요청 기록이 비어 있습니다.",
     requestHistoryLoadMore: "더 보기",
     requestHistoryDeleteAll: "모두 삭제",
-    requestHistoryDeleteConfirm: "서버의 요청 기록을 모두 삭제할까요? 되돌릴 수 없습니다.",
+    requestHistoryDeleteConfirm: "서버의 요청 기록과 지원용으로 공유한 사본을 모두 삭제할까요? 되돌릴 수 없습니다.",
     requestHistoryLoadFailed: "요청 기록을 불러오지 못했습니다: {{error}}",
     requestHistoryRetry: "다시 시도",
     requestHistoryGone: "이 요청은 더 이상 기록에 없습니다.",
@@ -1669,6 +1669,18 @@ export const languageKorean = {
     requestHistoryDropped: "교환 {{count}}개가 더 있었지만 저장되지 않았습니다.",
     requestHistoryContent: "요청 내용 저장",
     requestHistoryLimit: "요청 기록 개수",
+    requestHistoryShare: "지원용으로 공유",
+    requestHistoryShareUpdate: "공유 사본 갱신",
+    requestHistoryShareWithdraw: "공유 철회",
+    requestHistoryShared: "공유됨",
+    requestHistorySharedAt: "{{time}}에 지원용으로 공유했습니다.",
+    requestHistoryShareHelp:
+        "공유하면 기록에 남아 있는 이 작업의 모든 요청을 저장된 내용(프롬프트, 요청·응답 본문, 오류. 서버에 저장된 인증 정보는 다시 한 번 지움)과 함께 개발자가 읽을 수 있는 서버의 진단 폴더에 복사합니다. 지금 시점의 사본이라 이 작업의 이후 요청은 갱신하기 전까지 들어가지 않습니다. 기록에서 이 요청들이 지워져도 사본은 남습니다. 철회하면 서버의 사본을 삭제하지만, 이미 내려받은 사본은 되돌릴 수 없습니다.",
+    requestHistoryShares: "공유한 사본",
+    requestHistorySharesLoadFailed: "공유한 사본을 불러오지 못했습니다: {{error}}",
+    requestHistoryShareOlderCopiesRemain:
+        "공유 사본을 갱신했지만 이전 사본을 삭제하지 못했습니다. 모든 사본을 삭제하려면 공유를 철회하세요.",
+    requestHistoryShareFailed: "공유를 바꾸지 못했습니다: {{error}}",
     diagnostics: "진단",
     diagnosticsDesc:
         "문제를 찾는 데 도움이 되도록 이 탭과 서버의 최근 진단 이벤트를 모은 보고서입니다. 메시지나 프롬프트 내용, 본문, 인증 정보, URL, 이름은 들어 있지 않습니다. 이 패널을 열면 서버의 진단 정보를 읽어 오며, 보고서는 복사하거나 다운로드하거나 서버에 저장할 때만 이 기기 밖으로 나갑니다.",

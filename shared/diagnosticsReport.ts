@@ -182,6 +182,7 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
     const app = record(state.app);
     const settings = record(state.settings);
     const history = record(state.history);
+    const shared = record(state.shared);
     const workers = record(state.workers);
     const jobs = record(state.jobs);
     const failures = Array.isArray(state.recentJobFailures) ? state.recentJobFailures : [];
@@ -203,6 +204,8 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
         },
         history: history && { rows: countOrNull(history.rows), bytes: countOrNull(history.bytes) },
         journal: { eventBytes: journal.eventBytes, writeFailures: journal.writeFailures },
+        // v1 grows: only a state that has the section gets it back, so a report without it stays canonical.
+        ...(Object.hasOwn(state, "shared") ? { shared: shared && { files: countOrNull(shared.files) } } : {}),
         workers: workers && {
             workers: countOrNull(workers.workers),
             busy: countOrNull(workers.busy),

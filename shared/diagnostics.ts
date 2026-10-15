@@ -246,6 +246,8 @@ export const ROUTE_TEMPLATES = [
     "/api/llm/request",
     "/api/llm/request/:id/answer",
     "/api/request-history",
+    "/api/request-history/share",
+    "/api/request-history/shares",
     "/api/request-history/:id",
     "/api/diagnostics",
     "/api/diagnostics/report",
@@ -526,6 +528,11 @@ export type DiagnosticsState = {
     settings: { requestHistoryContent: boolean | null; requestHistoryLimit: number | null } | null;
     history: { rows: number | null; bytes: number | null } | null;
     journal: { eventBytes: number; writeFailures: number };
+    /**
+     * The copies the folder's `shared/` holds (slice 10), null when it could not be read. Optional:
+     * a state from before slice 10 (a report an older tab built) has none.
+     */
+    shared?: { files: number | null } | null;
     workers: {
         workers: number | null;
         busy: number | null;

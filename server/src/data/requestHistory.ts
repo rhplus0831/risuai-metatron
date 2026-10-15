@@ -4,8 +4,10 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { FetchLogEntry } from "../llm/transport.ts";
 import {
     isProviderCode,
+    type RequestHistoryExchange,
     type RequestHistoryFieldCut,
     type RequestHistoryRecord,
+    type RequestHistoryShareTarget,
     type RequestHistoryStatus,
     type RequestHistorySummary,
     type RequestHistoryTruncation,
@@ -105,6 +107,15 @@ export type RequestHistoryListQuery = {
     status?: RequestHistoryStatus | null;
 };
 
+/** What a share reads (`readShare`): a job's rows, or a request's own when it ran without a job. */
+export type RequestHistoryShareQuery = { jobId: string } | { requestId: string };
+
+export type RequestHistoryShareRead =
+    | { status: "ok"; target: RequestHistoryShareTarget; records: RequestHistoryRecord[] }
+    | { status: "missing" }
+    | { status: "tooLarge"; bytes: number }
+    | { status: "failed" };
+
 export type RequestHistory = {
     begin(summary: RequestHistoryBegin): void;
     /**
@@ -130,6 +141,21 @@ export type RequestHistory = {
     deleteAll(): number | null;
     /** Sets or clears `sharedAt` on the rows; returns how many changed. */
     setShared(ids: readonly string[], at: number | null): number;
+    /**
+     * The rows of a share with their content, oldest first, read in one read transaction (slice 10).
+     * A `requestId` whose row has a job reads that job's rows (decision 4); one without a job is read
+     * alone. `missing` when there is no such row; `tooLarge` when the rows' stored bytes pass
+     * `maxBytes` (their content is not read); `failed` when a read failed or the store is unavailable,
+     * never a partial list.
+     */
+    readShare(query: RequestHistoryShareQuery, maxBytes: number): RequestHistoryShareRead;
+    /**
+     * The share a request belongs to: its job's when its row has one, else its own (also when the
+     * row is gone, so a share kept after a prune can still be withdrawn); null when the read failed.
+     */
+    shareTargetOf(requestId: string): RequestHistoryShareTarget | null;
+    /** Clears `sharedAt` on a share's rows (a job's, or a lone request's); the ids cleared, or null when it failed. */
+    clearShared(target: RequestHistoryShareTarget): string[] | null;
     /** Removes the oldest rows until both caps hold (`limit` defaults to the `limit` option). */
     prune(limit?: number): void;
     stats(): { rows: number; bytes: number };
@@ -385,6 +411,24 @@ export function createRequestHistory(options: {
         }
     }
 
+    /** Runs `work` in one read transaction, so its reads see one state of the file. */
+    function readTransaction<T>(work: (s: NonNullable<typeof statements>) => T): T {
+        const open = db!;
+        open.exec("BEGIN");
+        try {
+            const result = work(statements!);
+            open.exec("COMMIT");
+            return result;
+        } catch (error) {
+            try {
+                open.exec("ROLLBACK");
+            } catch {
+                shutdown();
+            }
+            throw error;
+        }
+    }
+
     /** Runs a public operation: inert without a database, and never throwing. */
     function guard<T>(fallback: T, work: () => T): T {
         if (!db || !statements) {
@@ -442,6 +486,19 @@ export function createRequestHistory(options: {
             ),
             deleteAll: open.prepare("DELETE FROM requests"),
             share: open.prepare("UPDATE requests SET shared_at = ? WHERE id = ?"),
+            jobOf: open.prepare("SELECT job_id FROM requests WHERE id = ?"),
+            jobSize: open.prepare(
+                "SELECT COUNT(*) AS rows, COALESCE(SUM(bytes), 0) AS bytes FROM requests WHERE job_id = ?",
+            ),
+            jobRecords: open.prepare(
+                `SELECT ${SUMMARY_COLUMNS}, error, prompt FROM requests WHERE job_id = ? ORDER BY seq`,
+            ),
+            jobShared: open.prepare("SELECT id FROM requests WHERE job_id = ? AND shared_at IS NOT NULL"),
+            jobUnshare: open.prepare("UPDATE requests SET shared_at = NULL WHERE job_id = ?"),
+            loneShared: open.prepare(
+                "SELECT id FROM requests WHERE id = ? AND job_id IS NULL AND shared_at IS NOT NULL",
+            ),
+            loneUnshare: open.prepare("UPDATE requests SET shared_at = NULL WHERE id = ? AND job_id IS NULL"),
             oldest: open.prepare("SELECT seq, bytes FROM requests ORDER BY seq ASC LIMIT 64"),
             remove: open.prepare("DELETE FROM requests WHERE seq = ?"),
             totals: open.prepare("SELECT COUNT(*) AS rows, COALESCE(SUM(bytes), 0) AS bytes FROM requests"),
@@ -598,6 +655,43 @@ export function createRequestHistory(options: {
         provider: string | null;
         no_prompt: number | bigint;
     };
+
+    type RecordRow = SummaryRow & { error: string | null; prompt: string | null };
+
+    /** A row with its content (the exchanges read here). */
+    function toRecord(row: RecordRow): RequestHistoryRecord {
+        const summary = toSummary(row);
+        const exchanges: RequestHistoryExchange[] | null = summary.content
+            ? (
+                  statements!.exchanges.all(row.seq) as {
+                      url: string;
+                      header: string;
+                      body: string;
+                      response: string;
+                      success: number | bigint;
+                      status: number | bigint | null;
+                      date: string;
+                      response_type: string | null;
+                  }[]
+              ).map((exchange) => ({
+                  url: exchange.url,
+                  header: exchange.header,
+                  body: exchange.body,
+                  response: exchange.response,
+                  success: Number(exchange.success) === 1,
+                  status: nullableNumber(exchange.status),
+                  date: exchange.date,
+                  responseType: exchange.response_type,
+              }))
+            : null;
+        return {
+            ...summary,
+            error: row.error,
+            prompt: summary.content ? row.prompt : null,
+            exchanges,
+            truncation: parseTruncation(row.truncation),
+        };
+    }
 
     return {
         begin(summary) {
@@ -901,42 +995,8 @@ export function createRequestHistory(options: {
         },
         get(id) {
             return guard(null, () => {
-                const row = statements!.get.get(id) as
-                    (SummaryRow & { error: string | null; prompt: string | null }) | undefined;
-                if (!row) {
-                    return null;
-                }
-                const summary = toSummary(row);
-                const exchanges = summary.content
-                    ? (
-                          statements!.exchanges.all(row.seq) as {
-                              url: string;
-                              header: string;
-                              body: string;
-                              response: string;
-                              success: number | bigint;
-                              status: number | bigint | null;
-                              date: string;
-                              response_type: string | null;
-                          }[]
-                      ).map((exchange) => ({
-                          url: exchange.url,
-                          header: exchange.header,
-                          body: exchange.body,
-                          response: exchange.response,
-                          success: Number(exchange.success) === 1,
-                          status: nullableNumber(exchange.status),
-                          date: exchange.date,
-                          responseType: exchange.response_type,
-                      }))
-                    : null;
-                return {
-                    ...summary,
-                    error: row.error,
-                    prompt: summary.content ? row.prompt : null,
-                    exchanges,
-                    truncation: parseTruncation(row.truncation),
-                };
+                const row = statements!.get.get(id) as RecordRow | undefined;
+                return row ? toRecord(row) : null;
             });
         },
         deleteAll() {
@@ -966,6 +1026,64 @@ export function createRequestHistory(options: {
                 pruneAfterWrite();
             }
             return changed;
+        },
+        readShare(query, maxBytes) {
+            return guard<RequestHistoryShareRead>({ status: "failed" }, () =>
+                readTransaction((s): RequestHistoryShareRead => {
+                    let jobId: string | null;
+                    let requestId: string | null = null;
+                    if ("jobId" in query) {
+                        jobId = query.jobId;
+                    } else {
+                        const found = s.jobOf.get(query.requestId) as { job_id: string | null } | undefined;
+                        if (!found) {
+                            return { status: "missing" };
+                        }
+                        jobId = found.job_id;
+                        requestId = jobId === null ? query.requestId : null;
+                    }
+                    if (jobId !== null) {
+                        const size = s.jobSize.get(jobId) as { rows: number | bigint; bytes: number | bigint };
+                        if (Number(size.rows) === 0) {
+                            return { status: "missing" };
+                        }
+                        if (Number(size.bytes) > maxBytes) {
+                            return { status: "tooLarge", bytes: Number(size.bytes) };
+                        }
+                        const rows = s.jobRecords.all(jobId) as RecordRow[];
+                        return { status: "ok", target: { jobId, requestId: null }, records: rows.map(toRecord) };
+                    }
+                    const row = s.get.get(requestId) as RecordRow | undefined;
+                    if (!row) {
+                        return { status: "missing" };
+                    }
+                    if (Number(row.bytes) > maxBytes) {
+                        return { status: "tooLarge", bytes: Number(row.bytes) };
+                    }
+                    return { status: "ok", target: { jobId: null, requestId: requestId! }, records: [toRecord(row)] };
+                }),
+            );
+        },
+        shareTargetOf(requestId) {
+            return guard<RequestHistoryShareTarget | null>(null, () => {
+                const found = statements!.jobOf.get(requestId) as { job_id: string | null } | undefined;
+                return found?.job_id ? { jobId: found.job_id, requestId: null } : { jobId: null, requestId };
+            });
+        },
+        clearShared(target) {
+            return guard<string[] | null>(null, () =>
+                transaction((s) => {
+                    const rows = (
+                        target.jobId !== null ? s.jobShared.all(target.jobId) : s.loneShared.all(target.requestId)
+                    ) as { id: string }[];
+                    if (target.jobId !== null) {
+                        s.jobUnshare.run(target.jobId);
+                    } else {
+                        s.loneUnshare.run(target.requestId);
+                    }
+                    return rows.map((row) => row.id);
+                }),
+            );
         },
         prune(limit) {
             guard(undefined, () => pruneTo(clampRequestHistoryLimit(limit ?? limitOf())));

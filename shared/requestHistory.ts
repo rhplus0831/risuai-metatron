@@ -84,3 +84,47 @@ export type RequestHistoryPage = {
     /** The cursor of the next page, null on the last. */
     next: string | null;
 };
+
+/**
+ * `PUT`: shares a job's requests to the diagnostics folder for support, or withdraws the share
+ * (`docs/plan/request-history-diagnostics.md` slice 10). Body: `RequestHistoryShareBody`.
+ */
+export const REQUEST_HISTORY_SHARE_PATH = "/api/request-history/share";
+
+/** `GET`: the shares the folder holds (`RequestHistoryShareList`), kept even when their rows are gone. */
+export const REQUEST_HISTORY_SHARES_PATH = "/api/request-history/shares";
+
+const UUID_TEXT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+/** A request id the server issues (`randomUUID`). */
+export const SHARE_REQUEST_ID = new RegExp(`^${UUID_TEXT}$`);
+
+/** A job id the server issues: a generation job's `randomUUID`, or a translation run's `translate-<UUID>`. */
+export const SHARE_JOB_ID = new RegExp(`^(?:translate-)?${UUID_TEXT}$`);
+
+/**
+ * What a share is of: a job (every request of it), or a request that ran without a job (a tab's own
+ * request), shared alone.
+ */
+export type RequestHistoryShareTarget = { jobId: string; requestId: null } | { jobId: null; requestId: string };
+
+/**
+ * A share or a withdrawal. A `requestId` whose row has a job stands for that job (decision 4); a
+ * withdrawal of a request whose row is gone withdraws that request's own share.
+ */
+export type RequestHistoryShareBody =
+    | { jobId: string; requestId?: undefined; shared: boolean }
+    | { requestId: string; jobId?: undefined; shared: boolean };
+
+export type RequestHistoryShareResult = RequestHistoryShareTarget & {
+    shared: boolean;
+    /** The share's time, null after a withdrawal. */
+    sharedAt: number | null;
+    /** The rows marked (a share: every row in the shared copy) or unmarked (a withdrawal). */
+    ids: string[];
+};
+
+export type RequestHistoryShareEntry = RequestHistoryShareTarget & { sharedAt: number };
+
+/** `GET /api/request-history/shares`: newest first. */
+export type RequestHistoryShareList = { items: RequestHistoryShareEntry[] };
