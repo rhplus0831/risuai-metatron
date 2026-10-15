@@ -14,3 +14,4 @@ Active planning and implementation:
 
 - [Web Push](web-push.md): chat completion notifications through Web Push, with a per-character message
 - [Request History and Diagnostics](request-history-diagnostics.md): a durable LLM request history, structured job failures, and a content-free diagnostics folder pulled over sftp
+- [Audit Findings and Performance Leftovers](audit-findings-perf.md): the two 2026-10-15 audit reports and the memory's performance leftovers, sorted into slices by harm and file cluster
