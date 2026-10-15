@@ -220,6 +220,51 @@ describe("reads", () => {
         expect(await I.getInlayAsset("nodims")).not.toHaveProperty("width");
     });
 
+    test("getInlayMedia gives the type and asset key without reading bytes; null for a signature or a miss", async () => {
+        // Bytes this tab has not cached: any read would reach the asset store.
+        assets.set("assets/elsewhere.png", new TextEncoder().encode("hello"));
+        fake.set("inlays", "img", { name: "i", ext: "png", type: "image", asset: "assets/elsewhere.png" });
+        fake.set("inlays", "sig", { name: "s", ext: "json", type: "signature", text: "t" });
+        const { readAsset } = await import("../../../storage/assetClient");
+        expect(await I.getInlayMedia("img")).toEqual({ type: "image", asset: "assets/elsewhere.png" });
+        expect(readAsset).not.toHaveBeenCalled();
+        expect(await I.getInlayMedia("sig")).toBeNull();
+        expect(await I.getInlayMedia("missing")).toBeNull();
+    });
+
+    test("getInlayObjectUrl makes one typed URL per asset key, shared by ids and concurrent calls", async () => {
+        const created: Blob[] = [];
+        const create = vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+            created.push(blob as Blob);
+            return `blob:test-${created.length}`;
+        });
+        try {
+            await I.setInlayAsset("a1", { data: blobOf("sound"), ext: "mp3", type: "audio", name: "a" });
+            await I.setInlayAsset("a2", { data: blobOf("sound"), ext: "mp3", type: "audio", name: "a" });
+            const urls = await Promise.all([
+                I.getInlayObjectUrl("a1"),
+                I.getInlayObjectUrl("a2"),
+                I.getInlayObjectUrl("a1"),
+            ]);
+            expect(new Set(urls)).toEqual(new Set(["blob:test-1"]));
+            expect(created.map((blob) => blob.type)).toEqual(["audio/mpeg"]);
+            expect(await I.getInlayObjectUrl("a1")).toBe("blob:test-1");
+
+            // A same-id rewrite names new bytes, so it gets its own URL (never the old media).
+            await I.setInlayAsset("a1", { data: blobOf("other"), ext: "webm", type: "video", name: "v" });
+            expect(await I.getInlayObjectUrl("a1")).toBe("blob:test-2");
+            expect(created[1].type).toBe("video/webm");
+            expect(await I.getInlayObjectUrl("a2")).toBe("blob:test-1");
+
+            await I.saveInlayedSignature("sig", { signatures: [], sourceFormat: 0, source: "s" });
+            expect(await I.getInlayObjectUrl("sig")).toBeNull();
+            expect(await I.getInlayObjectUrl("missing")).toBeNull();
+            expect(create).toHaveBeenCalledTimes(2);
+        } finally {
+            create.mockRestore();
+        }
+    });
+
     test("returns null when the metadata exists but the media file is gone", async () => {
         await I.setInlayAsset("gone", image(blobOf("bytes")));
         assets.clear();

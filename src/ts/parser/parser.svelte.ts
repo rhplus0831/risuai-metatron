@@ -36,7 +36,7 @@ import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { calcString } from "../process/infunctions";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
 import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
-import { getInlayAssetBlob } from "../process/files/inlays";
+import { getInlayMedia, getInlayObjectUrl } from "../process/files/inlays";
 import { getModuleAssets, getModuleLorebooks, getModules } from "../process/modules";
 import hljs from "highlight.js/lib/core";
 import "highlight.js/styles/atom-one-dark.min.css";
@@ -785,8 +785,6 @@ function trimmer(str: string) {
     return str.trim().replace(/[_ -.]/g, "");
 }
 
-const blobUrlCache = new Map<string, string>();
-
 async function parseInlayAssets(data: string) {
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g);
     if (inlayMatch) {
@@ -796,13 +794,19 @@ async function parseInlayAssets(data: string) {
             let prefix = inlayType !== "inlay" ? `<div class="risu-inlay-image">` : "";
             let postfix = inlayType !== "inlay" ? `</div>\n\n` : "";
 
-            const asset = await getInlayAssetBlob(id);
-            let url = blobUrlCache.get(id);
-            if (!url && asset?.data) {
-                url = URL.createObjectURL(asset.data);
-                blobUrlCache.set(id, url);
+            // URLs that stay the same on every render and are never revoked, so a cached render or
+            // translation never holds a dead one: images through the asset URL path (service worker),
+            // audio and video as typed object URLs per asset key.
+            const media = await getInlayMedia(id);
+            const url = !media
+                ? ""
+                : media.type === "image"
+                  ? await getFileSrc(media.asset)
+                  : ((await getInlayObjectUrl(id)) ?? "");
+            if (!url) {
+                continue;
             }
-            switch (asset?.type) {
+            switch (media.type) {
                 case "image":
                     // Hide inlay images when hideAllImages is enabled
                     if (settings.ui.hideAllImages) {
