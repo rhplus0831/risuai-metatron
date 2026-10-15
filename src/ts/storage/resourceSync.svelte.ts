@@ -43,12 +43,13 @@ import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { applyItemPatch, type CheckedItemPatch, checkItemPatch, itemIds } from "../../../shared/recordPatch.ts";
-import { normalizeCharacter } from "../../../shared/characters.ts";
+import { CHARACTER_SHAPE_FIELDS, normalizeCharacter } from "../../../shared/characters.ts";
 import { reconcileSelection } from "./settingsViews.svelte";
 import {
     applyRaw,
     applyRawCharacter,
     characterData,
+    characterFieldStamp,
     patchRawCharacter,
     recordData,
     REMOVE_FIELD,
@@ -213,6 +214,20 @@ const BATCH_FRAME_BYTES = 38;
 /** Character fields that are client-only: chats (saved on their own), the selection, a render key. */
 const CHARACTER_LOCAL_KEYS = new Set(["chats", "chatPage", "reloadKeys"]);
 
+/**
+ * A character's last projection (`characterProjection`): its text, and per top-level field the value
+ * (identity) and field-text stamp (`characterFieldStamp`) its span of that text was serialized from.
+ */
+type FieldTextCache = {
+    source: string;
+    fields: Map<string, { value: unknown; stamp: number; start: number; end: number }>;
+};
+/** The field-text caches of the characters projected last, oldest first (`characterProjection`). */
+const characterTexts = new Map<string, FieldTextCache>();
+/** At most this many characters, and this many UTF-16 units of their texts, are cached. */
+const CHARACTER_TEXTS_MAX = 8;
+const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
+
 export const saving = $state({ state: false });
 
 const recordKey = (kind: string, id: string) => `${kind}\u0000${id}`;
@@ -298,6 +313,7 @@ const MAX_REMOTE_READS = 1000;
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
+    characterTexts.clear();
     for (const [kind, records] of Object.entries(result.kinds)) {
         for (const record of records) {
             persisted.set(recordKey(kind, record.id), {
@@ -557,6 +573,11 @@ function projectCharacter(character: character | groupChat): string {
  * A character's text (`projectCharacter`) and its top-level field parts (`objectProjection`). The
  * fields are taken from an ordinary object (`JSON.stringify` puts integer keys first there, not where
  * a `$state` proxy has them), so the text is `JSON.stringify` of that object.
+ *
+ * Serializing a large character through its `$state` proxies is the cost of a save cycle, so a field
+ * whose value (identity) and stamp (`characterFieldStamp`) equal those of the last projection reuses
+ * that projection's text of it: only the fields written since are serialized again. A character whose
+ * stamps are null (shared state, data that is not plain JSON) is serialized whole every time.
  */
 function characterProjection(character: character | groupChat): Projection {
     // Own keys defined, never assigned, and the values serialized straight from the record (not
@@ -573,7 +594,96 @@ function characterProjection(character: character | groupChat): Projection {
             });
         }
     }
-    return objectProjection(copy);
+    const id = character.chaId;
+    const cached = characterTexts.get(id);
+    characterTexts.delete(id);
+    if (hasJsonHook(copy)) {
+        return objectProjection(copy);
+    }
+    const fields: [string, string][] = [];
+    const sources: { value: unknown; stamp: number | null }[] = [];
+    for (const key of Object.keys(copy)) {
+        const value = copy[key];
+        const stamp = characterFieldStamp(id, key);
+        const hit = stamp === null ? undefined : cached?.fields.get(key);
+        let text: string | undefined;
+        if (hit && hit.stamp === stamp && Object.is(hit.value, value)) {
+            text = cached!.source.slice(hit.start, hit.end);
+        } else {
+            if (hasJsonHook(value)) {
+                return objectProjection(copy);
+            }
+            text = JSON.stringify(value);
+            if (text === undefined) {
+                continue;
+            }
+        }
+        fields.push([key, text]);
+        sources.push({ value, stamp });
+    }
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    const spans = objectSpans(writer, fields);
+    const text = writer.pieces.join("");
+    if (import.meta.env.DEV && text !== JSON.stringify(copy)) {
+        // A missed stamp: the cache would lose an edit. Reported, not repaired, so tests see it.
+        console.error(`[Save] character ${id}: the field-text cache differs from a whole serialization`);
+    }
+    if (sources.every((source) => source.stamp !== null)) {
+        rememberCharacterText(id, {
+            source: text,
+            fields: new Map(
+                spans.map(([key, start, end], index) => [
+                    key,
+                    { value: sources[index].value, stamp: sources[index].stamp!, start, end },
+                ]),
+            ),
+        });
+    }
+    return { text, parts: { type: "fields", source: text, fields: spans } };
+}
+
+/** Caches a character's projection (`characterTexts`), dropping the oldest past the bounds. */
+function rememberCharacterText(id: string, cache: FieldTextCache) {
+    characterTexts.set(id, cache);
+    let units = 0;
+    for (const entry of characterTexts.values()) {
+        units += entry.source.length;
+    }
+    for (const [oldest, entry] of characterTexts) {
+        if (characterTexts.size <= CHARACTER_TEXTS_MAX && units <= CHARACTER_TEXTS_MAX_UNITS) {
+            break;
+        }
+        characterTexts.delete(oldest);
+        units -= entry.source.length;
+    }
+}
+
+/** A field's value in `canonicalShape`: present and not `null`, its value not read. */
+const PRESENT: unknown = Object.freeze({});
+
+/**
+ * What `normalizeCharacter` needs of a character, from its field parts without parsing the whole text:
+ * the fields it reads by value (`CHARACTER_SHAPE_FIELDS`) parsed, every other field `null` when its
+ * JSON is `null` (an absent or `undefined` value has no part, so it stays absent), else `PRESENT`. The
+ * helper reads those only for being missing, so it sees what it would see on a parse of the text.
+ */
+function canonicalShape(parts: Extract<RecordParts, { type: "fields" }>): Record<string, unknown> {
+    const own: Record<string, unknown> = {};
+    for (const [key, start, end] of parts.fields) {
+        const text = parts.source.slice(start, end);
+        const value = CHARACTER_SHAPE_FIELDS.includes(key) ? JSON.parse(text) : text === "null" ? null : PRESENT;
+        // Defined, never assigned: an own `__proto__` key stays a key.
+        Object.defineProperty(own, key, { value, enumerable: true, writable: true, configurable: true });
+    }
+    return own;
+}
+
+/** The fields `normalizeCharacter` changed: a default or a rebuilt group array (it keeps the rest by reference). */
+function canonicalChanges(own: Record<string, unknown>): (readonly [string, unknown])[] {
+    const canonical = normalizeCharacter(own);
+    return Object.keys(canonical)
+        .filter((field) => !Object.hasOwn(own, field) || !Object.is(own[field], canonical[field]))
+        .map((field) => [field, canonical[field]] as const);
 }
 
 /**
@@ -582,21 +692,26 @@ function characterProjection(character: character | groupChat): Projection {
  * differing fields are written into the mirror raw first (`patchRawCharacter`: no mark, no echo) and the
  * canonical text is sent and held. Then the held text is the server's, and a later conflict merges
  * against the record the server really has. A character whose shape the helper refuses is sent as it
- * is (the server refuses it, and the record is quarantined as any refused write).
+ * is (the server refuses it, and the record is quarantined as any refused write). The helper runs on
+ * `canonicalShape` of the field parts; on the parse of the whole text when there are none, or when it
+ * changed a field `canonicalShape` left unread (a by-value read missing from `CHARACTER_SHAPE_FIELDS`;
+ * one that only picks another field's default is not caught here).
  */
 function canonicalCharacter(id: string, projection: Projection): Projection {
-    let own: Record<string, unknown>;
-    let canonical: Record<string, unknown>;
+    let changes: (readonly [string, unknown])[];
     try {
-        own = JSON.parse(projection.text) as Record<string, unknown>;
-        canonical = normalizeCharacter(own);
+        if (projection.parts?.type === "fields") {
+            const own = canonicalShape(projection.parts);
+            changes = canonicalChanges(own);
+            if (changes.some(([field]) => Object.hasOwn(own, field) && own[field] === PRESENT)) {
+                changes = canonicalChanges(JSON.parse(projection.text) as Record<string, unknown>);
+            }
+        } else {
+            changes = canonicalChanges(JSON.parse(projection.text) as Record<string, unknown>);
+        }
     } catch {
         return projection;
     }
-    const changes = Object.keys(canonical)
-        // The helper keeps every unchanged value by reference: only a default or a rebuilt group array differs.
-        .filter((field) => !Object.hasOwn(own, field) || !Object.is(own[field], canonical[field]))
-        .map((field) => [field, canonical[field]] as const);
     if (changes.length === 0) {
         return projection;
     }
@@ -980,6 +1095,7 @@ function collectOperations(): {
             const id = key.slice(characterPrefix.length);
             if (!present.has(id) && !isRecordJobBlocked(key)) {
                 forgetCharacter(id);
+                characterTexts.delete(id);
                 addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
                 );
@@ -1546,7 +1662,7 @@ function acceptRemote(item: RemoteItem) {
     } else {
         persisted.set(key, {
             revision: item.revision,
-            text: projectRecord(item.kind, item.id) ?? JSON.stringify(item.data),
+            ...(projectEntry(item.kind, item.id) ?? { text: JSON.stringify(item.data) }),
         });
     }
     discardSequence += 1;
@@ -1731,11 +1847,14 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     }
     // The saved base is the server's record. The local projection stands for it when the two are
     // equal (no echo write for a key-order difference); otherwise the next cycle writes the merge.
-    const merged = projectRecord(item.kind, item.id)!;
-    persisted.set(key, {
-        revision: item.revision,
-        text: isEqual(JSON.parse(merged), item.data) ? merged : recordText(item.kind, item.data),
-    });
+    // Its parts belong to the local text only: held with the server's text, they would hide the local edit.
+    const merged = projectEntry(item.kind, item.id)!;
+    persisted.set(
+        key,
+        isEqual(JSON.parse(merged.text), item.data)
+            ? { revision: item.revision, ...merged }
+            : { revision: item.revision, text: recordText(item.kind, item.data) },
+    );
     markKey(key);
     if (prepared.some(([field]) => !(isCharacter && field === "lastInteraction"))) {
         for (const listener of remoteChangeListeners) {
@@ -2060,6 +2179,7 @@ function applyToMirror(kind: string, id: string, data: unknown) {
             applyRawCharacter(id, data as Record<string, unknown> | null);
             if (data === null) {
                 forgetCharacter(id);
+                characterTexts.delete(id);
             }
             return;
         }
@@ -2464,7 +2584,7 @@ function applyRemoteRecord(
     } else {
         persisted.set(key, {
             revision: item.revision,
-            text: projectRecord(item.kind, item.id) ?? recordText(item.kind, item.data),
+            ...(projectEntry(item.kind, item.id) ?? { text: recordText(item.kind, item.data) }),
         });
     }
     if (isNew && collection) {
@@ -2664,7 +2784,7 @@ export function applyHydration(record: HydrationRecord): boolean {
     applyToMirror(record.kind, record.id, record.data);
     persisted.set(key, {
         revision: record.revision,
-        text: projectRecord(record.kind, record.id) ?? JSON.stringify(record.data),
+        ...(projectEntry(record.kind, record.id) ?? { text: JSON.stringify(record.data) }),
     });
     for (const listener of remoteChangeListeners) {
         try {

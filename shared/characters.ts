@@ -124,12 +124,27 @@ const SINGLE_CHARACTER: Defaults = [
 const missing = (value: unknown) => value === undefined || value === null;
 
 /**
+ * The fields `normalizeCharacter` reads by value; it reads every other field only for being missing.
+ * The client's save loop relies on this list to run the helper without parsing a whole character
+ * (`resourceSync.svelte.ts`, `canonicalShape`): a new by-value read must be added here.
+ */
+export const CHARACTER_SHAPE_FIELDS: readonly string[] = [
+    "type",
+    "characters",
+    "characterTalks",
+    "characterActive",
+    "viewScreen",
+    "inlayViewScreen",
+];
+
+/**
  * A character with its defaults: a new object (the input is not changed) with the input's own fields
  * in their order, each default set only where the field is `undefined` or `null` (a field that was
  * absent is appended, in the fixed order above). Never touches `chats`, `chatPage`, `reloadKeys`, or
  * `chaId`. One exception to "missing fields only": a group's `characterTalks` and `characterActive`
  * are rebuilt (every weight and flag reset) when they are not lists as long as its `characters`.
- * Idempotent. Throws `CharacterShapeError` for a group whose `characters` is set but not a list.
+ * Idempotent. Throws `CharacterShapeError` for a group whose `characters` is set but not a list. Reads
+ * only `CHARACTER_SHAPE_FIELDS` by value; keep that list current.
  */
 export function normalizeCharacter<T extends character | groupChat | Record<string, unknown>>(input: T): T {
     const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };

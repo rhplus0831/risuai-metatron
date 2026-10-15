@@ -248,6 +248,16 @@ interface RecordMeta {
     chaId: string | null;
     /** For a character owner: the epoch of a raw change of one top-level field (`patchRawCharacter`). */
     fieldEpochs: Map<string, number>;
+    /**
+     * For a character owner, the save loop's field-text stamps (`characterFieldStamp`): `lifetime` is
+     * taken when the owner's data is fresh (created, installed, replaced from the server), and
+     * `fieldStamps` per top-level field at every change under it (a write through a wrapper, a raw
+     * patch). `uncacheable`: data entered whose JSON could change without either (state shared between
+     * fields, a value that is not plain JSON data); sticky until the data is fresh again.
+     */
+    lifetime: number;
+    fieldStamps: Map<string, number>;
+    uncacheable: boolean;
     children: WeakMap<object, TrackedNode>;
     /** The `$state` objects this record's wrappers have reached (a written proxy that is one is stored as is). */
     owned: WeakSet<object>;
@@ -259,6 +269,8 @@ interface RecordMeta {
 const metas = new Map<string, RecordMeta>();
 /** Every epoch comes from this counter, so the epochs of a character and of its list never collide. */
 let epochCounter = 0;
+/** Every field-text stamp comes from this counter (never reset), so no two lifetimes share a stamp. */
+let stampCounter = 0;
 
 function metaOf(kind: string, list: RecordMeta | null = null, chaId: string | null = null): RecordMeta {
     let meta = metas.get(kind);
@@ -269,6 +281,9 @@ function metaOf(kind: string, list: RecordMeta | null = null, chaId: string | nu
             list,
             chaId,
             fieldEpochs: new Map(),
+            lifetime: (stampCounter += 1),
+            fieldStamps: new Map(),
+            uncacheable: false,
             children: new WeakMap(),
             owned: new WeakSet(),
             displaced: new Set(),
@@ -303,6 +318,37 @@ function nodeEpoch(meta: RecordMeta, field: string | null): number {
 function bumpEpoch(meta: RecordMeta) {
     epochCounter += 1;
     meta.epoch = epochCounter;
+}
+
+/** A change under a character's top-level `field` (`characterFieldStamp`). */
+function stampField(meta: RecordMeta, field: string) {
+    stampCounter += 1;
+    meta.fieldStamps.set(field, stampCounter);
+}
+
+/** A character's data is fresh (detached JSON): every field-text stamp changes, nothing is shared. */
+function renewStamps(meta: RecordMeta) {
+    stampCounter += 1;
+    meta.lifetime = stampCounter;
+    meta.fieldStamps.clear();
+    meta.uncacheable = false;
+}
+
+/**
+ * The stamp of a character's top-level field for the save loop's field-text cache
+ * (`resourceSync.svelte.ts`, `characterProjection`): while the field holds the same value (identity),
+ * an equal stamp means its JSON text is unchanged. It changes at every write through a wrapper under
+ * the field and at every raw change of it (`patchRawCharacter`), and all of them when the character's
+ * data is fresh (installed, replaced from the server, created). Null when the character's text cannot
+ * be cached: state shared between its fields (a write through one path would change another field
+ * unstamped), or data that is not plain JSON (an accessor, a `toJSON` hook, a function, a class
+ * instance, a null-prototype object, a cycle) whose JSON may change without a write. Every value written
+ * into a character is copied when it is plain JSON data (`adoptCharacterValue`), so an input the caller
+ * keeps cannot change the record afterwards.
+ */
+export function characterFieldStamp(chaId: string, field: string): number | null {
+    const meta = characterOwner(chaId);
+    return meta.uncacheable ? null : (meta.fieldStamps.get(field) ?? meta.lifetime);
 }
 
 let writeListener: ((kind: RecordKind) => void) | null = null;
@@ -369,11 +415,19 @@ function queueMembership() {
     queueKey(MEMBERSHIP_KEY);
 }
 
-/** Queues the write a change under `node` made: its settings kind, or the character it is in. */
-function queueNodeWrite(node: TrackedNode) {
+/**
+ * Queues the write a change under `node` made: its settings kind, or the character it is in. Under a
+ * character it stamps the top-level field changed (`characterFieldStamp`): the one `node` descends
+ * from, or `prop` written on the character element itself.
+ */
+function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
     if (node.kind !== CHARACTERS) {
         queueRecordWrite(node.kind);
     } else if (node.meta.chaId !== null) {
+        const field = node.field ?? (typeof prop === "string" ? prop : null);
+        if (field !== null) {
+            stampField(node.meta, field);
+        }
         queueCharacterWrite(node.meta.chaId);
     }
 }
@@ -453,6 +507,8 @@ export function initializeRecords(fields: RecordFields) {
         }
         seen.add(character.chaId as string);
         stripChatFields(character);
+        // An installation holds detached JSON data (a server read, a fixture).
+        renewStamps(characterOwner(character.chaId as string));
     }
     bumpEpoch(metaOf(CHARACTERS));
     untrack(() => {
@@ -480,6 +536,7 @@ export function resetRecords() {
     batchDepth = 0;
     batched.clear();
     mutatorDepth = 0;
+    mutatorWriteback = null;
     runMembershipHook();
 }
 
@@ -937,6 +994,8 @@ const isIndex = (key: string) => /^(0|[1-9]\d*)$/.test(key);
  */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"]);
 let mutatorDepth = 0;
+/** Only this call's prepared values may skip adoption when written back into its array. */
+let mutatorWriteback: { node: TrackedNode; values: Set<unknown> } | null = null;
 
 /** Records an object a write through a wrapper overwrote or deleted (cleared at the end of the task). */
 function displace(meta: RecordMeta, old: unknown) {
@@ -1093,6 +1152,18 @@ function detachedCopy(value: object, seen = new Map<object, unknown>()): unknown
     return out;
 }
 
+/** Whether a local-field input contains state that must not escape through its raw reads. */
+function containsRecordState(value: unknown, seen = new Set<object>()): value is object {
+    if (!isObject(value) || seen.has(value)) {
+        return false;
+    }
+    if (nodeOf.has(value) || STATE in value) {
+        return true;
+    }
+    seen.add(value);
+    return Reflect.ownKeys(value).some((key) => containsRecordState(Reflect.get(value, key), seen));
+}
+
 /**
  * A value written into record `kind` through a wrapper:
  * - a wrapper of the same record stores its current `$state` object (`assignedTarget`);
@@ -1138,6 +1209,120 @@ function unwrap(value: unknown, meta: RecordMeta, seen = new Set<object>()): unk
 /** A plain value with every wrapper and Svelte proxy in it replaced by a detached copy. */
 function unwrapPlain(value: unknown): unknown {
     return isObject(value) && (nodeOf.has(value) || STATE in value) ? detachedCopy(value) : value;
+}
+
+/**
+ * A value written into a record (`unwrap`); under a character (`adoptCharacterValue`), `field` names
+ * the character's top-level field it goes under (null: unknown).
+ */
+function unwrapInto(
+    value: unknown,
+    meta: RecordMeta,
+    field: string | null,
+    taint: Pick<RecordMeta, "uncacheable"> = meta,
+): unknown {
+    return meta.chaId === null ? unwrap(value, meta) : adoptCharacterValue(value, meta, field, taint);
+}
+
+/** `inertCopy`'s answer for a value that is not plain JSON data. */
+const NOT_INERT = Symbol("not inert");
+
+/**
+ * A value written into a character under its top-level `field`, as `unwrap` stores it, keeping the
+ * field-text cache sound (`characterFieldStamp`): this character's own state (a wrapper, an owned
+ * `$state` object) is stored as itself, and marks the character uncacheable when it may now be shared
+ * between two fields (it came from another field, or from somewhere unknown outside a mutator's own
+ * write-back, whose inserted values were checked when the call was planned); another record's state
+ * is a detached copy; plain JSON data (`inertCopy`) is a fresh copy, so neither the caller's object nor
+ * a second field can share it; anything else is stored as `unwrap` stores it, and marks the character
+ * uncacheable.
+ */
+function adoptCharacterValue(
+    value: unknown,
+    meta: RecordMeta,
+    field: string | null,
+    taint: Pick<RecordMeta, "uncacheable">,
+): unknown {
+    if (typeof value === "function") {
+        taint.uncacheable = true;
+        return value;
+    }
+    if (!isObject(value)) {
+        return value;
+    }
+    const node = nodeOf.get(value);
+    if (node ? node.meta === meta : STATE in value && meta.owned.has(value)) {
+        if (!node || field === null || node.field !== field) {
+            taint.uncacheable = true;
+        }
+        return unwrap(value, meta);
+    }
+    if (node || STATE in value) {
+        const copy = detachedCopy(value);
+        if (inertCopy(copy as object, meta, field, new Set(), taint) === NOT_INERT) {
+            taint.uncacheable = true;
+        }
+        return copy;
+    }
+    const copy = inertCopy(value, meta, field, new Set(), taint);
+    if (copy === NOT_INERT) {
+        taint.uncacheable = true;
+        return unwrap(value, meta);
+    }
+    return copy;
+}
+
+/**
+ * A fresh copy of plain JSON data written into a character (`adoptCharacterValue`): arrays and
+ * `Object.prototype` objects of enumerable data properties (own `__proto__` kept as a key), with no
+ * `toJSON` key, symbol key, function, or cycle; this character's state inside is kept as itself and
+ * another record's copied (`adoptCharacterValue`). `NOT_INERT` for anything else.
+ */
+function inertCopy(
+    value: object,
+    meta: RecordMeta,
+    field: string | null,
+    path: Set<object>,
+    taint: Pick<RecordMeta, "uncacheable">,
+): unknown {
+    const isArray = Array.isArray(value);
+    if (Object.getPrototypeOf(value) !== (isArray ? Array.prototype : Object.prototype) || path.has(value)) {
+        return NOT_INERT;
+    }
+    path.add(value);
+    const out: any = isArray ? [] : {};
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key === "symbol" || key === "toJSON") {
+            return NOT_INERT;
+        }
+        if (isArray && key === "length") {
+            continue;
+        }
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, key)!;
+        if (!("value" in descriptor) || !descriptor.enumerable) {
+            return NOT_INERT;
+        }
+        let entry: unknown = descriptor.value;
+        if (typeof entry === "function") {
+            return NOT_INERT;
+        }
+        if (isObject(entry)) {
+            entry =
+                nodeOf.has(entry) || STATE in entry
+                    ? adoptCharacterValue(entry, meta, field, taint)
+                    : inertCopy(entry, meta, field, path, taint);
+            if (entry === NOT_INERT) {
+                return NOT_INERT;
+            }
+        }
+        Object.defineProperty(out, key, { value: entry, enumerable: true, writable: true, configurable: true });
+    }
+    if (isArray) {
+        // Trailing holes are `null`s in the JSON text.
+        out.length = (value as unknown[]).length;
+    }
+    path.delete(value);
+    return out;
 }
 
 function moveIndexChild(node: TrackedNode, index: string) {
@@ -1388,8 +1573,9 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
             refuseChatFieldWrite(prop);
         }
         if (CHARACTER_LOCAL_FIELDS.has(prop)) {
-            // Outside the record: the render key, stored raw, nothing queued.
-            target[prop] = isRecordWrapper(value) ? detachedCopy(value as object) : value;
+            // Outside the record: the render key, stored raw, nothing queued. Detach any record state
+            // inside it so a raw write through the key cannot change persisted data unstamped.
+            target[prop] = containsRecordState(value) ? detachedCopy(value) : value;
             return true;
         }
         if (prop === "chaId") {
@@ -1434,7 +1620,10 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         route = prepared.route;
     }
     // Unwrapped (and validated: a gone wrapper throws) before anything changes.
-    const plain = unwrap(incoming, node.meta);
+    const plain =
+        mutatorWriteback?.node === node && isIndex(prop) && mutatorWriteback.values.has(incoming)
+            ? incoming
+            : unwrapInto(incoming, node.meta, node.field ?? prop);
     if (!Array.isArray(target) && assignsInheritedName(target, prop)) {
         install(node, writeEntries(target, [[prop, plain]])!);
     } else {
@@ -1444,7 +1633,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         target[prop] = plain;
     }
     route();
-    queueNodeWrite(node);
+    queueNodeWrite(node, prop);
     return true;
 }
 
@@ -1460,7 +1649,7 @@ function planMutator(
     target: unknown[],
     method: string,
     args: unknown[],
-): { args: unknown[]; route: () => void } {
+): { args: unknown[]; values: Set<unknown>; route: () => void } {
     if (
         method === "splice" &&
         args.slice(0, 2).some((arg) => (typeof arg === "object" && arg !== null) || typeof arg === "function")
@@ -1474,6 +1663,8 @@ function planMutator(
     const entryList = isEntryList(node);
     const routes: (() => void)[] = [];
     const owners: string[] = [];
+    const taint = { uncacheable: false };
+    const values = new Set<unknown>();
     const next = args.map((arg, index) => {
         if (insertedFrom === -1 || index < insertedFrom || index >= insertedTo) {
             return arg;
@@ -1488,7 +1679,9 @@ function planMutator(
             routes.push(prepared.route);
             owners.push(...prepared.owners);
         }
-        return unwrap(value, node.meta);
+        const plain = unwrapInto(value, node.meta, node.field, taint);
+        values.add(plain);
+        return plain;
     });
     if (owners.length > 0) {
         const inserted = next.slice(insertedFrom, insertedTo);
@@ -1506,8 +1699,10 @@ function planMutator(
         }
         assertCredentialOwners(node.kind, owners, resulting);
     }
+    node.meta.uncacheable ||= taint.uncacheable;
     return {
         args: next,
+        values,
         route: () => {
             for (const route of routes) {
                 route();
@@ -1572,10 +1767,13 @@ function createNode(
                         const plan = untrack(() => planMutator(node, resolve(node), prop, args));
                         return batchRecordWrites(() => {
                             mutatorDepth += 1;
+                            const previous = mutatorWriteback;
+                            mutatorWriteback = { node, values: plan.values };
                             let result: unknown;
                             try {
                                 result = Reflect.apply(native, node.proxy, plan.args);
                             } finally {
+                                mutatorWriteback = previous;
                                 mutatorDepth -= 1;
                             }
                             plan.route();
@@ -1597,11 +1795,14 @@ function createNode(
         },
         set(_, prop, value) {
             if (typeof prop === "symbol") {
-                return Reflect.set(
-                    untrack(() => resolve(node)),
-                    prop,
-                    value,
-                );
+                return untrack(() => {
+                    const resolved = resolve(node);
+                    return Reflect.set(
+                        resolved,
+                        prop,
+                        node.meta.chaId === null ? value : unwrapInto(value, node.meta, null),
+                    );
+                });
             }
             // Writes resolve untracked: an `$effect` that writes through a wrapper must not subscribe
             // to the path it writes.
@@ -1632,7 +1833,7 @@ function createNode(
                 }
                 displace(node.meta, resolved[prop]);
                 const done = Reflect.deleteProperty(resolved, prop);
-                queueNodeWrite(node);
+                queueNodeWrite(node, prop);
                 return done;
             });
         },
@@ -1674,9 +1875,18 @@ function createNode(
                     return writeThrough(node, prop, descriptor.value);
                 }
                 const prepared =
-                    "value" in descriptor ? { ...descriptor, value: unwrap(descriptor.value, node.meta) } : descriptor;
+                    "value" in descriptor
+                        ? {
+                              ...descriptor,
+                              value: unwrapInto(
+                                  descriptor.value,
+                                  node.meta,
+                                  node.field ?? (typeof prop === "string" ? prop : null),
+                              ),
+                          }
+                        : descriptor;
                 const done = Reflect.defineProperty(resolved, prop, prepared);
-                queueNodeWrite(node);
+                queueNodeWrite(node, prop);
                 return done;
             });
         },
@@ -1810,7 +2020,7 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
         const prepared = isEntryList(node)
             ? prepareEntryCredentials(node.kind, [...items], true)
             : { value: [...items], route: () => {} };
-        const plain = unwrap(prepared.value, node.meta) as unknown[];
+        const plain = unwrapInto(prepared.value, node.meta, node.field) as unknown[];
         // The elements the replacement drops count as displaced (a same-task re-insertion is allowed).
         const kept = new Set<unknown>(plain);
         for (const old of Array.from(target)) {
@@ -1886,8 +2096,8 @@ function requireNewId(list: readonly CharacterObject[], chaId: unknown, replacin
 /**
  * A whole character as the list stores it, for the owner of `chaId`: its fields unwrapped by that
  * owner's rules (a value of another character is copied), its local fields kept when they are the
- * ones `current` (the same character's stored object) holds, copied when they are another `$state`
- * object or a wrapper, kept when plain.
+ * ones `current` (the same character's stored object) holds, copied when they contain another `$state`
+ * object or a wrapper at any depth, kept when plain.
  */
 function storedCharacter(value: unknown, chaId: string, current: CharacterObject | undefined): CharacterObject {
     if (!isObject(value) || Array.isArray(value)) {
@@ -1911,11 +2121,11 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
             stored =
                 current !== undefined && Object.is(entry, current[key])
                     ? entry
-                    : isObject(entry) && (nodeOf.has(entry) || STATE in entry)
+                    : containsRecordState(entry)
                       ? detachedCopy(entry)
                       : entry;
         } else {
-            stored = unwrap(entry, meta);
+            stored = unwrapInto(entry, meta, key);
         }
         Object.defineProperty(out, key, { value: stored, enumerable: true, writable: true, configurable: true });
     }
@@ -1945,6 +2155,8 @@ export function insertCharacterRecord(value: CharacterObject): number {
     changeMembership(() => {
         const list = rawList();
         const chaId = requireNewId(list, value.chaId);
+        // A new record (an id created again included): its stamps start afresh, before its values are adopted.
+        renewStamps(characterOwner(chaId));
         const stored = storedCharacter(value, chaId, undefined);
         index = list.length;
         list.push(stored);
@@ -1966,6 +2178,9 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
         }
         const current = list[index];
         const chaId = requireNewId(list, value.chaId, index);
+        if (current?.chaId !== chaId) {
+            renewStamps(characterOwner(chaId));
+        }
         const stored = storedCharacter(value, chaId, current?.chaId === chaId ? current : undefined);
         if (!Object.is(stored, current)) {
             if (current !== undefined && current.chaId === chaId) {
@@ -2009,6 +2224,8 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
         const list = rawList();
         const index = list.findIndex((entry) => entry?.chaId === chaId);
         bumpEpoch(characterOwner(chaId));
+        // The server's copy: detached JSON data.
+        renewStamps(characterOwner(chaId));
         if (data === null) {
             if (index !== -1) {
                 list.splice(index, 1);
@@ -2045,6 +2262,8 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
         for (const [field] of changes) {
             epochCounter += 1;
             owner.fieldEpochs.set(field, epochCounter);
+            // Stamped even when the value is the one held: it may have changed in place.
+            stampField(owner, field);
         }
         for (const [field, value] of changes) {
             if (value === REMOVE_FIELD) {
