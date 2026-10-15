@@ -351,6 +351,24 @@ export function characterFieldStamp(chaId: string, field: string): number | null
     return meta.uncacheable ? null : (meta.fieldStamps.get(field) ?? meta.lifetime);
 }
 
+/**
+ * `characterFieldStamp` of the top-level field a character's wrapper is under: equal while the value
+ * keeps its identity means its JSON is unchanged. Null for any other value (not a wrapper, a wrapper of
+ * another record, the character element itself, one detached by `resetRecords`) or an uncacheable
+ * character.
+ */
+export function wrapperFieldStamp(value: unknown): number | null {
+    const node = isObject(value) ? nodeOf.get(value) : undefined;
+    if (!node || node.kind !== CHARACTERS || node.generation !== generation) {
+        return null;
+    }
+    const { meta, field } = node;
+    if (meta.chaId === null || field === null || meta.uncacheable) {
+        return null;
+    }
+    return meta.fieldStamps.get(field) ?? meta.lifetime;
+}
+
 let writeListener: ((kind: RecordKind) => void) | null = null;
 /** The save loop's character hooks: a character's own fields changed, or the list's membership did. */
 export interface CharacterWriteListener {
@@ -2185,8 +2203,15 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
         if (!Object.is(stored, current)) {
             if (current !== undefined && current.chaId === chaId) {
                 // A whole replacement of the character: what was under it follows the new object by path.
-                displace(characterOwner(chaId), current);
-                bumpEpoch(characterOwner(chaId));
+                const owner = characterOwner(chaId);
+                displace(owner, current);
+                bumpEpoch(owner);
+                // A retained wrapper of a field now reads the new value: its stamp changes with it.
+                for (const field of new Set([...Object.keys(current), ...Object.keys(stored)])) {
+                    if (!Object.is(current[field], stored[field])) {
+                        stampField(owner, field);
+                    }
+                }
             }
             list[index] = stored;
         }

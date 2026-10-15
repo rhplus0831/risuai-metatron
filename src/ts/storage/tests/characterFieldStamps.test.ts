@@ -17,6 +17,7 @@ import {
     setCharacterWriteListener,
     setRecordWriteListener,
     trackedCharacters,
+    wrapperFieldStamp,
 } from "../records.svelte";
 
 // The save loop's field-text stamps (`characterFieldStamp`, `docs/structure/persistence.md` save step 2),
@@ -382,5 +383,85 @@ describe("the challenge's other reproductions", () => {
         a[key].n = 6;
         expect(raw("a").payload).toEqual({ n: 6 });
         expect(cacheable("a")).toBe(false);
+    });
+});
+
+// `wrapperFieldStamp`: the parser's fuzzy asset lookup reuses an interim index of a character's asset
+// list only while the list wrapper's stamp is unchanged (`fuzzyIndexOf`), so every change the wrapper
+// can read must change it, a same-id whole replacement included (Sol, 2026-10-15).
+describe("wrapperFieldStamp", () => {
+    const assetsOf = (chaId: string) => byId(chaId).additionalAssets;
+
+    beforeEach(() => {
+        initializeRecords({
+            characters: [{ chaId: "a", name: "A", additionalAssets: [["old", "old.png", "png"]], other: { n: 1 } }],
+        });
+    });
+
+    it("is the character field's stamp for a wrapper under the field", () => {
+        const assets = assetsOf("a");
+        expect(wrapperFieldStamp(assets)).toBe(stamp("a", "additionalAssets"));
+        expect(wrapperFieldStamp(assets[0])).toBe(stamp("a", "additionalAssets"));
+    });
+
+    it("changes at every write the list can read and not at a write elsewhere", () => {
+        const assets = assetsOf("a");
+        const seen = new Set([wrapperFieldStamp(assets)]);
+        const writes = [
+            () => (assets[0][0] = "renamed"),
+            () => (assets[0][1] = "other.png"),
+            () => (assets[0][2] = "webm"),
+            () => assets.push(["more", "more.png", "png"]),
+            () => assets.reverse(),
+            () => assets.splice(0, 1),
+            () => patchRawCharacter("a", [["additionalAssets", [["raw", "raw.png", "png"]]]]),
+        ];
+        for (const write of writes) {
+            write();
+            const next = wrapperFieldStamp(assetsOf("a"));
+            expect(next).not.toBeNull();
+            expect(seen.has(next)).toBe(false);
+            seen.add(next);
+        }
+        const before = wrapperFieldStamp(assetsOf("a"));
+        byId("a").name = "B";
+        byId("a").other.n = 2;
+        expect(wrapperFieldStamp(assetsOf("a"))).toBe(before);
+    });
+
+    it("changes for a retained wrapper when the character is replaced whole under the same id", () => {
+        const assets = assetsOf("a");
+        const before = wrapperFieldStamp(assets);
+        const otherBefore = stamp("a", "other");
+        // Its own state (read through the wrapper) is kept, not copied; a plain object would be.
+        const other = byId("a").other;
+        replaceCharacterRecordAt(0, { chaId: "a", additionalAssets: [["new", "new.webm", "webm"]], other } as any);
+        expect(JSON.parse(JSON.stringify(assets))).toEqual([["new", "new.webm", "webm"]]);
+        expect(wrapperFieldStamp(assets)).not.toBe(before);
+        expect(wrapperFieldStamp(assets)).not.toBeNull();
+        // A field whose value keeps its identity keeps its stamp; a removed one changes.
+        expect(stamp("a", "other")).toBe(otherBefore);
+        expect(changed("a", () => replaceCharacterRecordAt(0, { chaId: "a", other } as any))).toContain(
+            "additionalAssets",
+        );
+    });
+
+    it("changes when the character's data is fresh from the server", () => {
+        const assets = assetsOf("a");
+        const before = wrapperFieldStamp(assets);
+        applyRawCharacter("a", { chaId: "a", name: "A", additionalAssets: [["old", "old.png", "png"]] });
+        expect(wrapperFieldStamp(assetsOf("a"))).not.toBe(before);
+    });
+
+    it("is null for anything but a live character field wrapper, and for an uncacheable character", () => {
+        expect(wrapperFieldStamp([["old", "old.png", "png"]])).toBeNull();
+        expect(wrapperFieldStamp(null)).toBeNull();
+        expect(wrapperFieldStamp(byId("a"))).toBeNull();
+        const assets = assetsOf("a");
+        byId("a").copy = raw("a").additionalAssets;
+        expect(stamp("a", "additionalAssets")).toBeNull();
+        expect(wrapperFieldStamp(assets)).toBeNull();
+        resetRecords();
+        expect(wrapperFieldStamp(assets)).toBeNull();
     });
 });

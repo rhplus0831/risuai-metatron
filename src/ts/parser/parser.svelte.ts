@@ -2,7 +2,7 @@ import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
-import { isRecordWrapper } from "../storage/records.svelte";
+import { isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
 import {
     isForwardedPresetRoot,
     scopedPresetRoot,
@@ -488,8 +488,11 @@ class FuzzyIndexSource {
  * and it keeps the component context it was created in, so a rendering message must not own it.
  */
 const fuzzyIndexes = new WeakMap<object, FuzzyIndexSource>();
-/** Lists a lookup found without a source, with the index it built meanwhile (untracked). */
-let pendingFuzzyLists = new Map<object, FuzzyIndex>();
+/**
+ * Lists a lookup found without a source, with the index it built meanwhile (untracked) and the list's
+ * `wrapperFieldStamp` then: the index is reused only while the stamp is unchanged and not null.
+ */
+let pendingFuzzyLists = new Map<object, { index: FuzzyIndex; stamp: number | null }>();
 let pendingFuzzyVersion = $state(0);
 /** Bumped once the pending lists have their sources; a lookup that found none reads it. */
 let fuzzySourcesVersion = $state(0);
@@ -700,8 +703,9 @@ function getClosestMatch(
 
 /**
  * A record list's index: its source's, else (until the module root creates the source) one built
- * untracked, with a dependency that reruns the render once the source exists. Any other list is
- * built per lookup, tracked (a `$state` array's edit reruns the render).
+ * untracked, with a dependency that reruns the render once the source exists; that one is reused
+ * only while the list's write stamp is unchanged, so a lookup after an edit in that window builds it
+ * again. Any other list is built per lookup, tracked (a `$state` array's edit reruns the render).
  */
 function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
     if (!isRecordWrapper(assets)) {
@@ -712,15 +716,17 @@ function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
         return source.index;
     }
     fuzzySourcesVersion;
-    let index = pendingFuzzyLists.get(assets);
-    if (!index) {
-        index = untrack(() => buildFuzzyIndex(assets));
-        if (pendingFuzzyLists.size === 0) {
-            // Not from here: a lookup runs inside a render's derived, which must not write state.
-            queueMicrotask(() => pendingFuzzyVersion++);
-        }
-        pendingFuzzyLists.set(assets, index);
+    const stamp = wrapperFieldStamp(assets);
+    const pending = pendingFuzzyLists.get(assets);
+    if (pending && pending.stamp !== null && pending.stamp === stamp) {
+        return pending.index;
     }
+    const index = untrack(() => buildFuzzyIndex(assets));
+    if (pendingFuzzyLists.size === 0) {
+        // Not from here: a lookup runs inside a render's derived, which must not write state.
+        queueMicrotask(() => pendingFuzzyVersion++);
+    }
+    pendingFuzzyLists.set(assets, { index, stamp });
     return index;
 }
 
