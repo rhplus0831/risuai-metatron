@@ -43,13 +43,21 @@
         streamingOptimizationMode: StreamingDisplayOptimizationMode;
         rawStreamingText: string;
     };
+    /**
+     * What mounts the row again when it changes: the text (unless the message streams), compared as is
+     * (`data` is always a string), and the rest as JSON, so values the stored data may hold beyond their
+     * types (an object `disabled`) compare by content after a clone, as before.
+     */
+    type MountKey = { text: string | null; rest: string };
     type Row = {
         instance: { updateRow?: (update: Partial<RowUpdate>) => void };
         element: HTMLDivElement;
-        /** What mounts the row again when it changes (the text, unless the message streams). */
-        mountKey: string;
+        mountKey: MountKey;
         sent: RowUpdate;
     };
+
+    /** The text is not copied into a key on every update (every streamed frame). */
+    const sameMountKey = (a: MountKey, b: MountKey) => a.text === b.text && a.rest === b.rest;
     /**
      * The mounted rows by key: the chat and the message's id (`Message.chatId`), so a message keeps its
      * row when messages before it are added or removed (its new index goes through `Chat.updateRow`).
@@ -110,12 +118,10 @@
                 key = `${key}\u0000#${i}`;
             }
             shownKeys.add(key);
-            const mountKey = JSON.stringify([
-                streamingMessage ? null : message.data,
-                messageLargePortrait,
-                message.disabled ?? false,
-                reloadPointer,
-            ]);
+            const mountKey: MountKey = {
+                text: streamingMessage ? null : message.data,
+                rest: JSON.stringify([messageLargePortrait, message.disabled ?? false, reloadPointer]),
+            };
             const sent: RowUpdate = {
                 message: message.data,
                 idx: i,
@@ -124,7 +130,7 @@
                 rawStreamingText: message.data,
             };
             const existing = rows.get(key);
-            if (existing && existing.mountKey === mountKey) {
+            if (existing && sameMountKey(existing.mountKey, mountKey)) {
                 const update: Partial<RowUpdate> = {};
                 let changed = false;
                 for (const field of Object.keys(sent) as (keyof RowUpdate)[]) {
@@ -135,8 +141,11 @@
                 }
                 if (changed) {
                     existing.instance.updateRow?.(update);
-                    existing.sent = sent;
                 }
+                // Equal text read again (a chat reload) may be a new string: comparing against the
+                // newest one keeps later frames on the same-string fast path.
+                existing.mountKey = mountKey;
+                existing.sent = sent;
                 shown.push(existing);
                 continue;
             }
