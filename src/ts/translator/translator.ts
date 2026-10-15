@@ -30,10 +30,62 @@ import { type CapturedTransform, captureTransform, serverProcessScript } from ".
 import localforage from "localforage";
 import sendSound from "../../etc/send.mp3";
 
-let cache = {
-    origin: [""],
-    trans: [""],
-};
+/**
+ * The non-LLM translators' in-memory translations: a source and its translation, found from either side
+ * (`translate`'s `reverse`). A message translated while it streams adds its growing last paragraph on
+ * every frame, so the least recently used pairs leave once the strings pass `MEMORY_CACHE_CHARS`.
+ */
+type MemoryCacheEntry = { origin: string; trans: string };
+const MEMORY_CACHE_CHARS = 4_000_000;
+/** Every pair, least recently used first. */
+const memoryCacheEntries = new Set<MemoryCacheEntry>();
+const memoryCacheByOrigin = new Map<string, MemoryCacheEntry>();
+const memoryCacheByTrans = new Map<string, MemoryCacheEntry>();
+let memoryCacheChars = 0;
+
+function readMemoryCache(text: string, reverse: boolean): string | undefined {
+    const entry = (reverse ? memoryCacheByTrans : memoryCacheByOrigin).get(text);
+    if (!entry) {
+        return undefined;
+    }
+    memoryCacheEntries.delete(entry);
+    memoryCacheEntries.add(entry);
+    return reverse ? entry.origin : entry.trans;
+}
+
+function dropMemoryCacheEntry(entry: MemoryCacheEntry): void {
+    memoryCacheEntries.delete(entry);
+    if (memoryCacheByOrigin.get(entry.origin) === entry) {
+        memoryCacheByOrigin.delete(entry.origin);
+    }
+    if (memoryCacheByTrans.get(entry.trans) === entry) {
+        memoryCacheByTrans.delete(entry.trans);
+    }
+    memoryCacheChars -= entry.origin.length + entry.trans.length;
+}
+
+/** Adds a pair; one already holding either side is replaced, so each side maps to one pair. */
+function writeMemoryCache(origin: string, trans: string): void {
+    const byOrigin = memoryCacheByOrigin.get(origin);
+    const byTrans = memoryCacheByTrans.get(trans);
+    if (byOrigin) {
+        dropMemoryCacheEntry(byOrigin);
+    }
+    if (byTrans && byTrans !== byOrigin) {
+        dropMemoryCacheEntry(byTrans);
+    }
+    const entry = { origin, trans };
+    memoryCacheEntries.add(entry);
+    memoryCacheByOrigin.set(origin, entry);
+    memoryCacheByTrans.set(trans, entry);
+    memoryCacheChars += origin.length + trans.length;
+    for (const oldest of memoryCacheEntries) {
+        if (memoryCacheChars <= MEMORY_CACHE_CHARS) {
+            break;
+        }
+        dropMemoryCacheEntry(oldest);
+    }
+}
 
 export const LLMCacheStorage = localforage.createInstance({
     name: "LLMTranslateCache",
@@ -59,9 +111,9 @@ function usesMemoryCache(): boolean {
 
 export async function translate(text: string, reverse: boolean) {
     if (usesMemoryCache()) {
-        const ind = reverse ? cache.trans.indexOf(text) : cache.origin.indexOf(text);
-        if (ind !== -1) {
-            return reverse ? cache.origin[ind] : cache.trans[ind];
+        const cached = readMemoryCache(text, reverse);
+        if (cached !== undefined) {
+            return cached;
         }
     }
 
@@ -161,9 +213,7 @@ export async function runTranslator(
     const result = fullResult.join("\n").trim();
 
     if (memoryCache && usesMemoryCache()) {
-        cache.origin.push(reverse ? result : text);
-
-        cache.trans.push(reverse ? text : result);
+        writeMemoryCache(reverse ? result : text, reverse ? text : result);
     }
 
     return result;
@@ -373,7 +423,6 @@ export async function translateHTML(
         return applyEdittransRegex(r, charArg, alwaysExistChar, chatID, transform);
     }
     const dom = new DOMParser().parseFromString(html, "text/html");
-    console.log(html);
 
     let promises: Promise<void>[] = [];
     let translationChunks: {
@@ -411,8 +460,6 @@ export async function translateHTML(
 
         const split = translated.split("■");
 
-        console.log(split.length, currentChunk.chunks.length);
-
         if (split.length !== currentChunk.chunks.length) {
             //try translating one by one
             for (let i = 0; i < currentChunk.chunks.length; i++) {
@@ -421,7 +468,6 @@ export async function translateHTML(
         }
 
         for (let i = 0; i < split.length; i++) {
-            console.log(split[i]);
             currentChunk.resolvers[i](split[i]);
         }
     }
