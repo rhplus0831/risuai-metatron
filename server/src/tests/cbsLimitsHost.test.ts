@@ -414,9 +414,10 @@ describe("the bindings", () => {
 describe("the native effect loop", () => {
     /**
      * The runtime over fake services whose `parse` holds the thread for `holdMs`, with the effect
-     * loop reading `now` (the real clock unless given).
+     * loop reading `now` (the real clock unless given). The first parse queues a stop due
+     * `stopAfterMs` later: queued inside the first effect, it cannot race the run's own first turn.
      */
-    function runtimeHolding(holdMs: number, effects: number, now?: () => number) {
+    function runtimeHolding(holdMs: number, effects: number, stopAfterMs: number, now?: () => number) {
         const controller = new AbortController();
         const parsed: string[] = [];
         let fatal: LuaJobFatalError | null = null;
@@ -484,6 +485,9 @@ describe("the native effect loop", () => {
             tokenize: async (text: string) => text.length,
             activateLore: async () => ({ actives: [] }),
             parse: (text: string) => {
+                if (parsed.length === 0) {
+                    setTimeout(() => controller.abort(), stopAfterMs);
+                }
                 parsed.push(text);
                 const until = performance.now() + holdMs;
                 while (performance.now() < until) {
@@ -517,9 +521,8 @@ describe("the native effect loop", () => {
     }
 
     it("yields a turn once an effect held the thread over 50 ms, so a stop queued meanwhile ends the run before the next effect", async () => {
-        const { runtime, controller, parsed, char, chat, effects } = runtimeHolding(80, 4);
-        // Queued before the run: due during the first effect, it can only run on a yield.
-        setTimeout(() => controller.abort(), 5);
+        // Queued from the first effect and due during it, the stop can only run on a yield.
+        const { runtime, parsed, char, chat, effects } = runtimeHolding(80, 4, 5);
         await expect(runtime.runTrigger(char, "start", { chat, displayMode: false })).rejects.toThrow(
             "request aborted",
         );
@@ -532,11 +535,14 @@ describe("the native effect loop", () => {
 
     it("does not yield between quick effects: a stop queued during them lands after the run", async () => {
         // A stopped clock: the effects take no time, however long the machine takes to run them.
-        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4, () => 0);
-        setTimeout(() => controller.abort(), 0);
+        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4, 0, () => 0);
         const result = await runtime.runTrigger(char, "start", { chat, displayMode: false });
         expect(result).not.toBeNull();
         expect(parsed).toHaveLength(8);
         expect(Object.keys(chat.scriptstate!).sort()).toEqual(["$v0", "$v1", "$v2", "$v3"]);
+        // The stop queued from the first effect was still pending through the run, and lands after it.
+        expect(controller.signal.aborted).toBe(false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(controller.signal.aborted).toBe(true);
     });
 });
