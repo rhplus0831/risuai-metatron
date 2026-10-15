@@ -51,8 +51,14 @@ Verification
   (real wall-clock limits, the real effect limit, cold tokenizer loads, fresh Node processes). When
   a change touches what one of them covers (the list and the paths are in `build-test-platforms.md`
   `Tests`), also run `pnpm test:slow` (about 25 s; it still imports every file to read the tags);
-  `pnpm test:all` runs both. `pnpm build` bundles. The service worker and the Vite dev proxy have no
-  automated tests and need manual verification; server routes are covered by `server/src/tests/*.test.ts`.
+  `pnpm test:all` runs both. Those three, a direct `vitest`, and `pnpm test:e2e` are for people and
+  CI: without `CI` or `HUMAN` in the environment they print a notice and exit
+  (`util/requireHuman.mjs`; agents do not set `HUMAN`). Agents run `pnpm --silent test:agent`
+  instead: it prints only the failures and one summary line, and when the working tree has not
+  changed since the last run it replays that run's output instead of running again (`--force`
+  reruns, `--all` runs every test, `--tags-filter=slow` only the slow ones; details in
+  `build-test-platforms.md`). `pnpm build` bundles. The service worker and the Vite dev proxy have no automated tests and need manual
+  verification; server routes are covered by `server/src/tests/*.test.ts`.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches
   happy-dom's `Node.prototype.nodeName` getter for DOMPurify (see `build-test-platforms.md`).

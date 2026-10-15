@@ -1,10 +1,16 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { configDefaults, defineConfig } from "vitest/config";
-import { lucideImports } from "./vitest.lucideImports";
+import { requireHuman } from "./util/requireHuman.mjs";
+import { lucideImports } from "./vitest.lucideImports.ts";
+
+// Every Vitest run loads this file once in the main process, so this gate covers `pnpm test` and a
+// direct `vitest` alike: without CI, HUMAN, or AGENT_TEST it prints the notice and exits.
+requireHuman("vitest");
 
 export default defineConfig({
     // `lucideImports` keeps each test from importing every icon (see the file).
-    plugins: [lucideImports(), svelte()],
+    // `configFile: false`: there is no svelte.config.js, and the lookup logs a line on every run.
+    plugins: [lucideImports(), svelte({ configFile: false })],
     resolve: {
         alias: {
             src: "/src",

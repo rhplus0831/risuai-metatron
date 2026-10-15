@@ -15,6 +15,7 @@
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.vscode/`
   - `public/sw.js`, `public/manifest.json`
   - `util/risuUserscript.user.js`
+  - `util/agentTest.mjs`, `util/agentTestReporter.ts` (the `test:agent` wrapper and its reporter), `util/requireHuman.mjs` (the human gate)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
 - Not here:
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
@@ -24,16 +25,17 @@
 
 `package.json` scripts:
 
-| Script      | Command                                                                  | Use                                      |
-| ----------- | ------------------------------------------------------------------------ | ---------------------------------------- |
-| `dev`       | `vite`                                                                   | dev server (needs `runserver`)           |
-| `build`     | `vite build --sourcemap`                                                 | production build (served by `runserver`) |
-| `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)             |
-| `test`      | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate)  |
-| `test:slow` | `vitest run --tags-filter=slow`                                          | only the `slow` tests                    |
-| `test:all`  | `vitest run`                                                             | every test                               |
-| `test:e2e`  | `playwright test`                                                        | browser specs in `e2e/` (not in `test`)  |
-| `runserver` | `node server/src/main.ts`                                                | self-host server                         |
+| Script       | Command                                                                  | Use                                                               |
+| ------------ | ------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `dev`        | `vite`                                                                   | dev server (needs `runserver`)                                    |
+| `build`      | `vite build --sourcemap`                                                 | production build (served by `runserver`)                          |
+| `check`      | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)                                      |
+| `test`       | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate; people and CI)            |
+| `test:agent` | `node util/agentTest.mjs`                                                | `test` for agents: failures only, cached (`--all` for every test) |
+| `test:slow`  | `vitest run --tags-filter=slow`                                          | only the `slow` tests                                             |
+| `test:all`   | `vitest run`                                                             | every test                                                        |
+| `test:e2e`   | `node util/requireHuman.mjs "pnpm test:e2e" && playwright test`          | browser specs in `e2e/` (not in `test`; people and CI)            |
+| `runserver`  | `node server/src/main.ts`                                                | self-host server                                                  |
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` mirrors `.ignore` plus lockfiles, snapshots, `dist/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
 
@@ -45,7 +47,10 @@ Config files:
   - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
   - Neither `define` nor `manualChunks` is set.
-- `vitest.config.ts`: Svelte plugin, the test-only `lucideImports` plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern, and `e2e/**` excluded (Vitest's default include also matches the Playwright `*.spec.ts` files).
+- `util/requireHuman.mjs`: the human gate. `requireHuman(command)` prints a notice (what to run as an agent, how to set `HUMAN` as a person) and exits with 1 unless `CI`, `HUMAN`, or `AGENT_TEST` is set; it exits instead of throwing so the caller shows no stack trace. `vitest.config.ts` calls it at load, which covers `pnpm test`, `pnpm test:slow`, `pnpm test:all`, and a direct `vitest` (every run loads the config once in the main process; the Vitest VS Code extension loads it too, so that editor needs `HUMAN` in its environment). `pnpm test:e2e` runs the file's command-line form (`node util/requireHuman.mjs "<command>"`) before Playwright. `util/agentTest.mjs` sets `AGENT_TEST=1` for the run it supervises. A convention, not a barrier: `HUMAN=1 pnpm test` passes, and agents are expected not to do that.
+- `vitest.config.ts`: `requireHuman("vitest")` at load (see above), Svelte plugin (`configFile: false`: there is no `svelte.config.js`, and the lookup would log a line on every run), the test-only `lucideImports` plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern, and `e2e/**` excluded (Vitest's default include also matches the Playwright `*.spec.ts` files).
+- `util/agentTest.mjs` (`pnpm test:agent [--force] [--verbose] [--all] [vitest args]`): `pnpm test` for agents, and the only test command that runs without `CI` or `HUMAN` (the child gets `AGENT_TEST=1`). It runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`; `--tags-filter=slow` is `pnpm test:slow`; an explicit `--tags-filter` replaces the default; other arguments, such as a file filter, pass through) with `util/agentTestReporter.ts` and caches the result in `node_modules/.cache/agent-test/<args hash>.json`. The key is the working tree's `git write-tree` id, taken from a copy of the real index with every change staged (untracked files included, `.gitignore` honored, so unchanged files keep their stat cache), plus the Node and Vitest versions and the arguments. On a hit it prints a `[agent-test] cached result ...` line, the stored stdout, and exits with the stored code; failures are cached too, since the same tree gives the same result, and `--force` runs anyway and replaces the entry. Stderr of the run (Node warnings, worker-thread traces from passing tests) is held back: a passing run only reports its line count, a failing run prints the last 60 lines after the report, `--verbose` prints all of it. Outside git it runs without the cache. An interrupted run caches nothing. `pnpm --silent test:agent` also drops pnpm's own banner lines.
+- `util/agentTestReporter.ts`: a Vitest reporter that prints nothing while tests run and then, per failure, `FAIL <file> > <suite> > <test>`, the error message, the diff (or `expected:`/`actual:`), the in-repo stack frames (no `node_modules`, Node internals, or anonymous frames; none when no frame is in the repository), the cause chain, and that test's console output (`--silent=passed-only` is not needed: logs are buffered per task and printed only under a failure), then one summary line: `OK <n> passed, <n> skipped (<files>, <s>s)` or `FAIL <n> failed, <n> passed, ... (<k> of <files> failed, <s>s)`. Module and suite errors (import failures, `beforeAll` throws) and unhandled errors are listed the same way. Diffs, values, logs, and frames are capped.
 - `vitest.lucideImports.ts` `lucideImports`: rewrites `import { Icon, A as B } from "@lucide/svelte"` into one `@lucide/svelte/icons/<file>` default import per icon, from a map read off the package's own re-export lines, keeping the statement's line count. Without it every test that reaches an icon imports all of them (about 15 s per file); pre-bundling the package (`deps.optimizer`) instead gives the icons their own Svelte runtime and breaks mounting them. A statement with a name the map lacks is left on the main entry. Tests only: the build tree-shakes and the dev server pre-bundles.
 - `playwright.config.ts`: specs in `e2e/**/*.spec.ts`, one worker, the system Chrome (`/usr/bin/google-chrome`, override with `RISU_CHROME`; no browser download), `baseURL` `http://localhost:5201`. `globalSetup` is `util/playwright/globalSetup.mjs`, which starts one isolated stack per run.
 - `util/playwright/stack.mjs`: `startStack({ serverPort, vitePort, serverEnv })` runs `server/src/main.ts` in a fresh temporary working directory (the server takes `save/` from `process.cwd()`, so the store starts empty and the repository `save/` is never touched) and the Vite dev server with `RISU_DEV_SERVER` pointing at it (`serverEnv` adds to the server's environment only, e.g. `NODE_OPTIONS` with a check's `--import` preload; without one the server gets a `fetch` egress tripwire, `deniedEgress()`); `isolateContext(context)` keeps a browser context's HTTP requests on local hosts and `unexpectedEgress` filters the expected blocks (CDN stylesheets, the hub listing). `util/playwright/offline.sh <command>` runs a check in a user and network namespace with loopback only (`unshare -rn`): the boundary that keeps the stack, the browser, and the mocks off public services, whatever the transport; `stop()` ends both and deletes the directory. `openApp(page, baseURL)` answers the node-password prompts and waits for `loadedStore`. Page code reaches app modules with `await import("/src/...")`, which is the same module instance the app uses; a two-client check opens a second browser context (tabs of one context share `localStorage`).
@@ -64,6 +69,7 @@ Config files:
 Environment variables:
 
 - `VITE_RISU_NIGHTLY_BUILD`, `VITE_RISU_BUILD_TIME`.
+- `CI`, `HUMAN`, `AGENT_TEST`: any one of them opens the human gate on the plain test commands (`util/requireHuman.mjs`). `CI` comes from the CI service, `HUMAN` from a person's shell, `AGENT_TEST` from `util/agentTest.mjs`.
 
 Web:
 
