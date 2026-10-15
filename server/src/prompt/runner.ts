@@ -25,6 +25,7 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { logEvent } from "../diagnostics/log.ts";
+import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
     type JobScope,
@@ -438,6 +439,13 @@ async function runSend(
     let speakers: string[];
     if (sendOwner.type === "group") {
         const group = sendOwner;
+        // The load read the members the group had then; one added since (the preset pick read the
+        // group again) is read now.
+        for (const memberId of group.characters ?? []) {
+            if (isValidResourceId(memberId) && !scope.db.characters.some((entry) => entry?.chaId === memberId)) {
+                refreshCharacter(store, kinds, scope, memberId);
+            }
+        }
         if (job.context.speakerChaId) {
             speakers = [job.context.speakerChaId];
         } else {

@@ -99,24 +99,6 @@ function canonical(value: unknown): string {
     );
 }
 
-/**
- * The characters a render reads besides the chat's owner: a group's members, every target's source,
- * and every message's speaker (a group's last speaker is the CBS character, a speaker's name enters
- * lore matching). The rest are never read, so the load parses none of them.
- */
-function renderedCharacters(chat: Chat, owner: character | groupChat, targets: readonly TransformTarget[]): string[] {
-    const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
-    for (const target of targets) {
-        ids.push(target.sourceId);
-    }
-    for (const message of chat.message ?? []) {
-        if (message.saying) {
-            ids.push(message.saying);
-        }
-    }
-    return ids;
-}
-
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Aborts `controller` when `signal` aborts (at once when it already has); returns the unlink. */
@@ -626,7 +608,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             // unset or gone field renders with the tab's (`docs/plan/chat-binding.md`).
             const scope = loadJobScope(store, kinds, context, {
                 binding: "display",
-                characters: (chat, owner) => renderedCharacters(chat, owner, request.targets),
+                // Besides the chat's characters, each target's source.
+                characters: () => request.targets.map((target) => target.sourceId),
             });
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: createLuaBudget(), cbsUsage: { usedMs: 0 } };

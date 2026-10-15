@@ -73,6 +73,11 @@ export type JobScope = {
      * from the same synchronous read as the data: the script transform's cache key (slice 13).
      */
     revisions?: ReadonlyMap<string, string>;
+    /**
+     * The characters kind, set by the load: the projection holds only the chat's characters, so a
+     * chat read again (`refreshChat`) reads the speakers it gained.
+     */
+    charactersKind?: ResourceKind;
 };
 
 function kindOf(kinds: ResourceKindRegistry, name: string): ResourceKind {
@@ -122,15 +127,33 @@ export function jobScopeKinds(kinds: ResourceKindRegistry): ResourceKind[] {
 }
 
 /**
- * The chat's owner and the characters `pick` names, read by id (a missing one left out), the owner
- * first; none when the chat or its owner is gone (the load then fails as a full read would).
+ * The characters a job reads besides its chat's owner: a group's members, the speaker the job names
+ * (`speakerChaId`), and every message's speaker (`saying`: the prompt's and lore's speaker names,
+ * CBS's group speaker). No job reads another one, so the load parses none of them.
+ */
+function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
+    const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
+    if (context.speakerChaId) {
+        ids.push(context.speakerChaId);
+    }
+    for (const message of chat.message ?? []) {
+        if (message.saying) {
+            ids.push(message.saying);
+        }
+    }
+    return ids;
+}
+
+/**
+ * The chat's owner, then the characters of `chatCharacters` and of `extra`, read by id (a missing
+ * one left out); none when the chat or its owner is gone (the load then fails on the owner).
  */
 function readCharacters(
     store: ResourceStore,
     charactersKind: ResourceKind,
     context: GenerationContext,
     chat: unknown,
-    pick: (chat: Chat, owner: character | groupChat) => Iterable<string>,
+    extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
 ): StoredResource<unknown>[] {
     const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
     if (!chat || ownerRead.data === null || ownerRead.revision === null) {
@@ -139,9 +162,10 @@ function readCharacters(
     const records: StoredResource<unknown>[] = [
         { id: context.characterId, revision: ownerRead.revision, data: ownerRead.data },
     ];
-    // An id no record can have (a stray `saying`, say) is one a full read would not find either.
+    const owner = ownerRead.data as character | groupChat;
+    // An id no record can have (a stray `saying`, say) is one no read finds.
     const ids = new Set<string>();
-    for (const id of pick(chat as Chat, ownerRead.data as character | groupChat)) {
+    for (const id of [...chatCharacters(chat as Chat, owner, context), ...(extra?.(chat as Chat, owner) ?? [])]) {
         if (id !== context.characterId && isValidResourceId(id)) {
             ids.add(id);
         }
@@ -162,8 +186,9 @@ function readCharacters(
  * chat, prompt or model preset, or persona fails the job (`GenerationRunnerError` 404), never a
  * redirect to another record.
  *
- * `characters` limits the characters read (every one by default) to the chat's owner and the ids it
- * returns for the chat and the owner's record; a missing one is left out, as it is from a full read.
+ * Of the characters, only the chat's owner and those `chatCharacters` names are read, plus the ids
+ * `characters` returns for the chat and the owner's record (a transform's target sources); a
+ * character read later (`refreshCharacter`) joins the projection then.
  */
 export function loadJobScope(
     store: ResourceStore,
@@ -175,20 +200,15 @@ export function loadJobScope(
     } = {},
 ): JobScope {
     const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
-    const read = store.readKinds(
-        options.characters ? jobScopeKinds(kinds).filter((kind) => kind !== charactersKind) : jobScopeKinds(kinds),
-    );
+    const read = store.readKinds(jobScopeKinds(kinds).filter((kind) => kind !== charactersKind));
     const chatRead = store.readRefs([], { chats: [{ characterId: context.characterId, id: context.chatId }] });
-    const pickCharacters = options.characters;
-    if (pickCharacters) {
-        read.kinds[RESOURCE_KIND.characters] = readCharacters(
-            store,
-            charactersKind,
-            context,
-            chatRead.chats[0]?.data,
-            pickCharacters,
-        );
-    }
+    read.kinds[RESOURCE_KIND.characters] = readCharacters(
+        store,
+        charactersKind,
+        context,
+        chatRead.chats[0]?.data,
+        options.characters,
+    );
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 
     const db: Record<string, unknown> = {};
@@ -305,6 +325,7 @@ export function loadJobScope(
         chatId: context.chatId,
         chatRevision: chatRecord.revision,
         revisions,
+        charactersKind,
         promptPreset: preset,
         modelPreset,
         modelProfiles,
@@ -355,7 +376,33 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
     }
     setChats(owner, [record.data as Chat]);
     scope.chatRevision = record.revision;
+    if (scope.charactersKind) {
+        addSpeakers(store, scope.charactersKind, scope, record.data as Chat);
+    }
     return true;
+}
+
+/**
+ * Reads into the projection the message speakers (`saying`) it lacks: a message written since the
+ * load (by the job, a script, or another tab) may name a character the load did not read.
+ */
+function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: JobScope, chat: Chat): void {
+    const known = new Set(scope.db.characters.map((entry) => entry?.chaId));
+    const missing = new Set<string>();
+    for (const message of chat.message ?? []) {
+        if (message.saying && !known.has(message.saying) && isValidResourceId(message.saying)) {
+            missing.add(message.saying);
+        }
+    }
+    if (missing.size === 0) {
+        return;
+    }
+    for (const item of store.readRefs([...missing].map((id) => ({ kind: charactersKind, id }))).items) {
+        if (item.data !== null) {
+            scope.db.characters.push({ ...(item.data as object), chats: [], chatPage: 0 } as unknown as
+                character | groupChat);
+        }
+    }
 }
 
 /** Reads one character record again into the projection (its chats kept); false when it is gone. */
