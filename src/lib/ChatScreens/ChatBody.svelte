@@ -1,5 +1,22 @@
-<script lang="ts">
+<script module lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import { getModuleAssets, getModulesUncached } from "src/ts/process/modules";
+
+    /**
+     * `checkImg`'s assets (newImageHandlingBeta): the selected character's and its modules', by
+     * lower-cased name. Shared by every row and built again only when a list or an asset changes,
+     * not per render. The modules resolve uncached: `getModules`' cache would hide a module list edit.
+     */
+    const imageAssets = $derived.by(() => {
+        const assets = getModuleAssets(undefined, getModulesUncached()).concat(
+            selectedCharacter().additionalAssets ?? [],
+        );
+        const list = assets.map((asset) => ({ name: asset[0].toLocaleLowerCase(), path: asset[1] }));
+        return { list, exact: new Map(list.map((asset) => [asset.name, asset.path])) };
+    });
+</script>
+
+<script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
     import { sleep } from "src/ts/util";
@@ -20,7 +37,6 @@
         pruneEmptyBilingualPairs,
     } from "../../ts/translator/bilingualInterleave";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
-    import { getModuleAssets } from "src/ts/process/modules";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
     interface Props {
@@ -310,20 +326,11 @@
         ) as NodeListOf<HTMLImageElement>;
 
         if (imgs.length > 0) {
-            const currentCharacter = selectedCharacter();
-            const styl = currentCharacter.prebuiltAssetStyle;
-            const assets = getModuleAssets().concat(currentCharacter.additionalAssets ?? []);
-            const normalizedAssets = assets.map((asset) => {
-                return {
-                    name: asset[0].toLocaleLowerCase(),
-                    path: asset[1],
-                };
-            });
-            const exactAssets = new Map(normalizedAssets.map((asset) => [asset.name, asset.path]));
+            const styl = selectedCharacter().prebuiltAssetStyle;
+            const { list: normalizedAssets, exact: exactAssets } = imageAssets;
 
             imgs.forEach(async (img) => {
                 const name = img.getAttribute("src")?.toLocaleLowerCase() || "";
-                console.log(name);
 
                 if (name.length > 200 || name.includes(":")) {
                     img.setAttribute("noimage", "true");
@@ -331,7 +338,6 @@
                 }
 
                 const foundAsset = exactAssets.get(name);
-                console.log("Checking image:", name, "Assets:", assets);
                 if (foundAsset) {
                     img.classList.add("root-loaded-image");
                     img.classList.add("root-loaded-image-" + styl);

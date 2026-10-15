@@ -456,6 +456,30 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
+    const { ids, personaIds } = enabledModuleIds(chatRef, scope);
+    // The persona's links resolve apart from the other ids (by id only), so they key apart too.
+    const idsJoined = JSON.stringify([ids, [...personaIds]]);
+    if (lastModules === idsJoined) {
+        return lastModuleData;
+    }
+
+    let modules: RisuModule[] = getModuleByIds(ids, personaIds);
+    lastModules = idsJoined;
+    lastModuleData = modules;
+    return modules;
+}
+
+/**
+ * `getModules` without its cache: always reads the module list, so a reactive reader (a `$derived`)
+ * follows a module added, removed, or renamed under the same ids.
+ */
+export function getModulesUncached(chatRef?: ModuleChatRef, scope?: PresetScope) {
+    const { ids, personaIds } = enabledModuleIds(chatRef, scope);
+    return getModuleByIds(ids, personaIds);
+}
+
+/** The ids and persona links `getModules` resolves. */
+function enabledModuleIds(chatRef: ModuleChatRef, scope: PresetScope | undefined) {
     const character = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
     const currentChat = chatRef ? findChat(chatRef) : selectedChat();
     const persona = checkPersonaBinded(chatRef);
@@ -478,16 +502,7 @@ export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
         const intList = integration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
-    // The persona's links resolve apart from the other ids (by id only), so they key apart too.
-    const idsJoined = JSON.stringify([ids, [...personaIds]]);
-    if (lastModules === idsJoined) {
-        return lastModuleData;
-    }
-
-    let modules: RisuModule[] = getModuleByIds(ids, personaIds);
-    lastModules = idsJoined;
-    lastModuleData = modules;
-    return modules;
+    return { ids, personaIds };
 }
 
 /** The lorebooks of `getModules(chatRef, scope)`. */
@@ -505,8 +520,8 @@ export function getModuleLorebooks(chatRef?: ModuleChatRef, scope?: PresetScope)
     return lorebooks;
 }
 
-export function getModuleAssets(chatRef?: ModuleChatRef) {
-    const modules = getModules(chatRef);
+/** The assets of `modules` (default: `getModules(chatRef)`), in order. */
+export function getModuleAssets(chatRef?: ModuleChatRef, modules: RisuModule[] = getModules(chatRef)) {
     let assets: [string, string, string][] = [];
     for (const module of modules) {
         if (!module) {

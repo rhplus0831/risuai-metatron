@@ -34,7 +34,7 @@
         chatBindingDialog,
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
-    import { tick } from "svelte";
+    import { tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
@@ -89,7 +89,6 @@
     let messageInput: string = $state("");
     let messageInputTranslate: string = $state("");
     let openMenu = $state(false);
-    let loadPages = $state(getInitialChatLoadPages(settings.ui));
     let autoMode = $state(false);
     let rerolls: Message[][] = [];
     let rerollid = -1;
@@ -115,6 +114,16 @@
         return ref !== null && chatBinding(ref)?.ok === false;
     });
     let messages = $derived(currentChat?.message ?? []);
+    // The open chat's identity: only a switch to another chat resets `loadPages`.
+    let chatKey = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref === null ? null : chatKeyOf(ref);
+    });
+    // How many messages are rendered from the end; loading more raises it, until another chat opens.
+    let loadPages = $derived.by(() => {
+        chatKey;
+        return untrack(() => getInitialChatLoadPages(settings.ui));
+    });
 
     function scrollToBottom() {
         chatsInstance?.scrollToLatestMessage();
@@ -606,10 +615,11 @@
                 mergedCanvas.remove();
             }
             alertNormal(language.screenshotSaved);
-            loadPages = getInitialChatLoadPages(settings.ui);
         } catch (error) {
             console.error(error);
             alertError("Error while taking screenshot");
+        } finally {
+            loadPages = getInitialChatLoadPages(settings.ui);
         }
     }
 </script>
