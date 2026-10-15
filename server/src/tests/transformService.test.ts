@@ -610,3 +610,79 @@ describe("the transform cache probe", () => {
         await service.close();
     });
 });
+
+describe("the transform load", () => {
+    const signal = () => new AbortController().signal;
+    const character = (chaId: string) => ({
+        chaId,
+        type: "character",
+        name: chaId.toUpperCase(),
+        firstMessage: "hi",
+        desc: "",
+        globalLore: [],
+        customscript: [],
+        triggerscript: [],
+    });
+
+    it("reads the owner, its members, the targets' sources, and the chat's speakers, not every character", async () => {
+        const h = open();
+        h.setHold(false);
+        const characters = h.kinds.get("characters")!;
+        for (const id of ["b", "source", "former", "outsider"]) {
+            h.store.put(characters, id, character(id), null);
+        }
+        h.store.put(
+            characters,
+            "g",
+            { chaId: "g", type: "group", name: "G", firstMessage: "", desc: "", characters: ["a", "b"] },
+            null,
+        );
+        // `former` spoke in the chat but is no longer a member.
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "g",
+                    chatId: "gk",
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                id: "gk",
+                                name: "GK",
+                                message: [{ role: "char", data: "earlier", saying: "former", chatId: "m1" }],
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        const base = h.request("c");
+        const request: TransformRequest = {
+            ...base,
+            context: { ...base.context, characterId: "g", chatId: "gk" },
+            targets: [...base.targets, { ...h.request("d").targets[0], sourceId: "source" }],
+        };
+        const readKinds = vi.spyOn(h.store, "readKinds");
+        const readRefs = vi.spyOn(h.store, "readRefs");
+        const service = createTransformService(h.deps);
+
+        // Each target renders with its own source: `a`'s regex scripts run, `source` has none.
+        const response = await service.transform(request, signal());
+        expect(response.results).toMatchObject([
+            { id: "c", ok: true, text: "Xc!", cached: false },
+            { id: "d", ok: true, text: "Xd", cached: false },
+        ]);
+        expect(readKinds).toHaveBeenCalled();
+        for (const [kindList] of readKinds.mock.calls) {
+            expect(kindList.map((kind) => kind.name)).not.toContain("characters");
+        }
+        const read = new Set(
+            readRefs.mock.calls.flatMap(([refs]) =>
+                refs.filter((ref) => ref.kind.name === "characters").map((ref) => ref.id),
+            ),
+        );
+        expect(read).toEqual(new Set(["g", "a", "b", "source", "former"]));
+        await service.close();
+    });
+});

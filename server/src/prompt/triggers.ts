@@ -230,9 +230,16 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * Character fields no trigger effect writes, shared with the source instead of copied: a card's
- * asset lists can hold 100,000 entries, and a render copies the character for every message.
+ * asset lists can hold 100,000 entries, the job's chat its whole message list (a run reads the chat
+ * from its argument and copies that; CBS only finds a group's chat here), and a render copies the
+ * character for every message.
  */
-const SHARED_CHARACTER_FIELDS: ReadonlySet<string> = new Set(["additionalAssets", "emotionImages", "ccAssets"]);
+const SHARED_CHARACTER_FIELDS: ReadonlySet<string> = new Set([
+    "additionalAssets",
+    "emotionImages",
+    "ccAssets",
+    "chats",
+]);
 
 /** A run's copy of a character: deep, except the shared fields (the source's arrays), in the source's key order. */
 function triggerCopy(source: character): character {

@@ -23,7 +23,7 @@ import {
     SECTION_KIND,
 } from "../../../shared/sections.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
-import type { ResourceStore } from "../data/resourceStore.ts";
+import { isValidResourceId, type ResourceStore, type StoredResource } from "../data/resourceStore.ts";
 import { loadRequestDb, type LoadedRequestDb } from "../llm/settings.ts";
 import {
     bindingLookup,
@@ -122,20 +122,73 @@ export function jobScopeKinds(kinds: ResourceKindRegistry): ResourceKind[] {
 }
 
 /**
+ * The chat's owner and the characters `pick` names, read by id (a missing one left out), the owner
+ * first; none when the chat or its owner is gone (the load then fails as a full read would).
+ */
+function readCharacters(
+    store: ResourceStore,
+    charactersKind: ResourceKind,
+    context: GenerationContext,
+    chat: unknown,
+    pick: (chat: Chat, owner: character | groupChat) => Iterable<string>,
+): StoredResource<unknown>[] {
+    const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
+    if (!chat || ownerRead.data === null || ownerRead.revision === null) {
+        return [];
+    }
+    const records: StoredResource<unknown>[] = [
+        { id: context.characterId, revision: ownerRead.revision, data: ownerRead.data },
+    ];
+    // An id no record can have (a stray `saying`, say) is one a full read would not find either.
+    const ids = new Set<string>();
+    for (const id of pick(chat as Chat, ownerRead.data as character | groupChat)) {
+        if (id !== context.characterId && isValidResourceId(id)) {
+            ids.add(id);
+        }
+    }
+    const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
+    for (const item of others) {
+        if (item.data !== null && item.revision !== null) {
+            records.push({ id: item.id, revision: item.revision, data: item.data });
+        }
+    }
+    return records;
+}
+
+/**
  * Reads the job's scope in consecutive synchronous store reads (no await between them, so one
  * committed state). The ids are the ones the client sent: they are checked against the chat's
  * binding first (`binding`, default `send`; `ChatBindingError` 409), then a missing character,
  * chat, prompt or model preset, or persona fails the job (`GenerationRunnerError` 404), never a
  * redirect to another record.
+ *
+ * `characters` limits the characters read (every one by default) to the chat's owner and the ids it
+ * returns for the chat and the owner's record; a missing one is left out, as it is from a full read.
  */
 export function loadJobScope(
     store: ResourceStore,
     kinds: ResourceKindRegistry,
     context: GenerationContext,
-    options: { binding?: ChatBindingMode } = {},
+    options: {
+        binding?: ChatBindingMode;
+        characters?: (chat: Chat, owner: character | groupChat) => Iterable<string>;
+    } = {},
 ): JobScope {
-    const read = store.readKinds(jobScopeKinds(kinds));
+    const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
+    const read = store.readKinds(
+        options.characters ? jobScopeKinds(kinds).filter((kind) => kind !== charactersKind) : jobScopeKinds(kinds),
+    );
     const chatRead = store.readRefs([], { chats: [{ characterId: context.characterId, id: context.chatId }] });
+    const pickCharacters = options.characters;
+    if (pickCharacters) {
+        read.kinds[RESOURCE_KIND.characters] = readCharacters(
+            store,
+            charactersKind,
+            context,
+            chatRead.chats[0]?.data,
+            pickCharacters,
+        );
+    }
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 
     const db: Record<string, unknown> = {};

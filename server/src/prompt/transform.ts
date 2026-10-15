@@ -99,6 +99,24 @@ function canonical(value: unknown): string {
     );
 }
 
+/**
+ * The characters a render reads besides the chat's owner: a group's members, every target's source,
+ * and every message's speaker (a group's last speaker is the CBS character, a speaker's name enters
+ * lore matching). The rest are never read, so the load parses none of them.
+ */
+function renderedCharacters(chat: Chat, owner: character | groupChat, targets: readonly TransformTarget[]): string[] {
+    const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
+    for (const target of targets) {
+        ids.push(target.sourceId);
+    }
+    for (const message of chat.message ?? []) {
+        if (message.saying) {
+            ids.push(message.saying);
+        }
+    }
+    return ids;
+}
+
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Aborts `controller` when `signal` aborts (at once when it already has); returns the unlink. */
@@ -414,9 +432,10 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     /**
      * The request's results from the cache alone, when every target has an entry: it reads the
      * revisions and the chat's metadata (no record's data, no message), so a render the cache
-     * answers never loads the job scope (every character and module parsed). Null when a target
-     * must run, the owner's members are not known for its revision, or the chat is gone: the
-     * request then loads as before (and its load reports a missing record or a binding refusal).
+     * answers never loads the job scope (the sections, presets, modules, and rendered characters
+     * parsed). Null when a target must run, the owner's members are not known for its revision, or
+     * the chat is gone: the request then loads as before (and its load reports a missing record or
+     * a binding refusal).
      */
     const cachedResults = (request: TransformRequest, epoch: string): TransformResult[] | null => {
         if (request.targets.length === 0 || request.targets.some((target) => target.noCache)) {
@@ -605,7 +624,10 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             };
             // A render, read-only: the chat's bound fields that exist must be the ones sent; an
             // unset or gone field renders with the tab's (`docs/plan/chat-binding.md`).
-            const scope = loadJobScope(store, kinds, context, { binding: "display" });
+            const scope = loadJobScope(store, kinds, context, {
+                binding: "display",
+                characters: (chat, owner) => renderedCharacters(chat, owner, request.targets),
+            });
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: createLuaBudget(), cbsUsage: { usedMs: 0 } };
             const base = baseKey(request, scope.revisions, scope.characterId, scopeMembers(scope), life.epoch, chat);
