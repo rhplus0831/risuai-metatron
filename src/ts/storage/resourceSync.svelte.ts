@@ -50,6 +50,7 @@ import {
     applyRawCharacter,
     characterData,
     characterFieldStamp,
+    moduleItemFieldStamp,
     patchRawCharacter,
     recordData,
     REMOVE_FIELD,
@@ -224,6 +225,12 @@ type FieldTextCache = {
 };
 /** The field-text caches of the characters projected last, oldest first (`characterProjection`). */
 const characterTexts = new Map<string, FieldTextCache>();
+/**
+ * Only the last live modules projection: one source text, with per-element field spans. Rebuilt
+ * each cycle so retained/removed elements cannot keep older source texts alive through this cache.
+ * Identity, not id: duplicate ids disable patches, but do not disable field-text reuse.
+ */
+let moduleTexts: { source: string; items: WeakMap<object, FieldTextCache["fields"]> } | null = null;
 /** At most this many characters, and this many UTF-16 units of their texts, are cached. */
 const CHARACTER_TEXTS_MAX = 8;
 const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
@@ -314,6 +321,7 @@ export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
     characterTexts.clear();
+    moduleTexts = null;
     for (const [kind, records] of Object.entries(result.kinds)) {
         for (const record of records) {
             persisted.set(recordKey(kind, record.id), {
@@ -444,7 +452,7 @@ function projectCollection(collection: Collection): string | undefined {
         return JSON.stringify(ordered);
     }
     if (collection === RESOURCE_KIND.modules) {
-        return itemProjection(record).text;
+        return moduleProjection(record).text;
     }
     // User-chosen keys (plugin storage, a preset's `seperateParameters.overrides`, the credential
     // maps): serialized straight from the live record; `$state.snapshot` would drop an own
@@ -555,10 +563,72 @@ function itemProjection(list: unknown): Projection {
 function collectionProjection(collection: Collection): Projection | undefined {
     if (collection === RESOURCE_KIND.modules) {
         const record = recordData(collection);
-        return record === undefined ? undefined : itemProjection(record);
+        return record === undefined ? undefined : moduleProjection(record);
     }
     const text = projectCollection(collection);
     return text === undefined ? undefined : { text, parts: null };
+}
+
+/**
+ * The live modules list, reusing each element field while its value and stamp match. Every live
+ * projection goes here; `baseParts` uses the uncached `itemProjection` on parsed persisted data.
+ * Root list moves preserve identity, so only fields written since the last projection stringify.
+ * Uncacheable records and shapes with JSON hooks use whole serialization, with no cache or parts.
+ */
+function moduleProjection(list: unknown): Projection {
+    const cached = moduleTexts;
+    moduleTexts = null;
+    if (!Array.isArray(list) || hasJsonHook(list) || moduleItemFieldStamp(list, "") === null) {
+        return { text: JSON.stringify(list), parts: null };
+    }
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    const items = new WeakMap<object, FieldTextCache["fields"]>();
+    const spans: { start: number; end: number; fields: FieldSpan[] }[] = [];
+    write(writer, "[");
+    for (let index = 0; index < list.length; index += 1) {
+        const item = list[index];
+        if (!isPlainObject(item) || hasJsonHook(item)) {
+            return { text: JSON.stringify(list), parts: null };
+        }
+        const fields: [string, string][] = [];
+        const sources: { value: unknown; stamp: number }[] = [];
+        const previous = cached?.items.get(item);
+        for (const key of Object.keys(item)) {
+            const value = item[key];
+            const stamp = moduleItemFieldStamp(item, key);
+            if (stamp === null || hasJsonHook(value)) {
+                return { text: JSON.stringify(list), parts: null };
+            }
+            const hit = previous?.get(key);
+            const text =
+                hit && hit.stamp === stamp && Object.is(hit.value, value)
+                    ? cached!.source.slice(hit.start, hit.end)
+                    : JSON.stringify(value);
+            if (text !== undefined) {
+                fields.push([key, text]);
+                sources.push({ value, stamp });
+            }
+        }
+        if (index > 0) {
+            write(writer, ",");
+        }
+        const start = writer.length;
+        const fieldSpans = objectSpans(writer, fields);
+        spans.push({ start, end: writer.length, fields: fieldSpans });
+        items.set(item, new Map(fieldSpans.map(([key, start, end], i) => [key, { ...sources[i], start, end }])));
+    }
+    write(writer, "]");
+    const text = writer.pieces.join("");
+    if (import.meta.env.DEV && text !== JSON.stringify(list)) {
+        // A missed stamp would lose an edit. Reported, not repaired, as for characters.
+        console.error("[Save] modules: the field-text cache differs from a whole serialization");
+    }
+    moduleTexts = { source: text, items };
+    const ids = itemIds(list);
+    return {
+        text,
+        parts: ids ? { type: "items", source: text, items: spans.map((span, i) => ({ id: ids[i], ...span })) } : null,
+    };
 }
 
 /**

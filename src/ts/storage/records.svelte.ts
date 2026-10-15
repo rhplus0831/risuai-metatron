@@ -53,6 +53,9 @@ import { writeEntries } from "./mutationValidation";
  *   detached copy, so a record never holds a wrapper or shares another object's state. Array mutators
  *   run in a mutator scope (the elements they displace are written back as they were read), and an
  *   element a write displaced in the current task may be assigned back (an indexed swap).
+ *   Plain JSON written under a character or `modules` is copied. Their field-text caches are
+ *   disabled by non-JSON data or state shared across cached fields; modules may move whole elements
+ *   between root list slots without disabling the cache, which follows element identity, not id.
  * - An own `__proto__` (or other inherited-name) key is rebuilt through `writeEntries`.
  * - Writes and replacements run untracked; comparisons use `Object.is` (in dev, Svelte compiles `===`
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
@@ -249,14 +252,17 @@ interface RecordMeta {
     /** For a character owner: the epoch of a raw change of one top-level field (`patchRawCharacter`). */
     fieldEpochs: Map<string, number>;
     /**
-     * For a character owner, the save loop's field-text stamps (`characterFieldStamp`): `lifetime` is
+     * For a character owner or modules, the save loop's field-text stamps: `lifetime` is
      * taken when the owner's data is fresh (created, installed, replaced from the server), and
-     * `fieldStamps` per top-level field at every change under it (a write through a wrapper, a raw
-     * patch). `uncacheable`: data entered whose JSON could change without either (state shared between
-     * fields, a value that is not plain JSON data); sticky until the data is fresh again.
+     * `fieldStamps` per character field / `itemFieldStamps` per module element field at every change
+     * under it (a wrapper write, a raw character patch). `uncacheable`: data whose JSON could change
+     * without either (state shared between fields, a value that is not plain JSON data); sticky until
+     * the data is fresh again.
      */
     lifetime: number;
     fieldStamps: Map<string, number>;
+    /** For `modules`: stamps by element identity, then its top-level field (ids may repeat). */
+    itemFieldStamps: WeakMap<object, Map<string, number>>;
     uncacheable: boolean;
     children: WeakMap<object, TrackedNode>;
     /** The `$state` objects this record's wrappers have reached (a written proxy that is one is stored as is). */
@@ -283,6 +289,7 @@ function metaOf(kind: string, list: RecordMeta | null = null, chaId: string | nu
             fieldEpochs: new Map(),
             lifetime: (stampCounter += 1),
             fieldStamps: new Map(),
+            itemFieldStamps: new WeakMap(),
             uncacheable: false,
             children: new WeakMap(),
             owned: new WeakSet(),
@@ -326,11 +333,12 @@ function stampField(meta: RecordMeta, field: string) {
     meta.fieldStamps.set(field, stampCounter);
 }
 
-/** A character's data is fresh (detached JSON): every field-text stamp changes, nothing is shared. */
+/** A character's or modules' data is fresh (detached JSON): all stamps change, nothing is shared. */
 function renewStamps(meta: RecordMeta) {
     stampCounter += 1;
     meta.lifetime = stampCounter;
     meta.fieldStamps.clear();
+    meta.itemFieldStamps = new WeakMap();
     meta.uncacheable = false;
 }
 
@@ -349,6 +357,18 @@ function renewStamps(meta: RecordMeta) {
 export function characterFieldStamp(chaId: string, field: string): number | null {
     const meta = characterOwner(chaId);
     return meta.uncacheable ? null : (meta.fieldStamps.get(field) ?? meta.lifetime);
+}
+
+/**
+ * A live modules element's top-level field stamp. Equal stamp and value identity mean equal JSON.
+ * Writes anywhere under the field stamp it; root list moves keep the element's stamps. Null for
+ * the whole record after an adoption that may allow unstamped edits (`adoptModuleValue`), until
+ * `applyRaw`/`initializeRecords` installs detached JSON again. The argument is the `$state` element
+ * from `recordData("modules")`, not its wrapper or id.
+ */
+export function moduleItemFieldStamp(element: object, field: string): number | null {
+    const meta = metaOf("modules");
+    return meta.uncacheable ? null : (meta.itemFieldStamps.get(element)?.get(field) ?? meta.lifetime);
 }
 
 /**
@@ -436,10 +456,22 @@ function queueMembership() {
 /**
  * Queues the write a change under `node` made: its settings kind, or the character it is in. Under a
  * character it stamps the top-level field changed (`characterFieldStamp`): the one `node` descends
- * from, or `prop` written on the character element itself.
+ * from, or `prop` written on the character element itself. Under modules it stamps the resolved
+ * element's top-level field; root list writes change membership/order, not existing field texts.
  */
 function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
     if (node.kind !== CHARACTERS) {
+        if (node.kind === "modules") {
+            const place = modulePlace(node, prop);
+            if (place?.type === "field") {
+                let fields = node.meta.itemFieldStamps.get(place.element);
+                if (!fields) {
+                    fields = new Map();
+                    node.meta.itemFieldStamps.set(place.element, fields);
+                }
+                fields.set(place.field, (stampCounter += 1));
+            }
+        }
         queueRecordWrite(node.kind);
     } else if (node.meta.chaId !== null) {
         const field = node.field ?? (typeof prop === "string" ? prop : null);
@@ -488,6 +520,9 @@ export function recordData<T = unknown>(kind: RecordKind): T | undefined {
  */
 export function applyRaw(kind: RecordKind, data: unknown) {
     bumpEpoch(metaOf(kind));
+    if (kind === "modules") {
+        renewStamps(metaOf(kind));
+    }
     untrack(() => {
         if (data === undefined) {
             delete records[kind];
@@ -568,7 +603,10 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
             assertNoLlmCredential(value);
         }
         const prepared = prepareEntryCredentials(kind, value, true);
-        const plain = unwrap(prepared.value, metaOf(kind));
+        const plain =
+            kind === "modules"
+                ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
+                : unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
         prepared.route();
     });
@@ -598,7 +636,10 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
             stored = write.value;
             route = write.route;
         }
-        const plain = unwrap(stored, metaOf(kind));
+        const plain =
+            kind === "modules"
+                ? adoptModuleValue(stored, metaOf(kind), isIndex(field) ? { type: "item" } : null)
+                : unwrap(stored, metaOf(kind));
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
@@ -1188,6 +1229,7 @@ function containsRecordState(value: unknown, seen = new Set<object>()): value is
  * - a wrapper of another record stores a detached copy;
  * - a Svelte proxy the record owns is stored as is; any other Svelte proxy a detached copy;
  * - a plain object or array is kept, with the wrappers in it replaced in place by these rules.
+ * Character and module writes first use their adoption rules, which copy plain JSON inputs.
  */
 function unwrap(value: unknown, meta: RecordMeta, seen = new Set<object>()): unknown {
     if (!isObject(value)) {
@@ -1240,6 +1282,155 @@ function unwrapInto(
     taint: Pick<RecordMeta, "uncacheable"> = meta,
 ): unknown {
     return meta.chaId === null ? unwrap(value, meta) : adoptCharacterValue(value, meta, field, taint);
+}
+
+type ModulePlace = { type: "list" } | { type: "item" } | { type: "field"; element: object; field: string } | null;
+
+/**
+ * Where an already resolved node (or a property written on it) stands in modules. Use its current
+ * ancestor targets, never a stored element on a positional node: a raw replacement retargets it.
+ * For assignment sources this runs after `assignedTarget`, preserving mutator/displacement rules.
+ */
+function modulePlace(node: TrackedNode, prop?: string | symbol): ModulePlace {
+    if (node.parent === null) {
+        return prop === undefined
+            ? { type: "list" }
+            : typeof prop === "string" && isIndex(prop)
+              ? { type: "item" }
+              : null;
+    }
+    let element = node;
+    let field = prop;
+    while (element.parent!.parent !== null) {
+        if (element.step.type !== "key") {
+            return null;
+        }
+        field = element.step.key;
+        element = element.parent!;
+    }
+    if (element.step.type !== "key" || !isIndex(element.step.key)) {
+        return null;
+    }
+    return field === undefined
+        ? { type: "item" }
+        : typeof field === "string" && element.target !== undefined
+          ? { type: "field", element: element.target, field }
+          : null;
+}
+
+/** The adoption path for a wrapper write, after its destination resolved. */
+function unwrapNodeValue(
+    value: unknown,
+    node: TrackedNode,
+    prop?: string | symbol,
+    taint: Pick<RecordMeta, "uncacheable"> = node.meta,
+): unknown {
+    if (node.kind === "modules") {
+        if (typeof prop === "symbol" || prop === "toJSON") {
+            taint.uncacheable = true;
+        }
+        return adoptModuleValue(value, node.meta, modulePlace(node, prop), taint);
+    }
+    return unwrapInto(value, node.meta, node.field ?? (typeof prop === "string" ? prop : null), taint);
+}
+
+/**
+ * Module adoption: copy plain inputs; keep own state only with a sound cache provenance. A whole
+ * element may move between root slots, and a value may stay under the same element field. All other
+ * own-state reuse taints the record. Foreign state is detached. Non-JSON inputs keep `unwrap`'s
+ * behavior but taint: their text might change without a wrapper write.
+ */
+function adoptModuleValue(
+    value: unknown,
+    meta: RecordMeta,
+    place: ModulePlace,
+    taint: Pick<RecordMeta, "uncacheable"> = meta,
+): unknown {
+    if (typeof value === "function") {
+        taint.uncacheable = true;
+        return value;
+    }
+    if (!isObject(value)) {
+        return value;
+    }
+    const node = nodeOf.get(value);
+    if (node ? node.meta === meta : STATE in value && meta.owned.has(value)) {
+        const target = node ? assignedTarget(node) : value;
+        const source = node ? modulePlace(node) : null;
+        const same =
+            source &&
+            place &&
+            source.type === place.type &&
+            (source.type !== "field" ||
+                (place.type === "field" && Object.is(source.element, place.element) && source.field === place.field));
+        if (!same) {
+            taint.uncacheable = true;
+        }
+        return target;
+    }
+    if (node || STATE in value) {
+        const copy = detachedCopy(value);
+        if (moduleInertCopy(copy as object, meta, place, new Set(), taint) === NOT_INERT) {
+            taint.uncacheable = true;
+        }
+        return copy;
+    }
+    const copy = moduleInertCopy(value, meta, place, new Set(), taint);
+    if (copy === NOT_INERT) {
+        taint.uncacheable = true;
+        return unwrap(value, meta);
+    }
+    return copy;
+}
+
+/** `inertCopy` for modules: only direct children of a root list may reuse whole elements. */
+function moduleInertCopy(
+    value: object,
+    meta: RecordMeta,
+    place: ModulePlace,
+    path: Set<object>,
+    taint: Pick<RecordMeta, "uncacheable">,
+): unknown {
+    const isArray = Array.isArray(value);
+    if (Object.getPrototypeOf(value) !== (isArray ? Array.prototype : Object.prototype) || path.has(value)) {
+        return NOT_INERT;
+    }
+    path.add(value);
+    const out: any = isArray ? [] : {};
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key === "symbol" || key === "toJSON") {
+            return NOT_INERT;
+        }
+        if (isArray && key === "length") {
+            continue;
+        }
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, key)!;
+        if (!("value" in descriptor) || !descriptor.enumerable || typeof descriptor.value === "function") {
+            return NOT_INERT;
+        }
+        let entry: unknown = descriptor.value;
+        if (isObject(entry)) {
+            const destination =
+                place?.type === "field"
+                    ? place
+                    : place?.type === "list" && isIndex(key)
+                      ? ({ type: "item" } as const)
+                      : null;
+            entry =
+                nodeOf.has(entry) || STATE in entry
+                    ? adoptModuleValue(entry, meta, destination, taint)
+                    : moduleInertCopy(entry, meta, destination, path, taint);
+            if (entry === NOT_INERT) {
+                return NOT_INERT;
+            }
+        }
+        Object.defineProperty(out, key, { value: entry, enumerable: true, writable: true, configurable: true });
+    }
+    if (isArray) {
+        out.length = (value as unknown[]).length;
+    }
+    path.delete(value);
+    return out;
 }
 
 /** `inertCopy`'s answer for a value that is not plain JSON data. */
@@ -1510,6 +1701,12 @@ function assignsInheritedName(target: object, prop: string): boolean {
 
 /** Puts a rebuilt container where `node`'s object was. */
 function install(node: TrackedNode, next: object) {
+    if (node.kind === "modules" && modulePlace(node)?.type === "item" && Object.values(node.target!).some(isObject)) {
+        // Rebuilding an element for an own inherited-name key keeps its child objects. The old
+        // element may still occupy another slot, or be reinserted from `displaced`: two element
+        // identities would then share fields, whose writes can stamp only one of them.
+        node.meta.uncacheable = true;
+    }
     if (node.parent === null) {
         records[node.kind] = next;
         return;
@@ -1641,7 +1838,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
     const plain =
         mutatorWriteback?.node === node && isIndex(prop) && mutatorWriteback.values.has(incoming)
             ? incoming
-            : unwrapInto(incoming, node.meta, node.field ?? prop);
+            : unwrapNodeValue(incoming, node, prop);
     if (!Array.isArray(target) && assignsInheritedName(target, prop)) {
         install(node, writeEntries(target, [[prop, plain]])!);
     } else {
@@ -1697,7 +1894,12 @@ function planMutator(
             routes.push(prepared.route);
             owners.push(...prepared.owners);
         }
-        const plain = unwrapInto(value, node.meta, node.field, taint);
+        const plain = unwrapNodeValue(
+            value,
+            node,
+            node.kind === "modules" && node.parent === null ? "0" : undefined,
+            taint,
+        );
         values.add(plain);
         return plain;
     });
@@ -1815,6 +2017,11 @@ function createNode(
             if (typeof prop === "symbol") {
                 return untrack(() => {
                     const resolved = resolve(node);
+                    if (node.kind === "modules") {
+                        const done = Reflect.set(resolved, prop, unwrapNodeValue(value, node, prop));
+                        queueNodeWrite(node, prop);
+                        return done;
+                    }
                     return Reflect.set(
                         resolved,
                         prop,
@@ -1896,11 +2103,7 @@ function createNode(
                     "value" in descriptor
                         ? {
                               ...descriptor,
-                              value: unwrapInto(
-                                  descriptor.value,
-                                  node.meta,
-                                  node.field ?? (typeof prop === "string" ? prop : null),
-                              ),
+                              value: unwrapNodeValue(descriptor.value, node, prop),
                           }
                         : descriptor;
                 const done = Reflect.defineProperty(resolved, prop, prepared);
@@ -2038,7 +2241,7 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
         const prepared = isEntryList(node)
             ? prepareEntryCredentials(node.kind, [...items], true)
             : { value: [...items], route: () => {} };
-        const plain = unwrapInto(prepared.value, node.meta, node.field) as unknown[];
+        const plain = unwrapNodeValue(prepared.value, node) as unknown[];
         // The elements the replacement drops count as displaced (a same-task re-insertion is allowed).
         const kept = new Set<unknown>(plain);
         for (const old of Array.from(target)) {
