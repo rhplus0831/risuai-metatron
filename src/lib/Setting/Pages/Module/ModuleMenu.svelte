@@ -12,10 +12,12 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import { getFileSrc, saveAsset, downloadFile } from "src/ts/globalApi.svelte";
+    import { saveAsset, downloadFile } from "src/ts/globalApi.svelte";
     import { alertNormal, alertError } from "src/ts/alert";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
-    import { selectMultipleFile } from "src/ts/util";
+    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile } from "src/ts/util";
+    import Button from "src/lib/UI/GUI/Button.svelte";
+    import LazyFileSrc from "src/lib/UI/GUI/LazyFileSrc.svelte";
 
     import { v4 } from "uuid";
 
@@ -25,22 +27,11 @@
     }
 
     let { currentModule = $bindable() }: Props = $props();
-    let assetFileExtensions: string[] = $state([]);
-    let assetFilePath: string[] = $state([]);
-
-    $effect.pre(() => {
-        if (settings.ui.useAdditionalAssetsPreview) {
-            if (currentModule?.assets) {
-                for (let i = 0; i < currentModule.assets.length; i++) {
-                    if (currentModule.assets[i].length > 2 && currentModule.assets[i][2]) {
-                        assetFileExtensions[i] = currentModule.assets[i][2];
-                    } else assetFileExtensions[i] = currentModule.assets[i][1].split(".").pop();
-                    getFileSrc(currentModule.assets[i][1]).then((filePath) => {
-                        assetFilePath[i] = filePath;
-                    });
-                }
-            }
-        }
+    // The asset rows rendered (each loads its preview once near the viewport); back to a page per module.
+    const assetsOwnerId = $derived(currentModule?.id);
+    let shownAssets = $derived.by(() => {
+        assetsOwnerId;
+        return ASSET_LIST_PAGE;
     });
 
     function addLorebook() {
@@ -338,22 +329,27 @@
                         <td colspan="3">{language.noData}</td>
                     </tr>
                 {:else}
-                    {#each currentModule.assets as assets, i}
+                    {#each currentModule.assets.slice(0, shownAssets) as assets, i}
+                        {@const extension = assetExtension(assets)}
                         <tr>
                             <td class="font-medium truncate">
-                                {#if assetFilePath[i] && settings.ui.useAdditionalAssetsPreview}
-                                    {#if assetFileExtensions[i] === "mp4"}
-                                        <!-- svelte-ignore a11y_media_has_caption -->
-                                        <video controls class="mt-2 px-2 w-full m-1 rounded-md"
-                                            ><source src={assetFilePath[i]} type="video/mp4" /></video
-                                        >
-                                    {:else if assetFileExtensions[i] === "mp3"}
-                                        <audio controls class="mt-2 px-2 w-full h-16 m-1 rounded-md" loop
-                                            ><source src={assetFilePath[i]} type="audio/mpeg" /></audio
-                                        >
-                                    {:else}
-                                        <img src={assetFilePath[i]} class="w-16 h-16 m-1 rounded-md" alt={assets[0]} />
-                                    {/if}
+                                {#if settings.ui.useAdditionalAssetsPreview}
+                                    <LazyFileSrc path={assets[1]}>
+                                        {#snippet children(src)}
+                                            {#if extension === "mp4"}
+                                                <!-- svelte-ignore a11y_media_has_caption -->
+                                                <video controls class="mt-2 px-2 w-full m-1 rounded-md"
+                                                    ><source {src} type="video/mp4" /></video
+                                                >
+                                            {:else if extension === "mp3"}
+                                                <audio controls class="mt-2 px-2 w-full h-16 m-1 rounded-md" loop
+                                                    ><source {src} type="audio/mpeg" /></audio
+                                                >
+                                            {:else}
+                                                <img {src} class="w-16 h-16 m-1 rounded-md" alt={assets[0]} />
+                                            {/if}
+                                        {/snippet}
+                                    </LazyFileSrc>
                                 {/if}
                                 <TextInput
                                     fullwidth
@@ -378,6 +374,15 @@
                             </th>
                         </tr>
                     {/each}
+                    {#if currentModule.assets.length > shownAssets}
+                        <tr>
+                            <td colspan="2">
+                                <Button className="w-full mt-2" onclick={() => (shownAssets += ASSET_LIST_PAGE)}>
+                                    {language.loadMore}
+                                </Button>
+                            </td>
+                        </tr>
+                    {/if}
                 {/if}
             </tbody>
         </table>

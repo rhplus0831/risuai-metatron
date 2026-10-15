@@ -212,6 +212,14 @@ export function getCharacterIndexObject() {
     return result;
 }
 
+/** An asset tuple's (`[name, path, ext?]`) extension: its stored one, else its path's. */
+export function assetExtension(asset: readonly string[]): string {
+    return asset.length > 2 && asset[2] ? asset[2] : (asset[1].split(".").pop() ?? "");
+}
+
+/** How many asset rows an asset list renders at first and adds per "Load More". */
+export const ASSET_LIST_PAGE = 100;
+
 export function defaultEmotion(em: [string, string][]) {
     if (!em) {
         return "";

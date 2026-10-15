@@ -62,6 +62,7 @@ GUI primitives (`src/lib/UI/GUI/*`):
 
 - `Button`, `IconButton`, `CheckInput`, `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput`, `SegmentedControl`, `SliderInput` (`-1000` means disabled; a touch or pen drags only after it moves sideways past a slop, a vertical move is left to page scrolling, and a tap sets the value through its click), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
 - `Portal`/`PortalConsumer`/`LazyPortal`.
+- `LazyFileSrc`: reads a stored file's `getFileSrc` URL only once its wrapper nears the viewport (an `IntersectionObserver`, 200px margin) and renders its snippet with it. The asset lists (`AssetInput`, `CharConfig`, `ModuleMenu`) preview through it and render `ASSET_LIST_PAGE` (`src/ts/util.ts`) rows at a time behind a Load More button.
 - `SideBarArrow`.
 - `SyntaxHighlightedTextarea` is empty.
 
@@ -136,7 +137,7 @@ Theme and GUI helpers:
 
 ## Tests
 
-- `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only. `src/lib/UI/GUI/SecretInput.test.ts` (with `src/lib/UI/tests/reactiveProps.svelte.ts`): the credential input: the status without the value, a draft submitted once on Enter or the button and never on blur, nothing submitted empty, the draft dropped when the path changes, a clear queued without the draft.
+- `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only. `src/lib/UI/GUI/SecretInput.test.ts` (with `src/lib/UI/tests/reactiveProps.svelte.ts`): the credential input: the status without the value, a draft submitted once on Enter or the button and never on blur, nothing submitted empty, the draft dropped when the path changes, a clear queued without the draft. `src/lib/UI/GUI/LazyFileSrc.test.ts` (a stand-in `IntersectionObserver`): no read before the wrapper is seen, one read after, nothing shown for a failed read, a changed path waiting to be seen again without showing the previous file, a late result for an old path dropped, an immediate read without `IntersectionObserver`, the observer disconnected on unmount.
 - `src/ts/gui/guiRecords.test.ts`: `colorscheme`, `guisize`, and `animation` over the records, the plugin theme getters following the `ui` record and returning detached copies. `e2e/welcomeAndChatSettings.spec.ts` (sorted last: it changes the shared stack's settings): the first-run wizard on a fresh server (every answer in its section, preset, or persona; no key in the tab or a settings record), send with Enter, auto translate, icon size, the `waifu` theme, a module hiding icons, the playground pages, and the Iris modal.
 - Not tested: sidebar, mobile.
 

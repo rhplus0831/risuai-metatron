@@ -2,8 +2,11 @@
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { FileMusicIcon, PlusIcon } from "@lucide/svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
-    import { getFileSrc, saveAsset } from "src/ts/globalApi.svelte";
-    import { selectMultipleFile } from "src/ts/util";
+    import { saveAsset } from "src/ts/globalApi.svelte";
+    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile } from "src/ts/util";
+    import Button from "../UI/GUI/Button.svelte";
+    import LazyFileSrc from "../UI/GUI/LazyFileSrc.svelte";
+    import { language } from "../../lang";
     interface Props {
         currentCharacter: AnyClientCharacter;
         onSelect: (additionalAsset: [string, string, string]) => void;
@@ -11,25 +14,11 @@
 
     const { currentCharacter, onSelect }: Props = $props();
 
-    let assetFileExtensions: string[] = $state([]);
-    let assetFilePath: string[] = $state([]);
-
-    $effect.pre(() => {
-        if (currentCharacter.type === "character") {
-            if (currentCharacter.additionalAssets) {
-                for (let i = 0; i < currentCharacter.additionalAssets.length; i++) {
-                    // console.log('check content type ...', currentCharacter.additionalAssets[i][0], currentCharacter.additionalAssets[i][1]);
-                    if (currentCharacter.additionalAssets[i].length > 2 && currentCharacter.additionalAssets[i][2]) {
-                        assetFileExtensions[i] = currentCharacter.additionalAssets[i][2];
-                    } else {
-                        assetFileExtensions[i] = currentCharacter.additionalAssets[i][1].split(".").pop();
-                    }
-                    getFileSrc(currentCharacter.additionalAssets[i][1]).then((filePath) => {
-                        assetFilePath[i] = filePath;
-                    });
-                }
-            }
-        }
+    // The stickers rendered (each loads its preview once near the viewport); back to a page per character.
+    const ownerId = $derived(currentCharacter.chaId);
+    let shown = $derived.by(() => {
+        ownerId;
+        return ASSET_LIST_PAGE;
     });
 </script>
 
@@ -57,31 +46,36 @@
         <PlusIcon />
     </button>
     {#if currentCharacter.additionalAssets}
-        {#each currentCharacter.additionalAssets as additionalAsset, i}
+        {#each currentCharacter.additionalAssets.slice(0, shown) as additionalAsset}
+            {@const extension = assetExtension(additionalAsset)}
             <button
                 onclick={() => {
                     onSelect(additionalAsset);
                 }}
             >
-                {#if assetFilePath[i]}
-                    {#if assetFileExtensions[i] === "mp4"}
-                        <!-- svelte-ignore a11y_media_has_caption -->
-                        <video class="w-16 h-16 m-1 rounded-md"
-                            ><source src={assetFilePath[i]} type="video/mp4" /></video
-                        >
-                    {:else if assetFileExtensions[i] === "mp3"}
-                        <div class="w-16 h-16 m-1 rounded-md bg-slate-500 flex flex-col justify-center items-center">
-                            <FileMusicIcon />
-                            <div class="w-16 px-1 text-ellipsis whitespace-nowrap overflow-hidden">
-                                {additionalAsset[0]}
-                            </div>
+                {#if extension === "mp3"}
+                    <div class="w-16 h-16 m-1 rounded-md bg-slate-500 flex flex-col justify-center items-center">
+                        <FileMusicIcon />
+                        <div class="w-16 px-1 text-ellipsis whitespace-nowrap overflow-hidden">
+                            {additionalAsset[0]}
                         </div>
-                        <!-- <audio controls class="w-16 h-16 m-1 rounded-md"><source src={assetPath} type="audio/mpeg"></audio> -->
-                    {:else}
-                        <img src={assetFilePath[i]} class="w-16 h-16 m-1 rounded-md" alt={additionalAsset[0]} />
-                    {/if}
+                    </div>
+                {:else}
+                    <LazyFileSrc path={additionalAsset[1]} class="w-16 h-16 m-1">
+                        {#snippet children(src)}
+                            {#if extension === "mp4"}
+                                <!-- svelte-ignore a11y_media_has_caption -->
+                                <video class="w-16 h-16 rounded-md"><source {src} type="video/mp4" /></video>
+                            {:else}
+                                <img {src} class="w-16 h-16 rounded-md" alt={additionalAsset[0]} />
+                            {/if}
+                        {/snippet}
+                    </LazyFileSrc>
                 {/if}
             </button>
         {/each}
+        {#if currentCharacter.additionalAssets.length > shown}
+            <Button className="m-1" onclick={() => (shown += ASSET_LIST_PAGE)}>{language.loadMore}</Button>
+        {/if}
     {/if}
 {/if}

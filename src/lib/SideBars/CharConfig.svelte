@@ -40,7 +40,14 @@
     import LoreBook from "./LoreBook/LoreBookSetting.svelte";
     import { alertNormal, showHypaV2Alert } from "../../ts/alert";
     import BarIcon from "./BarIcon.svelte";
-    import { findCharacterbyId, getAuthorNoteDefaultText, selectMultipleFile, selectSingleFile } from "../../ts/util";
+    import {
+        ASSET_LIST_PAGE,
+        assetExtension,
+        findCharacterbyId,
+        getAuthorNoteDefaultText,
+        selectMultipleFile,
+        selectSingleFile,
+    } from "../../ts/util";
     import Help from "../Others/Help.svelte";
     import { exportChar } from "src/ts/characterCards";
     import {
@@ -50,12 +57,12 @@
         oaiVoices,
         getNovelAIVoices,
     } from "src/ts/process/tts";
-    import { getFileSrc } from "src/ts/globalApi.svelte";
     import { addGroupChar, rmCharFromGroup } from "src/ts/process/group";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import NumberInput from "../UI/GUI/NumberInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
+    import LazyFileSrc from "../UI/GUI/LazyFileSrc.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import RegexList from "./Scripts/RegexList.svelte";
@@ -106,8 +113,12 @@
         }
     }
 
-    let assetFileExtensions: string[] = $state([]);
-    let assetFilePath: string[] = $state([]);
+    // The asset rows rendered (each loads its preview once near the viewport); back to a page per character.
+    const assetsOwnerId = $derived(currentCharacter.chaId);
+    let shownAssets = $derived.by(() => {
+        assetsOwnerId;
+        return ASSET_LIST_PAGE;
+    });
     let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
 
     $effect.pre(() => {
@@ -123,27 +134,6 @@
         untrack(() => {
             loadTokenize(desc, firstMsg, localNote);
         });
-    });
-
-    $effect.pre(() => {
-        if (currentCharacter.type === "character" && settings.ui.useAdditionalAssetsPreview) {
-            if ((currentCharacter as character).additionalAssets) {
-                for (let i = 0; i < (currentCharacter as character).additionalAssets.length; i++) {
-                    if (
-                        (currentCharacter as character).additionalAssets[i].length > 2 &&
-                        (currentCharacter as character).additionalAssets[i][2]
-                    ) {
-                        assetFileExtensions[i] = (currentCharacter as character).additionalAssets[i][2];
-                    } else
-                        assetFileExtensions[i] = (currentCharacter as character).additionalAssets[i][1]
-                            .split(".")
-                            .pop();
-                    getFileSrc((currentCharacter as character).additionalAssets[i][1]).then((filePath) => {
-                        assetFilePath[i] = filePath;
-                    });
-                }
-            }
-        }
     });
 
     $effect.pre(() => {
@@ -791,26 +781,27 @@
                             <td class="text-textcolor2"> No Assets</td>
                         </tr>
                     {:else}
-                        {#each currentCharacter.additionalAssets as assets, i}
+                        {#each currentCharacter.additionalAssets.slice(0, shownAssets) as assets, i}
+                            {@const extension = assetExtension(assets)}
                             <tr>
                                 <td class="font-medium truncate">
-                                    {#if assetFilePath[i] && settings.ui.useAdditionalAssetsPreview}
-                                        {#if assetFileExtensions[i] === "mp4"}
-                                            <!-- svelte-ignore a11y_media_has_caption -->
-                                            <video controls class="mt-2 px-2 w-full m-1 rounded-md"
-                                                ><source src={assetFilePath[i]} type="video/mp4" /></video
-                                            >
-                                        {:else if assetFileExtensions[i] === "mp3"}
-                                            <audio controls class="mt-2 px-2 w-full h-16 m-1 rounded-md" loop
-                                                ><source src={assetFilePath[i]} type="audio/mpeg" /></audio
-                                            >
-                                        {:else if ["png", "webp", "jpeg", "jpg", "gif"].includes(assetFileExtensions[i])}
-                                            <img
-                                                src={assetFilePath[i]}
-                                                class="w-16 h-16 m-1 rounded-md"
-                                                alt={assets[0]}
-                                            />
-                                        {/if}
+                                    {#if settings.ui.useAdditionalAssetsPreview && ["mp4", "mp3", "png", "webp", "jpeg", "jpg", "gif"].includes(extension)}
+                                        <LazyFileSrc path={assets[1]}>
+                                            {#snippet children(src)}
+                                                {#if extension === "mp4"}
+                                                    <!-- svelte-ignore a11y_media_has_caption -->
+                                                    <video controls class="mt-2 px-2 w-full m-1 rounded-md"
+                                                        ><source {src} type="video/mp4" /></video
+                                                    >
+                                                {:else if extension === "mp3"}
+                                                    <audio controls class="mt-2 px-2 w-full h-16 m-1 rounded-md" loop
+                                                        ><source {src} type="audio/mpeg" /></audio
+                                                    >
+                                                {:else}
+                                                    <img {src} class="w-16 h-16 m-1 rounded-md" alt={assets[0]} />
+                                                {/if}
+                                            {/snippet}
+                                        </LazyFileSrc>
                                     {/if}
                                     <TextInput
                                         size="sm"
@@ -862,6 +853,15 @@
                                 </th>
                             </tr>
                         {/each}
+                        {#if currentCharacter.additionalAssets.length > shownAssets}
+                            <tr>
+                                <td colspan="2">
+                                    <Button className="w-full mt-2" onclick={() => (shownAssets += ASSET_LIST_PAGE)}>
+                                        {language.loadMore}
+                                    </Button>
+                                </td>
+                            </tr>
+                        {/if}
                     {/if}
                 </tbody>
             </table>
