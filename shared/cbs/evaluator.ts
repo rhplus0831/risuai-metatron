@@ -20,7 +20,7 @@ import type { CBSRegisterArg, CbsConditions, CbsDatabase, RegisterCallback, matc
  * and `dateTimeFormat` uses the runtime's timezone); an evaluator registers the functions on first
  * use.
  *
- * A host with `limits` (`limits.ts`: the server) gets a bounded evaluator: a top-level
+ * A host with `limits` (`limits.ts`: the client and server) gets a bounded evaluator: a top-level
  * `risuChatParser` call that reaches a limit throws `CbsLimitError`. Without `limits` nothing is
  * counted and the results are the same.
  */
@@ -30,7 +30,7 @@ export type CbsHost = Omit<
 > & {
     /** A character by `chaId`; the client answers a blank "Unknown Character" when there is none. */
     findCharacterById: (id: string) => character;
-    /** Limits on evaluation; none on the client. */
+    /** Limits on evaluation; the client and server both supply them. */
     limits?: CbsLimits;
 };
 
@@ -756,9 +756,9 @@ function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudge
         }
     > = arg.functions ?? new Map();
 
-    arg.callStack = (arg.callStack ?? 0) + 1;
+    const callStack = (arg.callStack ?? 0) + 1;
 
-    if (arg.callStack > 20) {
+    if (callStack > 20) {
         return "ERROR: Call stack limit reached";
     }
 
@@ -775,7 +775,7 @@ function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudge
         consistantChar: arg.consistantChar ?? false,
         cbsConditions: arg.cbsConditions ?? {},
         chatRef: arg.chatRef ?? null,
-        callStack: arg.callStack,
+        callStack,
         getNested: () => {
             return nested;
         },
@@ -916,7 +916,6 @@ function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudge
                             break;
                         }
                         if (blockType.type === "function") {
-                            console.log(matchResult);
                             functions.set(blockType.funcArg![0], {
                                 data: matchResult,
                                 arg: blockType.funcArg!.slice(1),
@@ -944,14 +943,13 @@ function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudge
                     }
                 }
                 if (dat.startsWith("call::")) {
-                    if (arg.callStack && arg.callStack > 20) {
+                    if (callStack > 20) {
                         nested[0] += `ERROR: Call stack limit reached`;
                         break;
                     }
                     const argData = dat.split("::").slice(1);
                     const funcName = argData[0];
                     const func = functions.get(funcName);
-                    console.log(func);
                     if (func) {
                         let data = func.data;
                         for (let i = 0; i < argData.length; i++) {
@@ -960,8 +958,7 @@ function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudge
                             }
                             data = data.replaceAll(`{{arg::${i}}}`, argData[i]);
                         }
-                        arg.functions = functions;
-                        nested[0] += parse(ev, data, arg);
+                        nested[0] += parse(ev, data, { ...arg, functions, callStack });
                         break;
                     }
                 }

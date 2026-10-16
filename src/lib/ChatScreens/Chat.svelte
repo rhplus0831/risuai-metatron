@@ -65,6 +65,7 @@
     import {
         ParseMarkdown,
         risuChatParser,
+        risuChatParserForDisplay,
         type CbsConditions,
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
@@ -596,7 +597,7 @@
 
     /** The display CBS pre-pass of the row (`displaya`). */
     function displayPrePass(text: string): string {
-        return risuChatParser(text, {
+        return risuChatParserForDisplay(text, {
             chara: name,
             chatID: idx,
             rmVar: true,
@@ -1035,15 +1036,7 @@
                 const copyChat = displayedChat;
                 const copyUserName = getUserName(copyChat);
                 const copyUserIcon = getUserIcon(copyChat);
-                const copyText = renderRawStreaming
-                    ? risuChatParser(rawStreamingText, {
-                          chara: name,
-                          chatID: idx,
-                          rmVar: true,
-                          visualize: true,
-                          cbsConditions: getCbsCondition(),
-                      })
-                    : msgDisplay;
+                const copyText = renderRawStreaming ? displayPrePass(rawStreamingText) : msgDisplay;
                 if (window.navigator.clipboard.write) {
                     try {
                         alertWait(language.loading);

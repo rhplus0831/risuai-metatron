@@ -4,7 +4,7 @@
     import { popUpEditorStore } from "../../ts/stores.svelte";
     import type MonacoEditorType from "./MonacoEditor.svelte";
     import { language } from "src/lang";
-    import { ParseMarkdown, risuChatParser } from "src/ts/parser/parser.svelte";
+    import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
     import { tokenize } from "src/ts/tokenizer";
     import Toggles from "../SideBars/Toggles.svelte";
 
@@ -22,7 +22,7 @@
         try {
             $state.snapshot(settings.globalChatVariables);
         } catch (error) {}
-        return risuChatParser(popUpEditorStore.value);
+        return risuChatParserForDisplay(popUpEditorStore.value);
     });
 
     $effect(() => {

@@ -164,9 +164,9 @@ describe("the budget", () => {
     });
 
     it("lets the matcher's catch pass the limit error instead of leaving the function's literal text", () => {
-        sel.desc = "{{range::[0,1,0]}}";
+        sel.desc = "{{range::[0,1e18]}}";
         const ev = bounded(5000);
-        // Without the rethrow the stuck `range` would be swallowed and `{{description}}` left as it is.
+        // Without the rethrow the huge `range` would be swallowed and `{{description}}` left as it is.
         const error = limitError(() => ev.risuChatParser("[{{description}}]"));
         expect(error.reason).toBe("work");
         // An ordinary failing function still leaves its literal text, as before.
@@ -298,15 +298,27 @@ describe("the shared allowance (total)", () => {
 });
 
 describe("the registry's charges", () => {
-    it("range: a stuck or huge range ends with the work limit; a finite one answers as without limits", () => {
+    it("range: a huge range ends with the work limit; a non-advancing one answers []; a finite one answers as without limits", () => {
+        for (const huge of ["{{range::[0,1e18]}}", "{{range::[1e300]}}"]) {
+            expect(limitError(() => bounded(100_000).risuChatParser(huge)).reason, huge).toBe("work");
+        }
+        // A zero or negative step or a non-finite bound (audit UI-01, slice 1d of
+        // `docs/plan/audit-findings-perf.md`) is refused before the loop: `[]` instead of the work
+        // limit it used to reach (and the endless loop it was without limits).
         for (const stuck of [
             "{{range::[0,1,0]}}",
             "{{range::[0,1,-1]}}",
-            "{{range::[0,1e18]}}",
-            "{{range::[1e300]}}",
+            "{{range::[0,1e400]}}",
+            "{{range::[-1e400,1]}}",
+            '{{range::["Infinity",5]}}',
+            "{{range::[NaN,5]}}",
         ]) {
-            expect(limitError(() => bounded(100_000).risuChatParser(stuck)).reason, stuck).toBe("work");
+            expect(bounded(100_000).risuChatParser(stuck), stuck).toBe("[]");
         }
+        // A range that stops advancing in floating point (2^53) ends after the stalled element.
+        expect(bounded(100_000).risuChatParser("{{range::[9007199254740992,9007199254740994,1]}}")).toBe(
+            '["9007199254740992"]',
+        );
         const unbounded = evaluator(undefined);
         for (const fine of [
             "{{range::[5]}}",
@@ -348,7 +360,9 @@ describe("the registry's charges", () => {
             expect(bounded(1000).risuChatParser(text), text).toBe(unbounded.risuChatParser(text));
         }
         // After a NaN count the stuck range still ends (the budget's count stays a number).
-        expect(limitError(() => bounded(100_000).risuChatParser("{{cbr::NaN}}{{range::[0,1,0]}}")).reason).toBe("work");
+        expect(limitError(() => bounded(100_000).risuChatParser("{{cbr::NaN}}{{range::[0,1e18]}}")).reason).toBe(
+            "work",
+        );
         // A huge repetition is refused before `repeat` runs: the one intended difference from the
         // unbounded evaluator, which lets `repeat` throw and leaves the literal text.
         expect(limitError(() => bounded(1000).risuChatParser("{{cbr::100000}}")).reason).toBe("work");
@@ -630,7 +644,7 @@ describe("runaway templates end (in a child process, so a broken limit cannot ha
 
     it("the stuck range, an endless roll, a huge repetition, a deep nesting and a quadratic filter all end with the limit error", () => {
         const cases: [string, RegExp][] = [
-            ["{{range::[0,1,0]}}", /more than 10000000 steps/],
+            ["{{range::[0,1e18]}}", /more than 10000000 steps/],
             ["{{range::[5000000]}}", /more than 10000000 steps/],
             ["{{dice::100000000d6}}", /more than 10000000 steps/],
             ["{{cbr::10000000}}", /more than 10000000 steps/],
@@ -653,6 +667,12 @@ describe("runaway templates end (in a child process, so a broken limit cannot ha
             expect(result.ms, text.slice(0, 40)).toBeLessThan(SERVER_CBS_MAX_MS);
         }
     }, 120_000);
+
+    it("a non-advancing range answers [] under the server's limits (it used to spend the whole work budget)", () => {
+        const result = probe("{{range::[0,1,0]}}");
+        expect(result.error).toBeUndefined();
+        expect(result.length).toBe("[]".length);
+    });
 
     it("an ordinary large text passes under the server's limits", () => {
         const result = probe("{{char}} ".repeat(100_000) + "x".repeat(SERVER_CBS_MAX_WORK / 4));

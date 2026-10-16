@@ -1682,6 +1682,9 @@ export function registerCBS(arg: CBSRegisterArg) {
             const start = arr.length > 1 ? Number(arr[0]) : 0;
             const end = arr.length > 1 ? Number(arr[1]) : Number(arr[0]);
             const step = arr.length > 2 ? Number(arr[2]) : 1;
+            if (!Number.isFinite(start) || !Number.isFinite(end) || step <= 0) {
+                return makeArray([]);
+            }
             let out: string[] = [];
 
             for (let i = start; i < end; i += step) {
@@ -1689,6 +1692,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                 // An element is a string on the heap and a slot, and its text in the result.
                 spend(16 + element.length);
                 out.push(element);
+                if (i + step === i) break;
             }
 
             return makeArray(out);

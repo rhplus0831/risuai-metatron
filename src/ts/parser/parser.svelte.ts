@@ -51,6 +51,7 @@ import {
     type CbsHost,
     type CbsParseArg,
 } from "../../../shared/cbs/evaluator.ts";
+import { CbsLimitError, DEFAULT_CBS_MAX_WORK, type CbsLimits } from "../../../shared/cbs/limits.ts";
 import type { CbsConditions, CbsDatabase } from "../../../shared/cbs/types.ts";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 import cssSelectorParser from "postcss-selector-parser";
@@ -1255,8 +1256,13 @@ function cbsDatabase(presetField?: (rootKey: string) => unknown): CbsDatabase {
 
 const tabCbsDatabase = cbsDatabase();
 
+// Match the server's work limit so text the tab shows is also accepted by the server transform.
+// Allow 2 s of UI-thread time per top-level parse (each row's pre-pass is one); the budget resets for each.
+const CLIENT_CBS_LIMITS: CbsLimits = { maxWork: DEFAULT_CBS_MAX_WORK, maxMs: 2_000 };
+
 function clientCbsHost(): CbsHost {
     return {
+        limits: CLIENT_CBS_LIMITS,
         getDatabase: () => tabCbsDatabase,
         getUserName: getUserName,
         getPersonaPrompt: getPersonaPrompt,
@@ -1318,6 +1324,19 @@ export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string 
         }
     }
     return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
+}
+
+/** Show a localized message when a display parse exceeds its budget. Other callers keep throwing. */
+export function risuChatParserForDisplay(da: string, arg: ClientCbsParseArg = {}): string {
+    try {
+        return risuChatParser(da, arg);
+    } catch (error) {
+        if (!(error instanceof CbsLimitError)) {
+            throw error;
+        }
+        console.warn(error);
+        return language.cbsLimitReached.replace("{{reason}}", error.message);
+    }
 }
 
 const scopedEvaluators = new Map<string, CbsEvaluator>();

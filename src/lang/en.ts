@@ -30,6 +30,7 @@ export const languageEnglish = {
         requestLogRemoved: "This request log is removed.",
         requestLogRemovedDesc: "This request log removes when client is refreshed or reloaded.",
     },
+    cbsLimitReached: "This text's CBS could not be shown: {{reason}}",
     showHelp: "Show Help",
     help: {
         model: "Model option is a main model used in chat.",

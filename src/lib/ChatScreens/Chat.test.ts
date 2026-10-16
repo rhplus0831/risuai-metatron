@@ -39,6 +39,7 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
+    risuChatParserForDisplay: vi.fn((text: string) => text),
     ParseMarkdown: vi.fn(async (text: string) => `<p>${text}</p>`),
     trimMarkdown: vi.fn((html: string) => html),
     addMetadataToElement: vi.fn((html: string) => html),

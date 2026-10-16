@@ -4,7 +4,7 @@ import type { Chat, character, groupChat, loreBook } from "../../../shared/datab
 import type { RisuModule } from "../../../shared/modules.ts";
 import { calcString } from "../../../shared/cbs/calc.ts";
 import type { CbsHost } from "../../../shared/cbs/evaluator.ts";
-import type { CbsLimits, CbsUsage } from "../../../shared/cbs/limits.ts";
+import { DEFAULT_CBS_MAX_WORK, type CbsLimits, type CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { matcherArg } from "../../../shared/cbs/types.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
 import { personaLinksModule, personaModuleIdSet } from "../../../shared/personas.ts";
@@ -52,7 +52,7 @@ export function serverAppVersion(rootDir: string): string {
  * together to an allowance of evaluation time. The numbers are policy, chosen with room for large
  * inline data in card text (a multi-megabyte data URL scans at about 80 ns per character).
  */
-export const SERVER_CBS_MAX_WORK = 10_000_000;
+export const SERVER_CBS_MAX_WORK = DEFAULT_CBS_MAX_WORK;
 export const SERVER_CBS_MAX_MS = 5_000;
 export const SERVER_CBS_JOB_MS = 60_000;
 

@@ -1,12 +1,16 @@
 /**
  * Cooperative limits on CBS evaluation, for a host that evaluates card text where a runaway must
- * not hold the thread (the server's main thread). A host without `limits` gets none: the evaluator
- * then never counts and never reads the clock, and its results are unchanged.
+ * not hold the thread (the server's main thread or the client's UI thread). A host without `limits`
+ * gets none: the evaluator then never counts and never reads the clock, and its results are unchanged.
  *
  * The limits are checked at points inside the evaluator and the registry, so they are not a hard
  * deadline (one operation between two checks runs to its end) and not a heap bound (the lengths of
  * the amplifying operations are charged before they allocate, other results after they return).
  */
+
+/** Shared client/server work allowance, with room for large data URLs (scanned at about 80 ns per character). */
+export const DEFAULT_CBS_MAX_WORK = 10_000_000;
+
 export type CbsUsage = {
     /** Evaluation time spent so far by every evaluator that shares this object. */
     usedMs: number;

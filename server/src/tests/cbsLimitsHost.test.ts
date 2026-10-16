@@ -40,7 +40,8 @@ import type { HostContext } from "../scripts/workerPool.ts";
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
-const STUCK = "{{range::[0,1,0]}}";
+// A range too large for the work limit (a non-advancing one answers `[]` since slice 1d of the audit plan).
+const HUGE = "{{range::[0,1e18]}}";
 
 afterEach(() => {
     vi.restoreAllMocks();
@@ -98,7 +99,7 @@ describe("the server host", () => {
         const ev = createCbsEvaluator(host);
         const error = (() => {
             try {
-                ev.risuChatParser(STUCK);
+                ev.risuChatParser(HUGE);
             } catch (e) {
                 return e as CbsLimitError;
             }
@@ -336,7 +337,7 @@ describe("the bindings", () => {
     });
 
     it("latch a reached limit as the job's fatal failure named after the chat owner, seen through every closure, and evaluate nothing after it", () => {
-        const setup = bindingsSetup({ desc: STUCK });
+        const setup = bindingsSetup({ desc: HUGE });
         cleanups.push(setup.cleanup);
         const bindings = setup.make(undefined);
         // Through `services.parse` (what the native triggers, lore and the regex scripts call).
@@ -369,7 +370,7 @@ describe("the bindings", () => {
         const before = bindings.evaluator.risuChatParser("{{char}} says {{user}}");
         expect(before).toBe("Owner Name says Uma");
         const cbs = bindings.host.sync!.cbs as (args: unknown[], ctx: HostContext) => unknown;
-        expect(() => cbs([STUCK], setup.ctx)).toThrow(/CBS limit reached: .* \(Owner Name\)/);
+        expect(() => cbs([HUGE], setup.ctx)).toThrow(/CBS limit reached: .* \(Owner Name\)/);
         const setChatVar = bindings.host.sync!.setChatVar as (args: unknown[], ctx: HostContext) => unknown;
         expect(() => setChatVar(["late", "1"], setup.ctx)).toThrow(LuaJobFatalError);
         expect(setup.writes()).toBe(0);

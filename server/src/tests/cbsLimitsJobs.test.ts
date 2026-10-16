@@ -23,7 +23,8 @@ import { createSigner, createTestServer, json } from "./testSupport.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
-const STUCK = "{{range::[0,1,0]}}";
+// A range too large for the work limit (a non-advancing one answers `[]` since slice 1d of the audit plan).
+const STUCK = "{{range::[0,1e18]}}";
 const LIMIT = /^CBS limit reached: one template took more than 10000000 steps \((.+)\)$/;
 
 const bodies: any[] = [];
