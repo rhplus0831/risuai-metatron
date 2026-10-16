@@ -179,24 +179,47 @@ async function boot() {
         return data;
     };
     const apply = (jobId: string, event: GenerationEvent) => transport.applyGenerationEvent(jobId, refK, event);
-    const chunk = (generationId: string, seq: number, value: string, messageId = "b"): GenerationEvent => ({
-        type: "chunk",
-        epoch,
-        messageId,
-        generationId,
-        text: value,
-        seq,
-    });
-    const accepted = (jobId: string, generationId: string, messageId = "b", seq = 0): GenerationEvent => ({
-        type: "accepted",
-        epoch,
-        jobId,
-        messageId,
-        generationId,
-        revision: fake.chat("c", "k")!.revision,
-        text: "",
-        seq,
-    });
+    /**
+     * The server's view of each generation's stream (`job.current`): the seq and whole text it last
+     * sent, from which it computes a chunk's delta. An `accepted` sets it; a chunk the server would
+     * send (a newer seq) advances it. A replayed older chunk is still built against the current base,
+     * so the client sees it and drops it by its seq, and leaves the base where it was.
+     */
+    const sentStreams = new Map<string, { seq: number; text: string }>();
+    /** The wire `chunk` the server sends for the whole text `value` at `seq`: a delta from the text sent before it. */
+    const chunk = (generationId: string, seq: number, value: string, messageId = "b"): GenerationEvent => {
+        const previous = sentStreams.get(generationId) ?? { seq: 0, text: "" };
+        let keep = 0;
+        while (keep < previous.text.length && keep < value.length && previous.text[keep] === value[keep]) {
+            keep += 1;
+        }
+        if (seq > previous.seq) {
+            sentStreams.set(generationId, { seq, text: value });
+        }
+        return {
+            type: "chunk",
+            epoch,
+            messageId,
+            generationId,
+            seq,
+            base: previous.seq,
+            keep,
+            text: value.slice(keep),
+        };
+    };
+    const accepted = (jobId: string, generationId: string, messageId = "b", seq = 0, value = ""): GenerationEvent => {
+        sentStreams.set(generationId, { seq, text: value });
+        return {
+            type: "accepted",
+            epoch,
+            jobId,
+            messageId,
+            generationId,
+            revision: fake.chat("c", "k")!.revision,
+            text: value,
+            seq,
+        };
+    };
     /** The server's stored row of message `id` of `k` (what a patch carries for it). */
     const row = (id: string, chatId = "k") =>
         JSON.parse(JSON.stringify(fake.chat("c", chatId)!.data.message.find((entry) => entry.chatId === id)));
@@ -629,7 +652,6 @@ describe("a job's reply in the mirror", () => {
 // `begin`), and the reply is locked from that event on (`hydrateChat`), holding no stream update yet.
 describe("a reply locked by its job's chat event, before its stream", () => {
     /** The `accepted` snapshot carrying the text the job had streamed so far. */
-    const withText = (event: GenerationEvent, text: string): GenerationEvent => ({ ...event, text }) as GenerationEvent;
 
     it("locks the reply at the chat event (a reactive change), then the first accepted and chunk stream into it, and the terminal copy unlocks it", async () => {
         const { fake, sync, chat, text, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
@@ -677,7 +699,7 @@ describe("a reply locked by its job's chat event, before its stream", () => {
         // Busy: the mirror keeps its copy, and the reply is locked all the same.
         expect(text("b")).toBe("B");
         expect(locked("b")).toBe(true);
-        apply("J", withText(accepted("J", "g1", "b", 3), "RAW THREE"));
+        apply("J", accepted("J", "g1", "b", 3, "RAW THREE"));
         expect(text("b")).toBe("RAW THREE");
         await sync.flushResources();
         expect(fake.chat("c", "k")!.data.note).toBe("local note");
@@ -698,7 +720,7 @@ describe("a reply locked by its job's chat event, before its stream", () => {
         );
         expect(text("b")).toBe("PROCESSED FIVE");
         expect(locked("b")).toBe(true);
-        apply("J", withText(accepted("J", "g1", "b", 5), "RAW FIVE"));
+        apply("J", accepted("J", "g1", "b", 5, "RAW FIVE"));
         expect(text("b")).toBe("PROCESSED FIVE");
         revision = bumped(revision, 1);
         apply(
@@ -750,7 +772,7 @@ describe("a reply locked by its job's chat event, before its stream", () => {
         expect(locked("b")).toBe(true);
         apply("J", chunk("g1", 3, "OLD GENERATION"));
         expect(text("b")).toBe("FIRST REPLY");
-        apply("J", withText(accepted("J", "g2", "b", 0), "FIRST REPLY"));
+        apply("J", accepted("J", "g2", "b", 0, "FIRST REPLY"));
         apply("J", chunk("g2", 1, "FIRST REPLY, CONTINUED"));
         await vi.waitFor(() => expect(text("b")).toBe("FIRST REPLY, CONTINUED"));
         expect(locked("b")).toBe(true);
@@ -765,7 +787,8 @@ describe("the streaming state follows a job's stream", () => {
     const none = { chaId: null, chatId: null, messageId: null, mode: undefined };
 
     it("is set by a generation's first stream update with the configured mode, not by its chat event's placeholder lock, keeps that mode, and is cleared at the job's end", async () => {
-        const { fake, chat, settings, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        const { fake, chat, settings, locked, text, transport, chatEvent, copyWith, apply, chunk, accepted } =
+            await boot();
         settings.ui.streamingDisplayOptimizationMode = "strong";
         const revision = bumped(fake.chat("c", "k")!.revision, 1);
         apply(
@@ -785,15 +808,22 @@ describe("the streaming state follows a job's stream", () => {
         expect(locked("b")).toBe(false);
         expect(state(chat)).toEqual(none);
 
-        // Without the setting: "off". A generation that starts with a chunk sets it too.
+        // Without the setting: "off". A generation whose first event here is a chunk (its `accepted`
+        // missed) cannot rebuild the delta: it sets nothing and asks for the reply; the server's
+        // full-text answer is the generation's first stream update and sets it.
         // Cleared through the view (the section views are frozen accessors; the record holds the value).
         settings.ui.streamingDisplayOptimizationMode = undefined;
-        apply("K", chunk("g2", 0, "FIRST", "c"));
+        const follow = { send: vi.fn(() => true) };
+        transport.applyGenerationEvent("K", refK, chunk("g2", 1, "FIRST", "c"), follow);
+        expect(follow.send.mock.calls).toEqual([[{ type: "resyncReply" }]]);
+        expect(state(chat)).toEqual(none);
+        transport.applyGenerationEvent("K", refK, accepted("K", "g2", "c", 1, "FIRST"), follow);
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "off" });
+        expect(text("c")).toBe("FIRST");
     });
 
     it("is cleared when a chat event releases the generation or hands its message to another one, and a later generation keeps it when an earlier one's lock is released", async () => {
-        const { fake, chat, settings, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        const { fake, chat, settings, transport, chatEvent, copyWith, apply, chunk, accepted } = await boot();
         settings.ui.streamingDisplayOptimizationMode = "balanced";
         apply("A", accepted("A", "g1", "a"));
         expect(state(chat)).toEqual({ ...refK, messageId: "a", mode: "balanced" });
@@ -810,13 +840,18 @@ describe("the streaming state follows a job's stream", () => {
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "balanced" });
 
         // B's chat event hands c to a continue's generation g4: g3's state goes; g4's placeholder
-        // lock sets nothing until its first stream update.
+        // lock sets nothing until its first stream update. A chunk on the placeholder has no base to
+        // rebuild from: it sets nothing and asks for the reply, whose full-text answer sets it.
         revision = bumped(revision, 1);
         apply("B", chatEvent("B", [{ messageId: "c", generationId: "g4", seq: 0 }], { revision }));
         expect(chat.isMessageLocked(refK, "c")).toBe(true);
         expect(state(chat)).toEqual(none);
         settings.ui.streamingDisplayOptimizationMode = "strong";
-        apply("B", chunk("g4", 1, "CONTINUED", "c"));
+        const follow = { send: vi.fn(() => true) };
+        transport.applyGenerationEvent("B", refK, chunk("g4", 1, "CONTINUED", "c"), follow);
+        expect(follow.send.mock.calls).toEqual([[{ type: "resyncReply" }]]);
+        expect(state(chat)).toEqual(none);
+        transport.applyGenerationEvent("B", refK, accepted("B", "g4", "c", 1, "CONTINUED"), follow);
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "strong" });
 
         // A continue that arrives as a stream update first (g5 replaces g4 without a chat event)

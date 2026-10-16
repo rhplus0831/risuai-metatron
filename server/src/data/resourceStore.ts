@@ -27,6 +27,7 @@ import {
 import {
     type BatchConflict,
     type ChangeSet,
+    type ChatPatchBody,
     MAX_FEED_PATCH_BYTES,
     RESOURCE_KIND,
     type RecordPatch,
@@ -393,8 +394,12 @@ export function createResourceStore(options: {
         );
     }
 
-    function recordChat(characterId: string, id: string, revision: string | null) {
-        changes?.chats.set(`${characterId}\u0000${id}`, { characterId, id, revision });
+    function recordChat(characterId: string, id: string, revision: string | null, patch?: ChatPatchBody) {
+        const key = `${characterId}\u0000${id}`;
+        changes?.chats.set(
+            key,
+            patch && !changes.chats.has(key) ? { characterId, id, revision, patch } : { characterId, id, revision },
+        );
     }
 
     function recordOrder(characterId: string, revision: string | null) {
@@ -774,7 +779,7 @@ export function createResourceStore(options: {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
             for (const chat of chatOutcome.results) {
-                recordChat(chat.characterId, chat.id, chat.revision);
+                recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.patches.get(chat));
             }
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);

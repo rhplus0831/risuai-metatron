@@ -16,6 +16,8 @@ const stubs = vi.hoisted(() => ({
     auth: [] as { resolve: (token: string) => void; reject: (error: unknown) => void }[],
     fetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
     applyServerGeneration: vi.fn(() => true),
+    /** `applyServerGenerationChunk`: false when the chat module lacks the delta's base text. */
+    applyServerGenerationChunk: vi.fn<(...args: unknown[]) => boolean>(() => true),
     endServerJob: vi.fn(),
     applyHydration: vi.fn(() => true),
     applyPatchHydration: vi.fn<() => "applied" | "busy" | "mismatch" | "old">(() => "applied"),
@@ -42,6 +44,7 @@ vi.mock("../storage/serverAuth", () => ({
 }));
 vi.mock("../storage/chatStore.svelte", () => ({
     applyServerGeneration: stubs.applyServerGeneration,
+    applyServerGenerationChunk: stubs.applyServerGenerationChunk,
     endServerJob: stubs.endServerJob,
     isChatStale: stubs.isChatStale,
     chatHydrationHold: stubs.chatHydrationHold,
@@ -133,6 +136,7 @@ afterEach(() => {
     stubs.flushResources.mockReset().mockResolvedValue({ discarded: [] });
     stubs.applyPatchHydration.mockReset().mockReturnValue("applied");
     stubs.applyHydration.mockReset().mockReturnValue(true);
+    stubs.applyServerGenerationChunk.mockReset().mockReturnValue(true);
 });
 
 describe("the tab's identity and saved jobs", () => {
@@ -369,18 +373,22 @@ describe("the event dispatcher and the resume", () => {
             revision: "x",
             text: "",
         });
-        transport.applyGenerationEvent("j1", ref, {
-            type: "chunk",
+        const chunk = {
+            type: "chunk" as const,
             epoch: EPOCH,
             messageId: "r",
             generationId: "g",
-            text: "one",
             seq: 1,
-        });
+            base: 0,
+            keep: 0,
+            text: "one",
+        };
+        transport.applyGenerationEvent("j1", ref, chunk);
+        // `accepted` carries the full text; a chunk is a delta the chat module rebuilds from its held text.
         expect(stubs.applyServerGeneration.mock.calls).toEqual([
             [ref, { jobId: "j1", messageId: "r", generationId: "g", text: "", seq: 0 }],
-            [ref, { jobId: "j1", messageId: "r", generationId: "g", text: "one", seq: 1 }],
         ]);
+        expect(stubs.applyServerGenerationChunk.mock.calls).toEqual([[ref, "j1", chunk]]);
         const streaming = [{ messageId: "r", generationId: "g", seq: 1 }];
         transport.applyGenerationEvent("j1", ref, {
             type: "resource",
@@ -425,6 +433,62 @@ describe("the event dispatcher and the resume", () => {
         });
         expect(stubs.endServerJob).toHaveBeenCalledWith("j1");
         expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
+    it("asks the follow for the reply only (`resyncReply`) when a chunk's base is missing, once until an `accepted` re-arms it", () => {
+        const follow = { send: vi.fn(() => true) };
+        const chunk = (seq: number) => ({
+            type: "chunk" as const,
+            epoch: EPOCH,
+            messageId: "r",
+            generationId: "g",
+            seq,
+            base: seq - 1,
+            keep: 0,
+            text: "x",
+        });
+        const accepted = {
+            type: "accepted" as const,
+            epoch: EPOCH,
+            jobId: "j1",
+            messageId: "r",
+            generationId: "g",
+            revision: "x",
+            text: "full",
+            seq: 3,
+        };
+        // A chunk the chat module rebuilt asks nothing.
+        transport.applyGenerationEvent("j1", ref, chunk(1), follow);
+        expect(follow.send).not.toHaveBeenCalled();
+        // A missing base asks once; a second miss before an `accepted` asks nothing more.
+        stubs.applyServerGenerationChunk.mockReturnValue(false);
+        transport.applyGenerationEvent("j1", ref, chunk(2), follow);
+        expect(follow.send.mock.calls).toEqual([[{ type: "resyncReply" }]]);
+        transport.applyGenerationEvent("j1", ref, chunk(3), follow);
+        expect(follow.send).toHaveBeenCalledTimes(1);
+        // Without a transport nothing can be asked.
+        transport.applyGenerationEvent("j1", ref, chunk(3));
+        expect(follow.send).toHaveBeenCalledTimes(1);
+        // The full-text `accepted` (the answer) applies whole and re-arms the request.
+        transport.applyGenerationEvent("j1", ref, accepted, follow);
+        expect(stubs.applyServerGeneration).toHaveBeenLastCalledWith(ref, {
+            jobId: "j1",
+            messageId: "r",
+            generationId: "g",
+            text: "full",
+            seq: 3,
+        });
+        transport.applyGenerationEvent("j1", ref, chunk(5), follow);
+        expect(follow.send.mock.calls).toEqual([[{ type: "resyncReply" }], [{ type: "resyncReply" }]]);
+        // A send the follow could not make (no open socket) does not count as asked: the next miss asks again.
+        const closed = { send: vi.fn(() => false) };
+        transport.applyGenerationEvent("j1", ref, chunk(6), closed);
+        transport.applyGenerationEvent("j1", ref, chunk(7), closed);
+        expect(closed.send).toHaveBeenCalledTimes(2);
+        // After the job's end nothing more is asked through the follow.
+        transport.applyGenerationEvent("j1", ref, { type: "done", epoch: EPOCH, revision: null }, closed);
+        transport.applyGenerationEvent("j1", ref, chunk(8), closed);
+        expect(closed.send).toHaveBeenCalledTimes(2);
     });
 
     it("applies a `chatPatch` through the save adapter without remembering it for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
@@ -761,7 +825,9 @@ describe("the event dispatcher and the resume", () => {
     it("hands channel events to the lazily loaded dispatcher with the follow as transport, in socket order with the hydrations, and ends the channel on the terminal", async () => {
         const follow = { send: vi.fn(() => true) };
         const order: string[] = [];
-        stubs.rememberHydration.mockImplementation((record: { id: string }) => order.push(`hydration:${record.id}`));
+        stubs.rememberHydration.mockImplementation((jobId: string, record: { id: string }) =>
+            order.push(`hydration:${jobId}:${record.id}`),
+        );
         stubs.handleChannelEvent.mockImplementation((_jobId: string, event: { type: string }) =>
             order.push(event.type),
         );
@@ -802,7 +868,15 @@ describe("the event dispatcher and the resume", () => {
         expect(stubs.applyHydration).toHaveBeenCalledTimes(1);
         expect(order).toEqual([]);
         await vi.waitFor(() => expect(order).toContain("end"));
-        expect(order).toEqual(["hydration:c", "notice", "callback", "cancel", "end"]);
+        // The hydration is kept as the job's own copy (its id first), for that job's callback barriers.
+        expect(order).toEqual(["hydration:j1:c", "notice", "callback", "cancel", "end"]);
+        expect(stubs.rememberHydration).toHaveBeenCalledWith("j1", {
+            kind: "characters",
+            id: "c",
+            characterId: undefined,
+            revision: "y",
+            data: { chaId: "c" },
+        });
         expect(stubs.handleChannelEvent.mock.calls.map((call) => [call[0], call[2]])).toEqual([
             ["j1", follow],
             ["j1", follow],
@@ -849,11 +923,19 @@ describe("the event dispatcher and the resume", () => {
         const [socket] = FakeSocket.instances;
         expect(socket.url).toContain("/api/generations/known/ws");
         socket.open();
-        socket.message({ type: "chunk", epoch: EPOCH, messageId: "r", generationId: "g", text: "t", seq: 1 });
-        expect(stubs.applyServerGeneration).toHaveBeenCalledWith(
-            { chaId: "c", chatId: "k" },
-            { jobId: "known", messageId: "r", generationId: "g", text: "t", seq: 1 },
-        );
+        const chunk = {
+            type: "chunk",
+            epoch: EPOCH,
+            messageId: "r",
+            generationId: "g",
+            seq: 1,
+            base: 0,
+            keep: 0,
+            text: "t",
+        };
+        socket.message(chunk);
+        expect(stubs.applyServerGenerationChunk).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, "known", chunk);
+        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
         expect(seen).toEqual([["known", { chaId: "c", chatId: "k" }, "chunk"]]);
         follows[0].close();
     });

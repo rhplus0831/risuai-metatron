@@ -28,7 +28,7 @@ export function createEventSockets(options: {
     const sockets = new Set<WebSocket>();
     let closed = false;
 
-    function send(ws: WebSocket, frame: EventFeedFrame) {
+    function send(ws: WebSocket, text: string) {
         if (ws.readyState !== ws.OPEN) {
             return;
         }
@@ -36,7 +36,7 @@ export function createEventSockets(options: {
             ws.terminate();
             return;
         }
-        ws.send(JSON.stringify(frame));
+        ws.send(text);
     }
 
     const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {
@@ -44,15 +44,19 @@ export function createEventSockets(options: {
             event.type === "change"
                 ? { type: "change", epoch: event.epoch, changes: event.changes }
                 : { type: "epoch", epoch: event.epoch };
+        const text = JSON.stringify(frame);
         for (const ws of sockets) {
-            send(ws, frame);
+            send(ws, text);
         }
     });
 
     function attach(ws: WebSocket) {
         sockets.add(ws);
-        send(ws, { type: "hello", epoch: epoch() });
-        const ping = setInterval(() => send(ws, { type: "ping", ts: Date.now() }), HEARTBEAT_MS);
+        send(ws, JSON.stringify({ type: "hello", epoch: epoch() } satisfies EventFeedFrame));
+        const ping = setInterval(
+            () => send(ws, JSON.stringify({ type: "ping", ts: Date.now() } satisfies EventFeedFrame)),
+            HEARTBEAT_MS,
+        );
         const drop = () => {
             clearInterval(ping);
             sockets.delete(ws);

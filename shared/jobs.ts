@@ -1,5 +1,6 @@
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
+import type { ChatPatchBody } from "./resources.ts";
 
 /**
  * The generation job contract (Phase 5, `generation-jobs`): `POST /api/generations` creates a job
@@ -159,11 +160,18 @@ export type GenerationAcceptedEvent = {
     seq?: number;
 };
 
+/**
+ * A delta from this reply's text at sequence `base`: keep its first `keep` UTF-16 code units and
+ * append `text` to reconstruct the full text at `seq`. The base is the preceding accepted/chunk
+ * text, including rewrites and truncations. A client missing that base asks for `ReplyResyncRequest`.
+ */
 export type GenerationChunkEvent = {
     type: "chunk";
     epoch: string;
     messageId: string;
     generationId: string;
+    base: number;
+    keep: number;
     text: string;
     seq: number;
 };
@@ -208,22 +216,23 @@ export type GenerationResourceEvent =
  * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
  * event. A client that cannot apply it sends `ChatResyncRequest`.
  */
-export type GenerationChatPatchEvent = {
+export type GenerationChatPatchEvent = ChatPatchBody & {
     type: "chatPatch";
     epoch: string;
     characterId: string;
     id: string;
-    baseRevision: string;
     revision: string;
-    meta?: Record<string, unknown>;
-    removed?: string[];
-    messages?: { after: string | null; message: unknown }[];
-    count: number;
     streaming: StreamingMessage[];
 };
 
 /** The owner asks for the job chat whole (client to server): a `chatPatch` did not apply. */
 export type ChatResyncRequest = { type: "resync" };
+
+/**
+ * The owner cannot reconstruct a chunk (client to server). Answers only the live job's current
+ * reply as a full-text `accepted`, if it has a message id; never sends the chat or changes its base.
+ */
+export type ReplyResyncRequest = { type: "resyncReply" };
 
 export type GenerationTerminalEvent =
     | {

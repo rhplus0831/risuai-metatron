@@ -180,13 +180,27 @@ describe("the store publishes committed changes", () => {
             chats: [{ characterId: "c", chatId: "k", baseRevision: k, ops: [{ op: "setText", id: "a", text: "A2" }] }],
             chatOrders: [{ characterId: "c", baseRevision: order.revision, ids: ["j", "k"] }],
         });
+        // A by-id write carries its feed patch: the stored row after the write, from the revision before it.
+        const stored = (
+            store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as {
+                message: { chatId: string; data: string }[];
+            }
+        ).message;
+        expect(stored.map((message) => [message.chatId, message.data])).toEqual([["a", "A2"]]);
         expect(events).toEqual([
             {
                 type: "change",
                 epoch: store.epoch(),
                 changes: {
                     resources: [],
-                    chats: [{ characterId: "c", id: "k", revision: reordered.chats[0].revision }],
+                    chats: [
+                        {
+                            characterId: "c",
+                            id: "k",
+                            revision: reordered.chats[0].revision,
+                            patch: { baseRevision: k, messages: [{ after: null, message: stored[0] }], count: 1 },
+                        },
+                    ],
                     chatOrders: [{ characterId: "c", revision: reordered.chatOrders[0].revision }],
                 },
             },

@@ -332,7 +332,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             "done",
         ]);
         expect(owner.events.every((event) => "epoch" in event && event.epoch === epoch)).toBe(true);
-        const [snapshot, hydration, accepted, , second, , , finalChat, done] = owner.events as any[];
+        const [snapshot, hydration, accepted, first, second, , , finalChat, done] = owner.events as any[];
         // The attach snapshot: from the admission copy (the revision the owner named) to itself.
         expect(snapshot).toMatchObject({
             type: "chatPatch",
@@ -358,7 +358,29 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         expect(rows(hydration)).toEqual([["r", "u", ""]]);
         expect(accepted).toMatchObject({ messageId: "r", userMessageId: "u", generationId: "g1", seq: 0, text: "" });
-        expect(second).toMatchObject({ text: "one two", seq: 2 });
+        // The chunks are deltas from the text the socket holds: `accepted`'s (seq 0), then the first chunk's.
+        expect(first).toEqual({
+            type: "chunk",
+            epoch,
+            messageId: "r",
+            generationId: "g1",
+            seq: 1,
+            base: 0,
+            keep: 0,
+            text: "one",
+        });
+        expect(second).toEqual({
+            type: "chunk",
+            epoch,
+            messageId: "r",
+            generationId: "g1",
+            seq: 2,
+            base: 1,
+            keep: 3,
+            text: " two",
+        });
+        const afterFirst = accepted.text.slice(0, first.keep) + first.text;
+        expect(afterFirst.slice(0, second.keep) + second.text).toBe("one two");
         // The terminal hydration: the reply is final, so nothing is streaming any more; its stored
         // text comes along (a generated row is always carried).
         expect(finalChat).toMatchObject({ type: "chatPatch", baseRevision: hydration.revision, streaming: [] });

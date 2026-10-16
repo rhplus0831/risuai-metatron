@@ -7,6 +7,8 @@ import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
 import {
     type CallbackTargets,
     type ChatResyncRequest,
+    type ReplyResyncRequest,
+    type GenerationChunkEvent,
     type GenerationChatPatchEvent,
     type GenerationCommand,
     type GenerationContext,
@@ -135,8 +137,10 @@ export type JobChanges = {
 };
 
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
-/** An event as a runner emits it: the registry adds the epoch. */
-export type JobEventInput = Distribute<Exclude<GenerationEvent, { type: "ping" } | { type: "chatPatch" }>>;
+/** Runner chunks carry cumulative text; the registry computes the wire delta and adds the epoch. */
+export type JobEventInput =
+    | Distribute<Exclude<GenerationEvent, { type: "ping" | "chatPatch" | "chunk" }>>
+    | Omit<GenerationChunkEvent, "epoch" | "base" | "keep">;
 type TerminalInput = Distribute<GenerationTerminalEvent>;
 
 /** What the injected runner gets for one job. */
@@ -260,6 +264,10 @@ const chatKey = (characterId: string, chatId: string) => `${characterId}\u0000${
 
 function isResyncRequest(message: unknown): message is ChatResyncRequest {
     return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resync";
+}
+
+function isReplyResyncRequest(message: unknown): message is ReplyResyncRequest {
+    return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resyncReply";
 }
 
 /** A stored chat as a patch base: its revision, its fields without `message`, and its messages by id. */
@@ -888,7 +896,7 @@ export function createGenerationJobs(options: {
                 if (input.type === "resource" && HIDDEN_HYDRATION_KINDS.includes(input.kind)) {
                     throw new Error(`${input.kind} records are never sent to the client`);
                 }
-                const event = { ...input, epoch: job.epoch } as GenerationEvent;
+                const event = { ...input, epoch: job.epoch };
                 switch (event.type) {
                     case "accepted":
                         // The reply (and the user message) must exist in the client's mirror first.
@@ -907,9 +915,28 @@ export function createGenerationJobs(options: {
                         ) {
                             return;
                         }
+                        const previous = job.current.text;
+                        let keep = previous.length;
+                        if (!event.text.startsWith(previous)) {
+                            keep = 0;
+                            while (
+                                keep < previous.length &&
+                                keep < event.text.length &&
+                                previous[keep] === event.text[keep]
+                            ) {
+                                keep += 1;
+                            }
+                        }
+                        const chunk: GenerationChunkEvent = {
+                            ...event,
+                            base: job.current.seq ?? 0,
+                            keep,
+                            text: event.text.slice(keep),
+                        };
                         job.current.text = event.text;
                         job.current.seq = event.seq;
-                        break;
+                        send(job, chunk);
+                        return;
                     }
                     case "preset":
                         job.preset = event;
@@ -1175,6 +1202,14 @@ export function createGenerationJobs(options: {
             try {
                 message = JSON.parse(String(data));
             } catch {
+                return;
+            }
+            if (isReplyResyncRequest(message)) {
+                // Recovery needs the stream base even during a lock handoff. The client drops a
+                // retired generation; unlike currentReply, this does not require lock ownership.
+                if (!job.ended && job.current?.messageId) {
+                    send(job, job.current);
+                }
                 return;
             }
             if (isResyncRequest(message)) {

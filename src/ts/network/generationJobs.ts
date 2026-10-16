@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import {
     type ChatResyncRequest,
+    type ReplyResyncRequest,
     type GenerationCreateBody,
     type GenerationEvent,
     type GenerationStatus,
@@ -10,6 +11,7 @@ import {
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     applyServerGeneration,
+    applyServerGenerationChunk,
     type ChatRef,
     chatHydrationHold,
     endServerJob,
@@ -380,6 +382,9 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
  */
 const resyncing = new WeakSet<ChannelTransport>();
 
+/** One reply-only recovery at a time per follow, cleared by any full-text accepted event. */
+const resyncingReplies = new WeakSet<ChannelTransport>();
+
 /** The follows whose job ended or that closed: nothing more is asked through them. */
 const endedFollows = new WeakSet<ChannelTransport>();
 
@@ -400,7 +405,19 @@ function endFollowRecovery(transport: ChannelTransport) {
         clearTimeout(recovery.timer);
     }
     recoveries.delete(transport);
+    resyncing.delete(transport);
+    resyncingReplies.delete(transport);
     endedFollows.add(transport);
+}
+
+function requestReplyResync(transport: ChannelTransport) {
+    if (endedFollows.has(transport) || resyncingReplies.has(transport)) {
+        return;
+    }
+    const request: ReplyResyncRequest = { type: "resyncReply" };
+    if (transport.send(request)) {
+        resyncingReplies.add(transport);
+    }
 }
 
 /**
@@ -476,7 +493,7 @@ function runRecovery(transport: ChannelTransport, recovery: Recovery) {
  * records the job changed (`resource`, through `applyHydration`; the job chat's changes as
  * `chatPatch`, through `applyPatchHydration`), and the end (`done`, `error`: every lock of the job
  * is released and the saved job is forgotten). A patch the mirror cannot take asks the job for its
- * chat whole through `transport` (`resync`); nothing else is sent back.
+ * chat whole through `transport` (`resync`); a missing chunk base asks only for the reply (`resyncReply`).
  */
 export function applyGenerationEvent(
     jobId: string,
@@ -486,6 +503,9 @@ export function applyGenerationEvent(
 ) {
     switch (event.type) {
         case "accepted":
+            if (transport) {
+                resyncingReplies.delete(transport);
+            }
             if (event.messageId && event.generationId) {
                 applyServerGeneration(ref, {
                     jobId,
@@ -497,13 +517,9 @@ export function applyGenerationEvent(
             }
             return;
         case "chunk":
-            applyServerGeneration(ref, {
-                jobId,
-                messageId: event.messageId,
-                generationId: event.generationId,
-                text: event.text,
-                seq: event.seq,
-            });
+            if (!applyServerGenerationChunk(ref, jobId, event) && transport) {
+                requestReplyResync(transport);
+            }
             return;
         case "resource": {
             const record = {
@@ -516,7 +532,7 @@ export function applyGenerationEvent(
             };
             const applied = applyHydration(record);
             // Kept for a later callback's barrier, which applies it again after local work settles.
-            onChannel((channel) => channel.rememberHydration(record));
+            onChannel((channel) => channel.rememberHydration(jobId, record));
             if (transport && event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId) {
                 resyncing.delete(transport);
                 if (!applied && isChatStale(ref)) {

@@ -588,11 +588,11 @@ describe("callbacks", () => {
         expect(tx.answers[3]).toEqual(failed("barrier", /not applied/));
         expect(hook).not.toHaveBeenCalled();
         expect(deps.applyHydration).not.toHaveBeenCalled();
-        // The newest remembered hydration is applied again once local work settled.
+        // The newest hydration remembered for the callback's job is applied again once local work settled.
         const record = { kind: "chats", id: "k", characterId: "c", revision: rev(1, 5), data: {} };
-        channel.rememberHydration({ ...record, revision: rev(1, 4) });
-        channel.rememberHydration(record);
-        channel.rememberHydration({ ...record, revision: rev(1, 3) });
+        channel.rememberHydration("J", { ...record, revision: rev(1, 4) });
+        channel.rememberHydration("J", record);
+        channel.rememberHydration("J", { ...record, revision: rev(1, 3) });
         deps.applyHydration.mockImplementation(() => {
             deps.heldChat.mockReturnValue(rev(1, 5));
             return true;
@@ -615,6 +615,36 @@ describe("callbacks", () => {
         await pump();
         expect(tx.answers[5]).toMatchObject({ outcome: "answered" });
         expect(deps.heldRecord).toHaveBeenCalledWith("characters", "c");
+    });
+
+    it("applies only the callback's own job's remembered hydrations at its barrier, and drops a job's copies at its end", async () => {
+        const hook = vi.fn(() => "x");
+        hooks.editoutput.add(hook);
+        const receipt = { kind: "chats", id: "k", characterId: "c", revision: rev(1, 5) };
+        const record = { ...receipt, data: {} };
+        deps.applyHydration.mockImplementation(() => {
+            deps.heldChat.mockReturnValue(rev(1, 5));
+            return true;
+        });
+        // Job K's copy is not job J's: J's barrier fails without applying it.
+        channel.rememberHydration("K", record);
+        send(callback("i1", "editoutput", { text: "t" }, { revisions: [receipt] }));
+        await pump();
+        expect(tx.answers[0]).toEqual(failed("barrier", /chats record k the job changed is not applied/));
+        // K ended: its copy is dropped, so a later barrier of K (a callback under the same id) applies nothing.
+        channel.endJobChannel("K");
+        send(callback("i2", "editoutput", { text: "t" }, { jobId: "K", revisions: [receipt] }), "K");
+        await pump();
+        expect(tx.answers[1]).toEqual(failed("barrier", /not applied/));
+        expect(deps.applyHydration).not.toHaveBeenCalled();
+        expect(hook).not.toHaveBeenCalled();
+        // Remembered again for K, its barrier applies it and the hook runs.
+        channel.rememberHydration("K", record);
+        send(callback("i3", "editoutput", { text: "t" }, { jobId: "K", revisions: [receipt] }), "K");
+        await pump();
+        expect(deps.applyHydration).toHaveBeenCalledWith(record);
+        expect(tx.answers[2]).toEqual({ type: "answer", id: "i3", outcome: "answered", value: "x" });
+        expect(hook).toHaveBeenCalledTimes(1);
     });
 
     it("settles the hook's writes even when it threw: a discard or a rejected flush is a barrier failure, else the throw is a hook failure with its text", async () => {

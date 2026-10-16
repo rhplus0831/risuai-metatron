@@ -2315,7 +2315,8 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
  * client's own save, or a job event that applied it first). A field patch this client can take now
  * is applied at once (`applyRemotePatch`), with no read. A newer record waits for the cycle,
  * which reads and applies it while this client has no unsent change of it (`applyRemoteUpdates`); a
- * chat goes to the chat module's idle refresh; a new chat or a changed chat order reads the
+ * chat goes to the chat module with its optional by-id patch (applied at its exact base while
+ * loaded and idle, otherwise the ordinary idle refresh); a new chat or a changed chat order reads the
  * character's chat list (also for a character still waiting to be inserted). Never an outgoing
  * write, a discard, or a notice.
  */
@@ -2378,7 +2379,7 @@ export function noteRemoteChanges(changes: ChangeSet) {
             }
             continue;
         }
-        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision);
+        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision, chat.patch);
         if (outcome === "collection") {
             noteRemoteCollection(chat.characterId);
         }

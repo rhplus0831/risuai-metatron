@@ -2,7 +2,7 @@ import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
-import type { ChannelChunk, ChatResyncRequest } from "../../../shared/jobs.ts";
+import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
     CallbackTargets,
@@ -91,7 +91,9 @@ import {
  */
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
-export type ChannelTransport = { send(message: ChannelAnswer | ChannelChunk | ChatResyncRequest): boolean };
+export type ChannelTransport = {
+    send(message: ChannelAnswer | ChannelChunk | ChatResyncRequest | ReplyResyncRequest): boolean;
+};
 
 type Outstanding = {
     jobId: string;
@@ -132,8 +134,8 @@ const uiQueue: UiItem[] = [];
 let uiBusy = false;
 /** The question showing now: its job, the alert it opened (to close only its own), and its cancellation. */
 let showing: { id: string; jobId: string; alert: unknown; cancelled: boolean; release: () => void } | null = null;
-/** The newest hydration this client received per record (for the callback barrier). */
-const hydrations = new Map<string, HydrationRecord>();
+/** Each live job's newest hydration per record, retained only for its callback barriers. */
+const hydrations = new Map<string, Map<string, HydrationRecord>>();
 
 const recordKey = (kind: string, id: string, characterId?: string) =>
     kind === "chats" ? `chats\u0000${characterId ?? ""}\u0000${id}` : `${kind}\u0000${id}`;
@@ -152,12 +154,17 @@ function remember(id: string, entry: { jobId: string; answer: ChannelAnswer | nu
     }
 }
 
-/** Keeps the newest hydration of a record (by revision) for a later callback's barrier. */
-export function rememberHydration(record: HydrationRecord) {
+/** Keeps a job's newest hydration per record (by revision) for its later callback barriers. */
+export function rememberHydration(jobId: string, record: HydrationRecord) {
+    let records = hydrations.get(jobId);
+    if (!records) {
+        records = new Map();
+        hydrations.set(jobId, records);
+    }
     const key = recordKey(record.kind, record.id, record.characterId);
-    const held = hydrations.get(key);
+    const held = records.get(key);
     if (!held || (compareRevision(record.revision, held.revision) ?? 1) >= 0) {
-        hydrations.set(key, record);
+        records.set(key, record);
     }
 }
 
@@ -417,7 +424,7 @@ function holds(receipt: HydrationReceipt): boolean {
     return held !== null && (compareRevision(held, receipt.revision) ?? -1) >= 0;
 }
 
-async function barrier(event: GenerationCallbackEvent) {
+async function barrier(jobId: string, event: GenerationCallbackEvent) {
     let discarded: string[];
     try {
         ({ discarded } = await flushResources());
@@ -428,7 +435,7 @@ async function barrier(event: GenerationCallbackEvent) {
         throw new CallbackFailed("barrier", "A conflict discarded local changes before the callback", discarded);
     }
     for (const receipt of event.revisions) {
-        const record = hydrations.get(recordKey(receipt.kind, receipt.id, receipt.characterId));
+        const record = hydrations.get(jobId)?.get(recordKey(receipt.kind, receipt.id, receipt.characterId));
         if (record && !holds(receipt)) {
             applyHydration(record);
         }
@@ -802,7 +809,7 @@ async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): 
         ...(discarded ? { discarded } : {}),
     });
     try {
-        await barrier(event);
+        await barrier(entry.jobId, event);
     } catch (error) {
         return error instanceof CallbackFailed
             ? failedAnswer(error.failure, error.message, error.discarded)
@@ -1007,8 +1014,9 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
     }
 }
 
-/** The job ended: its queued questions are dropped and its callbacks stop starting hooks. */
+/** The job ended: its hydration copies and queued questions are dropped; callbacks stop starting hooks. */
 export function endJobChannel(jobId: string) {
+    hydrations.delete(jobId);
     // A cancel the socket lost (a disconnect) must not leave the job's question open.
     if (showing?.jobId === jobId) {
         cancelShowing();

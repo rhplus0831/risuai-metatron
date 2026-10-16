@@ -351,6 +351,29 @@ async function job(
         terminal: events.find((event) => event.type === "done" || event.type === "error"),
     };
 }
+/**
+ * The chunks' whole texts, rebuilt from the wire deltas: each chunk keeps `keep` units of the text its
+ * generation held at `base` (the reply's `accepted` text at its seq, 0 by default, then the previous
+ * chunk) and appends `text`. Each chunk's base must be the seq held before it.
+ */
+function streamedTexts(events: any[]): { seq: number; text: string; messageId: string; generationId: string }[] {
+    const held = new Map<string, { seq: number; text: string }>();
+    const out: { seq: number; text: string; messageId: string; generationId: string }[] = [];
+    for (const event of events) {
+        if (event.type === "accepted" && event.messageId && event.generationId) {
+            held.set(event.generationId, { seq: event.seq ?? 0, text: event.text });
+        } else if (event.type === "chunk") {
+            const before = held.get(event.generationId);
+            expect(before, `chunk ${event.seq} without a held base`).toBeDefined();
+            expect(event.base).toBe(before!.seq);
+            expect(event.keep).toBeLessThanOrEqual(before!.text.length);
+            const text = before!.text.slice(0, event.keep) + event.text;
+            held.set(event.generationId, { seq: event.seq, text });
+            out.push({ seq: event.seq, text, messageId: event.messageId, generationId: event.generationId });
+        }
+    }
+    return out;
+}
 const notices = (events: any[], kind: string) => events.filter((e) => e.type === "notice" && e.kind === kind);
 /** The request history rows of a job, newest first (slice 6: the error event names the failed one). */
 const historyOf = async (jobId: string) =>
@@ -492,15 +515,16 @@ describe("a send", () => {
                 ["user-1", undefined, ""],
                 [undefined, reply.chatId, ""],
             ]);
-            // Each chunk carries the whole text so far (the provider's events may coalesce on the wire, and
-            // the parser re-sends the final text on `[DONE]`, as the client's does): growing, numbered, whole.
-            const chunks = events.filter((event) => event.type === "chunk");
+            // Each chunk rebuilds the whole text so far from its delta (the provider's events may coalesce on
+            // the wire, and the parser re-sends the final text on `[DONE]`, as the client's does): growing,
+            // numbered, whole.
+            const chunks = streamedTexts(events);
             expect(chunks.length).toBeGreaterThanOrEqual(2);
             expect(chunks.map((event) => event.seq)).toEqual(chunks.map((_, i) => i + 1));
             for (let i = 1; i < chunks.length; i++) {
                 expect(chunks[i].text.startsWith(chunks[i - 1].text)).toBe(true);
             }
-            expect(chunks.at(-1).text).toBe("Hello there.");
+            expect(chunks.at(-1)?.text).toBe("Hello there.");
             expect(
                 chunks.every((event) => event.messageId === reply.chatId && event.generationId === reply.chatId),
             ).toBe(true);
@@ -571,10 +595,11 @@ describe("a send", () => {
                     .filter((event) => event.type === "accepted" && event.messageId)
                     .map((event) => [event.messageId, event.text]),
             ).toEqual([["r1", "Again."]]);
-            // Each chunk is the whole text so far, the old reply included. The provider's two events may
-            // still coalesce on the wire under load (as in the send test above), so the chunks are
-            // checked as a growing sequence that ends with the whole reply, not as an exact list.
-            const chunks = events.filter((event) => event.type === "chunk").map((event) => event.text);
+            // Each chunk rebuilds the whole text so far, the old reply included (its delta keeps the
+            // accepted text). The provider's two events may still coalesce on the wire under load (as in
+            // the send test above), so the chunks are checked as a growing sequence that ends with the
+            // whole reply, not as an exact list.
+            const chunks = streamedTexts(events).map((chunk) => chunk.text);
             const distinct = chunks.filter((text, i) => text !== chunks[i - 1]);
             expect(distinct.length).toBeGreaterThanOrEqual(1);
             expect(distinct.every((text) => text.startsWith("Again. More"))).toBe(true);
@@ -603,7 +628,7 @@ describe("a send", () => {
             const { events, terminal } = await job("send", chaId, {}, { abortAfterChunks: 1 });
             expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
             expect(Date.now() - started).toBeLessThan(15_000);
-            expect(events.filter((event) => event.type === "chunk").map((event) => event.text)).toEqual(["First."]);
+            expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["First."]);
             expect(events.filter((event) => event.type === "done")).toHaveLength(0);
             const chat = await readChat(chaId);
             expect(texts(chat)).toEqual(["user:q", "char:First."]);
@@ -955,7 +980,7 @@ describe("a send", () => {
                 // No error event in the body: no code on the event nor on the row.
                 expect("providerCode" in terminal!).toBe(false);
                 expect(errored[0].providerCode).toBeNull();
-                expect(events.filter((event) => event.type === "chunk").map((event) => event.text)).toEqual(["First."]);
+                expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["First."]);
                 const chat = await readChat(chaId);
                 expect(texts(chat)).toEqual(["user:q", "char:First."]);
                 expect(await clientSetText(chaId, chat.data.message.at(-1).chatId, "tab edit")).toBe(200);

@@ -215,19 +215,35 @@ export type RecordItemPatch = {
 /** A record patch: by top-level field (object records) or by item id (array records). */
 export type RecordPatch = RecordFieldPatch | RecordItemPatch;
 
-/** The largest record patch (UTF-8 bytes of its JSON) a change-feed entry carries; a larger one is a plain ref. */
+/**
+ * A chat's stored changes from `baseRevision` to the containing entry's revision. `messages` holds
+ * new or changed rows once each, in final stored order, with the preceding row's id (`after`, null
+ * at the start). `removed` names deleted ids; `meta`, when present, replaces all chat fields except
+ * `message`. `count` is the final message count. Job socket patches also carry generated rows.
+ */
+export type ChatPatchBody = {
+    baseRevision: string;
+    meta?: Record<string, unknown>;
+    removed?: string[];
+    messages?: { after: string | null; message: unknown }[];
+    count: number;
+};
+
+/** The largest record or chat patch (UTF-8 bytes of its JSON) a feed entry carries; larger ones are plain refs. */
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
 /**
  * What one committed write changed (Phase 6 live updates): refs and their new revisions, and data
- * only as a record patch. A `null` revision is a deletion. A record that changed more than once in the
- * write appears once, with its final revision and no patch. `patch`: the write was a record patch (see
- * `RecordFieldPatch`, `RecordItemPatch`); a client holding exactly its base revision may apply it
- * instead of reading the record, any other client reads the record as for a plain ref.
+ * only as a record patch (`RecordPatch`) or a by-id chat patch (`ChatPatchBody`). A `null` revision
+ * is a deletion. A record or chat recorded more than once in the write appears once with its final
+ * revision and no patch. A client holding exactly a patch's base revision may apply it when idle
+ * (a chat must also be loaded and not stale); otherwise it handles the plain notice as before.
+ * Chat revisions advance by the applied op count, not necessarily one. Whole-chat writes, no-op
+ * groups, remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch.
  */
 export type ChangeSet = {
     resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];
-    chats: { characterId: string; id: string; revision: string | null }[];
+    chats: { characterId: string; id: string; revision: string | null; patch?: ChatPatchBody }[];
     chatOrders: { characterId: string; revision: string | null }[];
 };
 

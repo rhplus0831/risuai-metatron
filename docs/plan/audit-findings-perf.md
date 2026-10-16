@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes) and 3b (API-01, API-02, API-03, API-05) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) and 3c (sync traffic during generation, compression deferred) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -196,6 +196,32 @@ P2 with the memory items that share its mechanism.
   hydrations map (a leak), then prefix-length chunks, then patch delivery to
   idle tabs, then compression last (measure first; it may not be worth it on
   loopback).
+  Landed 2026-10-16: the tab keeps job hydrations per job and frees them at
+  the job's end (`rememberHydration(jobId, record)`, `endJobChannel`); a job's
+  `chunk` event is a delta (`base`, `keep`, `text`) computed in the registry's
+  `emit` against `job.current.text`, rebuilt by `applyServerGenerationChunk`
+  from the stream buffer, with a reply-only recovery (`resyncReply`, answered
+  with the full-text `accepted`, once per follow until an `accepted` arrives; a
+  missing message or a retired generation is dropped silently); the change feed
+  carries a `ChatPatchBody` for a chat written with by-id ops (`chatFeedPatch`,
+  the 64 KiB cap, plain refs for whole ops, no-ops, a remove-and-reappend, a
+  chat recorded twice), applied by `noteRemoteChat` to a loaded idle chat held
+  at exactly the base (`applyRemoteChatPatch`), the notice and whole read
+  otherwise; feed frames serialized once per publish. Measured (302 messages,
+  464 KB chat; an 8,000-char reply as 400 chunks with 10 checkpoints): the
+  owner socket's chunk bytes 1.65 MB to 65 KB (206x to 8x the reply), the idle
+  tab's 12 notices 5.6 MB of whole reads to 46 KB of patches. Compression
+  deferred: after the above the large payloads left are whole chat reads (load,
+  reconcile, patch misses), `hydrateAll` (the whole chat per callback barrier,
+  464 KB here) and `resync`; gzip of that whole read was 4 KB on filler text,
+  so an HTTP `compress` scoped to `/api/resources/read` is the candidate if a
+  remote deployment needs it; ws `perMessageDeflate` is not worth its per-socket
+  zlib memory now that the socket carries deltas. Also not done: the barrier
+  still ships the whole chat (`hydrateAll`); the owner tab can apply its own
+  job's feed patch in an unlocked window, and a job patch spanning two writes
+  then mismatches into the existing whole-chat resync (rare); the client-to-
+  server provider `ChannelChunk` stays cumulative; `retiredGenerations` in the
+  chat module is never pruned.
 - **3d. Tab retention** (_small_ each, `global-api.md` and `plugins-mcp.md`).
   NET-01 plus the Stop B and inlay leftovers and EXT-03. `addFetchLog` and
   `appendFetchLog` in `src/ts/globalApi.svelte.ts:306` never prune (128 entries

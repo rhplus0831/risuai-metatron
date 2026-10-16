@@ -13,9 +13,9 @@ import type {
     MessageAnchor,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { StreamingMessage } from "../../../shared/jobs.ts";
+import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
-import { compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
+import { type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -909,7 +909,7 @@ function releaseStreaming(generationId: string) {
 /**
  * Mirrors a server generation job's reply (an `accepted` or `chunk` event): locks the message for
  * the job and writes `text` into the mirror. Nothing is queued and the chat's revision does not
- * move: only a whole-chat hydration (`hydrateChat`) advances it. A chunk older than the last one
+ * move: only stored chat copies or patches advance it. A chunk older than the last one
  * of its generation (`seq`) is dropped. The generation's first stream update makes its message the
  * streaming one (`streamingState`, with the configured display optimization mode). The mirror takes
  * at most one stream update per frame: the generation's first update, and one when no frame flush is
@@ -972,6 +972,43 @@ export function applyServerGeneration(
     if (!streamFrameScheduled) {
         scheduleStreamFrame();
     }
+    return true;
+}
+
+/**
+ * Reconstructs a wire chunk from the stream buffer, including text held for the next frame or
+ * hidden by a stored checkpoint. False asks for the current reply only; retired generations and
+ * messages not yet in the mirror drop silently. Applying a reconstructed text can leave the
+ * displayed checkpoint in place.
+ */
+export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: GenerationChunkEvent): boolean {
+    if (retiredGenerations.has(chunk.generationId)) {
+        return true;
+    }
+    // A reply-only recovery cannot install a missing message. Wait for the job's chat copy;
+    // its placeholder lock will make the next chunk request the full reply once it can apply.
+    if (!heldChat(ref)?.message.some((message) => message.chatId === chunk.messageId)) {
+        return true;
+    }
+    const held = serverGenerations.get(messageKeyOf(ref, chunk.messageId));
+    if (
+        !held ||
+        held.generationId !== chunk.generationId ||
+        held.seq < 0 ||
+        held.seq !== chunk.base ||
+        !Number.isSafeInteger(chunk.keep) ||
+        chunk.keep < 0 ||
+        chunk.keep > held.text.length
+    ) {
+        return false;
+    }
+    applyServerGeneration(ref, {
+        jobId,
+        messageId: chunk.messageId,
+        generationId: chunk.generationId,
+        seq: chunk.seq,
+        text: held.text.slice(0, chunk.keep) + chunk.text,
+    });
     return true;
 }
 
@@ -1088,15 +1125,12 @@ export function chatHydrationHold(ref: ChatRef): "none" | "saving" | "held" {
 }
 
 /** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
-export type ChatPatch = {
+export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     characterId: string;
     id: string;
-    baseRevision: string;
     revision: string;
-    meta?: Record<string, unknown>;
     removed?: readonly string[];
-    messages?: readonly { after: string | null; message: unknown }[];
-    count: number;
+    messages?: Readonly<ChatPatchBody["messages"]>;
 };
 
 /**
@@ -1284,6 +1318,13 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
         staleChats.add(key);
         return "mismatch";
     }
+    staleChats.delete(key);
+    installChatPatch(chat, patch, patched);
+    return "applied";
+}
+
+/** The checked row/meta/revision step shared by job hydration and idle change-feed patches. */
+function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number; tail: Message[] }) {
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
@@ -1309,11 +1350,39 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
             }
         }
     }
+    const key = keyOf(patch.characterId, patch.id);
     holdChatRevision(key, patch.revision);
-    staleChats.delete(key);
     changed(key);
-    remoteListener?.(ref);
-    return "applied";
+    remoteListener?.({ chaId: patch.characterId, chatId: patch.id });
+}
+
+/** A feed patch is optional: a miss neither marks stale nor touches a job's locks. */
+function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (!isLoaded(ref) || !canRefreshChat(ref) || staleChats.has(key) || chatRevisions.get(key) !== body.baseRevision) {
+        return false;
+    }
+    const base = parseRevisionToken(body.baseRevision);
+    const next = parseRevisionToken(revision);
+    if (!base || !next || base.epoch !== next.epoch || base.seq !== next.seq || next.revision <= base.revision) {
+        return false;
+    }
+    const chat = heldChat(ref);
+    if (!chat) {
+        return false;
+    }
+    const patch: ChatPatch = { ...body, characterId: ref.chaId, id: ref.chatId, revision };
+    let patched: { start: number; tail: Message[] } | null = null;
+    try {
+        patched = patchedTail(chat.message, patch);
+    } catch (error) {
+        console.error("[Save]", error);
+    }
+    if (!patched) {
+        return false;
+    }
+    installChatPatch(chat, patch, patched);
+    return true;
 }
 
 /**
@@ -3505,10 +3574,15 @@ function dropAnsweredNotices() {
  * dropped (this tab's own save, or a job's chat event that applied it first). A chat the mirror does
  * not hold, of a character it holds, is a new chat: `"collection"` asks for the character's chat list
  * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
- * `"collection"`: its summary comes with that list (never a whole-chat read). Nothing is written and
- * nothing is discarded.
+ * `"collection"`: its summary comes with that list (never a whole-chat read). An optional by-id
+ * patch applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
+ * base revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
  */
-export function noteRemoteChat(ref: ChatRef, revision: string | null): "noticed" | "collection" | "ignored" {
+export function noteRemoteChat(
+    ref: ChatRef,
+    revision: string | null,
+    patch?: ChatPatchBody,
+): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!findCharacter(ref.chaId)) {
         return "ignored";
@@ -3522,6 +3596,9 @@ export function noteRemoteChat(ref: ChatRef, revision: string | null): "noticed"
         return "ignored";
     }
     if (revision !== null && (compareRevision(revision, heldRevision) ?? 0) <= 0) {
+        return "ignored";
+    }
+    if (revision !== null && patch && applyRemoteChatPatch(ref, revision, patch)) {
         return "ignored";
     }
     noticeSeq += 1;

@@ -666,8 +666,8 @@ describe("characters another writer created or deleted", () => {
 });
 
 describe("chats and chat lists another writer changed", () => {
-    it("refreshes an idle chat on another tab's message edit", async () => {
-        const { fake, texts } = await boot();
+    it("applies another tab's by-id message edit of an idle chat as the feed's patch, with no read", async () => {
+        const { fake, chat, texts } = await boot();
         fake.chatBatch([
             {
                 characterId: "c",
@@ -676,8 +676,35 @@ describe("chats and chat lists another writer changed", () => {
                 ops: [{ op: "setText", id: "b", text: "B2" } as any],
             },
         ]);
+        const entry = (fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>).changes.chats[0];
+        expect(entry.patch).toMatchObject({ messages: [{ after: "a", message: { chatId: "b", data: "B2" } }] });
+        // Applied as the feed delivered it, before any cycle runs.
+        expect(texts("c", "k")).toEqual(["A", "B2", "C"]);
         await settle(fake);
         expect(texts("c", "k")).toEqual(["A", "B2", "C"]);
+        expect(chat.heldChatRevision(refK)).toBe(fake.chat("c", "k")!.revision);
+        expect(reads(fake)).toBe(0);
+        expect(fake.batchCount()).toBe(0);
+        noNotice();
+    });
+
+    it("refreshes an idle chat whole on another tab's whole-chat write (`replace`, no patch)", async () => {
+        const { fake, texts } = await boot();
+        const replaced = JSON.parse(JSON.stringify(fake.chat("c", "k")!.data));
+        replaced.message[1].data = "B3";
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "replace", chat: replaced } as any],
+            },
+        ]);
+        const entry = (fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>).changes.chats[0];
+        expect(entry).not.toHaveProperty("patch");
+        await settle(fake);
+        expect(texts("c", "k")).toEqual(["A", "B3", "C"]);
+        expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
@@ -864,9 +891,12 @@ describe("chats and chat lists another writer changed", () => {
                 await vi.advanceTimersByTimeAsync(1500);
                 expect(reads(fake), order).toBe(0);
             } else {
+                // The feed's by-id patch applies at once with no read; the job's copy at the same
+                // revision still takes the job's lock.
                 flushFeed();
+                expect(texts("c", "k"), order).toEqual(["A", "B1", "C"]);
                 await vi.advanceTimersByTimeAsync(1500);
-                expect(reads(fake), order).toBe(1);
+                expect(reads(fake), order).toBe(0);
                 sync.applyHydration(event);
             }
             expect(texts("c", "k"), order).toEqual(["A", "B1", "C"]);
@@ -916,13 +946,18 @@ describe("work that waits", () => {
         await chat.loadChats("d");
         fake.requests.length = 0;
         live.paused = true;
+        // Whole-chat writes (`replace`): a by-id write would apply as the feed's patch with no read.
         fake.store.applyChanges({
-            chats: ids.map((id) => ({
-                characterId: "d",
-                chatId: id,
-                baseRevision: fake.chat("d", id)!.revision,
-                ops: [{ op: "setText", id: `${id}-m`, text: "new" }],
-            })),
+            chats: ids.map((id) => {
+                const replaced = JSON.parse(JSON.stringify(fake.chat("d", id)!.data));
+                replaced.message[0].data = "new";
+                return {
+                    characterId: "d",
+                    chatId: id,
+                    baseRevision: fake.chat("d", id)!.revision,
+                    ops: [{ op: "replace" as const, chat: replaced }],
+                };
+            }),
         });
         flushFeed();
         live.paused = false;
@@ -930,6 +965,7 @@ describe("work that waits", () => {
         const sizes = fake.requests
             .filter((r) => r.path === "/api/resources/read")
             .map((r) => (r.body.chats ?? []).length as number);
+        expect(sizes.length).toBeGreaterThanOrEqual(2);
         expect(Math.max(...sizes)).toBeLessThanOrEqual(1000);
         expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(1001);
         expect(ids.every((id) => texts("d", id)[0] === "new")).toBe(true);

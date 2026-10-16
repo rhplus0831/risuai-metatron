@@ -216,7 +216,7 @@ const noNotice = () => {
 };
 
 describe("the boot from summaries", () => {
-    it("writes nothing at boot; selecting a character reads its selected chat only, and the chat's live update refreshes it whole", async () => {
+    it("writes nothing at boot; selecting a character reads its selected chat only; the chat's by-id live update applies as a patch and a whole-chat one refreshes it whole", async () => {
         const { fake, chat, selection, reads, remoteMeta } = await boot();
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(C_IDS);
         expect(chat.chatEntry({ chaId: "c", chatId: "n1" })).toEqual({
@@ -237,10 +237,33 @@ describe("the boot from summaries", () => {
         expect(reads()).toEqual([{ chats: ["c/k"], summaries: [], collections: [] }]);
         await settle(fake);
         expect(fake.batchCount()).toBe(0);
-        // Another tab edits the selected (loaded) chat: read whole, no write back, no notice.
+        // Another tab edits the selected (loaded, idle) chat's metadata by id: the feed's patch applies
+        // at the revision this tab holds, with no read, no write back, and no notice.
         remoteMeta("c", "k", { name: "K remote" });
+        const metaEntry = (fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>).changes.chats[0];
+        expect(metaEntry.patch).toMatchObject({ meta: { name: "K remote" } });
         await settle(fake);
         expect(chat.selectedChat()?.name).toBe("K remote");
+        expect(reads()).toEqual([{ chats: ["c/k"], summaries: [], collections: [] }]);
+        expect(fake.batchCount()).toBe(0);
+        noNotice();
+        // A whole-chat write (`replace`) carries no patch: the chat is read whole.
+        const replaced = JSON.parse(JSON.stringify(fake.chat("c", "k")!.data));
+        replaced.name = "K replaced";
+        replaced.message[0].data = "A replaced";
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "replace", chat: replaced } as any],
+            },
+        ]);
+        const replaceEntry = (fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>).changes.chats[0];
+        expect(replaceEntry).not.toHaveProperty("patch");
+        await settle(fake);
+        expect(chat.selectedChat()?.name).toBe("K replaced");
+        expect(chat.selectedChat()?.message.map((message) => message.data)).toEqual(["A replaced", "B", "C"]);
         expect(reads()).toEqual([
             { chats: ["c/k"], summaries: [], collections: [] },
             { chats: ["c/k"], summaries: [], collections: [] },

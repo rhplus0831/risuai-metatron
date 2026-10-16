@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat, MessageTranslation } from "../../../shared/database.ts";
-import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { type ChatPatchBody, MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../shared/resources.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -514,6 +514,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta FROM chats ORDER BY seq");
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
+    const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
+    const selectPatchMessages = db.prepare(
+        "SELECT m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
+            "ORDER BY p.position DESC LIMIT 1) AS after FROM messages m " +
+            "WHERE m.chatSeq = ? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.position",
+    );
     const selectCharacterChats = db.prepare(
         "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
     );
@@ -673,11 +679,61 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return [...targets.messages].some((id) => foreign(guard.holder(group.characterId, group.chatId, id)));
     }
 
+    /** Reads only touched rows and their final anchors, stopping once the feed's byte cap is exceeded. */
+    function chatFeedPatch(
+        row: ChatRow,
+        baseRevision: string,
+        touched: ReadonlySet<string>,
+        removed: ReadonlySet<string>,
+        metaChanged: boolean,
+    ): ChatPatchBody | undefined {
+        const { count } = countMessages.get(row.seq) as { count: number };
+        const patch: ChatPatchBody = { baseRevision, count };
+        let bytes = Buffer.byteLength(JSON.stringify(patch));
+        if (metaChanged) {
+            bytes += Buffer.byteLength(row.meta) + ',"meta":'.length;
+            if (bytes > MAX_FEED_PATCH_BYTES) {
+                return undefined;
+            }
+            patch.meta = JSON.parse(row.meta) as Record<string, unknown>;
+        }
+        if (removed.size > 0) {
+            const ids: string[] = [];
+            patch.removed = ids;
+            bytes += ',"removed":[]'.length;
+            for (const id of removed) {
+                bytes += Buffer.byteLength(JSON.stringify(id)) + (ids.length > 0 ? 1 : 0);
+                if (bytes > MAX_FEED_PATCH_BYTES) {
+                    return undefined;
+                }
+                ids.push(id);
+            }
+        }
+        if (touched.size > 0) {
+            const messages: { after: string | null; message: unknown }[] = [];
+            patch.messages = messages;
+            bytes += ',"messages":[]'.length;
+            for (const stored of selectPatchMessages.iterate(row.seq, JSON.stringify([...touched]))) {
+                const { after, data } = stored as { after: string | null; data: string };
+                bytes +=
+                    Buffer.byteLength(JSON.stringify(after)) +
+                    Buffer.byteLength(data) +
+                    '{"after":,"message":}'.length +
+                    (messages.length > 0 ? 1 : 0);
+                if (bytes > MAX_FEED_PATCH_BYTES) {
+                    return undefined;
+                }
+                messages.push({ after, message: JSON.parse(data) });
+            }
+        }
+        return patch;
+    }
+
     function applyGroup(
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
-    ): { result: ChatGroupResult; applied: number } {
+    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined): never => {
             throw new ChatChangeConflict({
@@ -714,6 +770,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         }
         /** Messages this group inserted; a new generation may begin on them without the current revision. */
         const insertedHere = new Set<string>();
+        // The actual stored base, which can be newer than a stale group's requested base.
+        const patchBase =
+            row && group.ops.every((op) => op.op !== "create" && op.op !== "replace" && op.op !== "delete")
+                ? tokens.token(row.seq, row.revision)
+                : null;
+        const touched = new Set<string>();
+        const removedIds = new Set<string>();
+        let reappended = false;
+        let metaChanged = false;
         let applied = 0;
         let messageIds: string[] | undefined;
         const checkpoints: CheckpointOutcome[] = [];
@@ -804,6 +869,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     const meta = serialize(normalizeChatMeta(current, chatId)).text;
                     setChatMeta.run(meta, CHAT_SCHEMA_VERSION, chatSeq);
                     row = { ...row!, meta };
+                    metaChanged = true;
                     applied += 1;
                     break;
                 }
@@ -832,6 +898,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                     }
                     if (fresh.length > 0) {
+                        for (const message of fresh) {
+                            touched.add(message.id);
+                            reappended ||= removedIds.has(message.id);
+                        }
                         fresh.forEach((message) => insertedHere.add(message.id));
                         insertAt(chatSeq, after, fresh);
                         applied += 1;
@@ -875,6 +945,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         text = serialize(message).text;
                     }
                     setMessageData.run(text, chatSeq, id);
+                    if (text !== existing!.data) {
+                        touched.add(id);
+                    }
                     applied += 1;
                     break;
                 }
@@ -885,6 +958,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     let removed = 0;
                     for (const id of op.ids) {
                         if (deleteMessage.run(chatSeq, id).changes > 0) {
+                            removedIds.add(id);
+                            touched.delete(id);
                             removed += 1;
                         } else if (op.ids.length > 1) {
                             conflictHere(row);
@@ -944,6 +1019,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         message.translation = op.translation;
                     }
                     setMessageData.run(serialize(message).text, chatSeq, op.id);
+                    touched.add(op.id);
                     applied += 1;
                     break;
                 }
@@ -971,7 +1047,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (translations.length > 0) {
             result.translations = translations;
         }
-        return { result, applied };
+        const patch =
+            patchBase && applied > 0 && !reappended
+                ? chatFeedPatch(row!, patchBase, touched, removedIds, metaChanged)
+                : undefined;
+        return { result, applied, patch };
     }
 
     return {
@@ -1040,6 +1120,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
+            // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
+            const patches = new Map<ChatGroupResult, ChatPatchBody>();
             const changedOrders = new Set<string>();
             let applied = 0;
             for (const [index, group] of groups.entries()) {
@@ -1047,6 +1129,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 try {
                     const outcome = applyGroup(group, changedOrders, jobToken);
                     results.push(outcome.result);
+                    if (outcome.patch) {
+                        patches.set(outcome.result, outcome.patch);
+                    }
                     applied += outcome.applied;
                 } catch (error) {
                     if (error instanceof ResourceValidationError) {
@@ -1100,7 +1185,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     });
                 }
             }
-            return { conflicts, results, orders: orderResults, applied };
+            return { conflicts, results, orders: orderResults, applied, patches };
         },
 
         /** The order rows the given reorders name, as they are before the batch writes anything. */

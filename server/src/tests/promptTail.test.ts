@@ -386,6 +386,28 @@ const callbacks = (events: any[], name?: string) =>
     events.filter((e) => e.type === "callback" && (name === undefined || e.name === name));
 const indexOf = (events: any[], predicate: (event: any) => boolean) => events.findIndex(predicate);
 /**
+ * The chunks' whole texts, rebuilt from the wire deltas: a chunk keeps `keep` units of the text its
+ * generation held at `base` (the reply's `accepted` text at its seq, 0 by default, then the previous
+ * chunk's) and appends `text`; each chunk's base must be the seq held before it.
+ */
+function streamedTexts(events: any[]): string[] {
+    const held = new Map<string, { seq: number; text: string }>();
+    const out: string[] = [];
+    for (const event of events) {
+        if (event.type === "accepted" && event.messageId && event.generationId) {
+            held.set(event.generationId, { seq: event.seq ?? 0, text: event.text });
+        } else if (event.type === "chunk") {
+            const before = held.get(event.generationId);
+            expect(before, `chunk ${event.seq} without a held base`).toBeDefined();
+            expect(event.base).toBe(before!.seq);
+            const text = before!.text.slice(0, event.keep) + event.text;
+            held.set(event.generationId, { seq: event.seq, text });
+            out.push(text);
+        }
+    }
+    return out;
+}
+/**
  * The job chat's events (the job's hydration of its chat): whole `resource` events (the callback
  * barrier) and `chatPatch` events (every other job chat event). Both carry `streaming`.
  */
@@ -579,8 +601,9 @@ describe("the streaming tail", () => {
                 expect(chat.data.scriptstate?.$seen).toBe("yes");
                 // The chunks are the raw text so far; the plugin hook ran once, on the completed text.
                 const chunks = events.filter((event) => event.type === "chunk");
-                expect(chunks.at(-1).text).toBe("Hello there");
-                expect(chunks.every((event) => !event.text.includes("[lua]"))).toBe(true);
+                const streamed = streamedTexts(events);
+                expect(streamed.at(-1)).toBe("Hello there");
+                expect(streamed.every((text) => !text.includes("[lua]"))).toBe(true);
                 expect(callbacks(events, "editoutput").map((event) => event.payload)).toEqual([
                     { text: "Hello there [lua]" },
                 ]);
