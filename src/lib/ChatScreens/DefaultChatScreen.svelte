@@ -54,6 +54,8 @@
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
     import { doingChat, sendChat } from "../../ts/process/index.svelte";
+    import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
+    import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { isExpTranslator, translate } from "../../ts/translator/translator";
@@ -104,6 +106,10 @@
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(selectedChat());
+    const ownedJobIds = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? followedJobsOf($followedJobs, ref) : [];
+    });
     // The chat is on screen: its chat is open, or it is the playground chat (always open).
     let chatShown = $derived(
         currentCharacter !== undefined && (selection.chatOpen || currentCharacter.chaId === "§playground"),
@@ -220,6 +226,10 @@
 
     async function sendMain(continueResponse: boolean) {
         if ($doingChat) {
+            return;
+        }
+        if (ownedJobIds.length > 0) {
+            alertError(language.chatGenerating);
             return;
         }
         // The chat this send writes to, captured before any await; everything after an await
@@ -378,11 +388,12 @@
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
-        abortController = new AbortController();
+        const controller = new AbortController();
+        abortController = controller;
         try {
             ok = await sendChat(-1, {
                 target,
-                signal: abortController.signal,
+                signal: controller.signal,
                 continue: continued,
                 ...serverInput,
             });
@@ -395,6 +406,9 @@
             console.error(error);
             alertError(error);
         } finally {
+            if (abortController === controller) {
+                abortController = null;
+            }
             if (serverInput) {
                 const landed =
                     findChat(target)?.message.some(
@@ -423,6 +437,9 @@
         if (abortController) {
             abortController.abort();
         }
+        for (const id of ownedJobIds) {
+            void abortGenerationJob(id).catch((error) => console.error("[Generation]", error));
+        }
     }
 
     async function runAutoMode() {
@@ -433,6 +450,11 @@
         const selectedChar = currentCharacter?.chaId;
         autoMode = true;
         while (autoMode) {
+            if (ownedJobIds.length > 0) {
+                alertError(language.chatGenerating);
+                autoMode = false;
+                break;
+            }
             await sendChatMain();
             // A switched character or a closed chat (Go Back, the browser's back) ends the loop.
             if (selectedChar !== selectedCharacter()?.chaId || !selection.chatOpen) {
@@ -777,7 +799,7 @@
                     }}
                     style:height={inputHeight}></textarea>
 
-                {#if $doingChat || doingChatInputTranslate}
+                {#if $doingChat || doingChatInputTranslate || ownedJobIds.length > 0}
                     <button
                         aria-labelledby="cancel"
                         class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-blue-500 hover:text-white transition-colors"

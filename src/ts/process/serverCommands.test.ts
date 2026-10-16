@@ -1,3 +1,4 @@
+import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 
@@ -1064,5 +1065,66 @@ describe("the follow's diagnostics (request history slice 8)", () => {
         }
         await resumed;
         expect(links()).toHaveLength(2);
+    });
+});
+
+describe("followedJobs (audit JOB-02, slice 2b)", () => {
+    const jobsOf = (chat: { chaId: string; chatId: string }) =>
+        commands.followedJobsOf(get(commands.followedJobs), chat);
+
+    it("lists a followed job under its chat from the follow's start until its end, for done and for an error", async () => {
+        const end = commands.followJobToEnd("j", ref);
+        await flush();
+        expect(jobsOf(ref)).toEqual(["j"]);
+        expect(jobsOf({ chaId: "c", chatId: "other" })).toEqual([]);
+        endWith(follows()[0], done);
+        expect(await end).toEqual(done);
+        expect(jobsOf(ref)).toEqual([]);
+
+        const failing = commands.followJobToEnd("j2", ref);
+        await flush();
+        expect(jobsOf(ref)).toEqual(["j2"]);
+        endWith(follows()[1], failed);
+        await failing;
+        expect(jobsOf(ref)).toEqual([]);
+    });
+
+    it("lists a job resumed at boot under the chat its status names, and drops it when the job is lost", async () => {
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        const boot = commands.resumeServerJobs();
+        await flush();
+        await flush();
+        expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual(["j"]);
+        // The socket closes without a terminal and the server no longer knows the job: lost.
+        stubs.read.mockResolvedValue(null);
+        follows()[0].end(null);
+        await boot;
+        expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual([]);
+    });
+
+    it("keeps a newer job of the same chat listed when the older follow ends after it started", async () => {
+        const older = commands.followJobToEnd("old", ref);
+        await flush();
+        const newer = commands.followJobToEnd("new", ref);
+        await flush();
+        expect(jobsOf(ref).sort()).toEqual(["new", "old"]);
+        endWith(follows()[0], done);
+        await older;
+        expect(jobsOf(ref)).toEqual(["new"]);
+        endWith(follows()[1], done);
+        await newer;
+        expect(jobsOf(ref)).toEqual([]);
+    });
+
+    it("drops a job whose chat cannot be loaded once the follow ends as lost, and never lists a job the server does not know", async () => {
+        stubs.load.mockReset().mockRejectedValue(new Error("offline"));
+        expect(await commands.followJobToEnd("j", ref)).toBe("lost");
+        expect(jobsOf(ref)).toEqual([]);
+
+        stubs.saved.mockReturnValue(["gone"]);
+        stubs.read.mockResolvedValue(null);
+        await commands.resumeServerJobs();
+        expect(get(commands.followedJobs).size).toBe(0);
     });
 });

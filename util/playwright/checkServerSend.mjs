@@ -3,8 +3,9 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // browser posts the job with the input and its user message id, the user message and the streamed
 // reply show and are stored, a continue extends the reply, a settings edit made right before a
 // preview reaches the assembled prompt (the pre-send flush), an abort keeps the text so far, and a
-// reload in the middle of a slow stream shows the checkpointed text and then the whole reply; the
-// messages render through the server transform.
+// reload in the middle of a slow stream shows the checkpointed text and then the whole reply, and a
+// second reload mid-stream shows Stop for the resumed job, which ends it with the text so far kept
+// (audit JOB-02); the messages render through the server transform.
 //
 // Usage:
 //   node util/playwright/checkServerSend.mjs
@@ -332,6 +333,49 @@ try {
             "server: the whole reply is stored",
             stored.at(-1)?.data === "Part A. Part B. Part C. Part D. Part E. Part F.",
             stored.at(-1)?.data,
+        );
+        // Stop after a reload mid-stream (audit JOB-02, `docs/plan/audit-findings-perf.md` slice 2b): the
+        // resumed job shows Stop, and Stop ends that job with the text so far kept.
+        mode = {
+            chunks: [
+                "Half A. ",
+                "Half B. ",
+                "Half C. ",
+                "Half D. ",
+                "Half E. ",
+                "Half F. ",
+                "Half G. ",
+                "Half H. ",
+                "Half I. ",
+                "Half J.",
+            ],
+            delayMs: 1200,
+        };
+        await input.fill("Tell me slowly again");
+        await input.press("Enter");
+        await page.getByText("Half A.").first().waitFor({ timeout: 20000 });
+        await page.waitForTimeout(1000);
+        await open();
+        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await page.getByText("Tell me slowly again").first().waitFor({ timeout: 15000 });
+        const stopAfterReload = page.locator('button[aria-labelledby="cancel"]');
+        await stopAfterReload
+            .first()
+            .waitFor({ timeout: 10000 })
+            .catch(() => {});
+        check(`${label}: a reload during a stream shows Stop for the resumed job`, (await stopAfterReload.count()) > 0);
+        await stopAfterReload
+            .first()
+            .click()
+            .catch(() => {});
+        check(`${label}: Stop ends the resumed job`, await waitIdle(15000));
+        await page.waitForTimeout(1500);
+        stored = await storedMessages();
+        const stoppedText = stored.at(-1)?.data ?? "";
+        check(
+            `${label}: the text so far is kept after stopping the resumed job`,
+            stoppedText.startsWith("Half A.") && !stoppedText.includes("Half J."),
+            stoppedText,
         );
         check(`${label}: no page errors`, pageErrors.length === 0, pageErrors);
         const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);

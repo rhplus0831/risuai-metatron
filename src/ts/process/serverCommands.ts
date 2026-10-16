@@ -13,6 +13,7 @@ import type {
     GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
+import { writable } from "svelte/store";
 import { alertError, alertJobError } from "../alert";
 import {
     abortGenerationJob,
@@ -55,6 +56,23 @@ const followedUp = new Set<string>();
 /** The one lifecycle of each job this tab follows to its end, shared by every caller. */
 const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
 
+/** The followed jobs whose chats are known, keyed by job id so overlapping follows stay visible. */
+export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
+
+const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
+
+/** The jobs this tab follows for a chat. */
+export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef): string[] {
+    const key = chatKeyOf(ref);
+    const ids: string[] = [];
+    for (const [jobId, chatKey] of jobs) {
+        if (chatKey === key) {
+            ids.push(jobId);
+        }
+    }
+    return ids;
+}
+
 /**
  * Follows a job until its end, once per job however many callers ask (a button, a busy job of this
  * tab, the boot resume): the lifecycle is reserved before anything else, so only it discovers the
@@ -83,6 +101,8 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 }
                 let target: ChatRef | "lost" = discovered;
                 if (target !== "lost") {
+                    const key = chatKeyOf(target);
+                    followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
                     release ??= pinChat(target);
                     if (!(await loadJobChat(target))) {
                         target = "lost";
@@ -114,6 +134,11 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 return end;
             } finally {
                 following.delete(jobId);
+                followedJobs.update((jobs) => {
+                    const next = new Map(jobs);
+                    next.delete(jobId);
+                    return next;
+                });
                 release?.();
             }
         })();

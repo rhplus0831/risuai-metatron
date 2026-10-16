@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03) and 2a (GEN-01, JOB-01) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 2a (GEN-01, JOB-01) and 2b (JOB-02) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
