@@ -95,6 +95,10 @@ export class MCPClient {
      * arrives later publishes nothing (`assertOpen`).
      */
     private closed = false;
+    /** Only the current legacy GET stream may reset the session when it ends. */
+    private legacy: AbortController | null = null;
+    /** Pending answers, including the legacy handshake's `"connected"` event. */
+    private readonly pending = new Map<string | number, (rpc: JsonRPC) => void>();
     serverInfo: {
         protocolVersion: string;
         capabilities: {
@@ -139,7 +143,46 @@ export class MCPClient {
         }
     }
 
-    async connectSSE(stream: ReadableStream, abortController?: AbortController) {
+    /** Registers once; every settlement removes both the document listener and the pending entry. */
+    private waitFor(id: string | number, http: RPCRequestResult["http"] = { status: 200, headers: {} }) {
+        // A replacement waiter must not strand the previous listener for the same id.
+        this.pending.get(id)?.({ jsonrpc: "2.0", id, error: { code: -32000, message: "The MCP session ended" } });
+        let resolve!: (answer: RPCRequestResult) => void;
+        const answer = new Promise<RPCRequestResult>((done) => {
+            resolve = done;
+        });
+        let settled = false;
+        const settle = (rpc: JsonRPC) => {
+            if (settled) return;
+            settled = true;
+            document.removeEventListener("mcp-sse", listener);
+            if (this.pending.get(id) === settle) {
+                this.pending.delete(id);
+            }
+            resolve({ rpc, http });
+        };
+        const listener = (event: CustomEvent<SseEventDetail>) => {
+            if (event.detail.mcpClientObjectId === this.mcpClientObjectId && event.detail.data.id === id) {
+                settle(event.detail.data);
+            }
+        };
+        this.pending.set(id, settle);
+        document.addEventListener("mcp-sse", listener);
+        return {
+            answer,
+            settle,
+            fail: (message: string, code = -32000) => settle({ jsonrpc: "2.0", id, error: { code, message } }),
+        };
+    }
+
+    private failPending(message: string): void {
+        for (const [id, settle] of this.pending) {
+            settle({ jsonrpc: "2.0", id, error: { code: -32000, message } });
+        }
+    }
+
+    /** Resolves at EOF, rejects on a read failure, and always releases its reader and tracked entry. */
+    async connectSSE(stream: ReadableStream, abortController = new AbortController()): Promise<void> {
         if (this.closed) {
             // A retired client reads no stream (its `destroy()` could not abort this one).
             stream.cancel().catch(() => {});
@@ -149,20 +192,32 @@ export class MCPClient {
         // Events are framed in bytes (`shared/mcp/sse.ts`: CRLF, LF, or CR line ends) and handled in order.
         const events: string[] = [];
         const framer = new SseFramer((event) => events.push(event));
-        this.sses.push({
-            stream: stream,
-            abortController: abortController,
-        });
+        const sse = { stream, abortController };
+        this.sses.push(sse);
+        // Also cancel the reader explicitly: a custom fetch transport may not wire its signal to
+        // the returned stream, and an answered request must stop reading even then.
+        const cancel = () => {
+            void reader.cancel().catch(() => {});
+        };
+        abortController.signal.addEventListener("abort", cancel, { once: true });
+        try {
+            while (!abortController.signal.aborted && !this.closed) {
+                const { done, value } = await reader.read();
+                if (done || abortController.signal.aborted || this.closed) break;
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            framer.push(value);
-            for (let i = 0; i < events.length; i++) {
-                await this.handleSseEvent(events[i]);
+                framer.push(value);
+                for (let i = 0; i < events.length; i++) {
+                    if (abortController.signal.aborted || this.closed) break;
+                    await this.handleSseEvent(events[i]);
+                }
+                events.length = 0;
             }
-            events.length = 0;
+        } finally {
+            abortController.signal.removeEventListener("abort", cancel);
+            cancel();
+            reader.releaseLock();
+            const index = this.sses.indexOf(sse);
+            if (index !== -1) this.sses.splice(index, 1);
         }
     }
 
@@ -204,7 +259,9 @@ export class MCPClient {
 
             //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
             if (jsonData.method === "ping") {
-                await this.request(
+                // Sending a ping reply must not prevent the reader from observing EOF or failure
+                // while the POST is still out.
+                void this.request(
                     "response",
                     {},
                     {
@@ -212,8 +269,10 @@ export class MCPClient {
                         initMethod: "none",
                         id: jsonData.id,
                     },
+                ).then(
+                    () => this.sseIdDone.add(jsonData.id),
+                    () => {},
                 );
-                this.sseIdDone.add(jsonData.id);
                 return;
             }
 
@@ -244,6 +303,7 @@ export class MCPClient {
         const initMethod = options.initMethod || "none";
         let httpStatus = 500;
         const url = this.sseEndpoint ?? this.url;
+        const legacy = !!this.sseEndpoint;
 
         const body =
             method === "response"
@@ -289,6 +349,7 @@ export class MCPClient {
             });
         }
 
+        let responseWaiter: ReturnType<MCPClient["waitFor"]> | null = null;
         try {
             const headers: Record<string, string> = !this.sseEndpoint
                 ? {
@@ -325,35 +386,31 @@ export class MCPClient {
                 delete requestParams.body;
             }
 
-            let responsePromise: Promise<RPCRequestResult> | null = null;
-            if (this.sseEndpoint && !options.notifications) {
-                responsePromise = new Promise<RPCRequestResult>((resolve) => {
-                    const sseListener = (event: CustomEvent<SseEventDetail>) => {
-                        if (event.detail.mcpClientObjectId !== this.mcpClientObjectId) return;
-                        const data = event.detail.data;
-                        if (data.id === body.id) {
-                            document.removeEventListener("mcp-sse", sseListener);
-                            resolve({
-                                rpc: data,
-                                http: {
-                                    status: 200,
-                                    headers: {},
-                                },
-                            });
-                        }
-                    };
-                    document.addEventListener("mcp-sse", sseListener);
-                });
+            if (legacy && !options.notifications) {
+                responseWaiter = this.waitFor(body.id);
             }
 
-            const response = await fetchNative(url, requestParams);
+            const fetching = fetchNative(url, requestParams);
+            // The legacy session can answer or end while its POST is still out. Neither leaves
+            // this request waiting for a POST response after its waiter has already settled.
+            const response = responseWaiter ? await Promise.race([fetching, responseWaiter.answer]) : await fetching;
+            if ("rpc" in response) {
+                abortController.abort();
+                void fetching.then(
+                    (late) => late.body?.cancel().catch(() => {}),
+                    () => {},
+                );
+                this.assertOpen();
+                return response;
+            }
             if (this.closed) {
                 // The client was retired while the request was out: its answer is not read.
                 response.body?.cancel().catch(() => {});
                 this.assertOpen();
             }
 
-            if (this.sseEndpoint && options.notifications) {
+            if (legacy && options.notifications) {
+                response.body?.cancel().catch(() => {});
                 return {
                     rpc: {
                         jsonrpc: "2.0",
@@ -367,11 +424,10 @@ export class MCPClient {
                 };
             }
 
-            if (response.status > 299 && responsePromise) {
-                //invoke error handler
-                const details: SseEventDetail = {
-                    mcpClientObjectId: this.mcpClientObjectId,
-                    data: {
+            if (responseWaiter) {
+                response.body?.cancel().catch(() => {});
+                if (response.status > 299) {
+                    responseWaiter.settle({
                         jsonrpc: "2.0",
                         id: body.id,
                         error: {
@@ -382,25 +438,17 @@ export class MCPClient {
                                 params: params,
                             },
                         },
-                    },
-                };
-
-                document.dispatchEvent(
-                    new CustomEvent("mcp-sse", {
-                        detail: details,
-                    }),
-                );
-            }
-
-            if (responsePromise) {
+                    });
+                }
                 // An answer that arrives after the client was retired is not taken.
-                return responsePromise.then((answer) => {
+                return responseWaiter.answer.then((answer) => {
                     this.assertOpen();
                     return answer;
                 });
             }
 
             if ((this.sessionId && response.status === 404) || (this.accessToken && response.status === 401)) {
+                response.body?.cancel().catch(() => {});
                 this.reset();
                 return this.request(method, params, options);
             }
@@ -411,29 +459,21 @@ export class MCPClient {
                 if (response.headers.has("Mcp-Session-Id") && initMethod !== "none") {
                     this.sessionId = response.headers.get("Mcp-Session-Id");
                 }
-                this.connectSSE(response.body, abortController);
-
-                const v = new Promise<RPCRequestResult>((resolve) => {
-                    const sseListener = (event: CustomEvent<SseEventDetail>) => {
-                        if (event.detail.mcpClientObjectId !== this.mcpClientObjectId) return;
-                        const data = event.detail.data;
-                        if (data.id === body.id) {
-                            document.removeEventListener("mcp-sse", sseListener);
-                            resolve({
-                                rpc: data,
-                                http: {
-                                    status: response.status,
-                                    headers: Object.fromEntries(response.headers.entries()),
-                                },
-                            });
-                        }
-                    };
-                    document.addEventListener("mcp-sse", sseListener);
+                const waiting = this.waitFor(body.id, {
+                    status: response.status,
+                    headers: Object.fromEntries(response.headers.entries()),
                 });
-                return v.then((answer) => {
-                    this.assertOpen();
-                    return answer;
-                });
+                void this.connectSSE(response.body, abortController).then(
+                    () => waiting.fail("The MCP stream ended without an answer"),
+                    (error) =>
+                        waiting.fail(error instanceof Error && error.message ? error.message : "The MCP stream failed"),
+                );
+                return waiting.answer
+                    .finally(() => abortController.abort())
+                    .then((answer) => {
+                        this.assertOpen();
+                        return answer;
+                    });
             }
 
             if (!contentType.includes("application/json")) {
@@ -469,6 +509,7 @@ export class MCPClient {
                 },
             };
         } catch (error) {
+            responseWaiter?.fail("Internal Error", httpStatus);
             if (this.closed) {
                 throw error;
             }
@@ -512,8 +553,62 @@ export class MCPClient {
         }
     }
 
+    /** The legacy GET belongs to its session, including the wait for the endpoint event. */
+    private async connectLegacy(headers: Record<string, string>): Promise<AbortController> {
+        const session = new AbortController();
+        this.legacy?.abort();
+        this.legacy = session;
+        const connected = this.waitFor("connected");
+        try {
+            const fetching = fetchNative(this.url, { method: "GET", headers, signal: session.signal });
+            const connection = await Promise.race([fetching, connected.answer]);
+            if ("rpc" in connection) {
+                session.abort();
+                void fetching.then(
+                    (late) => late.body?.cancel().catch(() => {}),
+                    () => {},
+                );
+                this.assertOpen();
+                throw new Error(connection.rpc.error?.message ?? "The MCP session ended");
+            }
+            if (this.closed || this.legacy !== session) {
+                connection.body?.cancel().catch(() => {});
+                this.assertOpen();
+                throw new Error("The MCP session ended");
+            }
+            if (connection.status !== 200) {
+                connection.body?.cancel().catch(() => {});
+                throw new Error(`Failed to connect to MCP server: ${connection.status} ${connection.statusText}`);
+            }
+
+            const ended = (message: string) => {
+                // An old stream may finish its cleanup after a new handshake installed its session.
+                if (this.legacy === session) this.reset(message);
+            };
+            void this.connectSSE(connection.body, session).then(
+                () => ended("The MCP session ended"),
+                (error) => ended(error instanceof Error && error.message ? error.message : "The MCP stream failed"),
+            );
+            const connectionResult = await connected.answer;
+            this.assertOpen();
+            const endpoint = connectionResult.rpc.result?.endpoint;
+            if (!endpoint) {
+                throw new Error(connectionResult.rpc.error?.message ?? "Failed to get endpoint from MCP server");
+            }
+            if (this.legacy !== session) throw new Error("The MCP session ended");
+            this.sseEndpoint = `${new URL(this.url).origin}${endpoint}`;
+            return session;
+        } catch (error) {
+            connected.fail("The MCP session ended");
+            if (this.legacy === session) this.reset();
+            session.abort();
+            throw error;
+        }
+    }
+
     async handshake() {
         this.assertOpen();
+        let legacySession: AbortController | null = null;
         console.log("MCP Handshake", this.url, this.mcpClientObjectId);
         this.protocolVersion = "2025-03-26"; //default to latest version
         let { rpc: d, http } = await this.request(
@@ -548,49 +643,9 @@ export class MCPClient {
                 headers["Authorization"] = `Bearer ${this.accessToken}`;
             }
 
-            const connection = await fetchNative(this.url, {
-                method: "GET",
-                headers: headers,
-            });
-            if (this.closed) {
-                connection.body?.cancel().catch(() => {});
-                this.assertOpen();
-            }
-
-            if (connection.status !== 200) {
-                throw new Error(`Failed to connect to MCP server: ${connection.status} ${connection.statusText}`);
-            }
-
-            this.connectSSE(connection.body);
-
-            const connectionResult = await new Promise<RPCRequestResult>((resolve) => {
-                const sseListener = (event: CustomEvent<SseEventDetail>) => {
-                    if (event.detail.mcpClientObjectId !== this.mcpClientObjectId) return;
-                    const data = event.detail.data;
-                    if (data.id === "connected") {
-                        document.removeEventListener("mcp-sse", sseListener);
-                        resolve({
-                            rpc: data,
-                            http: {
-                                status: connection.status,
-                                headers: Object.fromEntries(connection.headers.entries()),
-                            },
-                        });
-                    }
-                };
-                document.addEventListener("mcp-sse", sseListener);
-            });
-
+            legacySession = await this.connectLegacy(headers);
             this.assertOpen();
-            const endpoint = connectionResult.rpc.result.endpoint;
-
-            if (!endpoint) {
-                throw new Error("Failed to get endpoint from MCP server");
-            }
-
-            const baseUrl = new URL(this.url).origin;
-
-            this.sseEndpoint = `${baseUrl}${endpoint}`;
+            if (this.legacy !== legacySession) throw new Error("The MCP session ended");
 
             let r = await this.request(
                 "initialize",
@@ -612,6 +667,7 @@ export class MCPClient {
         }
 
         this.assertOpen();
+        if (legacySession && this.legacy !== legacySession) throw new Error("The MCP session ended");
         if (http.status === 401) {
             await this.oauthLogin();
             return this.handshake();
@@ -624,6 +680,7 @@ export class MCPClient {
                 notifications: true,
             });
             this.assertOpen();
+            if (legacySession && this.legacy !== legacySession) throw new Error("The MCP session ended");
 
             if (d?.result?.protocolVersion !== "2025-03-26" && d?.result?.protocolVersion !== "2024-11-05") {
                 console.warn("MCP Server is using an unsupported protocol version", d.result.protocolVersion);
@@ -912,21 +969,25 @@ export class MCPClient {
 
     /**
      * Retires the client (the registry dropped it): it starts nothing afterwards, and requests, logins,
-     * and lists it started refuse their late answers (a stream reader already running and the custom
-     * transport are not fenced).
+     * and lists it started refuse their late answers. Pending SSE answers settle, and running readers
+     * are cancelled and released. The custom transport is not fenced.
      */
     destroy() {
         this.closed = true;
         this.reset();
     }
 
-    /** Drops the session, the token, and the streams (a session reset keeps the client usable). */
-    private reset() {
+    /** Drops the session, token, and streams and settles its waiters; the client stays usable. */
+    private reset(message = "The MCP session ended") {
         this.initialized = false;
         this.sessionId = null;
         this.accessToken = null;
         this.sseEndpoint = null;
         this.sseResponses = {};
+        const legacy = this.legacy;
+        this.legacy = null;
+        legacy?.abort();
+        this.failPending(message);
         for (const sse of this.sses) {
             sse.abortController?.abort();
         }

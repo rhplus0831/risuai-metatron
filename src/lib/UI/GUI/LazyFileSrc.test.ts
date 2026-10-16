@@ -3,12 +3,15 @@ import { createRawSnippet, flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "../tests/reactiveProps.svelte";
 
-// The lazy preview the asset lists use: `getFileSrc` runs only once the wrapper nears the viewport,
-// for the path it was seen with; a row reused for another path waits to be seen again and never
-// shows the previous file; a late result for an old path is dropped.
+// The lazy preview the asset lists use: the file is held (`holdFileSrc`, its read behind the
+// `readFileSrc` double) only once the wrapper nears the viewport, for the path it was seen with; a
+// row reused for another path waits to be seen again and never shows the previous file; a late
+// result for an old path is dropped. The hold's release and revocation: `LazyFileSrcHold.test.ts`.
 
-const getFileSrc = vi.fn<(path: string) => Promise<string>>();
-vi.mock("src/ts/globalApi.svelte", () => ({ getFileSrc: (path: string) => getFileSrc(path) }));
+const readFileSrc = vi.fn<(path: string) => Promise<string>>();
+vi.mock("src/ts/globalApi.svelte", () => ({
+    holdFileSrc: (path: string) => ({ src: readFileSrc(path), release: () => {} }),
+}));
 
 import LazyFileSrc from "./LazyFileSrc.svelte";
 
@@ -55,8 +58,8 @@ const settle = async () => {
 };
 
 beforeEach(() => {
-    getFileSrc.mockReset();
-    getFileSrc.mockImplementation(async (path) => `/sw/img/${path}`);
+    readFileSrc.mockReset();
+    readFileSrc.mockImplementation(async (path) => `/sw/img/${path}`);
     FakeObserver.live = [];
     globalThis.IntersectionObserver = FakeObserver as unknown as typeof IntersectionObserver;
     target = document.createElement("div");
@@ -76,23 +79,23 @@ describe("LazyFileSrc", () => {
     it("reads the file only once the wrapper is seen, then renders the preview with its source", async () => {
         render("a.png");
         await settle();
-        expect(getFileSrc).not.toHaveBeenCalled();
+        expect(readFileSrc).not.toHaveBeenCalled();
         expect(shown()).toBeNull();
         expect(target.firstElementChild?.className).toBe("w-16 h-16");
 
         FakeObserver.intersect();
         await settle();
-        expect(getFileSrc.mock.calls).toEqual([["a.png"]]);
+        expect(readFileSrc.mock.calls).toEqual([["a.png"]]);
         expect(shown()).toBe("/sw/img/a.png");
         expect(FakeObserver.live).toHaveLength(0);
     });
 
     it("renders nothing when the read fails", async () => {
-        getFileSrc.mockResolvedValue("");
+        readFileSrc.mockResolvedValue("");
         render("missing.png");
         FakeObserver.intersect();
         await settle();
-        expect(getFileSrc).toHaveBeenCalledOnce();
+        expect(readFileSrc).toHaveBeenCalledOnce();
         expect(shown()).toBeNull();
     });
 
@@ -106,17 +109,17 @@ describe("LazyFileSrc", () => {
         flushSync();
         await settle();
         expect(shown()).toBeNull();
-        expect(getFileSrc.mock.calls).toEqual([["a.png"]]);
+        expect(readFileSrc.mock.calls).toEqual([["a.png"]]);
 
         FakeObserver.intersect();
         await settle();
-        expect(getFileSrc.mock.calls).toEqual([["a.png"], ["b.png"]]);
+        expect(readFileSrc.mock.calls).toEqual([["a.png"], ["b.png"]]);
         expect(shown()).toBe("/sw/img/b.png");
     });
 
     it("drops a result that arrives after the path changed", async () => {
         let resolveOld: (src: string) => void = () => {};
-        getFileSrc.mockImplementationOnce(() => new Promise((resolve) => (resolveOld = resolve)));
+        readFileSrc.mockImplementationOnce(() => new Promise((resolve) => (resolveOld = resolve)));
         const props = render("old.png");
         FakeObserver.intersect();
         await settle();
@@ -136,7 +139,7 @@ describe("LazyFileSrc", () => {
         globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
         render("a.png");
         await settle();
-        expect(getFileSrc.mock.calls).toEqual([["a.png"]]);
+        expect(readFileSrc.mock.calls).toEqual([["a.png"]]);
         expect(shown()).toBe("/sw/img/a.png");
     });
 
@@ -146,6 +149,6 @@ describe("LazyFileSrc", () => {
         unmount(instance!);
         instance = null;
         expect(FakeObserver.live).toHaveLength(0);
-        expect(getFileSrc).not.toHaveBeenCalled();
+        expect(readFileSrc).not.toHaveBeenCalled();
     });
 });

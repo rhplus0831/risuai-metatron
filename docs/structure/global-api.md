@@ -22,7 +22,8 @@
 - Storage and assets:
   - `saveAsset`: hashes the bytes and stores them as `assets/<hash>.<ext>`.
   - `loadAsset`, `readImage`.
-  - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when the service worker holds the file (it registers it once per path; each worker request is bounded at 10 s), else an object URL (`blob:`, `image/png`) of its bytes kept for the page (also on a page the worker does not control yet, its first load; a data URL would inflate the text a display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and resolves `""`, as does a failed load, and either is dropped so the next read tries again. The message rich copy embeds `blob:` message images and icons like the other URLs it reads.
+  - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when the service worker holds the file (it registers it once per path; each worker request is bounded at 10 s), else an object URL (`blob:`, `image/png`) of its bytes pinned for the page by this plain read (also on a page the worker does not control yet, its first load; a data URL would inflate the text a display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and resolves `""`, as does a failed load, and either is dropped so the next read tries again. The message rich copy embeds `blob:` message images and icons like the other URLs it reads.
+  - `holdFileSrc`: shares the same cached load as `getFileSrc`, but returns `{ src, release }` for previews. The last release revokes and drops an unpinned `blob:` URL after a 100 ms grace period, cancelled by a new hold or plain read so shifted list rows can reuse it. A release before loading finishes is applied after resolution unless the source was held or pinned again. Service-worker URLs are never revoked; plain reads stay pinned.
   - `downloadFile`, `getBasename`.
 - Save:
   - `saving`: indicator state (re-exported from the adapter).
@@ -31,7 +32,7 @@
 - Network:
   - `globalFetch(url, GlobalFetchArgs)`: buffered, returns `{ok,data,headers,status}`.
   - `fetchNative(url, args)`: returns a `Response` or stream.
-  - `addFetchLog`, `getFetchLogs`.
+  - `addFetchLog`, `appendFetchLog`, `getFetchLogs`: all writers (including `addFetchLogInGlobalFetch`) use `writeFetchLog`, which trims the live array in place to `FETCH_LOG_MAX_ENTRIES` (20) and `FETCH_LOG_MAX_CHARS` (16 Mi UTF-16 code units of `body`, `header`, and `response`). The newest entry always survives whole, even alone over budget.
   - `openURL`.
 - Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`, `BlankWriter`, `AppendableBuffer`.
 - Chat and UI:
@@ -124,7 +125,7 @@ Alerts:
 ## State
 
 - Asset logical keys (`storage/assetClient.ts`): `assets/*` only (the database is in the server resources).
-- `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live array (the popup's "This tab" and plugins' `getFetchLogs`). `appendFetchLog(entry)` adds an entry the server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes appear in the tab's request log.
+- `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed. Every insertion through `writeFetchLog` keeps the newest entries within the count and text budgets above (the newest entry alone may exceed the text budget), repairing an already oversized list too. `getFetchData` still finds an entry by `chatId`, and `addFetchLog` still returns 0. `appendFetchLog(entry)` adds an entry the server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes appear in the tab's request log.
 - `chatFoldedState.data` is `{charId, chatId, messageId}`.
 
 ## Coupling
@@ -167,11 +168,11 @@ Alerts:
 - `src/lib/Others/RequestLogs/ServerRequestHistory.test.ts` (request history slice 10, the network module, alerts, and the stores stubbed): a row's "Share for support" sending its job id (a standalone row its request id), the answer's ids marking every listed row with Update and Withdraw, one operation per target at a time, a failure as a localized notice (the server's older-copy answer as its own), the "Shared copies" box with a Withdraw each, the last list kept and the error with Retry when a read fails.
 - `src/ts/network/generationJobs.test.ts` also covers the job link's diagnostics over a stubbed collector: `attach` once on open, `detach` with the code for a close before the end, `attachFailed` with the code for a close before open and without one for a failed authentication, nothing after the terminal, the caller's close, a superseding follow, or a cancel.
 - `src/ts/alertTerminal.test.ts`: the terminal notice over the real `alert.ts`: ordinary alerts leave it pending, one acknowledgement resolves it, a second call reuses it, the store is read-only.
-- Nothing directly tests `globalFetch`/`fetchNative` routing, the writers, the rest of the alert protocol, or `util.ts`.
+- `src/ts/globalApiRetention.test.ts` (happy-dom; the storage and network I/O mocked, the real caches): the request log's budgets through `addFetchLog`, `appendFetchLog` and `globalFetch` (the newest 20 kept, an already overlong list repaired on the next insertion, the 16 Mi budget in UTF-16 units over `body`, `header` and `response`, an oversized newest entry kept whole, the array's identity and `getFetchData` by chat id); `holdFileSrc` and `getFileSrc` over a mocked `readAsset` (one load shared across holds, the 100 ms grace and its cancellation by a new hold, plain reads pinning, a release before the load resolves, worker URLs never revoked).
+- Nothing directly tests `globalFetch`/`fetchNative` routing, the rest of the alert protocol, or `util.ts`.
 
 ## Known Hazards
 
-- `addFetchLog` always returns 0, and streamed log piping assumes the newest entry is at index 0. Concurrent streams can attach response text to the wrong log.
 - The client `isLocalNetworkHost` accepts bare single-label hosts, but the server's version does not. A Node proxy job can be rejected, and the request then falls back to unrestricted `/proxy2`.
 - `alertInput`/`alertConfirm` wait by polling the shared alert store every 10 ms (`waitAlert`); a cancelled job question releases its channel request and, while its alert is still the one showing, clears it (`alertClear`), which ends its poller. When local UI had replaced the question's alert, the poller keeps running until that alert closes, so such cancellations can stack pollers.
 - A plugin hook already inside `invokeHook` cannot be aborted: a cancellation skips the later hooks, but the running one finishes, its writes flush, and it holds the callback lane until it settles.

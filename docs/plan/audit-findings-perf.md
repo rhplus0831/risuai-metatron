@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) and 3c (sync traffic during generation, compression deferred) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) and 3d (tab retention, inlay media deferred) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -233,6 +233,35 @@ P2 with the memory items that share its mechanism.
   whose stream ends without an answer. One bounded log writer, revocation
   where the parser's retained HTML cannot hold the URL, and a `finally` on the
   MCP read.
+  Landed 2026-10-16: one private `writeFetchLog` behind the three writers
+  (`FETCH_LOG_MAX_ENTRIES` 20, `FETCH_LOG_MAX_CHARS` 16 Mi UTF-16 units over
+  body, header and response, the newest entry always kept, trimmed in place so
+  the viewer's and plugins' array identity holds; the dead `pipeFetchLog`
+  removed): the audit's 128 x 128 KiB entries now keep 20 / 2.6 M chars instead
+  of 128 / 16.8 M. `holdFileSrc` beside `getFileSrc` (a shared entry with
+  `pinned`/`holders`; an unpinned `blob:` URL is revoked and dropped 100 ms
+  after its last release, a hold or plain read within the grace cancels it, a
+  release before the load resolves applies after it); `LazyFileSrc` (the asset
+  lists) holds and releases; every other caller pins as before. The translator
+  cache charges `MEMORY_CACHE_ENTRY_OVERHEAD` (64) per pair. The tab
+  `MCPClient` settles instead of hanging (mirroring the server's client, with
+  JSON-RPC errors, not rejections, so `getToolList`/`callTool` keep their
+  error convention): `waitFor`/`pending`/`failPending`, `connectSSE` releases
+  its reader and drops its `sses` entry in `finally`, an answered stream is
+  aborted, the legacy GET has a controller and only the current session's
+  stream may reset, a throwing POST removes its listener, a ping reply no
+  longer blocks the reader; the audit probe's EOF request now settles and 20
+  completed streams leave 0 locked readers. Deferred (the Opus challenge):
+  inlay audio/video object URLs stay pinned (a mounted-row refcount breaks on
+  the translation loading placeholder and on the other renderers of parser
+  output, and costs LLM translation cache hits); the recorded design is a
+  URL-free placeholder from the parser (`<source data-inlay-src="<key>">`)
+  filled by a DOM post-pass like `checkImg`, with the lifetime owned by the
+  DOM, which also needs the post-pass in BackgroundDom, MultiLangDisplay,
+  AlertComp, Suggestion, PlaygroundParser and the rich copy. Also not done: no
+  MCP request timeout and no abort propagation from `getTools` (recorded
+  hazards); inlay images without the worker stay pinned through the parser;
+  the 100 ms grace was not driven in a browser.
 - **3e. Module cache** (_hard_, `characters-modules.md`). ASSET-01 plus the
   Phase 6 and asset-audit leftovers. `getModules` in
   `src/ts/process/modules.ts:446` caches wrappers by the joined enabled-id

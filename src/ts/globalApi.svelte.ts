@@ -35,7 +35,26 @@ interface fetchLog {
     status?: number;
 }
 
-let fetchLog: fetchLog[] = [];
+const FETCH_LOG_MAX_ENTRIES = 20;
+const FETCH_LOG_MAX_CHARS = 16 * 1024 * 1024;
+const fetchLog: fetchLog[] = [];
+
+/** Keeps the newest entries within both budgets, always retaining the newest entry whole. */
+function writeFetchLog(entry: fetchLog): void {
+    fetchLog.unshift(entry);
+    let retainedChars = 0;
+    let length = Math.min(fetchLog.length, FETCH_LOG_MAX_ENTRIES);
+    for (let i = 0; i < length; i++) {
+        const log = fetchLog[i];
+        retainedChars += (log.body?.length ?? 0) + (log.header?.length ?? 0) + (log.response?.length ?? 0);
+        if (i > 0 && retainedChars > FETCH_LOG_MAX_CHARS) {
+            length = i;
+            break;
+        }
+    }
+    // Readers hold this array; trim in place, including a list already over the limits.
+    fetchLog.length = length;
+}
 
 export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
     if (typeof dat === "string") {
@@ -62,33 +81,85 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
     }, 10000);
 }
 
-/** Each file's source URL, one load per path; a failed load is dropped, so the next read tries again. */
-const fileSources = new Map<string, Promise<string>>();
+type FileSource = {
+    src: Promise<string>;
+    url: string | null;
+    pinned: boolean;
+    holders: number;
+    revokeTimer?: ReturnType<typeof setTimeout>;
+};
+
+/** One shared load per path, pinned by plain reads or held by previews; failed loads are dropped. */
+const fileSources = new Map<string, FileSource>();
+/** Let rows shifted by a list edit re-hold their sources before releasing their blobs. */
+const FILE_SOURCE_RELEASE_GRACE_MS = 100;
 
 /** How long a service-worker request may take before the read falls back to an object URL. */
 const SW_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * Gets the source URL of a file: the service worker's URL when the worker holds it (registered once
- * per path), else an object URL of its bytes, kept for the page (also on a page the worker does not
- * control yet, its first load). Concurrent reads of a path share one load. Resolves to `""` when the
- * file cannot be read or is empty.
+ * per path), else an object URL of its bytes (also on a page the worker does not control yet, its
+ * first load). This plain read pins the source for the page; previews use `holdFileSrc` to release
+ * theirs. Concurrent reads share one load. Resolves to `""` when the file cannot be read or is empty.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
 export function getFileSrc(loc: string): Promise<string> {
+    const source = getFileSource(loc);
+    source.pinned = true;
+    return source.src;
+}
+
+/** Holds a preview's source until released; a plain `getFileSrc` read keeps it pinned instead. */
+export function holdFileSrc(loc: string): { src: Promise<string>; release(): void } {
+    const source = getFileSource(loc);
+    source.holders++;
+    let released = false;
+    return {
+        src: source.src,
+        release() {
+            if (released) return;
+            released = true;
+            source.holders--;
+            scheduleFileSourceRelease(loc, source);
+        },
+    };
+}
+
+function getFileSource(loc: string): FileSource {
     let source = fileSources.get(loc);
     if (!source) {
-        source = loadFileSrc(loc);
+        source = { src: loadFileSrc(loc), url: null, pinned: false, holders: 0 };
         fileSources.set(loc, source);
-        void source.then((src) => {
+        void source.src.then((src) => {
+            source.url = src;
             if (src === "" && fileSources.get(loc) === source) {
                 fileSources.delete(loc);
+            } else {
+                // A preview may have released while loading. Keep the entry until now so another
+                // hold or a plain read in between reuses (and can pin) the same load.
+                scheduleFileSourceRelease(loc, source);
             }
         });
     }
+    clearTimeout(source.revokeTimer);
+    source.revokeTimer = undefined;
     return source;
+}
+
+function scheduleFileSourceRelease(loc: string, source: FileSource): void {
+    if (source.pinned || source.holders > 0 || !source.url?.startsWith("blob:") || source.revokeTimer !== undefined) {
+        return;
+    }
+    source.revokeTimer = setTimeout(() => {
+        source.revokeTimer = undefined;
+        if (!source.pinned && source.holders === 0 && fileSources.get(loc) === source) {
+            URL.revokeObjectURL(source.url);
+            fileSources.delete(loc);
+        }
+    }, FILE_SOURCE_RELEASE_GRACE_MS);
 }
 
 class MissingFileError extends Error {
@@ -313,7 +384,7 @@ export function addFetchLog(arg: {
     chatId?: string;
     status?: number;
 }): number {
-    fetchLog.unshift({
+    writeFetchLog({
         body: typeof arg.body === "string" ? arg.body : JSON.stringify(arg.body, null, 2),
         header: JSON.stringify(arg.headers ?? {}, null, 2),
         response: typeof arg.response === "string" ? arg.response : JSON.stringify(arg.response, null, 2),
@@ -332,7 +403,7 @@ export function addFetchLog(arg: {
  * the shape `addFetchLog` builds, with the credentials redacted).
  */
 export function appendFetchLog(entry: fetchLog) {
-    fetchLog.unshift(entry);
+    writeFetchLog(entry);
 }
 
 /**
@@ -400,7 +471,7 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
  */
 function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, arg: GlobalFetchArgs, status?: number) {
     try {
-        fetchLog.unshift({
+        writeFetchLog({
             body: JSON.stringify(arg.body, null, 2),
             header: JSON.stringify(arg.headers ?? {}, null, 2),
             response: JSON.stringify(response, null, 2),
@@ -411,7 +482,7 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
             status: status,
         });
     } catch {
-        fetchLog.unshift({
+        writeFetchLog({
             body: JSON.stringify(arg.body, null, 2),
             header: JSON.stringify(arg.headers ?? {}, null, 2),
             response: `${response}`,
@@ -421,10 +492,6 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
             chatId: arg.chatId,
             status: status,
         });
-    }
-
-    if (fetchLog.length > 20) {
-        fetchLog.pop();
     }
 }
 
@@ -750,23 +817,6 @@ export class AppendableBuffer {
 }
 
 /**
- * Pipes the fetch log to a readable stream.
- * @param {number} fetchLogIndex - The index of the fetch log.
- * @param {ReadableStream<Uint8Array>} readableStream - The readable stream to pipe.
- * @returns {ReadableStream<Uint8Array>} - The new readable stream.
- */
-const pipeFetchLog = (fetchLogIndex: number, readableStream: ReadableStream<Uint8Array>) => {
-    const splited = readableStream.tee();
-
-    (async () => {
-        const text = await new Response(splited[0]).text();
-        fetchLog[fetchLogIndex].response = text;
-    })();
-
-    return splited[1];
-};
-
-/**
  * Fetches data from a given URL using native fetch or through a proxy.
  * @param {string} url - The URL to fetch data from.
  * @param {Object} arg - The arguments for the fetch request.
@@ -835,9 +885,8 @@ export async function fetchNative(
     const timeoutSignal = buildTimeoutSignal(arg.signal, arg.requestTimeoutMs);
     const requestSignal = timeoutSignal.signal;
     const shouldLogFetch = arg.logFetch ?? true;
-    let fetchLogIndex: number | null = null;
     if (shouldLogFetch) {
-        fetchLogIndex = addFetchLog({
+        addFetchLog({
             body: new TextDecoder().decode(realBody),
             headers: arg.headers,
             response: "Streamed Fetch",

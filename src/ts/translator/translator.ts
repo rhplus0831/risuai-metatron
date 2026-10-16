@@ -33,10 +33,12 @@ import sendSound from "../../etc/send.mp3";
 /**
  * The non-LLM translators' in-memory translations: a source and its translation, found from either side
  * (`translate`'s `reverse`). A message translated while it streams adds its growing last paragraph on
- * every frame, so the least recently used pairs leave once the strings pass `MEMORY_CACHE_CHARS`.
+ * every frame, so the least recently used pairs leave once the strings plus a fixed overhead for
+ * each pair's Set and two Map entries pass `MEMORY_CACHE_CHARS` (UTF-16 code units).
  */
 type MemoryCacheEntry = { origin: string; trans: string };
 const MEMORY_CACHE_CHARS = 4_000_000;
+const MEMORY_CACHE_ENTRY_OVERHEAD = 64;
 /** Every pair, least recently used first. */
 const memoryCacheEntries = new Set<MemoryCacheEntry>();
 const memoryCacheByOrigin = new Map<string, MemoryCacheEntry>();
@@ -61,7 +63,7 @@ function dropMemoryCacheEntry(entry: MemoryCacheEntry): void {
     if (memoryCacheByTrans.get(entry.trans) === entry) {
         memoryCacheByTrans.delete(entry.trans);
     }
-    memoryCacheChars -= entry.origin.length + entry.trans.length;
+    memoryCacheChars -= entry.origin.length + entry.trans.length + MEMORY_CACHE_ENTRY_OVERHEAD;
 }
 
 /** Adds a pair; one already holding either side is replaced, so each side maps to one pair. */
@@ -78,7 +80,7 @@ function writeMemoryCache(origin: string, trans: string): void {
     memoryCacheEntries.add(entry);
     memoryCacheByOrigin.set(origin, entry);
     memoryCacheByTrans.set(trans, entry);
-    memoryCacheChars += origin.length + trans.length;
+    memoryCacheChars += origin.length + trans.length + MEMORY_CACHE_ENTRY_OVERHEAD;
     for (const oldest of memoryCacheEntries) {
         if (memoryCacheChars <= MEMORY_CACHE_CHARS) {
             break;

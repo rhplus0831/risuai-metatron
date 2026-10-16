@@ -1,9 +1,9 @@
 <script lang="ts">
     import type { Snippet } from "svelte";
-    import { getFileSrc } from "src/ts/globalApi.svelte";
+    import { holdFileSrc } from "src/ts/globalApi.svelte";
 
     interface Props {
-        /** The stored file's path, read through `getFileSrc` once the wrapper nears the viewport. */
+        /** Held once the wrapper nears the viewport, released when the path changes or it unmounts. */
         path: string;
         /** The preview, given the file's source URL; nothing renders before it loads or when it fails. */
         children: Snippet<[string]>;
@@ -46,13 +46,15 @@
             return;
         }
         let current = true;
-        getFileSrc(wanted).then((src) => {
+        const source = holdFileSrc(wanted);
+        source.src.then((src) => {
             if (current) {
                 loaded = { path: wanted, src };
             }
         });
         return () => {
             current = false;
+            source.release();
         };
     });
 </script>
