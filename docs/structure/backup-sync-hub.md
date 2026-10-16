@@ -21,7 +21,7 @@
 
 - `drive/backuplocal.ts` (the server builds and reads the archive; see `self-host-server.md`):
   - `SaveLocalBackup`: `flushResources`, then `POST /api/backups/export` (every asset on the server, inlays included, plus a snapshot of the resources), streamed to a file through `LocalWriter.write`. The manifest (first record) is read from the stream head; assets the database references but the archive lacks are reported.
-  - `SavePartialLocalBackup`: the same with `partial`: character/group profile images, user icon, persona icons, background, folder images, preset images (no inlays, emotion images, additional assets, VITS, or CC assets); the manifest's `missing` list is reported.
+  - `SavePartialLocalBackup`: the same with `{ partial: true }`; the server selects character/group profile images, persona icons (including the selected user icon), background, folder images, and preset images from the resource snapshot it archives (no inlays, emotion images, additional assets, VITS, or CC assets). `shared/backups.ts` `selectPartialBackupAssets` defines these categories for both sides; the client's `partialAssets` uses it only to label the manifest's `missing` entries. A key absent from the client's inventory is reported as "Unknown Asset".
   - `LoadLocalBackup`: posts the chosen `File` to `POST /api/backups/import` and reloads. The server refuses Risu Account archives (`encryption.risudat`) and archives from before Phase 1 (`database.risudat`, no migration owed).
 - `globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`): lists the server snapshots (taken every 10 minutes while data changes, 20 kept), restores the chosen one, reloads.
 - `UI/Realm/RealmMain.svelte`: browse via `characterCards.ts:getRisuHub`.
@@ -55,13 +55,14 @@
 
 ## Recipes
 
-- Add a partial-backup asset category: `partialAssets` in `backuplocal.ts` (a full backup already takes every asset).
+- Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if another kind is needed (a full backup already takes every asset).
 - Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip test.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
 ## Tests
 
-- `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer aborted on a write failure, writer aborted on a broken download, a refused export reported; the partial backup's two confirmations and key list; `LoadLocalBackup` posting the file with the epoch header and reloading, the server's refusal shown, and a 412 reloading without an error.
+- `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer aborted on a write failure, writer aborted on a broken download, a refused export reported; the partial backup's two confirmations and missing-asset labels; `LoadLocalBackup` posting the file with the epoch header and reloading, the server's refusal shown, and a 412 reloading without an error.
+- `src/ts/drive/backuplocalSnapshot.test.ts`: `SavePartialLocalBackup` against the real export route (node environment, the flush stubbed): an image another writer commits while the client waits for its flush is in the archive and its resource snapshot, and a referenced image the server lacks is reported under the character's label. `shared/tests/backups.test.ts`: the selector's categories, deduplication, and what it ignores.
 - Adjacent: `src/ts/network/localNetwork.test.ts`.
 - Not tested: `LocalWriter` itself (streamSaver), Realm, settings redaction.
 

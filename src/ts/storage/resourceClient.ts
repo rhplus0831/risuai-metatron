@@ -362,8 +362,8 @@ export async function restoreBackup(id: string): Promise<string> {
     ).epoch;
 }
 
-/** Starts a backup archive download: every asset, or only `partial` asset keys. */
-export function exportBackup(partial?: string[]): Promise<Response> {
+/** Starts an archive download: all assets, `true` for profiles selected from its snapshot, or explicit keys. */
+export function exportBackup(partial?: true | string[]): Promise<Response> {
     return send("/api/backups/export", {
         method: "POST",
         headers: jsonHeaders,

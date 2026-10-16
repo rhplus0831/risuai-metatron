@@ -99,6 +99,7 @@ export class CharXWriter {
         if (this.writeEnd) {
             await this.writer.close();
         }
+        return key;
     }
 
     #sanitizeZipFilename(filename: string) {
@@ -113,7 +114,7 @@ export class CharXWriter {
         }
 
         const splitName = sanitized.split(".");
-        let baseName = splitName.slice(0, -1).join(".");
+        const baseName = splitName.length > 1 ? splitName.slice(0, -1).join(".") : sanitized;
         const extension = splitName.length > 1 ? "." + splitName[splitName.length - 1] : "";
         let counter = 1;
         let uniqueName = baseName + extension;

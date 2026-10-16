@@ -123,7 +123,9 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 ## Invariants
 
 - Keep both the V2 `chara` and V3 `ccv3` readers, and the off-spec Tavern heuristics, `convertCharbook` migrations, and V2 `character_version` handling.
-- CharX: always await `CharXImporter.done()`. Never drop `module.risum`.
+- CharX: always await `CharXImporter.done()`. Never drop `module.risum`. `CharXWriter.write` sanitizes the member name and renames a collision; it returns the name it wrote, and an `embeded://` reference in the card is set from that return value, never from the name asked for.
+- The PNG card writer (`StreamChunkWriter`) copies every chunk of the portrait whole except the `chara` and `ccv3` text chunks it replaces; a keyword is read from the chunk's own start, so other `tEXt` chunks (`Comment`, `parameters`) survive with valid CRCs.
+- `importCharacterCardSpec` copies a well-formed `extensions.depth_prompt` (`{ depth: number, prompt: string }`) into the native field before it drops the duplicate from the extensions bag.
 - Asset references in cards and modules are storage IDs or protocol URIs, never local filesystem paths.
 - PNG text size is capped at 5 MiB. CRC is checked only in non-stream reads.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
@@ -149,11 +151,12 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 ## Tests
 
 - `src/ts/characterCardsImport.test.ts`: JSON V2, off-spec JSON, PNG, and CharX imports over the real store (fixtures in `storage/tests/importFixtures.ts`), the stamp, and a refused card. It also checks that each import returns its own `chaId` (also when two run at once), and that a multi-file `importCharacter` returns the last one imported, or `null` when none was.
+- `src/ts/characterCardsRoundTrip.test.ts`: export round trips over the real writers and importers: a CharX card's `embeded://` references name the members the zip writer wrote (a `?` sanitized to `_`, a post-sanitize collision renamed `_1`, an extensionless CC asset), a card's `depth_prompt` extension reaching the server record from V3 JSON, V2 JSON, and CharX (a malformed one leaves the default), and a PNG card exported from a portrait with `Comment` and `parameters` chunks that is CRC-valid, keeps them, drops the old `chara` chunk, and imports back (V3 and V2).
 - `src/ts/charactersCapture.test.ts`: `changeChar` and the add dialog select by id. `addCharEmotion`, `exportChat`, `addGroupChar`, and `applyModule` keep the target they captured before their awaits.
 - `src/ts/charactersImportChat.test.ts`: `importChat`'s target captured before the dialog (the selection moved, a reorder, a same-id replacement, a deletion), name substitution, and folder remapping.
 - `src/ts/process/modulesImport.test.ts`: `importModule` for `.risum`, CharX, module JSON, lore, and regex files, and a refused CharX module.
 - `src/ts/personaImport.test.ts` and `src/ts/process/lorebookImport.test.ts`: the persona import's id and icon order, the persona export keeping the persona selected at its start while the selection and the name change during its awaits, and the global lore import by the captured id.
-- Not tested: the editors, card export round trips.
+- Not tested: the editors; the JSON and `charxJpeg` export variants.
 - `shared/tests/personaModules.test.ts`, `server/src/tests/jobModules.test.ts`, and `src/ts/storage/tests/personaModuleLinks.test.ts`: persona module links: the canonical `modules` (`normalizePersonaModules`, `normalizePersonas`, `updatePersona`), id-only and non-MCP matching beside the legacy id list, the bound persona only (unbound, deleted, another chat by ref, a group's chat), duplicate ids, the `getModules` cache key and reactivity, and the background cleared on unlink, on the tab and the server alike. `src/lib/Setting/Pages/PersonaSettings.test.ts` (`PersonaSettings module links`): the editor's list (first of a duplicate id, a nameless module by its id, no blank-id or MCP module), its canonical write to the persona the editor shows, and its two empty states.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 - Not tested: the character lorebook drag's cost (the list rebuilds and Sortable is recreated after the write); measured by hand (`measureCharacters.mjs`): 104–112 ms against 100.5–105.5 ms before the character records (commit `139fc73b`), within about 7%.

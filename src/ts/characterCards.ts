@@ -933,6 +933,18 @@ async function importCharacterCardSpec<T extends boolean = false>(
         hideChatIcon: data?.extensions?.risuai?.hideChatIcon ?? false,
     };
 
+    const depthPrompt = data.extensions?.depth_prompt;
+    if (
+        depthPrompt !== null &&
+        typeof depthPrompt === "object" &&
+        !Array.isArray(depthPrompt) &&
+        typeof depthPrompt.depth === "number" &&
+        Number.isFinite(depthPrompt.depth) &&
+        typeof depthPrompt.prompt === "string"
+    ) {
+        char.depth_prompt = { depth: depthPrompt.depth, prompt: depthPrompt.prompt };
+    }
+
     if (card.spec === "chara_card_v3") {
         char.group_only_greetings = card.data.group_only_greetings ?? [];
         char.nickname = card.data.nickname ?? "";
@@ -1288,7 +1300,7 @@ export async function exportCharacterCard(
                     } else if (type === "json") {
                         const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
                         card.data.assets[i].uri = `data:application/octet-stream;base64,${b64encoded}`;
-                    } else {
+                    } else if (writer instanceof CharXWriter) {
                         let type = "other";
                         let itype = "other";
                         switch (card.data.assets[i].type) {
@@ -1349,10 +1361,9 @@ export async function exportCharacterCard(
                         }
 
                         let path = "";
-                        let name = card.data.assets[i].name || `asset_${assetIndex}`;
-                        if (name.length > 100) {
-                            name = name.substring(0, 100);
-                        }
+                        const name = Array.from(card.data.assets[i].name || `asset_${assetIndex}`)
+                            .slice(0, 100)
+                            .join("");
                         const ext = card.data.assets[i].ext === "unknown" ? "png" : card.data.assets[i].ext;
                         const baseDir =
                             card.data.assets[i].ext === "unknown" ? `assets/${type}/image` : `assets/${type}/${itype}`;
@@ -1367,7 +1378,6 @@ export async function exportCharacterCard(
                         path = `${baseDir}/${uniqueName}.${ext}`;
                         seenPaths.add(path);
 
-                        card.data.assets[i].uri = "embeded://" + path;
                         const imageType = getImageType(rData);
                         const metaPath = `x_meta/${uniqueName}.json`;
                         if (imageType === "PNG" && writer instanceof CharXWriter) {
@@ -1405,7 +1415,8 @@ export async function exportCharacterCard(
                                 6,
                             );
                         }
-                        await writer.write(path, Buffer.from(await compressImage(rData)));
+                        const writtenPath = await writer.write(path, Buffer.from(await compressImage(rData)));
+                        card.data.assets[i].uri = "embeded://" + writtenPath;
                     }
                 }
             }

@@ -445,7 +445,17 @@ describe("POST /api/backups/export", () => {
             assets: ["assets/b.png"],
             missing: ["assets/missing.png"],
         });
-        for (const partial of ["x", ["database/database.bin"], ["assets/"], [1], ["Assets/x.png"], [null]]) {
+        for (const partial of [
+            "x",
+            "true",
+            false,
+            ["database/database.bin"],
+            ["assets/"],
+            [1],
+            ["Assets/x.png"],
+            [null],
+            [true],
+        ]) {
             const res = await s.json("/api/backups/export", { partial });
             expect(res.status, JSON.stringify(partial)).toBe(400);
             expect(await res.json(), JSON.stringify(partial)).toEqual({
@@ -453,6 +463,85 @@ describe("POST /api/backups/export", () => {
             });
         }
         expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+
+    it("`partial: true` selects the profile images from the archived snapshot and reports the ones it lacks", async () => {
+        const s = await defaultServer();
+        await s.create(
+            "characters",
+            "alice",
+            character("alice", {
+                name: "Alice",
+                image: "assets/alice.png",
+                emotionImages: [["happy", "assets/happy.png"]],
+            }),
+        );
+        await s.create("characters", "bob", character("bob", { name: "Bob", image: "assets/nofile.png" }));
+        await s.create("characters", "carol", character("carol", { name: "Carol", image: "assets/" }));
+        // A singleton the store materializes exists already; the others are created.
+        const putSingleton = async (kind: string, data: unknown) => {
+            const current = await s.get(kind, "main");
+            const baseRevision =
+                current.status === 200 ? ((await current.json()) as { revision: string }).revision : null;
+            expect((await s.put(kind, "main", { baseRevision, data })).status, kind).toBe(200);
+        };
+        await putSingleton("personas", [{ id: "me", name: "Me", icon: "assets/me.png", personaPrompt: "", note: "" }]);
+        await putSingleton("characterOrder", [
+            "alice",
+            { id: "f", type: "folder", name: "F", img: "assets/folder.png", data: ["bob"] },
+        ]);
+        const ui = (await (await s.get("ui", "main")).json()) as { data: Record<string, unknown> };
+        await putSingleton("ui", { ...ui.data, customBackground: "assets/bg.png" });
+        await putSingleton("presets", [{ name: "P", image: "assets/preset.png" }]);
+        for (const key of ["alice", "happy", "me", "folder", "bg", "preset", "unreferenced"]) {
+            await writeAsset(s, `assets/${key}.png`, key.toUpperCase());
+        }
+
+        const records = parseArchive(await exportArchive(s, { partial: true }));
+        const manifest = JSON.parse(records[0].data.toString("utf-8")) as BackupArchiveManifest;
+        const selected = [
+            "assets/alice.png",
+            "assets/bg.png",
+            "assets/folder.png",
+            "assets/me.png",
+            "assets/preset.png",
+        ];
+        expect(manifest.partial).toBe(true);
+        expect([...manifest.assets].sort()).toEqual(selected);
+        // A referenced key with no file, and one that names no storage location, are reported, not fatal.
+        expect([...manifest.missing].sort()).toEqual(["assets/", "assets/nofile.png"]);
+        expect(records.slice(2).map((r) => r.name)).toEqual(manifest.assets);
+        expect(records.slice(2).map((r) => r.data.toString("utf-8"))).toEqual(
+            manifest.assets.map((key) => key.slice("assets/".length, -".png".length).toUpperCase()),
+        );
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+
+    it("`partial: true` follows the snapshot it archives, not the state before a concurrent image change", async () => {
+        const s = await defaultServer();
+        const revision = await s.create(
+            "characters",
+            "alice",
+            character("alice", { name: "Alice", image: "assets/old.png" }),
+        );
+        await writeAsset(s, "assets/old.png", "OLD");
+        await writeAsset(s, "assets/new.png", "NEW");
+        // The image changes before the export snapshots the store (another tab, a job, a plugin).
+        const res = await s.put("characters", "alice", {
+            baseRevision: revision,
+            data: stored("alice", { name: "Alice", image: "assets/new.png" }),
+        });
+        expect(res.status).toBe(200);
+        const records = parseArchive(await exportArchive(s, { partial: true }));
+        expect(JSON.parse(records[0].data.toString("utf-8"))).toMatchObject({
+            partial: true,
+            assets: ["assets/new.png"],
+            missing: [],
+        });
+        const extracted = path.join(s.rootDir, "partial.sqlite");
+        writeFileSync(extracted, records[1].data);
+        const alice = reader.readSnapshot(extracted).rows.find((r) => r.kind === "characters" && r.id === "alice")!;
+        expect(JSON.parse(alice.text).image).toBe("assets/new.png");
     });
 
     it("fails the download when a listed asset disappears after the manifest was fixed, and cleans up", async () => {

@@ -2,7 +2,8 @@ import { alertError, alertNormal, alertStore, alertWait, alertMd, alertConfirm }
 import { LocalWriter } from "../globalApi.svelte";
 import { buildBackupInventory, type BackupInventory } from "../storage/snapshots.svelte";
 import { language } from "src/lang";
-import type { BackupArchiveManifest } from "../../../shared/resources.ts";
+import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resources.ts";
+import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { flushResources } from "../storage/resourceSync.svelte";
 
@@ -61,39 +62,23 @@ function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
 /** The profile images a partial backup keeps. */
 function partialAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
-
-    // Only collect main profile images for both characters and groups
-    for (const char of db.characters ?? []) {
-        if (!char) continue;
-        const charName = char.name ?? "Unknown Character";
-        // Note: emotionImages are intentionally excluded from partial backup
-        if (char.image) {
-            assetMap.set(char.image, { charName: charName, assetName: "Profile Image" });
-        }
-    }
-    if (db.userIcon) {
-        assetMap.set(db.userIcon, { charName: "User Settings", assetName: "User Icon" });
-    }
-    for (const persona of db.personas ?? []) {
-        if (persona && persona.icon) {
-            assetMap.set(persona.icon, { charName: "Persona", assetName: `${persona.name} Icon` });
-        }
-    }
-    if (db.customBackground) {
-        assetMap.set(db.customBackground, { charName: "User Settings", assetName: "Custom Background" });
-    }
-    for (const item of db.characterOrder ?? []) {
-        if (typeof item !== "string" && item.img) {
-            assetMap.set(item.img, { charName: "Folder", assetName: `${item.name} Folder Image` });
-        }
-        if (typeof item !== "string" && item.imgFile) {
-            assetMap.set(item.imgFile, { charName: "Folder", assetName: `${item.name} Folder Image File` });
-        }
-    }
-    for (const preset of db.botPresets ?? []) {
-        if (preset && preset.image) {
-            assetMap.set(preset.image, { charName: "Preset", assetName: `${preset.name} Preset Image` });
-        }
+    const entries = selectPartialBackupAssets([
+        ...(db.characters ?? []).map((data) => ({ kind: RESOURCE_KIND.characters, data })),
+        { kind: RESOURCE_KIND.personas, data: db.personas },
+        { kind: RESOURCE_KIND.ui, data: { customBackground: db.customBackground } },
+        { kind: RESOURCE_KIND.characterOrder, data: db.characterOrder },
+        { kind: RESOURCE_KIND.presets, data: db.botPresets },
+    ]);
+    for (const { key, owner, role } of entries) {
+        const labels: Record<typeof role, AssetInfo> = {
+            profile: { charName: owner || "Unknown Character", assetName: "Profile Image" },
+            persona: { charName: "Persona", assetName: `${owner} Icon` },
+            background: { charName: "User Settings", assetName: "Custom Background" },
+            folder: { charName: "Folder", assetName: `${owner} Folder Image` },
+            folderFile: { charName: "Folder", assetName: `${owner} Folder Image File` },
+            preset: { charName: "Preset", assetName: `${owner} Preset Image` },
+        };
+        assetMap.set(key, labels[role]);
     }
     return assetMap;
 }
@@ -118,7 +103,7 @@ function tryReadManifest(head: Uint8Array): BackupArchiveManifest | null {
 /**
  * Saves every change, asks the server for an archive, and streams it to a file. Returns the manifest.
  */
-async function downloadArchive(label: string, partial?: string[]): Promise<BackupArchiveManifest | null> {
+async function downloadArchive(label: string, partial?: true | string[]): Promise<BackupArchiveManifest | null> {
     alertWait(`${label}...`);
     try {
         await flushResources();
@@ -229,8 +214,7 @@ export async function SavePartialLocalBackup() {
 
     try {
         const assetMap = partialAssets(buildBackupInventory());
-        const keys = [...assetMap.keys()].filter((key) => key.startsWith("assets/"));
-        const manifest = await downloadArchive("Saving partial local backup", keys);
+        const manifest = await downloadArchive("Saving partial local backup", true);
         if (!manifest) {
             return;
         }

@@ -13,12 +13,11 @@ class StreamChunkWriter {
     }
     async init() {
         let pos = 8;
-        let newData: Uint8Array[] = [];
-
         const data = this.data;
         await this.pushData(data.slice(0, 8));
 
         while (pos < data.length) {
+            const chunkStart = pos;
             const len = data[pos] * 0x1000000 + data[pos + 1] * 0x10000 + data[pos + 2] * 0x100 + data[pos + 3];
             const type = data.slice(pos + 4, pos + 8);
             const typeString = new TextDecoder().decode(type);
@@ -26,19 +25,18 @@ class StreamChunkWriter {
                 break;
             }
             if (typeString === "tEXt") {
-                const endPos = 12 + len + pos;
-                //get key
+                const dataEnd = chunkStart + 8 + len;
+                const endPos = dataEnd + 4;
+                let keyOffset = chunkStart + 8;
+                const keyLimit = Math.min(dataEnd, data.length, keyOffset + 79);
                 let key = "";
-                while (data[pos + 8] !== 0) {
-                    key += String.fromCharCode(data[pos + 8]);
-                    pos++;
-                    if (pos === endPos || key.length > 6) {
-                        break;
-                    }
+                while (keyOffset < keyLimit && data[keyOffset] !== 0) {
+                    key += String.fromCharCode(data[keyOffset++]);
                 }
 
-                if (key !== "ccv3" && key !== "chara") {
-                    await this.pushData(data.slice(pos, endPos));
+                const isCardKey = keyOffset < dataEnd && data[keyOffset] === 0 && (key === "ccv3" || key === "chara");
+                if (!isCardKey) {
+                    await this.pushData(data.slice(chunkStart, endPos));
                 }
                 pos = endPos;
             } else {

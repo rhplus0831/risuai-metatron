@@ -248,7 +248,7 @@ export type BackupArchiveManifest = {
     partial: boolean;
     /** Logical asset keys stored in the archive, in record order. */
     assets: string[];
-    /** Requested asset keys that were not found. */
+    /** Requested or selected asset keys that were not found. */
     missing: string[];
 };
 

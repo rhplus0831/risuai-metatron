@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { DatabaseSync } from "node:sqlite";
 import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../shared/resources.ts";
+import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import {
     ArchiveFormatError,
     copyRecordToFile,
@@ -38,8 +39,8 @@ class ArchiveRejectedError extends Error {}
  * - `GET /api/backups`: the retained snapshots, newest first.
  * - `POST /api/backups/:id/restore`: replaces every resource with a snapshot (safety snapshot first,
  *   mutations closed, new epoch).
- * - `POST /api/backups/export` `{ partial?: string[] }`: streams an archive of a fresh snapshot and
- *   the assets (every file of the `assets` namespace, or the listed keys).
+ * - `POST /api/backups/export` `{ partial?: true | string[] }`: streams an archive of a fresh snapshot
+ *   and assets (all files, profiles selected from that snapshot for `true`, or the listed keys).
  * - `POST /api/backups/import`: an archive as the raw body, spooled to disk (exempt from the global
  *   body limit, capped by `maxImportBytes`), validated completely, then its missing assets are added
  *   (existing files are never overwritten) and the resources restored like a snapshot.
@@ -124,6 +125,7 @@ export function registerBackupRoutes(
         const partial = parsed.body.partial;
         if (
             partial !== undefined &&
+            partial !== true &&
             (!Array.isArray(partial) ||
                 partial.length > MAX_PARTIAL_ASSETS ||
                 !partial.every(
@@ -164,21 +166,49 @@ export function registerBackupRoutes(
             // loses its `llmSecrets` row, and `VACUUM` rewrites the file so no page keeps the deleted
             // row (or an older version of it). Snapshots on the server keep the record.
             const staged = new DatabaseSync(databaseFile);
+            let selectedKeys: string[] = [];
             try {
                 staged.prepare("DELETE FROM resources WHERE kind = ?").run(RESOURCE_KIND.llmSecrets);
                 staged.exec("VACUUM");
+                if (partial === true) {
+                    // Select from the exact copy being archived, without reading or normalizing chats.
+                    const rows = staged
+                        .prepare("SELECT kind, id, data FROM resources WHERE kind IN (?, ?, ?, ?, ?)")
+                        .all(
+                            RESOURCE_KIND.characters,
+                            RESOURCE_KIND.personas,
+                            RESOURCE_KIND.ui,
+                            RESOURCE_KIND.characterOrder,
+                            RESOURCE_KIND.presets,
+                        );
+                    selectedKeys = selectPartialBackupAssets(
+                        rows.map((row) => ({ kind: row.kind as string, data: JSON.parse(row.data as string) })),
+                    ).map((asset) => asset.key);
+                }
             } finally {
                 staged.close();
             }
             if ((await fs.stat(databaseFile)).size > MAX_ARCHIVE_RECORD_BYTES) {
                 throw new ArchiveRejectedError("The resource database is too large for the archive format");
             }
-            const keys = partial === undefined ? await listAssetKeys(assetsPath) : [...new Set(partial as string[])];
+            const keys =
+                partial === undefined
+                    ? await listAssetKeys(assetsPath)
+                    : partial === true
+                      ? selectedKeys
+                      : [...new Set(partial as string[])];
+            if (partial !== undefined && keys.length > MAX_PARTIAL_ASSETS) {
+                throw new ResourceValidationError("Too many assets for one partial backup");
+            }
             if (keys.length > MAX_ARCHIVE_RECORDS - 2) {
                 throw new ArchiveRejectedError("Too many assets for one archive");
             }
             for (const key of keys) {
-                const file = resolveStorageKey(savePath, key)!;
+                const file = resolveStorageKey(savePath, key);
+                if (file === null) {
+                    missing.push(key);
+                    continue;
+                }
                 const stat = await fs.lstat(file).catch(() => null);
                 if (stat?.isFile() && stat.size <= MAX_ARCHIVE_RECORD_BYTES) {
                     assets.push({ key, file });
@@ -217,7 +247,7 @@ export function registerBackupRoutes(
             if (error instanceof ArchiveRejectedError) {
                 return c.json({ error: error.message }, 413);
             }
-            throw error;
+            return backupErrorResponse(c, error);
         }
         if (signal.aborted) {
             await finalize();

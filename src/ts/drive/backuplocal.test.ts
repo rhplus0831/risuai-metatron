@@ -268,26 +268,34 @@ describe("SaveLocalBackup", () => {
 });
 
 describe("SavePartialLocalBackup", () => {
-    it("asks twice, sends the profile-image keys, and reports what the server could not find", async () => {
+    it("asks twice, lets the server select the images from its snapshot, and labels what it could not find", async () => {
         const stream = streamed(
-            archive({ partial: true, assets: ["assets/alice.png"], missing: ["assets/me.png"] }),
+            archive({
+                partial: true,
+                assets: ["assets/alice.png"],
+                missing: [
+                    "assets/me.png",
+                    "assets/group.png",
+                    "assets/folder.png",
+                    "assets/preset.png",
+                    "assets/x.png",
+                ],
+            }),
             32,
         );
         exportResponse.current = stream.response;
         await SavePartialLocalBackup();
         expect(alerts.alertConfirm).toHaveBeenCalledTimes(2);
-        const body = JSON.parse(requests[0].init.body as string);
-        expect(body.partial.sort()).toEqual([
-            "assets/alice.png",
-            "assets/folder.png",
-            "assets/group.png",
-            "assets/icon.png",
-            "assets/me.png",
-            "assets/preset.png",
-        ]);
-        expect(body.partial).not.toContain("assets/happy.png");
+        // The server selects the profile images from the snapshot it archives (audit IO-04): the
+        // request carries no key list, so an image replaced after the inventory is still archived.
+        expect(JSON.parse(requests[0].init.body as string)).toEqual({ partial: true });
         const report = alerts.alertMd.mock.calls[0][0] as string;
         expect(report).toContain("**Me Icon** (from *Persona*)");
+        expect(report).toContain("**Profile Image** (from *Group*)");
+        expect(report).toContain("**F Folder Image** (from *Folder*)");
+        expect(report).toContain("**P Preset Image** (from *Preset*)");
+        // A key the client never saw (another writer's image) is still reported, by its file.
+        expect(report).toContain("**Unknown Asset**  \n  *File: assets/x.png*");
     });
 
     it("stops at the first declined confirmation", async () => {
