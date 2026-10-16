@@ -7,6 +7,7 @@
     import { saveImage as saveAsset, type character, type groupChat } from "../../ts/storage/database.svelte";
     import { setCurrentChatMeta } from "../../ts/storage/chatEdits";
     import { untrack } from "svelte";
+    import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
     import {
         PlusIcon,
@@ -113,12 +114,34 @@
         }
     }
 
-    // The asset rows rendered (each loads its preview once near the viewport); back to a page per character.
+    // Search and paging reset per character; each query starts at the first page of matches.
     const assetsOwnerId = $derived(currentCharacter.chaId);
+    let assetQuery = $derived.by(() => {
+        assetsOwnerId;
+        return "";
+    });
     let shownAssets = $derived.by(() => {
         assetsOwnerId;
+        assetQuery;
         return ASSET_LIST_PAGE;
     });
+    const matchedAssets = $derived.by(() => {
+        const ownerId = assetsOwnerId;
+        const query = assetQuery.trim().toLowerCase();
+        const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
+        const length = list?.length ?? 0;
+        if (!query) return null;
+        // Track only the owner, query, field and length: a row stays visible throughout a rename.
+        return length ? untrack(() => matchingAssetIndices(characterAssetNames(ownerId, list), query)) : [];
+    });
+    const assetCount = $derived(
+        matchedAssets?.length ??
+            (currentCharacter.type === "character" ? (currentCharacter.additionalAssets?.length ?? 0) : 0),
+    );
+    const assetIndices = $derived(
+        matchedAssets?.slice(0, shownAssets) ??
+            Array.from({ length: Math.min(shownAssets, assetCount) }, (_, index) => index),
+    );
     let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
 
     $effect.pre(() => {
@@ -776,12 +799,22 @@
                             </button>
                         </th>
                     </tr>
-                    {#if !currentCharacter.additionalAssets || currentCharacter.additionalAssets.length === 0}
+                    <tr>
+                        <td colspan="2">
+                            <TextInput fullwidth placeholder={language.search} bind:value={assetQuery} />
+                        </td>
+                    </tr>
+                    {#if matchedAssets?.length === 0}
+                        <tr>
+                            <td colspan="2" class="text-textcolor2">{language.noMatchingAssets}</td>
+                        </tr>
+                    {:else if !currentCharacter.additionalAssets || currentCharacter.additionalAssets.length === 0}
                         <tr>
                             <td class="text-textcolor2"> No Assets</td>
                         </tr>
                     {:else}
-                        {#each currentCharacter.additionalAssets.slice(0, shownAssets) as assets, i}
+                        {#each assetIndices as index}
+                            {@const assets = currentCharacter.additionalAssets[index]}
                             {@const extension = assetExtension(assets)}
                             <tr>
                                 <td class="font-medium truncate">
@@ -806,7 +839,7 @@
                                     <TextInput
                                         size="sm"
                                         marginBottom
-                                        bind:value={currentCharacter.additionalAssets[i][0]}
+                                        bind:value={currentCharacter.additionalAssets[index][0]}
                                         placeholder="..."
                                     />
                                 </td>
@@ -818,7 +851,7 @@
                                             if (currentCharacter.type === "character") {
                                                 setCurrentChatMeta({ fmIndex: -1 });
                                                 let additionalAssets = currentCharacter.additionalAssets;
-                                                additionalAssets.splice(i, 1);
+                                                additionalAssets.splice(index, 1);
                                                 currentCharacter.additionalAssets = additionalAssets;
                                             }
                                         }}
@@ -853,7 +886,7 @@
                                 </th>
                             </tr>
                         {/each}
-                        {#if currentCharacter.additionalAssets.length > shownAssets}
+                        {#if assetCount > shownAssets}
                             <tr>
                                 <td colspan="2">
                                     <Button className="w-full mt-2" onclick={() => (shownAssets += ASSET_LIST_PAGE)}>

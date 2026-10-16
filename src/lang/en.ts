@@ -1248,6 +1248,7 @@ export const languageEnglish = {
     personaModuleLinkActive: "Active from Persona",
     noLinkableModules: "No linkable modules are installed.",
     noMatchingModules: "No modules match the search.",
+    noMatchingAssets: "No assets match the search.",
     createModule: "Create Module",
     basicInfo: "Basic Info",
     moduleContent: "Module Content",

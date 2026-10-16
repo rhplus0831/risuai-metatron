@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { untrack } from "svelte";
+    import { matchingAssetIndices, moduleAssetNames } from "src/ts/assetList";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
@@ -27,12 +29,31 @@
     }
 
     let { currentModule = $bindable() }: Props = $props();
-    // The asset rows rendered (each loads its preview once near the viewport); back to a page per module.
+    // Search and paging reset per module; each query starts at the first page of matches.
     const assetsOwnerId = $derived(currentModule?.id);
+    let assetQuery = $derived.by(() => {
+        assetsOwnerId;
+        return "";
+    });
     let shownAssets = $derived.by(() => {
         assetsOwnerId;
+        assetQuery;
         return ASSET_LIST_PAGE;
     });
+    const matchedAssets = $derived.by(() => {
+        assetsOwnerId;
+        const query = assetQuery.trim().toLowerCase();
+        const list = currentModule.assets;
+        const length = list?.length ?? 0;
+        if (!query) return null;
+        // Name reads are untracked so a row stays visible while its name is being edited.
+        return length ? untrack(() => matchingAssetIndices(moduleAssetNames(currentModule), query)) : [];
+    });
+    const assetCount = $derived(matchedAssets?.length ?? currentModule.assets?.length ?? 0);
+    const assetIndices = $derived(
+        matchedAssets?.slice(0, shownAssets) ??
+            Array.from({ length: Math.min(shownAssets, assetCount) }, (_, index) => index),
+    );
 
     function addLorebook() {
         if (Array.isArray(currentModule.lorebook)) {
@@ -324,12 +345,22 @@
                         </button>
                     </th>
                 </tr>
-                {#if !currentModule.assets || currentModule.assets.length === 0}
+                <tr>
+                    <td colspan="2">
+                        <TextInput fullwidth placeholder={language.search} bind:value={assetQuery} />
+                    </td>
+                </tr>
+                {#if matchedAssets?.length === 0}
+                    <tr>
+                        <td colspan="2" class="text-textcolor2">{language.noMatchingAssets}</td>
+                    </tr>
+                {:else if !currentModule.assets || currentModule.assets.length === 0}
                     <tr>
                         <td colspan="3">{language.noData}</td>
                     </tr>
                 {:else}
-                    {#each currentModule.assets.slice(0, shownAssets) as assets, i}
+                    {#each assetIndices as index}
+                        {@const assets = currentModule.assets[index]}
                         {@const extension = assetExtension(assets)}
                         <tr>
                             <td class="font-medium truncate">
@@ -355,7 +386,7 @@
                                     fullwidth
                                     size="sm"
                                     marginBottom
-                                    bind:value={currentModule.assets[i][0]}
+                                    bind:value={currentModule.assets[index][0]}
                                     placeholder="..."
                                 />
                             </td>
@@ -365,7 +396,7 @@
                                     class="hover:text-green-500"
                                     onclick={() => {
                                         let additionalAssets = currentModule.assets;
-                                        additionalAssets.splice(i, 1);
+                                        additionalAssets.splice(index, 1);
                                         currentModule.assets = additionalAssets;
                                     }}
                                 >
@@ -374,7 +405,7 @@
                             </th>
                         </tr>
                     {/each}
-                    {#if currentModule.assets.length > shownAssets}
+                    {#if assetCount > shownAssets}
                         <tr>
                             <td colspan="2">
                                 <Button className="w-full mt-2" onclick={() => (shownAssets += ASSET_LIST_PAGE)}>

@@ -301,6 +301,7 @@ function bumpModuleAssets() {
 }
 
 const modulePlainFields = new WeakMap<object, Map<string, { stamp: number; value: unknown }>>();
+const characterPlainFields = new WeakMap<object, Map<string, { stamp: number; value: unknown }>>();
 
 /**
  * A detached, read-only-by-contract field copy, shared by all readers of this live element/stamp.
@@ -422,6 +423,41 @@ function renewStamps(meta: RecordMeta) {
 export function characterFieldStamp(chaId: string, field: string): number | null {
     const meta = characterOwner(chaId);
     return meta.uncacheable ? null : (meta.fieldStamps.get(field) ?? meta.lifetime);
+}
+
+/**
+ * A detached, read-only-by-contract character field copy, shared by live element and field stamp.
+ * Like moduleFieldPlain, reads the raw target only while the field is untouched; changed fields
+ * copy the live $state value, without walking the record wrappers. Never mutate the returned copy.
+ */
+export function characterFieldPlain<T = unknown>(chaId: string, field: string): T | undefined {
+    return untrack(() => {
+        const index = characterIndex(chaId);
+        if (index < 0) return undefined;
+        const element = (records[CHARACTERS] as CharacterObject[])[index];
+        const meta = characterOwner(chaId);
+        const stamp = characterFieldStamp(chaId, field);
+        const fields = characterPlainFields.get(element);
+        const cached = fields?.get(field);
+        if (stamp !== null && cached?.stamp === stamp) return cached.value as T;
+        const raw = stamp === meta.lifetime ? Reflect.get(element, STATE)?.[field] : undefined;
+        const untouched = stamp === meta.lifetime && !(isObject(raw) && STATE in raw);
+        const value = untouched ? raw : element[field];
+        const copy =
+            stamp !== null
+                ? value === undefined
+                    ? undefined
+                    : JSON.parse(JSON.stringify(value))
+                : isObject(value)
+                  ? detachedCopy(value)
+                  : value;
+        if (stamp !== null) {
+            const memo = fields ?? new Map();
+            memo.set(field, { stamp, value: copy });
+            characterPlainFields.set(element, memo);
+        }
+        return copy as T | undefined;
+    });
 }
 
 /**

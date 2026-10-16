@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { untrack } from "svelte";
+    import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { FileMusicIcon, PlusIcon } from "@lucide/svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
@@ -6,6 +8,7 @@
     import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile } from "src/ts/util";
     import Button from "../UI/GUI/Button.svelte";
     import LazyFileSrc from "../UI/GUI/LazyFileSrc.svelte";
+    import TextInput from "../UI/GUI/TextInput.svelte";
     import { language } from "../../lang";
     interface Props {
         currentCharacter: AnyClientCharacter;
@@ -14,39 +17,66 @@
 
     const { currentCharacter, onSelect }: Props = $props();
 
-    // The stickers rendered (each loads its preview once near the viewport); back to a page per character.
+    // Search and paging reset per character; each query starts at the first page of matches.
     const ownerId = $derived(currentCharacter.chaId);
+    let assetQuery = $derived.by(() => {
+        ownerId;
+        return "";
+    });
     let shown = $derived.by(() => {
         ownerId;
+        assetQuery;
         return ASSET_LIST_PAGE;
     });
+    const matchedAssets = $derived.by(() => {
+        const chaId = ownerId;
+        const query = assetQuery.trim().toLowerCase();
+        const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
+        const length = list?.length ?? 0;
+        if (!query) return null;
+        return length ? untrack(() => matchingAssetIndices(characterAssetNames(chaId, list), query)) : [];
+    });
+    const assetCount = $derived(
+        matchedAssets?.length ??
+            (currentCharacter.type === "character" ? (currentCharacter.additionalAssets?.length ?? 0) : 0),
+    );
+    const assetIndices = $derived(
+        matchedAssets?.slice(0, shown) ?? Array.from({ length: Math.min(shown, assetCount) }, (_, index) => index),
+    );
 </script>
 
 {#if currentCharacter.type === "character"}
-    <button
-        class="hover:text-green-500 bg-textcolor2 flex justify-center items-center w-16 h-16 m-1 rounded-md"
-        onclick={async () => {
-            if (currentCharacter.type === "character") {
-                const da = await selectMultipleFile(["png", "webp", "mp4", "mp3", "gif"]);
-                currentCharacter.additionalAssets = currentCharacter.additionalAssets ?? [];
-                if (!da) {
-                    return;
+    <div class="flex items-center w-full">
+        <button
+            class="hover:text-green-500 bg-textcolor2 flex justify-center items-center w-16 h-16 m-1 rounded-md"
+            onclick={async () => {
+                if (currentCharacter.type === "character") {
+                    const da = await selectMultipleFile(["png", "webp", "mp4", "mp3", "gif"]);
+                    currentCharacter.additionalAssets = currentCharacter.additionalAssets ?? [];
+                    if (!da) {
+                        return;
+                    }
+                    for (const f of da) {
+                        console.log(f);
+                        const img = f.data;
+                        const name = f.name;
+                        const extension = name.split(".").pop().toLowerCase();
+                        const imgp = await saveAsset(img, "", extension);
+                        currentCharacter.additionalAssets.push([name, imgp, extension]);
+                    }
                 }
-                for (const f of da) {
-                    console.log(f);
-                    const img = f.data;
-                    const name = f.name;
-                    const extension = name.split(".").pop().toLowerCase();
-                    const imgp = await saveAsset(img, "", extension);
-                    currentCharacter.additionalAssets.push([name, imgp, extension]);
-                }
-            }
-        }}
-    >
-        <PlusIcon />
-    </button>
+            }}
+        >
+            <PlusIcon />
+        </button>
+        <TextInput className="m-1 min-w-0 flex-1" placeholder={language.search} bind:value={assetQuery} />
+    </div>
+    {#if matchedAssets?.length === 0}
+        <div class="m-1 text-textcolor2">{language.noMatchingAssets}</div>
+    {/if}
     {#if currentCharacter.additionalAssets}
-        {#each currentCharacter.additionalAssets.slice(0, shown) as additionalAsset}
+        {#each assetIndices as index}
+            {@const additionalAsset = currentCharacter.additionalAssets[index]}
             {@const extension = assetExtension(additionalAsset)}
             <button
                 onclick={() => {
@@ -74,7 +104,7 @@
                 {/if}
             </button>
         {/each}
-        {#if currentCharacter.additionalAssets.length > shown}
+        {#if assetCount > shown}
             <Button className="m-1" onclick={() => (shown += ASSET_LIST_PAGE)}>{language.loadMore}</Button>
         {/if}
     {/if}

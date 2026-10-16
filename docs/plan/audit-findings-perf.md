@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, and 3g (remaining whole-record transport) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, and 3g (remaining whole-record transport) and 3h (asset list name filters) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -408,6 +408,55 @@ P2 with the memory items that share its mechanism.
   asset needs many Load More clicks; the paging has no tests and was never
   checked in a browser.
 
+  **Landed 2026-10-17.** `CharConfig`, `ModuleMenu` and `AssetInput` now have
+  a name search (trimmed, case-insensitive substring of `asset[0]` only),
+  a localized no-match message, and pages of 100 matching source indices.
+  Search resets per owner; paging resets per owner/query. Empty search skips
+  the cache/scan and builds only the visible indices. Rows read and write
+  the live record at their source index, retaining previews, delete,
+  prebuilt-exclude and sticker selection. Matching tracks the owner, query,
+  field read and length, with names read untracked: a rename cannot remove
+  its row mid-edit; the next query or structural list change refreshes matches.
+  `assetList.ts` caches lowercase names, shared between the character editor
+  and picker by wrapper/stamp, and for modules by the shared plain field
+  copy's identity. Plain create-mode modules and uncacheable lists rebuild.
+  The character wrapper-only prototype took 1,219.14 ms fresh and 589.57 ms
+  after a rename (cached 1.28 ms), exceeding the 300 ms rebuild threshold,
+  so `characterFieldPlain` now mirrors the module accessor: detached,
+  read-only-by-contract copies by live character identity and field stamp,
+  reading the raw target only while the field is untouched. UI edits still
+  go through the record wrappers, never the shared copies.
+  A temporary stdin Node script (`pnpm exec node --conditions=browser
+--input-type=module`, Node 24.21.0, Svelte 5.57.1 client/dev compilation)
+  seeded one character and one module with 100,000 `[Asset N.png, path, png]`
+  tuples through `initializeRecords` and timed the helper plus match scan:
+  fresh query / first query after renaming row 99,999 / later cached query
+  were **59.66 / 578.74 / 1.43 ms** for the character and
+  **56.47 / 578.31 / 1.29 ms** for the module. Queries were `asset 9`,
+  `renamed`, and `renamed target`, returning 11,111 / 1 / 1 matches.
+  The first post-edit copy still pays Svelte's live property-source cost
+  once; subsequent keystrokes scan only plain lowercase names. Timings
+  exclude DOM rendering and the rename itself. Browser check (headless Chrome
+  over the dev stack, a scratch Playwright driver, a character and a module
+  seeded with 100,000 assets through the records API, previews off): all 47
+  checks passed (paging, the filter and its resets per query and per owner,
+  the no-match message, a rename and a delete under a filter landing on the
+  right entry in the tab and on the server, the sticker pick inserting its
+  name). Main-thread long tasks: the first filter keystroke one task of about
+  340-400 ms (the field had just been written, so the plain copy walked the
+  live state once; module 54 + 301 ms), later keystrokes none, the first
+  query after a rename about 320-330 ms, the picker's keystroke none since it
+  shares the character's cache. Tests: `src/ts/assetList.test.ts` (the name
+  caches over real records: reuse until a write under the field, rebuild
+  after one, a remote patch and a replacement, an uncacheable character and
+  a plain create-mode module, 100k cached scans) and
+  `src/lib/Setting/Pages/Module/ModuleMenu.assets.test.ts` (`ModuleMenu` and
+  `AssetInput` mounted: paging with and without a filter, the name-only
+  trimmed case-insensitive match, the query and owner resets, the no-match
+  message, a rename kept visible mid-edit and a delete hitting the right
+  source entry, membership changes refreshing the matches, `onSelect`
+  receiving the live tuple). No stale tests.
+
 ## Phase 4: Compatibility and feature defects
 
 Independent P2s with no shared mechanism. Group by guide, one session per
@@ -441,7 +490,8 @@ group; order within the phase is free.
 The memory lists features that shipped without a real-browser pass. These are
 not defects, but each is a place a defect could hide. One session with a
 browser, one checklist: the request-history viewer and diagnostics panel, the
-Web Push browser matrix, the paged asset lists and `LazyFileSrc`, inlay audio
+Web Push browser matrix, `LazyFileSrc` with real files (the asset lists'
+paging and filters were checked on 2026-10-17 with previews off), inlay audio
 and video, the service worker's MIME and Range handling (everything is served
 as `image/png`), and the two load-only test flakes (`cbsLimitsHost.test.ts`
 "does not yield between quick effects", `checkStopDMatrix.mjs` setup).
