@@ -1896,6 +1896,9 @@ export const languageEnglish = {
         "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
     savePartialLocalBackup: "Save Partial Backup Locally (Excluding Character Assets)",
     pluginProviderNotFound: "Unknown Plugin detected. Please change the model or enable the corresponding plugin.",
+    pluginProviderPermissionDenied:
+        "Plugin {} was not allowed to act as a provider. Allow the provider permission or select another model.",
+    pluginProviderRequestAborted: "The provider request was aborted.",
     bootstrap: {
         dataCorruptionDetected: (name: string, type: string) =>
             `Data Corruption Detected\n\nModule "${name}" has corrupted lorebook format.\n\nCorrupted data type: ${type}`,

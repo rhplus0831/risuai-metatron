@@ -57,6 +57,7 @@ vi.mock("src/ts/alert", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async (bytes: Uint8Array) => `h(${new TextDecoder().decode(bytes)})`),
     risuChatParser: vi.fn((text: string) => text),
+    risuUnescape: (text: string) => text,
 }));
 vi.mock("./permissionStore", () => ({
     hasPermissionGrant: (key: string) => grants.has(key),
@@ -66,6 +67,13 @@ vi.mock("./permissionStore", () => ({
 vi.mock("src/ts/process/files/inlays", () => ({ getInlayAsset: vi.fn(async () => ({ name: "inlay" })) }));
 
 import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./v3.svelte";
+import { language } from "src/lang";
+import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
+import { requestChatData } from "src/ts/process/request/request";
+import * as resourceSync from "src/ts/storage/resourceSync.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
+import { invokeHook } from "./pluginContext";
 
 let counter = 0;
 
@@ -142,6 +150,168 @@ describe("grants", () => {
         const { api } = await makeApi("script-d");
         expect(await api.requestPluginPermission("sendChat")).toBe(true);
         expect(await api.requestPluginPermission("sendChat")).toBe(true);
+        expect(confirm).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("provider permission", () => {
+    const argument = (): PluginProviderArgument => ({
+        prompt_chat: [{ role: "user", content: "A prompt for the provider" }],
+        frequency_penalty: 0,
+        min_p: 0,
+        presence_penalty: 0,
+        repetition_penalty: 1,
+        top_k: 0,
+        top_p: 1,
+        temperature: 0.8,
+        mode: "model",
+        max_tokens: 20,
+    });
+
+    async function registerProvider() {
+        const { api, plugin } = await makeApi();
+        const name = `provider-${plugin.name}`;
+        const answer = { success: true, content: "The plugin's answer" };
+        const func = vi.fn(async (_arg: PluginProviderArgument, _signal?: AbortSignal) => answer);
+        api.addProvider(name, func);
+        const hook = pluginHooks.providers.get(name);
+        expect(hook).toBeDefined();
+        return { plugin, name, func, hook: hook!, answer };
+    }
+
+    it("returns a failure naming the plugin without calling it when provider consent is denied", async () => {
+        confirm.mockResolvedValue(false);
+        const { plugin, func, hook } = await registerProvider();
+
+        const result = await invokeHook(hook, undefined, argument(), new AbortController().signal);
+
+        expect(func).not.toHaveBeenCalled();
+        expect(result).toEqual({
+            success: false,
+            content: language.pluginProviderPermissionDenied.replace("{}", plugin.name),
+        });
+        expect(confirm).toHaveBeenCalledExactlyOnceWith(language.providerPermissionConsent.replace("{}", plugin.name));
+    });
+
+    it("returns the cached denial on a second provider call without another prompt or a plugin call", async () => {
+        confirm.mockResolvedValueOnce(false);
+        const { plugin, func, hook } = await registerProvider();
+        const denied = {
+            success: false,
+            content: language.pluginProviderPermissionDenied.replace("{}", plugin.name),
+        };
+
+        expect(await invokeHook(hook, undefined, argument(), new AbortController().signal)).toEqual(denied);
+        expect(await invokeHook(hook, undefined, argument(), new AbortController().signal)).toEqual(denied);
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(func).not.toHaveBeenCalled();
+    });
+
+    it("calls a consented provider with the prompt in v3 mode and returns its answer unchanged", async () => {
+        const { func, hook, answer } = await registerProvider();
+        const arg = argument();
+        const expected = { ...arg, mode: "v3" };
+        const signal = new AbortController().signal;
+
+        expect(await invokeHook(hook, undefined, arg, signal)).toBe(answer);
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(func).toHaveBeenCalledExactlyOnceWith(expected, signal);
+    });
+
+    it("returns the aborted failure without calling the plugin when the request aborts while consent is pending", async () => {
+        let answerConsent!: (answer: boolean) => void;
+        confirm.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerConsent = resolve)));
+        const { func, hook } = await registerProvider();
+        const abort = new AbortController();
+
+        const running = invokeHook(hook, undefined, argument(), abort.signal);
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+        expect(func).not.toHaveBeenCalled();
+        abort.abort();
+        answerConsent(true);
+
+        expect(await running).toEqual({ success: false, content: language.pluginProviderRequestAborted });
+        expect(func).not.toHaveBeenCalled();
+    });
+
+    it("answers server provider callbacks with prompted and cached denials without calling the plugin", async () => {
+        confirm.mockResolvedValueOnce(false);
+        const { plugin, name, func } = await registerProvider();
+        const send = vi.fn(() => true);
+        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+        const jobId = `job-${plugin.name}`;
+
+        try {
+            for (let call = 0; call < 2; call += 1) {
+                // Distinct callback ids make this a second provider request, not a channel replay.
+                const id = `callback-${plugin.name}-${call}`;
+                handleChannelEvent(
+                    jobId,
+                    {
+                        type: "callback",
+                        epoch: "epoch-1",
+                        jobId,
+                        id,
+                        name: "provider",
+                        targets: {
+                            chatRef: { chaId: "character", chatId: "chat" },
+                            presetId: "preset",
+                            modelPresetId: "model-preset",
+                            personaId: "persona",
+                        },
+                        revisions: [],
+                        payload: { name, argument: argument() },
+                        deadline: Date.now() + 10_000,
+                    },
+                    { send },
+                );
+                await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(call + 1));
+
+                expect(func).not.toHaveBeenCalled();
+                expect(send).toHaveBeenNthCalledWith(call + 1, {
+                    type: "answer",
+                    id,
+                    outcome: "answered",
+                    value: {
+                        success: false,
+                        content: language.pluginProviderPermissionDenied.replace("{}", plugin.name),
+                    },
+                });
+            }
+            expect(confirm).toHaveBeenCalledTimes(1);
+        } finally {
+            endJobChannel(jobId);
+            flush.mockRestore();
+        }
+    });
+
+    it("fails a tab request with the denied message on both the prompted and cached paths without calling the plugin", async () => {
+        confirm.mockResolvedValueOnce(false);
+        const { plugin, name, func } = await registerProvider();
+        installFlatDatabase({
+            characters: [],
+            aiModel: `pluginmodel:::${name}`,
+            temperature: 80,
+            maxResponse: 20,
+            requestRetrys: 0,
+            useStreaming: false,
+        });
+
+        for (let call = 0; call < 2; call += 1) {
+            const result = await requestChatData(
+                { formated: argument().prompt_chat, bias: {}, tools: [], chatRef: null },
+                "model",
+            );
+
+            expect(func).not.toHaveBeenCalled();
+            expect(result).toEqual({
+                type: "fail",
+                result: language.pluginProviderPermissionDenied.replace("{}", plugin.name),
+                model: `pluginmodel:::${name}`,
+            });
+        }
         expect(confirm).toHaveBeenCalledTimes(1);
     });
 });

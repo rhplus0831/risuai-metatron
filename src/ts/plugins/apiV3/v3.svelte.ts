@@ -1278,7 +1278,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 const context = takeHandoff();
                 const exit = context ? enterContext(contextOwner, context) : undefined;
                 try {
-                    await getPluginPermission(identity, "provider", "periodically");
+                    const conf = await getPluginPermission(identity, "provider", "periodically");
+                    if (!conf) {
+                        return {
+                            success: false,
+                            content: language.pluginProviderPermissionDenied.replace("{}", identity.name),
+                        };
+                    }
+                    if (abortSignal?.aborted) {
+                        return { success: false, content: language.pluginProviderRequestAborted };
+                    }
                     //mode is overridden to v3, due to vulnerabilities using mode.
                     //Alternative to mode will be added in future
                     arg.mode = "v3";
