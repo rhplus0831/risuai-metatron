@@ -71,6 +71,8 @@ function harness(options: {
     const questions: GenerationQuestion[] = [];
     const answers: unknown[] = [];
     const metaWrites: Record<string, unknown>[] = [];
+    /** The store's side of a variable setter: one key per change, as the job's coalescer takes it. */
+    const varWrites: [string, string][] = [];
     const chatOps: unknown[] = [];
     const characterPatches: Record<string, unknown>[] = [];
     const personaWrites: [string, string][] = [];
@@ -159,7 +161,15 @@ function harness(options: {
                 }
             }
         },
-        setChatVar: () => false,
+        setChatVar(key, value, ctx) {
+            fence(ctx);
+            if (state.chatGone || live.scriptstate?.[`$${key}`] === value) {
+                return false;
+            }
+            live.scriptstate = { ...live.scriptstate, [`$${key}`]: value };
+            varWrites.push([key, value]);
+            return true;
+        },
         getChatVar: (key) => String(live.scriptstate?.[`$${key}`] ?? "null"),
         patchCharacter(patch, ctx) {
             fence(ctx);
@@ -270,6 +280,7 @@ function harness(options: {
         questions,
         answers,
         metaWrites,
+        varWrites,
         chatOps,
         characterPatches,
         personaWrites,
@@ -295,7 +306,7 @@ afterEach(() => {
 });
 
 describe("variables", () => {
-    it("applies every operator on the working copy's scriptstate, writes the whole map at once, and CBS reads the write", async () => {
+    it("applies every operator on the working copy's scriptstate, hands the store one key per change, and CBS reads the write", async () => {
         const h = harness({
             triggers: [
                 trig([
@@ -313,14 +324,15 @@ describe("variables", () => {
         const result = await h.run();
         expect(result?.chat.scriptstate).toEqual({ $x: "1", $y: "-3" });
         expect(texts(result?.chat).at(-1)).toBe("char:x=1 y=-3");
-        expect(h.metaWrites.map((write) => write.scriptstate)).toEqual([
-            { $x: "5" },
-            { $x: "7" },
-            { $x: "7", $y: "-3" },
-            { $x: "21", $y: "-3" },
-            { $x: "3", $y: "-3" },
-            { $x: "1", $y: "-3" },
+        expect(h.varWrites).toEqual([
+            ["x", "5"],
+            ["x", "7"],
+            ["y", "-3"],
+            ["x", "21"],
+            ["x", "3"],
+            ["x", "1"],
         ]);
+        expect(h.metaWrites).toEqual([]);
         expect(notice(h, "updateGUI")).toHaveLength(1);
     });
 
@@ -440,6 +452,7 @@ describe("variables", () => {
         expect(result?.tempVars).toBe(tempVars);
         expect(result?.chat.note).toBe("n");
         expect(h.metaWrites).toEqual([]);
+        expect(h.varWrites).toEqual([]);
         expect(h.characterPatches).toEqual([]);
         expect(h.personaWrites).toEqual([]);
         expect(notice(h, "updateGUI")).toEqual([]);
@@ -459,6 +472,7 @@ describe("variables", () => {
         expect(result?.chat.scriptstate).toEqual({ $x: "1" });
         expect(result?.chat.note).toBe("n");
         expect(h.metaWrites).toEqual([]);
+        expect(h.varWrites).toEqual([]);
         expect(warn.mock.calls.map((call) => String(call[0]))).toEqual([
             expect.stringMatching(/chat is gone/),
             expect.stringMatching(/chat is gone/),
@@ -1138,7 +1152,7 @@ describe("chat, character, persona, and UI effects", () => {
             $note1: "note!",
         });
         expect(result?.chat.note).toBe("note!");
-        expect(h.metaWrites.at(-2)).toEqual({ note: "note!" });
+        expect(h.metaWrites).toEqual([{ note: "note!" }]);
         // The stored chat is untouched by the copy's edits: only the immediate writes landed.
         expect(texts(h.live)).toEqual(["char:greeting", "user:hi there"]);
     });
@@ -1469,6 +1483,7 @@ describe("recursion and the effect limit", () => {
         expect(result?.displayData).toBe("set by inner");
         expect(result?.tempVars).toEqual({ t: "temp", seen: "set by inner" });
         expect(h.metaWrites).toEqual([]);
+        expect(h.varWrites).toEqual([]);
     });
 
     it(
@@ -1543,6 +1558,7 @@ describe("the fences", () => {
         });
         await expect(h.run()).rejects.toBeInstanceOf(LuaJobFatalError);
         expect(h.metaWrites).toEqual([]);
+        expect(h.varWrites).toEqual([]);
         expect(h.notices).toEqual([]);
     });
 
@@ -1594,13 +1610,14 @@ describe("the fences", () => {
 
     it("checks the abort before every effect: an aborted run with a pending effect writes nothing more", async () => {
         const h = harness({ triggers: [trig([setVar("x", "=", "1"), setVar("y", "=", "2")])] });
-        const originalWrite = h.services.writeChat;
-        h.services.writeChat = (build, ctx) => {
-            originalWrite(build, ctx);
+        const originalSet = h.services.setChatVar;
+        h.services.setChatVar = (key, value, ctx) => {
+            const changed = originalSet(key, value, ctx);
             h.controller.abort(new Error("stop after the first write"));
+            return changed;
         };
         await expect(h.run()).rejects.toBeInstanceOf(LuaJobFatalError);
-        expect(h.metaWrites).toEqual([{ scriptstate: { $x: "1" } }]);
+        expect(h.varWrites).toEqual([["x", "1"]]);
     });
 });
 

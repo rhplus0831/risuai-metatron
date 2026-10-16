@@ -7,6 +7,8 @@ import { createResourceTestClient, type ResourceTestClient, sleep } from "./test
 
 // The real command route and default runner, without an owner socket. Count executed transcript
 // SELECTs and transactions only from admission through the terminal, excluding fixture/readback IO.
+// The setters of one synchronous run coalesce into one write (the effect loop yields only every 100
+// loop iterations or after a 50 ms effect, so a split under load is allowed, never one per setter).
 let client: ResourceTestClient;
 let bound: { presetId: string; modelPresetId: string; personaId: string };
 let counting = false;
@@ -47,9 +49,9 @@ afterAll(async () => {
 
 describe("manual metadata jobs through the routes", () => {
     it.each(["variables", "author note"])(
-        "keeps %s transcript reads bounded for 1 and 50 setters and stores exactly one revision per setter",
+        "keeps %s transcript reads and writes bounded for 1 and 50 setters, one revision per write",
         async (field) => {
-            const samples: { messageReads: number; overhead: number }[] = [];
+            const samples: { messageReads: number }[] = [];
             for (const count of [1, 50]) {
                 const characterId = `${field.replaceAll(" ", "-")}-${count}`;
                 const state: Record<string, string> = {};
@@ -141,17 +143,19 @@ describe("manual metadata jobs through the routes", () => {
                     counting = false;
                 }
                 expect(terminal?.type).toBe("done");
-                samples.push({ messageReads, overhead: transactions - count });
+                samples.push({ messageReads });
                 expect(messageReads > 0 && messageReads <= 4, `transcript reads: ${messageReads}; budget: 1..4`).toBe(
                     true,
                 );
-                expect(transactions).toBe(count);
+                expect(transactions >= 1 && transactions <= 2, `transactions: ${transactions}; budget: 1..2`).toBe(
+                    true,
+                );
                 const after = await read();
                 expect(after.data.message).toEqual(message);
                 if (field === "variables") expect(after.data.scriptstate).toEqual(state);
                 else expect(after.data.note).toBe(`note ${count - 1}`);
                 const parts = before.revision.split(":");
-                parts[2] = String(Number(parts[2]) + count);
+                parts[2] = String(Number(parts[2]) + transactions);
                 expect(after.revision).toBe(parts.join(":"));
                 expect(terminal).toMatchObject({ type: "done", revision: after.revision });
             }

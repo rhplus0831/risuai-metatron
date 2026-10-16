@@ -21,7 +21,15 @@ import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, refreshCharacter, refreshChat, refreshChatAfterWrite, scopeChat } from "../jobs/jobScope.ts";
+import {
+    chatMetadataFor,
+    flushChatMetadata,
+    type JobScope,
+    refreshCharacter,
+    refreshChat,
+    refreshChatAfterWrite,
+    scopeChat,
+} from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
@@ -257,13 +265,15 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * immediate-nil `alertInputMain`/`alertConfirmMain`).
  *
  * Chat functions work on the job's chat (`scope`), by index resolved to message ids when called,
- * and write through `job.write`; after each write the scope adopts its stored data and revision and sends it
- * to the tab. A refused write of a message another generation owns is skipped with a warning, as
+ * and write through `job.write`; variable keys and note setters coalesce in the live scope until a
+ * microtask or job barrier flushes them. After each write the scope adopts its stored data and
+ * revision and sends it to the tab. A refused write of a message another generation owns is skipped with a warning, as
  * the client's `liveWrite`; any other conflict is fatal. Character functions address the run's
  * character, read live from the store.
  */
 export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const { job, scope, store, kinds } = deps;
+    const metadata = deps.frozen ? null : chatMetadataFor(job, store, scope);
     const kindOf = (name: string): ResourceKind => {
         const kind = kinds.get(name);
         if (!kind) {
@@ -299,6 +309,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const fence = (ctx?: HostContext) => {
         if (fatalError) {
             throw fatalError;
+        }
+        try {
+            metadata?.check();
+        } catch (error) {
+            throw latch(error);
         }
         if (job.signal.aborted || ctx?.signal.aborted) {
             throw latch(new LuaJobFatalError("request aborted"));
@@ -350,7 +365,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /**
      * One write to the job's chat: the chat is read again first and `build` makes the ops from it
      * (indexes resolved, messages and metadata copied from the stored state, never an older copy),
-     * written with that revision; nothing when it returns null.
+     * written with that revision; nothing when it returns null. A lone note setter joins the job's
+     * pending metadata; every other group flushes that metadata as its own write first.
      */
     const writeChat = (build: (chat: Chat) => ChatOp[] | null, ctx?: HostContext): void => {
         fence(ctx);
@@ -366,6 +382,20 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!ops || ops.length === 0) {
             return;
         }
+        const only = ops.length === 1 ? ops[0] : undefined;
+        if (
+            only?.op === "meta" &&
+            !only.unset?.length &&
+            !only.merge &&
+            only.set &&
+            Object.keys(only.set).length === 1 &&
+            typeof only.set.note === "string"
+        ) {
+            metadata!.queue({ note: only.set.note }, latch);
+            return;
+        }
+        // A refused message group must not discard a setter that already took effect.
+        flushChatMetadata(job);
         if (deps.lock && touchesGenerating(ops, current)) {
             console.warn("[Lua] A chat change was refused: a message is being generated");
             return;
@@ -414,12 +444,12 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return ids.some((id) => deps.lock!.holder(scope.characterId, scope.chatId, id) !== null);
     };
 
-    /** `setChatVarOf` for the job's chat: the whole `scriptstate` as stored now, true when it changed. */
+    /** `setChatVarOf`: compare against the live stored snapshot plus pending keys, then queue one key. */
     const setChatVar = (key: string, value: string, ctx?: HostContext): boolean => {
+        fence(ctx);
         const stateKey = "$" + key;
         if (deps.frozen) {
             // The render's own copy: the target's later stages read it, nothing is stored.
-            fence(ctx);
             const chat = scopeChat(scope);
             if (!chat || chat.scriptstate?.[stateKey] === value) {
                 return false;
@@ -427,15 +457,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             chat.scriptstate = { ...(chat.scriptstate ?? {}), [stateKey]: value };
             return true;
         }
-        let changed = false;
-        writeChat((chat) => {
-            if (chat.scriptstate?.[stateKey] === value) {
-                return null;
-            }
-            changed = true;
-            return [{ op: "meta", set: { scriptstate: { ...(chat.scriptstate ?? {}), [stateKey]: value } } }];
-        }, ctx);
-        return changed;
+        refreshAll();
+        const chat = scopeChat(scope);
+        if (!chat || chat.scriptstate?.[stateKey] === value) {
+            return false;
+        }
+        metadata!.queue({ scriptstate: { [stateKey]: value } }, latch);
+        return true;
     };
 
     const cbsHost: CbsHost = createJobCbsHost(scope, {

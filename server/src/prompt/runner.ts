@@ -28,6 +28,8 @@ import { logEvent } from "../diagnostics/log.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
+    bindChatMetadata,
+    flushChatMetadata,
     type JobScope,
     loadJobScope,
     refreshCharacter,
@@ -356,6 +358,7 @@ async function runSend(
 
     /** Writes the job's chat as the job itself (no Lua fence: the abort grace may still persist text). */
     const writeOwn = (ops: ChatOp[], covers?: { messageId: string; generationId: string; seq: number }[]) => {
+        flushChatMetadata(job);
         refreshChat(store, scope);
         const applied = job.write(
             () => ({
@@ -422,6 +425,7 @@ async function runSend(
         job.channel.notice({ kind: "alertToast", payload: { message: `Cannot find preset: ${chain.missing}` } });
     } else if (chain) {
         // The working state as the input stage left it, on the picked preset's configuration.
+        bindChatMetadata(job, chain.scope);
         scope = chain.scope;
         refreshChat(store, scope);
         refreshCharacter(store, kinds, scope, characterId);
@@ -497,6 +501,7 @@ async function runSend(
                 writeOwn,
             });
             if (result.type === "preview") {
+                flushChatMetadata(job);
                 job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result: result.result });
                 return;
             }
@@ -536,6 +541,7 @@ async function runSend(
     if (last && !scopeChat(scope)?.message.some((message) => message.chatId === last!.messageId)) {
         last = null;
     }
+    flushChatMetadata(job);
     handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
     job.emit({
         type: "done",

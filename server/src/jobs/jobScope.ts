@@ -33,7 +33,7 @@ import {
     type ChatBindingMode,
     type ChatBindingRefusal,
 } from "./chatBinding.ts";
-import { GenerationRunnerError } from "./generationJobs.ts";
+import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
 
 /**
  * What a job reads (Phase 5 slice 8a; the slice 9 `PromptScope` builds on it), loaded at the job's
@@ -373,9 +373,152 @@ export function scopeChat(scope: JobScope): Chat | undefined {
     return owner?.chats.find((chat) => chat.id === scope.chatId) as Chat | undefined;
 }
 
+type PendingChatMeta = { scriptstate?: Record<string, string>; note?: string };
+const pendingMeta = new WeakMap<JobScope, PendingChatMeta>();
+const jobMetadata = new WeakMap<RunningJob, ReturnType<typeof createChatMetadata>>();
+
+/** A refreshed stored snapshot keeps the job's synchronous setters visible until their flush. */
+function overlayChatMeta(scope: JobScope, chat: Chat): void {
+    const pending = pendingMeta.get(scope);
+    if (!pending) {
+        return;
+    }
+    if (pending.scriptstate) {
+        chat.scriptstate = { ...chat.scriptstate, ...pending.scriptstate };
+    }
+    if (pending.note !== undefined) {
+        chat.note = pending.note;
+    }
+}
+
+/**
+ * One metadata batch per job, bound only to its live chat scope. Setters replace the variable map:
+ * display copies may share the old map. The microtask runs before another request or abort timer;
+ * job output and writes flush synchronously through the registered hook.
+ */
+function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope: JobScope) {
+    let scope = initialScope;
+    let scheduled = false;
+    let failure: unknown;
+    let failed = false;
+    let latch: (error: unknown) => unknown = (error) => error;
+    const clear = () => {
+        pendingMeta.delete(scope);
+        job.setPendingFlush?.(null);
+    };
+    const check = () => {
+        if (failed) {
+            throw failure;
+        }
+    };
+    const flush = () => {
+        check();
+        const pending = pendingMeta.get(scope);
+        if (!pending) {
+            return;
+        }
+        try {
+            // Refresh before merging keys, so another tab's unrelated variables survive.
+            const exists = refreshChat(store, scope);
+            const current = scopeChat(scope);
+            // This is its own write, never part of a caller's group or recursively flushed.
+            clear();
+            if (!exists || !current) {
+                return;
+            }
+            const set: Record<string, unknown> = { ...pending };
+            if (pending.scriptstate) {
+                set.scriptstate = { ...current.scriptstate, ...pending.scriptstate };
+            }
+            const ops: ChatOp[] = [{ op: "meta", set }];
+            const applied = job.write(() => ({
+                chats: [
+                    { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
+                ],
+            }));
+            refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+            job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
+        } catch (error) {
+            clear();
+            failed = true;
+            failure = error;
+            failure = latch(error);
+            throw failure;
+        }
+    };
+    return {
+        check,
+        flush,
+        bind(next: JobScope) {
+            if (scope !== next) {
+                flush();
+                scope = next;
+            }
+        },
+        queue(patch: PendingChatMeta, onFailure: (error: unknown) => unknown) {
+            check();
+            const chat = scopeChat(scope);
+            if (!chat) {
+                return;
+            }
+            latch = onFailure;
+            const pending = pendingMeta.get(scope) ?? {};
+            if (patch.scriptstate) {
+                pending.scriptstate = { ...pending.scriptstate, ...patch.scriptstate };
+                chat.scriptstate = { ...chat.scriptstate, ...patch.scriptstate };
+            }
+            if (patch.note !== undefined) {
+                pending.note = patch.note;
+                chat.note = patch.note;
+            }
+            pendingMeta.set(scope, pending);
+            job.setPendingFlush?.(flush);
+            if (!scheduled) {
+                scheduled = true;
+                queueMicrotask(() => {
+                    scheduled = false;
+                    try {
+                        flush();
+                    } catch (error) {
+                        // Never throw out of a microtask: the latched failure ends the job at its
+                        // next fence/explicit flush, including jobs without a registry hook.
+                        try {
+                            console.error("[Job] Chat metadata flush failed", error);
+                        } catch {
+                            // A broken logger must not escape the microtask either.
+                        }
+                    }
+                });
+            }
+        },
+    };
+}
+
+/** Shared by every live binding of a job; frozen/display bindings must not call this. */
+export function chatMetadataFor(job: RunningJob, store: ResourceStore, scope: JobScope) {
+    let metadata = jobMetadata.get(job);
+    if (!metadata) {
+        metadata = createChatMetadata(job, store, scope);
+        jobMetadata.set(job, metadata);
+    }
+    metadata.bind(scope);
+    return metadata;
+}
+
+/** Flush separately before another own-chat write, snapshot, or terminal revision is built. */
+export function flushChatMetadata(job: RunningJob): void {
+    jobMetadata.get(job)?.flush();
+}
+
+/** A preset-chain pick becomes the job's live scope after the old scope's writes land. */
+export function bindChatMetadata(job: RunningJob, scope: JobScope): void {
+    jobMetadata.get(job)?.bind(scope);
+}
+
 /**
  * Reads the job's chat again with its revision (after a write of the job or a callback that may
- * have written): data and revision always come together, so an old copy never carries a new token.
+ * have written): stored data and revision come together, with the pending metadata laid over that
+ * snapshot. Pending values carry no stored revision until their own flush commits.
  * Returns false when the chat is gone.
  */
 export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
@@ -394,6 +537,7 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
     }
     setChats(owner, [record.data as Chat]);
     scope.chatRevision = record.revision;
+    overlayChatMeta(scope, record.data as Chat);
     if (scope.charactersKind) {
         addSpeakers(store, scope.charactersKind, scope, record.data as Chat);
     }
@@ -415,7 +559,9 @@ export function refreshChatAfterWrite(
         const record = store.chatMeta(scope.characterId, scope.chatId);
         if (record?.revision === result.revision) {
             const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId)!;
-            setChats(owner, [{ ...(record.data as Chat), message: current.message }]);
+            const chat = { ...(record.data as Chat), message: current.message };
+            overlayChatMeta(scope, chat);
+            setChats(owner, [chat]);
             scope.chatRevision = record.revision;
             return true;
         }

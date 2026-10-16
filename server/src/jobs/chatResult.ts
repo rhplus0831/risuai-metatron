@@ -4,7 +4,7 @@ import type { Chat, Message } from "../../../shared/database.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { type JobScope, refreshChat, refreshChatAfterWrite, scopeChat } from "./jobScope.ts";
+import { flushChatMetadata, type JobScope, refreshChat, refreshChatAfterWrite, scopeChat } from "./jobScope.ts";
 
 /** A message the job is generating: its id and the next checkpoint of its generation (`seq` advanced). */
 export type OwnedGeneration = {
@@ -44,6 +44,7 @@ export function applyTriggerChat(
     options: { generation?: OwnedGeneration } = {},
 ): void {
     const { job, store, scope, lock } = deps;
+    flushChatMetadata(job);
     if (!refreshChat(store, scope)) {
         return;
     }

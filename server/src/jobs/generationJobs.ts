@@ -197,6 +197,8 @@ export type RunningJob = {
      * Phase 5 slice 9); callbacks already sent keep theirs.
      */
     setCallbackPreset?(presetId: string): void;
+    /** Flush synchronous metadata setters before a write, event, or callback barrier. */
+    setPendingFlush?(flush: (() => void) | null): void;
 };
 
 export type GenerationRunner = (job: RunningJob) => Promise<void>;
@@ -245,6 +247,7 @@ type Job = {
     sentChat: ChatBaseline | null;
     /** The last own-chat write, only if it changed metadata on exactly its base revision. */
     metaWrite?: { baseRevision: string; revision: string };
+    pendingFlush?: (() => void) | null;
     /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
     generated: Set<string>;
     terminal: GenerationTerminalEvent | null;
@@ -630,6 +633,7 @@ export function createGenerationJobs(options: {
      * Returns their receipts (synchronously: each receipt names the copy sent).
      */
     function hydrateAll(job: Job): HydrationReceipt[] {
+        job.pendingFlush?.();
         const chat = deliverJobChat(job, "whole");
         const events = freshRecords(job);
         for (const event of events) {
@@ -875,6 +879,7 @@ export function createGenerationJobs(options: {
             epoch: job.epoch,
             signal: job.controller.signal,
             emit(input) {
+                job.pendingFlush?.();
                 assertLive(job);
                 if (input.type === "done" || input.type === "error") {
                     finalize(job, input);
@@ -922,6 +927,7 @@ export function createGenerationJobs(options: {
                 send(job, event);
             },
             emitRecords(records) {
+                job.pendingFlush?.();
                 assertLive(job);
                 const receipts: HydrationReceipt[] = [];
                 for (const ref of records.refs ?? []) {
@@ -956,6 +962,8 @@ export function createGenerationJobs(options: {
             },
             write: (build, options) => {
                 try {
+                    // Before build/applyChanges: never flush inside another write's transaction.
+                    job.pendingFlush?.();
                     return writeAsJob(job, build, options?.covers);
                 } catch (error) {
                     // Every job write fails here: a conflict, a refused write, a storage failure.
@@ -964,6 +972,9 @@ export function createGenerationJobs(options: {
             },
             setCallbackPreset(presetId) {
                 job.targets.presetId = presetId;
+            },
+            setPendingFlush(flush) {
+                job.pendingFlush = flush;
             },
             onClientMessage(listener) {
                 assertLive(job);
@@ -1073,7 +1084,11 @@ export function createGenerationJobs(options: {
             epoch: job.epoch,
             targets: job.targets,
             hooks,
-            send: (event) => !job.ended && send(job, event),
+            flushPending: () => job.pendingFlush?.(),
+            send: (event) => {
+                job.pendingFlush?.();
+                return !job.ended && send(job, event);
+            },
             hydrate: () => hydrateAll(job),
             ownerAttached: () => job.sockets.size > 0,
         });

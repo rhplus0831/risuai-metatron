@@ -474,7 +474,12 @@ describe("the native effect loop", () => {
                     }
                 }
             },
-            setChatVar: () => false,
+            // The store's side of a setter: the key lands on the live chat (the runtime works on its copy).
+            setChatVar: (key: string, value: string, ctx?: HostContext) => {
+                fence(ctx);
+                chat.scriptstate = { ...chat.scriptstate, [`$${key}`]: value };
+                return true;
+            },
             getChatVar: () => "null",
             patchCharacter: () => true,
             patchPersonaPrompt: () => true,
@@ -527,7 +532,7 @@ describe("the native effect loop", () => {
         await expect(runtime.runTrigger(char, "start", { chat, displayMode: false })).rejects.toThrow(
             "request aborted",
         );
-        // The first effect ran whole (its value, then its output name: two parses, one write), the
+        // The first effect ran whole (its value, then its output name: two parses, one key), the
         // second never started.
         expect(parsed).toEqual(["value 0", "v0"]);
         expect(effects.count).toBe(1);

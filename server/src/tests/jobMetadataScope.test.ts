@@ -276,21 +276,24 @@ describe("metadata job scope", () => {
         expect(scope.chatRevision).toBe(h.store.chatRevision("c", "k"));
     });
 
-    it("Lua setters store each variable immediately, preserve concurrent keys, and adopt metadata without message reads", () => {
+    it("Lua setters land before the next task, preserve concurrent keys, and adopt metadata without message reads", async () => {
         const h = setup();
         const run = h.run();
-        const call = (key: string, value: string) =>
+        // A host call's write lands before the next macrotask (the next host call, another tab's request).
+        const call = async (key: string, value: string) => {
             run.bindings.host.sync!.setChatVar(["id", key, value], run.nativeCtx);
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        };
         const before = h.reads();
-        call("x", "first");
+        await call("x", "first");
         expect(h.store.chatMeta("c", "k")!.data.scriptstate).toEqual({ $old: "kept", $x: "first" });
         expect(run.bindings.services.parse("{{getvar::x}}", null)).toBe("first");
-        call("y", "second");
+        await call("y", "second");
         expect(h.reads() - before).toBe(0);
         h.write([
             { op: "meta", set: { scriptstate: { $old: "kept", $x: "first", $y: "second", $concurrent: "tab" } } },
         ]);
-        call("x", "third");
+        await call("x", "third");
         expect(h.store.chatMeta("c", "k")!.data.scriptstate).toEqual({
             $old: "kept",
             $x: "third",

@@ -9,7 +9,7 @@ import {
     markFailure,
     type RunningJob,
 } from "./generationJobs.ts";
-import { admitProviderModels, loadJobScope } from "./jobScope.ts";
+import { admitProviderModels, flushChatMetadata, loadJobScope } from "./jobScope.ts";
 import {
     createJobRunState,
     createRunSetup,
@@ -149,6 +149,7 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
             },
             { host: bindings.host, signal: state.runSignal, budget: state.budget },
         );
+        flushChatMetadata(job);
         const fatal = bindings.fatal();
         if (fatal) {
             throw fatal;
@@ -166,6 +167,7 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
             console.error("[Lua]", result.error);
         }
     }
+    flushChatMetadata(job);
     job.emit({
         type: "done",
         revision: store.chatRevision(characterId, chatId),
@@ -203,6 +205,7 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
         );
     }
     setup.check();
+    flushChatMetadata(job);
     job.emit({
         type: "done",
         revision: deps.store.chatRevision(characterId, chatId),

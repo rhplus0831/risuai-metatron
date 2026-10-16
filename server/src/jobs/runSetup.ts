@@ -31,7 +31,7 @@ import { jobModules } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "./jobScope.ts";
+import { flushChatMetadata, type JobScope, refreshCharacter, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
@@ -288,6 +288,7 @@ export function createRunSetup(
                 },
                 { host: bindings.host, signal: state.runSignal, budget: state.budget },
             );
+            flushChatMetadata(job);
             check();
             if (result.aborted) {
                 throw services.latch(new LuaJobFatalError("request aborted"));
@@ -317,12 +318,30 @@ export function createRunSetup(
     };
 
     const runOnCopy: RunSetup["runOnCopy"] = async (char, mode, arg = {}, options = {}) => {
+        flushChatMetadata(job);
         services.fence(nativeCtx);
         if (!refreshChat(store, scope)) {
             return undefined;
         }
         const baseline = { chat: structuredClone(scopeChat(scope)!) as Chat, revision: scope.chatRevision };
-        const result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat }));
+        let result: TriggerResult | null | undefined;
+        let threw = false;
+        try {
+            result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat }));
+        } catch (error) {
+            threw = true;
+            throw error;
+        } finally {
+            if (threw) {
+                try {
+                    flushChatMetadata(job);
+                } catch {
+                    // The flush has latched its failure; preserve the trigger's original error.
+                }
+            } else {
+                flushChatMetadata(job);
+            }
+        }
         services.fence(nativeCtx);
         if (result) {
             applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);

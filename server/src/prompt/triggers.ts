@@ -329,7 +329,7 @@ export function createTriggerRuntime(host: TriggerHost) {
         const parse = (text: string) => services.parse(text, char);
         // Chat variables and the author's note are written to the job's chat as the run goes (so CBS
         // reads them), except in display and request runs; the caller applies the rest of the result.
-        const writeChatMeta = (patch: Partial<Chat>) => {
+        const writeChatMeta = (patch: Pick<Chat, "note">) => {
             if (arg.displayMode) {
                 return;
             }
@@ -497,8 +497,12 @@ export function createTriggerRuntime(host: TriggerHost) {
             }
 
             varChanged = true;
-            chat.scriptstate[stateKey] = value;
-            writeChatMeta({ scriptstate: structuredClone(chat.scriptstate) });
+            chat.scriptstate = { ...chat.scriptstate, [stateKey]: value };
+            if (!services.chatExists()) {
+                console.warn("[Trigger] The chat is gone; a variable change was not saved");
+            } else {
+                services.setChatVar(key, value, ctx);
+            }
             return true;
         }
 

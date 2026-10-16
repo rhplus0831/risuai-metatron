@@ -41,6 +41,8 @@ export type ChannelTransport = {
     send(event: GenerationChannelEvent): boolean;
     /** Sends the job chat and every record the job sent, read now; returns what was sent. */
     hydrate(): HydrationReceipt[];
+    /** Persists synchronous setters before a notice or request leaves the runner. */
+    flushPending?(): void;
     ownerAttached(): boolean;
 };
 
@@ -445,6 +447,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
             const channel: JobChannel = {
                 notice(notice) {
+                    transport.flushPending?.();
                     if (state.closed) {
                         return;
                     }
@@ -460,6 +463,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     transport.send(event);
                 },
                 ask(question, options = {}) {
+                    transport.flushPending?.();
                     // Serialized now, so an unsendable payload throws here and never occupies a slot.
                     JSON.stringify(question);
                     return enqueue(
@@ -479,6 +483,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     ) as Promise<QuestionResult>;
                 },
                 callback(name, payload, options = {}) {
+                    transport.flushPending?.();
                     JSON.stringify(payload);
                     if (!hasHook(transport.hooks, name, payload)) {
                         return Promise.resolve({
