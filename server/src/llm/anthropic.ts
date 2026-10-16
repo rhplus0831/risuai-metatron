@@ -10,6 +10,7 @@ import type { MultiModal } from "../../../shared/openai.ts";
 import { deferFirstByte, textifyReadableStream } from "./transport.ts";
 import { replaceAsync, simplifySchema, sleep } from "./util.ts";
 import { extractJSON } from "./jsonSchema.ts";
+import { SseLines } from "./sseLines.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 
@@ -987,133 +988,76 @@ async function requestClaudeHTTP(
                 result: await textifyReadableStream(res.body!),
             };
         }
-        let breakError = "";
+        const lines = new SseLines();
+        let text = "";
         let thinking = false;
 
-        const stream = new ReadableStream<StreamResponseChunk>({
-            async start(controller) {
-                let text = "";
-                let reader = res.body!.getReader();
-                let parserData = "";
-                const decoder = new TextDecoder();
-                const parseEvent = (e: string) => {
-                    try {
-                        const parsedData = JSON.parse(e);
-
-                        if (parsedData?.type === "content_block_delta") {
-                            if (parsedData?.delta?.type === "text" || parsedData.delta?.type === "text_delta") {
-                                if (thinking) {
-                                    text += "</Thoughts>\n\n";
-                                    thinking = false;
-                                }
-                                text += parsedData.delta?.text ?? "";
+        const applyLines = (completeLines: string[]) => {
+            let applied = false;
+            for (const line of completeLines) {
+                if (!line.startsWith("data:")) continue;
+                try {
+                    const parsedData = JSON.parse(line.slice(5).trim());
+                    if (parsedData?.type === "content_block_delta") {
+                        if (parsedData.delta?.type === "text" || parsedData.delta?.type === "text_delta") {
+                            if (thinking) {
+                                text += "</Thoughts>\n\n";
+                                thinking = false;
                             }
-
-                            if (parsedData?.delta?.type === "thinking" || parsedData.delta?.type === "thinking_delta") {
-                                if (!thinking) {
-                                    text += "<Thoughts>\n";
-                                    thinking = true;
-                                }
-                                text += parsedData.delta?.thinking ?? "";
+                            text += parsedData.delta?.text ?? "";
+                        }
+                        if (parsedData.delta?.type === "thinking" || parsedData.delta?.type === "thinking_delta") {
+                            if (!thinking) {
+                                text += "<Thoughts>\n";
+                                thinking = true;
                             }
-
-                            if (parsedData?.delta?.type === "redacted_thinking") {
-                                if (!thinking) {
-                                    text += "<Thoughts>\n";
-                                    thinking = true;
-                                }
-                                text += "\n{{redacted_thinking}}\n";
+                            text += parsedData.delta?.thinking ?? "";
+                        }
+                        if (parsedData.delta?.type === "redacted_thinking") {
+                            if (!thinking) {
+                                text += "<Thoughts>\n";
+                                thinking = true;
                             }
+                            text += "\n{{redacted_thinking}}\n";
                         }
-
-                        if (parsedData?.type === "error") {
-                            const errormsg: string = parsedData?.error?.message;
-                            if (
-                                errormsg &&
-                                errormsg.toLocaleLowerCase().includes("overload") &&
-                                db.antiServerOverloads
-                            ) {
-                                // console.log('Overload detected, retrying...')
-                                controller.enqueue({
-                                    "0": "Overload detected, retrying...",
-                                });
-
-                                return "overload";
-                            }
-                            // Into the answer text (as on the client), without the credentials.
-                            text += "Error:" + arg.ctx.redactText(`${parsedData?.error?.message}`);
-                        }
-                    } catch (error) {}
-                };
-                let breakWhile = false;
-                let i = 0;
-                let prevText = "";
-                while (true) {
-                    try {
-                        if (arg?.abortSignal?.aborted || breakWhile) {
-                            break;
-                        }
-                        const { done, value } = await reader.read();
-                        if (done) {
-                            break;
-                        }
-                        parserData += decoder.decode(value);
-                        let parts = parserData.split("\n");
-                        for (; i < parts.length - 1; i++) {
-                            prevText = text;
-                            if (parts?.[i]?.startsWith("data: ")) {
-                                const d = await parseEvent(parts[i].slice(6));
-                                if (d === "overload") {
-                                    parserData = "";
-                                    prevText = "";
-                                    text = "";
-                                    reader.cancel();
-                                    const res = await arg.ctx.transport.fetchStream(replacerURL, {
-                                        body: JSON.stringify(body),
-                                        headers: headers,
-                                        method: "POST",
-                                        chatId: arg.chatId,
-                                        signal: arg.abortSignal,
-                                        interceptor: "anthropic_streaming_retry",
-                                    });
-
-                                    if (res.status !== 200) {
-                                        controller.enqueue({
-                                            "0": arg.ctx.redactText(await textifyReadableStream(res.body!)),
-                                        });
-                                        breakWhile = true;
-                                        break;
-                                    }
-
-                                    reader = res.body!.getReader();
-                                    break;
-                                }
-                            }
-                        }
-                        i--;
-                        text = prevText;
-
-                        controller.enqueue({
-                            "0": text,
-                        });
-                    } catch (error) {
-                        await sleep(1);
                     }
+                    if (parsedData?.type === "error") {
+                        // Provider errors, including overloads, are redacted answer text.
+                        // Retry policy belongs to requestChatDataOuter.
+                        text += "Error:" + arg.ctx.redactText(`${parsedData?.error?.message}`);
+                    }
+                    applied = true;
+                } catch {
+                    // A malformed data line must not hide the following events.
                 }
+            }
+            return applied;
+        };
+
+        const stream = new TransformStream<Uint8Array, StreamResponseChunk>({
+            transform(chunk, controller) {
+                if (applyLines(lines.push(chunk))) {
+                    controller.enqueue({ "0": text });
+                }
+            },
+            flush(controller) {
+                let changed = applyLines(lines.end());
                 if (thinking) {
                     text += "</Thoughts>\n\n";
-                    controller.enqueue({
-                        "0": text,
-                    });
+                    thinking = false;
+                    changed = true;
                 }
-                controller.close();
+                if (changed) {
+                    controller.enqueue({ "0": text });
+                }
             },
-            cancel() {},
         });
+        // Body errors reach the readable side; cancellation reaches the upstream body.
+        res.body!.pipeTo(stream.writable).catch(() => {});
 
         return {
             type: "streaming",
-            result: stream,
+            result: stream.readable,
         };
     }
 

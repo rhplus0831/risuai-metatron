@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01) and 3a (PERF-02, the read half and the coalesced setter writes) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes) and 3b (API-01, API-02, API-03, API-05) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -169,6 +169,22 @@ P2 with the memory items that share its mechanism.
   unparsed suffix, a streaming `TextDecoder`, each event parsed once, and
   reader errors surfaced. Regression: parse counts linear in events under
   arbitrary byte boundaries.
+  Landed 2026-10-16: `server/src/llm/sseLines.ts` (one streaming decoder, only the
+  unparsed line suffix kept) under the OpenAI Chat, Gemini and Anthropic parsers,
+  each with persistent state, one parse per event, a malformed line skipped alone,
+  one fresh snapshot per read that applied an event; OpenAI deltas concatenated
+  (the overlap heuristic of eb0005eeb removed; no provider needed it); Anthropic
+  as a `TransformStream` fed by `pipeTo`, so a body failure errors the stream and
+  a cancel reaches the body, and its dead in-stream overload retry (it read `db`
+  before the declaration, so an overload event vanished) removed: the event is
+  `Error:` text and the outer loop owns the retry. Also fixed on the way: Gemini's
+  signature saved once instead of per reparse, a `[DONE]` read's earlier events
+  kept, `extractJson` no longer blanking `__tool_calls`, a DeepSeek tool-only
+  answer no longer dropped, Anthropic's `</Thoughts>` lost at a read boundary.
+  800 events one per read: OpenAI 321,200 parses and 310 ms to 800 and 8 ms,
+  Gemini 320,400 and 318 ms to 800 and 11 ms; one byte per read, 200 events:
+  about 30 ms. Not done: a bounded Anthropic in-stream overload retry (a feature,
+  if wanted); the Responses API parser still runs `extractJSON` per event.
 - **3c. Sync traffic during generation** (_hard_, `persistence.md` with
   `chat-pipeline.md`). The chat-patch series' deferrals plus one Phase 6
   leftover: other tabs viewing the same chat still re-read it whole over HTTP

@@ -10,6 +10,7 @@ import { getFreeOpenRouterModels } from "../openrouter.ts";
 import { defaultCredentialKey } from "../credentials.ts";
 import { textifyReadableStream } from "../transport.ts";
 import { simplifySchema } from "../util.ts";
+import { SseLines } from "../sseLines.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
 import { applyChatTemplate } from "../chatTemplate.ts";
@@ -1019,164 +1020,105 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
 }
 
 function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8Array, StreamResponseChunk> {
-    let dataUint: Uint8Array | Buffer = new Uint8Array([]);
+    const lines = new SseLines();
+    const readed: Record<string, string> = { "0": "" };
+    const toolCalls: Record<
+        string,
+        {
+            id: string | null;
+            type: "function";
+            function: { name: string | null; arguments: string };
+        }
+    > = {};
     let reasoningContent = "";
     let reasoningFromStructured = false;
+    let done = false;
+    let emitted = false;
     const db = arg.ctx.db;
 
-    const appendStreamingFragment = (current: string, incoming?: string) => {
-        if (!incoming) {
-            return current;
+    const applyLines = (completeLines: string[]) => {
+        let applied = false;
+        for (const line of completeLines) {
+            if (done) break;
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") {
+                done = true;
+                applied = true;
+                break;
+            }
+            try {
+                const event = JSON.parse(data);
+                for (const choice of event.choices ?? []) {
+                    const delta = choice.delta;
+                    const content = delta?.content ?? choice.text;
+                    if (typeof content === "string") {
+                        const index = arg.multiGen ? choice.index.toString() : "0";
+                        readed[index] = (readed[index] ?? "") + content;
+                    }
+                    for (const toolCall of delta?.tool_calls ?? []) {
+                        const index = toolCall.index ?? 0;
+                        const call = (toolCalls[index] ??= {
+                            id: toolCall.id || null,
+                            type: "function",
+                            function: { name: null, arguments: "" },
+                        });
+                        if (toolCall.id) call.id = toolCall.id;
+                        if (toolCall.function?.name) call.function.name = toolCall.function.name;
+                        if (typeof toolCall.function?.arguments === "string") {
+                            call.function.arguments += toolCall.function.arguments;
+                        }
+                    }
+                    const reasoning = delta?.reasoning_content ?? delta?.reasoning;
+                    if (typeof reasoning === "string" && reasoning) {
+                        reasoningFromStructured = true;
+                        reasoningContent += reasoning;
+                    }
+                }
+                applied = true;
+            } catch {
+                // A malformed data line must not hide the following events.
+            }
         }
-        if (incoming.length > current.length && incoming.startsWith(current)) {
-            return incoming;
+        return applied;
+    };
+
+    const emit = async (control: TransformStreamDefaultController<StreamResponseChunk>) => {
+        const snapshot = { ...readed };
+        let reasoning = reasoningContent;
+        if (arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput) && !reasoningFromStructured) {
+            const content = readed["0"] ?? "";
+            const end = content.lastIndexOf("</think>");
+            if (end !== -1) {
+                reasoning = content.slice(0, end).replace(/<think>/g, "");
+                snapshot["0"] = content.slice(end + "</think>".length);
+            }
         }
-        return current + incoming;
+        if (arg.extractJson && (db.jsonSchemaEnabled || arg.schema)) {
+            for (const key in snapshot) {
+                snapshot[key] = await extractJSON(snapshot[key], arg.extractJson, arg.ctx);
+            }
+        }
+        if (reasoning) {
+            snapshot["0"] = `<Thoughts>\n${reasoning}\n</Thoughts>\n${snapshot["0"]}`;
+        }
+        if (Object.keys(toolCalls).length > 0) {
+            snapshot["__tool_calls"] = JSON.stringify(toolCalls);
+        }
+        control.enqueue(snapshot);
+        emitted = true;
     };
 
     return new TransformStream<Uint8Array, StreamResponseChunk>({
         async transform(chunk, control) {
-            const combined = new Uint8Array(dataUint.length + chunk.length);
-            combined.set(dataUint, 0);
-            combined.set(chunk, dataUint.length);
-            dataUint = Buffer.from(combined);
-            let JSONreaded: { [key: string]: string } = {};
-            reasoningContent = "";
-            try {
-                const datas = dataUint.toString().split("\n");
-                let readed: { [key: string]: string } = {};
-                for (const data of datas) {
-                    if (data.startsWith("data: ")) {
-                        try {
-                            const rawChunk = data.replace("data: ", "");
-                            if (rawChunk === "[DONE]") {
-                                if (
-                                    arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput) &&
-                                    !reasoningFromStructured
-                                ) {
-                                    readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
-                                        reasoningContent = p1;
-                                        return "";
-                                    });
-
-                                    if (reasoningContent) {
-                                        reasoningContent = reasoningContent.replace(/\<think\>/gm, "");
-                                    }
-                                }
-                                if (arg.extractJson && (db.jsonSchemaEnabled || arg.schema)) {
-                                    for (const key in readed) {
-                                        const extracted = await extractJSON(readed[key], arg.extractJson, arg.ctx);
-                                        JSONreaded[key] = extracted;
-                                    }
-                                    control.enqueue(JSONreaded);
-                                } else if (reasoningContent) {
-                                    const chunk: Record<string, string> = {
-                                        "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"] ?? ""}`,
-                                    };
-                                    if (readed["__tool_calls"]) {
-                                        chunk["__tool_calls"] = readed["__tool_calls"];
-                                    }
-                                    control.enqueue(chunk);
-                                } else {
-                                    control.enqueue(readed);
-                                }
-                                return;
-                            }
-                            const choices = JSON.parse(rawChunk).choices;
-                            for (const choice of choices) {
-                                const chunk = choice.delta.content ?? choice.text;
-                                if (chunk) {
-                                    if (arg.multiGen) {
-                                        const ind = choice.index.toString();
-                                        if (!readed[ind]) {
-                                            readed[ind] = "";
-                                        }
-                                        readed[ind] = appendStreamingFragment(readed[ind], chunk);
-                                    } else {
-                                        if (!readed["0"]) {
-                                            readed["0"] = "";
-                                        }
-                                        readed["0"] = appendStreamingFragment(readed["0"], chunk);
-                                    }
-                                }
-                                // Check for tool calls in the delta
-                                if (choice?.delta?.tool_calls) {
-                                    if (!readed["__tool_calls"]) {
-                                        readed["__tool_calls"] = JSON.stringify({});
-                                    }
-                                    const toolCallsData = JSON.parse(readed["__tool_calls"]);
-
-                                    for (const toolCall of choice.delta.tool_calls) {
-                                        const index = toolCall.index ?? 0;
-                                        const toolCallId = toolCall.id;
-
-                                        // Initialize tool call data if not exists
-                                        if (!toolCallsData[index]) {
-                                            toolCallsData[index] = {
-                                                id: toolCallId || null,
-                                                type: "function",
-                                                function: {
-                                                    name: null,
-                                                    arguments: "",
-                                                },
-                                            };
-                                        }
-
-                                        // Update tool call data incrementally
-                                        if (toolCall.id) {
-                                            toolCallsData[index].id = toolCall.id;
-                                        }
-                                        if (toolCall.function?.name) {
-                                            toolCallsData[index].function.name = toolCall.function.name;
-                                        }
-                                        if (toolCall.function?.arguments) {
-                                            toolCallsData[index].function.arguments = appendStreamingFragment(
-                                                toolCallsData[index].function.arguments,
-                                                toolCall.function.arguments,
-                                            );
-                                        }
-                                    }
-
-                                    readed["__tool_calls"] = JSON.stringify(toolCallsData);
-                                }
-                                const reasoningChunk = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
-                                if (reasoningChunk) {
-                                    reasoningFromStructured = true;
-                                    reasoningContent = appendStreamingFragment(reasoningContent, reasoningChunk);
-                                }
-                            }
-                        } catch (error) {}
-                    }
-                }
-
-                if (arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput) && !reasoningFromStructured) {
-                    readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
-                        reasoningContent = p1;
-                        return "";
-                    });
-
-                    if (reasoningContent) {
-                        reasoningContent = reasoningContent.replace(/\<think\>/gm, "");
-                    }
-                }
-                if (arg.extractJson && (db.jsonSchemaEnabled || arg.schema)) {
-                    for (const key in readed) {
-                        const extracted = await extractJSON(readed[key], arg.extractJson, arg.ctx);
-                        JSONreaded[key] = extracted;
-                    }
-                    control.enqueue(JSONreaded);
-                } else if (reasoningContent) {
-                    const chunk: Record<string, string> = {
-                        "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"] ?? ""}`,
-                    };
-                    if (readed["__tool_calls"]) {
-                        chunk["__tool_calls"] = readed["__tool_calls"];
-                    }
-                    control.enqueue(chunk);
-                } else {
-                    control.enqueue(readed);
-                }
-            } catch (error) {}
+            if (!done && applyLines(lines.push(chunk))) {
+                await emit(control);
+            }
+        },
+        async flush(control) {
+            if (!done && (applyLines(lines.end()) || !emitted)) {
+                await emit(control);
+            }
         },
     });
 }

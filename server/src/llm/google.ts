@@ -7,6 +7,7 @@ import type { InlaySignature } from "../../../shared/llm/request.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import { textifyReadableStream } from "./transport.ts";
 import { simplifySchema } from "./util.ts";
+import { SseLines } from "./sseLines.ts";
 import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type LLMParameter } from "./shared.ts";
@@ -906,90 +907,95 @@ function getTranStream(args: {
     saveSignature: boolean;
     ctx: RequestDataArgumentExtended["ctx"];
 }): TransformStream<Uint8Array, StreamResponseChunk> {
-    let buffer = "";
+    const lines = new SseLines();
+    const readed = initStreamState();
+    const toolCalls: GeminiFunctionCall[] = [];
+    let done = false;
+    let emitted = false;
     const { modelInfo, saveSignature, ctx } = args;
-    return new TransformStream<Uint8Array, StreamResponseChunk>({
-        transform(chunk, control) {
-            buffer += new TextDecoder().decode(chunk);
-            const lines = buffer.split("\n");
 
-            let readed = initStreamState();
-
+    const applyLines = (completeLines: string[]) => {
+        let applied = false;
+        for (const line of completeLines) {
+            if (done) break;
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") {
+                done = true;
+                applied = true;
+                break;
+            }
             try {
-                for (const line of lines) {
-                    if (line.startsWith("data: ")) {
-                        const dataStr = line.slice(6).trim();
-                        if (dataStr === "[DONE]") return;
-
-                        const jsonData = JSON.parse(dataStr);
-
-                        if (jsonData.candidates?.[0]?.content?.parts) {
-                            const parts = jsonData.candidates[0].content.parts;
-                            for (const part of parts) {
-                                if (part.text) {
-                                    readed["__thoughts"] += readed["__last_thought"];
-                                    readed["__last_thought"] = "";
-                                    if (part.thought) {
-                                        readed["__last_thought"] = part.text;
-                                    } else {
-                                        readed["0"] += part.text;
-                                    }
-                                    if (part.thoughtSignature) {
-                                        readed["__sign_text"] = part.thoughtSignature;
-                                        if (saveSignature) {
-                                            //Its a promise, but we don't need to await it here
-                                            const sigId = randomUUID();
-                                            ctx.inlays.saveSignature(sigId, {
-                                                source: modelInfo.internalID || modelInfo.id,
-                                                sourceFormat: modelInfo.format,
-                                                signatures: [
-                                                    {
-                                                        type: "text",
-                                                        content: part.text as string,
-                                                    },
-                                                ],
-                                            });
-                                            readed["0"] += `{{inlayeddata::${sigId}}}`;
-                                        }
-                                    }
-                                }
-                                if (part.functionCall) {
-                                    const toolCallsData = JSON.parse(readed["__tool_calls"]);
-                                    toolCallsData.push(part.functionCall);
-                                    readed["__tool_calls"] = JSON.stringify(toolCallsData);
-                                    if (part.thoughtSignature) {
-                                        readed["__sign_function"] = part.thoughtSignature;
-                                        const sigId = randomUUID();
-
-                                        if (saveSignature) {
-                                            //Its a promise, but we don't need to await it here
-                                            ctx.inlays.saveSignature(sigId, {
-                                                source: modelInfo.internalID || modelInfo.id,
-                                                sourceFormat: modelInfo.format,
-                                                signatures: [
-                                                    {
-                                                        type: "function",
-                                                        content: `${part.functionCall.name}(${JSON.stringify(part.functionCall.args)})`,
-                                                    },
-                                                ],
-                                            });
-                                            readed["0"] += `{{inlayeddata::${sigId}}}`;
-                                        }
-                                    }
-                                }
-                            }
+                const jsonData = JSON.parse(data);
+                const parts: GeminiPart[] = jsonData.candidates?.[0]?.content?.parts ?? [];
+                for (const part of parts) {
+                    const signatures: InlaySignature["signatures"] = [];
+                    if (part.text) {
+                        readed["__thoughts"] += readed["__last_thought"];
+                        readed["__last_thought"] = "";
+                        if (part.thought) {
+                            readed["__last_thought"] = part.text;
+                        } else {
+                            readed["0"] += part.text;
                         }
-
-                        if (jsonData.usageMetadata) {
-                            readed["__usageMetadata"] = JSON.stringify(jsonData.usageMetadata);
-                        }
-                        if (jsonData.modelStatus) {
-                            readed["__modelStatus"] = JSON.stringify(jsonData.modelStatus);
+                        if (part.thoughtSignature) {
+                            readed["__sign_text"] = part.thoughtSignature;
+                            signatures.push({ type: "text", content: part.text });
                         }
                     }
+                    if (part.functionCall) {
+                        toolCalls.push(part.functionCall);
+                        if (part.thoughtSignature) {
+                            readed["__sign_function"] = part.thoughtSignature;
+                            signatures.push({
+                                type: "function",
+                                content: `${part.functionCall.name}(${JSON.stringify(part.functionCall.args)})`,
+                            });
+                        }
+                    }
+                    if (saveSignature && signatures.length > 0) {
+                        const sigId = randomUUID();
+                        // Start saving before the snapshot can expose the inlay marker.
+                        ctx.inlays
+                            .saveSignature(sigId, {
+                                source: modelInfo.internalID || modelInfo.id,
+                                sourceFormat: modelInfo.format,
+                                signatures,
+                            })
+                            .catch(() => {});
+                        readed["0"] += `{{inlayeddata::${sigId}}}`;
+                    }
                 }
-                control.enqueue(readed);
-            } catch (error) {}
+                if (jsonData.usageMetadata) {
+                    readed["__usageMetadata"] = JSON.stringify(jsonData.usageMetadata);
+                }
+                if (jsonData.modelStatus) {
+                    readed["__modelStatus"] = JSON.stringify(jsonData.modelStatus);
+                }
+                applied = true;
+            } catch {
+                // A malformed data line must not hide the following events.
+            }
+        }
+        return applied;
+    };
+
+    const emit = (control: TransformStreamDefaultController<StreamResponseChunk>) => {
+        // The tool wrapper mutates its input while extracting JSON.
+        control.enqueue({ ...readed, __tool_calls: JSON.stringify(toolCalls) });
+        emitted = true;
+    };
+
+    return new TransformStream<Uint8Array, StreamResponseChunk>({
+        transform(chunk, control) {
+            if (!done && applyLines(lines.push(chunk))) {
+                emit(control);
+            }
+        },
+        flush(control) {
+            if (!done && (applyLines(lines.end()) || !emitted)) {
+                emit(control);
+            }
         },
     });
 }
