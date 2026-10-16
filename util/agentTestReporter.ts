@@ -2,16 +2,19 @@
 // error message, diff, in-repo stack frames, that test's console output) and one summary line.
 // Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/build-test-platforms.md`.
 import { isAbsolute } from "node:path";
+import { inspect } from "node:util";
 import type { Reporter, TestModule, TestRunEndReason, UserConsoleLog, Vitest } from "vitest/node";
 
+// The text fields are `unknown`: an error thrown outside `expect` (node:assert, a custom error) can
+// carry a number or an object as `actual`/`expected`, and the reporter must still print the failure.
 interface ErrorLike {
     name?: string;
-    message?: string;
-    stack?: string;
+    message?: unknown;
+    stack?: unknown;
     stacks?: ReadonlyArray<{ file: string; line: number; column: number; method?: string }>;
-    diff?: string;
-    expected?: string;
-    actual?: string;
+    diff?: unknown;
+    expected?: unknown;
+    actual?: unknown;
     cause?: ErrorLike;
 }
 
@@ -22,9 +25,11 @@ const MAX_LOG_LINES = 40;
 const MAX_CAUSE_DEPTH = 3;
 
 const ANSI = /\u001b\[[0-9;]*m/g;
-const stripAnsi = (text: string): string => text.replace(ANSI, "");
+const toText = (value: unknown): string =>
+    typeof value === "string" ? value : inspect(value, { depth: 4, breakLength: 100 });
+const stripAnsi = (value: unknown): string => toText(value).replace(ANSI, "");
 
-const capLines = (text: string, max: number): string[] => {
+const capLines = (text: unknown, max: number): string[] => {
     const lines = stripAnsi(text).replace(/\s+$/, "").split("\n");
     if (lines.length <= max) return lines;
     return [...lines.slice(0, max), `... (${lines.length - max} more lines)`];

@@ -168,8 +168,8 @@ P2 with the memory items that share its mechanism.
   `namespace`, so this needs a process-wide parsed cache keyed by revision, not a
   by-id read); `loadRequestDb` still re-reads every settings record per job and per
   `presetChain` pick; the Lua character setters (`patchCharacter`) still parse the
-  record about five times per call instead of a field patch; the agent test reporter
-  (`util/agentTestReporter.ts:25`) throws on a non-string assertion text.
+  record about five times per call instead of a field patch. (The agent test reporter's
+  throw on a non-string `actual`/`expected`/`message` was fixed on 2026-10-16.)
 - **3b. Stream parsing** (_hard_, `llm-requests.md`). API-05 with API-01,
   API-02 and API-03, all in the server adapters. OpenAI
   (`server/src/llm/openAI/requests.ts`) and Google (`server/src/llm/google.ts`)
