@@ -1,7 +1,8 @@
+import { secretPathKey, type SecretPath } from "../../../shared/llmSecrets.ts";
 import type { Credential, ModelProfile } from "../../../shared/database.ts";
 import { resolveCredentialBinding, type CredentialRefusalReason } from "../../../shared/llm/credentialBinding.ts";
 import { credentialSlotOf, type CredentialSlot } from "../../../shared/llm/credentialSlots.ts";
-import { secretStatus } from "../storage/llmSecrets.svelte";
+import { secretStatus, secretVersion } from "../storage/llmSecrets.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { getModelInfo } from "./modellist";
 
@@ -35,6 +36,27 @@ export function credentialFor(profile: ModelProfile | undefined, modelId = profi
         };
     }
     return { slot, state: "bound", credentialId: binding.credentialId, record: binding.record };
+}
+
+/** Masked key gates and a refresh identity that changes on binding switches as well as key writes. */
+export function credentialStatusFor(profile: ModelProfile | undefined, defaultPath: SecretPath) {
+    const binding = credentialFor(profile);
+    const path: SecretPath =
+        binding.state === "default" ? defaultPath : { kind: "entry", field: "credentials", id: binding.credentialId };
+    const keySet = binding.state !== "refused" && secretStatus(path).set;
+    return {
+        state: binding.state,
+        keySet,
+        keyVersion: JSON.stringify([
+            profile?.id,
+            profile?.modelId,
+            binding.state,
+            binding.state === "refused" ? binding.reason : null,
+            secretPathKey(path),
+            secretVersion(path),
+            keySet,
+        ]),
+    };
 }
 
 /** Select options in collection order; a model with no slot has no options. */

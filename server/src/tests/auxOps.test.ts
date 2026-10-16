@@ -167,7 +167,13 @@ async function seed(overrides: Partial<typeof SECRET> = {}) {
 const aux = (
     name: string,
     url: string,
-    init: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string } = {},
+    init: {
+        method?: "GET" | "POST";
+        headers?: Record<string, string>;
+        body?: string;
+        profileId?: string;
+        rawHeaders?: boolean;
+    } = {},
 ) => {
     const method = init.method ?? AUX_OPS[name as AuxOpName]?.method ?? "GET";
     return client.request("/proxy2", {
@@ -175,7 +181,14 @@ const aux = (
         headers: {
             "risu-aux-op": name,
             "risu-url": encodeURIComponent(url),
-            "risu-header": encodeURIComponent(JSON.stringify(init.headers ?? { "content-type": "application/json" })),
+            ...(init.rawHeaders
+                ? init.headers
+                : {
+                      "risu-header": encodeURIComponent(
+                          JSON.stringify(init.headers ?? { "content-type": "application/json" }),
+                      ),
+                  }),
+            ...(init.profileId !== undefined ? { "risu-aux-profile": init.profileId } : {}),
         },
         ...(method === "GET" ? {} : { body: init.body ?? JSON.stringify({ input: name }) }),
     });
@@ -501,5 +514,171 @@ describe("planAuxOp", () => {
             expect(op.origin, name).toMatch(/^https:\/\/[^/]+$/);
             expect(["GET", "POST"], name).toContain(op.method);
         }
+    });
+});
+
+async function putCollection(kind: string, data: unknown) {
+    const current = (await (await client.get(kind, "main")).json()) as { revision: string | null };
+    expect((await client.put(kind, "main", { baseRevision: current.revision, data })).status).toBe(200);
+}
+const NAMED = "named-key-SENTINEL-9999";
+async function profileRecords(
+    modelId = "nanogpt",
+    credentialId: string | undefined = "named",
+    type = "custom",
+    key = NAMED,
+) {
+    await putCollection("modelProfiles", [{ id: "edited", name: "Edited connection", modelId, credentialId }]);
+    await putCollection("credentials", [{ id: "named", name: "Named key", type }]);
+    if (key) await writeSecret({ kind: "entry", field: "credentials", id: "named" }, key);
+}
+const PROFILE_ROWS = [
+    ["nanogpt-models", "nanogpt", "https://nano-gpt.com/api/personalized/v1/models?detailed=true", SECRET.nanogpt],
+    [
+        "nanogpt-subscription-models",
+        "nanogpt",
+        "https://nano-gpt.com/api/subscription/v1/models?detailed=true",
+        SECRET.nanogpt,
+    ],
+    ["nanogpt-balance", "nanogpt", "https://nano-gpt.com/api/check-balance", SECRET.nanogpt],
+    ["nanogpt-subscription", "nanogpt", "https://nano-gpt.com/api/subscription/v1/usage", SECRET.nanogpt],
+    ["nanogpt-model-providers", "nanogpt", "https://nano-gpt.com/api/models/vendor%2Fmodel/providers", SECRET.nanogpt],
+    ["ollama-cloud-tags", "ollama-cloud", "https://ollama.com/api/tags", SECRET.ollama],
+    ["openrouter-models", "openrouter", "https://openrouter.ai/api/v1/models", SECRET.openrouter],
+    ["openrouter-providers", "openrouter", "https://openrouter.ai/api/v1/providers", SECRET.openrouter],
+] as const;
+
+describe("auxiliary profile credentials", () => {
+    it.each(PROFILE_ROWS)(
+        "uses the stored binding for %s and the flat key when unbound",
+        async (name, modelId, url, defaultKey) => {
+            await seed();
+            await profileRecords(modelId);
+            expect((await aux(name, url, { profileId: "edited" })).status).toBe(200);
+            expect(credentialOf(upstreamRequests[0])).toBe(NAMED);
+            await putCollection("modelProfiles", [{ id: "edited", name: "Edited", modelId }]);
+            expect((await aux(name, url, { profileId: "edited" })).status).toBe(200);
+            expect(credentialOf(upstreamRequests[1])).toBe(defaultKey);
+        },
+    );
+    it.each(["echo-escaped", "echo-header", "error-json-escaped"] as const)(
+        "redacts the named credential from %s",
+        async (mode) => {
+            await seed();
+            await profileRecords();
+            upstreamMode = mode;
+            const response = await aux("nanogpt-models", PROFILE_ROWS[0][2], { profileId: "edited" });
+            expect(credentialOf(upstreamRequests[0])).toBe(NAMED);
+            expect(response.status).toBe(mode === "echo-header" ? 200 : mode === "error-json-escaped" ? 401 : 502);
+            const text = await response.text();
+            expect(text).not.toContain(NAMED);
+            expect(text).not.toContain(escaped(NAMED));
+            if (mode === "echo-header") expect(response.headers.get("x-provider-debug")).toBe("key was [redacted]");
+        },
+    );
+    it.each([false, true])("strips the profile header with rawHeaders=%s", async (rawHeaders) => {
+        await seed();
+        await profileRecords();
+        const response = await aux("nanogpt-models", PROFILE_ROWS[0][2], {
+            profileId: "edited",
+            rawHeaders,
+            headers: { "risu-aux-profile": "embedded-profile" },
+        });
+        expect(response.status).toBe(200);
+        expect(credentialOf(upstreamRequests[0])).toBe(NAMED);
+        expect(upstreamRequests[0].headers["risu-aux-profile"]).toBeUndefined();
+    });
+    it.each(["", "deleted-profile"])(
+        "rejects the invalid or missing profile %j before forwarding",
+        async (profileId) => {
+            await seed();
+            const response = await aux("nanogpt-models", PROFILE_ROWS[0][2], { profileId });
+            expect(response.status).toBe(400);
+            expect(upstreamRequests).toHaveLength(0);
+        },
+    );
+    it.each([
+        [
+            "missing",
+            "nanogpt",
+            "gone",
+            "custom",
+            NAMED,
+            'Cannot request model "NanoGPT (nanogpt)": The bound credential no longer exists.',
+        ],
+        [
+            "empty",
+            "nanogpt",
+            "named",
+            "custom",
+            "",
+            'Cannot request model "NanoGPT (nanogpt)" with credential "Named key": The bound credential has no key.',
+        ],
+        [
+            "whitespace",
+            "nanogpt",
+            "named",
+            "custom",
+            "   ",
+            'Cannot request model "NanoGPT (nanogpt)" with credential "Named key": The bound credential has no key.',
+        ],
+        [
+            "type mismatch",
+            "nanogpt",
+            "named",
+            "openai",
+            NAMED,
+            'Cannot request model "NanoGPT (nanogpt)" with credential "Named key": The bound credential\'s type is not accepted by this model.',
+        ],
+        [
+            "unsupported model",
+            "echo_model",
+            "named",
+            "custom",
+            NAMED,
+            'Cannot request model "Echo (echo_model)" with credential "Named key": This model does not accept a credential binding.',
+        ],
+    ])(
+        "refuses %s with the generation message and no default fallback",
+        async (_reason, modelId, credentialId, type, key, error) => {
+            await seed();
+            await profileRecords(modelId, credentialId, type, key);
+            const response = await aux("nanogpt-models", PROFILE_ROWS[0][2], { profileId: "edited" });
+            expect(response.status).toBe(400);
+            expect(await response.json()).toEqual({ error });
+            expect(upstreamRequests).toHaveLength(0);
+        },
+    );
+    it.each([true, false])("rejects a different profile slot even when bound=%s", async (bound) => {
+        await seed();
+        await profileRecords("openrouter");
+        if (!bound) await putCollection("modelProfiles", [{ id: "edited", name: "Edited", modelId: "openrouter" }]);
+        expect((await aux("nanogpt-models", PROFILE_ROWS[0][2], { profileId: "edited" })).status).toBe(400);
+        expect(upstreamRequests).toHaveLength(0);
+    });
+    it.each([
+        ["openai-tts", "https://api.openai.com/v1/audio/speech"],
+        ["openai-embeddings", "https://api.openai.com/v1/embeddings"],
+        ["openai-models", "https://api.openai.com/v1/models"],
+        ["google-count-tokens", "https://generativelanguage.googleapis.com/v1beta/models/gemini:countTokens"],
+    ])("rejects a profile on the slotless %s row (a media, memory, provider-list, or count row)", async (name, url) => {
+        await seed();
+        await profileRecords();
+        expect((await aux(name, url, { profileId: "edited" })).status).toBe(400);
+        expect(upstreamRequests).toHaveLength(0);
+    });
+    it("plans a bound key with both redaction forms and strips an embedded profile header", () => {
+        const plan = planAuxOp(
+            "nanogpt-models",
+            PROFILE_ROWS[0][2],
+            "GET",
+            new Headers({ "risu-aux-profile": "embedded" }),
+            { nanogptKey: SECRET.nanogpt },
+            { slot: "nanogpt", credential: { kind: "key", key: `  ${NAMED}  ` } },
+        );
+        expect(plan).toMatchObject({ ok: true, secrets: [`  ${NAMED}  `, NAMED] });
+        if (!plan.ok) throw new Error(plan.error);
+        expect(plan.headers.get("authorization")).toBe(`Bearer ${NAMED}`);
+        expect(plan.headers.has("risu-aux-profile")).toBe(false);
     });
 });

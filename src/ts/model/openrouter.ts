@@ -1,3 +1,4 @@
+import type { ModelProfile } from "../../../shared/database.ts";
 import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
 
@@ -30,13 +31,13 @@ export type OpenRouterModelInfo = {
     internalReasoningPrice1M: PriceEntry;
 };
 
-export async function getOpenRouterProviders(): Promise<{ name: string; slug: string }[]> {
+export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ name: string; slug: string }[]> {
     try {
         // With the stored OpenRouter key, on the server (`auxFetch`, Phase 5 slice 7b).
         const providers: { data: { name: string; slug: string }[] } = await auxFetch(
             "openrouter-providers",
             "https://openrouter.ai/api/v1/providers",
-            { method: "GET", headers: { "Content-Type": "application/json" } },
+            { method: "GET", profileId: profile?.id, headers: { "Content-Type": "application/json" } },
         ).then((res) => res.json());
 
         return providers.data.map(({ name, slug }) => ({ name, slug })).sort((a, b) => a.name.localeCompare(b.name));
@@ -45,10 +46,11 @@ export async function getOpenRouterProviders(): Promise<{ name: string; slug: st
     }
 }
 
-export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
+export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenRouterModelInfo[]> {
     try {
         const aim = await auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
             method: "GET",
+            profileId: profile?.id,
             headers: { "Content-Type": "application/json" },
         }).then((res) => res.json());
 

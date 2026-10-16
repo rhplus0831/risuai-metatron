@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Astra's challenge point 2 on the split-preset implementation (`docs/plan/split-preset.md`):
 // `getModelInfo(id, scope)` applies the custom flags of the main profile of the model preset a
@@ -9,9 +9,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
+vi.mock("src/ts/storage/llmSecrets.svelte", () => ({ isSecretSet: () => true }));
 vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
 
-import { getModelInfo, LLMFlags } from "../modellist";
+import { getModelInfo, LLMFlags, LLMModels, registerModelDynamic } from "../modellist";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { selectModelPreset, selection } from "src/ts/storage/selection.svelte";
 import { trackedRecord } from "src/ts/storage/records.svelte";
@@ -86,4 +87,62 @@ describe("getModelInfo with a request's captured scope", () => {
         expect(getModelInfo("reverse_proxy").flags).toEqual(CATALOGUE_FLAGS);
         expect(selection.modelPresetId).toBe("plain");
     });
+});
+
+import { auxFetch } from "src/ts/network/auxFetch";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { dynamicModelOf } from "../../../../shared/llm/models.ts";
+const catalogueLength = LLMModels.length;
+afterEach(() => {
+    LLMModels.splice(catalogueLength);
+    vi.restoreAllMocks();
+});
+
+describe("dynamic registry discovery", () => {
+    it.each([
+        ["dynamic_google_gemini-future", "Gemini Future", "gemini-future", undefined],
+        ["dynamic_anthropic_claude-future", "Claude Future", "claude-future", true],
+        ["gpt-future", "gpt-future", "gpt-future", true],
+        ["gpt-future-response-api", "gpt-future (Response API)", "gpt-future", false],
+    ] as const)(
+        "registers %s with the shared wire fields and provider display metadata",
+        async (id, name, internalID, recommended) => {
+            settings.providers.dynamicModelRegistry = true;
+            vi.spyOn(console, "log").mockImplementation(() => {});
+            vi.mocked(auxFetch).mockImplementation(async (op) =>
+                Response.json(
+                    op === "google-models"
+                        ? {
+                              models: [
+                                  {
+                                      name: "models/gemini-future",
+                                      displayName: "Gemini Future",
+                                      supportedGenerationMethods: ["generateContent"],
+                                  },
+                              ],
+                          }
+                        : op === "anthropic-models"
+                          ? { data: [{ id: "claude-future", display_name: "Claude Future" }] }
+                          : { data: [{ id: "gpt-future" }] },
+                ),
+            );
+            await registerModelDynamic();
+            const registered = getModelInfo(id, undefined, null);
+            expect(registered).toMatchObject({ name, internalID });
+            expect(registered.recommended).toBe(recommended);
+            const template = dynamicModelOf(id)!;
+            for (const field of [
+                "provider",
+                "format",
+                "flags",
+                "parameters",
+                "tokenizer",
+                "endpoint",
+                "keyIdentifier",
+            ] as const) {
+                expect(registered[field], field).toEqual(template[field]);
+            }
+            expect(LLMModels.filter((model) => model.id === id)).toHaveLength(1);
+        },
+    );
 });

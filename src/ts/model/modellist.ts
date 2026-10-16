@@ -15,9 +15,8 @@ import {
     OpenAIParameters,
     ClaudeParameters,
     type LLMModel,
-    GPT5XHighParameters,
 } from "./types";
-import { BASE_LLM_MODELS, resolveModelInfo } from "../../../shared/llm/models.ts";
+import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { ModelProfile } from "../../../shared/database.ts";
 import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 import { presetFieldValue } from "../../../shared/presets.ts";
@@ -31,8 +30,8 @@ export type { LLMModel };
 
 /**
  * This tab's catalogue: the static list (`shared/llm/models.ts`) plus what `registerModelDynamic`
- * appends. The server knows only the static list, so a request for a dynamic model carries its
- * descriptor (`isDynamicModel`).
+ * appends. Dynamic ids resolve through the shared builder on both runtimes; this tab keeps
+ * the provider display names. Requests still carry a descriptor for compatibility.
  */
 export const LLMModels: LLMModel[] = structuredClone(BASE_LLM_MODELS) as LLMModel[];
 const dynamicModelIds = new Set<string>();
@@ -74,31 +73,10 @@ export async function registerModelDynamic() {
 
                 if (!exists) {
                     pushDynamicModel({
-                        id: "dynamic_google_" + id,
+                        ...dynamicModelOf("dynamic_google_" + id)!,
                         name: model.displayName || id,
                         shortName: model.displayName || id,
                         fullName: model.displayName || id,
-                        internalID: model.name,
-                        provider: LLMProvider.GoogleCloud,
-                        format: LLMFormat.GoogleCloud,
-                        flags: [
-                            LLMFlags.hasImageInput,
-                            LLMFlags.poolSupported,
-                            LLMFlags.hasAudioInput,
-                            LLMFlags.hasVideoInput,
-                            LLMFlags.hasStreaming,
-                            LLMFlags.requiresAlternateRole,
-                            LLMFlags.geminiThinking,
-                        ],
-                        parameters: [
-                            "thinking_tokens",
-                            "temperature",
-                            "top_k",
-                            "top_p",
-                            "presence_penalty",
-                            "frequency_penalty",
-                        ],
-                        tokenizer: LLMTokenizer.GoogleCloud,
                     });
                 }
             }
@@ -128,22 +106,10 @@ export async function registerModelDynamic() {
                 const exists = LLMModels.find((m) => m.id === model.id || m.internalID === model.id);
                 if (!exists) {
                     pushDynamicModel({
+                        ...dynamicModelOf(`dynamic_anthropic_${model.id}`)!,
                         name: model.display_name || model.id,
-                        id: `dynamic_anthropic_${model.id}`,
                         shortName: model.display_name || model.id,
                         fullName: model.display_name || model.id,
-                        internalID: model.id,
-                        provider: LLMProvider.Anthropic,
-                        format: LLMFormat.Anthropic,
-                        flags: [
-                            LLMFlags.hasImageInput,
-                            LLMFlags.hasFirstSystemPrompt,
-                            LLMFlags.hasStreaming,
-                            LLMFlags.claudeThinking,
-                            LLMFlags.claudeAdaptiveThinking,
-                        ],
-                        parameters: [...ClaudeParameters, "thinking_tokens"],
-                        tokenizer: LLMTokenizer.Claude,
                         recommended: true,
                     });
                 }
@@ -174,33 +140,13 @@ export async function registerModelDynamic() {
                 }
                 i++;
 
-                const a: LLMModel = {
-                    id: model.id,
-                    internalID: model.id,
-                    name: model.id,
-                    shortName: model.id,
-                    fullName: model.id,
-                    provider: LLMProvider.OpenAI,
-                    format: LLMFormat.OpenAICompatible,
-                    flags: [
-                        LLMFlags.hasStreaming,
-                        LLMFlags.OAICompletionTokens,
-                        LLMFlags.hasFullSystemPrompt,
-                        LLMFlags.hasImageInput,
-                        LLMFlags.DeveloperRole,
-                    ],
-                    parameters: GPT5XHighParameters,
-                    tokenizer: LLMTokenizer.tiktokenO200Base,
-                    recommended: i < 8,
-                };
-
-                pushDynamicModel(a);
+                const a = dynamicModelOf(model.id);
+                if (!a) continue;
+                pushDynamicModel({ ...a, recommended: i < 8 });
                 pushDynamicModel({
-                    ...a,
-                    format: LLMFormat.OpenAIResponseAPI,
-                    flags: [...a.flags, LLMFlags.hasPrefill],
-                    id: `${a.id}-response-api`,
+                    ...dynamicModelOf(`${a.id}-response-api`)!,
                     name: `${a.name} (Response API)`,
+                    shortName: a.shortName,
                     fullName: `${a.fullName ?? a.name} (Response API)`,
                     recommended: false,
                 });

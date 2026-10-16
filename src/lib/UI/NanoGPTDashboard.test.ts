@@ -9,12 +9,13 @@ import { reactiveProps } from "./tests/reactiveProps.svelte";
 // (`ModelSettings` resets it when the key is cleared; the chat requests pick their endpoint by it).
 
 const { nano } = vi.hoisted(() => ({
-    nano: { balance: vi.fn(), subscription: vi.fn() },
+    nano: { balance: vi.fn(), subscription: vi.fn(), providers: vi.fn() },
 }));
 
 vi.mock("src/ts/model/nanogpt", () => ({
-    getNanoGPTBalance: () => nano.balance(),
-    getNanoGPTSubscription: () => nano.subscription(),
+    getNanoGPTBalance: (profile: unknown) => nano.balance(profile),
+    getNanoGPTSubscription: (profile: unknown) => nano.subscription(profile),
+    getNanoGPTModelProviders: (modelId: string, profile: unknown) => nano.providers(modelId, profile),
 }));
 vi.mock("src/lang", () => ({
     language: new Proxy({} as Record<string, unknown>, {
@@ -25,6 +26,7 @@ vi.mock("src/lang", () => ({
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import NanoGPTDashboard from "./NanoGPTDashboard.svelte";
+import NanoGPTProviderPicker from "./NanoGPTProviderPicker.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
 function deferred<T>(): Deferred<T> {
@@ -103,5 +105,92 @@ describe("NanoGPTDashboard", () => {
         fourth.resolve(subscription("inactive"));
         await settle();
         expect(settings.providers.nanogptSubscriptionState).toBe("active");
+    });
+});
+
+vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
+vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
+vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+import { normalizeModelProfile } from "../../../shared/presets.ts";
+import { maskLlmSecrets } from "../../../shared/llmSecrets.ts";
+import { setMaskedSecrets, secretVersion } from "src/ts/storage/llmSecrets.svelte";
+import { credentialStatusFor } from "src/ts/model/credentials";
+
+describe("NanoGPTDashboard binding changes", () => {
+    it.each(["a", undefined])(
+        "refetches %s to B at equal key versions and ignores the earlier account",
+        async (credentialId) => {
+            installFlatDatabase({
+                credentials: [
+                    { id: "a", name: "A", type: "nanogpt" },
+                    { id: "b", name: "B", type: "nanogpt" },
+                ],
+                nanogptSubscriptionState: "",
+            });
+            setMaskedSecrets(
+                maskLlmSecrets({ nanogptKey: "flat", credentials: { a: { key: "A" }, b: { key: "B" } } }),
+                "all",
+            );
+            const flat = { kind: "flat", field: "nanogptKey" } as const;
+            expect(secretVersion(flat)).toBe(secretVersion({ kind: "entry", field: "credentials", id: "b" }));
+            expect(secretVersion({ kind: "entry", field: "credentials", id: "a" })).toBe(
+                secretVersion({ kind: "entry", field: "credentials", id: "b" }),
+            );
+            const profile = normalizeModelProfile({ id: "edited", modelId: "nanogpt", credentialId });
+            const props = reactiveProps({ profile, ...credentialStatusFor(profile, flat) });
+            const old = deferred<unknown>();
+            nano.subscription.mockReturnValueOnce(old.promise).mockResolvedValueOnce(subscription("active"));
+            mounted.push(mount(NanoGPTDashboard, { target, props }));
+            flushSync();
+            expect(nano.subscription).toHaveBeenCalledTimes(1);
+            expect(nano.subscription).toHaveBeenLastCalledWith(expect.objectContaining({ id: "edited" }));
+            expect(nano.subscription.mock.calls.at(-1)![0].credentialId).toBe(credentialId);
+            props.profile.credentialId = "b";
+            Object.assign(props, credentialStatusFor(props.profile, flat));
+            flushSync();
+            await settle();
+            expect(nano.subscription).toHaveBeenCalledTimes(2);
+            expect(nano.balance).toHaveBeenLastCalledWith(expect.objectContaining({ id: "edited", credentialId: "b" }));
+            expect(target.textContent).toContain("ACTIVE");
+            old.resolve(subscription("inactive"));
+            await settle();
+            expect(settings.providers.nanogptSubscriptionState).toBe("active");
+            expect(target.textContent).toContain("ACTIVE");
+        },
+    );
+});
+
+describe("NanoGPTProviderPicker binding changes", () => {
+    it("refetches providers when the binding changes at equal secret versions", async () => {
+        installFlatDatabase({
+            credentials: [
+                { id: "a", name: "A", type: "nanogpt" },
+                { id: "b", name: "B", type: "nanogpt" },
+            ],
+        });
+        setMaskedSecrets(maskLlmSecrets({ credentials: { a: { key: "A" }, b: { key: "B" } } }), "all");
+        expect(secretVersion({ kind: "entry", field: "credentials", id: "a" })).toBe(
+            secretVersion({ kind: "entry", field: "credentials", id: "b" }),
+        );
+        const profile = normalizeModelProfile({ id: "edited", modelId: "nanogpt", credentialId: "a" });
+        const flat = { kind: "flat", field: "nanogptKey" } as const;
+        const props = reactiveProps({
+            profile,
+            modelId: "vendor/model",
+            value: "",
+            ...credentialStatusFor(profile, flat),
+        });
+        nano.providers.mockResolvedValue(null);
+        mounted.push(mount(NanoGPTProviderPicker, { target, props }));
+        flushSync();
+        expect(nano.providers).toHaveBeenCalledTimes(1);
+        props.profile.credentialId = "b";
+        Object.assign(props, credentialStatusFor(props.profile, flat));
+        flushSync();
+        expect(nano.providers).toHaveBeenCalledTimes(2);
+        expect(nano.providers).toHaveBeenLastCalledWith(
+            "vendor/model",
+            expect.objectContaining({ id: "edited", credentialId: "b" }),
+        );
     });
 });

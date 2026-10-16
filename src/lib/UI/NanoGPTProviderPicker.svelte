@@ -1,4 +1,5 @@
 <script lang="ts">
+    import type { ModelProfile } from "../../../shared/database.ts";
     import { getNanoGPTModelProviders } from "src/ts/model/nanogpt";
     import type { NanoGPTModelProviders } from "src/ts/model/nanogpt";
     import { language } from "src/lang";
@@ -6,16 +7,17 @@
     interface Props {
         /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
         keySet: boolean;
-        keyVersion: number;
+        keyVersion: string | number;
+        profile?: ModelProfile;
         modelId: string;
         value: string;
     }
 
-    let { keySet, keyVersion, modelId, value = $bindable("") }: Props = $props();
+    let { keySet, keyVersion, profile, modelId, value = $bindable("") }: Props = $props();
 
     let providersPromise = $derived(
         keySet && modelId
-            ? (void keyVersion, getNanoGPTModelProviders(modelId))
+            ? (void keyVersion, getNanoGPTModelProviders(modelId, profile))
             : Promise.resolve<NanoGPTModelProviders | null>(null),
     );
 

@@ -415,7 +415,7 @@ describe("a buffered request", () => {
         await registry.dispose();
     });
 
-    it("uses a dynamic model's descriptor only for the id the preset names and only for a server format", async () => {
+    it("resolves a tab's dynamic model from its id, whatever descriptor the request carries", async () => {
         const dynamic = {
             id: "dynamic_google_gemini-x",
             name: "Gemini X",
@@ -428,16 +428,25 @@ describe("a buffered request", () => {
             parameters: ["temperature"],
             tokenizer: 0,
         };
-        const records = makeRecords({ preset: { aiModel: "dynamic_google_gemini-x" } });
-        const { registry, calls } = harness(records, () => chat("dyn"));
-        await run(registry, body({}, { dynamicModel: { ...dynamic, format: LLMFormat.Plugin } as never }));
-        // A Plugin hint is ignored: the id resolves as an unknown OpenAI-compatible model and reaches the provider.
-        expect(calls).toHaveLength(1);
-        await run(registry, body({}, { dynamicModel: { ...dynamic, id: "other" } as never }));
-        expect(calls).toHaveLength(2);
-        expect(JSON.parse(calls[1].body).model).toBe("dynamic_google_gemini-x");
-        await run(registry, body({}, { dynamicModel: dynamic as never }));
-        expect(JSON.parse(calls[2].body).model).toBe("gemini-x");
+        const records = makeRecords({
+            preset: { aiModel: "dynamic_google_gemini-x" },
+            secrets: { google: { accessToken: "google-key" } },
+        });
+        const { registry, calls } = harness(records, () =>
+            json({ candidates: [{ content: { parts: [{ text: "dyn" }] } }] }),
+        );
+        // A Plugin format, another id, or the honest descriptor: the id names a Google model either way.
+        for (const hint of [{ ...dynamic, format: LLMFormat.Plugin }, { ...dynamic, id: "other" }, dynamic]) {
+            const { events } = await run(registry, body({}, { dynamicModel: hint as never }));
+            expect(terminal(events)).toEqual([
+                { type: "result", response: expect.objectContaining({ type: "success", result: "dyn" }) },
+            ]);
+        }
+        expect(calls.map((call) => call.url)).toEqual(
+            Array(3).fill(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:generateContent?key=google-key",
+            ),
+        );
         await registry.dispose();
     });
 });
@@ -1123,17 +1132,25 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
         await registry.dispose();
     });
 
-    it("refuses a plugin or a tab's dynamic model without a provider request (they run in the browser)", async () => {
-        for (const aiModel of ["pluginmodel:::example", "dynamic_google_future-model"]) {
-            const records = makeRecords({ preset: { aiModel } });
-            const { registry, calls } = harness(records, () => chat("never"));
-            const { spec } = jobSpec(records);
-            const response = await registry.runInJob(spec);
-            expect(response.type).toBe("fail");
-            expect(calls).toHaveLength(0);
-            expect(registry.liveIds()).toEqual([]);
-            await registry.dispose();
-        }
+    it("refuses a plugin model without a provider request (it runs in the browser), and runs a dynamic model upstream from its id", async () => {
+        const plugin = makeRecords({ preset: { aiModel: "pluginmodel:::example" } });
+        const refused = harness(plugin, () => chat("never"));
+        expect((await refused.registry.runInJob(jobSpec(plugin).spec)).type).toBe("fail");
+        expect(refused.calls).toHaveLength(0);
+        expect(refused.registry.liveIds()).toEqual([]);
+        await refused.registry.dispose();
+
+        const dynamic = makeRecords({
+            preset: { aiModel: "dynamic_google_future-model" },
+            secrets: { google: { accessToken: "google-key" } },
+        });
+        const ran = harness(dynamic, () => json({ candidates: [{ content: { parts: [{ text: "future" }] } }] }));
+        expect(await ran.registry.runInJob(jobSpec(dynamic).spec)).toMatchObject({ type: "success", result: "future" });
+        expect(ran.calls.map((call) => call.url)).toEqual([
+            "https://generativelanguage.googleapis.com/v1beta/models/future-model:generateContent?key=google-key",
+        ]);
+        expect(ran.registry.liveIds()).toEqual([]);
+        await ran.registry.dispose();
     });
 
     it("runs the interceptor as a root callback of the job: an unregistered hook is skipped, a hook's throw keeps the body, and every other refusal or failure ends the job", async () => {
@@ -2190,7 +2207,7 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
         await atCap.registry.dispose();
     });
 
-    it("refuses a provider the tab did not register as the unknown-plugin failure without a request or ending the job (admitted or not), a dynamic model without any callback, and reaches the legacy `custom` model's provider by `currentPluginProvider`", async () => {
+    it("refuses a provider the tab did not register as the unknown-plugin failure without a request or ending the job (admitted or not), runs a dynamic model upstream without any callback, and reaches the legacy `custom` model's provider by `currentPluginProvider`", async () => {
         for (const admitted of [["other"], []]) {
             const records = pluginRecords("pluginmodel:::other");
             const { registry, calls: http } = harness(records, () => chat("never"));
@@ -2205,12 +2222,19 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
             expect(http).toHaveLength(0);
             await registry.dispose();
         }
-        const dynamicRecords = makeRecords({ preset: { aiModel: "dynamic_google_future-model" } });
-        const dynamic = harness(dynamicRecords, () => chat("never"));
+        const dynamicRecords = makeRecords({
+            preset: { aiModel: "dynamic_google_future-model" },
+            secrets: { google: { accessToken: "google-key" } },
+        });
+        const dynamic = harness(dynamicRecords, () =>
+            json({ candidates: [{ content: { parts: [{ text: "future" }] } }] }),
+        );
         const dynamicSpec = providerSpec(dynamicRecords, { registered: ["dynamic_google_future-model"] });
-        expect((await dynamic.registry.runInJob(dynamicSpec.spec)).type).toBe("fail");
+        expect(await dynamic.registry.runInJob(dynamicSpec.spec)).toMatchObject({ type: "success", result: "future" });
         expect(dynamicSpec.calls).toEqual([]);
-        expect(dynamic.calls).toHaveLength(0);
+        expect(dynamic.calls.map((call) => call.url)).toEqual([
+            "https://generativelanguage.googleapis.com/v1beta/models/future-model:generateContent?key=google-key",
+        ]);
         await dynamic.registry.dispose();
 
         // `currentPluginProvider` is a profile field (`docs/plan/model-profiles.md`).
@@ -2618,5 +2642,124 @@ describe("the request observer (request history slice 1)", () => {
         );
         await expect(failing.text()).rejects.toThrow("reset");
         expect(marks).toBe(0);
+    });
+});
+
+describe("discovered models on the server", () => {
+    const cases = [
+        {
+            id: "dynamic_anthropic_claude-future",
+            url: "https://api.anthropic.com/v1/messages",
+            model: "claude-future",
+            answer: { content: [{ type: "text", text: "ok" }] },
+        },
+        {
+            id: "dynamic_google_gemini-future",
+            url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-future:generateContent?key=google-key",
+            model: undefined,
+            answer: { candidates: [{ content: { parts: [{ text: "ok" }] } }] },
+        },
+        {
+            id: "gpt-future",
+            url: "https://api.openai.com/v1/chat/completions",
+            model: "gpt-future",
+            answer: { choices: [{ message: { content: "ok" } }] },
+        },
+        {
+            id: "gpt-future-response-api",
+            url: "https://api.openai.com/v1/responses",
+            model: "gpt-future",
+            answer: { output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }] },
+        },
+    ];
+    it.each(cases)("runs a descriptor-free job for $id", async ({ id, url, model, answer }) => {
+        const records = makeRecords({
+            preset: { aiModel: id },
+            secrets: { openAIKey: "openai-key", claudeAPIKey: "anthropic-key", google: { accessToken: "google-key" } },
+        });
+        const { registry, calls } = harness(records, () => Response.json(answer));
+        try {
+            const { spec } = jobSpec(records);
+            spec.arg.maxTokens = 123;
+            expect(await registry.runInJob(spec)).toMatchObject({ type: "success", result: "ok" });
+            expect(calls).toHaveLength(1);
+            expect(calls[0].url).toBe(url);
+            expect(JSON.parse(calls[0].body).model).toBe(model);
+            if (id === "gpt-future") {
+                expect(JSON.parse(calls[0].body).max_completion_tokens).toBe(123);
+            }
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it.each([
+        ["format", { format: LLMFormat.Anthropic }],
+        ["id", { id: "dynamic_anthropic_claude-other", internalID: "claude-other" }],
+        ["endpoint", { endpoint: "https://untrusted.example/v1/responses" }],
+        ["keyIdentifier", { keyIdentifier: "untrusted" }],
+    ] as const)("ignores a tab descriptor's %s", async (_field, override) => {
+        const records = makeRecords({
+            preset: { aiModel: "gpt-future-response-api" },
+            secrets: { openAIKey: "openai-key", OaiCompAPIKeys: { untrusted: "wrong-key" } },
+        });
+        const { registry, calls } = harness(records, () => Response.json(cases[3].answer));
+        const hint: LLMModel = {
+            id: "gpt-future-response-api",
+            name: "Tab name",
+            internalID: "gpt-future",
+            provider: LLMProvider.OpenAI,
+            format: LLMFormat.OpenAIResponseAPI,
+            tokenizer: LLMTokenizer.tiktokenO200Base,
+            flags: [],
+            parameters: [],
+            ...override,
+        };
+        try {
+            const result = await run(registry, body({}, { dynamicModel: hint }));
+            expect(result.events).toContainEqual(
+                expect.objectContaining({
+                    type: "result",
+                    response: expect.objectContaining({ type: "success", result: "ok" }),
+                }),
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0].url).toBe("https://api.openai.com/v1/responses");
+            expect(calls[0].headers.authorization).toBe("Bearer openai-key");
+            expect(JSON.parse(calls[0].body).model).toBe("gpt-future");
+        } finally {
+            await registry.dispose();
+        }
+    });
+});
+
+describe("discovered model token scopes", () => {
+    it.each([
+        ["dynamic_anthropic_claude-future", "claude"],
+        ["dynamic_google_gemini-future", "gemma"],
+        ["gpt-future", "o200k_base"],
+        ["gpt-future-response-api", "o200k_base"],
+    ])("counts %s with its provider tokenizer", async (id, family) => {
+        const records = makeRecords({ preset: { aiModel: id } });
+        const encode = vi.fn(async () => [1, 2]);
+        const tokens = createTokenCounter({ tokenizers: { encode } as unknown as Tokenizers });
+        expect(await tokens.count("count me", jobSpec(records).spec.tokenScope)).toBe(2);
+        expect(encode).toHaveBeenCalledExactlyOnceWith(family, "count me");
+    });
+    it("counts Google tokens with one models prefix and the upstream id", async () => {
+        const records = makeRecords({
+            preset: { aiModel: "dynamic_google_models/gemini-future" },
+            secrets: { google: { accessToken: "count-key" } },
+        });
+        records.providers = normalizeProviders({ googleClaudeTokenizing: true });
+        const fetchImpl = vi.fn(async () => Response.json({ totalTokens: 7 }));
+        const encode = vi.fn(async () => [1]);
+        const tokens = createTokenCounter({ tokenizers: { encode } as unknown as Tokenizers, fetchImpl });
+        expect(await tokens.count("count me", jobSpec(records).spec.tokenScope)).toBe(7);
+        expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-future:countTokens?key=count-key",
+            expect.objectContaining({ method: "POST" }),
+        );
+        expect(encode).not.toHaveBeenCalled();
     });
 });

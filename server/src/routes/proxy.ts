@@ -1,5 +1,6 @@
+import { isRecordId } from "../../../shared/ids.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { planAuxOp } from "../llm/auxOps.ts";
+import { planAuxOp, type AuxCredential } from "../llm/auxOps.ts";
 import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
@@ -29,6 +30,7 @@ const strippedProxyRequestHeaders = [
     "upgrade",
     "content-length",
     "risu-auth",
+    "risu-aux-profile",
 ];
 const nullBodyStatuses = new Set([101, 204, 205, 304]);
 
@@ -138,6 +140,8 @@ export function registerProxyRoutes(
         clientIp: (c: Context<AppEnv>) => string | undefined;
         /** The stored `llmSecrets` record, for the auxiliary operations (`risu-aux-op`). */
         llmSecrets: () => Record<string, unknown> | null;
+        /** Resolve a stored profile's credential binding; no store reads belong in this route. */
+        auxCredential?: (profileId: string) => AuxCredential;
     },
 ) {
     const { auth, limiter, clientIp, llmSecrets } = arg;
@@ -162,7 +166,15 @@ export function registerProxyRoutes(
         const header = buildUpstreamHeaders(
             risuHeader ? JSON.parse(decodeURIComponent(risuHeader)) : c.req.raw.headers,
         );
-        const plan = planAuxOp(name, urlParam, c.req.method, header, llmSecrets() ?? {});
+        const profileId = c.req.header("risu-aux-profile");
+        if (profileId !== undefined && !isRecordId(profileId)) {
+            return c.json({ error: "Invalid auxiliary model profile id" }, 400);
+        }
+        const profile =
+            profileId === undefined
+                ? undefined
+                : (arg.auxCredential?.(profileId) ?? { error: "The model profile no longer exists" });
+        const plan = planAuxOp(name, urlParam, c.req.method, header, llmSecrets() ?? {}, profile);
         if (!plan.ok) {
             return c.json({ error: plan.error }, plan.status);
         }

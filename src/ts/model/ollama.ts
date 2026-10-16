@@ -1,3 +1,4 @@
+import type { ModelProfile } from "../../../shared/database.ts";
 import { globalFetch } from "../globalApi.svelte";
 import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
@@ -25,12 +26,17 @@ type OllamaTagModel = {
  * The models of an Ollama host. The cloud list uses the stored Ollama key on the server
  * (`auxFetch`, Phase 5 slice 7b); a local host is read as before.
  */
-export async function getOllamaModels(host: string, source: OllamaModelSource): Promise<ModelGridItem[]> {
+export async function getOllamaModels(
+    host: string,
+    source: OllamaModelSource,
+    profile?: ModelProfile,
+): Promise<ModelGridItem[]> {
     try {
         let models: OllamaTagModel[];
         if (source === "cloud") {
             const response = await auxFetch("ollama-cloud-tags", "https://ollama.com/api/tags", {
                 method: "GET",
+                profileId: profile?.id,
                 interceptor: "ollama_models",
             });
             if (!response.ok) return [];

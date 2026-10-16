@@ -1,13 +1,14 @@
 import { addFetchLog } from "../globalApi.svelte";
 import { authFetch } from "../storage/serverAuth";
-import { assertSaveAdmission, awaitSecretWrites } from "../storage/resourceSync.svelte";
+import { assertSaveAdmission, awaitSecretWrites, flushResources } from "../storage/resourceSync.svelte";
 import { bodyIntercepterStore } from "../stores.svelte";
 
 /**
  * A call that uses a stored LLM credential, through `/proxy2`'s auxiliary operations (Phase 5 slice
  * 7b, `server/src/llm/auxOps.ts`): the server sends it to the operation's fixed endpoint with the
  * stored key; the tab never holds the key. The operation's method is kept (a GET carries no body).
- * It waits first for the credential writes this tab queued (a key entered just before is used), runs
+ * With a profileId it first flushes resource writes (including the profile and named-key metadata),
+ * then waits for credential writes this tab queued (a key entered just before is used), runs
  * the plugin body interceptors for `interceptor` as `globalFetch` does, and logs the request (its
  * headers carry no credential; the JWT is in the outer request only). Returns the `Response`; a
  * failed key save or a network error throws. An abort settles the call at once, even while it waits
@@ -25,6 +26,8 @@ export async function auxFetch(
         signal?: AbortSignal;
         interceptor?: string;
         chatId?: string;
+        /** Resolve discovery/account credentials through this stored model profile. */
+        profileId?: string;
     } = {},
 ): Promise<Response> {
     const signal = init.signal;
@@ -34,6 +37,11 @@ export async function auxFetch(
         }
     };
     checkAbort();
+    const profileId = init.profileId;
+    if (profileId !== undefined) {
+        await untilAborted(flushResources(), signal);
+        checkAbort();
+    }
     await untilAborted(awaitSecretWrites(), signal);
     const method = init.method ?? "POST";
     const headers: Record<string, string> = { ...(init.headers ?? {}) };
@@ -78,6 +86,7 @@ export async function auxFetch(
                     "risu-url": encodeURIComponent(url),
                     "risu-header": encodeURIComponent(JSON.stringify(headers)),
                     "risu-aux-op": op,
+                    ...(profileId !== undefined ? { "risu-aux-profile": profileId } : {}),
                     ...(payload !== undefined ? { "Content-Type": "application/octet-stream" } : {}),
                 },
                 body: payload,

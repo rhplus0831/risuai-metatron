@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04) and 4b (GEN-02, API-06, API-04) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04) and 4c (LLM-01, LLM-02) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -518,6 +518,31 @@ group; order within the phase is free.
 - **4c. Dynamic models and named keys** (`llm-requests.md`). LLM-01 (dynamic
   descriptors dropped from the job contract) and LLM-02 (named NanoGPT and
   Ollama keys do not reach discovery).
+  **Landed 2026-10-17.** The dynamic descriptors are rebuilt from the id instead
+  of carried: `shared/llm/models.ts` `dynamicModelOf` (the one template builder
+  for `dynamic_google_<id>` without `models/`, `dynamic_anthropic_<id>`, and an
+  unknown `gpt-<x>` or `gpt-<x>-response-api`) runs inside `resolveModelInfo`
+  before the as-is fallback, so jobs, the translation runner, transforms,
+  assembly, CBS, and token counting resolve them without a tab descriptor; the
+  job path's `dynamic_` refusal is gone and a tab's `dynamicModel` hint supplies
+  no field any more (a tab-supplied `endpoint` or `keyIdentifier` cannot reach
+  an adapter). Named keys reach discovery through `auxFetch`'s `profileId`
+  (`risu-aux-profile`, after a resource flush): the eight NanoGPT, Ollama cloud,
+  and OpenRouter rows take the profile's binding through
+  `resolveCredentialBinding` on the server (the bound key, the flat default, or
+  generation's refusal; a slot mismatch or a slotless row is a 400; the header
+  is stripped upstream), and the editor's gates and refetches follow
+  `credentialStatusFor` (binding identity plus key version). The dynamic-models
+  probe now fails its bug assertion; the aux probe calls `planAuxOp` without a
+  profile, so only its default-key case applies and still passes. Tests:
+  `models.test.ts` and `discovery.test.ts` (new), `modelInfoScope.test.ts`,
+  `credentials.test.ts`, `NanoGPTDashboard.test.ts`, `auxFetch.test.ts`,
+  `auxOps.test.ts`, `llmRequests.test.ts`. Stale: three `llmRequests.test.ts`
+  cases that asserted a dynamic model is refused or resolved from the tab's
+  hint, rewritten to the upstream dispatch. Left: the global NanoGPT
+  subscription state across profiles, the flat keys of the media/memory/count
+  rows and of the Google/Anthropic/OpenAI discovery lists,
+  `getFreeOpenRouterModels`.
 - **4d. Plugins and MCP** (`plugins-mcp.md`). EXT-02 (multi-plugin reload
   skips an instance), EXT-04 (Dynamic Assets needs an unrelated regex script
   to exist), SP-I1 (an MCP callback acts on the selected chat, not its job's),

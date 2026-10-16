@@ -9,9 +9,9 @@ vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
 vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
 
 import { maskLlmSecrets } from "../../../../shared/llmSecrets";
-import { credentialFor, credentialsAccepted, credentialsUsing } from "../credentials";
+import { credentialFor, credentialStatusFor, credentialsAccepted, credentialsUsing } from "../credentials";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { setMaskedSecrets, setSecret } from "src/ts/storage/llmSecrets.svelte";
+import { setMaskedSecrets, setSecret, secretVersion } from "src/ts/storage/llmSecrets.svelte";
 import { selectModelPreset } from "src/ts/storage/selection.svelte";
 import { resolveModelSlot, settings } from "src/ts/storage/settingsViews.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
@@ -141,5 +141,43 @@ describe("credentialsAccepted and credentialsUsing", () => {
         ]);
         expect(credentialsUsing("gone")).toEqual([{ kind: "modelProfile", id: "opus", name: "Opus" }]);
         expect(credentialsUsing("claude")).toEqual([]);
+    });
+});
+
+describe("discovery credential status", () => {
+    const flat = { kind: "flat", field: "nanogptKey" } as const;
+    it("uses the named key's masked status without a flat key", () => {
+        const nano = normalizeModelProfile({ id: "nano", modelId: "nanogpt", credentialId: "home" });
+        expect(credentialStatusFor(nano, flat)).toMatchObject({ state: "bound", keySet: true });
+        expect(credentialStatusFor(undefined, flat)).toMatchObject({ state: "default", keySet: false });
+    });
+    it.each(["gone", "nokey", "work"])(
+        "treats refused binding %s as no key even when the flat key is set",
+        (credentialId) => {
+            setMaskedSecrets(
+                maskLlmSecrets({ nanogptKey: "flat", credentials: { work: { key: "openai-key" } } }),
+                "all",
+            );
+            const nano = normalizeModelProfile({ id: "nano", modelId: "nanogpt", credentialId });
+            expect(credentialStatusFor(nano, flat)).toMatchObject({ state: "refused", keySet: false });
+        },
+    );
+    it("changes refresh identity for A to B and default to bound at equal secret versions", () => {
+        setMaskedSecrets(
+            maskLlmSecrets({ nanogptKey: "flat", credentials: { home: { key: "A" }, claude: { key: "B" } } }),
+            "all",
+        );
+        settings.credentials.find((key) => key.id === "claude")!.type = "custom";
+        const nano = normalizeModelProfile({ id: "nano", modelId: "nanogpt" });
+        const paths = [
+            flat,
+            { kind: "entry", field: "credentials", id: "home" },
+            { kind: "entry", field: "credentials", id: "claude" },
+        ] as const;
+        expect(new Set(paths.map((path) => secretVersion(path))).size).toBe(1);
+        const identities = [undefined, "home", "claude"].map(
+            (credentialId) => credentialStatusFor({ ...nano, credentialId }, flat).keyVersion,
+        );
+        expect(new Set(identities).size).toBe(3);
     });
 });

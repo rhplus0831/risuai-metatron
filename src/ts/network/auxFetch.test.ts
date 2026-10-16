@@ -13,6 +13,7 @@ const { deps } = vi.hoisted(() => ({
     deps: {
         authFetch: vi.fn(),
         awaitSecretWrites: vi.fn(),
+        flushResources: vi.fn(),
         assertSaveAdmission: vi.fn(),
         addFetchLog: vi.fn(),
         interceptors: [] as { id: string; callback: (body: any, type: string) => Promise<any> }[],
@@ -24,6 +25,7 @@ vi.mock("../storage/serverAuth", () => ({
 }));
 vi.mock("../storage/resourceSync.svelte", () => ({
     awaitSecretWrites: () => deps.awaitSecretWrites(),
+    flushResources: () => deps.flushResources(),
     assertSaveAdmission: () => deps.assertSaveAdmission(),
 }));
 vi.mock("../globalApi.svelte", () => ({
@@ -69,6 +71,7 @@ function answering(response: () => Response) {
 
 beforeEach(() => {
     deps.awaitSecretWrites.mockResolvedValue(undefined);
+    deps.flushResources.mockResolvedValue(undefined);
     deps.assertSaveAdmission.mockImplementation(() => {});
     deps.interceptors.length = 0;
     answering(() => Response.json({ data: [{ id: "m" }] }, { headers: { "x-upstream": "aux" } }));
@@ -395,5 +398,50 @@ describe("auxFetch", () => {
             data: "Error: A key could not be saved",
             status: 400,
         });
+    });
+});
+
+describe("auxFetch profile binding", () => {
+    it("flushes profiles and keys before secret writes and sends the profile only in the outer header", async () => {
+        const resources = deferred();
+        const secrets = deferred();
+        deps.flushResources.mockReturnValue(resources.promise);
+        deps.awaitSecretWrites.mockReturnValue(secrets.promise);
+        const call = auxFetch("nanogpt-models", "https://nano-gpt.com/api/personalized/v1/models", {
+            method: "GET",
+            profileId: "edited-profile",
+        });
+        await settle();
+        expect(deps.flushResources).toHaveBeenCalledTimes(1);
+        expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
+        expect(deps.authFetch).not.toHaveBeenCalled();
+        resources.resolve();
+        await settle();
+        expect(deps.awaitSecretWrites).toHaveBeenCalledTimes(1);
+        expect(deps.authFetch).not.toHaveBeenCalled();
+        secrets.resolve();
+        await call;
+        expect(sent()!.init.headers!["risu-aux-profile"]).toBe("edited-profile");
+        expect(upstreamHeaders(sent()!.init)).not.toHaveProperty("risu-aux-profile");
+    });
+    it("refuses a failed resource flush before sending a profile request", async () => {
+        deps.flushResources.mockRejectedValue(new Error("Profile could not be saved"));
+        await expect(
+            auxFetch("nanogpt-models", "https://nano-gpt.com/api/personalized/v1/models", {
+                method: "GET",
+                profileId: "edited-profile",
+            }),
+        ).rejects.toThrow("Profile could not be saved");
+        expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
+        expect(deps.authFetch).not.toHaveBeenCalled();
+    });
+    it("keeps a call without a profile independent of resource writes", async () => {
+        deps.flushResources.mockImplementation(() => {
+            throw new Error("must not flush");
+        });
+        await auxFetch("openai-models", "https://api.openai.com/v1/models", { method: "GET" });
+        expect(deps.flushResources).not.toHaveBeenCalled();
+        expect(deps.awaitSecretWrites).toHaveBeenCalledTimes(1);
+        expect(sent()!.init.headers).not.toHaveProperty("risu-aux-profile");
     });
 });

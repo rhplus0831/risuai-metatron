@@ -1,5 +1,6 @@
 import { auxFetch } from "../network/auxFetch";
-import { isSecretSet } from "../storage/llmSecrets.svelte";
+import { credentialStatusFor } from "./credentials";
+import type { ModelProfile } from "../../../shared/database.ts";
 import type { SecretPath } from "../../../shared/llmSecrets.ts";
 import {
     NANOGPT_PERSONALIZED_MODELS_ENDPOINT,
@@ -62,10 +63,11 @@ export type NanoGPTSubscriptionUsage = {
 };
 
 // The account and model calls use the stored NanoGPT key on the server (`auxFetch`, Phase 5 slice 7b).
-export async function getNanoGPTBalance(): Promise<NanoGPTBalance | null> {
+export async function getNanoGPTBalance(profile?: ModelProfile): Promise<NanoGPTBalance | null> {
     try {
         const res = await auxFetch("nanogpt-balance", NANOGPT_BALANCE_ENDPOINT, {
             method: "POST",
+            profileId: profile?.id,
             headers: { "Content-Type": "application/json" },
         });
         if (!res.ok) return null;
@@ -75,9 +77,12 @@ export async function getNanoGPTBalance(): Promise<NanoGPTBalance | null> {
     }
 }
 
-export async function getNanoGPTSubscription(): Promise<NanoGPTSubscriptionUsage | null> {
+export async function getNanoGPTSubscription(profile?: ModelProfile): Promise<NanoGPTSubscriptionUsage | null> {
     try {
-        const res = await auxFetch("nanogpt-subscription", NANOGPT_SUBSCRIPTION_ENDPOINT, { method: "GET" });
+        const res = await auxFetch("nanogpt-subscription", NANOGPT_SUBSCRIPTION_ENDPOINT, {
+            method: "GET",
+            profileId: profile?.id,
+        });
         if (!res.ok) return null;
         return await res.json();
     } catch {
@@ -125,12 +130,15 @@ export type NanoGPTModelProviders = {
     };
 };
 
-export async function getNanoGPTModelProviders(modelId: string): Promise<NanoGPTModelProviders | null> {
+export async function getNanoGPTModelProviders(
+    modelId: string,
+    profile?: ModelProfile,
+): Promise<NanoGPTModelProviders | null> {
     try {
         const res = await auxFetch(
             "nanogpt-model-providers",
             `${NANOGPT_MODEL_PROVIDERS_ENDPOINT}/${encodeURIComponent(modelId)}/providers`,
-            { method: "GET" },
+            { method: "GET", profileId: profile?.id },
         );
         if (!res.ok) return null;
         return await res.json();
@@ -139,14 +147,15 @@ export async function getNanoGPTModelProviders(modelId: string): Promise<NanoGPT
     }
 }
 
-export async function getNanoGPTSubscriptionModels(): Promise<NanoGPTModelInfo[]> {
-    if (!isSecretSet(NANOGPT_KEY)) return [];
+export async function getNanoGPTSubscriptionModels(profile?: ModelProfile): Promise<NanoGPTModelInfo[]> {
+    if (!credentialStatusFor(profile, NANOGPT_KEY).keySet) return [];
     try {
         const res = await auxFetch(
             "nanogpt-subscription-models",
             NANOGPT_SUBSCRIPTION_MODELS_ENDPOINT + "?detailed=true",
             {
                 method: "GET",
+                profileId: profile?.id,
             },
         );
         if (!res.ok) return [];
@@ -168,13 +177,16 @@ export async function getNanoGPTSubscriptionModels(): Promise<NanoGPTModelInfo[]
     }
 }
 
-export async function getNanoGPTModels(): Promise<NanoGPTModelInfo[]> {
+export async function getNanoGPTModels(profile?: ModelProfile): Promise<NanoGPTModelInfo[]> {
     try {
         // With a stored key, the personalized list through the server; without one, the public list.
         const headers: Record<string, string> = { "Content-Type": "application/json" };
-        const res = isSecretSet(NANOGPT_KEY)
+        const status = credentialStatusFor(profile, NANOGPT_KEY);
+        if (status.state === "refused") return [];
+        const res = status.keySet
             ? await auxFetch("nanogpt-models", NANOGPT_PERSONALIZED_MODELS_ENDPOINT + "?detailed=true", {
                   method: "GET",
+                  profileId: profile?.id,
                   headers,
               })
             : await fetch(NANOGPT_MODELS_ENDPOINT + "?detailed=true", { headers });

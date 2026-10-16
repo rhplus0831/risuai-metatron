@@ -1,4 +1,5 @@
 <script lang="ts">
+    import type { ModelProfile } from "../../../shared/database.ts";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy } from "svelte";
     import { getNanoGPTBalance, getNanoGPTSubscription } from "src/ts/model/nanogpt";
@@ -8,10 +9,11 @@
     interface Props {
         /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
         keySet: boolean;
-        keyVersion: number;
+        keyVersion: string | number;
+        profile?: ModelProfile;
     }
 
-    let { keySet, keyVersion }: Props = $props();
+    let { keySet, keyVersion, profile }: Props = $props();
 
     type DashboardData = {
         balance: NanoGPTBalance | null;
@@ -19,7 +21,9 @@
     };
 
     let dashboardPromise = $derived(
-        keySet ? fetchDashboard(keyVersion) : Promise.resolve<DashboardData>({ balance: null, subscription: null }),
+        keySet
+            ? fetchDashboard(keyVersion, profile)
+            : Promise.resolve<DashboardData>({ balance: null, subscription: null }),
     );
 
     let latest = 0;
@@ -33,9 +37,12 @@
     onDestroy(() => {
         latest += 1;
     });
-    async function fetchDashboard(version: number): Promise<DashboardData> {
+    async function fetchDashboard(version: string | number, profile?: ModelProfile): Promise<DashboardData> {
         const request = ++latest;
-        const [balance, subscription] = await Promise.all([getNanoGPTBalance(), getNanoGPTSubscription()]);
+        const [balance, subscription] = await Promise.all([
+            getNanoGPTBalance(profile),
+            getNanoGPTSubscription(profile),
+        ]);
         if (request !== latest) {
             // A newer key's answer is on its way: this one is stale.
             return { balance, subscription };

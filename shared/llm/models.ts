@@ -646,6 +646,73 @@ function deepFreeze<T>(value: T): T {
  */
 export const BASE_LLM_MODELS: readonly LLMModel[] = deepFreeze(LLMModels);
 
+/** Discovery templates shared by the tab registry and every server model scope. */
+export function dynamicModelOf(id: string): LLMModel | null {
+    const base = { id, name: id, shortName: id, fullName: id };
+    if (id.startsWith("dynamic_google_")) {
+        const internalID = id.slice("dynamic_google_".length).replace(/^models\//, "");
+        if (!internalID) return null;
+        return {
+            ...base,
+            internalID,
+            provider: LLMProvider.GoogleCloud,
+            format: LLMFormat.GoogleCloud,
+            flags: [
+                LLMFlags.hasImageInput,
+                LLMFlags.poolSupported,
+                LLMFlags.hasAudioInput,
+                LLMFlags.hasVideoInput,
+                LLMFlags.hasStreaming,
+                LLMFlags.requiresAlternateRole,
+                LLMFlags.geminiThinking,
+            ],
+            parameters: ["thinking_tokens", "temperature", "top_k", "top_p", "presence_penalty", "frequency_penalty"],
+            tokenizer: LLMTokenizer.GoogleCloud,
+        };
+    }
+    if (id.startsWith("dynamic_anthropic_")) {
+        const internalID = id.slice("dynamic_anthropic_".length);
+        if (!internalID) return null;
+        return {
+            ...base,
+            internalID,
+            provider: LLMProvider.Anthropic,
+            format: LLMFormat.Anthropic,
+            flags: [
+                LLMFlags.hasImageInput,
+                LLMFlags.hasFirstSystemPrompt,
+                LLMFlags.hasStreaming,
+                LLMFlags.claudeThinking,
+                LLMFlags.claudeAdaptiveThinking,
+            ],
+            parameters: [...ClaudeParameters, "thinking_tokens"],
+            tokenizer: LLMTokenizer.Claude,
+        };
+    }
+    if (id.startsWith("gpt-")) {
+        const responses = id.endsWith("-response-api");
+        const internalID = responses ? id.slice(0, -"-response-api".length) : id;
+        if (internalID.length <= "gpt-".length) return null;
+        return {
+            ...base,
+            internalID,
+            provider: LLMProvider.OpenAI,
+            format: responses ? LLMFormat.OpenAIResponseAPI : LLMFormat.OpenAICompatible,
+            flags: [
+                LLMFlags.hasStreaming,
+                LLMFlags.OAICompletionTokens,
+                LLMFlags.hasFullSystemPrompt,
+                LLMFlags.hasImageInput,
+                LLMFlags.DeveloperRole,
+                ...(responses ? [LLMFlags.hasPrefill] : []),
+            ],
+            parameters: [...GPT5XHighParameters],
+            tokenizer: LLMTokenizer.tiktokenO200Base,
+        };
+    }
+    return null;
+}
+
 export type ModelResolution = {
     enableCustomFlags?: boolean;
     customFlags?: LLMFlags[];
@@ -660,7 +727,7 @@ export type ModelResolution = {
  * The client's `getModelInfo` (`src/ts/model/modellist.ts`), with its reads passed in: the static
  * list, then `extraModels` (a found model is cloned and takes `customFlags` when
  * `enableCustomFlags` is on), `hf:::`, `horde:::`, `xcustom:::` (`customModels`),
- * `pluginmodel:::` (`pluginModels`, returned as stored), then an unknown OpenAI-compatible model.
+ * `pluginmodel:::` (`pluginModels`, returned as stored), dynamic ids, then an unknown OpenAI-compatible model.
  */
 export function resolveModelInfo(id: string | null | undefined, from: ModelResolution = {}): LLMModel {
     if (!id) {
@@ -750,6 +817,12 @@ export function resolveModelInfo(id: string | null | undefined, from: ModelResol
         if (pluginModel) {
             return pluginModel;
         }
+    }
+
+    const dynamic = dynamicModelOf(id);
+    if (dynamic) {
+        if (from.enableCustomFlags) dynamic.flags = structuredClone(from.customFlags) as LLMFlags[];
+        return dynamic;
     }
 
     return {

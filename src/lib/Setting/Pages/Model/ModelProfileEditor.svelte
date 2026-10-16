@@ -12,7 +12,7 @@
     import { tokenizerList } from "src/ts/tokenizer";
     import ModelList from "src/lib/UI/ModelList.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import { isSecretSet, secretVersion } from "src/ts/storage/llmSecrets.svelte";
+    import { credentialStatusFor } from "src/ts/model/credentials";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -50,12 +50,15 @@
         { id: "openrouter/auto", displayName: "OpenRouter Auto", providerName: "OpenRouter" },
     ];
     const NANOGPT_KEY = { kind: "flat", field: "nanogptKey" } as const;
+    const nanogptKey = $derived(credentialStatusFor(record, NANOGPT_KEY));
+    const ollamaKey = $derived(credentialStatusFor(record, { kind: "flat", field: "ollamaApiKey" }));
+    const openrouterKey = $derived(credentialStatusFor(record, { kind: "flat", field: "openrouterKey" }));
     let nanogptInputMode = $state<"list" | "manual">(
         untrack(() => (profile.nanogptRequestModel && !profile.nanogptRequestModelName ? "manual" : "list")),
     );
     let nanogptKeyInitialized = false;
     $effect(() => {
-        const keySet = isSecretSet(NANOGPT_KEY);
+        const keySet = nanogptKey.keySet;
         if (!nanogptKeyInitialized) {
             nanogptKeyInitialized = true;
             return;
@@ -136,7 +139,7 @@
                 oninput={() => (profile.ollamaCloudModelName = "")}
             />
         {:else}
-            {#await (secretVersion( { kind: "flat", field: "ollamaApiKey" } ), getOllamaModels(profile.ollamaURL, "cloud"))}
+            {#await (ollamaKey.keyVersion, getOllamaModels(profile.ollamaURL, "cloud", record))}
                 <ModelGrid bind:value={profile.ollamaCloudModel} loading={true} />
             {:then cloudModels}
                 <ModelGrid
@@ -198,7 +201,7 @@
     {/if}
 {/if}
 {#if profile.modelId === "nanogpt"}
-    <NanoGPTDashboard keySet={isSecretSet(NANOGPT_KEY)} keyVersion={secretVersion(NANOGPT_KEY)} />
+    <NanoGPTDashboard profile={record} keySet={nanogptKey.keySet} keyVersion={nanogptKey.keyVersion} />
 
     {#if settings.providers.nanogptSubscriptionState === "active" || settings.providers.nanogptSubscriptionState === "grace"}
         <div class="flex items-center mt-3">
@@ -231,7 +234,7 @@
             }}
         />
     {:else}
-        {#await Promise.all([getNanoGPTModels(), (secretVersion(NANOGPT_KEY), getNanoGPTSubscriptionModels())])}
+        {#await (nanogptKey.keyVersion, Promise.all([getNanoGPTModels(record), getNanoGPTSubscriptionModels(record)]))}
             <ModelGrid bind:value={profile.nanogptRequestModel} loading={true} />
         {:then [regular, sub]}
             <ModelGrid
@@ -250,8 +253,9 @@
             />
             {#if !settings.providers.nanogptUseSubscriptionEndpoint}
                 <NanoGPTProviderPicker
-                    keySet={isSecretSet(NANOGPT_KEY)}
-                    keyVersion={secretVersion(NANOGPT_KEY)}
+                    profile={record}
+                    keySet={nanogptKey.keySet}
+                    keyVersion={nanogptKey.keyVersion}
                     modelId={profile.nanogptRequestModel}
                     bind:value={profile.nanogptProvider}
                 />
@@ -261,7 +265,7 @@
 {/if}
 {#if profile.modelId === "openrouter"}
     <span class="text-textcolor mt-4">OpenRouter {language.model}</span>
-    {#await getOpenRouterModels()}
+    {#await (openrouterKey.keyVersion, getOpenRouterModels(record))}
         <ModelGrid bind:value={profile.openrouterRequestModel} pinnedItems={openrouterPinnedItems} loading={true} />
     {:then m}
         <ModelGrid

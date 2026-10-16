@@ -336,8 +336,8 @@ function formatName(format: LLMFormat): string | null {
  * Missing or required profiles refuse before dispatch; the job's captured settings stay unchanged.
  * `Plugin` (a plugin provider model) is called in the job's tab through `ctx.pluginProvider`, and
  * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
- * job's request only; a tab runs them itself and its transport never sends them. A tab's dynamic
- * model the server has no descriptor for (`dynamic_`) is refused.
+ * job's request only; a tab runs them itself and its transport never sends them. Dynamic provider
+ * models resolve from their ids through the shared catalogue.
  */
 export async function requestChatDataMain(
     arg: RequestArgs & { tools: ToolDescriptor[] },
@@ -394,7 +394,7 @@ export async function requestChatDataMain(
     };
 
     if (
-        (targ.modelInfo.format === LLMFormat.Plugin && (!ctx.pluginProvider || targ.aiModel.startsWith("dynamic_"))) ||
+        (targ.modelInfo.format === LLMFormat.Plugin && !ctx.pluginProvider) ||
         (targ.modelInfo.format === LLMFormat.WebLLM && !ctx.localGeneration)
     ) {
         return {

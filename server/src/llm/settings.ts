@@ -168,22 +168,7 @@ export function loadRequestDb(
     }
     db.autoSuggestPrefix = ui.autoSuggestPrefix;
     db.customModels = customModels;
-    const credentialKeys = (llmSecrets.credentials ?? {}) as Record<string, { key?: unknown }>;
-    db.credentials = Object.fromEntries(
-        ((credentials ?? []) as Credential[]).map((credential) => {
-            const entry = Object.hasOwn(credentialKeys, credential.id) ? credentialKeys[credential.id] : undefined;
-            return [
-                credential.id,
-                {
-                    name: credential.name,
-                    type: credential.type,
-                    key: typeof entry?.key === "string" ? entry.key : "",
-                    ...(credential.clientEmail !== undefined ? { clientEmail: credential.clientEmail } : {}),
-                    ...(credential.projectId !== undefined ? { projectId: credential.projectId } : {}),
-                },
-            ];
-        }),
-    );
+    db.credentials = mergeCredentials(credentials ?? [], llmSecrets);
 
     const nameOf = (id: string | null): string | null => {
         if (!id) {
@@ -198,6 +183,29 @@ export function loadRequestDb(
         speakerName: names ? names.speakerName : nameOf(ids.speakerId),
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
+}
+
+/** The same metadata/value merge for generation and profile-scoped auxiliary calls. */
+export function mergeCredentials(
+    credentials: Credential[],
+    llmSecrets: Record<string, unknown>,
+): RequestDb["credentials"] {
+    const credentialKeys = (llmSecrets.credentials ?? {}) as Record<string, { key?: unknown }>;
+    return Object.fromEntries(
+        credentials.map((credential) => {
+            const entry = Object.hasOwn(credentialKeys, credential.id) ? credentialKeys[credential.id] : undefined;
+            return [
+                credential.id,
+                {
+                    name: credential.name,
+                    type: credential.type,
+                    key: typeof entry?.key === "string" ? entry.key : "",
+                    ...(credential.clientEmail !== undefined ? { clientEmail: credential.clientEmail } : {}),
+                    ...(credential.projectId !== undefined ? { projectId: credential.projectId } : {}),
+                },
+            ];
+        }),
+    );
 }
 
 /**

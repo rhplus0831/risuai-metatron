@@ -1,3 +1,9 @@
+import type { CredentialSlotName } from "../../../shared/llm/credentialSlots.ts";
+import type { ResolvedCredential } from "./credentials.ts";
+
+/** A profile's binding resolved by the app against stored records, never a caller-supplied key. */
+export type AuxCredential = { slot: CredentialSlotName | null; credential: ResolvedCredential } | { error: string };
+
 /**
  * The auxiliary operations of `/proxy2` (owner answer 2, `implementation-plan.md` step 0): a
  * `risu-aux-op` header names one row, and the server sends the request with its stored credential
@@ -35,6 +41,7 @@ type AuxOp = {
     path: RegExp;
     /** The query parameters the request may carry (besides the injected `key`); any other is refused. */
     query?: readonly string[];
+    slot?: CredentialSlotName;
     secret: (secrets: AuxSecrets) => unknown;
     inject: "bearer" | "query-key" | "x-api-key";
 };
@@ -112,6 +119,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "openrouter-providers": {
+        slot: "openrouter",
         origin: OPENROUTER,
         method: "GET",
         path: /^\/api\/v1\/providers$/,
@@ -119,6 +127,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "openrouter-models": {
+        slot: "openrouter",
         origin: OPENROUTER,
         method: "GET",
         path: /^\/api\/v1\/models$/,
@@ -126,6 +135,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "nanogpt-balance": {
+        slot: "nanogpt",
         origin: NANOGPT,
         method: "POST",
         path: /^\/api\/check-balance$/,
@@ -133,6 +143,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "x-api-key",
     },
     "nanogpt-subscription": {
+        slot: "nanogpt",
         origin: NANOGPT,
         method: "GET",
         path: /^\/api\/subscription\/v1\/usage$/,
@@ -140,6 +151,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "nanogpt-subscription-models": {
+        slot: "nanogpt",
         origin: NANOGPT,
         method: "GET",
         path: /^\/api\/subscription\/v1\/models$/,
@@ -148,6 +160,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "nanogpt-model-providers": {
+        slot: "nanogpt",
         origin: NANOGPT,
         method: "GET",
         path: /^\/api\/models\/[^/]+\/providers$/,
@@ -155,6 +168,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "nanogpt-models": {
+        slot: "nanogpt",
         origin: NANOGPT,
         method: "GET",
         path: /^\/api\/personalized\/v1\/models$/,
@@ -163,6 +177,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "bearer",
     },
     "ollama-cloud-tags": {
+        slot: "ollama",
         origin: "https://ollama.com",
         method: "GET",
         path: /^\/api\/tags$/,
@@ -200,6 +215,7 @@ export function planAuxOp(
     method: string,
     headers: Headers,
     secrets: AuxSecrets,
+    profile?: AuxCredential,
 ): AuxOpPlan {
     const op = Object.hasOwn(AUX_OPS, name) ? AUX_OPS[name as AuxOpName] : undefined;
     if (!op) {
@@ -217,12 +233,38 @@ export function planAuxOp(
     if (method.toUpperCase() !== op.method) {
         return { ok: false, status: 400, error: `${name} takes ${op.method}` };
     }
-    const secret = op.secret(secrets);
+    let secret = op.secret(secrets);
+    if (profile) {
+        if (!op.slot) {
+            return { ok: false, status: 400, error: `${name} does not take a model profile` };
+        }
+        if ("error" in profile) {
+            return { ok: false, status: 400, error: profile.error };
+        }
+        if (profile.credential.kind === "refused") {
+            return { ok: false, status: 400, error: profile.credential.message };
+        }
+        if (profile.slot !== op.slot) {
+            return { ok: false, status: 400, error: `The model profile does not use the ${op.slot} credential slot` };
+        }
+        if (profile.credential.kind === "key") {
+            secret = profile.credential.key;
+        } else if (profile.credential.kind !== "default") {
+            return { ok: false, status: 400, error: `${name} requires an API key` };
+        }
+    }
     if (typeof secret !== "string" || secret.trim() === "") {
         return { ok: false, status: 400, error: `No credential is stored for ${name}` };
     }
     const out = new Headers(headers);
-    for (const header of ["authorization", "x-api-key", "x-goog-api-key", "api-key", "risu-aux-op"]) {
+    for (const header of [
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        "api-key",
+        "risu-aux-op",
+        "risu-aux-profile",
+    ]) {
         out.delete(header);
     }
     for (const param of ["key", "api_key", "token"]) {

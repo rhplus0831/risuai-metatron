@@ -1,3 +1,7 @@
+import type { Credential, Database, ModelProfile } from "../../shared/database.ts";
+import { credentialSlotOf } from "../../shared/llm/credentialSlots.ts";
+import { resolveModelInfo } from "../../shared/llm/models.ts";
+import { resolveCredential } from "./llm/credentials.ts";
 import { mkdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
@@ -26,7 +30,7 @@ import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJo
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
-import { loadStoredSecrets } from "./llm/settings.ts";
+import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
@@ -450,6 +454,36 @@ export function createServerContext(options: {
                 ? ((resources.get(llmSecretsKind, SINGLETON_RESOURCE_ID)?.data as
                       Record<string, unknown> | undefined) ?? null)
                 : null,
+        auxCredential: (profileId) => {
+            const read = resources.readRefs(
+                [
+                    RESOURCE_KIND.modelProfiles,
+                    RESOURCE_KIND.credentials,
+                    RESOURCE_KIND.llmSecrets,
+                    RESOURCE_KIND.customModels,
+                ].map((name) => ({ kind: resourceKinds.get(name)!, id: SINGLETON_RESOURCE_ID })),
+            );
+            const [profiles, records, secrets, customModels] = read.items.map((item) => item.data);
+            const profile = (profiles as ModelProfile[] | null)?.find((entry) => entry.id === profileId);
+            if (!profile) return { error: "The model profile no longer exists" };
+            const modelInfo = resolveModelInfo(profile.modelId, {
+                customModels: (customModels ?? []) as Database["customModels"],
+            });
+            return {
+                slot: credentialSlotOf(profile.modelId, modelInfo)?.slot ?? null,
+                credential: resolveCredential(
+                    {
+                        credentials: mergeCredentials(
+                            (records ?? []) as Credential[],
+                            (secrets ?? {}) as Record<string, unknown>,
+                        ),
+                    },
+                    profile.modelId,
+                    modelInfo,
+                    profile,
+                ),
+            };
+        },
     });
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
     registerTransformRoutes(app, {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
-import { resolveModelInfo } from "../../../shared/llm/models.ts";
+import { dynamicModelOf, resolveModelInfo } from "../../../shared/llm/models.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import { type CallbackTargets, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
@@ -609,10 +609,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 // `pluginModels` branch: custom flags do not apply to them).
                 pluginModels: db.pluginModels,
             });
-            // A plugin model or a tab's dynamic model reaches the server only as the tab's descriptor;
-            // without one, the catalogue would read it as an OpenAI-compatible model and send it to
-            // OpenAI. A job has no tab descriptor: such a model runs in the browser (refused).
-            if (p.browserOnlyModels && (modelId.startsWith("pluginmodel:::") || modelId.startsWith("dynamic_"))) {
+            // Plugin providers still require the job's tab callback and admitted descriptor.
+            if (p.browserOnlyModels && modelId.startsWith("pluginmodel:::")) {
                 return { ...model, format: LLMFormat.Plugin };
             }
             return model;
@@ -1434,7 +1432,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 tokenScope,
                 controller,
                 redactor: () => redactor,
-                extraModels: (modelId) => dynamicModelFor(body, modelId),
+                extraModels: (modelId) => dynamicModelFor(modelId),
                 log: (entry) => emitRedacted({ type: "log", entry }),
                 tracker,
                 alertError: (text) => emitRedacted({ type: "notice", kind: "alertError", message: text }),
@@ -1706,11 +1704,8 @@ function decodeToolCall(text: string, calls: Record<string, ToolCallRecord> | un
     return structuredClone(calls[callId]);
 }
 
-/** The request's dynamic model, accepted only for the id it names and a format the server runs. */
-function dynamicModelFor(body: LlmRequestBody, id: string): LLMModel[] {
-    const hint = body.dynamicModel;
-    if (!hint || hint.id !== id || hint.format === LLMFormat.Plugin || hint.format === LLMFormat.WebLLM) {
-        return [];
-    }
-    return [structuredClone(hint)];
+/** Compatibility hints cannot supply routing, keys, flags, or endpoints to an adapter. */
+function dynamicModelFor(id: string): LLMModel[] {
+    const model = dynamicModelOf(id);
+    return model ? [model] : [];
 }

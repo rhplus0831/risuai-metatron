@@ -6,12 +6,15 @@
 
     import OpenrouterProviderList from "src/lib/UI/OpenrouterProviderList.svelte";
     import { PlusIcon, TrashIcon } from "@lucide/svelte";
+    import { credentialStatusFor } from "src/ts/model/credentials";
     import { getOpenRouterProviders } from "src/ts/model/openrouter";
 
     interface Props {
         profile?: ModelProfileView;
     }
     let { profile = activeMainProfile }: Props = $props();
+    const record = $derived(settings.modelProfiles.find((entry) => entry.id === profile.id));
+    const key = $derived(credentialStatusFor(record, { kind: "flat", field: "openrouterKey" }));
     const provider = $derived(profile.openrouterProvider ?? { order: [], only: [], ignore: [] });
     function setProviders(field: "order" | "only" | "ignore", values: string[]) {
         profile.openrouterProvider = { ...provider, [field]: values };
@@ -28,7 +31,7 @@
     <div class="flex items-center mb-4">
         <Check bind:check={profile.useInstructPrompt} name={language.useInstructPrompt} />
     </div>
-    {#await getOpenRouterProviders()}
+    {#await (key.keyVersion, getOpenRouterProviders(record))}
         <Accordion name={language.openRouterProviderOrder} help="openRouterProviderOrder" styled>
             <p>{language.loading}...</p>
         </Accordion>

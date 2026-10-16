@@ -25,7 +25,7 @@ export function defaultCredentialKey(modelId: string | undefined, defaultKey: st
 
 /** Resolve only the profile's binding; an invalid binding never redirects to a default credential. */
 export function resolveCredential(
-    db: RequestDb,
+    db: Pick<RequestDb, "credentials">,
     aiModel: string,
     modelInfo: LLMModel,
     profile: Pick<ModelProfile, "credentialId"> | undefined,
@@ -35,7 +35,7 @@ export function resolveCredential(
         modelInfo,
         profile,
         db.credentials ?? {},
-        (credential) => !!credential.key,
+        (credential) => credential.key.trim() !== "",
     );
     if (binding.kind === "default") {
         return { kind: "default" };
