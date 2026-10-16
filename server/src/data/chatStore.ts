@@ -474,6 +474,7 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
+    const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
     const insertChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, 0, ?, ?)",
     );
@@ -992,9 +993,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return !!guard && [...guard.characterHolders(characterId)].some((token) => token !== jobToken);
         },
 
-        /** The chat's revision token, or null when it does not exist (its messages are not read). */
+        /** The chat's revision token, or null when it does not exist (no metadata or messages read). */
         chatRevision(characterId: string, id: string): string | null {
-            const row = selectChat.get(characterId, id) as ChatRow | undefined;
+            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
             return row ? tokens.token(row.seq, row.revision) : null;
         },
 

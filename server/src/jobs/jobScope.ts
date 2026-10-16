@@ -9,6 +9,7 @@ import type {
     groupChat,
 } from "../../../shared/database.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
+import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { FLAT_SECRET_FIELDS, llmSecretSiblings, NESTED_SECRET_FIELDS } from "../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
@@ -73,6 +74,8 @@ export type JobScope = {
      * from the same synchronous read as the data: the script transform's cache key (slice 13).
      */
     revisions?: ReadonlyMap<string, string>;
+    /** Live character revisions, separate from the load's transform cache key; null means gone. */
+    characterRevisions?: Map<string, string | null>;
     /**
      * The characters kind, set by the load: the projection holds only the chat's characters, so a
      * chat read again (`refreshChat`) reads the speakers it gained.
@@ -154,8 +157,10 @@ function readCharacters(
     context: GenerationContext,
     chat: unknown,
     extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
+    revisions: Map<string, string | null>,
 ): StoredResource<unknown>[] {
     const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
+    revisions.set(context.characterId, ownerRead.revision);
     if (!chat || ownerRead.data === null || ownerRead.revision === null) {
         return [];
     }
@@ -172,6 +177,7 @@ function readCharacters(
     }
     const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
     for (const item of others) {
+        revisions.set(item.id, item.revision);
         if (item.data !== null && item.revision !== null) {
             records.push({ id: item.id, revision: item.revision, data: item.data });
         }
@@ -202,12 +208,14 @@ export function loadJobScope(
     const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
     const read = store.readKinds(jobScopeKinds(kinds).filter((kind) => kind !== charactersKind));
     const chatRead = store.readRefs([], { chats: [{ characterId: context.characterId, id: context.chatId }] });
+    const characterRevisions = new Map<string, string | null>();
     read.kinds[RESOURCE_KIND.characters] = readCharacters(
         store,
         charactersKind,
         context,
         chatRead.chats[0]?.data,
         options.characters,
+        characterRevisions,
     );
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 
@@ -303,14 +311,20 @@ export function loadJobScope(
     }
     setChats(owner, [chatRecord.data as Chat]);
 
-    const request = loadRequestDb(store, kinds, {
-        presetId: preset.id,
-        modelPresetId: modelPreset.id,
-        personaId: effectivePersona.id,
-        selectedPersonaId: effectivePersona.id,
-        selectedCharacterId: context.characterId,
-        speakerId: context.speakerChaId ?? null,
-    });
+    const speaker = characters.find((entry) => entry.chaId === context.speakerChaId);
+    const request = loadRequestDb(
+        store,
+        kinds,
+        {
+            presetId: preset.id,
+            modelPresetId: modelPreset.id,
+            personaId: effectivePersona.id,
+            selectedPersonaId: effectivePersona.id,
+            selectedCharacterId: context.characterId,
+            speakerId: context.speakerChaId ?? null,
+        },
+        { selectedCharacterName: `${owner.name}`, speakerName: speaker ? `${speaker.name}` : null },
+    );
 
     const revisions = new Map<string, string>();
     for (const [kindName, records] of Object.entries(read.kinds)) {
@@ -325,6 +339,7 @@ export function loadJobScope(
         chatId: context.chatId,
         chatRevision: chatRecord.revision,
         revisions,
+        characterRevisions,
         charactersKind,
         promptPreset: preset,
         modelPreset,
@@ -364,6 +379,9 @@ export function scopeChat(scope: JobScope): Chat | undefined {
  * Returns false when the chat is gone.
  */
 export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
+    if (store.chatRevision(scope.characterId, scope.chatId) === scope.chatRevision && scopeChat(scope)) {
+        return true;
+    }
     const read = store.readRefs([], { chats: [{ characterId: scope.characterId, id: scope.chatId }] });
     const record = read.chats[0];
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
@@ -383,14 +401,43 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
 }
 
 /**
+ * Adopt an own metadata write without reading unchanged messages. A stale write or a subsequent
+ * change needs a full refresh: the stored transcript may no longer be the scope's copy.
+ */
+export function refreshChatAfterWrite(
+    store: ResourceStore,
+    scope: JobScope,
+    ops: readonly ChatOp[],
+    result: ChatGroupResult | undefined,
+): boolean {
+    const current = scopeChat(scope);
+    if (current && result?.revision && !result.stale && ops.every((op) => op.op === "meta")) {
+        const record = store.chatMeta(scope.characterId, scope.chatId);
+        if (record?.revision === result.revision) {
+            const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId)!;
+            setChats(owner, [{ ...(record.data as Chat), message: current.message }]);
+            scope.chatRevision = record.revision;
+            return true;
+        }
+    }
+    return refreshChat(store, scope);
+}
+
+/**
  * Reads into the projection the message speakers (`saying`) it lacks: a message written since the
  * load (by the job, a script, or another tab) may name a character the load did not read.
  */
 function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: JobScope, chat: Chat): void {
+    const revisions = (scope.characterRevisions ??= new Map());
     const known = new Set(scope.db.characters.map((entry) => entry?.chaId));
     const missing = new Set<string>();
     for (const message of chat.message ?? []) {
-        if (message.saying && !known.has(message.saying) && isValidResourceId(message.saying)) {
+        if (
+            message.saying &&
+            !known.has(message.saying) &&
+            !revisions.has(message.saying) &&
+            isValidResourceId(message.saying)
+        ) {
             missing.add(message.saying);
         }
     }
@@ -398,6 +445,7 @@ function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: 
         return;
     }
     for (const item of store.readRefs([...missing].map((id) => ({ kind: charactersKind, id }))).items) {
+        revisions.set(item.id, item.revision);
         if (item.data !== null) {
             scope.db.characters.push({ ...(item.data as object), chats: [], chatPage: 0 } as unknown as
                 character | groupChat);
@@ -412,8 +460,19 @@ export function refreshCharacter(
     scope: JobScope,
     characterId: string,
 ): boolean {
-    const row = store.get(kindOf(kinds, RESOURCE_KIND.characters), characterId);
+    const kind = kindOf(kinds, RESOURCE_KIND.characters);
+    const revisions = (scope.characterRevisions ??= new Map());
     const index = scope.db.characters.findIndex((entry) => entry?.chaId === characterId);
+    const revision = store.revisionOf(kind, characterId);
+    if (
+        revisions.has(characterId) &&
+        revisions.get(characterId) === revision &&
+        (revision === null ? index < 0 : index >= 0)
+    ) {
+        return revision !== null;
+    }
+    const row = store.get(kind, characterId);
+    revisions.set(characterId, row?.revision ?? null);
     if (!row) {
         if (index >= 0) {
             scope.db.characters.splice(index, 1);

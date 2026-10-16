@@ -21,7 +21,7 @@ import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "../jobs/jobScope.ts";
+import { type JobScope, refreshCharacter, refreshChat, refreshChatAfterWrite, scopeChat } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
@@ -257,7 +257,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * immediate-nil `alertInputMain`/`alertConfirmMain`).
  *
  * Chat functions work on the job's chat (`scope`), by index resolved to message ids when called,
- * and write through `job.write`; after each write the chat is read again with its revision and sent
+ * and write through `job.write`; after each write the scope adopts its stored data and revision and sends it
  * to the tab. A refused write of a message another generation owns is skipped with a warning, as
  * the client's `liveWrite`; any other conflict is fatal. Character functions address the run's
  * character, read live from the store.
@@ -326,10 +326,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!deps.runCharacterId) {
             return undefined;
         }
-        if (deps.frozen) {
-            return scope.db.characters.find((entry) => entry?.chaId === deps.runCharacterId);
+        if (!deps.frozen) {
+            refreshCharacter(store, kinds, scope, deps.runCharacterId);
         }
-        return (store.get(charactersKind, deps.runCharacterId)?.data ?? undefined) as character | groupChat | undefined;
+        return scope.db.characters.find((entry) => entry?.chaId === deps.runCharacterId);
+    };
+    const refreshCharacters = () => {
+        refreshCharacter(store, kinds, scope, deps.engineCharacterId);
+        if (deps.runCharacterId && deps.runCharacterId !== deps.engineCharacterId) {
+            refreshCharacter(store, kinds, scope, deps.runCharacterId);
+        }
     };
     const refreshAll = () => {
         if (deps.frozen) {
@@ -338,10 +344,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (refreshChat(store, scope)) {
             lastChat = scopeChat(scope);
         }
-        refreshCharacter(store, kinds, scope, deps.engineCharacterId);
-        if (deps.runCharacterId && deps.runCharacterId !== deps.engineCharacterId) {
-            refreshCharacter(store, kinds, scope, deps.runCharacterId);
-        }
+        refreshCharacters();
     };
 
     /**
@@ -367,8 +370,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             console.warn("[Lua] A chat change was refused: a message is being generated");
             return;
         }
+        let applied;
         try {
-            job.write(() => ({
+            applied = job.write(() => ({
                 chats: [
                     { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
                 ],
@@ -386,7 +390,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             throw latch(error);
         }
-        refreshAll();
+        if (refreshChatAfterWrite(store, scope, ops, applied.chats[0])) {
+            lastChat = scopeChat(scope);
+        }
+        refreshCharacters();
         job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
     };
 

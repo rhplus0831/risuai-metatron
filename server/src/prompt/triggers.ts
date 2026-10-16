@@ -365,6 +365,7 @@ export function createTriggerRuntime(host: TriggerHost) {
         );
         // The trigger's working copy. A display run copies only the chat and its message list (it runs
         // for every rendered message); its effects replace messages instead of editing them in place.
+        // Never edit nested metadata in place in a display run: the live scope keeps its objects across refreshes.
         let chat = (
             arg.displayMode ? { ...arg.chat, message: [...arg.chat.message] } : structuredClone(arg.chat)
         ) as Chat;

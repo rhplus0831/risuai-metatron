@@ -243,6 +243,8 @@ type Job = {
      * owner applies a patch only at exactly its base or its revision, and asks for a resync otherwise.
      */
     sentChat: ChatBaseline | null;
+    /** The last own-chat write, only if it changed metadata on exactly its base revision. */
+    metaWrite?: { baseRevision: string; revision: string };
     /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
     generated: Set<string>;
     terminal: GenerationTerminalEvent | null;
@@ -394,12 +396,19 @@ export function createGenerationJobs(options: {
     }
 
     /** The chat as stored now, or null (gone, another epoch, or the store closed during shutdown). */
-    function readChat(job: Job, characterId: string, id: string): { revision: string; data: Chat } | null {
+    function readChat(
+        job: Job,
+        characterId: string,
+        id: string,
+        metadataOnly = false,
+    ): { revision: string; data: Chat } | null {
         try {
             if (store.epoch() !== job.epoch) {
                 return null;
             }
-            const chat = store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
+            const chat = metadataOnly
+                ? store.chatMeta(characterId, id)
+                : store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
             return chat && chat.revision !== null ? { revision: chat.revision, data: chat.data as Chat } : null;
         } catch {
             // The store closed during shutdown: nothing more to hydrate.
@@ -457,14 +466,48 @@ export function createGenerationJobs(options: {
     function jobChatEvent(
         job: Job,
         mode: "patch" | "whole",
+        metadataOnly = false,
     ): { event: GenerationEvent; baseline: ChatBaseline } | null {
         const { characterId, chatId } = job.context;
+        const base = mode === "patch" ? job.sentChat : null;
+        if (metadataOnly && base && job.metaWrite?.baseRevision === base.revision) {
+            const chat = readChat(job, characterId, chatId, true);
+            if (chat?.revision === job.metaWrite.revision) {
+                const meta = chatMeta(chat.data as Chat);
+                const baseline = { ...base, revision: chat.revision, meta: JSON.stringify(meta) };
+                // Only metadata changed since this baseline, so its stored generated rows are still
+                // exact. Carry them as diffChat does, without parsing any other message.
+                const messages: { after: string | null; message: unknown }[] = [];
+                base.ids.forEach((id, index) => {
+                    if (job.generated.has(id)) {
+                        messages.push({
+                            after: index > 0 ? base.ids[index - 1] : null,
+                            message: JSON.parse(base.texts.get(id)!),
+                        });
+                    }
+                });
+                return {
+                    baseline,
+                    event: {
+                        type: "chatPatch",
+                        epoch: job.epoch,
+                        characterId,
+                        id: chatId,
+                        baseRevision: base.revision,
+                        revision: chat.revision,
+                        ...(baseline.meta !== base.meta ? { meta } : {}),
+                        ...(messages.length > 0 ? { messages } : {}),
+                        count: base.ids.length,
+                        streaming: streamingIn(job, characterId, chatId),
+                    },
+                };
+            }
+        }
         const chat = readChat(job, characterId, chatId);
         if (!chat) {
             return null;
         }
         const baseline = chatBaseline(chat.revision, chat.data);
-        const base = mode === "patch" ? job.sentChat : null;
         const diff = base ? diffChat(base, baseline, chat.data, job.generated) : null;
         const event: GenerationEvent =
             base && diff
@@ -504,8 +547,8 @@ export function createGenerationJobs(options: {
     }
 
     /** Sends the job chat (`jobChatEvent`); a socket taking it makes its copy the next patch's base. */
-    function deliverJobChat(job: Job, mode: "patch" | "whole"): GenerationEvent | null {
-        const built = jobChatEvent(job, mode);
+    function deliverJobChat(job: Job, mode: "patch" | "whole", metadataOnly = false): GenerationEvent | null {
+        const built = jobChatEvent(job, mode, metadataOnly);
         if (!built) {
             return null;
         }
@@ -749,6 +792,14 @@ export function createGenerationJobs(options: {
                     const outcomes = applied.chats[index]?.checkpoints ?? [];
                     let checkpoint = 0;
                     if (group.characterId === job.context.characterId && group.chatId === job.context.chatId) {
+                        const result = applied.chats[index];
+                        job.metaWrite =
+                            group.baseRevision &&
+                            result?.revision &&
+                            !result.stale &&
+                            group.ops.every((op) => op.op === "meta")
+                                ? { baseRevision: group.baseRevision, revision: result.revision }
+                                : undefined;
                         for (const op of group.ops) {
                             if (op.op === "begin") {
                                 // The client's copy of it can hold streamed text: patches carry its row.
@@ -884,8 +935,12 @@ export function createGenerationJobs(options: {
                 for (const ref of records.chats ?? []) {
                     track(job, `chats\u0000${ref.characterId}\u0000${ref.id}`, { kind: "chats", ...ref });
                     if (ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
+                        // Nothing is buffered here. Leave sentChat alone; attach rebuilds from it.
+                        if (![...job.sockets].some((ws) => ws.readyState === ws.OPEN)) {
+                            continue;
+                        }
                         // The job chat: what changed since the last copy a socket took.
-                        const event = deliverJobChat(job, "patch");
+                        const event = deliverJobChat(job, "patch", true);
                         if (event) {
                             receipts.push(receiptOf(event));
                         }

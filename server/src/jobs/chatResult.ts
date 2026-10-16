@@ -4,7 +4,7 @@ import type { Chat, Message } from "../../../shared/database.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
+import { type JobScope, refreshChat, refreshChatAfterWrite, scopeChat } from "./jobScope.ts";
 
 /** A message the job is generating: its id and the next checkpoint of its generation (`seq` advanced). */
 export type OwnedGeneration = {
@@ -82,9 +82,10 @@ export function applyTriggerChat(
         if (ops.length === 0) {
             return;
         }
+        let applied;
         try {
             const cover = options.generation?.covers?.();
-            job.write(
+            applied = job.write(
                 () => ({
                     chats: [
                         { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
@@ -103,7 +104,7 @@ export function applyTriggerChat(
             }
             throw error;
         }
-        refreshChat(store, scope);
+        refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
         job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
     };
 
@@ -167,8 +168,13 @@ export function applyTriggerChat(
     const unset: string[] = [];
     const baseFields = baseline.chat as unknown as Record<string, unknown>;
     const nextFields = next as unknown as Record<string, unknown>;
+    const currentFields = current as unknown as Record<string, unknown>;
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
-        if (nonMetaKeys.has(key) || json(baseFields[key]) === json(nextFields[key])) {
+        if (
+            nonMetaKeys.has(key) ||
+            json(baseFields[key]) === json(nextFields[key]) ||
+            json(currentFields[key]) === json(nextFields[key])
+        ) {
             continue;
         }
         if (Object.hasOwn(nextFields, key) && nextFields[key] !== undefined) {

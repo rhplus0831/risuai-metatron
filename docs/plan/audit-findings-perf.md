@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04) and 2f (EXT-01) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01) and 3a (PERF-02, the read half) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -153,6 +153,23 @@ P2 with the memory items that share its mechanism.
   await boundaries, and read only what the job touches. The probe
   `performance-server-probe.mjs` with `PERF_TRACE_SQL=1` is the before/after
   measurement.
+  Landed 2026-10-16 (the read half): revision-checked `refreshChat`/`refreshCharacter`,
+  the job's own metadata write adopted without a transcript read, no redundant final
+  reapply, hydration built only for an open socket and from the metadata for a
+  metadata-only write, the owner and speaker names reused by `loadRequestDb` (100
+  setters on a 1 MB message: 308 reads and 686 ms to 4 reads and 37 ms; 101 to 100
+  transactions). **3a leftovers** (their own slice, measure first): coalescing the
+  setter writes themselves (one transaction and one `chatMeta` read per setter remain,
+  so the cost now scales with the chat's metadata such as `hypaV3Data`; the Opus
+  challenge named the safe form: a pending patch on the scope laid over every
+  refresh, flushed at the `job.write` choke point and from a microtask, ignoring
+  the fatal latch); reading only the resolvable `modules` and the job's presets
+  and sections (`cutRecord` parses the whole record first and `modulesByIds` matches
+  `namespace`, so this needs a process-wide parsed cache keyed by revision, not a
+  by-id read); `loadRequestDb` still re-reads every settings record per job and per
+  `presetChain` pick; the Lua character setters (`patchCharacter`) still parse the
+  record about five times per call instead of a field patch; the agent test reporter
+  (`util/agentTestReporter.ts:25`) throws on a non-string assertion text.
 - **3b. Stream parsing** (_hard_, `llm-requests.md`). API-05 with API-01,
   API-02 and API-03, all in the server adapters. OpenAI
   (`server/src/llm/openAI/requests.ts`) and Google (`server/src/llm/google.ts`)

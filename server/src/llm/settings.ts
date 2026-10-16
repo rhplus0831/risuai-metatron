@@ -93,6 +93,7 @@ export function loadRequestDb(
     store: ResourceStore,
     kinds: ResourceKindRegistry,
     ids: RequestScopeIds,
+    names?: Pick<LoadedRequestDb, "selectedCharacterName" | "speakerName">,
 ): LoadedRequestDb {
     const kind = (name: string) => {
         const found = kinds.get(name);
@@ -101,7 +102,7 @@ export function loadRequestDb(
         }
         return found;
     };
-    const characterIds = [ids.selectedCharacterId, ids.speakerId].filter((id): id is string => !!id);
+    const characterIds = names ? [] : [ids.selectedCharacterId, ids.speakerId].filter((id): id is string => !!id);
     const read = store.readRefs([
         { kind: kind(RESOURCE_KIND.providers), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.llmSecrets), id: SINGLETON_RESOURCE_ID },
@@ -193,8 +194,8 @@ export function loadRequestDb(
     };
     return {
         db: db as unknown as RequestDb,
-        selectedCharacterName: nameOf(ids.selectedCharacterId),
-        speakerName: nameOf(ids.speakerId),
+        selectedCharacterName: names ? names.selectedCharacterName : nameOf(ids.selectedCharacterId),
+        speakerName: names ? names.speakerName : nameOf(ids.speakerId),
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
 }

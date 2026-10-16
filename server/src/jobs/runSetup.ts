@@ -5,7 +5,7 @@ import {
     MAX_FOLLOW_UP_PART_CHARS,
     MAX_FOLLOW_UP_PARTS,
 } from "../../../shared/jobs.ts";
-import type { character, Chat, groupChat } from "../../../shared/database.ts";
+import type { character, Chat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
@@ -31,7 +31,7 @@ import { jobModules } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
+import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
@@ -309,8 +309,12 @@ export function createRunSetup(
         return asScript(() => (options.working ? bindings.withWorking(options.working, run) : run()));
     };
 
-    const charactersKind = kinds.get(RESOURCE_KIND.characters)!;
-    const storedCharacter = () => store.get(charactersKind, characterId)?.data as character | groupChat | undefined;
+    const storedCharacter = () => {
+        if (!options.frozen) {
+            refreshCharacter(store, kinds, scope, characterId);
+        }
+        return scope.db.characters.find((entry) => entry?.chaId === characterId);
+    };
 
     const runOnCopy: RunSetup["runOnCopy"] = async (char, mode, arg = {}, options = {}) => {
         services.fence(nativeCtx);

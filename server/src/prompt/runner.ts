@@ -31,6 +31,7 @@ import {
     type JobScope,
     loadJobScope,
     refreshCharacter,
+    refreshChatAfterWrite,
     refreshChat,
     scopeChat,
 } from "../jobs/jobScope.ts";
@@ -362,7 +363,7 @@ async function runSend(
             }),
             covers ? { covers } : undefined,
         );
-        refreshChat(store, scope);
+        refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
         job.emitRecords({ chats: [{ characterId, id: chatId }] });
         return applied.chats[0]?.checkpoints ?? [];
     };
