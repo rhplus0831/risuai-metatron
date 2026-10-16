@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // The Phase 6 Stop D Docker smoke (the closeout's two-client matrix), against the built app (the
 // Docker image on a fresh volume), through the UI and the public API only (no dev modules):
 // - first run: client A sets the password of the fresh server, client B (another browser context,
@@ -210,7 +210,12 @@ const healthy = async () => {
 const description = (page) =>
     page.locator('xpath=//span[starts-with(normalize-space(.), "Description")]/following::textarea[1]').first();
 
-/** Selects the character in the sidebar and opens its editor (the chat screen stays beside it). */
+/**
+ * Selects the character in the sidebar, opens its chat, and opens its editor (the chat screen stays
+ * beside it). From home the character lands on its closed-chat screen and "Open most recent chat"
+ * opens the chat; after the app's own reload (a restore) the URL (`/chat/:chaId/:chatId`) has opened
+ * it already. Nothing else is open before, so the two cases do not race.
+ */
 async function openCharacter(c, chaId) {
     if (
         !(await c.page
@@ -227,6 +232,11 @@ async function openCharacter(c, chaId) {
     }
     await c.page.locator(`[data-char-id="${chaId}"]`).first().waitFor({ timeout: 60_000 });
     await c.page.locator(`[data-char-id="${chaId}"]`).first().click();
+    const openChat = c.page.getByRole("button", { name: /Open most recent chat/ });
+    await openChat.or(c.page.locator("textarea.input-text")).first().waitFor({ timeout: 15_000 });
+    if (await openChat.isVisible()) {
+        await openChat.click();
+    }
     await c.page.waitForTimeout(1000);
     await c.page.getByRole("button", { name: "Character", exact: true }).first().click();
     await description(c.page).waitFor({ timeout: 15_000 });
@@ -287,6 +297,7 @@ try {
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
+    const personas = await single("personas");
     const preset = {
         ...presets.data[0],
         aiModel: "reverse_proxy",
@@ -350,6 +361,8 @@ try {
                             id: chatId,
                             name: "Chat 1",
                             message: [{ role: "char", data: "Greetings.", chatId: randomUUID() }],
+                            // Bound: a send refuses an unbound chat (`docs/plan/chat-binding.md`).
+                            ...chatBindingFixture(modelPresets, presets, personas),
                         },
                     },
                 ],

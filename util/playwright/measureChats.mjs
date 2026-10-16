@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Measurement for Phase 6 slice 9 (chat projection and lazy loading; `docs/plan/phases/slices/
 // phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`): the chats left the
 // character records for the chat module's own store (9a), and boot reads summaries, a chat loads
@@ -11,8 +11,11 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // - the boot: a fresh page until the sidebar shows "Many" (3 runs), and the JS heap after a forced
 //   garbage collection;
 // - switching Many's chats from its chat list (alternating "Long" and a 20-message chat, both
-//   loaded after the first switch), and cold switches: each of 28 other 20-message chats once, until
-//   its chat screen shows (9b: it loads first; with eight idle loaded chats kept, each is a load);
+//   loaded after the first switch; each switch opens the chat from the list, after an untimed Go Back
+//   has closed the one before, so these timings are not comparable with builds before the
+//   closed-chat screen, which switched from one open chat to the next), and cold switches: each of
+//   28 other 20-message chats once, until its chat screen shows (9b: it loads first; with eight
+//   idle loaded chats kept, each is a load);
 // - a streamed reply: the frame intervals while it streams (each chunk renders through the chat
 //   screen's readers) and the long tasks;
 // - opening the chat list (the list entries of 30 chats).
@@ -173,6 +176,7 @@ try {
         maxResponse: 100,
     };
     const providers = await single("providers");
+    const personas = await single("personas");
     const character = (chaId, name) => ({
         chaId,
         name,
@@ -210,7 +214,6 @@ try {
         chatId: id,
         baseRevision: null,
         ops: [
-            ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
             {
                 op: "create",
                 chat: {
@@ -219,6 +222,9 @@ try {
                     note: "",
                     localLore: [],
                     message: Array.from({ length: count }, (_, i) => message(i)),
+                    // Bound: Stream's chat is sent in, and a send refuses an unbound chat
+                    // (`docs/plan/chat-binding.md`).
+                    ...chatBindingFixture(modelPresets, presets, personas),
                 },
             },
         ],
@@ -227,6 +233,7 @@ try {
         method: "POST",
         body: JSON.stringify({
             ops: [
+                ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                 {
                     kind: "ui",
                     id: "main",
@@ -308,18 +315,26 @@ try {
     };
     await selectCharacter(manyId);
     await page.waitForTimeout(1500);
-    const chatRow = (name) =>
-        page
+    // A chat row of the list. While a chat is open the sidebar's chat tab shows Go Back in place of
+    // the list: Go Back (untimed) closes the chat, which stays loaded, and shows the list.
+    const chatRow = async (name) => {
+        const back = page.getByRole("button", { name: "Go Back" });
+        if (await back.isVisible()) {
+            await back.click();
+        }
+        return page
             .locator("button[data-risu-chat-idx]")
             .filter({ has: page.getByText(name, { exact: true }) })
-            .first();
+            .first()
+            .elementHandle();
+    };
     const switches = { long: [], short: [] };
     for (let run = 0; run < WARMUP + RUNS; run++) {
         for (const [label, name] of [
             ["short", "Short 1"],
             ["long", "Long"],
         ]) {
-            const handle = await chatRow(name).elementHandle();
+            const handle = await chatRow(name);
             const ms = await page.evaluate((row) => {
                 const start = performance.now();
                 row.click();
@@ -329,8 +344,8 @@ try {
             await page.waitForTimeout(400);
         }
     }
-    console.log("switch to Long (2,000 messages, the default visible window)", split(switches.long));
-    console.log("switch to a 20-message chat", split(switches.short));
+    console.log("open Long from the list (2,000 messages, the default visible window)", split(switches.long));
+    console.log("open a 20-message chat from the list", split(switches.short));
 
     // 2b. Cold switches: until the chat screen shows the chat (after its load, when it was not loaded).
     await page.evaluate(() => {
@@ -348,7 +363,7 @@ try {
     });
     const cold = [];
     for (let i = 2; i < 30; i++) {
-        const handle = await chatRow(`Short ${i}`).elementHandle();
+        const handle = await chatRow(`Short ${i}`);
         const ms = await page.evaluate((row) => {
             const start = performance.now();
             row.click();
@@ -359,8 +374,10 @@ try {
     }
     console.log("cold switch until the chat shows (28 chats, each once)", stats(cold));
 
-    // 3. A streamed reply into Stream's chat: frame intervals and long tasks while it streams.
+    // 3. A streamed reply into Stream's chat: frame intervals and long tasks while it streams. The
+    // character lands on its closed-chat screen; "Open most recent chat" opens its chat.
     await selectCharacter(streamId);
+    await page.getByRole("button", { name: /Open most recent chat/ }).click();
     await page.waitForTimeout(1500);
     await page.evaluate(() => {
         window.__frames = [];
@@ -418,7 +435,7 @@ try {
         if (run >= WARMUP) opens.push(ms);
         await page.waitForTimeout(300);
     }
-    console.log("select Many (its 30-chat list and the Long chat's window)", split(opens));
+    console.log("select Many (its closed-chat screen and 30-chat list)", split(opens));
 
     const denied = unexpectedEgress(blocked, []);
     check("no unexpected outbound request", denied.length === 0, denied.length === 0 ? undefined : denied);

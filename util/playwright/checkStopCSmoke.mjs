@@ -109,7 +109,10 @@ const shown = (c, chatId, count) =>
         .first()
         .waitFor({ timeout: 20_000 });
 
-/** Selects the character in the sidebar (its selected chat shows). */
+/**
+ * Selects the character in the sidebar and opens its selected chat from its closed-chat screen
+ * ("Open most recent chat"; every call is from home, after a load at the app's root).
+ */
 async function openCharacter(c, chaId) {
     if (
         !(await c.page
@@ -127,10 +130,16 @@ async function openCharacter(c, chaId) {
     await c.page.locator(`[data-char-id="${chaId}"]`).first().waitFor({ timeout: 60_000 });
     const handle = await c.page.locator(`[data-char-id="${chaId}"]`).first().elementHandle();
     await c.page.evaluate((avatar) => (avatar.closest('[role="button"]') ?? avatar).click(), handle);
+    await c.page.getByRole("button", { name: /Open most recent chat/ }).click();
 }
 
-/** Opens a chat from the character's chat list and waits until its last message shows. */
+/**
+ * Opens a chat from the character's chat list and waits until its last message shows. A chat is open
+ * at every call, so the sidebar's chat tab shows Go Back in place of the list: Go Back closes the
+ * chat and shows the list.
+ */
 async function openChat(c, chat) {
+    await c.page.getByRole("button", { name: "Go Back" }).click();
     await c.page
         .locator("button[data-risu-chat-idx]")
         .filter({ has: c.page.getByText(chat.name, { exact: true }) })
@@ -253,6 +262,8 @@ try {
         B.traffic.chats,
     );
     B.reset();
+    // B's list: Go Back closes its chat and shows the list in the sidebar's chat tab.
+    await B.page.getByRole("button", { name: "Go Back" }).click();
     const before = (
         await api("/api/resources/read", {
             method: "POST",
