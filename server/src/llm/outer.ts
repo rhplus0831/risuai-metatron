@@ -4,6 +4,8 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { requestDataResponse } from "./request.ts";
 import type { RequestDb } from "./settings.ts";
 
+const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 /** What the outer loop calls; every hook it lacks is skipped. */
 export type OuterRequestDeps = {
     db: Pick<RequestDb, "requestRetrys" | "antiServerOverloads" | "banCharacterset">;
@@ -44,6 +46,8 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * `requestChatDataMain`) for a server job: the retries (`requestRetrys`, `antiServerOverloads` after
  * a server error), `escape`, the plugin replacers before and after each attempt, the `request`
  * trigger, and `banCharacterset`, in the client's order. Tools are the caller's (`arg.tools`).
+ * Charset rejections count against `requestRetrys`. The loop yields a turn of the event loop
+ * before every attempt.
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },
@@ -66,6 +70,7 @@ export async function requestChatDataOuter(
     });
 
     while (true) {
+        await yieldTurn();
         if (deps.signal.aborted) {
             return { type: "fail", result: "Aborted" };
         }
@@ -109,6 +114,9 @@ export async function requestChatDataOuter(
                 const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
                 if (checkRegex.test(da.result)) {
                     trys += 1;
+                    if (trys > db.requestRetrys) {
+                        return { type: "fail", result: `The model answered in a banned script (${set})` };
+                    }
                     failed = true;
                     break;
                 }

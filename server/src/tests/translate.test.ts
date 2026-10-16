@@ -869,7 +869,8 @@ describe("createTranslationRunner over a fake request layer", () => {
     it("an immediate retry loop (a banned character set) yields each attempt and still ends at the deadline", async () => {
         vi.useFakeTimers({ toFake: ["Date"] });
         build();
-        patch("providers", { banCharacterset: ["Latin"] });
+        // A budget the deadline comes before: a rejection counts against `requestRetrys` (slice 1c).
+        patch("providers", { banCharacterset: ["Latin"], requestRetrys: 1_000 });
         answer = async () => ({ type: "success", result: "latin again" });
         const start = Date.now();
         const result = runner.translate(req("m0"));

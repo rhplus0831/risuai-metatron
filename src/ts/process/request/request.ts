@@ -438,11 +438,13 @@ async function requestPinnedChatData(
         if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
             let failed = false;
             for (const set of settings.providers.banCharacterset) {
-                console.log(set);
                 const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
 
                 if (checkRegex.test(da.result)) {
                     trys += 1;
+                    if (trys > settings.providers.requestRetrys) {
+                        return { type: "fail", result: `The model answered in a banned script (${set})` };
+                    }
                     failed = true;
                     break;
                 }

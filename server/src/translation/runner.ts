@@ -318,9 +318,8 @@ export function createTranslationRunner(deps: {
                             db,
                             signal,
                             attempt: async (arg) => {
-                                // A turn of the event loop before each attempt: the outer loop retries
-                                // some answers at once, and timers and other requests must still run.
-                                await new Promise<void>((resolve) => setImmediate(resolve));
+                                // The outer loop yields a turn before each attempt; check the run
+                                // after that turn.
                                 assertLive(life);
                                 return llm.runInJob(spec(arg));
                             },
