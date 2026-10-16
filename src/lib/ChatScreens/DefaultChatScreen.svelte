@@ -68,6 +68,8 @@
     import { aiLawApplies, chatFoldedState, chatFoldedStateMessageIndex, downloadFile } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
+    import { createRerollHistory } from "src/ts/process/rerollHistory";
+    import { createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
@@ -90,9 +92,9 @@
     let messageInputTranslate: string = $state("");
     let openMenu = $state(false);
     let autoMode = $state(false);
-    let rerolls: Message[][] = [];
-    let rerollid = -1;
-    let lastCharId: string | undefined = undefined;
+    const rerollHistory = createRerollHistory();
+    const sendDrafts = createSendDrafts();
+    const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
     let doingChatInputTranslate = false;
     let toggleStickers: boolean = $state(false);
     let fileInput: string[] = $state([]);
@@ -123,6 +125,18 @@
     let loadPages = $derived.by(() => {
         chatKey;
         return untrack(() => getInitialChatLoadPages(settings.ui));
+    });
+    $effect(() => {
+        chatKey;
+        untrack(() => {
+            const ref = currentChatRef();
+            if (ref && messageInput === "") {
+                const draft = sendDrafts.takeUnplaced(ref);
+                if (draft) {
+                    messageInput = draft.input;
+                }
+            }
+        });
     });
 
     function scrollToBottom() {
@@ -208,11 +222,6 @@
         if ($doingChat) {
             return;
         }
-        if (lastCharId !== currentCharacter?.chaId) {
-            rerolls = [];
-            rerollid = -1;
-        }
-
         // The chat this send writes to, captured before any await; everything after an await
         // resolves it again by id (and stops when it is gone).
         const ref = currentChatRef();
@@ -248,7 +257,7 @@
         }
 
         // The job runs the input stage and appends the user message (Phase 5 slice 9).
-        let serverInput: { input: string; userMessageId: string } | null = null;
+        let serverInput: SendDraft | null = null;
         if (messageInput === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
@@ -258,15 +267,12 @@
                 }
             }
         } else {
-            // The same text after a send that got no answer keeps its id: the server skips an input it
-            // already appended under it.
-            const unresolved = pendingServerInputs.get(chatKeyOf(ref));
-            const pending = unresolved?.input === messageInput ? unresolved : null;
-            serverInput = { input: messageInput, userMessageId: pending?.userMessageId ?? v4() };
+            // Retried text keeps its id: the server skips an input it already appended under it.
+            serverInput = { input: messageInput, userMessageId: sendDrafts.idFor(ref, messageInput) };
         }
         messageInput = "";
         messageInputTranslate = "";
-        rerolls = [];
+        rerollHistory.clear(ref);
         await sleep(10);
         updateInputSizeAll();
         await sendChatMain(continueResponse, ref, serverInput);
@@ -275,10 +281,6 @@
     async function reroll() {
         if ($doingChat) {
             return;
-        }
-        if (lastCharId !== currentCharacter?.chaId) {
-            rerolls = [];
-            rerollid = -1;
         }
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -299,22 +301,9 @@
                 return;
             }
         }
-        if (rerollid < rerolls.length - 1) {
-            if (Array.isArray(rerolls[rerollid + 1])) {
-                rerollid += 1;
-                const rerollData = safeStructuredClone(rerolls[rerollid]);
-                // The last messages become the stored reroll (by id: the replaced ones go, these come).
-                editChatSync(ref, (chat) => {
-                    for (let i = 0; i < rerollData.length; i++) {
-                        chat.message[chat.message.length - rerollData.length + i] = rerollData[i];
-                    }
-                });
-            }
+        if (rerollHistory.canForward(ref)) {
+            rerollHistory.forward(ref);
             return;
-        }
-        if (rerolls.length === 0) {
-            rerolls.push(safeStructuredClone([currentChat.message.at(-1)]) as Message[]);
-            rerollid = rerolls.length - 1;
         }
         let cha = safeStructuredClone(currentChat.message) as Message[];
         if (cha.length === 0) {
@@ -323,7 +312,8 @@
         openMenu = false;
         const saying = cha[cha.length - 1].saying;
         let sayingQu = 2;
-        while (cha[cha.length - 1].role !== "user") {
+        const removed: Message[] = [];
+        while (cha.length > 0 && cha[cha.length - 1].role !== "user") {
             if (cha[cha.length - 1].saying === saying) {
                 sayingQu -= 1;
                 if (sayingQu === 0) {
@@ -334,22 +324,21 @@
             if (!msg) {
                 return;
             }
+            removed.push(msg);
         }
+        removed.reverse();
+        rerollHistory.begin(ref, cha.at(-1)?.chatId ?? null, removed);
         // The replies after the last user message go, then the send runs again.
         const kept = new Set(cha.map((message) => message.chatId));
         editChatSync(ref, (chat) => {
             chat.message = chat.message.filter((message) => kept.has(message.chatId));
         });
-        await sendChatMain();
+        await sendChatMain(false, ref);
     }
 
     async function unReroll() {
         if ($doingChat) {
             return;
-        }
-        if (lastCharId !== currentCharacter?.chaId) {
-            rerolls = [];
-            rerollid = -1;
         }
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -370,24 +359,10 @@
                 return;
             }
         }
-        if (rerollid <= 0) {
-            return;
-        }
-        if (Array.isArray(rerolls[rerollid - 1])) {
-            rerollid -= 1;
-            const rerollData = safeStructuredClone(rerolls[rerollid]);
-            editChatSync(ref, (chat) => {
-                for (let i = 0; i < rerollData.length; i++) {
-                    chat.message[chat.message.length - rerollData.length + i] = rerollData[i];
-                }
-            });
-        }
+        rerollHistory.back(ref);
     }
 
     let abortController: null | AbortController = null;
-    /** Per chat: a server send's input that got no answer (it may have been appended under its id). */
-    let pendingServerInputs = new Map<string, { input: string; userMessageId: string }>();
-    const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
@@ -396,64 +371,48 @@
     async function sendChatMain(
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
-        serverInput: { input: string; userMessageId: string } | null = null,
+        serverInput: SendDraft | null = null,
     ) {
         if (!target) {
             return;
         }
-        let previousLength = findChat(target)?.message.length ?? 0;
-        messageInput = "";
+        const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
+        let ok = false;
         abortController = new AbortController();
         try {
-            await sendChat(-1, {
+            ok = await sendChat(-1, {
                 target,
                 signal: abortController.signal,
                 continue: continued,
-                ...(serverInput
-                    ? {
-                          ...serverInput,
-                          onServerRefused: (ambiguous: boolean) => {
-                              // Appended after all (an earlier attempt that got no answer): nothing to put back.
-                              if (findChat(target)?.message.some((m) => m.chatId === serverInput.userMessageId)) {
-                                  pendingServerInputs.delete(chatKeyOf(target));
-                                  return;
-                              }
-                              if (messageInput === "") {
-                                  messageInput = serverInput.input;
-                              }
-                              // A send that got no answer may still append under its id, also after a later
-                              // refusal of a retry: the id stays with the text until the chat holds it.
-                              const key = chatKeyOf(target);
-                              if (
-                                  ambiguous ||
-                                  pendingServerInputs.get(key)?.userMessageId === serverInput.userMessageId
-                              ) {
-                                  pendingServerInputs.set(key, serverInput);
-                              }
-                          },
-                      }
-                    : {}),
+                ...serverInput,
             });
             const messages = findChat(target)?.message ?? [];
-            if (serverInput) {
-                const userIndex = messages.findIndex((message) => message.chatId === serverInput.userMessageId);
-                if (userIndex !== -1) {
-                    previousLength = userIndex + 1;
-                    if (pendingServerInputs.get(chatKeyOf(target))?.userMessageId === serverInput.userMessageId) {
-                        pendingServerInputs.delete(chatKeyOf(target));
-                    }
-                }
-            }
-            if (previousLength < messages.length) {
-                rerolls.push((safeStructuredClone(messages) as Message[]).slice(previousLength));
-                rerollid = rerolls.length - 1;
+            const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
+            if ((anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
+                rerollHistory.record(target, anchor, messages.slice(anchorIndex + 1));
             }
         } catch (error) {
             console.error(error);
             alertError(error);
+        } finally {
+            if (serverInput) {
+                const landed =
+                    findChat(target)?.message.some(
+                        (message) => message.chatId === serverInput.userMessageId && message.role === "user",
+                    ) ?? false;
+                const selected = currentChatRef();
+                const result = sendDrafts.settle(target, serverInput, {
+                    landed,
+                    ok,
+                    selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
+                    composerEmpty: messageInput === "",
+                });
+                if (result === "restore") {
+                    messageInput = serverInput.input;
+                }
+            }
+            $doingChat = false;
         }
-        lastCharId = currentCharacter?.chaId;
-        $doingChat = false;
         if (settings.ui.playMessage) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
