@@ -15,6 +15,7 @@ import { activateLore } from "../../../shared/lore/activation.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
 import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import { itemIds } from "../../../shared/recordPatch.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
@@ -541,7 +542,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                                   kind: charactersKind,
                                   id,
                                   baseRevision: row.revision,
-                                  data: { ...(row.data as object), ...patch },
+                                  patch: { set: patch },
                               },
                           ],
                       }
@@ -573,10 +574,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 if (!row || index === -1) {
                     return {};
                 }
-                const next = list.slice();
-                next[index] = { ...list[index], personaPrompt: value };
+                const payload = itemIds(list)
+                    ? { patch: { changes: [{ id: personaId, set: { personaPrompt: value } }] } }
+                    : { data: list.map((entry, i) => (i === index ? { ...entry, personaPrompt: value } : entry)) };
                 return {
-                    ops: [{ kind: personasKind, id: SINGLETON_RESOURCE_ID, baseRevision: row.revision, data: next }],
+                    ops: [{ kind: personasKind, id: SINGLETON_RESOURCE_ID, baseRevision: row.revision, ...payload }],
                 };
             });
         } catch (error) {

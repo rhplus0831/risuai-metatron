@@ -78,7 +78,7 @@ const module = (id: string, extra: Record<string, unknown> = {}) => ({ id, name:
  * `m2`, and `m3`, nothing selected, the adapter started with its boot pass done. Then live delivery
  * starts, and requests can be held or hooked (`intercept`).
  */
-async function boot() {
+async function boot(prepare?: (fake: StoreBackedServer) => void) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ feed: true });
     server.current = fake;
@@ -97,6 +97,8 @@ async function boot() {
             },
         ],
     });
+
+    prepare?.(fake);
 
     const client = await import("../resourceClient");
     const sync = await import("../resourceSync.svelte");
@@ -207,6 +209,7 @@ async function boot() {
         records,
         characterStore,
         collectionStore,
+        selection: selectionModule,
         settings,
         live,
         flushFeed,
@@ -850,7 +853,8 @@ describe("modules item patches another tab committed", () => {
         agree("modules");
         await vi.advanceTimersByTimeAsync(5000);
         expect(fake.batchCount()).toBe(1);
-        expect(reads()).toBe(1);
+        // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
+        expect(reads()).toBe(0);
     }, 20_000);
     it("drops the echo of this tab's own modules patch before its acknowledgement, and holds another tab's patch that lands during the save until after it, without a read", async () => {
         const { fake, sync, settings, intercept, patchModules, reads, settle, agree, revision, noNotice } =
@@ -889,4 +893,366 @@ describe("modules item patches another tab committed", () => {
         agree("modules");
         noNotice();
     }, 20_000);
+});
+
+// General record patches (audit slice 3g). Expectations describe the wire contract, not a diff helper.
+const idKinds = ["presets", "modelPresets", "modelProfiles", "personas", "credentials", "plugins"] as const;
+describe("patches of the other mirrored records", () => {
+    it.each(idKinds)("saves and receives %s item patches, including membership and selection changes", async (kind) => {
+        const h = await boot((fake) =>
+            fake.set(
+                kind,
+                "main",
+                [
+                    { id: "a", name: "A" },
+                    { id: "b", name: "B" },
+                    { id: "c", name: "C" },
+                ].map((entry) =>
+                    kind === "credentials"
+                        ? { ...entry, type: "openai" }
+                        : kind === "plugins"
+                          ? { ...entry, keep: "x".repeat(1000) }
+                          : entry,
+                ),
+            ),
+        );
+        const { fake, records, sync, ops, reads, revision, selection, settle } = h;
+        const base = revision(kind);
+        const list = records.trackedRecord(kind) as any;
+        list[1].name = "Renamed";
+        await sync.flushResources();
+        expect(ops()).toEqual([
+            {
+                kind,
+                id: "main",
+                baseRevision: base,
+                patch: { items: [], changes: [{ id: "b", set: { name: "Renamed" }, remove: [] }] },
+            },
+        ]);
+        expect(new TextEncoder().encode(JSON.stringify(ops()[0].patch)).length).toBeLessThan(
+            new TextEncoder().encode(JSON.stringify(h.record(kind))).length,
+        );
+        expect(h.record(kind)[1].name).toBe("Renamed");
+        const select =
+            kind === "presets"
+                ? selection.selectPreset
+                : kind === "personas"
+                  ? selection.selectPersona
+                  : kind === "modelPresets"
+                    ? selection.selectModelPreset
+                    : null;
+        select?.("a");
+        const saved = revision(kind);
+        fake.store.applyChanges({
+            ops: [
+                {
+                    kind: fake.kind(kind),
+                    id: "main",
+                    baseRevision: saved,
+                    patch: { changes: [{ id: "b", set: { name: "Remote" } }], order: ["c", "b"] },
+                },
+            ],
+        });
+        expect(plain(records.recordData(kind)).map((entry: any) => [entry.id, entry.name])).toEqual([
+            ["c", "C"],
+            ["b", "Remote"],
+        ]);
+        if (select) {
+            const key = kind === "presets" ? "presetId" : kind === "personas" ? "personaId" : "modelPresetId";
+            expect(selection.selection[key]).toBe("c");
+        }
+        expect(sync.heldRecordRevision(kind, "main")).toBe(revision(kind));
+        await settle();
+        expect(reads()).toBe(0);
+        expect(fake.batchCount()).toBe(1);
+    });
+
+    it.each([
+        { kind: "ui", data: { zoomsize: 100 }, field: "zoomsize", value: 125, remote: 140 },
+        {
+            kind: "pluginStorage",
+            data: { keep: "가".repeat(1000), value: 1, obsolete: true },
+            field: "value",
+            value: 2,
+            remote: 3,
+        },
+        { kind: "statics", data: { messages: 1, imports: 1234567890123456 }, field: "messages", value: 2, remote: 3 },
+        {
+            kind: "translatorPresets",
+            data: {
+                items: [
+                    { id: "a", name: "A" },
+                    { id: "b", name: "B" },
+                ],
+                selectedId: "a",
+            },
+            field: "selectedId",
+            value: "b",
+            remote: "a",
+        },
+        {
+            kind: "hypaV3Presets",
+            data: {
+                items: [
+                    { id: "a", name: "A" },
+                    { id: "b", name: "B" },
+                ],
+                selectedId: "a",
+            },
+            field: "selectedId",
+            value: "b",
+            remote: "a",
+        },
+    ])(
+        "saves and receives $kind field patches without echoing the remote record",
+        async ({ kind, data, field, value, remote }) => {
+            const h = await boot((fake) => fake.set(kind, "main", data));
+            const { records, sync, fake, revision, ops, reads, settle } = h;
+            const base = revision(kind);
+            const record = records.trackedRecord(kind as any) as any;
+            record[field] = value;
+            const remove = kind === "pluginStorage" ? ["obsolete"] : [];
+            if (remove.length) delete record.obsolete;
+            await sync.flushResources();
+            expect(ops()).toEqual([
+                { kind, id: "main", baseRevision: base, patch: { set: { [field]: value }, remove } },
+            ]);
+            expect(h.record(kind)[field]).toBe(value);
+            expect(h.record(kind)).not.toHaveProperty("obsolete");
+            fake.store.applyChanges({
+                ops: [
+                    {
+                        kind: fake.kind(kind),
+                        id: "main",
+                        baseRevision: revision(kind),
+                        patch: { set: { [field]: remote } },
+                    },
+                ],
+            });
+            expect(plain(records.recordData(kind as any))[field]).toBe(remote);
+            expect(sync.heldRecordRevision(kind, "main")).toBe(revision(kind));
+            await settle();
+            expect(reads()).toBe(0);
+            expect(fake.batchCount()).toBe(1);
+        },
+    );
+
+    it("keeps whole writes for lists without unique nonempty ids, llmSecrets, and patches no smaller in UTF-8", async () => {
+        const h = await boot((fake) => {
+            fake.set("plugins", "main", [{ name: "one" }, { name: "two" }]);
+            fake.set("loreBook", "main", [{ name: "one", data: [] }]);
+            fake.set("globalscript", "main", [{ in: "a", out: "b", type: "editinput" }]);
+            fake.set("pluginStorage", "main", { x: "a" });
+        });
+        const { records, sync, ops, fake } = h;
+        for (const [kind, field] of [
+            ["plugins", "name"],
+            ["loreBook", "name"],
+            ["globalscript", "out"],
+        ] as const) {
+            (records.trackedRecord(kind) as any)[0][field] = "changed";
+        }
+        (records.trackedRecord("llmSecrets") as any).vertexClientEmail = "readable@example.test";
+        (records.trackedRecord("pluginStorage") as any).x = "가".repeat(30);
+        await sync.flushResources();
+        expect(
+            ops()
+                .map((op) => op.kind)
+                .sort(),
+        ).toEqual(["globalscript", "llmSecrets", "loreBook", "pluginStorage", "plugins"]);
+        for (const op of ops()) {
+            expect(op).not.toHaveProperty("patch");
+            expect(op).toHaveProperty("data");
+        }
+        // UTF-16 length would choose the whole record here; UTF-8 correctly favors the patch.
+        fake.set("pluginStorage", "main", { keep: "가".repeat(5), value: "a" });
+        await h.settle();
+        fake.requests.length = 0;
+        (records.trackedRecord("pluginStorage") as any).value = "b";
+        await sync.flushResources();
+        const patch = { set: { value: "b" }, remove: [] };
+        const whole = h.record("pluginStorage");
+        expect(JSON.stringify(patch).length).toBeGreaterThan(JSON.stringify(whole).length);
+        expect(new TextEncoder().encode(JSON.stringify(patch)).length).toBeLessThan(
+            new TextEncoder().encode(JSON.stringify(whole)).length,
+        );
+        expect(ops()[0].patch).toEqual(patch);
+        // Duplicate and empty ids also reject parts, even though these records are arrays of objects.
+        for (const ids of [
+            ["same", "same"],
+            ["", "b"],
+        ]) {
+            fake.set(
+                "plugins",
+                "main",
+                ids.map((id) => ({ id, name: "base", keep: "x".repeat(1000) })),
+            );
+            await h.settle();
+            fake.requests.length = 0;
+            const replacement = plain(records.recordData("plugins"));
+            replacement[0].name = "edited";
+            records.replaceRecord("plugins", replacement);
+            await sync.flushResources();
+            expect(ops()).toHaveLength(1);
+            expect(ops()[0]).not.toHaveProperty("patch");
+            expect(h.record("plugins")[0].name).toBe("edited");
+        }
+    });
+
+    it("reads the whole record when an object or item feed patch is malformed or does not fit its held base", async () => {
+        const h = await boot((fake) => fake.set("pluginStorage", "main", { value: "base" }));
+        h.live.paused = true;
+        const cases = [
+            ["pluginStorage", (base: string) => ({ baseRevision: base, items: [], changes: [], order: [] })],
+            ["presets", (base: string) => ({ baseRevision: base, set: { name: "wrong shape" }, remove: [] })],
+            [
+                "pluginStorage",
+                (base: string) => ({ baseRevision: base, set: JSON.parse('{"__proto__":1}'), remove: [] }),
+            ],
+            [
+                "presets",
+                (base: string) => ({
+                    baseRevision: base,
+                    items: [],
+                    changes: [{ id: "missing", set: { name: "x" }, remove: [] }],
+                }),
+            ],
+            ["pluginStorage", (base: string) => ({ baseRevision: base, set: null, remove: [] })],
+            [
+                "pluginStorage",
+                (base: string) => ({
+                    baseRevision: base.replace(/:[0-9]+$/, ":0"),
+                    set: { value: "wrong base" },
+                    remove: [],
+                }),
+            ],
+            [
+                "pluginStorage",
+                (base: string) => ({ baseRevision: "other-epoch:1:1", set: { value: "wrong epoch" }, remove: [] }),
+            ],
+        ] as const;
+        for (const [i, [kind, make]] of cases.entries()) {
+            const base = h.revision(kind);
+            const data =
+                kind === "presets" ? [{ ...h.record(kind)[0], name: `remote ${i}` }] : { value: `remote ${i}` };
+            h.fake.set(kind, "main", data);
+            h.sync.noteRemoteChanges({
+                resources: [{ kind, id: "main", revision: h.revision(kind), patch: make(base) as any }],
+                chats: [],
+                chatOrders: [],
+            });
+            await h.settle();
+            expect(plain(h.records.recordData(kind))).toEqual(h.record(kind));
+            expect(h.reads()).toBe(i + 1);
+        }
+        // A held base still cannot cover two writes: the notice must be exactly base + 1.
+        const base = h.revision("pluginStorage");
+        h.fake.set("pluginStorage", "main", { value: "intermediate" });
+        h.fake.set("pluginStorage", "main", { value: "latest" });
+        h.sync.noteRemoteChanges({
+            resources: [
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    revision: h.revision("pluginStorage"),
+                    patch: { baseRevision: base, set: { value: "incomplete" }, remove: [] },
+                },
+            ],
+            chats: [],
+            chatOrders: [],
+        });
+        await h.settle();
+        expect(plain(h.records.recordData("pluginStorage"))).toEqual({ value: "latest" });
+        expect(h.reads()).toBe(cases.length + 1);
+        expect(h.fake.batchCount()).toBe(0);
+    });
+
+    it.each(["feed", "hydration"] as const)(
+        "rebuilds a dirty tab's 409 from matching %s data, retaining merge, discard and lost-response behavior",
+        async (delivery) => {
+            const h = await boot((fake) => fake.set("statics", "main", { messages: 4, imports: 0 }));
+            h.live.paused = true;
+            const publish = (kind: string, id: string, patch: unknown) => {
+                h.fake.store.applyChanges({
+                    ops: [{ kind: h.fake.kind(kind), id, baseRevision: h.revision(kind, id), patch }],
+                });
+                if (delivery === "feed") h.flushFeed();
+                else {
+                    h.live.queue.length = 0;
+                    const row = h.fake.record(kind, id)!;
+                    expect(h.sync.applyHydration({ kind, id, ...row })).toBe(false);
+                }
+            };
+            // An unrelated character stamp merges, and statistics add both tabs' deltas.
+            h.character().desc = "local";
+            (h.records.trackedRecord("statics") as any).messages = 6;
+            publish("characters", "c", { set: { lastInteraction: 123 } });
+            publish("statics", "main", { set: { messages: 7 } });
+            expect(h.character().lastInteraction).not.toBe(123);
+            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(h.record("characters", "c")).toMatchObject({ desc: "local", lastInteraction: 123 });
+            expect(h.record("statics")).toEqual({ messages: 9, imports: 0 });
+            expect(h.reads()).toBe(0);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            // A non-mergeable collection is discarded with the ordinary reload notice.
+            h.settings.modules[1].name = "mine";
+            publish("modules", "main", { changes: [{ id: "m2", set: { name: "theirs" } }] });
+            expect(h.settings.modules[1].name).toBe("mine");
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(h.settings.modules[1].name).toBe("theirs");
+            expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+            expect(h.reads()).toBe(0);
+            alerts.normal.mockClear();
+            // A lost acknowledgement is recognized from an exact copy of what this tab sent.
+            h.settings.modules[1].name = "ack lost";
+            h.fake.dropNextBatchResponse = true;
+            await expect(h.sync.flushResources()).rejects.toThrow("Failed to fetch");
+            if (delivery === "feed") h.flushFeed();
+            else {
+                const row = h.fake.record("modules", "main")!;
+                h.sync.applyHydration({ kind: "modules", id: "main", ...row });
+            }
+            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(h.record("modules")[1].name).toBe("ack lost");
+            expect(h.reads()).toBe(0);
+            expect(alerts.normal).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(["missing", "older feed", "wrong base", "older hydration"])(
+        "reads a conflicting record when the available copy is %s",
+        async (mode) => {
+            const h = await boot();
+            h.live.paused = true;
+            h.settings.modules[1].name = "local";
+            const base = h.revision("modules");
+            h.patchModules({ changes: [{ id: "m2", set: { name: "first remote" } }] });
+            if (mode === "older feed") h.flushFeed();
+            if (mode === "older hydration")
+                h.sync.applyHydration({ kind: "modules", id: "main", ...h.fake.record("modules", "main")! });
+            if (mode === "wrong base") {
+                h.sync.noteRemoteChanges({
+                    resources: [
+                        {
+                            kind: "modules",
+                            id: "main",
+                            revision: h.revision("modules"),
+                            patch: {
+                                baseRevision: base.replace(/:[0-9]+$/, ":0"),
+                                items: [],
+                                changes: [{ id: "m2", set: { name: "bad" }, remove: [] }],
+                            },
+                        },
+                    ],
+                    chats: [],
+                    chatOrders: [],
+                });
+            } else h.patchModules({ changes: [{ id: "m2", set: { name: "latest remote" } }] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(h.reads()).toBe(1);
+            expect(h.settings.modules[1].name).toBe(mode === "wrong base" ? "first remote" : "latest remote");
+            expect(h.sync.heldRecordRevision("modules", "main")).toBe(h.revision("modules"));
+            expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        },
+    );
 });

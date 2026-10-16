@@ -42,7 +42,7 @@ import {
 import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { applyItemPatch, type CheckedItemPatch, checkItemPatch, itemIds } from "../../../shared/recordPatch.ts";
+import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
 import { CHARACTER_SHAPE_FIELDS, normalizeCharacter } from "../../../shared/characters.ts";
 import { reconcileSelection } from "./settingsViews.svelte";
 import {
@@ -175,8 +175,8 @@ type Collection = Phase1Collection | SectionKind | CollectionKind;
 /** A top-level field of a record's text: its name, and where its value's JSON text is in that text. */
 type FieldSpan = [key: string, start: number, end: number];
 /**
- * A record's JSON text in parts, what a save diffs to send a patch: a character's top-level fields,
- * or the `modules` items by id (each item's span and fields), as spans of `source`, the text they
+ * A record's JSON text in parts, what a save diffs to send a patch: an object's top-level fields,
+ * or an array's items by id (each item's span and fields), as spans of `source`, the text they
  * were built with (a projection's own text, so the parts hold no copy of it).
  */
 type RecordParts =
@@ -559,14 +559,26 @@ function itemProjection(list: unknown): Projection {
     return { text, parts: { type: "items", source: text, items: parts } };
 }
 
-/** A collection's text, with the `modules` parts (`itemProjection`); undefined when the record is absent. */
+/** A dirty collection's text and parts; only modules reuse the field-text cache. */
 function collectionProjection(collection: Collection): Projection | undefined {
-    if (collection === RESOURCE_KIND.modules) {
-        const record = recordData(collection);
-        return record === undefined ? undefined : moduleProjection(record);
+    const record = recordData(collection as RecordKind);
+    if (record === undefined) {
+        return undefined;
     }
-    const text = projectCollection(collection);
-    return text === undefined ? undefined : { text, parts: null };
+    if (collection === SECTION_KIND.llmSecrets) {
+        // The server refuses patches of a projecting/prepareWrite kind, even its readable siblings.
+        return { text: projectCollection(collection)!, parts: null };
+    }
+    if (collection === RESOURCE_KIND.modules) {
+        return moduleProjection(record);
+    }
+    if (isSection(collection)) {
+        const ordered = Object.fromEntries(
+            SECTION_FIELDS[collection].map((field) => [field, (record as Record<string, unknown>)[field]]),
+        );
+        return objectProjection(ordered);
+    }
+    return isPlainObject(record) ? objectProjection(record) : itemProjection(record);
 }
 
 /**
@@ -956,9 +968,9 @@ function pendingOp(op: Omit<PendingOp, "part" | "bytes">, patch?: string): Pendi
 
 /**
  * The parts of a held record's text (`RecordParts`), computed once from the text and cached on the
- * entry; null when it has none (not a character or `modules`, a list without unique item ids, a
- * `toJSON` hook). Parts rebuilt from a parse are spans of the held text when the rebuilt text equals
- * it, else of the rebuilt text: a parse may order nested integer keys differently from the live
+ * entry; null when it has none (`llmSecrets`, a list without unique item ids, a `toJSON` hook). Parts
+ * rebuilt from a parse are spans of the held text when the rebuilt text equals it, else of the rebuilt
+ * text: a parse may order nested integer keys differently from the live
  * record, and such a field only reads as changed and is sent again, never the reverse.
  */
 function baseParts(kind: string, entry: Persisted): RecordParts | null {
@@ -968,10 +980,8 @@ function baseParts(kind: string, entry: Persisted): RecordParts | null {
     let projection: Projection | null = null;
     try {
         const data: unknown = JSON.parse(entry.text);
-        if (kind === RESOURCE_KIND.characters && isPlainObject(data)) {
-            projection = objectProjection(data);
-        } else if (kind === RESOURCE_KIND.modules) {
-            projection = itemProjection(data);
+        if (kind !== SECTION_KIND.llmSecrets) {
+            projection = isPlainObject(data) ? objectProjection(data) : itemProjection(data);
         }
     } catch {}
     const parts = projection?.parts ?? null;
@@ -1020,7 +1030,7 @@ function fieldPatchText(set: readonly [string, string][], remove: readonly strin
 /**
  * The JSON of the record patch from `base` to `local` (`RecordFieldPatch` or `RecordItemPatch`
  * without its revision), `""` when nothing differs but key order, or null when a whole write is
- * needed (a changed `__proto__` field of a character).
+ * needed (a changed `__proto__` field of an object record).
  */
 function recordPatchText(base: RecordParts, local: RecordParts): string | null {
     if (base.type === "fields" && local.type === "fields") {
@@ -1059,7 +1069,7 @@ function recordPatchText(base: RecordParts, local: RecordParts): string | null {
 
 /**
  * The save of a held record whose text changed: a record patch against the saved base when both have
- * parts (a character's changed fields, the changed `modules` items), unless it is not smaller in UTF-8
+ * parts (an object's changed fields, an array's changed items), unless it is not smaller in UTF-8
  * bytes than the whole data; otherwise the whole record. Null when only key order differs: the local
  * text is held as the saved one (the same JSON values at the same revision), and nothing is sent.
  */
@@ -1953,14 +1963,39 @@ function sameJson(a: string, b: string): boolean {
     }
 }
 
+/** A conflicting revision already received over the feed or the job's hydration connection. */
+function rebuildConflictRecord(conflict: { kind: string; id: string; revision: string | null }): RemoteItem | null {
+    if (conflict.revision === null || parseRevisionToken(conflict.revision)?.epoch !== getResourceEpoch()) {
+        return null;
+    }
+    const key = recordKey(conflict.kind, conflict.id);
+    const held = persisted.get(key);
+    const notice = remoteRecords.get(key);
+    if (
+        held &&
+        notice?.revision === conflict.revision &&
+        notice.patch &&
+        held.revision === notice.patch.baseRevision &&
+        matchesPatchRevision(notice.patch, conflict.revision)
+    ) {
+        const data = patchedRecord(held.text, notice.patch);
+        if (data !== null) {
+            return { ...conflict, data };
+        }
+    }
+    const deferred = deferredHydrations.get(key);
+    return deferred?.revision === conflict.revision ? { ...conflict, data: deferred.data } : null;
+}
+
 /**
- * Another tab or device wrote records this batch was based on. Reads them back and puts the server
- * version into the mirror, unless the server already holds exactly what this client sent (a retry
- * after a lost response). The rest of the batch goes out in the next cycle.
+ * Another tab or device wrote records this batch was based on. Rebuilds an already received revision
+ * or reads it back, then puts the server version into the mirror, unless the server already holds
+ * exactly what this client sent (a retry after a lost response). The rest of the batch goes out in the next cycle.
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
     const sent = new Map(batch.map((op) => [op.key, op]));
     const refs: { kind: string; id: string }[] = [];
+    const rebuilt: RemoteItem[] = [];
     const chatRefs: { characterId: string; id: string }[] = [];
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
@@ -1993,7 +2028,12 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         } else if (isChatOrderConflict(conflict)) {
             conflictedOrders.add(conflict.characterId);
         } else {
-            refs.push({ kind: conflict.kind, id: conflict.id });
+            const item = rebuildConflictRecord(conflict);
+            if (item) {
+                rebuilt.push(item);
+            } else {
+                refs.push({ kind: conflict.kind, id: conflict.id });
+            }
         }
     }
     // Counts only: the conflicting records' ids stay here.
@@ -2021,7 +2061,7 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
         hydrate.add(characterId);
     }
-    for (const item of read.items) {
+    for (const item of [...rebuilt, ...read.items]) {
         const key = recordKey(item.kind, item.id);
         const text = item.revision === null ? null : recordText(item.kind, item.data);
         const op = sent.get(key);
@@ -2456,8 +2496,8 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
  * Applies a live update's record patch without reading the record, when this client holds the record
  * at exactly the patch's base revision (of the loaded epoch, the same incarnation, one write before
  * the update) and has no local change of it (`canApplyRemote`): a character's field patch
- * (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); a `modules` item patch
- * (`RecordItemPatch`) is applied to a detached copy of the held text and the result goes in through
+ * (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); another mirrored record
+ * patch (except `llmSecrets`) is applied to a detached copy of the held text and the result goes through
  * the mirror's whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's
  * projection afterwards, as for a whole update, and a waiting notice the update covers is settled.
  * The remote-change listeners hear of it unless only a character's `lastInteraction` changed (a send
@@ -2476,20 +2516,10 @@ function applyRemotePatch(ref: {
     const patch = ref.patch;
     if (
         !patch ||
-        (ref.kind !== RESOURCE_KIND.characters && ref.kind !== RESOURCE_KIND.modules) ||
-        ref.revision === null
-    ) {
-        return false;
-    }
-    const base = parseRevisionToken(patch.baseRevision);
-    const next = parseRevisionToken(ref.revision);
-    if (
-        !base ||
-        !next ||
-        base.epoch !== getResourceEpoch() ||
-        next.epoch !== base.epoch ||
-        next.seq !== base.seq ||
-        next.revision !== base.revision + 1
+        ref.kind === SECTION_KIND.llmSecrets ||
+        (ref.kind !== RESOURCE_KIND.characters && !COLLECTIONS.includes(ref.kind as Collection)) ||
+        ref.revision === null ||
+        !matchesPatchRevision(patch, ref.revision)
     ) {
         return false;
     }
@@ -2501,7 +2531,7 @@ function applyRemotePatch(ref: {
     const changed =
         ref.kind === RESOURCE_KIND.characters
             ? applyCharacterPatch(ref.id, patch)
-            : applyModulesPatch(ref.id, held.text, patch);
+            : applyCollectionPatch(ref.kind, ref.id, held.text, patch);
     if (changed === null) {
         return false;
     }
@@ -2559,23 +2589,58 @@ function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
     return fields.some((field) => field !== "lastInteraction");
 }
 
-/**
- * A `modules` item patch (`applyRemotePatch`): applied to a parse of the held text (the mirror equals
- * it), and the detached result replaces the record as a whole read's would. Returns null when it does
- * not apply, else true.
- */
-function applyModulesPatch(id: string, heldText: string, patch: RecordPatch): boolean | null {
-    if (!Object.hasOwn(patch, "items") || Object.hasOwn(patch, "set") || Object.hasOwn(patch, "remove")) {
-        return null;
-    }
-    let list: Record<string, unknown>[];
+/** A patch must describe exactly the next write of the held incarnation, in this epoch. */
+function matchesPatchRevision(patch: RecordPatch, revision: string): boolean {
+    const base = parseRevisionToken(patch.baseRevision);
+    const next = parseRevisionToken(revision);
+    return (
+        !!base &&
+        !!next &&
+        base.epoch === getResourceEpoch() &&
+        next.epoch === base.epoch &&
+        next.seq === base.seq &&
+        next.revision === base.revision + 1
+    );
+}
+
+/** A detached server record reconstructed from held text; null for a malformed or inapplicable patch. */
+function patchedRecord(
+    heldText: string,
+    patch: RecordPatch,
+): Record<string, unknown> | Record<string, unknown>[] | null {
     try {
-        const checked: CheckedItemPatch = checkItemPatch(structuredClone(patch) as Record<string, unknown>);
-        list = applyItemPatch(JSON.parse(heldText), checked);
+        const value: unknown = JSON.parse(heldText);
+        const copy = structuredClone(patch) as Record<string, unknown>;
+        if (!isPlainObject(copy)) {
+            return null;
+        }
+        if (["items", "changes", "order"].some((key) => Object.hasOwn(copy, key))) {
+            if (!Object.hasOwn(copy, "items") || Object.hasOwn(copy, "set") || Object.hasOwn(copy, "remove")) {
+                return null;
+            }
+            return applyItemPatch(value, checkItemPatch(copy));
+        }
+        if (!isPlainObject(value) || !isPlainObject(copy.set) || !Array.isArray(copy.remove)) {
+            return null;
+        }
+        // The feed can carry an empty diff after normalization kept every value.
+        if (Object.keys(copy.set).length === 0 && copy.remove.length === 0) {
+            return value;
+        }
+        const checked = checkFields(copy.set, copy.remove, "a patch");
+        return withFields(value, checked.set, checked.remove);
     } catch {
         return null;
     }
-    applyToMirror(RESOURCE_KIND.modules, id, list);
+}
+
+/** Apply a detached patch result through exactly the same mirror path as a whole read. */
+function applyCollectionPatch(kind: string, id: string, heldText: string, patch: RecordPatch): boolean | null {
+    const data = patchedRecord(heldText, patch);
+    if (data === null) {
+        return null;
+    }
+    applyToMirror(kind, id, data);
     return true;
 }
 

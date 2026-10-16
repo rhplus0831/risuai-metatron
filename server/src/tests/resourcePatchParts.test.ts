@@ -299,3 +299,196 @@ describe("a patch of a shallowNormalize kind", () => {
         expect(JSON.parse(s.text(s.characters, CHARACTER_ID)).desc).toBe("second");
     });
 });
+
+// Slice 3g: observe both the stored result and its feed, including the work avoided by the fast path.
+describe("general record patch writes", () => {
+    it("patches pluginStorage without parsing or serializing its unchanged payload, and publishes a detached field diff", () => {
+        const s = side(FAST);
+        const kind = FAST.get("pluginStorage")!;
+        const keep = { nested: "가".repeat(100_000) };
+        s.store.put(kind, "main", { keep, obsolete: true, value: 1 }, null);
+        const write = (patch: unknown) =>
+            s.store.applyChanges({
+                ops: [{ kind, id: "main", baseRevision: s.store.revisionOf(kind, "main"), patch }],
+            });
+        write({ set: { value: 2 } });
+        const baseRevision = s.store.revisionOf(kind, "main");
+        const parse = vi.spyOn(JSON, "parse");
+        const stringify = vi.spyOn(JSON, "stringify");
+        try {
+            write({ set: { value: 3 }, remove: ["obsolete"] });
+            expect(parse.mock.calls.some(([text]) => String(text).includes(keep.nested))).toBe(false);
+            expect(
+                stringify.mock.results.some(({ value }) => typeof value === "string" && value.includes(keep.nested)),
+            ).toBe(false);
+        } finally {
+            parse.mockRestore();
+            stringify.mockRestore();
+        }
+        expect(s.store.get(kind, "main")!.data).toEqual({ keep, value: 3 });
+        const event = s.events.at(-1)!;
+        expect(event.type).toBe("change");
+        if (event.type !== "change") throw new Error("missing feed change");
+        expect(event.changes.resources[0].patch).toEqual({ baseRevision, set: { value: 3 }, remove: ["obsolete"] });
+    });
+
+    it("diffs slow-path stored preset text into changed items and order without reserializing unchanged prompts, and caps the feed", () => {
+        const s = side(FAST);
+        const kind = FAST.get("presets")!;
+        const prompt = "unchanged 한글 ".repeat(10_000);
+        s.store.put(
+            kind,
+            "main",
+            [
+                { id: "a", name: "A", promptTemplate: [{ type: "plain", text: prompt, role: "system" }] },
+                { id: "b", name: "B" },
+            ],
+            s.store.revisionOf(kind, "main"),
+        );
+        const before = s.store.get(kind, "main")!.data as Record<string, unknown>[];
+        const added = { ...before[1], id: "c", name: "C" };
+        const baseRevision = s.store.revisionOf(kind, "main");
+        const expected = [added, { ...before[0], name: "Renamed" }];
+        const whole = side(FAST);
+        // A whole write pays for normalization too. A patch must not serialize an unchanged
+        // cloned prompt any more times than that control merely to build the feed diff.
+        const stringify = vi.spyOn(JSON, "stringify");
+        const promptSerializations = () =>
+            stringify.mock.calls.filter(([value]) => Array.isArray(value) && value[0]?.text === prompt).length;
+        try {
+            whole.store.put(kind, "main", expected, whole.store.revisionOf(kind, "main"));
+            const normalizationCost = promptSerializations();
+            stringify.mockClear();
+            s.store.applyChanges({
+                ops: [
+                    {
+                        kind,
+                        id: "main",
+                        baseRevision,
+                        patch: {
+                            changes: [{ id: "a", set: { name: "Renamed" } }],
+                            items: [added],
+                            order: ["c", "a"],
+                        },
+                    },
+                ],
+            });
+            expect(promptSerializations()).toBeLessThanOrEqual(normalizationCost);
+        } finally {
+            stringify.mockRestore();
+        }
+        expect(s.store.get(kind, "main")!.data).toEqual(expected);
+        const event = s.events.at(-1)!;
+        if (event.type !== "change") throw new Error("missing feed change");
+        expect(event.changes.resources[0].patch).toEqual({
+            baseRevision,
+            items: [added],
+            changes: [{ id: "a", set: { name: "Renamed" }, remove: [] }],
+            order: ["c", "a"],
+        });
+        const large = "가".repeat(24_000); // Under 64 Ki characters, over 64 Ki UTF-8 bytes.
+        s.store.applyChanges({
+            ops: [
+                {
+                    kind,
+                    id: "main",
+                    baseRevision: s.store.revisionOf(kind, "main"),
+                    patch: { changes: [{ id: "a", set: { mainPrompt: large } }] },
+                },
+            ],
+        });
+        const capped = s.events.at(-1)!;
+        if (capped.type !== "change") throw new Error("missing feed change");
+        expect(capped.changes.resources[0]).not.toHaveProperty("patch");
+        expect((s.store.get(kind, "main")!.data as any[])[1].mainPrompt).toBe(large);
+    });
+
+    it("uses slow-path field removals and item replacements, omitting an unsafe top-level __proto__ diff", () => {
+        // Force the whole normalization path while retaining the production kinds' value contract.
+        const s = side(SLOW);
+        const plugins = SLOW.get("plugins")!;
+        s.store.put(
+            plugins,
+            "main",
+            [{ id: "a", old: 1, keep: { x: [1, 2] } }, JSON.parse('{"id":"b","__proto__":1}')],
+            null,
+        );
+        const baseRevision = s.store.revisionOf(plugins, "main");
+        const replacement = JSON.parse('{"id":"b","__proto__":2}');
+        s.store.applyChanges({
+            ops: [
+                {
+                    kind: plugins,
+                    id: "main",
+                    baseRevision,
+                    patch: {
+                        items: [replacement],
+                        changes: [{ id: "a", set: { fresh: false }, remove: ["old"] }],
+                    },
+                },
+            ],
+        });
+        const event = s.events.at(-1)!;
+        if (event.type !== "change") throw new Error("missing feed change");
+        expect(event.changes.resources[0].patch).toEqual({
+            baseRevision,
+            items: [replacement],
+            changes: [{ id: "a", set: { fresh: false }, remove: ["old"] }],
+        });
+        expect(s.store.get(plugins, "main")!.data).toEqual([
+            { id: "a", keep: { x: [1, 2] }, fresh: false },
+            replacement,
+        ]);
+        // A slow normalizer can change a top-level reserved key as a side effect of a permitted patch.
+        const transformed = {
+            ...SLOW.get("pluginStorage")!,
+            normalize: (data: any) => ({ ...data, ["__proto__"]: data.version }),
+        };
+        const registry = createKindRegistry([transformed]);
+        const other = side(registry);
+        other.store.put(transformed, "main", { version: 1, old: true }, null);
+        other.store.applyChanges({
+            ops: [
+                {
+                    kind: transformed,
+                    id: "main",
+                    baseRevision: other.store.revisionOf(transformed, "main"),
+                    patch: { set: { version: 2 }, remove: ["old"] },
+                },
+            ],
+        });
+        const unsafe = other.events.at(-1)!;
+        if (unsafe.type !== "change") throw new Error("missing feed change");
+        expect(unsafe.changes.resources[0]).not.toHaveProperty("patch");
+        expect(other.store.get(transformed, "main")!.data).toEqual(JSON.parse('{"version":2,"__proto__":2}'));
+    });
+
+    it("charges four units per cut text: evicts older large bases and never caches one over a quarter of the budget", () => {
+        const s = side(FAST);
+        const kind = s.characters;
+        const write = (id: string, value: string) =>
+            s.store.applyChanges({
+                ops: [{ kind, id, baseRevision: s.store.revisionOf(kind, id), patch: { set: { desc: value } } }],
+            });
+        const large = "x".repeat(6 * 1024 * 1024);
+        for (const id of ["a", "b", "c"]) {
+            s.store.put(kind, id, { chaId: id, payload: large }, null);
+            write(id, "warm");
+        }
+        const parsesPayload = (id: string) => {
+            const parse = vi.spyOn(JSON, "parse");
+            try {
+                write(id, "next");
+                return parse.mock.calls.some(([text]) => String(text).includes(large));
+            } finally {
+                parse.mockRestore();
+            }
+        };
+        expect(parsesPayload("b")).toBe(false); // Two 6 Mi texts fit (48 Mi charged units).
+        expect(parsesPayload("a")).toBe(true); // Three do not (72 Mi): oldest was evicted.
+        s.store.put(kind, "oversized", { chaId: "oversized", payload: "x".repeat(17 * 1024 * 1024) }, null);
+        write("oversized", "warm");
+        expect(parsesPayload("oversized")).toBe(true);
+        expect((s.store.get(kind, "oversized")!.data as any).desc).toBe("next");
+    }, 20_000);
+});

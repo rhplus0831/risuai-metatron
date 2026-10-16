@@ -325,7 +325,7 @@ describe("records another writer committed", () => {
         await vi.advanceTimersByTimeAsync(0);
         // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
         const batch = fake.batchBodies()[0];
-        expect(batch?.ops?.[0]?.data?.iconsize).toBe(77);
+        expect(batch?.ops?.[0]?.patch?.set?.iconsize).toBe(77);
         await vi.advanceTimersByTimeAsync(3000);
         // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");

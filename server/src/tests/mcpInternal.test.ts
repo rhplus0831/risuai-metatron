@@ -7,6 +7,7 @@ import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { RPCToolCallContent } from "../../../shared/llm/request.ts";
 import { callGraphMemTool } from "../../../shared/mcp/graphmem.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, ResourceBatchConflictError, type ResourceStore } from "../data/resourceStore.ts";
 import { createVectorCache, type VectorCache } from "../data/vectorCache.ts";
@@ -101,8 +102,19 @@ function fakeEmbeddings() {
     return { service, embedded };
 }
 
-function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } = {}) {
-    const store = createResourceStore({ file: ":memory:", kinds });
+function setup(options: { attached?: boolean; embeddings?: EmbeddingsService; legacyPersonas?: boolean } = {}) {
+    const testKinds = options.legacyPersonas
+        ? createKindRegistry(
+              DEFAULT_RESOURCE_KINDS.map((entry) =>
+                  entry.name === "personas" ? { ...entry, normalize: (data: unknown) => data ?? [] } : entry,
+              ),
+          )
+        : kinds;
+    const kind = (name: string) => testKinds.get(name)!;
+    const feed = createChangeFeed();
+    const events: ChangeFeedEvent[] = [];
+    feed.subscribe((event) => events.push(event));
+    const store = createResourceStore({ file: ":memory:", kinds: testKinds, feed });
     stores.push(store);
     const singleton = (name: string, data: unknown) => {
         const row = store.get(kind(name), SINGLETON_RESOURCE_ID);
@@ -193,7 +205,7 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
         input: "",
         chatRevision: store.chatRevision("c", "k")!,
     };
-    const scope = loadJobScope(store, kinds, context);
+    const scope = loadJobScope(store, testKinds, context);
 
     const log = {
         questions: [] as GenerationQuestion[],
@@ -279,7 +291,7 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
         job,
         scope,
         store,
-        kinds,
+        kinds: testKinds,
         rootDir: "/nonexistent",
         savePath: "/nonexistent/save",
         llm: {
@@ -338,6 +350,8 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
         store.put(kind(name), id, data, store.get(kind(name), id)?.revision ?? null);
     return {
         store,
+        kind,
+        events,
         scope,
         bindings,
         state,
@@ -977,4 +991,112 @@ describe("graph memory's read loop (shared/mcp/graphmem.ts)", () => {
             { type: "text", text: "Error: job ended" },
         ]);
     });
+});
+
+describe("server writers publish record patches", () => {
+    it("MCP updateCharacter publishes set and remove entries, including undefined removal", async () => {
+        const s = setup();
+        s.put("characters", "c", { ...s.stored("c"), replaceGlobalNote: "obsolete" });
+        const baseRevision = s.store.revisionOf(kind("characters"), "c");
+        s.events.length = 0;
+        expect(
+            s.text(
+                await s.tool("risu-set-character-info", {
+                    id: "c",
+                    data: { description: "new", replaceGlobalNote: undefined },
+                }),
+            ),
+        ).toContain("Successfully updated");
+        expect(s.stored("c").desc).toBe("new");
+        expect(s.stored("c")).not.toHaveProperty("replaceGlobalNote");
+        expect(s.events.flatMap((event) => (event.type === "change" ? event.changes.resources : []))).toEqual([
+            {
+                kind: "characters",
+                id: "c",
+                revision: s.store.revisionOf(kind("characters"), "c"),
+                patch: {
+                    baseRevision,
+                    set: { desc: "new" },
+                    remove: ["replaceGlobalNote"],
+                },
+            },
+        ]);
+    });
+
+    it.each([false, true])(
+        "MCP updateModule patches unique ids and edits only the first duplicate (duplicates: %s), keeping enabledModules whole",
+        async (duplicates) => {
+            const s = setup();
+            if (duplicates)
+                s.put("modules", "main", [...s.storedModules(), { id: "m", name: "Second", description: "keep" }]);
+            const baseRevision = s.store.revisionOf(kind("modules"), "main");
+            s.events.length = 0;
+            expect(
+                s.text(await s.tool("risu-set-module-info", { id: "m", data: { name: "Renamed", enabled: true } })),
+            ).toContain("Successfully");
+            expect(s.storedModules()[0].name).toBe("Renamed");
+            expect(s.storedEnabled()).toContain("m");
+            const refs = s.events.flatMap((event) => (event.type === "change" ? event.changes.resources : []));
+            expect(refs.map((ref) => ref.kind).sort()).toEqual(["enabledModules", "modules"]);
+            expect(refs.find((ref) => ref.kind === "enabledModules")).not.toHaveProperty("patch");
+            const moduleRef = refs.find((ref) => ref.kind === "modules")!;
+            if (duplicates) {
+                expect(s.storedModules().at(-1)).toEqual({ id: "m", name: "Second", description: "keep" });
+                expect(moduleRef).not.toHaveProperty("patch");
+            } else
+                expect(moduleRef.patch).toEqual({
+                    baseRevision,
+                    items: [],
+                    changes: [{ id: "m", set: { name: "Renamed" }, remove: [] }],
+                });
+        },
+    );
+
+    it("Lua patchCharacter publishes only changed fields and keeps unrelated character state", () => {
+        const s = setup();
+        const before = s.stored("c");
+        const baseRevision = s.store.revisionOf(kind("characters"), "c");
+        s.events.length = 0;
+        expect(
+            s.bindings.services.patchCharacter({ desc: "Lua description", firstMessage: "Lua greeting" }, s.ctx),
+        ).toBe(true);
+        expect(s.stored("c")).toEqual({ ...before, desc: "Lua description", firstMessage: "Lua greeting" });
+        const refs = s.events.flatMap((event) => (event.type === "change" ? event.changes.resources : []));
+        expect(refs).toHaveLength(1);
+        expect(refs[0].patch).toEqual({
+            baseRevision,
+            set: { desc: "Lua description", firstMessage: "Lua greeting" },
+            remove: [],
+        });
+    });
+
+    it.each([false, true])(
+        "Lua patchPersonaPrompt patches unique ids and falls back to the first match for a legacy list (duplicates: %s)",
+        (duplicates) => {
+            // Production normalization repairs duplicate personas; a legacy kind lets the binding's
+            // explicit itemIds fallback be exercised without mocking its writer or patch helpers.
+            const s = setup({ legacyPersonas: duplicates });
+            s.put("personas", "main", [
+                { id: "u", name: "First", personaPrompt: "old" },
+                { id: duplicates ? "u" : "v", name: "Second", personaPrompt: "keep" },
+            ]);
+            const before = s.store.get(s.kind("personas"), "main")!.data as any[];
+            const baseRevision = s.store.revisionOf(s.kind("personas"), "main");
+            s.events.length = 0;
+            expect(s.bindings.services.patchPersonaPrompt("u", "Lua prompt", s.ctx)).toBe(true);
+            expect(s.store.get(s.kind("personas"), "main")!.data).toEqual([
+                { ...before[0], personaPrompt: "Lua prompt" },
+                before[1],
+            ]);
+            const refs = s.events.flatMap((event) => (event.type === "change" ? event.changes.resources : []));
+            expect(refs).toHaveLength(1);
+            if (duplicates) expect(refs[0]).not.toHaveProperty("patch");
+            else
+                expect(refs[0].patch).toEqual({
+                    baseRevision,
+                    items: [],
+                    changes: [{ id: "u", set: { personaPrompt: "Lua prompt" }, remove: [] }],
+                });
+        },
+    );
 });

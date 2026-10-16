@@ -148,6 +148,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.pluginStorage,
         schemaVersion: 1,
         singleton: true,
+        shallowNormalize: true,
         normalize: (input) => requireObject(input, "pluginStorage"),
     },
     {

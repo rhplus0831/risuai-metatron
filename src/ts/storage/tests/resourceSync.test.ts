@@ -190,8 +190,10 @@ describe("dirty generations", () => {
         const [batch] = fake.batchBodies();
         expect(batch.ops).toHaveLength(1);
         expect(batch.ops[0]).toMatchObject({ kind: "ui", id: "main", baseRevision: before });
-        expect(batch.ops[0].data).not.toHaveProperty("characters");
-        expect(batch.ops[0].data).not.toHaveProperty("botPresets");
+        // The section travels as a field patch of what changed (slice 3g): no whole record, so no
+        // whole-database fields can leak into it.
+        expect(batch.ops[0]).not.toHaveProperty("data");
+        expect(batch.ops[0].patch).toEqual({ set: { theme: "edited" }, remove: [] });
         expect(fake.data("ui", "main").theme).toBe("edited");
         const afterFirst = fake.get("ui", "main")!.revision;
         expect(afterFirst).not.toBe(before);

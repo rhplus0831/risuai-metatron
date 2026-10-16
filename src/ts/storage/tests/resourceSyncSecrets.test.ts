@@ -225,8 +225,15 @@ describe("a queued credential write", () => {
         const log = requestLog(fake);
         const batches = fake.batchBodies();
         expect(batches).toHaveLength(2);
-        expect(batches[0].ops[0].data.map((c: { id: string }) => c.id)).toEqual(["c1", "c2", "c3", "c4"]);
-        expect(batches[1].ops[0].data.map((c: { id: string }) => c.id)).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+        // Each batch carries its new credential as an item patch (slice 3g): the added item whole, in order.
+        expect(batches[0].ops[0].patch).toMatchObject({
+            items: [expect.objectContaining({ id: "c4" })],
+            order: ["c1", "c2", "c3", "c4"],
+        });
+        expect(batches[1].ops[0].patch).toMatchObject({
+            items: [expect.objectContaining({ id: "c5" })],
+            order: ["c1", "c2", "c3", "c4", "c5"],
+        });
         expect(log).toEqual([
             "POST /api/resources/batch",
             "POST /api/resources/batch",

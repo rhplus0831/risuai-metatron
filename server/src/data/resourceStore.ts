@@ -35,6 +35,7 @@ import {
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
+import { diffRecordText } from "./recordPatchText.ts";
 import {
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
@@ -65,11 +66,16 @@ const BUSY_TIMEOUT_MS = 5000;
 const MAX_JSON_DEPTH = 256;
 /**
  * `writePatch`'s cache of the last patched records cut into parts (`PatchBase`): at most this many, and
- * this many UTF-16 units counting each record's text twice (the text and its parts; the value read from
- * it, often a few times the text in memory, is not counted). A record over that alone is not kept.
+ * this many estimated UTF-16 units: 2x text.length for text/parts plus 2x for the parsed graph.
+ * Node 24.21.0, 2026-10-17, --expose-gc, heapUsed deltas (7 samples, GC before/after): a
+ * 10,017,827-unit character with 20,000 lore entries retained 30.997 MB cut (ASCII), 59.832 MB
+ * with two-byte text; the parsed value alone was 10.960/19.760 MB (1.094/1.973 bytes per unit).
+ * The 4x charge rounds up with graph overhead headroom; an estimate, not a hard heap bound for
+ * every JSON shape. A record over the budget alone is not kept.
  */
 const PATCH_BASES_MAX = 4;
 const PATCH_BASES_MAX_UNITS = 64 * 1024 * 1024;
+const PATCH_BASE_UNITS_PER_CHAR = 4;
 
 const MAX_RESOURCE_ID_LENGTH = 512;
 const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
@@ -551,7 +557,7 @@ export function createResourceStore(options: {
             }
             const { text, stored } = serialize(normalizeInput(kind, next, id));
             update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
-            return feedPatch(kind, token(base.seq, base.revision), old, stored);
+            return feedPatch(kind, token(base.seq, base.revision), old, stored, { old: row.data, next: text });
         } catch (error) {
             if (error instanceof ResourceValidationError || error instanceof RecordPatchError) {
                 throw new ResourceValidationError(`ops[${entry.index}]: ${error.message}`);
@@ -581,14 +587,14 @@ export function createResourceStore(options: {
         patchBases.set(key, cut);
         let units = 0;
         for (const entry of patchBases.values()) {
-            units += entry.text.length * 2;
+            units += entry.text.length * PATCH_BASE_UNITS_PER_CHAR;
         }
         for (const [oldest, entry] of patchBases) {
             if (patchBases.size <= PATCH_BASES_MAX && units <= PATCH_BASES_MAX_UNITS) {
                 break;
             }
             patchBases.delete(oldest);
-            units -= entry.text.length * 2;
+            units -= entry.text.length * PATCH_BASE_UNITS_PER_CHAR;
         }
     }
 
@@ -1501,16 +1507,26 @@ function defineField(target: Record<string, unknown>, field: string, value: unkn
 /**
  * What the change feed carries for a patch op that stored `stored` over `old`: for an object record
  * every top-level field whose stored JSON value differs (`diffFields`, normalization included), for
- * an item list the changed items (`diffItems`). None (a plain ref) for a kind whose data does not
+ * an item list the changed items (`diffItems`). The slow path compares stored texts (`diffRecordText`),
+ * since its normalizer clones even unchanged values. None (a plain ref) for a kind whose data does not
  * reach clients as stored, for a changed `__proto__` field, for a record that is neither shape before
  * and after, or for a patch over `MAX_FEED_PATCH_BYTES`.
  */
-function feedPatch(kind: ResourceKind, baseRevision: string, old: unknown, stored: unknown): RecordPatch | undefined {
+function feedPatch(
+    kind: ResourceKind,
+    baseRevision: string,
+    old: unknown,
+    stored: unknown,
+    texts?: { old: string; next: string },
+): RecordPatch | undefined {
     if (kind.project || HIDDEN_HYDRATION_KINDS.includes(kind.name)) {
         return undefined;
     }
     let patch: RecordPatch | undefined;
-    if (isPlainObject(old) && isPlainObject(stored)) {
+    if (texts) {
+        const diff = diffRecordText(texts.old, texts.next, old, stored);
+        patch = diff ? { baseRevision, ...diff } : undefined;
+    } else if (isPlainObject(old) && isPlainObject(stored)) {
         const fields = diffFields(old, stored);
         patch = fields ? { baseRevision, ...fields } : undefined;
     } else if (Array.isArray(old) && Array.isArray(stored)) {

@@ -805,7 +805,7 @@ async function runSpeaker(arg: {
                             kind: charactersKind,
                             id: characterId,
                             baseRevision: row.revision,
-                            data: { ...data, supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(data) + 1 },
+                            patch: { set: { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(data) + 1 } },
                         },
                     ],
                 };

@@ -829,10 +829,13 @@ describe("conflict reloads", () => {
         const before = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
-        // The projection after the reload is the server's canonical text.
+        // The next edit goes as a field patch (slice 3g) on the reloaded base and lands as a normalized
+        // value. The fake applies a patch without a normalizer, so it keeps the server's key order; the
+        // real store serializes the normalizer's order.
         settings.ui.zoomsize = 67;
         await sync.flushResources();
         const stored = fake.data("ui", "main");
-        expect(JSON.stringify(stored)).toBe(JSON.stringify(normalizeUi(stored)));
+        expect(stored.zoomsize).toBe(67);
+        expect(stored).toEqual(normalizeUi(stored));
     });
 });

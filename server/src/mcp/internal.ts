@@ -14,6 +14,7 @@ import type { RisuModule } from "../../../shared/modules.ts";
 import { CHARACTER_FIXED_FIELDS, detachPatch, MutationValidationError } from "../../../shared/mutationValidation.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import { itemIds } from "../../../shared/recordPatch.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import { type ResourceBatchOperation, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
 import { JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
@@ -80,6 +81,14 @@ function applyEntries(data: unknown, entries: readonly (readonly [string, unknow
         }
     }
     return next;
+}
+
+/** The validated entries as a field patch; undefined has the same removal semantics as applyEntries. */
+function entryPatch(entries: readonly (readonly [string, unknown])[]) {
+    return {
+        set: Object.fromEntries(entries.filter(([, value]) => value !== undefined)),
+        remove: entries.filter(([, value]) => value === undefined).map(([field]) => field),
+    };
 }
 
 /**
@@ -239,7 +248,7 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
                               kind: charactersKind,
                               id: chaId,
                               baseRevision: row.revision,
-                              data: applyEntries(row.data, prepared.entries),
+                              patch: entryPatch(prepared.entries),
                           },
                       ];
             return write(ctx, ops, [{ kind: RESOURCE_KIND.characters, id: chaId }]);
@@ -263,13 +272,21 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
             }
             const ops: ResourceBatchOperation[] = [];
             if (prepared.entries.length > 0) {
-                const next = list.slice();
-                next[index] = applyEntries(list[index], prepared.entries) as unknown as RisuModule;
+                const change = { id, ...entryPatch(prepared.entries) };
+                // normalizeModules permits duplicate ids: preserve the first-match whole write then.
+                let payload: Pick<ResourceBatchOperation, "patch" | "data">;
+                if (itemIds(list)) {
+                    payload = { patch: { changes: [change] } };
+                } else {
+                    const next = list.slice();
+                    next[index] = applyEntries(list[index], prepared.entries) as unknown as RisuModule;
+                    payload = { data: next };
+                }
                 ops.push({
                     kind: modulesKind,
                     id: SINGLETON_RESOURCE_ID,
                     baseRevision: row.revision,
-                    data: next,
+                    ...payload,
                 });
             }
             // The module's fields and its enabled state in one write: both or neither.

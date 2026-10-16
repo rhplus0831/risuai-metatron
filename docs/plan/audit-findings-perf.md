@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, and 3g (remaining whole-record transport) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -362,6 +362,47 @@ P2 with the memory items that share its mechanism.
   still travel whole; whole writes (jobs, MCP, imports) publish plain refs; the
   server's `patchBases` budget counts text only; a dirty tab whole-reads on 409. Lower value than 3a to 3e; do after them, or drop if 3c's measurement
   shows the traffic is small.
+
+  Landed 2026-10-17: all mirrored object records except `llmSecrets` and all
+  arrays accepted by `itemIds` now save smaller record patches and apply eligible
+  feed patches without a read. MCP character/module edits, Lua character/persona
+  edits, and the runner's memory-trim edit use patch ops; ambiguous module/persona
+  ids retain the whole-write fallback. `pluginStorage` opts into `shallowNormalize`;
+  cloning preset/persona normalizers stay on the slow path, whose feed diff now
+  compares stored text parts (reusing already parsed item ids) and parses only
+  changed parts. A dirty tab's 409 reuses an exact-base waiting feed patch or an
+  exact-revision deferred hydration before falling back to a whole read.
+  Measurements on Node 24.21.0, uncompressed UTF-8, a one-op batch including its
+  envelope: renaming one of 30 presets with 100 KB of nested prompt text each
+  (3,157,851-byte record) went from 3,157,984 to 206 bytes/edit; changing a counter
+  beside 2 MB of plugin storage went from 2,000,165 to 173 bytes/edit. Eligible
+  observers use the 130/91-byte feed patch bodies instead of fetching those
+  records. With in-memory SQLite, 5 warmups and median of 25 GC-separated edits,
+  presets patch CPU went from 42.04 to 34.74 ms (wall 40.64 to 34.55 ms);
+  whole-write CPU was 27.74/27.46 ms before/after. Feed-diff CPU fell from 8.58 to
+  2.66 ms (wall 7.41 to 1.44 ms); the slow patch still pays for parsing the old
+  record. Seven `--expose-gc` heap samples of a cut 10,017,827-unit character with
+  20,000 lore entries retained about 31.0 MB in ASCII or 59.8 MB with two-byte text;
+  its parsed graph alone retained 11.0/19.8 MB. The cache now charges
+  `text.length * 4` (2 for text/parts, 2 for the parsed graph with headroom) against
+  its existing 64 Mi-unit/four-record limit. Still whole: creates, unpatchable
+  lists (`plugins`, `loreBook`, `globalscript` without unique ids), `llmSecrets`,
+  patches no smaller than the record, changed top-level `__proto__`/unsupported
+  serialization hooks, server `enabledModules`/`authRefreshes` writes, and job
+  owners' `resource` events. Imports and other whole-write callers still publish
+  plain refs; feed patches remain capped at 64 KiB. Tests:
+  `resourceSyncPatches.test.ts` ("patches of the other mirrored records": the
+  per-kind save and feed-apply cases, the whole-write exceptions, the malformed
+  and wrong-base fallbacks, the 409 rebuild from a feed patch or a deferred
+  hydration and its fallbacks), `resourcePatchParts.test.ts` ("general record
+  patch writes": the `pluginStorage` fast path, the slow-path text diff and the
+  feed cap, the `__proto__` omission, the cache budget), `recordPatchText.test.ts`
+  (whitespace and scan fallback), `mcpInternal.test.ts` ("server writers publish
+  record patches") and the memory-trim case in `memoryJobs.test.ts` (slow). Five
+  stale assertions of whole payloads or a whole read were updated in
+  `resourceSync`, `resourceSyncLive`, `resourceSyncPatches`, `resourceSyncSecrets`
+  and `resourceSyncSections` tests.
+
 - **3h. Asset list usability** (_small_, `characters-modules.md`). The paged
   asset lists (`ASSET_LIST_PAGE` of 100) have no name filter, so a far-down
   asset needs many Load More clicks; the paging has no tests and was never

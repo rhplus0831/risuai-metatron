@@ -924,38 +924,72 @@ describe("the no-memory trim question", () => {
     it(
         "'memory' turns the owner's toggle on (counting the transition), emits the record, runs memory in the same send, and is not asked again",
         async () => {
-            await patchSettings({ hypaV3: true });
-            const chaId = await seedCharacter({ extra: { supaMemory: false } });
-            const { events, terminal } = await job(
-                "send",
-                chaId,
-                { input: "Hello V3", userMessageId: "u1" },
-                { answer: () => "memory" },
+            const ws = new WebSocket(
+                `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
             );
-            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-            expect(questions(events)).toHaveLength(1);
-            // The owner: on, its first off→on transition counted, the record sent to the tab.
-            const owner = (await readCharacter(chaId)).data;
-            expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 1]);
-            expect(ownerRecords(events, chaId).map((event) => event.data.supaMemory)).toEqual([true]);
-            // Memory ran in this send: the summaries, the card in the main request, the data stored.
-            expect(summaries().length).toBeGreaterThan(0);
-            expect(mains()).toHaveLength(1);
-            expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
-            const chat = await readChat(chaId);
-            expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
-            expect(chat.data.memoryTrimAck).toBeUndefined();
-            // The next send finds the owner on: no question, memory again.
-            upstream.length = 0;
-            const next = await job(
-                "send",
-                chaId,
-                { input: "Hello again", userMessageId: "u2" },
-                { answer: () => "once" },
-            );
-            expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
-            expect(questions(next.events)).toHaveLength(0);
-            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            const frames: any[] = [];
+            ws.onmessage = (message) => frames.push(JSON.parse(String(message.data)));
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    ws.onopen = () => resolve();
+                    ws.onerror = () => reject(new Error("feed socket failed"));
+                });
+                await expect.poll(() => frames.some((frame) => frame.type === "hello")).toBe(true);
+                await patchSettings({ hypaV3: true });
+                const chaId = await seedCharacter({ extra: { supaMemory: false } });
+                let patchBase = "";
+                const { events, terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello V3", userMessageId: "u1" },
+                    {
+                        answer: async () => {
+                            patchBase = (await readCharacter(chaId)).revision;
+                            return "memory";
+                        },
+                    },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(questions(events)).toHaveLength(1);
+                // The owner: on, its first off→on transition counted, the record sent to the tab.
+                const owner = (await readCharacter(chaId)).data;
+                expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 1]);
+                expect(ownerRecords(events, chaId).map((event) => event.data.supaMemory)).toEqual([true]);
+                const memoryPatches = () =>
+                    frames
+                        .filter((frame) => frame.type === "change")
+                        .flatMap((frame) => frame.changes.resources)
+                        .filter(
+                            (ref) =>
+                                ref.kind === "characters" && ref.id === chaId && ref.patch?.set?.supaMemory === true,
+                        );
+                await expect.poll(memoryPatches).toHaveLength(1);
+                expect(memoryPatches()[0].patch).toEqual({
+                    baseRevision: patchBase,
+                    set: { supaMemory: true, supaMemoryOnCount: 1 },
+                    remove: [],
+                });
+                // Memory ran in this send: the summaries, the card in the main request, the data stored.
+                expect(summaries().length).toBeGreaterThan(0);
+                expect(mains()).toHaveLength(1);
+                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+                const chat = await readChat(chaId);
+                expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
+                expect(chat.data.memoryTrimAck).toBeUndefined();
+                // The next send finds the owner on: no question, memory again.
+                upstream.length = 0;
+                const next = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello again", userMessageId: "u2" },
+                    { answer: () => "once" },
+                );
+                expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
+                expect(questions(next.events)).toHaveLength(0);
+                expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            } finally {
+                ws.close();
+            }
         },
         SLOW,
     );
