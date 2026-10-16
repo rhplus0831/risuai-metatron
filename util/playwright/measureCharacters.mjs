@@ -6,14 +6,19 @@
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI, with 300 characters (one of them "Big": a 300-entry lorebook and a chat of 400
 // messages):
-// - selecting a character from the sidebar (alternating "Big" and "Small"): `changeChar`, its
-//   formatter, and the chat screen rendering its default visible window of the 400 messages
-//   (`loadPages`), not the whole history;
+// - selecting a character from the sidebar (alternating "Big" and "Small"): `changeChar`, closing
+//   the other character's open chat, and its closed-chat screen; then, timed on its own, opening its
+//   chat with "Open most recent chat": the chat screen rendering its default visible window of the
+//   400 messages (`loadPages`), not the whole history, until the rows' bodies show (`rendered`).
+//   Before the closed-chat screen one select timed both, so neither number compares directly with
+//   such a baseline;
 // - 100 keystrokes into Big's description (`bind:value` on the character record), 50 ms apart;
 // - the character lorebook drag (300 entries) through the list's sort handler (`LoreBookList.svelte`'s
 //   `onEnd`: one assignment of `globalLore`).
 // Timed as in `measureRecords.mjs` (task latency, paint, and the drag's completion; 3 warm-up and 10
-// measured runs). Compare with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks:
+// measured runs). Compare with a baseline build (`RISU_DIST=<dist of an earlier commit>`; it needs the
+// closed-chat screen, or the first step waits for its button in vain: measure an older build with
+// this script's version before 2026-10-16). The checks:
 // the typed description and the dragged order are on the server, no page error, no unexpected egress.
 //
 // Usage: pnpm build && node util/playwright/measureCharacters.mjs
@@ -225,32 +230,82 @@ try {
             const [task, paint] = await Promise.all([window.__untilIdle(start), window.__untilPaint(start)]);
             return { task, paint };
         };
+        // Until the opened chat's rows show their bodies, then a frame: a body is empty until its
+        // server transform answers (`ChatBody.svelte`), so every row's `.chattext` has text and the
+        // chat's last message (`needle`) shows. Rejects after 10 s.
+        window.__untilRendered = (start, needle) =>
+            new Promise((resolve, reject) => {
+                const frame = () => {
+                    const screen = document.querySelector(".default-chat-screen");
+                    const bodies = screen ? [...screen.querySelectorAll(".chattext")] : [];
+                    if (
+                        bodies.length > 0 &&
+                        bodies.every((body) => body.textContent.trim() !== "") &&
+                        screen.innerText.includes(needle)
+                    ) {
+                        requestAnimationFrame(() => resolve(performance.now() - start));
+                    } else if (performance.now() - start > 10_000) {
+                        reject(new Error(`the chat did not render "${needle}" within 10 s`));
+                    } else {
+                        requestAnimationFrame(frame);
+                    }
+                };
+                requestAnimationFrame(frame);
+            });
     });
     const split = (samples) =>
         Object.fromEntries(Object.keys(samples[0]).map((key) => [key, stats(samples.map((sample) => sample[key]))]));
 
-    // 1. Selecting a character from the sidebar (Big: 400 messages and a 300-entry lorebook; Small).
+    // 1. Selecting a character from the sidebar (Big: 400 messages and a 300-entry lorebook; Small),
+    // which closes the other character's open chat and lands on its closed-chat screen, then opening
+    // its chat from there (task and paint as above, and `rendered`: until the bodies show). The wait
+    // for the button between the two is not timed.
     const selects = { big: [], small: [] };
-    for (let run = 0; run < WARMUP + RUNS; run++) {
-        for (const [label, chaId] of [
-            ["small", smallId],
-            ["big", bigId],
-        ]) {
-            const handle = await page.locator(`[data-char-id="${chaId}"]`).first().elementHandle();
-            const ms = await page.evaluate((avatar) => {
+    const opens = { big: [], small: [] };
+    const openButton = page.getByRole("button", { name: /Open most recent chat/ });
+    const select = (avatar) =>
+        page.evaluate((element) => {
+            const start = performance.now();
+            element.closest('[role="button"]').click();
+            return window.__time(start);
+        }, avatar);
+    const openChat = (button, needle) =>
+        page.evaluate(
+            async ([element, text]) => {
                 const start = performance.now();
-                avatar.closest('[role="button"]').click();
-                return window.__time(start);
-            }, handle);
-            if (run >= WARMUP) selects[label].push(ms);
+                element.click();
+                const [timed, rendered] = await Promise.all([
+                    window.__time(start),
+                    window.__untilRendered(start, text),
+                ]);
+                return { ...timed, rendered };
+            },
+            [button, needle],
+        );
+    for (let run = 0; run < WARMUP + RUNS; run++) {
+        for (const [label, chaId, needle] of [
+            ["small", smallId, "Hello."],
+            ["big", bigId, "Message 399:"],
+        ]) {
+            const avatar = await page.locator(`[data-char-id="${chaId}"]`).first().elementHandle();
+            const selected = await select(avatar);
+            await openButton.waitFor({ timeout: 15_000 });
+            const opened = await openChat(await openButton.elementHandle(), needle);
+            if (run >= WARMUP) {
+                selects[label].push(selected);
+                opens[label].push(opened);
+            }
             await page.waitForTimeout(400);
         }
     }
-    const selectBig = split(selects.big);
     const selectSmall = split(selects.small);
-    console.log("select Big (a 400-message history, the default visible window)", selectBig);
-    console.log("select Small", selectSmall);
+    const openSmall = split(opens.small);
+    console.log("select Big from Small's open chat (Big's closed-chat screen)", split(selects.big));
+    console.log("open Big's chat (a 400-message history, the default visible window)", split(opens.big));
+    console.log("select Small from Big's open chat (Small's closed-chat screen)", selectSmall);
+    console.log("open Small's chat", openSmall);
     budget("select Small", selectSmall);
+    budget("open Small's chat", openSmall);
 
     // 2. Typing into Big's description (the character editor).
     await page.getByRole("button", { name: "Character", exact: true }).first().click();
