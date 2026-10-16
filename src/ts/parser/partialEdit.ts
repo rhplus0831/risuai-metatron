@@ -120,6 +120,7 @@ function transformCBSPatterns(s: string): { processed: string; positionMap: numb
 /**
  * Stage 2: Normalize text (CRLF, typographic chars, zero-width chars, whitespace)
  * Maps final result back to original string positions via sourceMap
+ * All three dots expanded from an ellipsis map to the ellipsis character itself
  */
 function normalizeText(text: string, sourceMap: number[]): { norm: string; map: number[] } {
     const out: string[] = [];
@@ -170,7 +171,7 @@ function normalizeText(text: string, sourceMap: number[]): { norm: string; map: 
         if (ch === "\u2026") {
             const basePos = sourceMap[i];
             out.push(".", ".", ".");
-            map.push(basePos, basePos, basePos + 1);
+            map.push(basePos, basePos, basePos);
             i++;
             continue;
         }
@@ -368,16 +369,20 @@ export function findAllOriginalRangesFromText(
         };
     }
 
-    function deduplicateByLine(matches: RangeResultWithContext[]): RangeResultWithContext[] {
-        // Keep only highest confidence match per line
-        const byLine = new Map<number, RangeResultWithContext>();
+    /**
+     * Deduplicate identical source ranges, keeping the highest confidence match
+     * Preserves the existing sorted order and distinct matches on the same line
+     */
+    function deduplicateByRange(matches: RangeResultWithContext[]): RangeResultWithContext[] {
+        const byRange = new Map<string, RangeResultWithContext>();
         for (const match of matches) {
-            const existing = byLine.get(match.lineNumber);
+            const key = `${match.start}:${match.end}`;
+            const existing = byRange.get(key);
             if (!existing || match.confidence > existing.confidence) {
-                byLine.set(match.lineNumber, match);
+                byRange.set(key, match);
             }
         }
-        return Array.from(byLine.values());
+        return Array.from(byRange.values());
     }
 
     const results: RangeResultWithContext[] = [];
@@ -400,7 +405,7 @@ export function findAllOriginalRangesFromText(
             }
             return a.start - b.start;
         });
-        const deduplicated = deduplicateByLine(results);
+        const deduplicated = deduplicateByRange(results);
         return deduplicated.slice(0, MAX_RESULTS);
     }
 
@@ -435,7 +440,7 @@ export function findAllOriginalRangesFromText(
             }
             return a.start - b.start;
         });
-        const deduplicated = deduplicateByLine(results);
+        const deduplicated = deduplicateByRange(results);
         return deduplicated.slice(0, MAX_RESULTS);
     }
 
@@ -528,7 +533,7 @@ export function findAllOriginalRangesFromText(
             }
             return a.start - b.start;
         });
-        const deduplicated = deduplicateByLine(results);
+        const deduplicated = deduplicateByRange(results);
         return deduplicated.slice(0, MAX_RESULTS);
     }
 
@@ -613,7 +618,7 @@ export function findAllOriginalRangesFromText(
         }
         return a.start - b.start;
     });
-    const deduplicated = deduplicateByLine(results);
+    const deduplicated = deduplicateByRange(results);
     return deduplicated.slice(0, MAX_RESULTS);
 }
 

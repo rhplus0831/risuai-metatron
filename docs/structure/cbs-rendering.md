@@ -46,7 +46,8 @@
   - Globals: `getGlobalChatVar`/`setGlobalChatVar` (`db.globalChatVariables`, or chat-local overrides when `useLocallySetGlobalVariables`), plus `getGLChatVar`/`setGLChatVar` and `isLocallyHandledGlobalChatVar`.
 - `parser/chatML.ts` `parseChatML`: a lightweight `<|im_start|>` splitter that extracts `<Thoughts>` and CBS-parses each part. Used by `sendChat` `chatML` cards, the translator, and memory.
 - `parser/partialEdit.ts`: maps rendered text back to markdown ranges.
-  - `findAllOriginalRangesFromText`/`FromHtml` match in stages: exact, then anchor, then fuzzy, then bigram.
+  - `findAllOriginalRangesFromText`/`FromHtml` match in stages: exact, then anchor, then fuzzy, then bigram. The answer is sorted by confidence then position and deduplicated by identical source range only, so two identical occurrences on one source line both come back and the controller shows its chooser (audit UI-02).
+  - The normalization maps every character of the normalized text to a source offset; a typographic ellipsis becomes three dots that all map to the ellipsis, so a selection ending in one stops at it (audit UI-03).
   - Also `replaceRange` and `EDITABLE_BLOCK_SELECTORS`.
 - `gui/highlight.ts`: editor highlighting and autocomplete.
   - `highlighter` uses the CSS Custom Highlight API with `::highlight(cbsnest0..4)` etc. in `src/styles.css`.
@@ -139,8 +140,9 @@ Display:
 - `e2e/serverTransform.spec.ts` (mock provider): one send per streaming mode (raw while streaming, transformed once at the end, no other row transformed, 0 DOM mutations on an unrelated row, an open `<details>` stays open); a locked row that is not the last renders raw with no request and is transformed once when the lock ends; Re-render sends one request with a bypass target for that message only; a chat switch while answers are held (A's answer does not land in B, stored variables unchanged).
 - `e2e/transformGolden.spec.ts`: the script-transform golden. All of `fixtures/baseline/markdown.json` (`direct`, `prePass`, `back`, `editprocess`, with and without hooks) on the server path against the fixture recorded from the browser path before the cutover; the server-evaluated random and clock messages (`m-m3`, `m-m4`) are compared by format. Independent cases against their expected output recorded from the browser path at `219dfb51` (`server/src/tests/fixtures/transform/display-trigger-assets.json`, with its provenance): a v2 `display` trigger and both asset passes. On a page's first load (no controlling worker) the same render holds object URLs, a large image included, and otherwise matches the recording.
 - A new chat's first-save re-render: the `chatSaveVersion` count it keys on is pinned in `src/ts/storage/tests/resourceSyncChats.test.ts` ("a chat's first save", `persistence.md`); the `Chat.svelte` effect itself runs only in the component.
-- `src/lib/ChatScreens/PartialEditController.test.ts`: the controller's translation writes through `saveTranslation` and the dispatched `save` without it (`media-aux.md` Tests).
-- Not tested: most of `shared/cbs/registry.ts`, inlay and dynamic-asset rendering, `partialEdit` (the matcher), `highlight.ts`.
+- `src/lib/ChatScreens/PartialEditController.test.ts`: the controller's translation writes through `saveTranslation` and the dispatched `save` without it (`media-aux.md` Tests); occurrence targeting (two identical blocks on one line offered as a choice for an edit and a delete, the chosen one changed; a drag selection ending in an ellipsis edits exactly the selection).
+- `src/ts/parser/tests/partialEdit.test.ts`: the matcher's occurrences (both on one line, from text and from a block's HTML, the `maxResults` cap) and the ellipsis mapping (before text, a space, a paragraph break, another ellipsis, at the end, selected as ASCII dots; ASCII dots in the source and the ruby case unchanged).
+- Not tested: most of `shared/cbs/registry.ts`, inlay and dynamic-asset rendering, the matcher's anchor, fuzzy and bigram stages, `highlight.ts`.
 - Not tested: the transform cache key's dependency on `GLGlobalVariables`, the preset and persona ids, the greeting, and the background targets (the chat's variables, note, local lore, source character, and language are).
 
 ## Known Hazards

@@ -53,13 +53,20 @@ function render(props: {
     translatedView?: boolean;
     context?: () => Promise<{ key: string; data: string } | null>;
     saveTranslation?: (newData: string, key: string) => Promise<boolean> | boolean;
+    /** The message's source (default `SOURCE`) and its rendered HTML (default one paragraph of it). */
+    source?: string;
+    html?: string;
+    /** Which rendered block the pointer is over (default the first paragraph). */
+    hovered?: (bodyRoot: HTMLElement) => HTMLElement;
+    dragEditEnabled?: boolean;
 }) {
+    const source = props.source ?? SOURCE;
     const target = document.createElement("div");
     document.body.appendChild(target);
     const bodyRoot = document.createElement("div");
-    bodyRoot.innerHTML = `<p>${SOURCE}</p>`;
+    bodyRoot.innerHTML = props.html ?? `<p>${source}</p>`;
     target.appendChild(bodyRoot);
-    const block = bodyRoot.querySelector("p")!;
+    const block = props.hovered?.(bodyRoot) ?? bodyRoot.querySelector("p")!;
     // The hover detection asks the document what is under the pointer.
     document.elementFromPoint = () => block;
     const saved: SaveEvent[] = [];
@@ -67,11 +74,11 @@ function render(props: {
         mount(PartialEditController, {
             target,
             props: {
-                messageData: SOURCE,
+                messageData: source,
                 chatIndex: 0,
                 bodyRoot,
                 blockEditEnabled: true,
-                dragEditEnabled: false,
+                dragEditEnabled: props.dragEditEnabled ?? false,
                 translatedView: props.translatedView ?? false,
                 getTranslationEditContext: props.context,
                 saveTranslation: props.saveTranslation,
@@ -86,10 +93,20 @@ function render(props: {
     flushSync();
 
     const query = <T extends Element>(selector: string) => document.querySelector<T>(selector);
-    /**
-     * Hovers the block and clicks its edit (or delete) button; waits for the editor or the modal, then
-     * (unless `settle` is false) for the editor's focus and scroll timers.
-     */
+    const anyModal = () =>
+        query(".partial-edit-modal") ??
+        query(".partial-delete-modal") ??
+        query(".partial-match-failed-modal") ??
+        query(".partial-match-selection-modal");
+    /** Waits for the editor or a modal, then (unless `settle` is false) for the editor's focus and scroll timers. */
+    const opened = async ({ settle = true } = {}) => {
+        await vi.waitFor(() => expect(anyModal()).not.toBeNull());
+        // `proceedWithEdit` focuses the textarea 10 ms after opening and scrolls its buttons 200 ms later.
+        if (settle) {
+            await new Promise((resolve) => setTimeout(resolve, 230));
+        }
+    };
+    /** Hovers the block and clicks its edit (or delete) button, then `opened`. */
     const start = async (action: "edit" | "delete", { settle = true } = {}) => {
         document.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 5, bubbles: true }));
         await vi.waitFor(() => {
@@ -98,15 +115,51 @@ function render(props: {
             expect(wrapper!.style.display).not.toBe("none");
         });
         query<HTMLButtonElement>(`.partial-edit-btn-${action}`)!.click();
-        await vi.waitFor(() => {
-            expect(
-                query(".partial-edit-modal") ?? query(".partial-delete-modal") ?? query(".partial-match-failed-modal"),
-            ).not.toBeNull();
-        });
-        // `proceedWithEdit` focuses the textarea 10 ms after opening and scrolls its buttons 200 ms later.
-        if (settle) {
-            await new Promise((resolve) => setTimeout(resolve, 230));
+        await opened({ settle });
+    };
+    /**
+     * Selects `text` inside the rendered body (the first text node holding it) as a drag would, lets
+     * the controller's debounce see it, and clicks the drag edit (or delete) button, then `opened`.
+     */
+    const dragStart = async (text: string, action: "edit" | "delete") => {
+        const walker = document.createTreeWalker(bodyRoot, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+            const at = node.textContent!.indexOf(text);
+            if (at >= 0) {
+                const range = document.createRange();
+                range.setStart(node, at);
+                range.setEnd(node, at + text.length);
+                const selection = window.getSelection()!;
+                selection.removeAllRanges();
+                selection.addRange(range);
+                break;
+            }
         }
+        expect(window.getSelection()!.toString()).toBe(text);
+        document.dispatchEvent(new Event("selectionchange"));
+        await vi.waitFor(() => {
+            const wrapper = query<HTMLElement>(".partial-edit-drag-btn-wrapper");
+            expect(wrapper).not.toBeNull();
+            expect(wrapper!.style.display).not.toBe("none");
+        });
+        query<HTMLButtonElement>(`.partial-edit-drag-btn-wrapper .partial-edit-btn-${action}`)!.click();
+        await opened();
+    };
+    /** The chooser's rows, with the source text each one would edit. */
+    const choices = () =>
+        Array.from(document.querySelectorAll(".partial-match-selection-modal .match-item")).map((item) =>
+            item.querySelector(".match-text")!.textContent!.trim(),
+        );
+    const choose = async (index: number) => {
+        document.querySelectorAll<HTMLElement>(".partial-match-selection-modal .match-item")[index]!.click();
+        flushSync();
+        await vi.waitFor(() => expect(query(".partial-match-selection-modal")).toBeNull());
+        await opened();
+    };
+    const confirmDelete = () => {
+        query<HTMLButtonElement>(".partial-delete-confirm-btn")!.click();
+        flushSync();
     };
     const textarea = () => query<HTMLTextAreaElement>(".partial-edit-textarea");
     const type = (text: string) => {
@@ -123,7 +176,7 @@ function render(props: {
         query<HTMLButtonElement>(".partial-edit-modal .partial-edit-cancel-btn")!.click();
         flushSync();
     };
-    return { saved, start, textarea, type, save, cancel, query, block };
+    return { saved, start, dragStart, choices, choose, confirmDelete, textarea, type, save, cancel, query, block };
 }
 
 beforeEach(() => {
@@ -282,5 +335,52 @@ describe("PartialEditController translation writes", () => {
         expect(ui.saved[0]).toEqual({ newData: "Hello there", target: "original", translationKey: undefined });
         expect(saveTranslation).not.toHaveBeenCalled();
         expect(ui.query(".partial-edit-modal")).toBeNull();
+    });
+});
+
+// Occurrence targeting (audit UI-02 and UI-03, `docs/plan/audit-findings-perf.md` slice 2c): two
+// identical rendered blocks on one source line are offered as a choice and the chosen one is the one
+// edited or deleted; a drag selection ending in a typographic ellipsis edits exactly the selection.
+describe("PartialEditController occurrence targeting", () => {
+    const TWO_BLOCKS = "<p>Hello</p><p>Hello</p>";
+    const second = (bodyRoot: HTMLElement) => bodyRoot.querySelectorAll("p")[1] as HTMLElement;
+
+    it("editing the second of two identical blocks on one line offers both and edits the chosen one", async () => {
+        const ui = render({ source: TWO_BLOCKS, html: TWO_BLOCKS, hovered: second });
+        await ui.start("edit");
+        expect(ui.query(".partial-edit-modal")).toBeNull();
+        expect(ui.choices()).toEqual(["Hello", "Hello"]);
+        await ui.choose(1);
+        expect(ui.textarea()!.value).toBe("Hello");
+        ui.type("EDIT");
+        ui.save();
+        await vi.waitFor(() => expect(ui.saved).toHaveLength(1));
+        expect(ui.saved[0].newData).toBe("<p>Hello</p><p>EDIT</p>");
+    });
+
+    it("deleting the second of two identical blocks on one line removes the chosen one", async () => {
+        const ui = render({ source: TWO_BLOCKS, html: TWO_BLOCKS, hovered: second });
+        await ui.start("delete");
+        expect(ui.query(".partial-delete-modal")).toBeNull();
+        expect(ui.choices()).toHaveLength(2);
+        await ui.choose(1);
+        expect(ui.query(".partial-delete-modal")).not.toBeNull();
+        ui.confirmDelete();
+        await vi.waitFor(() => expect(ui.saved).toHaveLength(1));
+        // The block's range is its text (the matcher maps rendered text, not tags), so the chosen
+        // paragraph is emptied and the first one is untouched.
+        expect(ui.saved[0].newData).toBe("<p>Hello</p><p></p>");
+    });
+
+    it("a drag selection ending in an ellipsis edits the selection and keeps the character after it", async () => {
+        // happy-dom's ranges have no layout; the controller hides the button for a rect without size.
+        vi.spyOn(Range.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 40, 16));
+        const ui = render({ source: "Wait…Next", dragEditEnabled: true });
+        await ui.dragStart("Wait…", "edit");
+        expect(ui.textarea()!.value).toBe("Wait…");
+        ui.type("EDIT");
+        ui.save();
+        await vi.waitFor(() => expect(ui.saved).toHaveLength(1));
+        expect(ui.saved[0].newData).toBe("EDITNext");
     });
 });
