@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 slice 9: a send from the chat input runs as a server job against a mock provider (an OpenAI-compatible SSE stream): the
 // browser posts the job with the input and its user message id, the user message and the streamed
 // reply show and are stored, a continue extends the reply, a settings edit made right before a
@@ -126,7 +126,9 @@ try {
         const modelPresets = (await api("/api/resources/modelPresets/main")).body;
         const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
         const providers = (await api("/api/resources/providers/main")).body;
+        const personas = (await api("/api/resources/personas/main")).body;
         const chaId = randomUUID();
+        const chatId = randomUUID();
         const preset = {
             ...presets.data[0],
             aiModel: "reverse_proxy",
@@ -197,11 +199,38 @@ try {
                         data: [...(Array.isArray(order.data) ? order.data : []), chaId],
                     },
                 ],
+                // A chat bound to the mock's model preset, the prompt preset, and a persona: a send
+                // refuses an unbound chat, and a character's first chat starts unbound
+                // (`docs/plan/chat-binding.md`).
+                chats: [
+                    {
+                        characterId: chaId,
+                        chatId,
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    id: chatId,
+                                    name: "Chat 1",
+                                    fmIndex: -1,
+                                    message: [],
+                                    ...chatBindingFixture(modelPresets, presets, personas),
+                                },
+                            },
+                        ],
+                    },
+                ],
             }),
         });
         check(`${label}: seeded`, seeded.status === 200, seeded);
+        // A character opens on its closed-chat screen; its chat opens from there.
+        const openChat = async () => {
+            await page.locator(`[data-char-id="${chaId}"]`).first().click();
+            await page.getByRole("button", { name: /Open most recent chat/ }).click();
+        };
         await open();
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openChat();
         await page.getByText("Greetings.").first().waitFor({ timeout: 15000 });
         await page.waitForTimeout(1500);
         const storedMessages = async () =>
@@ -317,7 +346,7 @@ try {
         await page.getByText("Part A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(3500);
         await open();
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openChat();
         await page.getByText("Tell me slowly").first().waitFor({ timeout: 15000 });
         const midText = (await page.evaluate(() => document.body.innerText)).includes("Part A.");
         check("server: after a reload mid-stream the text so far shows", midText);
@@ -356,7 +385,7 @@ try {
         await page.getByText("Half A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(1000);
         await open();
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openChat();
         await page.getByText("Tell me slowly again").first().waitFor({ timeout: 15000 });
         const stopAfterReload = page.locator('button[aria-labelledby="cancel"]');
         await stopAfterReload
