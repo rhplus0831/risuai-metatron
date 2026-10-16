@@ -23,6 +23,7 @@ import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
 import { get } from "svelte/store";
+import { moduleMembershipRevision, moduleAssetsRevision, moduleFieldPlain } from "../storage/records.svelte";
 import { untrack } from "svelte";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
@@ -443,6 +444,7 @@ function deduplicateModuleById(modules: RisuModule[]) {
 }
 
 let lastModules = "";
+let lastModuleRevision = -1;
 let lastModuleData: RisuModule[] = [];
 /** A chat by id (structural, so this module does not depend on the chat module). */
 export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined;
@@ -457,26 +459,21 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
+    const revision = moduleMembershipRevision();
     const { ids, personaIds } = enabledModuleIds(chatRef, scope);
     // The persona's links resolve apart from the other ids (by id only), so they key apart too.
     const idsJoined = JSON.stringify([ids, [...personaIds]]);
-    if (lastModules === idsJoined) {
+    if (lastModules === idsJoined && lastModuleRevision === revision) {
         return lastModuleData;
     }
 
-    let modules: RisuModule[] = getModuleByIds(ids, personaIds);
+    // Membership is tracked by the revision, including on cache hits. Filtering need not track
+    // every wrapper read, which would give a cache miss different dependencies from a hit.
+    const modules = untrack(() => getModuleByIds(ids, personaIds));
     lastModules = idsJoined;
+    lastModuleRevision = revision;
     lastModuleData = modules;
     return modules;
-}
-
-/**
- * `getModules` without its cache: always reads the module list, so a reactive reader (a `$derived`)
- * follows a module added, removed, or renamed under the same ids.
- */
-export function getModulesUncached(chatRef?: ModuleChatRef, scope?: PresetScope) {
-    const { ids, personaIds } = enabledModuleIds(chatRef, scope);
-    return getModuleByIds(ids, personaIds);
 }
 
 /** The ids and persona links `getModules` resolves. */
@@ -521,18 +518,34 @@ export function getModuleLorebooks(chatRef?: ModuleChatRef, scope?: PresetScope)
     return lorebooks;
 }
 
-/** The assets of `modules` (default: `getModules(chatRef)`), in order. */
+type ModuleAssets = NonNullable<RisuModule["assets"]>;
+type AssetSetMemo = { next: WeakMap<ModuleAssets, AssetSetMemo>; assets?: ModuleAssets };
+const assetSets: AssetSetMemo = { next: new WeakMap() };
+
+/**
+ * Plain tuples shared by element/assets stamp, never record wrappers. The version tracks edits;
+ * unchanged enabled copies keep the aggregate's identity, so derived consumers ignore disabled
+ * modules' edits. The copy cache is independent of the save loop and survives enable/disable.
+ */
 export function getModuleAssets(chatRef?: ModuleChatRef, modules: RisuModule[] = getModules(chatRef)) {
-    let assets: [string, string, string][] = [];
+    moduleAssetsRevision();
+    const parts: ModuleAssets[] = [];
+    let memo = assetSets;
     for (const module of modules) {
-        if (!module) {
-            continue;
+        if (!module) continue;
+        const part = moduleFieldPlain(module, "assets");
+        if (!part) continue;
+        parts.push(part);
+        let next = memo.next.get(part);
+        if (!next) {
+            next = { next: new WeakMap() };
+            memo.next.set(part, next);
         }
-        if (module.assets) {
-            assets = assets.concat(module.assets);
-        }
+        memo = next;
     }
-    return assets;
+    // Key by copies, not the last caller's context: another chat's read must not make a disabled
+    // module edit replace this chat's value. Weak keys release obsolete stamps and combinations.
+    return (memo.assets ??= ([] as ModuleAssets).concat(...parts));
 }
 
 export function getModuleTriggers(chatRef?: ModuleChatRef) {
@@ -629,24 +642,21 @@ export async function applyModule() {
     alertNormal(language.successApplyModule);
 }
 
-let lastModuleIds: string = "";
+let lastModuleIds = "[]";
+let lastReloadModules: RisuModule[] = [];
 
 /**
- * Publishes the selected chat's enabled modules' icon and background settings, and reloads the GUI
- * when their ids change. It resolves the modules uncached, so the root effect that runs it
- * (`stores.svelte.ts`) tracks the reads that match them (the list, each module's id, namespace, and
- * MCP link) and a module added, removed, or renamed under the same enabled ids counts; it then
- * stores that list as the `getModules` cache, so the cache follows the selected chat. The stores are
- * set untracked: their subscribers (the chat's GUI reload parses CBS over module lore and assets) run
- * synchronously and must not become the effect's dependencies.
+ * Publishes icon/background settings and reloads once when the resolved elements/ids change. Membership
+ * revision reads in getModules track replacements synchronously; content fields track themselves.
+ * Store subscribers parse rows synchronously, so publish under untrack to keep their reads out.
  */
 export function moduleUpdate() {
-    const { ids: enabledIds, personaIds } = enabledModuleIds(undefined, undefined);
-    const m = getModuleByIds(enabledIds, personaIds);
-    lastModules = JSON.stringify([enabledIds, [...personaIds]]);
-    lastModuleData = m;
-
-    const ids = m.map((m) => m.id).join("-");
+    const m = getModules();
+    // JSON keeps hyphenated ids distinct. Duplicate ids can resolve to a different element after
+    // a toggle (e.g. a namespace/persona previously selected only the second one), so compare
+    // wrapper identities too, without ever reading retained wrappers that may now be detached.
+    const ids = JSON.stringify(m.map((module) => module.id));
+    const changed = lastModuleIds !== ids || m.some((module, i) => !Object.is(module, lastReloadModules[i]));
 
     let moduleHideIcon = false;
     let backgroundEmbedding = "";
@@ -669,14 +679,10 @@ export function moduleUpdate() {
         moduleBackgroundEmbedding.set(backgroundEmbedding);
         HideIconStore.set(hideIcon);
 
-        if (lastModuleIds !== ids) {
+        lastModuleIds = ids;
+        lastReloadModules = m;
+        if (changed) {
             ReloadGUIPointer.set(get(ReloadGUIPointer) + 1);
-            lastModuleIds = ids;
         }
     });
-}
-
-export function refreshModules() {
-    lastModules = "";
-    lastModuleData = [];
 }

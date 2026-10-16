@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) and 3d (tab retention, inlay media deferred) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) and 3e (module membership/assets cache and bounded fuzzy scans) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -263,17 +263,45 @@ P2 with the memory items that share its mechanism.
   hazards); inlay images without the worker stay pinned through the parser;
   the 100 ms grace was not driven in a browser.
 - **3e. Module cache** (_hard_, `characters-modules.md`). ASSET-01 plus the
-  Phase 6 and asset-audit leftovers. `getModules` in
-  `src/ts/process/modules.ts:446` caches wrappers by the joined enabled-id
-  list, so a remote `modules` replacement serves a disabled module through a
-  positional wrapper or throws `DetachedWrapperError`; `checkImg` already
-  side-steps it with `getModulesUncached`. Memory adds: enabling a 100k-asset
-  module runs a synchronous ~1.2 s chat GUI reload inside the `moduleUpdate`
-  effect; the fuzzy prefix scan runs Levenshtein over every asset per
-  unresolved image; `fuzzyIndexOf` has no parser-level tests. Key the cache by
-  a module-record revision and invalidate on every whole-record and item
-  replacement, then move the reload off the effect, then bound the fuzzy
-  scan.
+  Phase 6 and asset-audit leftovers: stale module wrappers after replacement,
+  repeated wrapper walks over 100k assets, duplicate row reloads per toggle,
+  and unbounded fuzzy scans.
+
+  Landed 2026-10-16: `getModules` keeps its enabled-id/persona-link memo and
+  reads a synchronous tracked membership revision from `records.svelte.ts`
+  on every call. Whole replacements (remote item patches included), list
+  writes/reorders, rebuilt elements, `id`/`namespace`/`mcp` edits, installation
+  and reset invalidate it before any effect flush; content edits do not.
+  Removed `getModulesUncached`, `refreshModules` and the settings teardown
+  call. `moduleFieldPlain` shares plain asset tuples by live element proxy and
+  field stamp, using the raw target only for untouched, cacheable fields;
+  changed fields walk the live proxy once. A separate assets revision and
+  stable aggregates keep parser/ChatBody readers tracked without cascading
+  disabled-module or lorebook edits. Parser input keys also make a parse
+  current before the root effect runs; maps build lazily on the next parse,
+  and an explicit `resetAssetsCache` wins until live inputs change. The effect
+  retains its GUI reload, and the menu's
+  duplicate bumps are gone: every toggle that changes the effective elements
+  is covered, while another enable source can make a toggle visually redundant
+  for the rows. The id comparison uses JSON to avoid hyphen collisions and
+  also compares wrappers: duplicate ids may switch which element resolves.
+  Both fuzzy scans use strict best-so-far cutoffs, UTF-16 length pruning and
+  reusable two-row banded distance with row-minimum termination. Parser
+  misses remember their cutoff (a larger threshold rescans); `checkImg` caches
+  names on its asset value. Legacy Int16 overflow above 32,767 code units
+  requires an unpruned two-row compatibility path; `getDistance` is unchanged.
+  Temporary Vitest dev probe, real stores and parser root live, 100k assets:
+  enable flush 3,796 → 8.74 ms (current copies), `getModuleAssets` 924 → 0.196 ms,
+  asset rename plus flush 3,116 → 1,459 ms (one proxy copy, then shared).
+  The first parse after enabling, including the deferred plain path map, takes
+  128 ms; re-enabling flushes in 3.95 ms. The 201-module cached `getModules`
+  call remains cheap (0.089 → 0.102 ms; uncached baseline 2.87 ms).
+  Parser 100k-name hit/miss scans 6,471/2,869 → 0.55/6.23 ms;
+  `checkImg` no-prefix/common-prefix scans 3,524/8,011 → 298/19.3 ms.
+  Asset edits still pay Svelte's first property-source creation cost once;
+  enable/disable reuses the copies. The probe is removed; permanent tests
+  belong to the separate verification follow-up.
+
 - **3f. Chat rows** (_hard_, `ui-theming.md`; needs 0b). The chat rendering
   series' item 4: cap mounted rows or virtualize, decided only after 0b shows
   how many rows a long chat keeps mounted. Bundle the `Chats.svelte` minors:
@@ -343,34 +371,34 @@ as `image/png`), and the two load-only test flakes (`cbsLimitsHost.test.ts`
 
 ## Index: where each item went
 
-| Source item                                                                                          | Slice  |
-| ---------------------------------------------------------------------------------------------------- | ------ |
-| PERF-01                                                                                              | 1a     |
-| MEM-01, MEM-02                                                                                       | 1b     |
-| LLM-03                                                                                               | 1c     |
-| UI-01, UI-04                                                                                         | 1d     |
-| GEN-01, JOB-01                                                                                       | 2a     |
-| JOB-02                                                                                               | 2b     |
-| UI-02, UI-03                                                                                         | 2c     |
-| DATA-01, PERSIST-01                                                                                  | 2d     |
-| IO-01, IO-02, IO-03, IO-04                                                                           | 2e     |
-| EXT-01                                                                                               | 2f     |
-| PERF-02; memory: whole modules/sections per job, `setChatVar` double parse, deleted speaker lookup   | 3a     |
-| API-01, API-02, API-03, API-05                                                                       | 3b     |
-| memory: chat-patch deferrals, `hydrations` map, no compression                                       | 3c     |
-| NET-01, EXT-03; memory: `getFileSrc` URLs, inlay audio/video, translator budget                      | 3d     |
-| ASSET-01; memory: `getModules` stale cache, 1.2 s reload in effect, fuzzy scan, `fuzzyIndexOf` tests | 3e     |
-| memory: chat rendering item 4 and `Chats.svelte` minors                                              | 3f     |
-| memory: A1 leftovers (other kinds, whole writes, cache budget, 409 whole read)                       | 3g     |
-| memory: asset list filter and paging tests                                                           | 3h     |
-| GEN-03, GEN-04                                                                                       | 4a     |
-| GEN-02, API-04, API-06                                                                               | 4b     |
-| LLM-01, LLM-02                                                                                       | 4c     |
-| EXT-02, EXT-04, SP-I1, NET-02                                                                        | 4d     |
-| MEDIA-01 to MEDIA-05                                                                                 | 4e     |
-| WEB-01, WEB-02, WEB-03                                                                               | 4f     |
-| e2e first-load fixtures, `checkStreamingModes`, `measureChats`                                       | 0a, 0b |
-| memory: never-checked-in-browser items, load flakes                                                  | 5      |
+| Source item                                                                                        | Slice  |
+| -------------------------------------------------------------------------------------------------- | ------ |
+| PERF-01                                                                                            | 1a     |
+| MEM-01, MEM-02                                                                                     | 1b     |
+| LLM-03                                                                                             | 1c     |
+| UI-01, UI-04                                                                                       | 1d     |
+| GEN-01, JOB-01                                                                                     | 2a     |
+| JOB-02                                                                                             | 2b     |
+| UI-02, UI-03                                                                                       | 2c     |
+| DATA-01, PERSIST-01                                                                                | 2d     |
+| IO-01, IO-02, IO-03, IO-04                                                                         | 2e     |
+| EXT-01                                                                                             | 2f     |
+| PERF-02; memory: whole modules/sections per job, `setChatVar` double parse, deleted speaker lookup | 3a     |
+| API-01, API-02, API-03, API-05                                                                     | 3b     |
+| memory: chat-patch deferrals, `hydrations` map, no compression                                     | 3c     |
+| NET-01, EXT-03; memory: `getFileSrc` URLs, inlay audio/video, translator budget                    | 3d     |
+| ASSET-01; module membership revision, shared plain assets, bounded fuzzy scans (landed 2026-10-16) | 3e     |
+| memory: chat rendering item 4 and `Chats.svelte` minors                                            | 3f     |
+| memory: A1 leftovers (other kinds, whole writes, cache budget, 409 whole read)                     | 3g     |
+| memory: asset list filter and paging tests                                                         | 3h     |
+| GEN-03, GEN-04                                                                                     | 4a     |
+| GEN-02, API-04, API-06                                                                             | 4b     |
+| LLM-01, LLM-02                                                                                     | 4c     |
+| EXT-02, EXT-04, SP-I1, NET-02                                                                      | 4d     |
+| MEDIA-01 to MEDIA-05                                                                               | 4e     |
+| WEB-01, WEB-02, WEB-03                                                                             | 4f     |
+| e2e first-load fixtures, `checkStreamingModes`, `measureChats`                                     | 0a, 0b |
+| memory: never-checked-in-browser items, load flakes                                                | 5      |
 
 ## Suggested start
 

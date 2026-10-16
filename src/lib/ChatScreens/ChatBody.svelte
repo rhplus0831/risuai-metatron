@@ -1,18 +1,19 @@
 <script module lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { getModuleAssets, getModulesUncached } from "src/ts/process/modules";
+    import { getModuleAssets, getModules } from "src/ts/process/modules";
+    import { findAssetPrefix } from "src/ts/parser/assetSearch";
 
-    /**
-     * `checkImg`'s assets (newImageHandlingBeta): the selected character's and its modules', by
-     * lower-cased name. Shared by every row and built again only when a list or an asset changes,
-     * not per render. The modules resolve uncached: `getModules`' cache would hide a module list edit.
-     */
+    // This boundary preserves the value on disabled-module edits; every row shares the copies.
+    const moduleAssets = $derived(getModuleAssets(undefined, getModules()));
+    /** checkImg's normalized assets and per-name results, replaced only when its inputs change. */
     const imageAssets = $derived.by(() => {
-        const assets = getModuleAssets(undefined, getModulesUncached()).concat(
-            selectedCharacter().additionalAssets ?? [],
-        );
+        const assets = moduleAssets.concat(selectedCharacter()?.additionalAssets ?? []);
         const list = assets.map((asset) => ({ name: asset[0].toLocaleLowerCase(), path: asset[1] }));
-        return { list, exact: new Map(list.map((asset) => [asset.name, asset.path])) };
+        return {
+            list,
+            exact: new Map(list.map((asset) => [asset.name, asset.path])),
+            results: new Map<string, string>(),
+        };
     });
 </script>
 
@@ -23,7 +24,6 @@
     import { alertError } from "../../ts/alert";
     import {
         addMetadataToElement,
-        getDistance,
         ParseMarkdown,
         postTranslationParse,
         trimMarkdown,
@@ -327,7 +327,7 @@
 
         if (imgs.length > 0) {
             const styl = selectedCharacter().prebuiltAssetStyle;
-            const { list: normalizedAssets, exact: exactAssets } = imageAssets;
+            const { list: normalizedAssets, exact: exactAssets, results } = imageAssets;
 
             imgs.forEach(async (img) => {
                 const name = img.getAttribute("src")?.toLocaleLowerCase() || "";
@@ -349,19 +349,11 @@
                     img.setAttribute("noimage", "true");
                     return;
                 }
-                const prefixLoc = name.lastIndexOf(".");
-                const prefix = prefixLoc > 0 ? name.substring(0, prefixLoc) : "";
-                let currentDistance = 1000;
-                let currentFound = "";
-                for (const asset of normalizedAssets) {
-                    if (!asset.name.startsWith(prefix)) {
-                        continue;
-                    }
-                    const distance = getDistance(name, asset.name);
-                    if (distance < currentDistance) {
-                        currentDistance = distance;
-                        currentFound = asset.path;
-                    }
+                let currentFound = results.get(name);
+                if (currentFound === undefined) {
+                    currentFound = findAssetPrefix(name, normalizedAssets);
+                    if (results.size >= 10000) results.clear();
+                    results.set(name, currentFound);
                 }
                 if (currentFound) {
                     const got = await getFileSrc(currentFound);

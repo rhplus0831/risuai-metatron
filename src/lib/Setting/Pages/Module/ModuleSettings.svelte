@@ -4,13 +4,7 @@
 
     import Button from "src/lib/UI/GUI/Button.svelte";
     import ModuleMenu from "src/lib/Setting/Pages/Module/ModuleMenu.svelte";
-    import {
-        exportModule,
-        exportModuleLegacy,
-        importModule,
-        refreshModules,
-        type RisuModule,
-    } from "src/ts/process/modules";
+    import { exportModule, exportModuleLegacy, importModule, type RisuModule } from "src/ts/process/modules";
     import {
         SquarePen,
         TrashIcon,
@@ -25,7 +19,6 @@
     import { tooltip } from "src/ts/gui/tooltip";
     import { alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import { onDestroy } from "svelte";
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
     import { addCharacter } from "src/ts/storage/characterStore.svelte";
@@ -50,10 +43,6 @@
                 return score;
             });
     }
-
-    onDestroy(() => {
-        refreshModules();
-    });
 </script>
 
 {#if mode === 0}

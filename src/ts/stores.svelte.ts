@@ -183,9 +183,9 @@ ReloadGUIPointer.subscribe(() => {
     resetTransformEffects();
 });
 
-// `moduleUpdate` resolves the enabled modules itself, uncached: it reads each module's id,
-// namespace, and MCP link to match, then the matched modules' `hideIcon` and `backgroundEmbedding`.
-// So an edit elsewhere in a module (a lorebook entry, an asset) does not rerun this.
+// `moduleUpdate` reads getModules' membership revision and the enabled ids, then the matched
+// modules' hideIcon/backgroundEmbedding. Lorebook, asset and trigger edits do not invalidate
+// membership. Its reload covers chat/character toggles once, when the effective elements/ids change.
 $effect.root(() => {
     $effect(() => {
         settings.enabledModules;

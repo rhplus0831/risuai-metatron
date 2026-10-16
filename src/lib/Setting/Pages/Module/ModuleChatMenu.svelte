@@ -8,7 +8,6 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import type { RisuModule } from "src/ts/process/modules";
 
-    import { ReloadGUIPointer } from "src/ts/stores.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
     import { checkPersonaBinded } from "src/ts/util";
@@ -113,7 +112,6 @@
                                                 ? chatModules.filter((id) => id !== rmodule.id)
                                                 : [...chatModules, rmodule.id],
                                         });
-                                        $ReloadGUIPointer += 1;
                                     }}
                                     oncontextmenu={(e) => {
                                         e.preventDefault();
@@ -129,7 +127,6 @@
                                         } else {
                                             currentCharacter.modules.push(rmodule.id);
                                         }
-                                        $ReloadGUIPointer += 1;
                                     }}
                                 >
                                     <CircleCheckIcon size={18} />

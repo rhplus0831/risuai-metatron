@@ -1,3 +1,4 @@
+import { boundedDistance } from "./assetSearch";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
@@ -469,8 +470,10 @@ type FuzzyIndex = {
     assets: FuzzyAsset[];
     /** Trimmed name -> the first asset with it: a distance-0 match without the scan. */
     exact: Map<string, FuzzyAsset>;
-    /** Trimmed reference -> its closest asset, hits and misses alike (the threshold applies at read). */
-    results: Map<string, FuzzyMatch>;
+    /** Long names can produce negative Int16 distances; they preclude the distance-1 early stop. */
+    hasLegacyOverflow: boolean;
+    /** A hit is globally closest; a miss is reusable only at a cutoff no greater than this one. */
+    results: Map<string, { match: FuzzyMatch; cutoff: number }>;
 };
 
 /** `getClosestMatch`'s index of one asset list, built again when the list or an asset in it changes. */
@@ -518,7 +521,23 @@ $effect.root(() => {
     });
 });
 
+// Separate derived inputs keep a module edit from walking character assets, and a disabled
+// module's edit from rebuilding either consumer. getModuleAssets preserves its value in that case.
+const parserModuleAssets = $derived(getModuleAssets());
+const parserCharacterAssets = $derived.by(() => {
+    const char = selectedCharacter();
+    if (!char || char.type !== "character") return null;
+    return {
+        charAssets: (char.additionalAssets ?? []).map((asset) => [...asset]),
+        emoAssets: (char.emotionImages ?? []).map((asset) => [...asset]),
+    };
+});
+const parserAssetInputs = $derived.by(() => ({ character: parserCharacterAssets, modules: parserModuleAssets }));
+let lastAssetInputs: typeof parserAssetInputs | undefined;
+
 export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+    // An explicit reset (including moduleAssets = []) wins until the live inputs actually change.
+    lastAssetInputs = untrack(() => parserAssetInputs);
     const assetPaths: AssetPaths = {};
     const charEmoPaths: AssetPaths = {};
 
@@ -530,18 +549,22 @@ export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], 
     emoAssetsCache = charEmoPaths;
 }
 
+/** Also read by a parse: tracked, and current even before the root effect has flushed. */
+function syncAssetsCache() {
+    const inputs = parserAssetInputs;
+    if (!Object.is(inputs, lastAssetInputs)) {
+        lastAssetInputs = inputs;
+        // Build the path maps on the next parse, once. An enable/disable only resolves the cheap
+        // input key; it need not normalize every plain name while no rendered text needs a map.
+        assetsCache = null;
+        emoAssetsCache = null;
+    }
+    return inputs;
+}
+
 $effect.root(() => {
     $effect(() => {
-        const char = selectedCharacter();
-        if (!char || char.type !== "character") {
-            return;
-        }
-
-        const charAssets = char.additionalAssets ?? [];
-        const emoAssets = char.emotionImages ?? [];
-        const moduleAssets = getModuleAssets();
-
-        resetAssetsCache(charAssets, emoAssets, moduleAssets);
+        syncAssetsCache();
     });
 });
 
@@ -563,8 +586,13 @@ async function parseAdditionalAssets(
             ? `max-width:${settings.ui.assetWidth}rem;`
             : "";
 
+    const inputs = syncAssetsCache();
     if (char.type === "character" && (!assetsCache || !emoAssetsCache)) {
-        resetAssetsCache(char.additionalAssets ?? [], char.emotionImages, getModuleAssets());
+        resetAssetsCache(
+            inputs.character?.charAssets ?? char.additionalAssets ?? [],
+            inputs.character?.emoAssets ?? char.emotionImages ?? [],
+            inputs.modules,
+        );
     }
 
     const assetPaths = assetsCache ?? {};
@@ -687,16 +715,19 @@ function getClosestMatch(
 
     const index = fuzzyIndexOf(assets);
     const trimmedName = trimmer(name);
-    let best = index.results.get(trimmedName);
-    if (best === undefined) {
-        best = closestAsset(index, trimmedName);
+    const threshold = settings.ui.assetMaxDifference;
+    const cutoff = Number.isFinite(threshold) ? Math.floor(threshold) : Infinity;
+    let cached = index.results.get(trimmedName);
+    if (!cached || (!cached.match && cutoff > cached.cutoff)) {
+        cached = { match: closestAsset(index, trimmedName, cutoff), cutoff };
         if (index.results.size >= FUZZY_RESULT_LIMIT) {
             index.results.clear();
         }
-        index.results.set(trimmedName, best);
+        index.results.set(trimmedName, cached);
     }
-
-    if (!best || best.dist > settings.ui.assetMaxDifference) {
+    const best = cached.match;
+    // Keep JS comparison semantics for NaN, infinities, and old non-number settings values.
+    if (!best || best.dist > threshold) {
         return null;
     }
     return { srcPaths: [best.path], ext: best.ext };
@@ -732,10 +763,11 @@ function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
 }
 
 function buildFuzzyIndex(assets: [string, string, string][]): FuzzyIndex {
-    const index: FuzzyIndex = { assets: [], exact: new Map(), results: new Map() };
+    const index: FuzzyIndex = { assets: [], exact: new Map(), results: new Map(), hasLegacyOverflow: false };
     for (const asset of assets) {
         const entry: FuzzyAsset = { trimmed: trimmer(asset[0].toLocaleLowerCase()), path: asset[1], ext: asset[2] };
         index.assets.push(entry);
+        index.hasLegacyOverflow ||= entry.trimmed.length > 32767;
         if (!index.exact.has(entry.trimmed)) {
             index.exact.set(entry.trimmed, entry);
         }
@@ -743,16 +775,19 @@ function buildFuzzyIndex(assets: [string, string, string][]): FuzzyIndex {
     return index;
 }
 
-function closestAsset(index: FuzzyIndex, trimmedName: string): FuzzyMatch {
+function closestAsset(index: FuzzyIndex, trimmedName: string, threshold: number): FuzzyMatch {
     const exact = index.exact.get(trimmedName);
     if (exact) {
         return { path: exact.path, ext: exact.ext, dist: 0 };
     }
     let best: FuzzyMatch = null;
     for (const asset of index.assets) {
-        const dist = getDistance(trimmedName, asset.trimmed);
-        if (!best || dist < best.dist) {
+        const cutoff = Math.min(best ? best.dist - 1 : Infinity, threshold);
+        const dist = boundedDistance(trimmedName, asset.trimmed, cutoff);
+        if (dist <= cutoff && (!best || dist < best.dist)) {
             best = { path: asset.path, ext: asset.ext, dist };
+            // The exact map already answered distance 0. Overflow can still beat a distance 1.
+            if (dist === 1 && !index.hasLegacyOverflow && trimmedName.length <= 32767) break;
         }
     }
     return best;

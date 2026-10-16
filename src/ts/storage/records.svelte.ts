@@ -278,6 +278,71 @@ let epochCounter = 0;
 /** Every field-text stamp comes from this counter (never reset), so no two lifetimes share a stamp. */
 let stampCounter = 0;
 
+/** Synchronous invalidation, independent of save dispatch and meta lifetimes (including resets). */
+let moduleRevisionCounter = 0;
+let modulesRevision = $state(0);
+let assetsRevision = $state(0);
+
+export function moduleMembershipRevision(): number {
+    return modulesRevision;
+}
+
+export function moduleAssetsRevision(): number {
+    return assetsRevision;
+}
+
+/** Called only inside the write paths' untrack scopes. */
+function bumpModuleMembership() {
+    modulesRevision = ++moduleRevisionCounter;
+}
+
+function bumpModuleAssets() {
+    assetsRevision = ++moduleRevisionCounter;
+}
+
+const modulePlainFields = new WeakMap<object, Map<string, { stamp: number; value: unknown }>>();
+
+/**
+ * A detached, read-only-by-contract field copy, shared by all readers of this live element/stamp.
+ * Resolve the wrapper to its $state proxy: stamps belong to that proxy, not its raw target.
+ * Svelte never updates the raw target after a write, so it is usable only for an untouched field.
+ * Never return the raw target or freeze it. Uncacheable data must be copied on every read.
+ */
+export function moduleFieldPlain<T extends object, K extends keyof T & string>(wrapper: T, field: K): T[K] {
+    return untrack(() => {
+        const node = nodeOf.get(wrapper);
+        if (!node || node.kind !== "modules" || modulePlace(node)?.type !== "item") {
+            const value = wrapper[field];
+            return (isObject(value) ? detachedCopy(value) : value) as T[K];
+        }
+        const element = resolve(node);
+        const stamp = moduleItemFieldStamp(element, field);
+        const fields = modulePlainFields.get(element);
+        const cached = fields?.get(field);
+        if (stamp !== null && cached?.stamp === stamp) {
+            return cached.value as T[K];
+        }
+        const raw = stamp === node.meta.lifetime ? element[STATE]?.[field] : undefined;
+        const untouched = stamp === node.meta.lifetime && !(isObject(raw) && STATE in raw);
+        const value = untouched ? raw : element[field];
+        // Detached JSON on the fast path: no Svelte property sources are created for its tuples.
+        const copy =
+            stamp !== null
+                ? value === undefined
+                    ? undefined
+                    : JSON.parse(JSON.stringify(value))
+                : isObject(value)
+                  ? detachedCopy(value)
+                  : value;
+        if (stamp !== null) {
+            const memo = fields ?? new Map();
+            memo.set(field, { stamp, value: copy });
+            modulePlainFields.set(element, memo);
+        }
+        return copy as T[K];
+    });
+}
+
 function metaOf(kind: string, list: RecordMeta | null = null, chaId: string | null = null): RecordMeta {
     let meta = metas.get(kind);
     if (!meta) {
@@ -462,15 +527,24 @@ function queueMembership() {
 function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
     if (node.kind !== CHARACTERS) {
         if (node.kind === "modules") {
-            const place = modulePlace(node, prop);
-            if (place?.type === "field") {
-                let fields = node.meta.itemFieldStamps.get(place.element);
-                if (!fields) {
-                    fields = new Map();
-                    node.meta.itemFieldStamps.set(place.element, fields);
+            // The bulk list helpers dispatch here after their write scope has ended.
+            untrack(() => {
+                const place = modulePlace(node, prop);
+                if (place?.type !== "field" || ["id", "namespace", "mcp"].includes(place.field)) {
+                    bumpModuleMembership();
                 }
-                fields.set(place.field, (stampCounter += 1));
-            }
+                if (place?.type !== "field" || place.field === "assets" || node.meta.uncacheable) {
+                    bumpModuleAssets();
+                }
+                if (place?.type === "field") {
+                    let fields = node.meta.itemFieldStamps.get(place.element);
+                    if (!fields) {
+                        fields = new Map();
+                        node.meta.itemFieldStamps.set(place.element, fields);
+                    }
+                    fields.set(place.field, (stampCounter += 1));
+                }
+            });
         }
         queueRecordWrite(node.kind);
     } else if (node.meta.chaId !== null) {
@@ -524,6 +598,10 @@ export function applyRaw(kind: RecordKind, data: unknown) {
         renewStamps(metaOf(kind));
     }
     untrack(() => {
+        if (kind === "modules") {
+            bumpModuleMembership();
+            bumpModuleAssets();
+        }
         if (data === undefined) {
             delete records[kind];
         } else {
@@ -580,6 +658,8 @@ export function resetRecords() {
     writeListener = null;
     characterListener = null;
     untrack(() => {
+        bumpModuleMembership();
+        bumpModuleAssets();
         for (const kind of Object.keys(records)) {
             delete records[kind];
         }
@@ -608,6 +688,10 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
                 ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
                 : unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
+        if (kind === "modules") {
+            bumpModuleMembership();
+            bumpModuleAssets();
+        }
         prepared.route();
     });
     queueRecordWrite(kind);
@@ -643,6 +727,10 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
+        if (kind === "modules") {
+            bumpModuleMembership();
+            bumpModuleAssets();
+        }
         route();
     });
     queueRecordWrite(kind);
@@ -1701,6 +1789,11 @@ function assignsInheritedName(target: object, prop: string): boolean {
 
 /** Puts a rebuilt container where `node`'s object was. */
 function install(node: TrackedNode, next: object) {
+    if (node.kind === "modules" && modulePlace(node)?.type === "item") {
+        // A rebuilt element changes identity even if queueNodeWrite receives an unrelated field.
+        bumpModuleMembership();
+        bumpModuleAssets();
+    }
     if (node.kind === "modules" && modulePlace(node)?.type === "item" && Object.values(node.target!).some(isObject)) {
         // Rebuilding an element for an own inherited-name key keeps its child objects. The old
         // element may still occupy another slot, or be reinserted from `displaced`: two element
