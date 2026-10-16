@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, and 3g (remaining whole-record transport) and 3h (asset list name filters) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters) and 4a (GEN-03, GEN-04) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -466,6 +466,26 @@ group; order within the phase is free.
   (standard HypaV3 keys the combined vector map by chunk text, losing the
   context-qualified vector) and GEN-04 (Hanurai's `substring(16)` against a
   17-character prefix defeats duplicate suppression).
+  **Landed 2026-10-17.** Both `HypaProcesserEx.addSummaryChunksContextual`
+  copies key their in-memory maps (`groupCache`, `cachedVectors`) by the
+  context-qualified cache key recorded per chunk, not by the chunk text, so an
+  identical paragraph in two summaries keeps each summary's own Voyage vector;
+  keying by the cache key rather than the chunk object keeps a paragraph
+  repeated inside one summary ranking alike on a cold and a warm cache (both
+  positions use the vector stored last). Hanurai uses one `search_document: `
+  prefix constant sliced by its length, and skips a retrieved document when it
+  is in the Set of the kept chats' trimmed contents (trimmed `\n\n` paragraphs
+  in split mode), built after the drop loop; card entries lose the leading
+  space. The frozen fixture's `hanurai-plain` and `hanurai-split-paragraphs`
+  cases were hand-edited to the goal (only the dropped messages, in the recorded
+  ranking order, without the leading space; tokens 346 and 375 by the fixture's
+  own count), the first hand edit of `algorithms.json`; `hanurai-exhaustion` and
+  every `v3`/`v3exp` case are unchanged. Both audit probes now fail their
+  bug assertions (the GEN-03 probe's fake host needs the `regex` capability
+  slice 1b added before it runs at all). Tests: GEN-03 cold/warm on the server
+  port and on the client copy (`memoryAlgorithms.test.ts` "what the server
+  adds", `memoryOracle.test.ts`), GEN-04 unsplit, trimmed-comparison and split
+  cases. Stale: the two fixture cases above.
 - **4b. Token accounting** (`llm-requests.md` and `self-host-server.md`).
   GEN-02 (final trim subtracts an image's tokens but keeps the image), API-06
   (image token estimates use the wrong tile cost), API-04 (the strong-ban

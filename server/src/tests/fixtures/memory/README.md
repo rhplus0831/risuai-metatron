@@ -19,3 +19,5 @@ The fixture is the client's recorded behavior, never derived from server code. A
 a defect to attribute, not a reason to recapture. A deliberate change to an algorithm's outcome is a
 reviewed, hand-edited change to the affected case, made in the same commit as the code, and the
 commit message says which case changed and why.
+
+The `hanurai-plain` and `hanurai-split-paragraphs` cases were hand-edited on 2026-10-17 for audit GEN-04.

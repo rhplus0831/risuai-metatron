@@ -1303,6 +1303,7 @@ class HypaProcesserEx extends HypaProcesser {
 
         const groupsToEmbed: SummaryChunk[][] = [];
         const cachedVectors = new Map<string, memoryVector>();
+        const chunkKeys = new Map<SummaryChunk, string>();
 
         for (const [, group] of summaryGroups) {
             const groupTexts = group.map((c) => c.text);
@@ -1310,17 +1311,19 @@ class HypaProcesserEx extends HypaProcesser {
             const groupCache = new Map<string, memoryVector>();
 
             for (const chunk of group) {
-                const cached = this.cached(cacheKeyFor(chunk.text, groupTexts), chunk.text);
+                const cacheKey = cacheKeyFor(chunk.text, groupTexts);
+                chunkKeys.set(chunk, cacheKey);
+                const cached = this.cached(cacheKey, chunk.text);
                 if (cached) {
-                    groupCache.set(chunk.text, cached);
+                    groupCache.set(cacheKey, cached);
                 } else {
                     allCached = false;
                 }
             }
 
             if (allCached) {
-                for (const [text, vector] of groupCache) {
-                    cachedVectors.set(text, vector);
+                for (const [cacheKey, vector] of groupCache) {
+                    cachedVectors.set(cacheKey, vector);
                 }
             } else {
                 groupsToEmbed.push(group);
@@ -1334,7 +1337,6 @@ class HypaProcesserEx extends HypaProcesser {
 
             for (let i = 0; i < groupsToEmbed.length; i++) {
                 const group = groupsToEmbed[i];
-                const groupTexts = group.map((c) => c.text);
                 const embeddings = results[i];
 
                 for (let j = 0; j < group.length; j++) {
@@ -1345,14 +1347,15 @@ class HypaProcesserEx extends HypaProcesser {
                         embedding,
                     };
 
-                    this.store(cacheKeyFor(chunk.text, groupTexts), vector);
-                    cachedVectors.set(chunk.text, vector);
+                    const cacheKey = chunkKeys.get(chunk)!;
+                    this.store(cacheKey, vector);
+                    cachedVectors.set(cacheKey, vector);
                 }
             }
         }
 
         for (const chunk of chunks) {
-            const vector = cachedVectors.get(chunk.text);
+            const vector = cachedVectors.get(chunkKeys.get(chunk)!);
             if (!vector) {
                 throw new Error(`Failed to create vector for summary chunk:\n${chunk.text}`);
             }

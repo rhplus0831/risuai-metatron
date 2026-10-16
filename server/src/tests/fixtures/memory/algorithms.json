@@ -3891,12 +3891,12 @@
     },
     "hanurai-plain": {
       "result": {
-        "tokens": 509,
+        "tokens": 346,
         "chats": [
           {
             "role": "system",
             "memo": "supaMemory",
-            "content": " Message 0: river meadow gravel orchard ember lantern.\n\n Message 5: orchard ember lantern whisper saffron copper willow silent.\n\n Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\n Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n Message 8: river meadow gravel orchard ember lantern whisper.\n\n Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\n Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+            "content": "Message 0: river meadow gravel orchard ember lantern.\n\nMessage 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard."
           },
           {
             "role": "user",
@@ -4002,12 +4002,12 @@
     },
     "hanurai-split-paragraphs": {
       "result": {
-        "tokens": 514,
+        "tokens": 375,
         "chats": [
           {
             "role": "system",
             "memo": "supaMemory",
-            "content": " Message 0: river meadow gravel orchard ember lantern.\n\n Message 5: orchard ember lantern whisper saffron copper willow silent.\n\n Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\n Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n Message 8: river meadow gravel orchard ember lantern whisper.\n\n Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\n Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+            "content": "Message 0: river meadow gravel orchard ember lantern.\n\nMessage 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nMessage 2: whisper saffron copper willow silent harbor river meadow gravel."
           },
           {
             "role": "assistant",

@@ -35,7 +35,8 @@ import {
 // and its outcome must equal the client's: the result or the thrown message, the ordered summary
 // requests, summarizer inputs, completions bodies, embedding requests, local model runs, cache keys
 // written, progress payloads, and alerts. A difference is a parity defect to attribute, never a
-// fixture to recapture from the server. Beside the fixture: the server-only refusal of HypaV3's
+// fixture to recapture from the server (the `hanurai-plain` and `hanurai-split-paragraphs` cases were
+// hand-edited on 2026-10-17 for audit GEN-04; see the fixture README). Beside the fixture: the server-only refusal of HypaV3's
 // WebLLM summarization models, and the host's fence and signal reaching the algorithms.
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures/memory/algorithms.json");
@@ -232,6 +233,192 @@ describe("the server ports against the browser fixture", () => {
 });
 
 describe("what the server adds to the algorithms", () => {
+    describe("GEN-03: contextual summary vectors", () => {
+        const shared = "Shared paragraph.";
+        const cases = [
+            {
+                name: "keeps identical paragraphs in different contexts separate, cold and warm",
+                groups: [
+                    [shared, "Context B."],
+                    [shared, "Context A."],
+                ],
+                vectors: [
+                    [
+                        [0, 1],
+                        [0, 1],
+                    ],
+                    [
+                        [1, 0],
+                        [0, 1],
+                    ],
+                ],
+            },
+            {
+                name: "uses the last stored vector for both repeated positions in one summary, cold and warm",
+                groups: [
+                    [shared, shared],
+                    ["Other paragraph.", "Another paragraph."],
+                ],
+                vectors: [
+                    [
+                        [1, 0],
+                        [0, 1],
+                    ],
+                    [
+                        [0.6, 0.8],
+                        [0.6, 0.8],
+                    ],
+                ],
+            },
+        ];
+
+        for (const { name, groups, vectors } of cases) {
+            it(name, async () => {
+                const texts = groups.map((group) => group.join("\n\n"));
+                const scenario: Scenario = {
+                    name,
+                    algorithm: "v3",
+                    settings: { hypaModel: "voyageContext3" },
+                    preset: {
+                        useExperimentalImpl: false,
+                        preserveOrphanedMemory: true,
+                        recentMemoryRatio: 0,
+                        similarMemoryRatio: 1,
+                        memoryTokensRatio: 0.1,
+                        queryChatCount: 1,
+                        summaryChunkSeparator: "\\n\\n",
+                    },
+                    chats: [{ role: "user", content: "Query", memo: "current" }],
+                    room: {
+                        hypaV3Data: {
+                            summaries: texts.map((text) => ({ text, chatMemos: [], isImportant: false, tags: [] })),
+                        },
+                    },
+                    char: { type: "character", name: "Mira" },
+                    maxContextTokens: 1000,
+                };
+                const world = createWorld(scenario);
+                const http = vi.spyOn(world, "http").mockImplementation(async (_url, body) => ({
+                    ok: true,
+                    status: 200,
+                    data: {
+                        data: body.inputs.map((group: string[]) => ({
+                            data: group.map((_text, position) => ({
+                                embedding:
+                                    body.input_type === "query"
+                                        ? [1, 0]
+                                        : vectors[texts.indexOf(group.join("\n\n"))][position],
+                            })),
+                        })),
+                    },
+                }));
+
+                for (const cacheState of ["cold", "warm"]) {
+                    http.mockClear();
+                    // A new host/processor per send; only the world's vector cache survives.
+                    const result = await hypaMemoryV3(
+                        hostOf(scenario, world),
+                        structuredClone(scenario.chats),
+                        100,
+                        scenario.maxContextTokens,
+                        structuredClone(scenario.room) as never,
+                        scenario.char as never,
+                        { tokenizeChat: async ({ content }) => content.length },
+                    );
+                    expect(result.error).toBeUndefined();
+                    // Query [1,0] favors A. For the repeated case, BOTH B positions use the
+                    // last stored [0,1], so A's two [0.6,0.8] vectors win instead.
+                    // Length counts leave 55 memory tokens: either summary fits, both do not.
+                    expect.soft(result.memory?.metrics?.lastSimilarSummaries, cacheState).toEqual([1]);
+                    expect.soft(result.chats[0].content, cacheState).toContain(texts[1]);
+                    expect.soft(result.chats[0].content, cacheState).not.toContain(texts[0]);
+                    const documents = http.mock.calls.filter(([, body]) => body.input_type === "document");
+                    expect(documents, cacheState).toHaveLength(cacheState === "cold" ? 1 : 0);
+                    if (cacheState === "cold") {
+                        expect(documents[0][1].inputs).toEqual(groups);
+                    }
+                }
+                expect(world.log.requests).toEqual([]);
+            });
+        }
+    });
+
+    describe("GEN-04: Hanurai retrieves only dropped document texts", () => {
+        const cases = [
+            {
+                name: "excludes a retained message without whitespace and retrieves a dropped message once without a leading space",
+                split: false,
+                dropped: "  Dropped message.  ",
+                retained: "Kept message.",
+                documents: ["Dropped message.", "Kept message."],
+                card: "Dropped message.",
+            },
+            {
+                name: "compares retained messages after trimming, as embedding documents are built",
+                split: false,
+                dropped: "  Dropped message.  ",
+                retained: " \n Kept message. \t",
+                documents: ["Dropped message.", "Kept message."],
+                card: "Dropped message.",
+            },
+            {
+                name: "excludes both retained paragraphs and retrieves each dropped paragraph once without a leading space",
+                split: true,
+                dropped: "  Dropped first. \n\n Dropped second.  ",
+                retained: " Kept first. \n\n Kept second. ",
+                documents: ["Dropped first.", "Dropped second.", "Kept first.", "Kept second."],
+                card: "Dropped first.\n\nDropped second.",
+            },
+        ];
+
+        for (const { name, split, dropped, retained, documents, card } of cases) {
+            it(name, async () => {
+                const scenario: Scenario = {
+                    name,
+                    algorithm: "hanurai",
+                    settings: { hanuraiSplit: split, hanuraiTokens: 15 },
+                    chats: [
+                        { role: "user", content: dropped, memo: "dropped" },
+                        { role: "assistant", content: retained, memo: "retained" },
+                        ...[1, 2, 3].map((i) => ({
+                            role: "user" as const,
+                            content: `Query ${i}`,
+                            memo: `recent-${i}`,
+                        })),
+                    ],
+                    room: {},
+                    char: { type: "character", name: "Mira" },
+                    maxContextTokens: 26,
+                };
+                const world = createWorld(scenario);
+                // Every old document matches all three recent queries. Aggregating those hits
+                // must retrieve each dropped text only once, while excluding every retained text.
+                const http = vi.spyOn(world, "http").mockImplementation(async (_url, body) => ({
+                    ok: true,
+                    status: 200,
+                    data: {
+                        data: (Array.isArray(body.input) ? body.input : [body.input]).map(() => ({
+                            embedding: [1, 0],
+                        })),
+                    },
+                }));
+                const result = await hanuraiMemory(hostOf(scenario, world), structuredClone(scenario.chats), {
+                    // 12 + 15 reserved > 26: drop exactly one one-token message. After releasing
+                    // the reserve, even all four candidates would fit, so the budget cannot hide duplicates.
+                    currentTokens: 12,
+                    maxContextTokens: scenario.maxContextTokens,
+                    tokenizer: { tokenizeChat: async () => 1 },
+                    tooMuchToken: TOO_MUCH_TOKEN,
+                });
+                expect(result).not.toHaveProperty("alert");
+                if ("alert" in result) throw new Error(result.alert);
+                expect(result.chats.slice(1)).toEqual(scenario.chats.slice(1));
+                expect(result.chats[0]).toEqual({ role: "system", memo: "supaMemory", content: card });
+                expect(http.mock.calls[0][1].input).toEqual(documents.map((text) => "search_document: " + text));
+            });
+        }
+    });
+
     const overflow: Scenario = {
         name: "v3-mlc",
         algorithm: "v3",

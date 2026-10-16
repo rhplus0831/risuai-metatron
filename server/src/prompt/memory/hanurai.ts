@@ -3,11 +3,14 @@ import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
 const maxRecentChatQuery = 4;
+const searchDocumentPrefix = "search_document: ";
+const prefixLength = searchDocumentPrefix.length;
 
 /**
  * `hanuraiMemory` of the former `src/ts/process/memory/hanuraiMemory.ts`, statement for statement, on a
  * `MemoryHost`. Where the client alerts and returns `false` (no chat left to drop), this returns the
  * alert's text as `alert`: the caller ends the send with it, without the inlay error message.
+ * Audit GEN-04 deliberately corrects the prefix length and checks duplicates against kept document texts.
  */
 export async function hanuraiMemory(
     host: MemoryHost,
@@ -38,10 +41,10 @@ export async function hanuraiMemory(
                 if (!split.trim()) {
                     continue;
                 }
-                addTexts.push(`search_document: ${split.trim()}`);
+                addTexts.push(searchDocumentPrefix + split.trim());
             }
         } else {
-            addTexts.push(`search_document: ${chat.content?.trim()}`);
+            addTexts.push(searchDocumentPrefix + chat.content?.trim());
         }
     });
     await processer.addText(addTexts);
@@ -77,26 +80,38 @@ export async function hanuraiMemory(
         tokens -= await tokenizer.tokenizeChat(poped);
     }
 
+    const keptDocumentTexts = new Set<string>();
+    for (const chat of chats) {
+        if (!chat?.content?.trim()) {
+            continue;
+        }
+        const texts = db.hanuraiSplit ? chat.content.split("\n\n") : [chat.content];
+        for (const text of texts) {
+            if (text.trim()) {
+                keptDocumentTexts.add(text.trim());
+            }
+        }
+    }
+
     tokens -= db.hanuraiTokens;
 
     let resultTexts: string[] = [];
     for (const vector of vectorResult) {
-        const chat = chats.find((chat) => chat.content === vector[0].substring(16));
-        if (chat) {
+        if (keptDocumentTexts.has(vector[0].substring(prefixLength))) {
             continue;
         }
         const tokenized =
             (await tokenizer.tokenizeChat({
                 role: "system",
                 memo: "supaMemory",
-                content: vector[0].substring(16),
+                content: vector[0].substring(prefixLength),
             })) + 2;
         tokens += tokenized;
         if (tokens >= arg.maxContextTokens) {
             tokens -= tokenized;
             break;
         }
-        resultTexts.push(vector[0].substring(16));
+        resultTexts.push(vector[0].substring(prefixLength));
     }
     chats.unshift({
         role: "system",

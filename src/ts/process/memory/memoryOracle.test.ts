@@ -161,6 +161,118 @@ describe("the browser memory algorithms against the recorded fixture", () => {
     }
 });
 
+describe("GEN-03: the modal's contextual summary vectors", () => {
+    const shared = "Shared paragraph.";
+    const cases = [
+        {
+            name: "keeps identical paragraphs in different contexts separate, cold and warm",
+            groups: [
+                [shared, "Context B."],
+                [shared, "Context A."],
+            ],
+            vectors: [
+                [
+                    [0, 1],
+                    [0, 1],
+                ],
+                [
+                    [1, 0],
+                    [0, 1],
+                ],
+            ],
+        },
+        {
+            name: "uses the last stored vector for both repeated positions in one summary, cold and warm",
+            groups: [
+                [shared, shared],
+                ["Other paragraph.", "Another paragraph."],
+            ],
+            vectors: [
+                [
+                    [1, 0],
+                    [0, 1],
+                ],
+                [
+                    [0.6, 0.8],
+                    [0.6, 0.8],
+                ],
+            ],
+        },
+    ];
+
+    for (const { name, groups, vectors } of cases) {
+        it(name, async () => {
+            const texts = groups.map((group) => group.join("\n\n"));
+            const scenario: Scenario = {
+                name,
+                algorithm: "v3",
+                settings: { hypaModel: "voyageContext3" },
+                preset: {
+                    useExperimentalImpl: false,
+                    preserveOrphanedMemory: true,
+                    recentMemoryRatio: 0,
+                    similarMemoryRatio: 1,
+                    memoryTokensRatio: 0.1,
+                    queryChatCount: 1,
+                    summaryChunkSeparator: "\\n\\n",
+                },
+                chats: [{ role: "user", content: "Query", memo: "current" }],
+                room: {
+                    hypaV3Data: {
+                        summaries: texts.map((text) => ({ text, chatMemos: [], isImportant: false, tags: [] })),
+                    },
+                },
+                char: { type: "character", name: "Mira" },
+                maxContextTokens: 1000,
+            };
+            const world = createWorld(scenario);
+            const http = vi.spyOn(world, "http").mockImplementation(async (_url, body) => ({
+                ok: true,
+                status: 200,
+                data: {
+                    data: body.inputs.map((group: string[]) => ({
+                        data: group.map((_text, position) => ({
+                            embedding:
+                                body.input_type === "query"
+                                    ? [1, 0]
+                                    : vectors[texts.indexOf(group.join("\n\n"))][position],
+                        })),
+                    })),
+                },
+            }));
+            Object.assign(world.db, settingsOf(scenario));
+            installWorld(world);
+            current = world;
+            const { hypaMemoryV3 } = await import("./hypav3");
+
+            for (const cacheState of ["cold", "warm"]) {
+                http.mockClear();
+                // Fresh input and processor each time; the same fake LocalForage survives.
+                const result = await hypaMemoryV3(
+                    structuredClone(scenario.chats),
+                    100,
+                    scenario.maxContextTokens,
+                    structuredClone(scenario.room) as never,
+                    scenario.char as never,
+                    { tokenizeChat: async ({ content }) => content.length } as never,
+                );
+                expect(result.error).toBeUndefined();
+                // Query [1,0] favors A. Repeated positions share the last [0,1] vector,
+                // so both lose to A's [0.6,0.8]. The length budget fits exactly one summary.
+                expect.soft(result.memory?.metrics?.lastSimilarSummaries, cacheState).toEqual([1]);
+                expect.soft(result.chats[0].content, cacheState).toContain(texts[1]);
+                expect.soft(result.chats[0].content, cacheState).not.toContain(texts[0]);
+                const documents = http.mock.calls.filter(([, body]) => body.input_type === "document");
+                expect(documents, cacheState).toHaveLength(cacheState === "cold" ? 1 : 0);
+                if (cacheState === "cold") {
+                    expect(documents[0][1].inputs).toEqual(groups);
+                }
+            }
+            expect(world.log.requests).toEqual([]);
+        });
+    }
+});
+
 describe("P10: the summary requests carry the send's or the action's context", () => {
     const byName = (name: string) => scenarios.find((scenario) => scenario.name === name)!;
     const context = {
