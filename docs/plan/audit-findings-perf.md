@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) and 3e (module membership/assets cache and bounded fuzzy scans) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -309,6 +309,54 @@ P2 with the memory items that share its mechanism.
   read, the draft kept in a long-press-cancelled editor, and the decision on
   the dormant last-5 rerender. Untested paths to cover: reload pointer,
   portrait change, folded index.
+
+  Landed 2026-10-16: the structural row diff tracks message identities/order,
+  streaming state, the loaded/folded window, reload store and character/user
+  props; each mounted row owns a disposable effect for its text and mount key.
+  Stream chunks update only that row through `Chat.updateRow`; its display-only
+  `name`/`img` fields also refresh names and image sources without remounting or
+  resetting the body key. Callback identity changes do not remount rows. The streaming-id scan
+  is cached separately. Image promises are reused until their source changes;
+  simple character props and callbacks are captured at mount. An observer marks only
+  rows beyond two viewport heights `far` for `content-visibility: auto`; changed
+  content is remeasured after async markdown so empty-body sizes do not cause
+  scroll jumps. Near rows stay uncontained for fixed overlays and highlights.
+  After a same-chat append at the bottom, keep at least 150 rows or the visible
+  rows plus a load page. Screenshots, scroll-to-message, folds and open editors
+  block trimming. The tail detaches once; component disposal runs in 4 ms frame
+  budgets (a first synchronous teardown took 235 ms). The at-bottom read is
+  gated and precedes DOM changes; the update/unmount logs and dead last-five
+  key are gone. Both message editors use a separate draft, and unfolding keeps
+  the old lower window boundary. Screenshots wait for all rows' current parses,
+  disable containment, then restore the previous window/scroll offset.
+
+  Production Chrome, 2,000-message Long, 200 chunks at 20 ms: streaming frame
+  p95 500 -> 16.8 ms, max 700 -> 99.9 ms; 18 long tasks / about 1,500 ms ->
+  one / 91 ms (the first-second trim). Mounted rows after sending: 2,000 ->
+  150; retained JS heap 228.4 -> 44.3 MB. Before the trim, explicitly loading
+  all 2,000 still uses 230.7 MB (30 rows 30.3 MB, 510 rows 79.1 MB). Later
+  load-more task latency fell from median 125 / max 250 ms to 58 / 78.3 ms.
+  Streaming while scrolled up with 600 rows initially mounted (615 afterward)
+  has frame p95 33.4 ms and no long tasks. With `CHUNK_MS=0 MAX_ROWS=600`,
+  the send trims 600 -> 150 rows (43.1 MB); frame p95 is 16.7 ms at the bottom
+  and 33.3 ms scrolled up (615 rows afterward), with no long tasks in either
+  stream. Both harness runs pass all eight checks. The fast run's load-more
+  samples still include a 233.7 ms task, so history mounting is not a bounded
+  task guarantee. The harness uses 250 ms newest-row
+  text checks tied to the new reply, avoiding whole-DOM text-engine scans.
+  Manual Chrome checks: zero anchor drift through 400 rows; partial-edit modal
+  covered the 1280 x 800 viewport; cancelled drafts stayed hidden/unsaved and
+  reopened intact; an offscreen editor blocked trimming; a bottom append
+  retained scrollTop 0; unfolding retained indices 70–100; a screenshot from
+  a one-row window captured 40 rendered messages plus the greeting and restored
+  the original window. Tests: `Chats.rows.svelte.test.ts`, `Chat.draft.test.ts`,
+  `observer.markers.test.ts` (chunk isolation, remount rules, the trim and its
+  guards, far marking, the editor draft, the BGM scan filter). Remaining: full history browsing can still mount all
+  requested rows until a bottom append; far custom fixed/overflowing content
+  remains contained, and older length-dependent CBS waits for its next render.
+  Firefox/Safari behavior and permanent coverage of these observer/trim guards
+  remain to be verified separately.
+
 - **3g. Remaining whole-record transport** (_small_, `persistence.md`). The
   asset audit's A1 leftovers: presets, plugins, pluginStorage and sections
   still travel whole; whole writes (jobs, MCP, imports) publish plain refs; the

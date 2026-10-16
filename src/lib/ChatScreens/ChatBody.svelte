@@ -18,6 +18,7 @@
 </script>
 
 <script lang="ts">
+    import { tick } from "svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
     import { sleep } from "src/ts/util";
@@ -375,6 +376,16 @@
     };
 
     let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++parseRun));
+
+    /** Screenshot capture waits for the current parse, including a replacement started meanwhile. */
+    export async function whenRendered() {
+        while (!shouldRenderRawStreaming) {
+            const pending = markParsingResult;
+            await pending;
+            await tick();
+            if (pending === markParsingResult) return;
+        }
+    }
 
     $effect(() => {
         if (shouldRenderRawStreaming) {

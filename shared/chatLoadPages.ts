@@ -1,3 +1,6 @@
+/** Maximum steady-state row window after an append at the bottom (plus any visible overflow). */
+export const CHAT_ROW_CAP = 150;
+
 export const DEFAULT_CHAT_LOAD_INITIAL_PAGES = 30;
 export const DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES = 15;
 

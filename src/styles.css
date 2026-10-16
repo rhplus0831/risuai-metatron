@@ -619,3 +619,9 @@ body {
 annotation {
     display: none;
 }
+
+/* Near rows stay uncontained so fixed overlays and overflowing highlights keep their viewport. */
+.chat-message-container.far {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 240px;
+}

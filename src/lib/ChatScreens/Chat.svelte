@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts">
+    import { tick } from "svelte";
     import {
         ArrowLeft,
         ArrowLeftRightIcon,
@@ -114,6 +115,11 @@
 
     let translating = $state(false);
     let editMode = $state(false);
+    // A cancelled long press keeps the draft available, without changing the rendered/stored message.
+    let draft: string | null = $state(null);
+    export function isEditing() {
+        return editMode || editTranslationMode || loadingTranslationEdit;
+    }
     let statusMessage: string = $state("");
     let retranslate = $state(false);
     let editTranslationMode = $state(false);
@@ -126,6 +132,11 @@
     /** Whether this message was locked when last seen (the server transform skips a locked message). */
     let wasLocked = false;
     let bodyRoot: HTMLElement | null = $state(null);
+    let parsedBody: { whenRendered: () => Promise<void> } | undefined = $state();
+    export async function whenRendered() {
+        await tick();
+        await parsedBody?.whenRendered();
+    }
     interface Props {
         message?: string;
         name?: string;
@@ -138,7 +149,6 @@
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean | "dynamic";
         role?: string;
-        totalLength?: number;
         onReroll?: () => void;
         unReroll?: () => void;
         character?: simpleCharacterArgument | string | null;
@@ -164,7 +174,6 @@
         rerollIcon = false,
         messageGenerationInfo = null,
         role = null,
-        totalLength = 0,
         onReroll = () => {},
         unReroll = () => {},
         character = null,
@@ -254,8 +263,8 @@
 
     /**
      * `Chats` keys a row by its message id and passes these here instead of mounting the row again: a
-     * new position (a message before it was added or removed), and the text while it streams. Only
-     * the fields given change.
+     * new position (a message before it was added or removed), the text while it streams, and
+     * display-only name/image changes. Only the fields given change; name/image never reset ChatBody.
      */
     export function updateRow(update: {
         message?: string;
@@ -263,12 +272,16 @@
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
+        name?: string;
+        img?: string | Promise<string>;
     }) {
         if ("message" in update) message = update.message;
         if ("idx" in update) idx = update.idx;
         if ("isOptimizedStreamingMessage" in update) isOptimizedStreamingMessage = update.isOptimizedStreamingMessage;
         if ("streamingOptimizationMode" in update) streamingOptimizationMode = update.streamingOptimizationMode;
         if ("rawStreamingText" in update) rawStreamingText = update.rawStreamingText;
+        if ("name" in update) name = update.name;
+        if ("img" in update) img = update.img;
     }
 
     // A row rendered before its chat's first save had no transform context (the script stage was
@@ -359,13 +372,16 @@
             return false;
         }
         if (target) {
-            setMessageText(target.ref, target.id, message);
+            setMessageText(target.ref, target.id, draft ?? message);
         }
+        message = draft ?? message;
+        draft = null;
         return true;
     }
 
     function startOriginalEdit() {
         if (originalEditControlDisabled) return;
+        draft ??= message;
         editMode = true;
     }
 
@@ -598,7 +614,9 @@
     /** The display CBS pre-pass of the row (`displaya`). */
     function displayPrePass(text: string): string {
         return risuChatParserForDisplay(text, {
-            chara: name,
+            // Display-only name updates do not restart the pre-pass; the next text/render
+            // change still uses the current name.
+            chara: untrack(() => name),
             chatID: idx,
             rmVar: true,
             visualize: true,
@@ -898,7 +916,7 @@
     {/if}
     {#if editMode}
         <AutoresizeArea
-            bind:value={message}
+            bind:value={draft}
             handleLongPress={() => {
                 editMode = false;
             }}
@@ -932,7 +950,6 @@
         </div>
     {:else}
         {@const chatReloadPointer = $ReloadGUIPointer + ($ReloadChatPointer[reloadChatKey(messageId, idx)] ?? 0)}
-        {@const totalLengthPointer = idx > totalLength - 6 ? totalLength : 0}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span
@@ -948,8 +965,9 @@
             style:font-size="{0.875 * (settings.ui.zoomsize / 100)}rem"
             style:line-height="{(settings.ui.lineHeight ?? 1.25) * (settings.ui.zoomsize / 100)}rem"
         >
-            {#key `${totalLengthPointer}|${chatReloadPointer}`}
+            {#key chatReloadPointer}
                 <ChatBody
+                    bind:this={parsedBody}
                     {character}
                     {firstMessage}
                     {idx}
@@ -1841,7 +1859,7 @@
                         {#if editMode}
                             <textarea
                                 class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-black p-2 mb-2 resize-none message-edit-area"
-                                bind:value={message}></textarea>
+                                bind:value={draft}></textarea>
                         {:else}
                             <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">
                                 {@render textBox()}

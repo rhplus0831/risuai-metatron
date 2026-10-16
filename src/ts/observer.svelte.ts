@@ -221,6 +221,10 @@ function queueBgmSync() {
     }, 0);
 }
 
+function containsControlMarker(node: Node): boolean {
+    return node instanceof Element && (node.matches("[risu-ctrl]") || node.querySelector("[risu-ctrl]") !== null);
+}
+
 export function startObserveDom() {
     if (observingDom) {
         return;
@@ -231,7 +235,25 @@ export function startObserveDom() {
     document.addEventListener("click", closeCodeContextMenu);
 
     // Parsed message HTML (and its BGM markers) arrives through {@html}
-    new MutationObserver(queueBgmSync).observe(document.body, {
+    new MutationObserver((records) => {
+        for (const record of records) {
+            if (record.type === "attributes" && record.attributeName === "risu-ctrl") {
+                queueBgmSync();
+                return;
+            }
+            if (record.type !== "childList") continue;
+            // Plain streamed text/HTML cannot change the marker set. Search only changed
+            // subtrees here; syncBgm keeps the document-order scan when a marker may have changed.
+            for (const nodes of [record.addedNodes, record.removedNodes]) {
+                for (const node of nodes) {
+                    if (containsControlMarker(node)) {
+                        queueBgmSync();
+                        return;
+                    }
+                }
+            }
+        }
+    }).observe(document.body, {
         childList: true,
         subtree: true,
         attributes: true,

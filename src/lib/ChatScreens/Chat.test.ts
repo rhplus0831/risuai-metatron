@@ -246,7 +246,6 @@ function render(props: { message?: string; messageId?: string | undefined; idx?:
             isLastMemory: false,
             idx: props.idx ?? 0,
             messageId: "messageId" in props ? props.messageId : "a",
-            totalLength: 2,
             character: createSimpleCharacter(selectedCharacter()),
             name: "C",
             role: "char",

@@ -2,15 +2,18 @@
     import type { AnyClientCharacter, ClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import type { DeepReadonly, Message, StreamingDisplayOptimizationMode } from "src/ts/storage/database.svelte";
-    import { mount, onDestroy, unmount } from "svelte";
+    import { mount, onDestroy, tick, unmount, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
     import { currentChatRef, selectedChatId, streamingState } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
-    import { get } from "svelte/store";
+    import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
-    const getCurrentChatRoomId = () => currentChatRef()?.chatId ?? null;
+    const getCurrentChatRoomId = () => {
+        const ref = currentChatRef();
+        return ref ? `${ref.chaId}\u0000${ref.chatId}` : null;
+    };
 
     let {
         messages,
@@ -21,6 +24,8 @@
         userIcon,
         loadPages,
         userIconPortrait,
+        onTrim,
+        suspendTrim = false,
         hasNewUnreadMessage = $bindable(false),
     }: {
         messages: readonly DeepReadonly<Message>[];
@@ -31,190 +36,385 @@
         userIcon: string;
         loadPages: number;
         userIconPortrait?: boolean;
+        onTrim?: (keep: number) => number | undefined;
+        suspendTrim?: boolean;
         hasNewUnreadMessage?: boolean;
     } = $props();
 
-    let chatBody: HTMLDivElement;
-    /** What `Chat.updateRow` changes on a mounted row: its position, and its text while it streams. */
+    let chatBody: HTMLDivElement = $state();
     type RowUpdate = {
         message: string;
         idx: number;
         isOptimizedStreamingMessage: boolean;
         streamingOptimizationMode: StreamingDisplayOptimizationMode;
         rawStreamingText: string;
+        name: string;
+        img: string | Promise<string>;
     };
-    /**
-     * What mounts the row again when it changes: the text (unless the message streams), compared as is
-     * (`data` is always a string), and the rest as JSON, so values the stored data may hold beyond their
-     * types (an object `disabled`) compare by content after a clone, as before.
-     */
     type MountKey = { text: string | null; rest: string };
-    type Row = {
-        instance: { updateRow?: (update: Partial<RowUpdate>) => void };
-        element: HTMLDivElement;
-        mountKey: MountKey;
-        sent: RowUpdate;
+    type RowInput = {
+        message: DeepReadonly<Message>;
+        idx: number;
+        streaming: boolean;
+        optimized: boolean;
+        mode: StreamingDisplayOptimizationMode;
     };
+    type Row = {
+        instance: {
+            updateRow?: (update: Partial<RowUpdate>) => void;
+            isEditing?: () => boolean;
+            whenRendered?: () => Promise<void>;
+        };
+        element: HTMLDivElement;
+        input: RowInput;
+        dispose: () => void;
+    };
+    const rows = new Map<string, Row>();
+    const rowElements = new WeakMap<Element, Row>();
+    const capturing = $derived(loadPages === Infinity);
+    // Names and images update in place; only character identity and portrait affect mounting.
+    // Callbacks and the simple character are captured at mount.
+    const context = $derived({
+        character: currentCharacter,
+        image: currentCharacter.image,
+        name: currentCharacter.name,
+        portrait: (currentCharacter as ClientCharacter).largePortrait ?? false,
+        userIcon,
+        currentUsername,
+        userIconPortrait: userIconPortrait ?? false,
+    });
 
-    /** The text is not copied into a key on every update (every streamed frame). */
-    const sameMountKey = (a: MountKey, b: MountKey) => a.text === b.text && a.rest === b.rest;
-    /**
-     * The mounted rows by key: the chat and the message's id (`Message.chatId`), so a message keeps its
-     * row when messages before it are added or removed (its new index goes through `Chat.updateRow`).
-     * A row mounts again, resetting its state (an open editor, the translation toggle), when its text
-     * changes, its message starts or stops streaming, or its portrait, disabled state, or reload
-     * pointer changes. While it streams, its text goes through `Chat.updateRow` in every mode.
-     */
-    let rows: Map<string, Row> = new Map();
+    function isEditing(row: Row) {
+        return !!(
+            row.instance?.isEditing?.() || row.element.querySelector(".message-edit-area, .partial-edit-overlay")
+        );
+    }
 
-    const updateChatBody = () => {
-        if (!chatBody) {
-            return;
+    let observer: IntersectionObserver | undefined;
+    // The first observation follows layout. Use that measured block size as the fallback too:
+    // browsers need not remember a size rendered before content-visibility became auto.
+    $effect(() => {
+        const body = chatBody;
+        const capture = capturing;
+        if (!body || typeof IntersectionObserver === "undefined") return;
+        const root = body.parentElement;
+        const observe = () => {
+            observer?.disconnect();
+            observer = new IntersectionObserver(
+                (entries) => {
+                    for (const entry of entries) {
+                        const element = entry.target as HTMLDivElement;
+                        const row = rowElements.get(element);
+                        if (!row) continue;
+                        if (!element.classList.contains("far")) {
+                            const style = getComputedStyle(element);
+                            const blockSize =
+                                entry.boundingClientRect.height -
+                                parseFloat(style.borderTopWidth) -
+                                parseFloat(style.borderBottomWidth) -
+                                parseFloat(style.paddingTop) -
+                                parseFloat(style.paddingBottom);
+                            element.style.containIntrinsicBlockSize = `auto ${Math.max(0, blockSize)}px`;
+                        }
+                        element.classList.toggle("far", !capture && !entry.isIntersecting && !isEditing(row));
+                    }
+                },
+                { root, rootMargin: `${2 * (root?.clientHeight ?? 0)}px 0px` },
+            );
+            for (const row of rows.values()) {
+                if (capture) row.element.classList.remove("far");
+                observer.observe(row.element);
+            }
+        };
+        observe();
+        const refresh = (element: Element) => {
+            const row = rowElements.get(element);
+            if (!row) return;
+            row.element.classList.remove("far");
+            observer?.unobserve(element);
+            observer?.observe(element);
+        };
+        // The first layout may precede async markdown. Re-observe just the rows whose content
+        // changed, after they have laid out uncontained. Otherwise a far row remembers the empty
+        // body height and jumps when its parsed text first enters the viewport. Stream chunks
+        // produce records only for their own row; this never walks all mounted rows per chunk.
+        const mutations = new MutationObserver((records) => {
+            const changed = new Set<Element>();
+            for (const record of records) {
+                const target = record.target instanceof Element ? record.target : record.target.parentElement;
+                if (record.type === "attributes" && rowElements.has(target)) continue;
+                const element = target?.closest(".chat-message-container");
+                if (element) changed.add(element);
+            }
+            for (const element of changed) refresh(element);
+        });
+        mutations.observe(body, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ["class", "style", "src"],
+        });
+        const loaded = (event: Event) => {
+            const element = (event.target as Element)?.closest?.(".chat-message-container");
+            if (element) refresh(element);
+        };
+        body.addEventListener("load", loaded, true);
+        const resize =
+            typeof ResizeObserver === "undefined"
+                ? undefined
+                : new ResizeObserver(() => {
+                      for (const row of rows.values()) row.element.classList.remove("far");
+                      observe();
+                  });
+        if (root) resize?.observe(root);
+        return () => {
+            resize?.disconnect();
+            mutations.disconnect();
+            body.removeEventListener("load", loaded, true);
+            observer?.disconnect();
+            observer = undefined;
+        };
+    });
+
+    function createRow(input: RowInput): Row {
+        const element = document.createElement("div");
+        element.classList.add("chat-message-container");
+        let currentInput = $state.raw(input);
+        const row: Row = {
+            element,
+            get input() {
+                return currentInput;
+            },
+            set input(value) {
+                currentInput = value;
+            },
+            instance: undefined,
+            dispose: () => {},
+        };
+        rowElements.set(element, row);
+        row.dispose = $effect.root(() => {
+            let mountKey: MountKey | undefined;
+            let mountedCharacter: AnyClientCharacter;
+            let imageSource: string | undefined;
+            let sent: RowUpdate | undefined;
+            $effect(() => {
+                const { message, idx, streaming, optimized, mode } = row.input;
+                const ctx = context;
+                const data = message.data;
+                const portrait = message.role === "user" ? ctx.userIconPortrait : ctx.portrait;
+                const key: MountKey = {
+                    text: streaming ? null : data,
+                    // Keep disabled's historical by-content comparison, even for legacy object values.
+                    rest: JSON.stringify([
+                        portrait,
+                        message.disabled ?? false,
+                        $ReloadChatPointer[reloadChatKey(message.chatId, idx)] ?? 0,
+                        message.role,
+                    ]),
+                };
+                const nextImageSource = message.role === "user" ? ctx.userIcon : ctx.image;
+                const next: RowUpdate = {
+                    message: data,
+                    idx,
+                    isOptimizedStreamingMessage: optimized,
+                    streamingOptimizationMode: mode,
+                    rawStreamingText: data,
+                    name: message.role === "user" ? ctx.currentUsername : ctx.name,
+                    // Reuse the resolved/pending image on text and name updates, including every
+                    // stream chunk. A changed source updates the portrait without remounting Chat.
+                    img: untrack(() =>
+                        sent && imageSource === nextImageSource ? sent.img : getCharImage(nextImageSource, "css"),
+                    ),
+                };
+                untrack(() => {
+                    if (
+                        mountKey &&
+                        mountKey.text === key.text &&
+                        mountKey.rest === key.rest &&
+                        mountedCharacter === ctx.character
+                    ) {
+                        const update: Partial<RowUpdate> = {};
+                        for (const field of Object.keys(next) as (keyof RowUpdate)[]) {
+                            if (sent[field] !== next[field]) (update as Record<string, unknown>)[field] = next[field];
+                        }
+                        if (Object.keys(update).length) row.instance.updateRow?.(update);
+                    } else {
+                        if (row.instance) unmount(row.instance);
+                        element.classList.remove("far");
+                        row.instance = mount(Chat, {
+                            target: element,
+                            props: {
+                                ...next,
+                                isLastMemory: false,
+                                messageId: message.chatId,
+                                onReroll,
+                                unReroll,
+                                rerollIcon: "dynamic",
+                                character: createSimpleCharacter(ctx.character),
+                                largePortrait: portrait,
+                                messageGenerationInfo: message.generationInfo,
+                                role: message.role,
+                                isComment: message.isComment ?? false,
+                                disabled: message.disabled ?? false,
+                            },
+                        });
+                        observer?.unobserve(element);
+                        observer?.observe(element);
+                    }
+                    // Keep the latest equal string after a reload on the same-string comparison path.
+                    mountKey = key;
+                    mountedCharacter = ctx.character;
+                    imageSource = nextImageSource;
+                    sent = next;
+                });
+            });
+        });
+        return row;
+    }
+
+    // Detach the offscreen tail in one structural update, then dispose its component instances in
+    // small frame budgets. They cannot be interacted with once detached; editor guards run before
+    // detachment. Keeping teardown separate avoids repeating the full diff on every removal frame.
+    const retired = new Set<Row["instance"]>();
+    let retireFrame: number;
+    function disposeRetired() {
+        const deadline = performance.now() + 4;
+        for (const instance of retired) {
+            retired.delete(instance);
+            unmount(instance);
+            if (performance.now() >= deadline) break;
         }
+        retireFrame = retired.size ? requestAnimationFrame(disposeRetired) : undefined;
+    }
 
-        const charImage = getCharImage(currentCharacter.image, "css");
-        const userImage = getCharImage(userIcon, "css");
-        const simpleChar = createSimpleCharacter(currentCharacter);
-        let loadStart = messages.length - 1;
-        let loadEnd = messages.length - loadPages;
-        const currentChatId = selectedChatId(currentCharacter.chaId);
-        const configuredPerformanceMode = settings.ui.streamingDisplayOptimizationMode ?? "off";
-        const streaming =
-            streamingState.messageId !== null &&
-            streamingState.chaId === currentCharacter.chaId &&
-            streamingState.chatId === currentChatId;
-        const performanceMode = streaming ? streamingState.mode : configuredPerformanceMode;
-        // The streaming message by id, not by position (another message may follow it).
-        const activeStreamingIndex =
-            performanceMode !== "off" && streaming
-                ? messages.findIndex((message) => message.chatId === streamingState.messageId)
-                : -1;
-
-        if (chatFoldedStateMessageIndex.index !== -1) {
-            loadStart = chatFoldedStateMessageIndex.index;
-            loadEnd = Math.max(0, chatFoldedStateMessageIndex.index - loadPages);
+    function removeRow(row: Row, defer = false) {
+        row.dispose();
+        observer?.unobserve(row.element);
+        rowElements.delete(row.element);
+        row.element.remove();
+        if (!row.instance) return;
+        if (defer) {
+            retired.add(row.instance);
+            retireFrame ??= requestAnimationFrame(disposeRetired);
+        } else {
+            unmount(row.instance);
         }
+    }
 
-        const reloadPointerMap = get(ReloadChatPointer);
-        const chatKey = `${currentCharacter.chaId}\u0000${currentChatId}`;
-        /** The rows to show, newest first (the DOM order: the list's flex direction reverses it). */
+    // Cache the id scan independently of the window/reload/context diff. Text is never an input.
+    const activeStreamingIndex = $derived.by(() => {
+        const id = streamingState.messageId;
+        if (
+            id === null ||
+            streamingState.mode === "off" ||
+            streamingState.chaId !== currentCharacter.chaId ||
+            streamingState.chatId !== selectedChatId(currentCharacter.chaId)
+        )
+            return -1;
+        return messages.findIndex((message) => message.chatId === id);
+    });
+
+    function updateChatBody(
+        structure: readonly DeepReadonly<Message>[],
+        chatKey: string,
+        streamingId: string | null,
+        mode: StreamingDisplayOptimizationMode,
+        streamingIndex: number,
+        window: number,
+        folded: number,
+        deferRemoval: boolean,
+    ) {
+        let loadStart = structure.length - 1;
+        let loadEnd = structure.length - window;
+        if (folded !== -1) {
+            loadStart = folded;
+            loadEnd = Math.max(0, folded - window);
+        }
         const shown: Row[] = [];
         const shownKeys = new Set<string>();
-
-        for (let i = loadStart; i >= loadEnd; i--) {
-            if (i < 0) break; // Prevent out of bounds
-            const message = messages[i];
-            const messageLargePortrait =
-                message.role === "user"
-                    ? (userIconPortrait ?? false)
-                    : ((currentCharacter as ClientCharacter).largePortrait ?? false);
-            const reloadPointer = reloadPointerMap[reloadChatKey(message.chatId, i)] ?? 0;
-            const streamingMessage =
-                streaming && message.role === "char" && message.chatId === streamingState.messageId;
-            const activeStreamingMessage = streamingMessage && i === activeStreamingIndex;
+        for (let i = loadStart; i >= Math.max(0, loadEnd); i--) {
+            const message = structure[i];
+            if (!message) continue;
             let key = `${chatKey}\u0000${message.chatId ?? `#${i}`}`;
-            if (shownKeys.has(key)) {
-                // A repeated id (not expected in a saved chat) gets a row of its own.
-                key = `${key}\u0000#${i}`;
-            }
+            if (shownKeys.has(key)) key = `${key}\u0000#${i}`;
             shownKeys.add(key);
-            const mountKey: MountKey = {
-                text: streamingMessage ? null : message.data,
-                rest: JSON.stringify([messageLargePortrait, message.disabled ?? false, reloadPointer]),
-            };
-            const sent: RowUpdate = {
-                message: message.data,
+            const streaming = streamingId !== null && message.role === "char" && message.chatId === streamingId;
+            const input: RowInput = {
+                message,
                 idx: i,
-                isOptimizedStreamingMessage: activeStreamingMessage,
-                streamingOptimizationMode: performanceMode,
-                rawStreamingText: message.data,
+                streaming,
+                optimized: streaming && i === streamingIndex,
+                mode,
             };
-            const existing = rows.get(key);
-            if (existing && sameMountKey(existing.mountKey, mountKey)) {
-                const update: Partial<RowUpdate> = {};
-                let changed = false;
-                for (const field of Object.keys(sent) as (keyof RowUpdate)[]) {
-                    if (existing.sent[field] !== sent[field]) {
-                        (update as Record<string, unknown>)[field] = sent[field];
-                        changed = true;
-                    }
-                }
-                if (changed) {
-                    existing.instance.updateRow?.(update);
-                }
-                // Equal text read again (a chat reload) may be a new string: comparing against the
-                // newest one keeps later frames on the same-string fast path.
-                existing.mountKey = mountKey;
-                existing.sent = sent;
-                shown.push(existing);
-                continue;
+            let row = rows.get(key);
+            if (!row) {
+                row = createRow(input);
+                rows.set(key, row);
+            } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
+                row.input = input;
             }
-            if (existing) {
-                unmount(existing.instance);
-                existing.element.remove();
-            }
-            const element = document.createElement("div");
-            element.classList.add("chat-message-container");
-            const instance = mount(Chat, {
-                target: element,
-                props: {
-                    ...sent,
-                    isLastMemory: false,
-                    messageId: message.chatId,
-                    totalLength: messages.length,
-                    img: message.role === "user" ? userImage : charImage,
-                    onReroll: onReroll,
-                    unReroll: unReroll,
-                    rerollIcon: "dynamic",
-                    character: simpleChar,
-                    largePortrait: messageLargePortrait,
-                    messageGenerationInfo: message.generationInfo,
-                    role: message.role,
-                    name: message.role === "user" ? currentUsername : currentCharacter.name,
-                    isComment: message.isComment ?? false,
-                    disabled: message.disabled ?? false,
-                },
-            });
-            const row: Row = { instance, element, mountKey, sent };
-            rows.set(key, row);
             shown.push(row);
         }
-
         for (const [key, row] of rows) {
             if (!shownKeys.has(key)) {
-                unmount(row.instance);
-                row.element.remove();
+                removeRow(row, deferRemoval);
                 rows.delete(key);
             }
         }
-
-        // Put the rows in order, moving only the ones out of place.
         let previous: Element | null = null;
         for (const row of shown) {
-            const expected: Element | null = previous ? previous.nextElementSibling : chatBody.firstElementChild;
-            if (expected !== row.element) {
-                chatBody.insertBefore(row.element, expected);
-            }
+            const expected = previous ? previous.nextElementSibling : chatBody.firstElementChild;
+            if (expected !== row.element) chatBody.insertBefore(row.element, expected);
             previous = row.element;
         }
-    };
+    }
 
+    // Called before changing the DOM, only on an append at the bottom of this same open chat.
+    function trimWindow(length: number): number | undefined {
+        if (
+            !onTrim ||
+            suspendTrim ||
+            !Number.isFinite(loadPages) ||
+            Math.min(loadPages, length) <= CHAT_ROW_CAP ||
+            chatFoldedStateMessageIndex.index !== -1 ||
+            !chatBody.parentElement ||
+            chatBody.parentElement.scrollTop <= -4
+        )
+            return;
+        const top = chatBody.parentElement.getBoundingClientRect().top;
+        let keep = CHAT_ROW_CAP;
+        // Newest first: once a row is entirely above the viewport, the older rows are too.
+        for (const element of chatBody.children) {
+            const row = rowElements.get(element);
+            if (!row) continue;
+            if (element.getBoundingClientRect().bottom < top) break;
+            keep = Math.max(keep, length - row.input.idx + getAdditionalChatLoadPages(settings.ui));
+        }
+        if (keep >= loadPages) return;
+        for (const row of rows.values()) {
+            if (row.input.idx < length - keep && isEditing(row)) return;
+        }
+        return onTrim(keep);
+    }
+
+    let scrollTimer: ReturnType<typeof setTimeout>;
     onDestroy(() => {
-        console.log("Unmounting Chats");
-        rows.forEach((row) => {
-            unmount(row.instance);
-        });
+        clearTimeout(scrollTimer);
+        cancelAnimationFrame(retireFrame);
+        for (const instance of retired) unmount(instance);
+        retired.clear();
+        for (const row of rows.values()) removeRow(row);
         rows.clear();
     });
 
     function checkIfAtBottom() {
-        if (!chatBody || !chatBody.parentElement) return true;
-        const sc = chatBody.parentElement;
-        const lastEl = chatBody.firstElementChild;
-        if (!lastEl) return true;
-        const rect = lastEl.getBoundingClientRect();
-        const scRect = sc.getBoundingClientRect();
-        return rect.top <= scRect.bottom + 100;
+        return !chatBody?.parentElement || chatBody.parentElement.scrollTop > -4;
+    }
+
+    export async function whenRendered() {
+        await tick();
+        await Promise.all([...rows.values()].map((row) => row.instance?.whenRendered?.()));
     }
 
     export const scrollToLatestMessage = () => {
@@ -230,32 +430,55 @@
     let previousChatRoomId: string | null = null;
 
     $effect(() => {
-        console.log("Updating Chats");
-        void $ReloadChatPointer; // Make $effect track ReloadChatPointer changes
-        const wasAtBottom = checkIfAtBottom();
-        updateChatBody();
-
-        const currentChatRoomId = getCurrentChatRoomId();
-        const isSameChat = currentChatRoomId === previousChatRoomId;
-
-        // Only auto-scroll if it's the same chat and new messages were added
-        if (isSameChat && messages.length > previousLength) {
-            const lastMsg = messages[messages.length - 1];
-            if (lastMsg && lastMsg.role === "char" && settings.ui.autoScrollToNewMessage) {
+        if (!chatBody) return;
+        // Track array identity, length, order, message identity and ids, but never message.data.
+        const structure = messages.map((message) => {
+            void message.chatId;
+            void message.role;
+            return message;
+        });
+        const ctx = context;
+        const currentChatId = selectedChatId(ctx.character.chaId);
+        const streaming = streamingState.chaId === ctx.character.chaId && streamingState.chatId === currentChatId;
+        const streamingId = streaming ? streamingState.messageId : null;
+        const mode =
+            streamingId !== null ? streamingState.mode : (settings.ui.streamingDisplayOptimizationMode ?? "off");
+        const streamingIndex = activeStreamingIndex;
+        const window = loadPages;
+        const folded = chatFoldedStateMessageIndex.index;
+        void $ReloadChatPointer;
+        const room = getCurrentChatRoomId();
+        const append = room === previousChatRoomId && structure.length > previousLength;
+        const autoScroll = append && structure.at(-1)?.role === "char" && settings.ui.autoScrollToNewMessage;
+        untrack(() => {
+            // Both geometry decisions precede the DOM update. The at-bottom read for auto-scroll
+            // is gated first; a text chunk reaches neither this effect nor the row diff.
+            const wasAtBottom = autoScroll && checkIfAtBottom();
+            const keep = append ? trimWindow(structure.length) : undefined;
+            updateChatBody(
+                structure,
+                `${ctx.character.chaId}\u0000${currentChatId}`,
+                streamingId,
+                mode,
+                streamingIndex,
+                keep ?? window,
+                folded,
+                keep !== undefined,
+            );
+            if (autoScroll) {
                 if (wasAtBottom || settings.ui.alwaysScrollToNewMessage) {
+                    clearTimeout(scrollTimer);
                     const element = chatBody.firstElementChild;
-                    if (element) {
-                        setTimeout(() => {
-                            element.scrollIntoView({ behavior: "instant", block: "start" });
-                        }, 700);
-                    }
+                    scrollTimer = setTimeout(() => {
+                        if (element?.isConnected) element.scrollIntoView({ behavior: "instant", block: "start" });
+                    }, 700);
                 } else {
                     hasNewUnreadMessage = true;
                 }
             }
-        }
-        previousLength = messages.length;
-        previousChatRoomId = currentChatRoomId;
+            previousLength = structure.length;
+            previousChatRoomId = room;
+        });
     });
 </script>
 

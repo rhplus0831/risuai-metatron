@@ -102,7 +102,9 @@
     let fileInput: string[] = $state([]);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
+    let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
     let isScrollingToMessage = $state(false);
+    let takingScreenshot = $state(false);
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(selectedChat());
@@ -127,7 +129,7 @@
         const ref = currentChatRef();
         return ref === null ? null : chatKeyOf(ref);
     });
-    // How many messages are rendered from the end; loading more raises it, until another chat opens.
+    // How many messages render from the end; load more grows it, an append at the bottom may trim it.
     let loadPages = $derived.by(() => {
         chatKey;
         return untrack(() => getInitialChatLoadPages(settings.ui));
@@ -545,9 +547,16 @@
     }
 
     async function screenShot() {
+        const previousWindow = loadPages;
+        const capturedChat = chatKey;
+        const scroller = document.querySelector(".default-chat-screen");
+        const previousScroll = scroller?.scrollTop ?? 0;
+        takingScreenshot = true;
         try {
             loadPages = Infinity;
+            await tick();
             const html2canvas = await import("html-to-image");
+            await Promise.all([chatsInstance?.whenRendered(), greetingInstance?.whenRendered()]);
             const chats = document.querySelectorAll(".default-chat-screen .risu-chat");
             alertWait("Taking screenShot...");
             let canvases: HTMLCanvasElement[] = [];
@@ -600,7 +609,12 @@
             console.error(error);
             alertError("Error while taking screenshot");
         } finally {
-            loadPages = getInitialChatLoadPages(settings.ui);
+            if (chatKey === capturedChat) {
+                loadPages = previousWindow;
+                await tick();
+                if (scroller) scroller.scrollTop = previousScroll;
+            }
+            takingScreenshot = false;
         }
     }
 </script>
@@ -978,7 +992,7 @@
                     <Button
                         className="max-w-xl w-full"
                         onclick={() => {
-                            loadPages += chatFoldedStateMessageIndex.index + 1;
+                            loadPages += messages.length - chatFoldedStateMessageIndex.index;
                             chatFoldedState.data = null;
                         }}
                     >
@@ -991,6 +1005,12 @@
                 bind:this={chatsInstance}
                 {messages}
                 {loadPages}
+                suspendTrim={takingScreenshot || isScrollingToMessage}
+                onTrim={(keep) => {
+                    if (takingScreenshot || isScrollingToMessage || !Number.isFinite(loadPages)) return;
+                    loadPages = keep;
+                    return keep;
+                }}
                 onReroll={reroll}
                 {unReroll}
                 {currentCharacter}
@@ -1003,6 +1023,7 @@
             {#if currentChat.message.length <= loadPages}
                 {#if currentCharacter.type !== "group"}
                     <Chat
+                        bind:this={greetingInstance}
                         character={createSimpleCharacter(currentCharacter)}
                         name={currentCharacter.name}
                         message={(currentChat?.fmIndex ?? -1) === -1
