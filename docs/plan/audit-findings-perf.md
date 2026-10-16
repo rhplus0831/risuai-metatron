@@ -58,7 +58,9 @@ These block "the probe now fails" as a done criterion, so they go first.
   `e2e/transformGolden.spec.ts:500` expect an uncontrolled first load, but the
   worker calls `skipWaiting()` and `clients.claim()`. Repair the fixture
   precondition (an uncontrolled page or an explicit unregister), not the
-  worker. Also `util/playwright/checkStreamingModes.mjs` fails at seeding.
+  worker. (`util/playwright/checkStreamingModes.mjs`, which failed right after
+  seeding, runs again since 2026-10-16: it opens its bound chat from the
+  closed-chat screen.)
 - **0b. Chat measurement harness** (_small_, `ui-theming.md`).
   `util/playwright/measureChats.mjs` sends chunks every 20 ms, so it cannot
   show the per-frame change. Add a fast-chunk mode and a row-count report;

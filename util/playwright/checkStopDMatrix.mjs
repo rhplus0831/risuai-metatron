@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 Stop D (and the cutover's matrix): the parts of the server matrix the
 // slice checks do not cover, against a mock provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
 // image service (OpenAI-compatible images): a send and a reroll, a group send (one reply per active
@@ -22,7 +22,7 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const args = process.argv.slice(2);
 const option = (name) => {
@@ -176,7 +176,7 @@ try {
         if ((await modal.count()) > 0) {
             console.log("MODAL:", (await modal.first().innerText()).slice(0, 400));
         }
-        await p.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openCharacterChat(p, chaId);
         await (text === null ? p.locator("textarea.input-text") : p.getByText(text))
             .first()
             .waitFor({ timeout: 15000 });
@@ -235,6 +235,16 @@ try {
     const providers = await single("providers");
     const media = await single("memoryTranslateMedia");
     const secrets = await single("secrets");
+    const personas = await single("personas");
+    // Every seeded chat is bound: a job runs on its chat's binding or not at all, and a character's
+    // first chat starts unbound (`docs/plan/chat-binding.md`).
+    const binding = chatBindingFixture(modelPresets, presets, personas);
+    const boundChat = (characterId, chatId = "c") => ({
+        characterId,
+        chatId,
+        baseRevision: null,
+        ops: [{ op: "create", chat: { id: chatId, name: "Chat 1", fmIndex: -1, message: [], ...binding } }],
+    });
     const preset = {
         ...presets.data[0],
         aiModel: "reverse_proxy",
@@ -347,13 +357,9 @@ try {
                 },
             ],
             chats: [
+                ...[sendId, groupId, imgId, restoreId].map((id) => boundChat(id)),
                 // Stored before either tab opens it (two tabs creating the first chat of a character conflict).
-                {
-                    characterId: tabsId,
-                    chatId: "t",
-                    baseRevision: null,
-                    ops: [{ op: "create", chat: { id: "t", name: "T", fmIndex: -1, message: [] } }],
-                },
+                boundChat(tabsId, "t"),
                 {
                     characterId: memId,
                     chatId: "k",
@@ -365,6 +371,7 @@ try {
                                 id: "k",
                                 name: "K",
                                 fmIndex: -1,
+                                ...binding,
                                 message: Array.from({ length: 24 }, (_, i) => ({
                                     role: i % 2 === 0 ? "user" : "char",
                                     data: longText(i),
@@ -659,7 +666,8 @@ try {
             reloaded,
             tail: (await bodyText()).slice(-300),
         });
-        // The app's own reload: wait for it to sign in again, then select the chat (no navigation).
+        // The app's own reload: wait for it to sign in again. It keeps the URL (`/chat/:chaId/:chatId`),
+        // so the chat is open again without a selection or a navigation.
         await waitReady(page);
         await page.waitForTimeout(3000);
         const after = await storedChat();
@@ -668,7 +676,8 @@ try {
             after.id === before.id && JSON.stringify(after.messages) === JSON.stringify(before.messages),
             { before, after },
         );
-        await openChar(page, restoreId, "Baseline message");
+        await page.getByText("Baseline message").first().waitFor({ timeout: 15000 });
+        await page.waitForTimeout(1500);
         const shown = await bodyText();
         check(
             `restore (${route}): the reloaded tab shows that chat`,

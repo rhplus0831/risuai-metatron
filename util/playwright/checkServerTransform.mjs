@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 slice 13: the display transform of a chat runs through
 // `POST /api/transform` for a chat with `editdisplay` regex scripts, a Lua `editDisplay` listener
 // that sets a chat variable, and a display trigger (the expected text is checked; since the cutover
@@ -11,7 +11,7 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -109,6 +109,7 @@ try {
         const modelPresets = (await api("/api/resources/modelPresets/main")).body;
         const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
         const providers = (await api("/api/resources/providers/main")).body;
+        const personas = (await api("/api/resources/personas/main")).body;
         const chaId = randomUUID();
         const chatId = randomUUID();
         const preset = {
@@ -207,6 +208,9 @@ try {
                                 chat: {
                                     id: chatId,
                                     name: "Chat",
+                                    // Bound: the streamed reply below is a send, which refuses an
+                                    // unbound chat (`docs/plan/chat-binding.md`).
+                                    ...chatBindingFixture(modelPresets, presets, personas),
                                     message: [
                                         { role: "user", data: "Hello user VAR", chatId: "m-user" },
                                         { role: "char", data: "Plain RND reply", chatId: "m-rnd" },
@@ -220,7 +224,7 @@ try {
         });
         check(`${label}: seeded`, seeded.status === 200, seeded);
         await open();
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openCharacterChat(page, chaId);
         await page
             .getByText("Hello user")
             .first()

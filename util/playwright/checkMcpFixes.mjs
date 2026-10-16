@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5's Stop D fixes to the MCP clients and graph memory (slice 13d), on the
 // server-job path (the only one since the cutover; the tab client's fixes are pinned by
 // `src/ts/process/mcp/tests/mcplib.test.ts`), against a mock provider
@@ -17,7 +17,7 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openApp, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -272,7 +272,7 @@ try {
         return chat;
     };
     const openChar = async (chaId) => {
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openCharacterChat(page, chaId);
         await page.getByText("Greetings.").first().waitFor({ timeout: 15000 });
         await page.waitForTimeout(1500);
     };
@@ -303,6 +303,7 @@ try {
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
+    const personas = await single("personas");
     const preset = {
         ...presets.data[0],
         aiModel: "reverse_proxy",
@@ -425,7 +426,18 @@ try {
                 characterId,
                 chatId: "t",
                 baseRevision: null,
-                ops: [{ op: "create", chat: { id: "t", name: "T", fmIndex: -1, message: [] } }],
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            id: "t",
+                            name: "T",
+                            fmIndex: -1,
+                            message: [],
+                            ...chatBindingFixture(modelPresets, presets, personas),
+                        },
+                    },
+                ],
             })),
         }),
     });

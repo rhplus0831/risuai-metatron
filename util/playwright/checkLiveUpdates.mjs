@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 6 slice 2 (live updates, Stop A's two-tab matrix on the flat mirror):
 // two tabs of one browser (A1, A2) and a second browser (B) against one dev stack. Writes made in a
 // tab, and through the routes as another device would, reach the other tabs without a reload,
@@ -14,7 +14,7 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, openApp, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openApp, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -167,6 +167,7 @@ try {
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
     const providers = await single("providers");
+    const personas = await single("personas");
     const preset = {
         ...presets.data[0],
         name: "Preset One",
@@ -352,7 +353,17 @@ try {
                 characterId: liaId,
                 chatId: "j",
                 baseRevision: null,
-                ops: [{ op: "create", chat: chat("j", "Chat J", [message("n1", "char", "Second chat.")]) }],
+                ops: [
+                    {
+                        op: "create",
+                        // Bound: step 8 sends in it, and a send refuses an unbound chat
+                        // (`docs/plan/chat-binding.md`).
+                        chat: {
+                            ...chat("j", "Chat J", [message("n1", "char", "Second chat.")]),
+                            ...chatBindingFixture(modelPresets, presets, personas),
+                        },
+                    },
+                ],
             },
         ],
     });
@@ -387,7 +398,7 @@ try {
 
     // 8. A server send in A1: A2 and B show the reply at a checkpoint, then the final text.
     mode = { chunks: Array.from({ length: 16 }, (_, i) => `part${i} `), delayMs: 500 };
-    await A1.locator(`[data-char-id="${liaId}"]`).first().click();
+    await openCharacterChat(A1, liaId);
     await A1.getByText("Second chat.").first().waitFor({ timeout: 15000 });
     await A1.waitForTimeout(1000);
     const input = A1.locator("textarea.input-text").first();

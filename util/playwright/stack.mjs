@@ -217,3 +217,18 @@ export async function openApp(page, baseURL, password = "playwright") {
     }
     throw new Error("The app did not finish loading within 120 s");
 }
+
+/**
+ * Opens a character's chat through the UI: the sidebar click selects the character, which lands on
+ * its closed-chat screen (`ClosedChatScreen`), and "Open most recent chat" opens its selected chat.
+ * The UI only, so it works against the built app too. The character must not be the selected one
+ * (after `openApp` at the app's root, or from another character): selecting it again keeps its chat
+ * as it was, and a reload of a `/chat/:chaId/:chatId` URL opens that chat by itself.
+ *
+ * @param {import("playwright-core").Page} page
+ * @param {string} chaId
+ */
+export async function openCharacterChat(page, chaId) {
+    await page.locator(`[data-char-id="${chaId}"]`).first().click();
+    await page.getByRole("button", { name: /Open most recent chat/ }).click();
+}

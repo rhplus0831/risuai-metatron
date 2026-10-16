@@ -6,8 +6,9 @@
 // Usage: node util/playwright/checkServerButton.mjs [--base <url> --password <pw>] (production: the built app,
 // e.g. the Docker image on a fresh volume; the check sets its password)
 import { randomUUID } from "node:crypto";
+import { chatBindingFixture } from "./modelProfiles.mjs";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -105,7 +106,11 @@ try {
         const ui = (await api("/api/resources/ui/main")).body;
         epoch = ui.epoch ?? epoch;
         const order = (await api("/api/resources/characterOrder/main")).body;
+        const presets = (await api("/api/resources/presets/main")).body;
+        const modelPresets = (await api("/api/resources/modelPresets/main")).body;
+        const personas = (await api("/api/resources/personas/main")).body;
         const chaId = randomUUID();
+        const chatId = randomUUID();
         const character = {
             name: `Button Char ${label}`,
             firstMessage: `Press <button risu-btn="go">Run Lua</button> please.`,
@@ -149,12 +154,33 @@ try {
                         data: [...(Array.isArray(order.data) ? order.data : []), chaId],
                     },
                 ],
+                // A bound chat: a command job runs on its chat's binding or not at all, and a
+                // character's first chat starts unbound (`docs/plan/chat-binding.md`).
+                chats: [
+                    {
+                        characterId: chaId,
+                        chatId,
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    id: chatId,
+                                    name: "Chat 1",
+                                    fmIndex: -1,
+                                    message: [],
+                                    ...chatBindingFixture(modelPresets, presets, personas),
+                                },
+                            },
+                        ],
+                    },
+                ],
             }),
         });
         check(`${label}: seeded`, seeded.status === 200, seeded);
         await open();
         requests.length = 0;
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openCharacterChat(page, chaId);
         const button = page.locator('[risu-btn="go"]').first();
         await button.waitFor({ timeout: 15000 });
         const clickedAt = consoleLines.length;
@@ -224,7 +250,7 @@ try {
             stored,
         );
         await open();
-        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await openCharacterChat(page, chaId);
         await page
             .getByText(reply)
             .first()

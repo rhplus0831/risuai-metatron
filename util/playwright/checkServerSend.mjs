@@ -19,7 +19,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const args = process.argv.slice(2);
 const option = (name) => {
@@ -224,13 +224,8 @@ try {
             }),
         });
         check(`${label}: seeded`, seeded.status === 200, seeded);
-        // A character opens on its closed-chat screen; its chat opens from there.
-        const openChat = async () => {
-            await page.locator(`[data-char-id="${chaId}"]`).first().click();
-            await page.getByRole("button", { name: /Open most recent chat/ }).click();
-        };
         await open();
-        await openChat();
+        await openCharacterChat(page, chaId);
         await page.getByText("Greetings.").first().waitFor({ timeout: 15000 });
         await page.waitForTimeout(1500);
         const storedMessages = async () =>
@@ -346,7 +341,7 @@ try {
         await page.getByText("Part A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(3500);
         await open();
-        await openChat();
+        await openCharacterChat(page, chaId);
         await page.getByText("Tell me slowly").first().waitFor({ timeout: 15000 });
         const midText = (await page.evaluate(() => document.body.innerText)).includes("Part A.");
         check("server: after a reload mid-stream the text so far shows", midText);
@@ -385,7 +380,7 @@ try {
         await page.getByText("Half A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(1000);
         await open();
-        await openChat();
+        await openCharacterChat(page, chaId);
         await page.getByText("Tell me slowly again").first().waitFor({ timeout: 15000 });
         const stopAfterReload = page.locator('button[aria-labelledby="cancel"]');
         await stopAfterReload

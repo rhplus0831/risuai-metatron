@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for the Phase 5 cutover's credential criterion ("no LLM provider credential appears
 // in client network traffic, except the request that enters or replaces a key"): every credential
 // leaf of `llmSecrets` (`shared/llmSecrets.ts`) gets its own sentinel, set through the server's
@@ -35,7 +35,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, startStack } from "./stack.mjs";
+import { chromePath, openApp, openCharacterChat, startStack } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -381,7 +381,9 @@ try {
     const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
     const providers = (await api("/api/resources/providers/main")).body;
     const credentials = (await api("/api/resources/credentials/main")).body;
+    const personas = (await api("/api/resources/personas/main")).body;
     const chaId = randomUUID();
+    const chatId = randomUUID();
     const preset = {
         ...presets.data[0],
         aiModel: "gpt4o",
@@ -452,6 +454,27 @@ try {
                     id: "main",
                     baseRevision: order.revision,
                     data: [...(Array.isArray(order.data) ? order.data : []), chaId],
+                },
+            ],
+            // A bound chat: a send refuses an unbound chat, and a character's first chat starts
+            // unbound (`docs/plan/chat-binding.md`).
+            chats: [
+                {
+                    characterId: chaId,
+                    chatId,
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                id: chatId,
+                                name: "Chat 1",
+                                fmIndex: -1,
+                                message: [],
+                                ...chatBindingFixture(modelPresets, presets, personas),
+                            },
+                        },
+                    ],
                 },
             ],
         }),
@@ -537,7 +560,7 @@ try {
     const isOpenAI = (p) => (u) => u.host === "api.openai.com" && u.pathname === p;
     const isGoogle = (suffix) => (u) => u.host === "generativelanguage.googleapis.com" && u.pathname.endsWith(suffix);
 
-    await page.locator(`[data-char-id="${chaId}"]`).first().click();
+    await openCharacterChat(page, chaId);
     await page.getByText("Greetings.").first().waitFor({ timeout: 15000 });
     await page.waitForTimeout(1500);
     const input = page.locator("textarea.input-text").first();

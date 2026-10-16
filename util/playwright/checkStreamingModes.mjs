@@ -1,4 +1,4 @@
-import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 6 slice 3 (the streaming display optimization rewired to server streams,
 // owner decision 3): for each `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a
 // server send makes its reply the streaming message (`streamingState`, with the configured mode) from
@@ -11,7 +11,7 @@ import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, openApp, startStack, unexpectedEgress } from "./stack.mjs";
+import { chromePath, isolateContext, openApp, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -85,6 +85,7 @@ try {
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
+    const personas = await single("personas");
     const preset = {
         ...presets.data[0],
         aiModel: "reverse_proxy",
@@ -161,6 +162,7 @@ try {
                             name: "Stream chat",
                             note: "",
                             localLore: [],
+                            ...chatBindingFixture(modelPresets, presets, personas),
                             message: [{ role: "char", data: "Seeded line.", chatId: "m1", saying: "", time: 1 }],
                         },
                     },
@@ -171,7 +173,7 @@ try {
     check("seed: stored", seeded.status === 200, seeded);
 
     await page.locator(`[data-char-id="${chaId}"]`).first().waitFor({ timeout: 15000 });
-    await page.locator(`[data-char-id="${chaId}"]`).first().click();
+    await openCharacterChat(page, chaId);
     await page.getByText("Seeded line.").first().waitFor({ timeout: 15000 });
     await page.waitForTimeout(1000);
 
