@@ -55,6 +55,7 @@ import {
     assembleChats,
     ensureChatLoaded,
     findChat,
+    forgetCharacter,
     installCharacterChats,
     seedChats,
     trimLoadedChats,
@@ -79,6 +80,9 @@ function install() {
         characters: [{ chaId: "a", type: "character", name: "A", chatPage: 0, chats: [] }],
     };
     initializeRecords(takeRecordFields(raw));
+    // The module is shared by the tests: a replacement under the same ids (`replaceA`) queues chat
+    // work for `a`, which would keep its chats from being evicted in a later test (`pinned`).
+    forgetCharacter("a");
     const chats = [
         { characterId: "a", id: "a1", revision: REVISION, name: "A1", fmIndex: -1 },
         ...OTHERS.map((id) => ({ characterId: "a", id, revision: REVISION, data: chatOf(id) as never })),

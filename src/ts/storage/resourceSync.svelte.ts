@@ -2278,6 +2278,15 @@ export function setRemoteResourceOwner(kind: string, owner: RemoteResourceOwner 
 
 const isMirroredKind = (kind: string) => kind === RESOURCE_KIND.characters || COLLECTIONS.includes(kind as Collection);
 
+/** A mirrored singleton absent locally, so adopting its first remote record cannot overwrite a local create. */
+function isAbsentMirroredSingleton({ kind, id }: { kind: string; id: string }): boolean {
+    return (
+        id === SINGLETON_RESOURCE_ID &&
+        COLLECTIONS.includes(kind as Collection) &&
+        collectionProjection(kind as Collection) === undefined
+    );
+}
+
 function noteRemoteCollection(chaId: string) {
     remoteCollectionSeq += 1;
     remoteCollections.set(chaId, remoteCollectionSeq);
@@ -2333,8 +2342,8 @@ export function noteRemoteChanges(changes: ChangeSet) {
         if (ref.revision !== null && held && (compareRevision(ref.revision, held.revision) ?? 0) <= 0) {
             continue;
         }
-        if (!held && ref.kind !== RESOURCE_KIND.characters) {
-            // Singletons are seeded at boot; one this client does not hold is not its data.
+        if (!held && ref.kind !== RESOURCE_KIND.characters && !isAbsentMirroredSingleton(ref)) {
+            // A singleton absent at boot can arrive later. A local create still waits for its save.
             continue;
         }
         if (ref.patch && applyRemotePatch(ref)) {
@@ -2576,8 +2585,10 @@ function canApplyRemote(key: string, entry: { kind: string; id: string; blockedL
     }
     const held = persisted.get(key);
     if (!held) {
-        // A character this client does not hold yet; one it created and has not saved waits for its save.
-        return entry.kind === RESOURCE_KIND.characters && !findMirrorCharacter(entry.id);
+        // A new remote record can be adopted only while no local creation would be overwritten.
+        return entry.kind === RESOURCE_KIND.characters
+            ? !findMirrorCharacter(entry.id)
+            : isAbsentMirroredSingleton(entry);
     }
     const local = projectRecord(entry.kind, entry.id);
     if (entry.kind === SECTION_KIND.llmSecrets) {

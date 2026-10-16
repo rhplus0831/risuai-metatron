@@ -2530,16 +2530,76 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
 /**
  * Holds the chats of a character that is about to enter the character list (`characterStore`'s
  * add and replace), prepared (`prepareCharacterChats`), replacing anything held under `chaId`.
- * Nothing is queued: the save loop's `adoptCharacter` queues the creates with the character. The
- * caller has finished every check that can refuse the character first, and forgets the chats
- * (`forgetCharacter`) when the insertion throws anyway.
+ * A new character leaves its creates to the save loop's `adoptCharacter`. A reused character id
+ * reconciles the chats the server holds or may receive from earlier work: its character record
+ * stays an update, so the save loop will not adopt its replacement chats. Unsent work is superseded,
+ * but an unacknowledged create keeps its payload for replay before the replacement or deletion.
+ * The caller has finished every check that can refuse the character first, and drops the held chats
+ * (`forgetCharacterChats`) if insertion throws; the save loop then forgets the absent owner's work.
+ *
+ * A replacement based on a revision another tab changed follows the usual conflict reload, which
+ * discards that chat's replacement with a notice. A chat another tab created that this client never
+ * saw survives on the server; reconciliation can delete only chats this client knows about.
  */
 export function installCharacterChats(chaId: string, chats: Chat[], character: { firstMsgIndex?: unknown }) {
+    const prefix = `${chaId}\u0000`;
+    const known = new Set(
+        [
+            ...chatRevisions.keys(),
+            ...inflight.keys(),
+            ...[...pending].filter(([, entry]) => entry.create || entry.resend).map(([key]) => key),
+        ].filter((key) => key.startsWith(prefix)),
+    );
+    const reconcile =
+        known.size > 0 || orderRevisions.has(chaId) || pendingOrders.has(chaId) || inflightOrders.has(chaId);
     renewLifetime(chaId);
     dropLoadState(chaId);
     setChatList(chaId, loadedEntries(prepareCharacterChats(chats, character)));
+    if (reconcile) {
+        const ids = new Set(memberIds(chaId));
+        for (const key of known) {
+            const chatId = key.slice(prefix.length);
+            if (ids.has(chatId)) {
+                continue;
+            }
+            const entry = pending.get(key);
+            const seq = nextSeq();
+            if (!chatRevisions.has(key) && !inflight.has(key) && !entry?.resend) {
+                // Only a never-sent create existed: nothing needs deleting on the server.
+                pending.delete(key);
+                settleKey(key, seq);
+            } else {
+                pending.set(key, {
+                    characterId: chaId,
+                    chatId,
+                    create: false,
+                    resend: entry?.resend ?? null,
+                    ops: [{ op: "delete" }],
+                    seq,
+                });
+            }
+            staleChats.delete(key);
+            noticedChats.delete(key);
+            deferred.delete(key);
+            jobBlocked.delete(key);
+        }
+        for (const chat of chatsOf(chaId)) {
+            const key = keyOf(chaId, chat.id!);
+            const entry = pendingFor({ chaId, chatId: chat.id! });
+            const sending = inflight.get(key);
+            // A delete in flight will remove the base, so the reused id needs a create after it settles.
+            entry.create = sending?.ops[0]?.op === "delete" || (!chatRevisions.has(key) && !sending && !entry.resend);
+            entry.ops = entry.create ? [] : [{ op: "replace", chat: projectChat(chat) }];
+            entry.seq = nextSeq();
+        }
+        // The reorder waits until the queued deletes can leave a permutation of the server's list.
+        pendingOrders.set(chaId, nextSeq());
+    }
     mutationToken += 1;
     syncSelection(chaId);
+    if (reconcile) {
+        notifyWork();
+    }
 }
 
 /**
