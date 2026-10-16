@@ -517,34 +517,29 @@ describe("ChatTokenCounter (the shared token arithmetic)", () => {
         expect(await make(1, "noName").tokenizeChat({ ...message, thoughts: [] }, { countThoughts: true })).toBe(3);
     });
 
-    it("counts an image by the tile formula: 85 plus two per 512-pixel tile after clamping to 768 (the inherited scaling)", () => {
+    it("counts an image by the model's rule (the GPT-4o tile fallback for a host without a model): 85 plus 170 per 512-pixel tile after the documented downscaling, with no per-image overhead", () => {
         const counter = make(3, "noName");
         const image = (width?: number, height?: number) => ({ type: "image" as const, base64: "", width, height });
-        expect(counter.tokenizeMultiModal(image(512, 512))).toBe(3 + 2 + 85);
-        expect(counter.tokenizeMultiModal(image(1024, 1024))).toBe(3 + 2 * 2 * 2 + 85);
-        expect(counter.tokenizeMultiModal(image(768, 768))).toBe(3 + 2 * 2 * 2 + 85);
-        // Portrait, width within 768: no scaling (ceil(500/512) * ceil(2000/512) = 4 tiles).
-        expect(counter.tokenizeMultiModal(image(500, 2000))).toBe(3 + 4 * 2 + 85);
-        // Portrait, width over 768 (inherited quirk): the width is clamped to 768 before the height
-        // is scaled by `768 / width`, so the height stays 2000 (2 * 4 tiles, not 2 * 3).
-        expect(counter.tokenizeMultiModal(image(1000, 2000))).toBe(3 + 8 * 2 + 85);
-        // Landscape, height over 768: the same quirk, the width stays 2000 (4 * 2 tiles).
-        expect(counter.tokenizeMultiModal(image(2000, 1000))).toBe(3 + 8 * 2 + 85);
-        // Landscape, height within 768: no scaling (4 * 1 tiles).
-        expect(counter.tokenizeMultiModal(image(2000, 500))).toBe(3 + 4 * 2 + 85);
-        // Missing dimensions count as zero: no tiles.
-        expect(counter.tokenizeMultiModal(image())).toBe(3 + 85);
+        expect(counter.tokenizeMultiModal(image(512, 512))).toBe(85 + 170);
+        expect(counter.tokenizeMultiModal(image(1024, 1024))).toBe(85 + 4 * 170);
+        // Over 768 on the shorter side: fit within 2048, then the shorter side to 768 and the other
+        // floored (768 x 1536: six tiles), not the inherited one-side clamp that kept the height at 2000.
+        expect(counter.tokenizeMultiModal(image(1000, 2000))).toBe(85 + 6 * 170);
+        expect(counter.tokenizeMultiModal(image(2000, 1000))).toBe(85 + 6 * 170);
+        // Missing dimensions count as a 512 x 512 image: one tile.
+        expect(counter.tokenizeMultiModal(image())).toBe(85 + 170);
     });
 
-    it("counts every image as 87 at low vision quality, and as the additional tokens when inlay images are unsupported", () => {
+    it("counts an image at low vision quality as the model's base tokens, and as the additional tokens when inlay images are unsupported", () => {
         const image = { type: "image" as const, base64: "", width: 4000, height: 4000 };
-        expect(make(3, "noName", { gptVisionQuality: () => "low" }).tokenizeMultiModal(image)).toBe(87);
+        expect(make(3, "noName", { gptVisionQuality: () => "low" }).tokenizeMultiModal(image)).toBe(85);
         expect(
             make(3, "noName", { supportsInlayImage: () => false, gptVisionQuality: () => "low" }).tokenizeMultiModal(
                 image,
             ),
         ).toBe(3);
-        expect(make(3, "noName", { gptVisionQuality: () => undefined }).tokenizeMultiModal(image)).toBe(3 + 8 + 85);
+        // An unset quality counts as high: 4000 x 4000 fits within 2048, then 768 x 768, four tiles.
+        expect(make(3, "noName", { gptVisionQuality: () => undefined }).tokenizeMultiModal(image)).toBe(85 + 4 * 170);
     });
 
     it("adds the images of a message and sums a list of messages (thoughts not counted there)", async () => {
@@ -558,9 +553,9 @@ describe("ChatTokenCounter (the shared token arithmetic)", () => {
             ],
             thoughts: ["ignored"],
         };
-        expect(await counter.tokenizeChat(message)).toBe(3 + 1 + (1 + 2 + 85) + (1 + 8 + 85));
+        expect(await counter.tokenizeChat(message)).toBe(3 + 1 + (85 + 170) + (85 + 4 * 170));
         expect(await counter.tokenizeChats([message, { role: "assistant", content: "de", name: "n" }])).toBe(
-            3 + 1 + (1 + 2 + 85) + (1 + 8 + 85) + (2 + 1 + 1 + 1),
+            3 + 1 + (85 + 170) + (85 + 4 * 170) + (2 + 1 + 1 + 1),
         );
     });
 });

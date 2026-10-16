@@ -24,7 +24,7 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { markFailure } from "../jobs/generationJobs.ts";
 import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
-import type { TokenCounter, TokenCountScope } from "../prompt/tokens.ts";
+import { tokenizerIdentityKey, type TokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
 import type { ClaudeObserver } from "./claudeObserver.ts";
 import type { PluginProviderAnswer, RequestContext } from "./context.ts";
 import { messages } from "./messages.ts";
@@ -189,19 +189,23 @@ function endStatus(reason: unknown): RequestEndStatus {
     return reason instanceof FatalRequestError ? "error" : "aborted";
 }
 
-/** `strongBan` of `src/ts/tokenizer.ts`, its `localStorage` cache an LRU here (keyed by the text alone, as the client keys it). */
-function createStrongBan(cache: Map<string, string>) {
+/** Cache only a phrase's banned token ids per tokenizer identity; merge into each request's bias map. */
+function createStrongBan(cache: Map<string, readonly number[]>) {
     return async (
         data: string,
         bias: { [key: number]: number },
         tokenizeNum: (text: string) => Promise<ArrayLike<number>>,
+        tokenizerKey: string,
     ): Promise<{ [key: number]: number }> => {
-        const cached = cache.get("strongBan_" + data);
+        const cacheKey = JSON.stringify([data, tokenizerKey]);
+        const cached = cache.get(cacheKey);
         if (cached !== undefined) {
-            cache.delete("strongBan_" + data);
-            cache.set("strongBan_" + data, cached);
-            return JSON.parse(cached);
+            cache.delete(cacheKey);
+            cache.set(cacheKey, cached);
+            for (const id of cached) bias[id] = -100;
+            return bias;
         }
+        const bannedIds = new Set<number>();
         let charAlt = [
             data,
             data.trim(),
@@ -222,7 +226,7 @@ function createStrongBan(cache: Map<string, string>) {
             const encoded = await tokenizeNum(char);
             if (encoded.length > 0) {
                 if (!unbanChars.includes(encoded[0])) {
-                    bias[encoded[0]] = -100;
+                    bannedIds.add(encoded[0]);
                 }
             }
             for (const alt of charAlt) {
@@ -231,21 +235,22 @@ function createStrongBan(cache: Map<string, string>) {
                 const encoded = await tokenizeNum(alt + fchar);
                 if (encoded.length > 0) {
                     if (!unbanChars.includes(encoded[0])) {
-                        bias[encoded[0]] = -100;
+                        bannedIds.add(encoded[0]);
                     }
                 }
                 const encoded2 = await tokenizeNum(fchar + alt);
                 if (encoded2.length > 0) {
                     if (!unbanChars.includes(encoded2[0])) {
-                        bias[encoded2[0]] = -100;
+                        bannedIds.add(encoded2[0]);
                     }
                 }
             }
         }
-        cache.set("strongBan_" + data, JSON.stringify(bias));
+        cache.set(cacheKey, [...bannedIds]);
         while (cache.size > STRONG_BAN_CACHE_SIZE) {
             cache.delete(cache.keys().next().value!);
         }
+        for (const id of bannedIds) bias[id] = -100;
         return bias;
     };
 }
@@ -418,7 +423,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     const now = options.now ?? Date.now;
     const requests = new Map<string, LiveRequest>();
     const draining = new Set<Promise<void>>();
-    const strongBanCache = new Map<string, string>();
+    const strongBanCache = new Map<string, readonly number[]>();
     const strongBan = createStrongBan(strongBanCache);
     let accepting = true;
     let paused = false;
@@ -613,6 +618,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             return model;
         };
         const tokenizeNum = (text: string) => options.tokens.encode(text, p.tokenScope);
+        const tokenizerKey = tokenizerIdentityKey(p.tokenScope);
         const { tracker } = p;
         const exchange = tracker.exchange;
         const transport = createTransport({
@@ -674,7 +680,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             },
             redactText: (text) => p.redactor().text(text),
             tokenizeNum,
-            strongBan: (text, bias) => strongBan(text, bias, tokenizeNum),
+            strongBan: (text, bias) => strongBan(text, bias, tokenizeNum, tokenizerKey),
             parseCbs: p.parseCbs,
             tools: p.tools,
             inlays: p.inlays,

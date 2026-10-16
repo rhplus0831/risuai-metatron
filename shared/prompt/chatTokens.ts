@@ -1,14 +1,20 @@
 import type { MultiModal, OpenAIChat } from "../openai.ts";
+import type { LLMModel } from "../llm.ts";
+import { imageTokens, NON_IMAGE_TOKENS } from "./imageTokens.ts";
 
 /**
  * A prompt's token arithmetic, shared by the client (`ChatTokenizer`) and the server: each
- * message's text plus `chatAdditionalTokens`, its name, its thoughts, and the image tile formula.
+ * message's text plus `chatAdditionalTokens`, its name, its thoughts, and model-specific images.
  */
 export type ChatTokenHost = {
     encode: (text: string) => Promise<ArrayLike<number>>;
     /** Whether the model takes inlay images (`supportsInlayImage` on the client). */
     supportsInlayImage: () => boolean;
-    /** `gptVisionQuality` (`low` counts every image as 87). */
+    /** Main model metadata; omitted by encoder-only hosts, which use the unknown-model fallback. */
+    mainModel?: () => LLMModel;
+    /** OpenRouter/NanoGPT's selected wire id, otherwise undefined. Both production hosts supply this. */
+    requestModel?: () => string | undefined;
+    /** `low` selects the model's low rule only for formats that send detail; everything else is high. */
     gptVisionQuality: () => string | undefined;
 };
 
@@ -57,35 +63,9 @@ export class ChatTokenCounter {
         if (!this.host.supportsInlayImage()) {
             return this.chatAdditionalTokens;
         }
-        if (this.host.gptVisionQuality() === "low") {
-            return 87;
+        if (data.type !== "image") {
+            return NON_IMAGE_TOKENS;
         }
-
-        let encoded = this.chatAdditionalTokens;
-        let height = data.height ?? 0;
-        let width = data.width ?? 0;
-
-        if (height === width) {
-            if (height > 768) {
-                height = 768;
-                width = 768;
-            }
-        } else if (height > width) {
-            if (width > 768) {
-                width = 768;
-                height = height * (768 / width);
-            }
-        } else {
-            if (height > 768) {
-                height = 768;
-                width = width * (768 / height);
-            }
-        }
-
-        const chunkSize = Math.ceil(width / 512) * Math.ceil(height / 512);
-        encoded += chunkSize * 2;
-        encoded += 85;
-
-        return encoded;
+        return imageTokens(data, this.host.mainModel?.(), this.host.requestModel?.(), this.host.gptVisionQuality());
     }
 }

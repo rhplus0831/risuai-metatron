@@ -31,6 +31,8 @@ import type { requestDataResponse } from "../llm/request.ts";
 import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { watchFirstByte } from "../llm/transport.ts";
+import { createTokenCounter } from "../prompt/tokens.ts";
+import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 7a: the live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`)
@@ -1005,6 +1007,85 @@ function jobSpec(
     };
     return { spec, alerts, ended };
 }
+
+describe("strong-ban cache isolation", () => {
+    // Deterministic encoders at the tokenizer boundary: punctuation has id 1, and each
+    // family's cat token has a distinct id. The real counter still resolves the scope.
+    function banTokens() {
+        const catIds: Record<string, number> = { o200k_base: 101, cl100k_base: 202, claude: 303 };
+        return createTokenCounter({
+            tokenizers: {
+                encode: async (family: string, text: string) => {
+                    if (!(family in catIds)) throw new Error(`Unexpected tokenizer: ${family}`);
+                    return [/cat/i.test(text) ? catIds[family] : /dog/i.test(text) ? catIds[family] + 10 : 1];
+                },
+            } as unknown as Tokenizers,
+        });
+    }
+
+    it("merges cached ban ids into the current request without restoring an earlier request's biases", async () => {
+        const records = makeRecords({ preset: { aiModel: "gpt4o" } });
+        const { registry, calls } = harness(records, () => chat("ok"), { tokens: banTokens() });
+        try {
+            for (const [id, value] of [
+                [12345, 10],
+                [54321, 20],
+            ]) {
+                const { spec } = jobSpec(records);
+                spec.arg.biasString = [
+                    [`[[${id}]]`, value],
+                    ["[[101]]", 5],
+                    ["cat", -101],
+                ];
+                expect(await registry.runInJob(spec)).toMatchObject({ type: "success", result: "ok" });
+            }
+            const { spec } = jobSpec(records);
+            spec.arg.biasString = [["dog", -101]];
+            expect(await registry.runInJob(spec)).toMatchObject({ type: "success", result: "ok" });
+            expect(calls.map((call) => JSON.parse(call.body).logit_bias)).toEqual([
+                { 12345: 10, 101: -100 },
+                { 54321: 20, 101: -100 },
+                { 111: -100 },
+            ]);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("recomputes a phrase for another tokenizer exactly as a fresh registry does", async () => {
+        // Cover both a catalogue model switch and a tokenizer override on the same model id.
+        for (const [first, next, expectedId] of [
+            [{ aiModel: "gpt4o" }, { aiModel: "gpt4" }, 202],
+            [
+                { aiModel: "reverse_proxy", customTokenizer: "tik" },
+                { aiModel: "reverse_proxy", customTokenizer: "claude" },
+                303,
+            ],
+        ] as const) {
+            const records = makeRecords({ preset: first });
+            const nextRecords = makeRecords({ preset: next });
+            const warmed = harness(records, () => chat("ok"), { tokens: banTokens() });
+            const fresh = harness(nextRecords, () => chat("ok"), { tokens: banTokens() });
+            const request = async (registry: typeof warmed.registry, records: Records) => {
+                const { spec } = jobSpec(records);
+                spec.arg.biasString = [["cat", -101]];
+                expect(await registry.runInJob(spec)).toMatchObject({ type: "success", result: "ok" });
+            };
+            try {
+                await request(warmed.registry, records);
+                await request(warmed.registry, nextRecords);
+                await request(fresh.registry, nextRecords);
+                expect(JSON.parse(warmed.calls[0].body).logit_bias).toEqual({ 101: -100 });
+                const expected = { [expectedId]: -100 };
+                expect(JSON.parse(fresh.calls[0].body).logit_bias).toEqual(expected);
+                expect(JSON.parse(warmed.calls[1].body).logit_bias).toEqual(expected);
+            } finally {
+                await warmed.registry.dispose();
+                await fresh.registry.dispose();
+            }
+        }
+    });
+});
 
 describe("a job's in-process request (runInJob, slice 8a)", () => {
     it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the exchanges it reports (a job has no tab log)", async () => {

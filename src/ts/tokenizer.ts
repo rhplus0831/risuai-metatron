@@ -356,6 +356,13 @@ export class ChatTokenizer extends ChatTokenCounter {
         super(chatAdditionalTokens, useName, {
             encode,
             supportsInlayImage,
+            mainModel: () => getModelInfoForMode("model"),
+            requestModel: () => {
+                const model = getModelInfoForMode("model");
+                if (model.id === "openrouter") return activeMainProfile.openrouterRequestModel;
+                if (model.id === "nanogpt") return activeMainProfile.nanogptRequestModel;
+                return undefined;
+            },
             gptVisionQuality: () => settings.providers.gptVisionQuality,
         });
     }

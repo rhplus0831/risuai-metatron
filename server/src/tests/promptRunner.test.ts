@@ -489,6 +489,79 @@ afterAll(async () => {
 
 describe("a send", () => {
     it(
+        "counts images with the runner's main profile and routed request model",
+        async () => {
+            const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+            const quality = (await single("providers")).data.gptVisionQuality;
+            // Replace only the provider request, after the real runner has assembled and counted.
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockResolvedValue({
+                type: "success",
+                result: "ok",
+            });
+            mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
+            writeFileSync(
+                path.join(rootDir, "save", "assets", "token_image.png"),
+                Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+            );
+            const stored = await batch({
+                ops: [
+                    {
+                        kind: "inlays",
+                        id: "token-image",
+                        baseRevision: null,
+                        data: {
+                            name: "token image",
+                            ext: "png",
+                            type: "image",
+                            asset: "assets/token_image.png",
+                            width: 1024,
+                            height: 1024,
+                        },
+                    },
+                ],
+            });
+            expect(stored.status).toBe(200);
+            try {
+                await patchProviders({ gptVisionQuality: "low" });
+                for (const [modelId, expected] of [
+                    ["gpt4om", 2833],
+                    ["openrouter", 2833],
+                    ["nanogpt", 308],
+                ] as const) {
+                    await patchPreset("modelProfiles", profileId, {
+                        modelId,
+                        maxContext: 10000,
+                        openrouterRequestModel: "openai/gpt-4o-mini",
+                        nanogptRequestModel: "openai/gpt-5.5",
+                    });
+                    const counts: number[] = [];
+                    for (const suffix of ["", "{{inlay::token-image}} "]) {
+                        const chaId = await seedCharacter({
+                            name: "Image counter",
+                            extra: { firstMessage: "", desc: "" },
+                        });
+                        const result = await job("send", chaId, { input: suffix + "photo", userMessageId: "photo" });
+                        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                        const messages = (await readChat(chaId)).data.message;
+                        counts.push(messages.at(-1).generationInfo.inputTokens);
+                        const prompt = upstream.mock.calls.at(-1)![0].arg.formated;
+                        expect(prompt.find((message) => message.memo === "photo")?.multimodals?.length ?? 0).toBe(
+                            suffix ? 1 : 0,
+                        );
+                    }
+                    // Identical text and message overhead: the difference is exactly one image's cost.
+                    expect(counts[1] - counts[0], modelId).toBe(expected);
+                }
+            } finally {
+                upstream.mockRestore();
+                await patchPreset("modelProfiles", profileId, profile);
+                await patchProviders({ gptVisionQuality: quality });
+            }
+        },
+        SLOW,
+    );
+
+    it(
         "runs the input stage (the input trigger, editinput in the worker, the user message under its id) and streams the raw reply",
         async () => {
             const chaId = await seedCharacter({

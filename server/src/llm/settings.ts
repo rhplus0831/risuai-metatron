@@ -266,7 +266,7 @@ export function loadStoredSecrets(store: ResourceStore, kinds: ResourceKindRegis
 }
 
 /** The main model (`db.aiModel`) in the catalogue, the custom models, and the custom flags. */
-function mainModelOf(db: RequestDb): LLMModel {
+export function mainModelOf(db: RequestDb): LLMModel {
     return resolveModelInfo(db.aiModel ?? "", {
         enableCustomFlags: db.enableCustomFlags,
         customFlags: db.customFlags,

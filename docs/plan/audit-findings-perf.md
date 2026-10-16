@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters) and 4a (GEN-03, GEN-04) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04) and 4b (GEN-02, API-06, API-04) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -490,6 +490,31 @@ group; order within the phase is free.
   GEN-02 (final trim subtracts an image's tokens but keeps the image), API-06
   (image token estimates use the wrong tile cost), API-04 (the strong-ban
   cache restores a previous request's biases and tokenizer ids).
+  **Landed 2026-10-17.** The final token recheck of `assemblePrompt` drops a
+  trimmed message's `multimodals` with its text, so the whole message goes and
+  `generationInfo.inputTokens` equals a recount of the prompt sent (an
+  untrimmed image-only message still stays). `shared/prompt/imageTokens.ts`
+  holds OpenAI's documented image rules: tile-based models (gpt-4o/4.1 85+170
+  per tile, gpt-4o-mini 2833+5667, gpt-5/5.1 70+140, o1/o3 75+150; low detail
+  the base only; high fits 2048 then the shorter side to 768 with the other
+  floored) and patch-based models (32-px patches times a multiplier after the
+  detail's dimension and patch budget: gpt-6-astra, gpt-5.6/5.5/5.4/5.2,
+  gpt-4.1-mini, the deprecated minis with the 2025 1536-patch cap), with the
+  gpt-4o rule as the explicit fallback for every other wire id (Claude, Gemini,
+  custom models). `ChatTokenHost` gained `mainModel` and `requestModel` (the
+  OpenRouter/NanoGPT request model wins, `openai/` stripped); low detail counts
+  only for the formats that send `detail`; non-image entries are a flat 85; a
+  dimensionless image counts as 512×512; a supported model adds no per-image
+  `chatAdditionalTokens`. The strong-ban cache keys by phrase and
+  `tokenizerIdentityKey(scope)` (the encode cache's tuple) and stores only the
+  ban's token ids, merged as `-100` into the current request's map. All three
+  audit probes now fail their bug assertions (the image-token probe's own host
+  needs `mainModel` to see a model). Tests: `imageTokens.test.ts` (new),
+  `assemble.test.ts` recheck cases, `promptRunner.test.ts` image counts through
+  a send, `llmRequests.test.ts` ban cache isolation, `tokenizer.test.ts` client
+  host. Stale: the three image cases of `tokens.test.ts`, rewritten to the
+  fallback rule. Left approximate: Claude/Gemini image costs (the gpt-4o
+  fallback), video/audio/signature at 85, the deprecated patch models' sizing.
 - **4c. Dynamic models and named keys** (`llm-requests.md`). LLM-01 (dynamic
   descriptors dropped from the job contract) and LLM-02 (named NanoGPT and
   Ollama keys do not reach discovery).

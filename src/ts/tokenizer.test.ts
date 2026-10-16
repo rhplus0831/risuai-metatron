@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../shared/presets";
-import { activeMainProfile } from "./storage/settingsViews.svelte";
+import { activeMainProfile, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import { encode } from "./tokenizer";
 
@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => {
         customTokenizer: "",
         enableCustomFlags: false,
     };
-    return { fixture, constructedWith: [] as string[] };
+    return { fixture, constructedWith: [] as string[], supportsImages: false };
 });
 
 // `database.svelte` (reached through the records' graph) re-exports the asset writer.
@@ -26,7 +26,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 vi.mock("src/ts/process/files/inlays", () => ({
-    supportsInlayImage: () => false,
+    supportsInlayImage: () => mocks.supportsImages,
 }));
 
 vi.mock("@dqbd/tiktoken", () => ({
@@ -104,6 +104,36 @@ describe("the routing shared with the server (Phase 5 slice 4)", () => {
 });
 
 describe("ChatTokenizer", () => {
+    it("uses the main profile and its OpenRouter or NanoGPT wire model for image tokens", async () => {
+        const { ChatTokenizer } = await import("./tokenizer");
+        const saved = {
+            modelId: activeMainProfile.modelId,
+            openrouterRequestModel: activeMainProfile.openrouterRequestModel,
+            nanogptRequestModel: activeMainProfile.nanogptRequestModel,
+            quality: settings.providers.gptVisionQuality,
+        };
+        try {
+            mocks.supportsImages = true;
+            settings.providers.gptVisionQuality = "low";
+            const counter = new ChatTokenizer(3, "noName");
+            const image = { type: "image" as const, base64: "", width: 1024, height: 1024 };
+            activeMainProfile.modelId = "gpt4om";
+            expect(counter.tokenizeMultiModal(image)).toBe(2833);
+            activeMainProfile.openrouterRequestModel = "openai/gpt-4o-mini";
+            activeMainProfile.modelId = "openrouter";
+            expect(counter.tokenizeMultiModal(image)).toBe(2833);
+            activeMainProfile.nanogptRequestModel = "openai/gpt-5.5";
+            activeMainProfile.modelId = "nanogpt";
+            expect(counter.tokenizeMultiModal(image)).toBe(308);
+        } finally {
+            activeMainProfile.modelId = saved.modelId;
+            activeMainProfile.openrouterRequestModel = saved.openrouterRequestModel;
+            activeMainProfile.nanogptRequestModel = saved.nanogptRequestModel;
+            settings.providers.gptVisionQuality = saved.quality;
+            mocks.supportsImages = false;
+        }
+    });
+
     it("is the shared arithmetic over the client's encode, inlay support, and vision quality", async () => {
         const { ChatTokenizer } = await import("./tokenizer");
         const counter = new ChatTokenizer(3, "name");

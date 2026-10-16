@@ -1446,6 +1446,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             if (formated[pointer].removable) {
                 inputTokens -= await tokenizeChat(formated[pointer]);
                 formated[pointer].content = "";
+                delete formated[pointer].multimodals;
             }
             pointer++;
         }

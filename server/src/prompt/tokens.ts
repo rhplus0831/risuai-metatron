@@ -34,6 +34,19 @@ export type TokenCountScope = {
     googleAccessToken?: string;
 };
 
+/** The tokenizer-selecting scope fields, shared by the encode and strong-ban cache keys. */
+export function tokenizerIdentityKey(scope: TokenCountScope): string {
+    return JSON.stringify([
+        scope.aiModel,
+        scope.customTokenizer,
+        scope.currentPluginProvider,
+        scope.googleClaudeTokenizing,
+        scope.model.tokenizer,
+        scope.model.internalID ?? null,
+        scope.pluginTokenizer,
+    ]);
+}
+
 type Encoded = ArrayLike<number>;
 
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
@@ -73,16 +86,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         if (scope.useTokenizerCaching) {
             // The client's key, plus the model's `internalID`: two scopes may resolve one `aiModel`
             // to different models, and Google counts by `internalID`.
-            cacheKey = JSON.stringify([
-                text,
-                scope.aiModel,
-                scope.customTokenizer,
-                scope.currentPluginProvider,
-                scope.googleClaudeTokenizing,
-                scope.model.tokenizer,
-                scope.model.internalID ?? null,
-                scope.pluginTokenizer,
-            ]);
+            cacheKey = JSON.stringify([text, tokenizerIdentityKey(scope)]);
             const cached = encodeCache.get(cacheKey);
             if (cached !== undefined) {
                 return cached;

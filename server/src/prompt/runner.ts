@@ -50,7 +50,7 @@ import {
 } from "../jobs/runSetup.ts";
 import { messages } from "../llm/messages.ts";
 import { JobRequestError } from "../llm/requests.ts";
-import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
+import { mainModelOf, mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { readStorageFile } from "../routes/storage.ts";
 import { type AssembledPrompt, assemblePrompt, getGenerationModelString } from "./assemble.ts";
@@ -1075,6 +1075,12 @@ async function runSpeaker(arg: {
                     {
                         encode: (text) => deps.tokens.encode(text, tokenScopeFor(requestDb)),
                         supportsInlayImage: () => mainModelTakesImages(requestDb),
+                        mainModel: () => mainModelOf(requestDb),
+                        requestModel: () => {
+                            if (requestDb.aiModel === "openrouter") return requestDb.openrouterRequestModel;
+                            if (requestDb.aiModel === "nanogpt") return requestDb.nanogptRequestModel;
+                            return undefined;
+                        },
                         gptVisionQuality: () => db.gptVisionQuality,
                     },
                 ),

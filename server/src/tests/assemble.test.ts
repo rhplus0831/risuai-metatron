@@ -6,6 +6,9 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { resolveModelInfo } from "../../../shared/llm/models.ts";
+import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
+import { assemblePrompt, type AssemblyHost } from "../prompt/assemble.ts";
 import {
     normalizePreset,
     PERSONA_ROOT_ALIASES,
@@ -365,4 +368,141 @@ describe("the prompt golden (the browser capture)", () => {
         },
         SLOW,
     );
+});
+
+describe("assemblePrompt final token recheck", () => {
+    // Keep the public assembler real; only its I/O services and text encoder are deterministic.
+    // One character is one text token, three tokens of overhead per message, and real image rules.
+    function assembly(messages: { chatId: string; data: string }[], depthText: string) {
+        const character = {
+            ...scenario.characters[0],
+            type: "character",
+            chaId: "counter",
+            name: "Counter",
+            firstMessage: "",
+            alternateGreetings: [],
+            exampleMessage: "",
+            desc: "",
+            personality: "",
+            scenario: "",
+            additionalText: "",
+            bias: [],
+            depth_prompt: { depth: 0, prompt: depthText },
+        } as unknown as AssemblyHost["speaker"];
+        const chat: ReturnType<AssemblyHost["chat"]> = {
+            id: "k",
+            fmIndex: -1,
+            name: "Counter",
+            note: "",
+            localLore: [],
+            message: messages.map((message) => ({ ...message, role: "user" })),
+        };
+        const tokenizer = new ChatTokenCounter(3, "noName", {
+            encode: async (text) => Array.from(text, (_, i) => i),
+            supportsInlayImage: () => true,
+            mainModel: () => resolveModelInfo("gpt4o"),
+            gptVisionQuality: () => "high",
+        });
+        const host: AssemblyHost = {
+            db: {
+                ...scenario.baseSettings,
+                ...normalizePreset({}),
+                aiModel: "gpt4o",
+                maxContext: 700,
+                maxResponse: 10,
+                bias: [],
+                personaPrompt: "",
+                promptInfoInsideChat: false,
+                promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+                promptSettings: { trimStartNewChat: true, sendName: false },
+            } as unknown as AssemblyHost["db"],
+            owner: character,
+            speaker: character,
+            chatRef: { chaId: "counter", chatId: "k" },
+            parse: (text) => text,
+            chat: () => chat,
+            findCharacter: () => character,
+            userName: () => "User",
+            personaPrompt: () => "",
+            activateLore: async () => ({ actives: [], matchLog: [] }),
+            scripts: {
+                process: async (_char, data) => ({ data, emoChanged: false }),
+                editRequest: async (_char, messages) => messages,
+            },
+            runStartTrigger: async () => null,
+            runEditRequest: async (messages) => messages,
+            readInlay: async (id) => ({ type: "image", data: `data:image/png;base64,${id}`, width: 512, height: 512 }),
+            readAsset: async () => null,
+            moduleAssets: () => [],
+            moduleToggles: () => "",
+            runCurrentChatFunction() {},
+            setLastMemory() {},
+            memoryTrim: { enabled: () => false, confirm: async () => "trim" },
+            memory: { embeddings: { db: {} } } as AssemblyHost["memory"],
+            writeMemory() {},
+            endMemoryProgress() {},
+            captionImage: async () => {
+                throw new Error("Images must remain multimodal");
+            },
+            tokenizer,
+            getModelInfo: (id) => resolveModelInfo(id),
+            fence() {},
+        };
+        return {
+            tokenizer,
+            run: () =>
+                assemblePrompt(host, {
+                    chatAdditonalTokens: 3,
+                    continue: false,
+                    generationId: "counting",
+                    stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+                }),
+        };
+    }
+
+    it("removes the whole trimmed message including its images and reports the returned prompt's token count", async () => {
+        for (const suffix of [" {{inlay::first}} {{inlay::second}}", ""]) {
+            const depth = "d".repeat(650);
+            const { run, tokenizer } = assembly(
+                [
+                    { chatId: "old", data: "x".repeat(50) + suffix },
+                    { chatId: "kept", data: "keep" },
+                ],
+                depth,
+            );
+            // Both histories fit before the late depth prompt; only the final recheck trims.
+            const result = await run();
+            expect(result.type).toBe("prompt");
+            if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+            expect(result.formated.map(({ role, content, multimodals }) => ({ role, content, multimodals }))).toEqual([
+                { role: "user", content: "keep", multimodals: undefined },
+                { role: "system", content: depth, multimodals: undefined },
+            ]);
+            expect(result.generationInfo.inputTokens).toBe(660); // (4 + 3) + (650 + 3).
+            expect(result.generationInfo.inputTokens).toBe(await tokenizer.tokenizeChats(result.formated));
+        }
+    });
+
+    it("keeps an untrimmed image-only message even when a preceding text message is trimmed", async () => {
+        const { run, tokenizer } = assembly(
+            [
+                { chatId: "old", data: "x".repeat(100) },
+                { chatId: "image-only", data: "{{inlay::kept}}" },
+            ],
+            "d".repeat(400),
+        );
+        const result = await run();
+        expect(result.type).toBe("prompt");
+        if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+        expect(result.formated).toHaveLength(2);
+        expect(result.formated[0]).toMatchObject({
+            role: "user",
+            content: "",
+            memo: "image-only",
+            multimodals: [{ type: "image", base64: "data:image/png;base64,kept", width: 512, height: 512 }],
+        });
+        expect(result.formated[1]).toEqual({ role: "system", content: "d".repeat(400) });
+        expect(result.generationInfo.inputTokens).toBe(661); // 255 + 3 for the image message; 400 + 3 for depth.
+        expect(result.generationInfo.inputTokens).toBe(await tokenizer.tokenizeChats(result.formated));
+    });
 });
