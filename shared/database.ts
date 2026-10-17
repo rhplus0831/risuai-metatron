@@ -26,6 +26,7 @@ import type {
     TranslatorPreset,
 } from "./settings.ts";
 import type { triggerscript } from "./triggers.ts";
+import type { TogglePreset } from "./togglePresets.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
 
@@ -439,6 +440,8 @@ export interface Database {
     hypaV3Presets: HypaV3Preset[];
     /** The selected `hypaV3Presets` entry, by id (travels in the `hypaV3Presets` record). */
     hypaV3PresetId: string;
+    /** Saved prompt-toggle presets, `shared/togglePresets.ts`; the chat links one through `Chat.togglePresetId`. */
+    togglePresets: TogglePreset[];
     realmDirectOpen: boolean; // legacy
     OaiCompAPIKeys: { [key: string]: string };
     inlayErrorResponse: boolean;
@@ -1217,6 +1220,11 @@ export interface Chat {
     bookmarkNames?: { [chatId: string]: string };
     /** The chat's prompt toggle map, with `toggle_<key>` keys and string values. */
     GLGlobalVariables?: { [key: string]: string };
+    /**
+     * The linked `togglePresets` entry; a deleted one is kept and shown as gone.
+     * Unset through `setChatMeta`'s `unset`, never stored as null.
+     */
+    togglePresetId?: string;
     /**
      * The remembered tool calls of this chat (`rememberToolUsage`), by call id: what a
      * `<tool_call>` marker in a message stands for (Phase 5 slice 11b). Conversation data: stored

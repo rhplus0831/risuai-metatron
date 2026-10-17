@@ -3,6 +3,7 @@ import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
+import { normalizeTogglePresets as normalizeTogglePresetList } from "../../../../shared/togglePresets.ts";
 import { createTranslatorPreset, getNormalizedTranslatorPresetName } from "../../../../shared/translatorPresets.ts";
 import { ResourceValidationError } from "../resourceStore.ts";
 import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from "./shared.ts";
@@ -11,7 +12,8 @@ import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from 
  * The collection normalizers other than `personas`. Each accepts `undefined` (a record being
  * materialized) and returns the fresh-boot value; otherwise it rejects a value of the wrong shape
  * (a `ResourceValidationError`, a 400 on write) and returns a copy. Only `hotkeys` and the two
- * `{ items, selectedId }` records add anything to what the client sent.
+ * `{ items, selectedId }` records add default items; `togglePresets` repairs ids and fields without
+ * adding items.
  */
 
 function objectList<T>(what: string, fallback: () => T[] = () => []): (input: unknown) => T[] {
@@ -23,6 +25,11 @@ export const normalizeLoreBook = objectList<Database["loreBook"][number]>("loreB
 ]);
 
 export const normalizeGlobalscript = objectList<Database["globalscript"][number]>("globalscript");
+
+/** `togglePresets`: a possibly empty list with unique ids and no collection-level selection. */
+export function normalizeTogglePresets(input: unknown): Database["togglePresets"] {
+    return input === undefined ? [] : normalizeTogglePresetList(requireArrayOfObjects(input, "togglePresets"));
+}
 
 /** `hotkeys`: the stored list, then each built-in hotkey whose `action` it lacks (as `setDatabase` merged them). */
 export function normalizeHotkeys(input: unknown): Database["hotkeys"] {

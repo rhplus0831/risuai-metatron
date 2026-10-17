@@ -74,6 +74,15 @@ const json = (text: string) => JSON.parse(text);
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const credPath = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 
+const togglePreset = {
+    id: "toggle-1",
+    name: "Writing",
+    values: { title: "private title", notes: "private notes\nsecond line", ["__proto__"]: "own text" },
+    kinds: { title: "text", notes: "textarea", ["__proto__"]: "text" },
+    createdAt: 10,
+    updatedAt: 20,
+} as const;
+
 /** A fresh module graph with the server stand-in installed, without starting the adapter. */
 async function fresh<S extends Server>(fake: S) {
     vi.resetModules();
@@ -184,6 +193,7 @@ const customRecords: Record<string, unknown> = {
     characterOrder: ["a", { name: "folder", data: ["b"], id: "f" }],
     authRefreshes: [{ url: "u", tokenUrl: "t", refreshToken: "r", clientId: "c" }],
     globalChatVariables: json('{"__proto__":"p","x":"1"}'),
+    togglePresets: [togglePreset],
     personas: [
         { id: "persona-1", name: "A", icon: "", personaPrompt: "", note: "", largePortrait: false },
         { name: "no id" },
@@ -283,6 +293,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             // The mirror shows the stored values, own `__proto__` keys included.
             expect(settings.providers.loreBookToken).toBe(1234);
             expect(settings.ui.zoomsize).toBe(111);
+            expect(Array.isArray(settings.togglePresets)).toBe(true);
+            expect(plain(settings.togglePresets)).toEqual([togglePreset]);
             expect(settings.ui.irisDialogue).toEqual([{ speaker: "Iris", text: "hi", tip: "t" }]);
             expect(settings.memoryTranslateMedia.NAIImgConfig.v4_prompt).toBeDefined();
             expect(settings.translatorPresets.selectedId).toBe("t2");
@@ -389,6 +401,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             }
             const first = await boot(store);
             const { settings, activePreset, activePersona } = first;
+            expect(Array.isArray(settings.togglePresets)).toBe(true);
             const third = createTranslatorPreset("Third", { prompt: "p3" });
             const hypa = createHypaV3Preset("H3");
             settings.ui.zoomsize = 112;
@@ -401,6 +414,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             settings.secrets.elevenLabKey = "el";
             settings.memoryTranslateMedia.sdSteps = 32;
             settings.globalChatVariables.y = "2";
+            settings.togglePresets[0].values.title = "edited title";
+            settings.togglePresets[0].updatedAt = 30;
             settings.translatorPresets.items.push(third);
             settings.translatorPresets.selectedId = third.id;
             settings.hypaV3Presets.items.push(hypa);
@@ -444,6 +459,12 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(store.record("hypaV3Presets", "main")!.data.items[2]).toEqual(hypa);
             expect(store.record("hypaV3Presets", "main")!.data.selectedId).toBe(hypa.id);
             expect(store.record("statics", "main")!.data).toEqual({ messages: 4, imports: 0 });
+            const editedTogglePreset = {
+                ...togglePreset,
+                values: { ...togglePreset.values, title: "edited title" },
+                updatedAt: 30,
+            };
+            expect(store.record("togglePresets", "main")!.data).toEqual([editedTogglePreset]);
             expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.credentials, "__proto__")).toBe(true);
             expect(store.record("llmSecrets", "main")!.data.credentials.__proto__).toEqual({ key: "proto2" });
             expect(store.record("llmSecrets", "main")!.data.credentials["key-1"]).toEqual({ key: "q" });
@@ -466,6 +487,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             const second = await boot(store);
             expect(second.bootBatches).toEqual([]);
             expect(second.settings.ui.zoomsize).toBe(112);
+            expect(plain(second.settings.togglePresets)).toEqual([editedTogglePreset]);
             expect(second.activePersona.name).toBe("u2");
             expect(second.activePreset.temperature).toBe(42);
             expect(second.views.activeMainProfile.maxContext).toBe(9001);
@@ -482,6 +504,58 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
                 true,
             );
             await second.sync.flushResources();
+            expect(store.batchCount()).toBe(0);
+        } finally {
+            store.close();
+        }
+    });
+});
+
+describe("toggle preset records", () => {
+    it("retains a preset wrapper by id through a conflict reload and saves the next edit to that preset", async () => {
+        const store = await StoreBackedServer.create();
+        try {
+            store.set("togglePresets", "main", [togglePreset, { ...togglePreset, id: "toggle-2", name: "Other" }]);
+            const { settings, sync } = await boot(store);
+            const held = settings.togglePresets[0];
+            // Another client replaces and reorders the list while this editor retains its wrapper.
+            const remote = [
+                { ...togglePreset, id: "toggle-2", name: "Other" },
+                { ...togglePreset, name: "Remote name", values: { title: "remote title" } },
+            ];
+            store.set("togglePresets", "main", remote);
+            held.name = "stale local name";
+            expect((await sync.flushResources()).discarded).toEqual(["togglePresets/main"]);
+            expect(settings.togglePresets[1]).toBe(held);
+            expect(held.name).toBe("Remote name");
+            expect(held.values).toEqual({ title: "remote title" });
+            const batches = store.batchCount();
+            await sync.flushResources();
+            expect(store.batchCount()).toBe(batches);
+            held.values.title = "after conflict";
+            await sync.flushResources();
+            expect(store.record("togglePresets", "main")!.data).toEqual([
+                remote[0],
+                { ...remote[1], values: { title: "after conflict" } },
+            ]);
+        } finally {
+            store.close();
+        }
+    });
+
+    it("excludes toggle presets and their free text from the settings report while keeping them in settings", async () => {
+        const store = await StoreBackedServer.create();
+        try {
+            store.set("togglePresets", "main", [togglePreset]);
+            const { settings, snapshots, sync } = await boot(store);
+            expect(plain(settings.togglePresets)).toEqual([togglePreset]);
+            expect(snapshots.rootSnapshot().togglePresets).toEqual([togglePreset]);
+            const report = snapshots.buildSettingsReport();
+            expect(report).not.toHaveProperty("togglePresets");
+            expect(JSON.stringify(report)).not.toContain("private title");
+            expect(JSON.stringify(report)).not.toContain("private notes");
+            expect(plain(settings.togglePresets)).toEqual([togglePreset]);
+            await sync.flushResources();
             expect(store.batchCount()).toBe(0);
         } finally {
             store.close();

@@ -1688,6 +1688,7 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
  * repeat ids after a re-import), uses object and path identity.
  * - `presets` (the record): `normalizePresets` (`shared/presets.ts`);
  * - `personas` (the record): `normalizePersonas` (`shared/personas.ts`);
+ * - `togglePresets` (the record): `normalizeTogglePresets` (`shared/togglePresets.ts`);
  * - `modelPresets` / `modelProfiles`: their shared normalizers (`shared/presets.ts`);
  * - `translatorPresets.items`, `hypaV3Presets.items`: `selectableList`
  *   (`server/src/data/normalize/collections.ts`).
@@ -1695,6 +1696,7 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
 const BY_ID_FIELDS: readonly { kind: TrackedKind; field: string | null; id?: string }[] = [
     { kind: "presets", field: null },
     { kind: COLLECTION_KIND.personas, field: null },
+    { kind: COLLECTION_KIND.togglePresets, field: null },
     { kind: COLLECTION_KIND.modelPresets, field: null },
     { kind: COLLECTION_KIND.modelProfiles, field: null },
     { kind: COLLECTION_KIND.translatorPresets, field: "items" },

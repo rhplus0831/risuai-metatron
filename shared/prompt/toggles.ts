@@ -61,7 +61,8 @@ export function parseToggleSyntax(template: string): sidebarToggle[] {
     return toggles;
 }
 
-export type ToggleKind = "checkbox" | "select" | "text" | "textarea";
+export const TOGGLE_KINDS = ["checkbox", "select", "text", "textarea"] as const;
+export type ToggleKind = (typeof TOGGLE_KINDS)[number];
 
 export function toggleKindOf(toggle: sidebarToggle): ToggleKind | undefined {
     switch (toggle.type) {

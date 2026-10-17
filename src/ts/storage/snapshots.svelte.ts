@@ -103,6 +103,7 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "google",
     "customPromptTemplateToggle",
     "globalChatVariables",
+    "togglePresets",
     "comfyConfig",
     "comfyUiUrl",
     "translatorPrompt",

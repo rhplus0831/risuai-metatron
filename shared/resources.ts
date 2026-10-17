@@ -44,6 +44,7 @@ export const RESOURCE_KIND = {
     personas: "personas",
     translatorPresets: "translatorPresets",
     hypaV3Presets: "hypaV3Presets",
+    togglePresets: "togglePresets",
     customModels: "customModels",
     credentials: "credentials",
     enabledModules: "enabledModules",

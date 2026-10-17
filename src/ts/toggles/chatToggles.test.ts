@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Chat } from "../../../shared/database.ts";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 const { authFetch } = vi.hoisted(() => ({ authFetch: vi.fn() }));
@@ -63,6 +64,7 @@ async function boot() {
         characters: read.kinds.characters.map((record) => record.data),
         botPresets: [{ id: "p", name: "P", customPromptTemplateToggle: "flag=Flag\ntitle=Title=text" }],
         globalChatVariables: { ...legacy },
+        togglePresets: [],
     });
     const summaries = server.store.readKinds([], { chatSummaries: true }).chatSummaries!;
     chat.seedChats(read.chats!, read.chatOrders!);
@@ -151,6 +153,44 @@ describe("setChatToggle", () => {
 });
 
 describe("initialChatToggles", () => {
+    it("inherits the selected loaded chat's preset link, even if deleted, independently of its map", () => {
+        const { chat, initialChatToggles, settings, commit, recordsWritten } = fixture;
+        chat.setChatMeta(ref, { togglePresetId: "first-chat-preset" });
+        chat.setChatMeta({ chaId: "c", chatId: "j" }, { togglePresetId: "deleted-preset" });
+        chat.setChatMeta({ chaId: "c", chatId: "no-map" }, { togglePresetId: "mapless-preset" });
+        commit();
+        expect(settings.togglePresets).toEqual([]);
+        chat.selectChat("c", "j");
+        for (const policy of [undefined, "inherit"] as const) {
+            settings.ui.newChatBinding = policy;
+            recordsWritten.mockClear();
+            expect(initialChatToggles("c")).toEqual({
+                GLGlobalVariables: { toggle_flag: "0", toggle_title: "selected source" },
+                togglePresetId: "deleted-preset",
+            });
+            expect(recordsWritten).not.toHaveBeenCalled();
+        }
+        chat.selectChat("c", "no-map");
+        expect(initialChatToggles("c")).toEqual({ togglePresetId: "mapless-preset" });
+        expect(chat.hasChatWork()).toBe(false);
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("omits the preset link under empty policy and when the linked source is unloaded", () => {
+        const { chat, initialChatToggles, settings, commit, unload } = fixture;
+        chat.setChatMeta({ chaId: "c", chatId: "j" }, { togglePresetId: "linked" });
+        commit();
+        chat.selectChat("c", "j");
+        settings.ui.newChatBinding = "empty";
+        expect(initialChatToggles("c")).toEqual({});
+        expect(chat.findChat({ chaId: "c", chatId: "j" })!.togglePresetId).toBe("linked");
+        settings.ui.newChatBinding = "inherit";
+        unload();
+        expect(initialChatToggles("c")).toEqual({});
+        expect(authFetch).not.toHaveBeenCalled();
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
     it("inherits a plain detached map from the character's selected loaded chat without writing", () => {
         const { chat, initialChatToggles, settings, recordsWritten, take, setChatToggle } = fixture;
         chat.selectChat("c", "j");
@@ -201,5 +241,36 @@ describe("initialChatToggles", () => {
         expect(authFetch).not.toHaveBeenCalled();
         expect(recordsWritten).not.toHaveBeenCalled();
         expect(settings.globalChatVariables).toEqual(legacy);
+    });
+});
+
+describe("importedChatTogglePreset", () => {
+    it("keeps only exact local preset ids and leaves imported toggle values untouched", () => {
+        const { settings, importedChatTogglePreset, recordsWritten, chat } = fixture;
+        settings.togglePresets = [{ id: "local", name: "Local", values: {}, kinds: {}, createdAt: 0, updatedAt: 0 }];
+        recordsWritten.mockClear();
+        const values = { toggle_title: "imported text", toggle_flag: "0" };
+        for (const id of ["local", "missing", " local ", "", null, 7, undefined]) {
+            const imported = {
+                name: "Imported",
+                message: [],
+                note: "note",
+                localLore: [],
+                GLGlobalVariables: { ...values },
+                togglePresetId: id,
+            } as unknown as Chat;
+            importedChatTogglePreset(imported);
+            expect(imported).toEqual({
+                name: "Imported",
+                message: [],
+                note: "note",
+                localLore: [],
+                GLGlobalVariables: values,
+                ...(id === "local" ? { togglePresetId: "local" } : {}),
+            });
+            expect(Object.hasOwn(imported, "togglePresetId")).toBe(id === "local");
+        }
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(chat.hasChatWork()).toBe(false);
     });
 });

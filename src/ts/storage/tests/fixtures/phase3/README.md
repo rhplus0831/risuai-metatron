@@ -63,5 +63,7 @@ The prompt preset's context size override (2026-10-14) added the two prompt pres
 `maxContextOverride` `false` and `maxContextOverrideSize` `0` to the root by hand (they are forwarded
 prompt fields; the stored `botPresets[0]` keeps the pre-split template payload, which never had them).
 
+Toggle presets (`docs/plan/chat-toggles-and-presets.md` slice 3, 2026-10-17) added `"togglePresets": []` by hand.
+
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

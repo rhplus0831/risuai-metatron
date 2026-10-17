@@ -137,10 +137,17 @@ const COMPONENT_REMOVED_KEYS = [
     "authRefreshes",
 ];
 
-/** The component's filter before the slice: whether the report dropped `key`. */
+/**
+ * Removed after the slice: the saved toggle presets (`docs/plan/chat-toggles-and-presets.md`, slice 3)
+ * hold free user text like `globalChatVariables` and `customPromptTemplateToggle`.
+ */
+const LATER_REMOVED_KEYS = ["togglePresets"];
+
+/** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {
     return (
         COMPONENT_REMOVED_KEYS.includes(key) ||
+        LATER_REMOVED_KEYS.includes(key) ||
         (SECTION_FIELDS.llmSecrets as readonly string[]).includes(key) ||
         key.toLowerCase().includes("key") ||
         key.toLowerCase().includes("proxy") ||
@@ -415,6 +422,7 @@ describe("buildSettingsReport", () => {
             "openAIKey",
             "claudeAPIKey",
             "hypaV3",
+            "togglePresets",
         ]) {
             expect(Object.hasOwn(report, dropped), dropped).toBe(false);
         }

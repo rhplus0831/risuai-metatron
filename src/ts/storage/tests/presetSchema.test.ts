@@ -1010,10 +1010,10 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and fifteen collections, two of them with a selection field, modelPresets and modelProfiles among them", () => {
+    it("lists five sections and sixteen collections, two of them with a selection field, modelPresets and modelProfiles among them", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(15);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(16);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_KIND.modelPresets).toBe("modelPresets");
         expect(COLLECTION_FIELDS.modelPresets).toBe("modelPresets");

@@ -80,6 +80,52 @@ type KindCase = {
 };
 
 const CASES: KindCase[] = [
+    {
+        kind: "togglePresets",
+        fresh: [],
+        write: [
+            {
+                id: "t1",
+                name: "",
+                values: { flag: "0", title: "", bad: 1 },
+                kinds: { flag: "checkbox", title: "text", bad: "caption" },
+                createdAt: 12,
+                extra: true,
+            },
+        ],
+        stored: [
+            {
+                id: "t1",
+                name: "Toggle Preset 1",
+                values: { flag: "0", title: "" },
+                kinds: { flag: "checkbox", title: "text" },
+                createdAt: 12,
+                updatedAt: 12,
+            },
+        ],
+        update: [
+            {
+                id: "t1",
+                name: "Renamed",
+                values: { notes: "two lines\nhere" },
+                kinds: { notes: "textarea" },
+                createdAt: 12,
+                updatedAt: 20,
+            },
+        ],
+        updated: [
+            {
+                id: "t1",
+                name: "Renamed",
+                values: { notes: "two lines\nhere" },
+                kinds: { notes: "textarea" },
+                createdAt: 12,
+                updatedAt: 20,
+            },
+        ],
+        invalid: [{ id: "t1" }, null],
+        refused: "togglePresets must be an array of objects",
+    },
     // ---- the Phase 1 kinds ------------------------------------------------------------------
     {
         kind: "presets",

@@ -10,7 +10,7 @@ Active planning and implementation:
   are listed in its Status; deferred work and Phase 5 verification remain separate.
 - [Per-Chat Toggles and Toggle Presets](chat-toggles-and-presets.md): remove
   Local Toggles, make toggle state per chat with kind defaults, and add saved
-  toggle presets; four slices, none landed.
+  toggle presets; slices 1–3 landed, slice 4 remains planned.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.

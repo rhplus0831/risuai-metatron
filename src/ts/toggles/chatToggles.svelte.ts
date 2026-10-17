@@ -20,8 +20,8 @@ export function setChatToggle(ref: ChatRef, key: string, value: string): boolean
     return true;
 }
 
-/** New-chat toggle values: inherit the selected chat's stored map unless explicitly starting empty. */
-export function initialChatToggles(chaId: string): Pick<Chat, "GLGlobalVariables"> {
+/** New-chat toggles: inherit the selected loaded chat's map and preset link unless starting empty. */
+export function initialChatToggles(chaId: string): Pick<Chat, "GLGlobalVariables" | "togglePresetId"> {
     return untrack(() => {
         if (settings.ui.newChatBinding === "empty") {
             return {};
@@ -29,7 +29,20 @@ export function initialChatToggles(chaId: string): Pick<Chat, "GLGlobalVariables
         const chatId = selectedChatId(chaId);
         const chat = chatId === null ? undefined : findChat({ chaId, chatId });
         // Do not load or seed values here: an unavailable source starts with legacy/default reads.
-        // `chatEntry` cannot provide this map because it is not a summary field.
-        return chat?.GLGlobalVariables ? { GLGlobalVariables: { ...$state.snapshot(chat.GLGlobalVariables) } } : {};
+        // `chatEntry` cannot provide the map or link because neither is a summary field.
+        return {
+            ...(chat?.GLGlobalVariables ? { GLGlobalVariables: { ...$state.snapshot(chat.GLGlobalVariables) } } : {}),
+            ...(typeof chat?.togglePresetId === "string" ? { togglePresetId: chat.togglePresetId } : {}),
+        };
+    });
+}
+
+/** Keeps an imported chat's toggle preset link only when the preset exists here. Mutates `chat`. Untracked. */
+export function importedChatTogglePreset(chat: Chat) {
+    untrack(() => {
+        const id = chat.togglePresetId;
+        if (typeof id !== "string" || !settings.togglePresets.some((preset) => preset.id === id)) {
+            delete chat.togglePresetId;
+        }
     });
 }

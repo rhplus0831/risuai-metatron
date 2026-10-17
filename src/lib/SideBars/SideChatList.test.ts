@@ -169,12 +169,15 @@ const strip = (entry: Record<string, unknown>) => {
 
 describe("new chat toggle inheritance", () => {
     it.each(["sidebar", "modal"] as const)(
-        "the %s button copies the selected chat's map, and the empty policy omits it",
+        "the %s button copies the selected chat's map and preset link, and the empty policy omits both",
         (surface) => {
             const source = { chaId: "c", chatId: "j" };
             const toggles = { toggle_flag: "0", toggle_title: "selected chat" };
-            setChatMeta({ chaId: "c", chatId: "k" }, { GLGlobalVariables: { toggle_title: "first chat" } });
-            setChatMeta(source, { GLGlobalVariables: toggles });
+            setChatMeta(
+                { chaId: "c", chatId: "k" },
+                { GLGlobalVariables: { toggle_title: "first chat" }, togglePresetId: "first-preset" },
+            );
+            setChatMeta(source, { GLGlobalVariables: toggles, togglePresetId: "selected-preset" });
             settings.globalChatVariables = { toggle_title: "legacy" };
             settings.ui.newChatBinding = "inherit";
             selectCharacter("c");
@@ -185,12 +188,15 @@ describe("new chat toggle inheritance", () => {
             const created = { chaId: "c", chatId: ids("c")[0] };
             expect(created.chatId).not.toBe("j");
             expect(findChat(created)!.GLGlobalVariables).toEqual(toggles);
+            expect(findChat(created)!.togglePresetId).toBe("selected-preset");
             setChatMeta(created, { GLGlobalVariables: { toggle_flag: "1", toggle_title: "edited new chat" } });
             expect(findChat(source)!.GLGlobalVariables).toEqual(toggles);
+            expect(findChat(source)!.togglePresetId).toBe("selected-preset");
             settings.ui.newChatBinding = "empty";
             list.newChat().click();
             flushSync();
             expect(findChat({ chaId: "c", chatId: ids("c")[0] })!.GLGlobalVariables).toBeUndefined();
+            expect(findChat({ chaId: "c", chatId: ids("c")[0] })).not.toHaveProperty("togglePresetId");
             expect(settings.globalChatVariables).toEqual({ toggle_title: "legacy" });
         },
     );

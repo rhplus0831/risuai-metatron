@@ -25,6 +25,7 @@ const phase3Kinds = [
     "personas",
     "translatorPresets",
     "hypaV3Presets",
+    "togglePresets",
     "customModels",
     "credentials",
     "enabledModules",
@@ -43,7 +44,7 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 20 Phase 3 singletons (including credentials); presets and Phase 3 materialize", () => {
+    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 21 Phase 3 singletons (including credentials and togglePresets); presets and Phase 3 materialize", () => {
         expect([...kinds.keys()]).toEqual([...phase1Kinds, ...phase3Kinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([

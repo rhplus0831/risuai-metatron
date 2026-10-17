@@ -1,6 +1,6 @@
 # Per-Chat Toggles and Toggle Presets Plan
 
-Status: slices 1–2 landed; slices 3–4 remain planned. Slice 1 keeps kind-aware empty strings (`""` stays set for text/textarea). Slice 2 adds `GLGlobalVariables` to `CHAT_META_MERGE_KEYS` for per-key writes (unchanged stored values skip; unloaded targets return false), removes Local Toggles, and inherits only a loaded source chat's map; an unloaded source starts without a map because chat summaries do not carry it. These decisions supersede the whole-map write and loading behavior described below.
+Status: slices 1–3 landed; slice 4 remains planned. Slice 1 keeps kind-aware empty strings (`""` stays set for text/textarea). Slice 2 adds `GLGlobalVariables` to `CHAT_META_MERGE_KEYS` for per-key writes (unchanged stored values skip; unloaded targets return false), removes Local Toggles, and inherits only a loaded source chat's map; an unloaded source starts without a map because chat summaries do not carry it. These decisions supersede the whole-map write and loading behavior described below. Slice 3 adds the normalized `togglePresets` list and `Chat.togglePresetId`, inherits a loaded source's link, drops missing links on import, and excludes presets from settings reports. Its test additions and updates are a separate follow-up after verification.
 
 Planned on 2026-10-17. Sources: the code at
 `bfdcfd508` (anchors below are from that commit; re-verify before editing) and
@@ -127,8 +127,8 @@ part of a toggle preset, as in the fastify fork.
 ## Slices
 
 One slice is one session, one commit, one file cluster. Slices 1 and 2 share
-files and run in order; slice 3 touches persistence plumbing only and can run
-in parallel with them; slice 4 needs 2 and 3.
+files and run in order; slice 3 adds persistence plumbing and extends slice 2's
+new-chat helper with preset-link inheritance and import cleanup; slice 4 needs 2 and 3.
 
 ### 1. Shared toggle helpers and read-time defaults (_small_)
 
@@ -203,27 +203,45 @@ Guides: cbs-rendering, ui-theming, persistence. After slice 1.
 
 ### 3. The `togglePresets` collection and `Chat.togglePresetId` (_small_)
 
-Guide: persistence. Independent of slices 1 and 2.
+Guide: persistence. Landed; extends slice 2's new-chat helper. Test additions and
+updates are handled separately after verification.
 
 - `shared/togglePresets.ts`: `TogglePreset { id, name, values: Record<string, string>,
-kinds: Record<string, ToggleKind>, createdAt, updatedAt }`,
-  `createTogglePreset(name, values, kinds, id?)` (id through `newId`/`isRecordId`,
-  as `createHypaV3Preset` at `shared/hypaV3Presets.ts:10`), and
-  `normalizeTogglePresets(input)` (drops non-objects and duplicate ids, names an
-  unnamed preset `Toggle Preset N`, keeps only string values and known kinds,
-  repairs timestamps; the fastify `normalizeChatGenerationTogglePresets` rules).
-- Thread it as `hypaV3Presets` is, minus the selection field: `Database`
-  (`shared/database.ts`), `COLLECTION_KIND`/`COLLECTION_FIELDS`
-  (`shared/sections.ts:296-329`), `RESOURCE_KIND` (`shared/resources.ts:46`),
-  the server normalizer (`server/src/data/normalize/collections.ts`, default
-  `[]`), `settingsKind` registration (`server/src/data/kinds.ts:232`),
-  `BY_ID_FIELDS` (`src/ts/storage/records.svelte.ts:1695`). Boot install, the
-  settings view (`settings.togglePresets`), save/sync, backup, and the settings
-  report are automatic; leave it in the report (not sensitive) and out of the
-  plugin `allowedDbKeys`.
+kinds: Record<string, ToggleKind>, createdAt, updatedAt }`, with bare keys in both maps.
+  `createTogglePreset(name, values, kinds, id?)` uses `isRecordId`/`newId`, copies the
+  maps, and sets both timestamps to `Date.now()`. `TOGGLE_KINDS` in
+  `shared/prompt/toggles.ts` is the runtime list that also defines `ToggleKind`.
+  `normalizeTogglePresets(input)` never throws for plain data: a non-array becomes
+  `[]`, non-objects are dropped, and invalid or duplicate ids are re-keyed, keeping
+  every object entry. It names an unnamed preset `Toggle Preset N`, keeps only
+  string values and known kinds from object maps (`Object.fromEntries` preserves
+  own `__proto__` keys), and returns exactly the six fields in the order above.
+  `createdAt` defaults to 0 and `updatedAt` to `createdAt` unless finite numbers;
+  normalization never reads the clock or mutates input.
+- Thread it as `personas` is, without the never-empty rule: a plain id-carrying
+  list in `Database` (`shared/database.ts`), `COLLECTION_KIND`/`COLLECTION_FIELDS`
+  (`shared/sections.ts`), `RESOURCE_KIND` (`shared/resources.ts`), the server
+  normalizer (`server/src/data/normalize/collections.ts`, default `[]`, rejecting
+  a non-array or non-object entries before calling the shared normalizer),
+  `settingsKind` registration (`server/src/data/kinds.ts`), and `BY_ID_FIELDS`
+  (`src/ts/storage/records.svelte.ts`, `field: null`). No selection field or
+  `selectableList`. Boot install, the settings view (`settings.togglePresets`),
+  save/sync, and backup are automatic. Exclude it from the settings report through
+  `REPORT_REMOVED_KEYS` (text/textarea values are free user text), and leave it out
+  of the plugin `allowedDbKeys`.
 - `Chat.togglePresetId?: string` on `shared/database.ts` `Chat`: stored as sent,
-  defaulted by readers, no server change (D2); written through `setChatMeta`
-  (`null` unsets, as `setChatTranslationSettings` does). Not a summary field.
+  defaulted by readers, no server change (D2). A deleted preset leaves the link
+  dangling; remove it through `setChatMeta`'s `unset`, never store null. It is not
+  a summary field, merge key, or transform cache key.
+- `initialChatToggles` returns `Pick<Chat, "GLGlobalVariables" | "togglePresetId">`:
+  with `inherit`, copy the selected loaded source's string preset id alongside its
+  map (even if the preset was deleted); otherwise omit the link. `empty` returns
+  `{}`. `importedChatTogglePreset(chat)` drops any non-string id or id absent from
+  `settings.togglePresets`, untracked, before `addChats` in `src/ts/characters.ts`
+  creates an imported chat, next to binding and translation cleanup.
+- Add `"togglePresets": []` to the hand-maintained boot fixture alongside its
+  normalizer, record the by-hand addition in the fixture README, and update the
+  persistence/server guides and active plan index.
 - Tests to extend: `server/src/tests/kinds.test.ts:15-35`,
   `resourceKinds.test.ts`, `normalizeCollections.test.ts` (the new normalizer),
   `src/ts/storage/tests/resourceSyncSections.test.ts` (the non-default fixture

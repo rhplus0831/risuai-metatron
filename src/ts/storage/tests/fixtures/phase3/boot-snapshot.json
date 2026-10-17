@@ -493,6 +493,7 @@
     }
   ],
   "hypaV3PresetId": 0,
+  "togglePresets": [],
   "translatorPresets": [
     {
       "name": "Default",

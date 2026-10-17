@@ -18,6 +18,7 @@ import {
     normalizeHypaV3Presets,
     normalizeLoreBook,
     normalizeStatics,
+    normalizeTogglePresets,
     normalizeTranslatorPresets,
 } from "../data/normalize/collections.ts";
 import { normalizePersonas } from "../data/normalize/personas.ts";
@@ -73,6 +74,41 @@ describe("the registry", () => {
     it("materializes every `materialize` kind to a value that is its own fixed point after serialization", () => {
         for (const kind of DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize)) {
             expectIdempotent((input) => kind.normalize(input, { id: "main" }), undefined);
+        }
+    });
+});
+
+describe("togglePresets", () => {
+    it("materializes an empty list and normalizes object entries without a selection field", () => {
+        expect(normalizeTogglePresets(undefined)).toEqual([]);
+        expect(normalizeTogglePresets([])).toEqual([]);
+        const input = [
+            {
+                id: "p",
+                name: "",
+                values: { title: "", bad: 3 },
+                kinds: { title: "text", bad: "group" },
+                createdAt: 4,
+                extra: true,
+            },
+        ];
+        expect(normalizeTogglePresets(input)).toEqual([
+            {
+                id: "p",
+                name: "Toggle Preset 1",
+                values: { title: "" },
+                kinds: { title: "text" },
+                createdAt: 4,
+                updatedAt: 4,
+            },
+        ]);
+        expectIdempotent(normalizeTogglePresets, input);
+    });
+
+    it("rejects every non-array record and any non-object entry with ResourceValidationError", () => {
+        for (const input of [null, {}, "x", 1, true, [null], [1], ["x"], [[]], [{ id: "p" }, false]]) {
+            expect(() => normalizeTogglePresets(input), JSON.stringify(input)).toThrow(ResourceValidationError);
+            rejects(normalizeTogglePresets, input, "togglePresets must be an array of objects");
         }
     });
 });

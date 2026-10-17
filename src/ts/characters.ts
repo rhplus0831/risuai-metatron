@@ -31,6 +31,7 @@ import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
+import { importedChatTogglePreset } from "./toggles/chatToggles.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
@@ -456,12 +457,14 @@ export async function importChat() {
          * Adds imported chats at the top of the list, in their order (new chat and message ids where
          * needed). Every format passes here: each chat keeps only the bound ids that exist here and
          * waits for the user's confirmation before its first send (`importedChatBinding`), and keeps its
-         * translator preset only when it exists here (`importedChatTranslation`).
+         * translator and toggle presets only when they exist here (`importedChatTranslation`,
+         * `importedChatTogglePreset`).
          */
         const addChats = (chats: Chat[]) => {
             chats.forEach((chat, index) => {
                 importedChatBinding(chat);
                 importedChatTranslation(chat);
+                importedChatTogglePreset(chat);
                 createChat(chaId, chat, { index });
             });
         };

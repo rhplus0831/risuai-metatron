@@ -319,6 +319,30 @@ describe("importChat writes the character selected when the dialog opened", () =
 // string) dropped, and `bindingReview: true` set (an imported `false` overwritten), so the chat is
 // blocked until the user confirms it. The saved chat on the server carries the same fields.
 describe("importChat prepares each imported chat's binding", () => {
+    it("saves imported toggle preset links only when they exist locally, preserving each chat's toggle values", async () => {
+        const { run, alpha, chatsOf, settings, sync, fake } = await boot();
+        settings.togglePresets = [
+            { id: "local-toggle", name: "Local", values: {}, kinds: {}, createdAt: 0, updatedAt: 0 },
+        ];
+        const inputs = ["local-toggle", "missing-toggle", null, 7, undefined].map((togglePresetId, index) => ({
+            ...chatV2(`Imported ${index}`, null, `Message ${index}`),
+            togglePresetId,
+            GLGlobalVariables: { toggle_title: `Imported text ${index}`, toggle_flag: "0" },
+        }));
+        await run({ name: "chats.json", data: encode({ type: "risuAllChats", ver: 2, folders: [], data: inputs }) });
+        const imported = chatsOf(alpha).slice(0, inputs.length);
+        expect(imported).toHaveLength(inputs.length);
+        await sync.flushResources();
+        for (const [index, chat] of imported.entries()) {
+            const stored = fake.chat(alpha, chat.id)!.data;
+            for (const copy of [chat, stored]) {
+                expect(copy.GLGlobalVariables).toEqual(inputs[index].GLGlobalVariables);
+                if (index === 0) expect(copy.togglePresetId).toBe("local-toggle");
+                else expect(copy).not.toHaveProperty("togglePresetId");
+            }
+        }
+    });
+
     /** The ids of the records the harness holds: the first prompt preset, model preset, and persona. */
     const existing = (booted: Awaited<ReturnType<typeof boot>>) => ({
         promptPresetId: booted.settings.presets[0].id as string,
