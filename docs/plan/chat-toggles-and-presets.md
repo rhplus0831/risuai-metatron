@@ -1,6 +1,6 @@
 # Per-Chat Toggles and Toggle Presets Plan
 
-Status: slices 1–3 landed; slice 4 remains planned. Slice 1 keeps kind-aware empty strings (`""` stays set for text/textarea). Slice 2 adds `GLGlobalVariables` to `CHAT_META_MERGE_KEYS` for per-key writes (unchanged stored values skip; unloaded targets return false), removes Local Toggles, and inherits only a loaded source chat's map; an unloaded source starts without a map because chat summaries do not carry it. These decisions supersede the whole-map write and loading behavior described below. Slice 3 adds the normalized `togglePresets` list and `Chat.togglePresetId`, inherits a loaded source's link, drops missing links on import, and excludes presets from settings reports. Its test additions and updates are a separate follow-up after verification.
+Status: slices 1–4 landed. Slice 1 keeps kind-aware empty strings (`""` stays set for text/textarea). Slice 2 merges changed `GLGlobalVariables` keys only on a loaded chat, removes Local Toggles, and inherits only a loaded source's map. Slice 3 adds `togglePresets` and `Chat.togglePresetId`, link inheritance/import cleanup, and settings-report exclusion. Slice 4 adds the shared capture/projection/comparison helpers, loaded-chat operations, localized sidebar controls and difference markers, and disables preset controls in the prompt preview. Slice 4 test coverage and selector-query updates are now in the working tree. Browser verification is recorded below; this plan remains in place until a separate archive commit.
 
 Planned on 2026-10-17. Sources: the code at
 `bfdcfd508` (anchors below are from that commit; re-verify before editing) and
@@ -90,11 +90,10 @@ part of a toggle preset, as in the fastify fork.
   deferred follow-up, not part of this plan. Keys that are not a defined toggle
   (nothing writes them today) keep the old `"null"` answer, so `getglobalvar` of
   an arbitrary name is unchanged.
-- **Defaults are read-time, not only write-time.** One shared helper answers
-  `resolveToggleValue(kind, stored)`; the client getters and the server host use
-  it, so an unset toggle never reaches a prompt as `"null"`. A stored `""` or
-  `"null"` counts as unset (this also repairs selects left blank by the current
-  bug). The only writes of defaults are at chat creation (inheritance, below);
+- **Defaults are read-time, not only write-time.** The shared `resolveGlobalChatVar(key, chatMap, legacyMap, definitionsText)`
+  reader serves the client getters and the server host, so an unset toggle never reaches a prompt as `"null"`. A stored `"null"` counts as unset; `""` stays set for text/textarea and is
+  unset for checkbox/select. Defaults are captured when saving a preset and
+  written when applying one; new chats inherit stored values only (below);
   opening an old chat writes nothing (the idle-reload invariant,
   `e2e/0-idleReload.spec.ts`).
 - **New chats follow `settings.ui.newChatBinding`** like bindings and
@@ -114,15 +113,15 @@ part of a toggle preset, as in the fastify fork.
   the chat currently defines, the preset's value or the kind default; preset
   keys the chat does not define are ignored. "Save" overwrites the linked preset
   (confirm) or asks for a name when none is linked. A deleted preset leaves
-  `togglePresetId` dangling; the select shows "none" and the caption says the
-  preset is gone. The caption marks the chat "edited" when its values differ
+  `togglePresetId` dangling; the select shows a "deleted" option for that id and the caption says
+  "deleted". The caption marks the chat "edited" when its values differ
   from the linked preset's and "mismatch" when the key or kind sets differ.
 - **`Toggles.svelte` takes a `chatRef` prop** like the newer panels
   (`ChatTranslationPanel.svelte`), instead of reading `selectedChat()`. Without a
-  loaded chat the inputs are disabled and show defaults; writes go through
-  `setChatMeta(ref, { GLGlobalVariables: next })` (whole-map replace, as
-  `scriptstate` is written). `OpenChatPanel` passes the open chat,
-  `CharConfig` the character's selected chat, `PopupEditor` `currentChatRef()`.
+  loaded chat the inputs are disabled and show defaults; writes merge changed keys through `mergeChatMeta(ref, "GLGlobalVariables", entries)`.
+  Preset apply then links through `setChatMeta` (the two unsent ops coalesce);
+  whole-map replacement would discard another tab's key edits. `OpenChatPanel` passes the open chat,
+  `CharConfig` the character's selected chat, `PopupEditor` `currentChatRef()` with `presets={false}`.
 
 ## Slices
 
@@ -139,8 +138,7 @@ Guides: cbs-rendering, self-host-server, global-api.
   `server/src/prompt/assemble.ts` import it, the server copy is deleted). Add
   `ToggleKind` (`"checkbox" | "select" | "text" | "textarea"`),
   `toggleKindOf(definition)`, `toggleStorageKey(key)` (`toggle_` prefix),
-  `toggleDefault(kind)`, `isToggleValueSet(value)` (a non-empty string other
-  than `"null"`), `resolveToggleValue(kind, stored)`, and
+  `toggleDefault(kind)`, `resolveGlobalChatVar(key, chatMap, legacyMap, definitionsText)`, and
   `toggleDefinitionsText(presetText, moduleText, characterText)` (the join the
   sidebar does at `Toggles.svelte:93`), plus `valueToggles(definitions)` (the
   entries that hold a value: no group, divider, caption).
@@ -150,8 +148,7 @@ Guides: cbs-rendering, self-host-server, global-api.
   (`settingsViews.svelte.ts:580`, `chatBinding.svelte.ts:58`), `getModuleToggles()`,
   and the chat owner's `customModuleToggle`; memoize per definitions text (a
   `$derived` in a small `src/ts/toggles/chatToggles.svelte.ts` module that
-  exports `chatToggleDefinitions(ref)`, `getChatToggle(ref, key)`,
-  `setChatToggle(ref, key, value)`). `Toggles.svelte` keeps its current markup in
+  exports `chatToggleDefinitions(ref)` and `setChatToggle(ref, key, value)`). `Toggles.svelte` keeps its current markup in
   this slice and only switches to these accessors.
 - Server: `createJobCbsHost` parses the job's definitions once lazily
   (`db.customPromptTemplateToggle` of the forwarded preset roots,
@@ -159,8 +156,8 @@ Guides: cbs-rendering, self-host-server, global-api.
   `getGlobalChatVar` through the same helper. Prompt info
   (`assemble.ts:327-346`) uses the chat-aware read, includes the character's
   toggles, and reports text/textarea raw and select by option label.
-- Tests: `shared/prompt/toggles.test.ts` (grammar, kinds, defaults, `""`/`"null"`
-  as unset); `src/ts/parser/tests/chatVar.svelte.test.ts` (an unset defined
+- Tests: `shared/prompt/toggles.test.ts` (grammar, kinds, defaults, kind-aware `""`/`"null"`
+  handling); `src/ts/parser/tests/chatVar.svelte.test.ts` (an unset defined
   checkbox reads `"0"`, select `"0"`, text `""`, an undefined name still `"null"`,
   chat value over legacy global); `server/src/tests/cbsHost.ts` and
   `fixtures/cbs-parity.json` (the same on the server; the parity suite keeps
@@ -173,8 +170,8 @@ Guides: cbs-rendering, ui-theming, persistence. After slice 1.
 - `chatVar.svelte.ts`: delete `getGLChatVar`, `setGLChatVar`, `deleteGLChatVar`,
   `isLocallyHandledGlobalChatVar`, `removeLocallyHandledGlobalChatVar`, and the
   `console.log` calls; `setGlobalChatVar` becomes `setChatToggle(ref, key, value)`
-  writing `GLGlobalVariables` through `setChatMeta` (throws while the chat loads,
-  as today; the component disables inputs then). Nothing writes
+  merging one changed `GLGlobalVariables` entry through `mergeChatMeta` (returns
+  false for an unchanged stored value or an unloaded chat; inputs are disabled while loading). Nothing writes
   `settings.globalChatVariables`.
 - `shared/database.ts`: remove `useLocallySetGlobalVariables` from `Chat`
   (keep `GLGlobalVariables`, documented as the chat's toggle map).
@@ -251,45 +248,59 @@ kinds: Record<string, ToggleKind>, createdAt, updatedAt }`, with bare keys in bo
 
 ### 4. Preset operations and the sidebar UI (_medium_)
 
-Guides: ui-theming, settings-i18n. After slices 2 and 3.
+Guides: ui-theming, settings-i18n, persistence. Landed after slices 2 and 3.
 
-- Pure helpers in `shared/prompt/togglePresets.ts` (tested without the DOM):
-  `captureToggleValues(definitions, read)` (every value toggle, through
-  `resolveToggleValue`), `toggleValuesForChat(preset, definitions)` (the apply
-  projection: preset value or kind default per defined key, bare keys mapped to
-  storage keys), `compareTogglePreset(preset, definitions, read)` →
-  `{ missing, stale, kindMismatch, differing, hasMismatch, hasDifference }`
-  (the fastify `compareChatGenerationTogglePresetToActiveState` contract).
-- Operations in `src/ts/toggles/togglePresets.svelte.ts` over
-  `settings.togglePresets` and `setChatMeta`: `saveTogglePresetFromChat(ref, name)`,
-  `overwriteTogglePreset(ref, id)`, `applyTogglePreset(ref, id)` (writes the map
-  and `togglePresetId` in one `setChatMeta`), `renameTogglePreset(id, name)`,
-  `deleteTogglePreset(id)`. House rule from `TranslatorPresetSettings.svelte:64-140`:
-  capture `{ id, name }` before an `alertInput`/`alertConfirm`, find the record by
-  id again after the await, and re-check `chatEntry(ref)` before a chat write.
-- UI at the top of `Toggles.svelte` (hidden when the chat defines no value
-  toggle): a caption row "Toggle preset" with the state word (none, edited,
-  mismatch, deleted), a `SelectInput` ("none" plus every preset by name, value
-  `chat.togglePresetId`; choosing one applies and links, after `alertConfirm`
-  when the chat is edited), and icon buttons Save (overwrite the linked preset
-  after confirm, else name a new one), Save as new, Rename, Delete (confirm).
-  Rows whose value differs from the linked preset get a `text-draculared`
-  marker (theme tokens only, U1). GUI primitives: `SelectInput`/`OptionInput`,
-  `IconButton`, `@lucide/svelte` icons.
-- Lang keys in `src/lang/en.ts` (the type) with `ko.ts` overrides: the caption,
-  state words, the name prompt, the overwrite/apply/delete confirmations, and
-  the "preset no longer exists" note; reuse `removeConfirm`, `close`, `edit`,
-  `remove` where they fit.
-- Tests: the pure helpers (missing/stale/kind-mismatch/differing, projection
-  defaults, bare-to-storage key mapping); `Toggles.test.ts` cases for save (a
-  record appears with the chat's values and kinds), apply (the chat map and
-  `togglePresetId` change in one write; undefined preset keys ignored), delete
-  (the chat keeps a dangling id and shows the note).
-- Docs: `ui-theming.md` (`Toggles.svelte` and `OpenChatPanel.svelte` entries),
-  `persistence.md` (the collection and the chat field), `cbs-rendering.md`
-  `chatVar.svelte.ts` users. Record the browser check in the commit message
-  (the sidebar on desktop and mobile layouts; `playwright-check-runs` memory for
-  the dev-stack recipe).
+- Pure helpers in `shared/togglePresets.ts`, taking joined `definitionsText` and a
+  `read(storageKey)` callback where needed: `captureToggleValues` saves resolved
+  values and kinds under bare keys, over `valueToggles(parseToggleSyntax(text))`
+  (first definition wins). `toggleValuesForChat` projects only defined keys to
+  storage keys, defaulting missing values, changed kinds, and invalid select
+  indices. `compareTogglePreset` returns `{ missing, stale, kindMismatch,
+differing, hasMismatch, hasDifference }`: missing values and incompatible
+  kinds/indices always differ; stale includes saved values or kinds no longer
+  defined. Mismatch includes missing/stale/incompatible keys, difference includes
+  differing/stale keys. No new file under `shared/prompt/`.
+- `src/ts/toggles/togglePresets.svelte.ts`: `saveTogglePresetFromChat`,
+  `overwriteTogglePreset`, `applyTogglePreset`, `unlinkTogglePreset`,
+  `renameTogglePreset`, `deleteTogglePreset`. Every chat operation checks
+  `findChat(ref)` (summaries from `chatEntry` cannot establish that it is loaded).
+  Capture reads through `resolveGlobalChatVar` with definitions computed once per
+  operation. Save and rename reject blank trimmed names. Overwrite replaces both
+  maps and timestamps the change. Apply merges only changed stored raw entries
+  through `mergeChatMeta`, skipping an empty merge, then links with `setChatMeta`;
+  the two unsent ops coalesce into one metadata op. Unlink unsets the field and
+  keeps values. Delete splices by id and leaves chat links dangling.
+- `Toggles.svelte`: one derived definitions text for parsing, reads and comparison.
+  The preset panel (`data-toggle-presets`) appears above value toggles inside the
+  loaded-chat fieldset. Every handler also checks `findChat`, since happy-dom does
+  not enforce disabled fieldsets on descendants. The caption shows edited,
+  mismatch or deleted only when linked, and no state word when matched/unlinked.
+  `SelectInput` (`data-toggle-preset-select`) lists None, every preset, and a
+  deleted option for a dangling link. Applying asks for confirmation when any
+  projected value differs from the current resolved value; cancel/failure resets
+  the captured select element to its previous value (currentTarget is null after
+  an await). Save confirms overwrite when linked to an existing preset, otherwise
+  asks for a name; Save as new, Rename and Delete use the usual alert helpers.
+  Capture the chat ref and `{ id, name }` before awaiting, then re-find by id and
+  check `findChat` before writing. Plain sidebar icon buttons use localized titles
+  and aria-labels. All four value row kinds, including groups, show the themed
+  `CircleAlertIcon` marker beside differing labels. `presets` defaults to true;
+  `PopupEditor` passes false to suppress preset controls, markers and dialogs.
+- `src/lang/en.ts:togglePresets` defines the strings and functions; `ko.ts`
+  overrides them. Delete reuses `removeConfirm`.
+- Tests: `shared/togglePresetValues.test.ts` covers the capture, projection, and
+  comparison helpers. The `toggle preset operations` describe in
+  `src/ts/toggles/chatToggles.test.ts` covers save/overwrite/apply with merge+link
+  coalescing over the real chat store, unlink, rename/delete, blank names, and
+  unloaded chats. The `toggle preset panel` describe in
+  `src/lib/SideBars/Toggles.test.ts` covers panel placement and `presets={false}`,
+  the edited/mismatch/deleted states and row markers, save/overwrite/save-as-new/
+  rename/delete dialogs, cancel paths, select reset, handler guards, and
+  unload-during-dialog and captured-id races. The four pre-existing Toggles cases
+  now exclude the preset select from their queries.
+- Docs: `ui-theming.md` describes the panel, fieldset/handler guards and preview
+  prop; `persistence.md` describes operations and the remaining whole-collection
+  concurrent-save gap; `cbs-rendering.md` names the new definition/reader users.
 
 ## Deferred (not in this plan)
 
@@ -316,3 +327,19 @@ stays per chat across two chats of one character, inherit/empty on a new chat,
 save/apply/rename/delete, prompt info showing the chat's values), and the idle
 reload e2e (`e2e/0-idleReload.spec.ts`) to confirm opening an old chat writes
 nothing.
+
+Slice 4 browser check (2026-10-17): Playwright over the isolated dev stack
+(`startStack`, `openCharacterChat`, `chatBindingFixture`) passed save-as-new
+with all four value kinds and resolved defaults, linked/equal display, edited
+state and markers on all kinds (text/textarea inside a group), confirmed apply,
+cancelled apply restoring the previous selection, overwrite, rename, delete
+with the dangling id's deleted option, and None unlinking without value changes.
+It also passed missing/stale/out-of-range-select mismatch display and default
+projection, overwrite dropping stale keys, preset/link/value persistence across
+reload, no writes on idle reload or opening the populated chat, and the
+`PopupEditor` preview with toggle inputs but no preset UI/markers/dialogs.
+Observed apply traffic used one coalesced metadata op with a map merge and link
+set, preserving an unrelated chat key. At 390px the sidebar and document had no
+horizontal overflow. No browser page errors were observed. The slice 4 helper,
+operation, and panel tests described above are now in the working tree; the four
+pre-existing Toggles cases exclude the preset select from their queries.

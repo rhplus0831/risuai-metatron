@@ -17,9 +17,16 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", () => ({
+    alertError: vi.fn(),
+    alertNormal: vi.fn(),
+    alertConfirm: vi.fn(),
+    alertInput: vi.fn(),
+}));
 
 import { language } from "src/lang";
+import { alertConfirm, alertInput } from "src/ts/alert";
+import type { TogglePreset } from "../../../shared/togglePresets.ts";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
@@ -38,12 +45,12 @@ import Toggles from "./Toggles.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
 
-function render(chatRef: ChatRef | null = { chaId: "c", chatId: "k" }) {
+function render(chatRef: ChatRef | null = { chaId: "c", chatId: "k" }, presets = true) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     // The selected character's record, as `CharConfig.svelte` passes it (a writable wrapper).
     const chara = selectedCharacter()!;
-    mounted.push(mount(Toggles, { target, props: { chara, chatRef } }));
+    mounted.push(mount(Toggles, { target, props: { chara, chatRef, presets } }));
     flushSync();
     /** The checkbox of the label that carries `name`, or none. */
     const checkbox = (name: string) => {
@@ -54,6 +61,8 @@ function render(chatRef: ChatRef | null = { chaId: "c", chatId: "k" }) {
 }
 
 beforeEach(() => {
+    vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    vi.mocked(alertInput).mockReset().mockResolvedValue("");
     vi.mocked(getModuleToggles).mockReturnValue("");
     sessionStorage.clear();
     localStorage.clear();
@@ -75,6 +84,7 @@ beforeEach(() => {
         hypaV3: false,
         hanuraiEnable: false,
         jailbreakToggle: false,
+        togglePresets: [],
     } as any);
     selectCharacter("c");
 });
@@ -86,7 +96,8 @@ it("renders unset selects at option zero and empty text controls from preset, mo
         customModuleToggle: "owner_mode=Owner mode=select=Owner first,Owner second\nnotes=Notes=textarea",
     });
     const { target, checkbox } = render();
-    const selects = [...target.querySelectorAll("select")];
+    // The toggle selects only: the preset panel's own select (`data-toggle-preset-select`) comes first.
+    const selects = [...target.querySelectorAll<HTMLSelectElement>("select:not([data-toggle-preset-select])")];
     expect(selects.map((select) => [select.value, select.selectedOptions[0]?.textContent])).toEqual([
         ["0", "First"],
         ["0", "Module first"],
@@ -143,7 +154,7 @@ describe("per-chat prompt toggles", () => {
         checkbox("Flag")!.click();
         flushSync();
         expect(findChat(ref)!.GLGlobalVariables).toEqual({ toggle_keep: "keep me", toggle_flag: "1" });
-        change(target.querySelector("select")!, "1");
+        change(target.querySelector<HTMLSelectElement>("select:not([data-toggle-preset-select])")!, "1");
         change(target.querySelector<HTMLInputElement>('input[type="text"]')!, "chat title");
         change(target.querySelector("textarea")!, "chat notes");
         expect(findChat(ref)!.GLGlobalVariables).toEqual({
@@ -229,7 +240,10 @@ describe("per-chat prompt toggles", () => {
             const { target, chara, checkbox } = render(state === "null" ? null : ref);
             const fieldset = target.querySelector("fieldset")!;
             expect(fieldset.disabled).toBe(true);
-            expect(fieldset.querySelectorAll("input, select, textarea")).toHaveLength(4);
+            // The four toggle controls; the preset panel's select sits in the same disabled fieldset.
+            expect(fieldset.querySelectorAll("input, select:not([data-toggle-preset-select]), textarea")).toHaveLength(
+                4,
+            );
             expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe(
                 state === "null" ? "selected chat title" : "legacy",
             );
@@ -331,5 +345,441 @@ describe("the memory toggle", () => {
         input!.click();
         flushSync();
         expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
+    });
+});
+
+describe("toggle preset panel", () => {
+    const ref = { chaId: "c", chatId: "k" };
+    const definitions = "flag=Flag\nmode=Mode=select=First,Second\ntitle=Title=text\nnotes=Notes=textarea";
+    const defaults = { flag: "0", mode: "0", title: "", notes: "" };
+    const kinds = { flag: "checkbox", mode: "select", title: "text", notes: "textarea" } as const;
+    const legacy = { toggle_unrelated: "legacy must survive" };
+    const saved = (id = "p", values = defaults): TogglePreset => ({
+        id,
+        name: `Preset ${id}`,
+        values: { ...values },
+        kinds: { ...kinds },
+        createdAt: 1,
+        updatedAt: 2,
+    });
+    const select = (target: HTMLElement) => target.querySelector<HTMLSelectElement>("[data-toggle-preset-select]")!;
+    const button = (target: HTMLElement, action: "save" | "saveAsNew" | "rename" | "remove") =>
+        target.querySelector<HTMLButtonElement>(`button[aria-label="${language.togglePresets[action]}"]`)!;
+    const state = (target: HTMLElement) => target.querySelector("[data-toggle-preset-state]")?.textContent ?? null;
+    const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        flushSync();
+    };
+    const choose = (target: HTMLElement, id: string) => {
+        const input = select(target);
+        input.value = id;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const unload = () =>
+        assembleChats(
+            [{ chaId: "c" }],
+            [{ characterId: "c", id: "k", revision: "r1", name: "K", fmIndex: -1 }],
+            [{ characterId: "c", revision: "o1", ids: ["k"] }],
+        );
+    function pending<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((done) => {
+            resolve = done;
+        });
+        return { promise, resolve };
+    }
+    function observeWrites() {
+        const chatWritten = vi.fn();
+        const recordsWritten = vi.fn();
+        setChatWorkListener(chatWritten);
+        setRecordWriteListener(recordsWritten);
+        return { chatWritten, recordsWritten };
+    }
+
+    beforeEach(() => {
+        activePreset.customPromptTemplateToggle = definitions;
+        settings.globalChatVariables = { ...legacy };
+        settings.togglePresets = [saved(), saved("q")];
+    });
+
+    it("places the localized preset controls first in the chat fieldset only for enabled value-toggle panels", () => {
+        activePreset.customPromptTemplateToggle = "help=Help=caption\nrule=Rule=divider";
+        const { target } = render();
+        expect(target.querySelector("[data-toggle-presets]")).toBeNull();
+        activePreset.customPromptTemplateToggle = definitions;
+        flushSync();
+        const fieldset = target.querySelector("fieldset")!;
+        expect(fieldset.firstElementChild).toBe(target.querySelector("[data-toggle-presets]"));
+        expect(fieldset.firstElementChild!.textContent).toContain(language.togglePresets.title);
+        expect(select(target).getAttribute("aria-label")).toBe(language.togglePresets.title);
+        expect([...select(target).options].map(({ value, textContent }) => [value, textContent])).toEqual([
+            ["", language.togglePresets.none],
+            ["p", "Preset p"],
+            ["q", "Preset q"],
+        ]);
+        for (const action of ["save", "saveAsNew"] as const)
+            expect(button(target, action).title).toBe(language.togglePresets[action]);
+        expect(button(target, "rename")).toBeNull();
+        expect(button(target, "remove")).toBeNull();
+        expect(state(target)).toBeNull();
+        setChatMeta(ref, { togglePresetId: "p", GLGlobalVariables: { toggle_flag: "1" } });
+        const preview = render(ref, false).target;
+        expect(preview.querySelector("[data-toggle-presets]")).toBeNull();
+        expect(preview.querySelector("[data-toggle-differs]")).toBeNull();
+        expect(preview.querySelector("fieldset")!.querySelectorAll("input, select, textarea")).toHaveLength(4);
+        expect(alertConfirm).not.toHaveBeenCalled();
+        expect(alertInput).not.toHaveBeenCalled();
+    });
+
+    it("shows edited, mismatch and deleted states and marks differing rows of all four kinds inside and outside groups", async () => {
+        activePreset.customPromptTemplateToggle =
+            definitions +
+            "\ng=Group=group\ngflag=Group flag\ngmode=Group mode=select=First,Second\ngtitle=Group title=text\ngnotes=Group notes=textarea\ne=End=groupEnd";
+        settings.togglePresets = [
+            {
+                ...saved(),
+                values: { ...defaults, gflag: "0", gmode: "0", gtitle: "", gnotes: "" },
+                kinds: { ...kinds, gflag: "checkbox", gmode: "select", gtitle: "text", gnotes: "textarea" },
+            },
+        ];
+        setChatMeta(ref, { togglePresetId: "p" });
+        const { target } = render();
+        [...target.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Group")!.click();
+        flushSync();
+        expect(state(target)).toBeNull();
+        expect(target.querySelectorAll("[data-toggle-differs]")).toHaveLength(0);
+        for (const action of ["rename", "remove"] as const)
+            expect(button(target, action).title).toBe(language.togglePresets[action]);
+        setChatMeta(ref, {
+            GLGlobalVariables: {
+                toggle_flag: "1",
+                toggle_mode: "1",
+                toggle_title: "changed",
+                toggle_notes: "changed",
+                toggle_gflag: "1",
+                toggle_gmode: "1",
+                toggle_gtitle: "changed",
+                toggle_gnotes: "changed",
+            },
+        });
+        flushSync();
+        expect(state(target)).toBe(language.togglePresets.edited);
+        const markers = [...target.querySelectorAll<HTMLElement>("[data-toggle-differs]")];
+        expect(markers.map((marker) => marker.parentElement!.textContent!.trim())).toEqual([
+            "Flag",
+            "Mode",
+            "Title",
+            "Notes",
+            "Group flag",
+            "Group mode",
+            "Group title",
+            "Group notes",
+        ]);
+        for (const marker of markers) {
+            expect(marker.classList.contains("text-draculared")).toBe(true);
+            expect(marker.title).toBe(language.togglePresets.differs);
+        }
+        setChatMeta(ref, { GLGlobalVariables: {} });
+        settings.togglePresets[0].kinds.orphan = "text";
+        flushSync();
+        expect(state(target)).toBe(language.togglePresets.mismatch);
+        expect(target.querySelectorAll("[data-toggle-differs]")).toHaveLength(0);
+        delete settings.togglePresets[0].values.title;
+        settings.togglePresets[0].kinds.flag = "text";
+        flushSync();
+        expect(
+            [...target.querySelectorAll("[data-toggle-differs]")].map((marker) =>
+                marker.parentElement!.textContent!.trim(),
+            ),
+        ).toEqual(["Flag", "Title"]);
+        settings.togglePresets = [];
+        flushSync();
+        // Svelte's select option observer settles after the option list changes.
+        await settle();
+        expect(state(target)).toBe(language.togglePresets.deleted);
+        expect(select(target).value).toBe("p");
+        expect([...select(target).options].map(({ value, textContent }) => [value, textContent])).toEqual([
+            ["", language.togglePresets.none],
+            ["p", language.togglePresets.deleted],
+        ]);
+        expect(button(target, "rename")).toBeNull();
+        expect(button(target, "remove")).toBeNull();
+        setChatMeta(ref, {}, ["togglePresetId"]);
+        flushSync();
+        expect(state(target)).toBeNull();
+        expect(target.querySelectorAll("[data-toggle-differs]")).toHaveLength(0);
+    });
+
+    it("saves a new named preset, confirms overwrite, and always asks a name for Save as new or a deleted link", async () => {
+        const { target } = render();
+        const { recordsWritten } = observeWrites();
+        vi.mocked(alertInput).mockResolvedValueOnce("  Mine  ");
+        button(target, "save").click();
+        await settle();
+        expect(alertInput).toHaveBeenCalledWith(language.togglePresets.namePrompt);
+        expect(alertConfirm).not.toHaveBeenCalled();
+        const firstId = findChat(ref)!.togglePresetId!;
+        expect(settings.togglePresets[2]).toMatchObject({ id: firstId, name: "Mine", values: defaults, kinds });
+        expect(select(target).value).toBe(firstId);
+        setChatMeta(ref, { GLGlobalVariables: { toggle_title: "new title", toggle_keep: "keep" } });
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        button(target, "save").click();
+        await settle();
+        expect(alertConfirm).toHaveBeenCalledWith(language.togglePresets.overwriteConfirm("Mine"));
+        expect(settings.togglePresets).toHaveLength(3);
+        expect(settings.togglePresets[2].values).toEqual({ ...defaults, title: "new title" });
+        expect(state(target)).toBeNull();
+        vi.mocked(alertInput).mockResolvedValueOnce("Copy");
+        button(target, "saveAsNew").click();
+        await settle();
+        expect(alertInput).toHaveBeenCalledTimes(2);
+        expect(alertConfirm).toHaveBeenCalledTimes(1);
+        expect(settings.togglePresets).toHaveLength(4);
+        expect(findChat(ref)!.togglePresetId).toBe(settings.togglePresets[3].id);
+        expect(findChat(ref)!.togglePresetId).not.toBe(firstId);
+        setChatMeta(ref, { togglePresetId: "deleted" });
+        flushSync();
+        vi.mocked(alertInput).mockResolvedValueOnce("Replacement");
+        button(target, "save").click();
+        await settle();
+        expect(alertInput).toHaveBeenCalledTimes(3);
+        expect(settings.togglePresets[4].name).toBe("Replacement");
+        expect(findChat(ref)!.togglePresetId).toBe(settings.togglePresets[4].id);
+        expect(new Set(recordsWritten.mock.calls.map(([key]) => key))).toEqual(new Set(["togglePresets"]));
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("prefills Rename and confirms Delete by name, retaining the deleted link and chat values", async () => {
+        setChatMeta(ref, { togglePresetId: "p", GLGlobalVariables: { toggle_title: "chat title" } });
+        const { target } = render();
+        const { chatWritten } = observeWrites();
+        vi.mocked(alertInput).mockResolvedValueOnce("  Renamed  ");
+        button(target, "rename").click();
+        await settle();
+        expect(alertInput).toHaveBeenCalledWith(language.togglePresets.namePrompt, [], "Preset p");
+        expect(select(target).selectedOptions[0].textContent).toBe("Renamed");
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        button(target, "remove").click();
+        await settle();
+        expect(alertConfirm).toHaveBeenCalledWith(language.removeConfirm + "Renamed");
+        expect(settings.togglePresets).toEqual([saved("q")]);
+        expect(findChat(ref)).toMatchObject({ togglePresetId: "p", GLGlobalVariables: { toggle_title: "chat title" } });
+        expect(select(target).value).toBe("p");
+        expect(state(target)).toBe(language.togglePresets.deleted);
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("cancelled and blank save or rename dialogs and cancelled overwrite or delete make no writes", async () => {
+        setChatMeta(ref, { togglePresetId: "p" });
+        const { target } = render();
+        const { chatWritten, recordsWritten } = observeWrites();
+        for (const action of ["save", "remove", "saveAsNew", "rename"] as const) {
+            button(target, action).click();
+            await settle();
+        }
+        for (const action of ["saveAsNew", "rename"] as const) {
+            vi.mocked(alertInput).mockResolvedValueOnce(" \n ");
+            button(target, action).click();
+            await settle();
+        }
+        expect(alertConfirm).toHaveBeenCalledTimes(2);
+        expect(alertInput).toHaveBeenCalledTimes(4);
+        expect(settings.togglePresets).toEqual([saved(), saved("q")]);
+        expect(select(target).value).toBe("p");
+        expect(findChat(ref)!.GLGlobalVariables).toBeUndefined();
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("restores a cancelled choice, applies an accepted choice and unlinks None without changing values", async () => {
+        settings.togglePresets[1].values = { flag: "1", mode: "1", title: "from q", notes: "notes" };
+        setChatMeta(ref, { togglePresetId: "p", GLGlobalVariables: { toggle_keep: "keep" } });
+        const { target } = render();
+        const { chatWritten, recordsWritten } = observeWrites();
+        choose(target, "q");
+        await settle();
+        expect(alertConfirm).toHaveBeenCalledWith(language.togglePresets.applyConfirm("Preset q"));
+        expect(select(target).value).toBe("p");
+        expect(findChat(ref)).toMatchObject({ togglePresetId: "p", GLGlobalVariables: { toggle_keep: "keep" } });
+        expect(chatWritten).not.toHaveBeenCalled();
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        choose(target, "q");
+        await settle();
+        const applied = {
+            toggle_keep: "keep",
+            toggle_flag: "1",
+            toggle_mode: "1",
+            toggle_title: "from q",
+            toggle_notes: "notes",
+        };
+        expect(findChat(ref)).toMatchObject({ togglePresetId: "q", GLGlobalVariables: applied });
+        expect(select(target).value).toBe("q");
+        expect(state(target)).toBeNull();
+        choose(target, "");
+        await settle();
+        expect(Object.hasOwn(findChat(ref)!, "togglePresetId")).toBe(false);
+        expect(findChat(ref)!.GLGlobalVariables).toEqual(applied);
+        expect(select(target).value).toBe("");
+        expect(state(target)).toBeNull();
+        expect(alertConfirm).toHaveBeenCalledTimes(2);
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("applies equal resolved defaults without confirmation even when the preset has missing values and stale keys", async () => {
+        settings.togglePresets = [{ ...saved(), values: { stale: "ignore" }, kinds: {} }];
+        const { target } = render();
+        choose(target, "p");
+        await settle();
+        expect(alertConfirm).not.toHaveBeenCalled();
+        expect(findChat(ref)).toMatchObject({
+            togglePresetId: "p",
+            GLGlobalVariables: {
+                toggle_flag: "0",
+                toggle_mode: "0",
+                toggle_title: "",
+                toggle_notes: "",
+            },
+        });
+        expect(select(target).value).toBe("p");
+        expect(state(target)).toBe(language.togglePresets.mismatch);
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("guards every handler when the chat unloads before an event, without relying on fieldset disabling", async () => {
+        setChatMeta(ref, { togglePresetId: "p" });
+        const { target } = render();
+        const buttons = ["save", "saveAsNew", "rename", "remove"].map(
+            (action: "save" | "saveAsNew" | "rename" | "remove") => button(target, action),
+        );
+        const { chatWritten, recordsWritten } = observeWrites();
+        unload();
+        expect(findChat(ref)).toBeUndefined();
+        // Intentionally dispatch before Svelte flushes; happy-dom also permits these
+        // clicks under a disabled fieldset, so only the handlers can refuse them.
+        for (const control of buttons) control.click();
+        choose(target, "q");
+        await settle();
+        expect(alertInput).not.toHaveBeenCalled();
+        expect(alertConfirm).not.toHaveBeenCalled();
+        expect(settings.togglePresets).toEqual([saved(), saved("q")]);
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("restores the previous selection and writes nothing if its chat unloads during apply confirmation", async () => {
+        settings.togglePresets[1].values.title = "different";
+        setChatMeta(ref, { togglePresetId: "p" });
+        const { target } = render();
+        const dialog = pending<boolean>();
+        vi.mocked(alertConfirm).mockReturnValueOnce(dialog.promise);
+        choose(target, "q");
+        expect(alertConfirm).toHaveBeenCalledWith(language.togglePresets.applyConfirm("Preset q"));
+        unload();
+        await settle();
+        const { chatWritten, recordsWritten } = observeWrites();
+        dialog.resolve(true);
+        await settle();
+        expect(select(target).value).toBe("p");
+        expect(findChat(ref)).toBeUndefined();
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it.each(["save", "saveAsNew", "rename", "remove"] as const)(
+        "refuses %s after the chat unloads during its dialog",
+        async (action) => {
+            setChatMeta(ref, { togglePresetId: "p" });
+            const { target } = render();
+            const confirm = pending<boolean>();
+            const input = pending<string>();
+            vi.mocked(alertConfirm).mockReturnValueOnce(confirm.promise);
+            vi.mocked(alertInput).mockReturnValueOnce(input.promise);
+            button(target, action).click();
+            expect(vi.mocked(alertConfirm).mock.calls.length + vi.mocked(alertInput).mock.calls.length).toBe(1);
+            unload();
+            const { chatWritten, recordsWritten } = observeWrites();
+            confirm.resolve(true);
+            input.resolve("New name");
+            await settle();
+            expect(settings.togglePresets).toEqual([saved(), saved("q")]);
+            expect(findChat(ref)).toBeUndefined();
+            expect(chatWritten).not.toHaveBeenCalled();
+            expect(recordsWritten).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(["save", "rename", "remove"] as const)(
+        "%s keeps the captured id when the link and preset objects change during the dialog",
+        async (action) => {
+            setChatMeta(ref, { togglePresetId: "p", GLGlobalVariables: { toggle_title: "capture me" } });
+            const { target } = render();
+            const confirm = pending<boolean>();
+            const input = pending<string>();
+            vi.mocked(alertConfirm).mockReturnValueOnce(confirm.promise);
+            vi.mocked(alertInput).mockReturnValueOnce(input.promise);
+            button(target, action).click();
+            if (action === "save")
+                expect(alertConfirm).toHaveBeenCalledWith(language.togglePresets.overwriteConfirm("Preset p"));
+            if (action === "remove") expect(alertConfirm).toHaveBeenCalledWith(language.removeConfirm + "Preset p");
+            if (action === "rename")
+                expect(alertInput).toHaveBeenCalledWith(language.togglePresets.namePrompt, [], "Preset p");
+            // A fresh collection in a different order and another linked preset must
+            // not redirect the outstanding dialog to q or mutate a detached p object.
+            settings.togglePresets = [saved("q"), { ...saved(), name: "Remote name" }];
+            setChatMeta(ref, { togglePresetId: "q" });
+            flushSync();
+            confirm.resolve(true);
+            input.resolve("Renamed p");
+            await settle();
+            expect(settings.togglePresets[0]).toEqual(saved("q"));
+            if (action === "save") {
+                expect(settings.togglePresets[1]).toMatchObject({
+                    id: "p",
+                    name: "Remote name",
+                    values: { ...defaults, title: "capture me" },
+                });
+                expect(findChat(ref)!.togglePresetId).toBe("p");
+            } else if (action === "rename") {
+                expect(settings.togglePresets[1]).toMatchObject({ id: "p", name: "Renamed p", values: defaults });
+                expect(findChat(ref)!.togglePresetId).toBe("q");
+            } else {
+                expect(settings.togglePresets).toEqual([saved("q")]);
+                expect(findChat(ref)!.togglePresetId).toBe("q");
+            }
+            expect(settings.globalChatVariables).toEqual(legacy);
+        },
+    );
+
+    it("re-finds an apply target after confirmation and restores the old selection if that preset was deleted", async () => {
+        settings.togglePresets[1].values.title = "before dialog";
+        setChatMeta(ref, { togglePresetId: "p" });
+        const { target } = render();
+        const first = pending<boolean>();
+        vi.mocked(alertConfirm).mockReturnValueOnce(first.promise);
+        choose(target, "q");
+        settings.togglePresets = [saved("q", { ...defaults, title: "after dialog" }), saved()];
+        first.resolve(true);
+        await settle();
+        expect(findChat(ref)).toMatchObject({
+            togglePresetId: "q",
+            GLGlobalVariables: { toggle_title: "after dialog" },
+        });
+        const second = pending<boolean>();
+        vi.mocked(alertConfirm).mockReturnValueOnce(second.promise);
+        choose(target, "p");
+        settings.togglePresets = [settings.togglePresets[0]];
+        flushSync();
+        const { chatWritten, recordsWritten } = observeWrites();
+        second.resolve(true);
+        await settle();
+        expect(select(target).value).toBe("q");
+        expect(findChat(ref)!.togglePresetId).toBe("q");
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
     });
 });

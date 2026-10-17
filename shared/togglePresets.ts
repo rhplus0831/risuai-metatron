@@ -1,5 +1,13 @@
 import { isRecordId, newId } from "./ids.ts";
-import { TOGGLE_KINDS, type ToggleKind } from "./prompt/toggles.ts";
+import {
+    TOGGLE_KINDS,
+    parseToggleSyntax,
+    toggleDefault,
+    toggleKindOf,
+    toggleStorageKey,
+    valueToggles,
+    type ToggleKind,
+} from "./prompt/toggles.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /** Saved prompt-toggle values and kinds, both keyed by the bare toggle key. */
@@ -27,6 +35,72 @@ export function createTogglePreset(
         kinds: { ...kinds },
         createdAt: now,
         updatedAt: now,
+    };
+}
+
+/** Capture resolved values, including defaults, using bare keys and the first definition of each. */
+export function captureToggleValues(definitionsText: string, read: (storageKey: string) => string) {
+    const toggles = valueToggles(parseToggleSyntax(definitionsText));
+    return {
+        values: Object.fromEntries(toggles.map((toggle) => [toggle.key, read(toggleStorageKey(toggle.key))])),
+        kinds: Object.fromEntries(toggles.map((toggle) => [toggle.key, toggleKindOf(toggle)!])),
+    };
+}
+
+function incompatibleValue(preset: TogglePreset, toggle: ReturnType<typeof valueToggles>[number]): boolean {
+    if (Object.hasOwn(preset.kinds, toggle.key) && preset.kinds[toggle.key] !== toggleKindOf(toggle)) {
+        return true;
+    }
+    if (toggle.type === "select" && Object.hasOwn(preset.values, toggle.key)) {
+        const value = preset.values[toggle.key];
+        const index = Number(value);
+        return !/^\d+$/.test(value) || !Number.isInteger(index) || index < 0 || index >= toggle.options.length;
+    }
+    return false;
+}
+
+/** Only currently defined toggles are applied; missing or incompatible saved values use defaults. */
+export function toggleValuesForChat(preset: TogglePreset, definitionsText: string): Record<string, string> {
+    return Object.fromEntries(
+        valueToggles(parseToggleSyntax(definitionsText)).map((toggle) => [
+            toggleStorageKey(toggle.key),
+            Object.hasOwn(preset.values, toggle.key) && !incompatibleValue(preset, toggle)
+                ? preset.values[toggle.key]
+                : toggleDefault(toggleKindOf(toggle)!),
+        ]),
+    );
+}
+
+/** Compare saved keys, kinds, and values without writing defaults or changing the preset. */
+export function compareTogglePreset(
+    preset: TogglePreset,
+    definitionsText: string,
+    read: (storageKey: string) => string,
+) {
+    const toggles = valueToggles(parseToggleSyntax(definitionsText));
+    const defined = new Set(toggles.map((toggle) => toggle.key));
+    const missing: string[] = [];
+    const kindMismatch: string[] = [];
+    const differing: string[] = [];
+    for (const toggle of toggles) {
+        const absent = !Object.hasOwn(preset.values, toggle.key);
+        const incompatible = incompatibleValue(preset, toggle);
+        if (absent) missing.push(toggle.key);
+        if (incompatible) kindMismatch.push(toggle.key);
+        if (absent || incompatible || preset.values[toggle.key] !== read(toggleStorageKey(toggle.key))) {
+            differing.push(toggle.key);
+        }
+    }
+    const stale = [...new Set([...Object.keys(preset.values), ...Object.keys(preset.kinds)])].filter(
+        (key) => !defined.has(key),
+    );
+    return {
+        missing,
+        stale,
+        kindMismatch,
+        differing,
+        hasMismatch: missing.length > 0 || stale.length > 0 || kindMismatch.length > 0,
+        hasDifference: differing.length > 0 || stale.length > 0,
     };
 }
 

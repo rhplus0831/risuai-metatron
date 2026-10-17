@@ -112,7 +112,7 @@
 
                     {#if showToggles}
                         <div class="w-96 border-l border-darkborderc overflow-y-auto p-4">
-                            <Toggles chatRef={currentChatRef()} />
+                            <Toggles chatRef={currentChatRef()} presets={false} />
                         </div>
                     {/if}
                 </div>

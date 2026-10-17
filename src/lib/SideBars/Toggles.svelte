@@ -11,20 +11,118 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import { getGlobalChatVar, getGlobalChatVarOf } from "src/ts/parser/chatVar.svelte";
+    import { getGlobalChatVar } from "src/ts/parser/chatVar.svelte";
     import { chatToggleDefinitions, setChatToggle } from "src/ts/toggles/chatToggles.svelte";
     import { supaMemoryOnCount } from "../../../shared/characters.ts";
+    import { resolveGlobalChatVar, valueToggles } from "../../../shared/prompt/toggles.ts";
+    import { compareTogglePreset, toggleValuesForChat } from "../../../shared/togglePresets.ts";
+    import {
+        applyTogglePreset,
+        deleteTogglePreset,
+        overwriteTogglePreset,
+        renameTogglePreset,
+        saveTogglePresetFromChat,
+        unlinkTogglePreset,
+    } from "src/ts/toggles/togglePresets.svelte";
+    import { alertConfirm, alertInput } from "src/ts/alert";
+    import { CircleAlertIcon, CopyPlusIcon, PencilIcon, SaveIcon, TrashIcon } from "@lucide/svelte";
 
     interface Props {
         chara?: AnyClientCharacter;
         chatRef: ChatRef | null;
+        presets?: boolean;
     }
 
-    let { chara = $bindable(), chatRef }: Props = $props();
+    let { chara = $bindable(), chatRef, presets = true }: Props = $props();
 
     const chat = $derived(chatRef ? findChat(chatRef) : undefined);
     const loaded = $derived(chat !== undefined);
-    const valueOf = (key: string) => (chatRef ? getGlobalChatVarOf(chatRef, key) : getGlobalChatVar(key));
+    const definitionsText = $derived(chatToggleDefinitions(chatRef));
+    const definitions = $derived(parseToggleSyntax(definitionsText));
+    const hasValueToggles = $derived(valueToggles(definitions).length > 0);
+    const valueOf = (key: string) =>
+        chatRef
+            ? resolveGlobalChatVar(key, chat?.GLGlobalVariables, settings.globalChatVariables, definitionsText)
+            : getGlobalChatVar(key);
+    const linkedId = $derived(chat?.togglePresetId ?? "");
+    const savedPresets = $derived(settings.togglePresets ?? []);
+    const linkedPreset = $derived(savedPresets.find((preset) => preset.id === linkedId));
+    const comparison = $derived(
+        presets && linkedPreset ? compareTogglePreset(linkedPreset, definitionsText, valueOf) : undefined,
+    );
+    const differing = $derived(new Set(comparison?.differing ?? []));
+    const presetState = $derived(
+        !linkedId
+            ? ""
+            : !linkedPreset
+              ? language.togglePresets.deleted
+              : comparison?.hasMismatch
+                ? language.togglePresets.mismatch
+                : comparison?.hasDifference
+                  ? language.togglePresets.edited
+                  : "",
+    );
+
+    async function selectPreset(event: Event & { currentTarget: HTMLSelectElement }) {
+        const select = event.currentTarget;
+        const previous = linkedId;
+        const id = select.value;
+        const ref = chatRef;
+        if (!ref || !findChat(ref)) {
+            select.value = previous;
+            return;
+        }
+        if (id === "") {
+            unlinkTogglePreset(ref);
+            return;
+        }
+        const preset = savedPresets.find((entry) => entry.id === id);
+        if (!preset) {
+            select.value = previous;
+            return;
+        }
+        const { name } = preset;
+        const changesValues = Object.entries(toggleValuesForChat(preset, definitionsText)).some(
+            ([key, value]) => value !== valueOf(key),
+        );
+        if (changesValues && !(await alertConfirm(language.togglePresets.applyConfirm(name)))) {
+            select.value = previous;
+            return;
+        }
+        // Resolve again inside the operation: the record may have been removed during the dialog.
+        if (!findChat(ref) || !applyTogglePreset(ref, id)) {
+            select.value = previous;
+        }
+    }
+
+    async function savePreset(asNew = false) {
+        const ref = chatRef;
+        if (!ref || !findChat(ref)) return;
+        if (!asNew && linkedPreset) {
+            const { id, name } = linkedPreset;
+            if ((await alertConfirm(language.togglePresets.overwriteConfirm(name))) && findChat(ref)) {
+                overwriteTogglePreset(ref, id);
+            }
+        } else {
+            const name = await alertInput(language.togglePresets.namePrompt);
+            if (name && findChat(ref)) saveTogglePresetFromChat(ref, name);
+        }
+    }
+
+    async function renamePreset() {
+        const ref = chatRef;
+        if (!ref || !findChat(ref) || !linkedPreset) return;
+        const { id, name } = linkedPreset;
+        const nextName = await alertInput(language.togglePresets.namePrompt, [], name);
+        if (nextName && findChat(ref)) renameTogglePreset(id, nextName);
+    }
+
+    async function removePreset() {
+        const ref = chatRef;
+        if (!ref || !findChat(ref) || !linkedPreset) return;
+        const { id, name } = linkedPreset;
+        if ((await alertConfirm(language.removeConfirm + name)) && findChat(ref)) deleteTogglePreset(id);
+    }
 
     /** Re-check the target at event time: it may have unloaded or disappeared since rendering. */
     function write(key: string, value: string) {
@@ -77,14 +175,12 @@
     });
 
     let groupedToggles = $derived.by(() => {
-        const ungrouped = parseToggleSyntax(chatToggleDefinitions(chatRef));
-
         let groupOpen = false;
         // group toggles together between group ... groupEnd
-        return ungrouped.reduce<sidebarToggle[]>((acc, toggle) => {
+        return definitions.reduce<sidebarToggle[]>((acc, toggle) => {
             if (toggle.type === "group") {
                 groupOpen = true;
-                acc.push(toggle);
+                acc.push({ ...toggle, children: [] });
             } else if (toggle.type === "groupEnd") {
                 groupOpen = false;
             } else if (groupOpen) {
@@ -97,6 +193,18 @@
     });
 </script>
 
+{#snippet differenceMarker(key: string)}
+    {#if differing.has(key)}
+        <span
+            class="ml-1 shrink-0 inline-flex text-draculared"
+            title={language.togglePresets.differs}
+            data-toggle-differs
+        >
+            <CircleAlertIcon size={14} />
+        </span>
+    {/if}
+{/snippet}
+
 {#snippet toggles(items: sidebarToggle[], reverse: boolean = false)}
     {#each items as toggle, index}
         {#if toggle.type === "group" && toggle.children.length > 0}
@@ -107,7 +215,7 @@
             </div>
         {:else if toggle.type === "select"}
             <div class="w-full flex gap-2 mt-2 items-center">
-                <span>{toggle.value}</span>
+                <span class="inline-flex items-center">{toggle.value}{@render differenceMarker(toggle.key)}</span>
                 <SelectInput
                     className="w-32"
                     value={valueOf(`toggle_${toggle.key}`)}
@@ -122,7 +230,7 @@
             </div>
         {:else if toggle.type === "text"}
             <div class="w-full flex gap-2 mt-2 items-center">
-                <span>{toggle.value}</span>
+                <span class="inline-flex items-center">{toggle.value}{@render differenceMarker(toggle.key)}</span>
                 <TextInput
                     className="w-32"
                     value={valueOf(`toggle_${toggle.key}`)}
@@ -133,7 +241,8 @@
             </div>
         {:else if toggle.type === "textarea"}
             <div class="w-full flex gap-2 mt-2 items-start">
-                <span class="mt-1.5">{toggle.value}</span>
+                <span class="mt-1.5 inline-flex items-center">{toggle.value}{@render differenceMarker(toggle.key)}</span
+                >
                 <TextAreaInput
                     className="w-32"
                     height="20"
@@ -169,7 +278,9 @@
                     {reverse}
                     name={toggle.value}
                     onChange={(check) => write(`toggle_${toggle.key}`, check ? "1" : "0")}
-                />
+                >
+                    {@render differenceMarker(toggle.key)}
+                </CheckInput>
             </div>
         {/if}
     {/each}
@@ -181,6 +292,62 @@
     </div>
 {/if}
 <fieldset disabled={!loaded} class="m-0 min-w-0 border-0 p-0">
+    {#if presets && hasValueToggles}
+        <div class="flex min-w-0 flex-col gap-2 mt-2 mb-3" data-toggle-presets>
+            <div class="flex flex-wrap items-center gap-2 text-sm text-textcolor2">
+                <span>{language.togglePresets.title}</span>
+                {#if presetState}<span data-toggle-preset-state>{presetState}</span>{/if}
+            </div>
+            <SelectInput
+                className="w-full min-w-0"
+                size="sm"
+                aria-label={language.togglePresets.title}
+                data-toggle-preset-select
+                value={linkedId}
+                onchange={selectPreset}
+            >
+                <OptionInput value="">{language.togglePresets.none}</OptionInput>
+                {#if linkedId && !linkedPreset}
+                    <OptionInput value={linkedId}>{language.togglePresets.deleted}</OptionInput>
+                {/if}
+                {#each savedPresets as preset (preset.id)}
+                    <OptionInput value={preset.id}>{preset.name}</OptionInput>
+                {/each}
+            </SelectInput>
+            <div class="flex flex-wrap items-center gap-3">
+                <button
+                    type="button"
+                    class="text-textcolor2 hover:text-green-500 cursor-pointer"
+                    title={language.togglePresets.save}
+                    aria-label={language.togglePresets.save}
+                    onclick={() => savePreset()}><SaveIcon size={18} /></button
+                >
+                <button
+                    type="button"
+                    class="text-textcolor2 hover:text-green-500 cursor-pointer"
+                    title={language.togglePresets.saveAsNew}
+                    aria-label={language.togglePresets.saveAsNew}
+                    onclick={() => savePreset(true)}><CopyPlusIcon size={18} /></button
+                >
+                {#if linkedPreset}
+                    <button
+                        type="button"
+                        class="text-textcolor2 hover:text-green-500 cursor-pointer"
+                        title={language.togglePresets.rename}
+                        aria-label={language.togglePresets.rename}
+                        onclick={renamePreset}><PencilIcon size={18} /></button
+                    >
+                    <button
+                        type="button"
+                        class="text-textcolor2 hover:text-green-500 cursor-pointer"
+                        title={language.togglePresets.remove}
+                        aria-label={language.togglePresets.remove}
+                        onclick={removePreset}><TrashIcon size={18} /></button
+                    >
+                {/if}
+            </div>
+        </div>
+    {/if}
     {@render toggles(groupedToggles)}
 </fieldset>
 {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}

@@ -1,5 +1,7 @@
 <script lang="ts">
-    interface Props {
+    import type { HTMLSelectAttributes } from "svelte/elements";
+
+    interface Props extends Omit<HTMLSelectAttributes, "value" | "size" | "children" | "onchange"> {
         value: string | number;
         className?: string;
         size?: "sm" | "md" | "lg" | "xl";
@@ -11,10 +13,11 @@
         ) => any;
     }
 
-    let { value = $bindable(), className = "", size = "md", children, onchange }: Props = $props();
+    let { value = $bindable(), className = "", size = "md", children, onchange, ...attributes }: Props = $props();
 </script>
 
 <select
+    {...attributes}
     class={"border border-darkborderc focus:border-borderc rounded-md shadow-xs text-textcolor bg-transparent focus:ring-borderc focus:ring-2 focus:outline-hidden transition-colors duration-200" +
         (className ? " " + className : "")}
     class:text-sm={size === "sm"}

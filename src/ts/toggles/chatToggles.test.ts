@@ -59,6 +59,8 @@ async function boot() {
     const { settings } = await import("../storage/settingsViews.svelte");
     const { setRecordWriteListener } = await import("../storage/records.svelte");
     const toggles = await import("./chatToggles.svelte");
+    const togglePresets = await import("./togglePresets.svelte");
+    const { activePreset } = await import("../storage/settingsViews.svelte");
     const read = server.store.readKinds([server.kind("characters")], { chats: true });
     installFlatDatabase({
         characters: read.kinds.characters.map((record) => record.data),
@@ -80,7 +82,7 @@ async function boot() {
         chat.ackChatWork(work, result.chats, result.chatOrders);
         return { work, result };
     };
-    return { server, chat, settings, recordsWritten, take, commit, unload, ...toggles };
+    return { server, chat, settings, activePreset, recordsWritten, take, commit, unload, ...toggles, ...togglePresets };
 }
 
 // Cold Svelte/server imports belong to setup, outside each synchronous behavior test's timeout.
@@ -92,6 +94,7 @@ beforeEach(async () => {
     fixture = await boot();
 }, 20_000);
 afterEach(() => {
+    vi.restoreAllMocks();
     for (const server of servers.splice(0)) server.close();
 });
 
@@ -272,5 +275,231 @@ describe("importedChatTogglePreset", () => {
         }
         expect(recordsWritten).not.toHaveBeenCalled();
         expect(chat.hasChatWork()).toBe(false);
+    });
+});
+
+describe("toggle preset operations", () => {
+    // Assertions come from slice 4: captures use resolved values; chat writes must
+    // remain per-field metadata operations, never a replacement of the toggle map.
+    const definitions = "flag=Flag\nmode=Mode=select=First,Second\ntitle=Title=text\nnotes=Notes=textarea";
+    const saved = (id = "saved") => ({
+        id,
+        name: "Saved",
+        values: { flag: "1", title: "saved title", stale: "drop" },
+        kinds: { flag: "checkbox" as const, title: "text" as const, staleKind: "textarea" as const },
+        createdAt: 10,
+        updatedAt: 20,
+    });
+
+    it("saves a trimmed named capture of the addressed chat's resolved values and links it without seeding its map", () => {
+        const { settings, activePreset, chat, saveTogglePresetFromChat, recordsWritten, take } = fixture;
+        activePreset.customPromptTemplateToggle = definitions;
+        chat.selectChat("c", "j");
+        recordsWritten.mockClear();
+        vi.spyOn(Date, "now").mockReturnValue(100);
+        const result = saveTogglePresetFromChat(ref, "  My toggles  ")!;
+        expect(result).toEqual({
+            id: expect.any(String),
+            name: "My toggles",
+            values: { flag: "0", mode: "0", title: "legacy title", notes: "" },
+            kinds: { flag: "checkbox", mode: "select", title: "text", notes: "textarea" },
+            createdAt: 100,
+            updatedAt: 100,
+        });
+        expect(result.id).not.toBe("");
+        expect(settings.togglePresets).toEqual([result]);
+        expect(chat.findChat(ref)!.GLGlobalVariables).toEqual({ toggle_keep: "original" });
+        expect(chat.findChat({ chaId: "c", chatId: "j" })!.togglePresetId).toBeUndefined();
+        expect(take().groups.map(({ chatId, ops }) => ({ chatId, ops }))).toEqual([
+            { chatId: "k", ops: [expect.objectContaining({ op: "meta", set: { togglePresetId: result.id } })] },
+        ]);
+        expect(recordsWritten.mock.calls.map(([key]) => key)).toEqual(["togglePresets"]);
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("overwrites both saved maps with the current capture, drops stale keys, advances updatedAt and links the chat", () => {
+        const { settings, activePreset, chat, overwriteTogglePreset, commit, recordsWritten } = fixture;
+        settings.togglePresets = [saved(), saved("other")];
+        activePreset.customPromptTemplateToggle = definitions;
+        chat.setChatMeta(ref, { GLGlobalVariables: { toggle_title: "", toggle_notes: "chat notes" } });
+        commit();
+        recordsWritten.mockClear();
+        vi.spyOn(Date, "now").mockReturnValue(200);
+        expect(overwriteTogglePreset(ref, "saved")).toBe(true);
+        expect(settings.togglePresets).toEqual([
+            {
+                id: "saved",
+                name: "Saved",
+                createdAt: 10,
+                updatedAt: 200,
+                values: { flag: "0", mode: "0", title: "", notes: "chat notes" },
+                kinds: { flag: "checkbox", mode: "select", title: "text", notes: "textarea" },
+            },
+            saved("other"),
+        ]);
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([expect.objectContaining({ op: "meta", set: { togglePresetId: "saved" } })]);
+        expect(chat.findChat(ref)!.GLGlobalVariables).toEqual({ toggle_title: "", toggle_notes: "chat notes" });
+        expect(new Set(recordsWritten.mock.calls.map(([key]) => key))).toEqual(new Set(["togglePresets"]));
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("applies only changed raw entries and coalesces merge plus link while preserving another writer's keys", () => {
+        const { settings, activePreset, server, chat, applyTogglePreset, commit, recordsWritten } = fixture;
+        activePreset.customPromptTemplateToggle = definitions;
+        settings.togglePresets = [
+            {
+                ...saved(),
+                values: { flag: "1", mode: "8", title: "wrong kind", stale: "ignore" },
+                kinds: { flag: "checkbox", mode: "select", title: "textarea" },
+            },
+        ];
+        chat.setChatMeta(ref, {
+            GLGlobalVariables: { toggle_keep: "original", toggle_flag: "1", toggle_title: "before" },
+        });
+        commit();
+        recordsWritten.mockClear();
+        const base = server.chat("c", "k")!.revision;
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: base,
+                ops: [{ op: "meta", merge: { GLGlobalVariables: { toggle_remote: "other tab" } } }],
+            },
+        ]);
+        expect(applyTogglePreset(ref, "saved")).toBe(true);
+        const { work } = commit();
+        expect(work.groups).toHaveLength(1);
+        expect(work.groups[0]).toMatchObject({ characterId: "c", chatId: "k", baseRevision: base });
+        expect(work.groups[0].ops).toEqual([
+            expect.objectContaining({
+                op: "meta",
+                set: { togglePresetId: "saved" },
+                merge: { GLGlobalVariables: { toggle_mode: "0", toggle_title: "", toggle_notes: "" } },
+            }),
+        ]);
+        expect(server.chat("c", "k")!.data).toMatchObject({
+            togglePresetId: "saved",
+            GLGlobalVariables: {
+                toggle_keep: "original",
+                toggle_flag: "1",
+                toggle_title: "",
+                toggle_mode: "0",
+                toggle_notes: "",
+                toggle_remote: "other tab",
+            },
+        });
+        expect(settings.globalChatVariables).toEqual(legacy);
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("materializes resolved defaults on first apply, skips unchanged raw values on relink, and queues nothing on repeated apply", () => {
+        const { settings, chat, applyTogglePreset, commit, take, recordsWritten } = fixture;
+        settings.togglePresets = [saved(), saved("other")].map((entry) => ({
+            ...entry,
+            values: { flag: "0", title: "legacy title" },
+            kinds: { flag: "checkbox", title: "text" },
+        }));
+        recordsWritten.mockClear();
+        expect(applyTogglePreset(ref, "saved")).toBe(true);
+        expect(commit().work.groups[0].ops).toEqual([
+            expect.objectContaining({
+                op: "meta",
+                set: { togglePresetId: "saved" },
+                merge: { GLGlobalVariables: { toggle_flag: "0", toggle_title: "legacy title" } },
+            }),
+        ]);
+        expect(applyTogglePreset(ref, "other")).toBe(true);
+        const relink = commit().work.groups[0].ops;
+        expect(relink).toEqual([expect.objectContaining({ op: "meta", set: { togglePresetId: "other" } })]);
+        expect(relink[0]).not.toHaveProperty("merge");
+        expect(applyTogglePreset(ref, "other")).toBe(true);
+        expect(take()).toMatchObject({ groups: [], orders: [] });
+        expect(chat.findChat(ref)!.GLGlobalVariables).toEqual({
+            toggle_keep: "original",
+            toggle_flag: "0",
+            toggle_title: "legacy title",
+        });
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("unlinks by unsetting the field while retaining values and saved presets", () => {
+        const { settings, chat, unlinkTogglePreset, commit, recordsWritten } = fixture;
+        settings.togglePresets = [saved()];
+        chat.setChatMeta(ref, { togglePresetId: "saved" });
+        commit();
+        recordsWritten.mockClear();
+        expect(unlinkTogglePreset(ref)).toBe(true);
+        expect(commit().work.groups[0].ops).toEqual([
+            expect.objectContaining({ op: "meta", unset: ["togglePresetId"] }),
+        ]);
+        expect(Object.hasOwn(chat.findChat(ref)!, "togglePresetId")).toBe(false);
+        expect(chat.findChat(ref)!.GLGlobalVariables).toEqual({ toggle_keep: "original" });
+        expect(settings.togglePresets).toEqual([saved()]);
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("renames and deletes by id without changing chat values or dangling links", () => {
+        const { settings, chat, renameTogglePreset, deleteTogglePreset, commit, take, recordsWritten } = fixture;
+        settings.togglePresets = [saved("other"), saved()];
+        chat.setChatMeta(ref, { togglePresetId: "saved" });
+        commit();
+        recordsWritten.mockClear();
+        expect(renameTogglePreset("saved", "  Renamed  ")).toBe(true);
+        expect(settings.togglePresets.map(({ id, name }) => ({ id, name }))).toEqual([
+            { id: "other", name: "Saved" },
+            { id: "saved", name: "Renamed" },
+        ]);
+        expect(deleteTogglePreset("saved")).toBe(true);
+        expect(settings.togglePresets).toEqual([saved("other")]);
+        expect(chat.findChat(ref)).toMatchObject({
+            togglePresetId: "saved",
+            GLGlobalVariables: { toggle_keep: "original" },
+        });
+        expect(take()).toMatchObject({ groups: [], orders: [] });
+        expect(new Set(recordsWritten.mock.calls.map(([key]) => key))).toEqual(new Set(["togglePresets"]));
+        expect(settings.globalChatVariables).toEqual(legacy);
+    });
+
+    it("refuses blank names, missing presets and every chat operation on unloaded or absent chats without writes or fetches", () => {
+        const {
+            settings,
+            chat,
+            saveTogglePresetFromChat,
+            overwriteTogglePreset,
+            applyTogglePreset,
+            unlinkTogglePreset,
+            renameTogglePreset,
+            deleteTogglePreset,
+            recordsWritten,
+            take,
+            unload,
+        } = fixture;
+        settings.togglePresets = [saved()];
+        recordsWritten.mockClear();
+        for (const name of ["", " \n\t "]) {
+            expect(saveTogglePresetFromChat(ref, name)).toBeUndefined();
+            expect(renameTogglePreset("saved", name)).toBe(false);
+        }
+        expect(overwriteTogglePreset(ref, "missing")).toBe(false);
+        expect(applyTogglePreset(ref, "missing")).toBe(false);
+        expect(renameTogglePreset("missing", "Name")).toBe(false);
+        expect(deleteTogglePreset("missing")).toBe(false);
+        unload();
+        expect(chat.chatEntry(ref)).toBeDefined();
+        for (const chatId of ["k", "missing"]) {
+            const target = { chaId: "c", chatId };
+            expect(chat.findChat(target)).toBeUndefined();
+            expect(saveTogglePresetFromChat(target, "New")).toBeUndefined();
+            expect(overwriteTogglePreset(target, "saved")).toBe(false);
+            expect(applyTogglePreset(target, "saved")).toBe(false);
+            expect(unlinkTogglePreset(target)).toBe(false);
+        }
+        expect(settings.togglePresets).toEqual([saved()]);
+        expect(settings.globalChatVariables).toEqual(legacy);
+        expect(take()).toMatchObject({ groups: [], orders: [] });
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(authFetch).not.toHaveBeenCalled();
     });
 });
