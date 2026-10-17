@@ -1,6 +1,6 @@
 # Large Asset Import and Export Plan
 
-Status: planned on 2026-10-17; nothing landed. Each slice is one session, one
+Status: slice 1a landed on 2026-10-17 (a034d709b); the rest is planned. Each slice is one session, one
 commit, one file cluster. Re-verify the cited identifiers before editing.
 
 ## Problem
