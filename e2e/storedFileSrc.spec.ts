@@ -5,9 +5,11 @@ import { openApp } from "../util/playwright/stack.mjs";
 // stack of `playwright.config.ts`, with the app's own service worker. Before the fix, on a page's
 // first load (the worker registered but not controlling the page yet) the worker check reached the
 // network, the read answered `undefined`, and every later read of the same path waited forever;
-// a refused registration still answered the worker's URL. What only the browser shows:
-// - on a first load: an object URL (`blob:`) that displays, one storage read and one URL for
-//   concurrent and later reads, a missing file answers "" and is read again once it exists;
+// a refused registration still answered the worker's URL. The worker now claims every page at once,
+// so the uncontrolled case is a page whose worker script failed to load (slice 4f: the boot
+// continues without the worker). What only the browser shows:
+// - on a page without a worker: an object URL (`blob:`) that displays, one storage read and one URL
+//   for concurrent and later reads, a missing file answers "" and is read again once it exists;
 // - on a page the worker controls: `/sw/img/<hex>`, registered once for concurrent reads; a missing
 //   file is never registered; a refused registration, a worker request that never answers (bounded
 //   at 10 s), and no worker at all fall back to an object URL that displays.
@@ -105,14 +107,19 @@ const hex = (path: string) => Buffer.from(path, "utf-8").toString("hex");
 let unique = 0;
 const id = (name: string) => `filesrc-${name}-${Date.now().toString(36)}-${unique++}`;
 
-test("on a page's first load: an object URL that displays, one read for concurrent and later reads, and a missing file read again", async ({
+test("on a page without a worker: an object URL that displays, one read for concurrent and later reads, and a missing file read again", async ({
     page,
     baseURL,
 }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error).slice(0, 300)));
+    // The worker claims every page at once (`clients.claim`), so a page it does not control is made
+    // by failing its script (a context route: the page's routes do not see the worker script request); the
+    // boot records the failure and continues without it (slice 4f).
+    await page
+        .context()
+        .route("**/sw.js", (route) => route.fulfill({ status: 503, contentType: "text/javascript", body: "" }));
     await openApp(page, baseURL!);
-    // The worker is registered but does not control the page that registered it.
     expect(await controlled(page)).toBe(false);
     await instrument(page);
 

@@ -19,7 +19,7 @@
   - `loadData`: the server resources are read and installed into the records, then maintenance, theme, `startResourceSync` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
   - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built.
   - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default.
-  - `registerSw`: service worker.
+  - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload, and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also records the sync event and flushes diagnostics.
 - `src/ts/stores.svelte.ts`: all global UI stores (see State).
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
@@ -46,7 +46,7 @@ Boot:
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
 2. `boot.ts:boot` starts the diagnostics collector, then `startApp.ts:startApp` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
+3. `bootstrap.ts:loadData` loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, `registerSw`, then `characterURLImport`. Only a `ready` worker enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On `reloading`, boot returns immediately with the loading screen up, preserving import hashes until navigation. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
    1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrder`), and `initializeChats`.
    2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
@@ -151,7 +151,8 @@ All of these live in `src/ts/stores.svelte.ts`.
 ## Tests
 
 - `src/boot.test.ts`: the entry's order over stubbed modules (request history slice 8): importing `boot.ts` evaluates the collector only, and `boot()` starts it before `startApp.ts` is loaded and started.
-- None cover screen precedence, platform detection, hotkeys, or `Mutex`.
+- `src/ts/bootstrap.serviceWorker.test.ts` (slice 4f, audit WEB-02): `loadData` over a store-backed server with a fake `navigator.serviceWorker`, `fetch`, `location.reload`, and `sessionStorage`: a rejected registration or `/sw/init` fetch records its diagnostic and the boot completes (`loadedStore` true, `characterURLImport` and `startRouter` run once) with `getFileSrc` answering an object URL and never fetching `/sw/check`; a non-2xx `/sw/init` reloads once with the marker set and the diagnostics flushed, and nothing after the worker step runs; the marker present, or a throwing `sessionStorage`, boots without the worker and without a reload; a 2xx clears the marker and `getFileSrc` answers `/sw/img/<hex>`; a missing `navigator.serviceWorker` keeps the `unsupported` path.
+- None cover screen precedence, platform detection, the hotkey dispatch, or `Mutex`.
 - `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
 - Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked by hand).
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked. `src/ts/observer.markers.test.ts`: the BGM sync's document-wide `[risu-ctrl]` scan does not run for text or plain HTML mutations and runs once for an added or removed marker element (nested or not) and for a `risu-ctrl` attribute change, with the playback that follows.
@@ -167,7 +168,6 @@ All of these live in `src/ts/stores.svelte.ts`.
   - without the Navigation API (iOS before 26.2, older Firefox) the router never goes back, so the history grows and a back after a close shows the same screen again;
   - after a back and a forward inside settings, a close replaces instead of going back (the entries beneath may name another base).
 - A back pressed before any interaction on a directly opened settings or grid link leaves the app, like any first page.
-- `/settings/hotkeys` below 768 px shows no page (`Settings.svelte` renders `HotkeySettings` only from 768 px).
 
 - BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for example a slow re-parse), the track stops and restarts from the beginning.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.

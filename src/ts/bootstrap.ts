@@ -57,8 +57,11 @@ export async function loadData() {
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
-                setUsingSw(true);
-                await registerSw();
+                const status = await registerSw();
+                setUsingSw(status === "ready");
+                if (status === "reloading") {
+                    return;
+                }
             } else {
                 recordClientEvent({ kind: "serviceWorker", phase: "unsupported" });
                 setUsingSw(false);
@@ -217,33 +220,46 @@ function watchRemoteRecords() {
     setRemoteChatListener(() => invalidateInlayCaches());
 }
 
-/**
- * Registers the service worker and initializes it.
- */
-async function registerSw() {
+const SW_INIT_RELOAD_KEY = "risu.serviceWorker.initReload";
+
+/** Registers the worker, allowing at most one reload until initialization succeeds. */
+async function registerSw(): Promise<"ready" | "unavailable" | "reloading"> {
     try {
         await navigator.serviceWorker.register("/sw.js", {
             scope: "/",
         });
-    } catch (error) {
+    } catch {
         recordClientEvent({ kind: "serviceWorker", phase: "registerFailed" });
-        throw error;
+        return "unavailable";
     }
     recordClientEvent({ kind: "serviceWorker", phase: "registered" });
     await sleep(100);
     let da: Response;
     try {
         da = await fetch("/sw/init");
-    } catch (error) {
+    } catch {
         recordClientEvent({ kind: "serviceWorker", phase: "initFailed" });
-        throw error;
+        return "unavailable";
     }
     if (!(da.status >= 200 && da.status < 300)) {
         recordClientEvent({ kind: "serviceWorker", phase: "initFailed" });
+        try {
+            if (sessionStorage.getItem(SW_INIT_RELOAD_KEY) !== null) {
+                return "unavailable";
+            }
+            sessionStorage.setItem(SW_INIT_RELOAD_KEY, "1");
+        } catch {
+            return "unavailable";
+        }
         recordClientEvent({ kind: "sync", phase: "reload", reason: "serviceWorker" });
         flushClientDiagnostics();
         location.reload();
+        return "reloading";
     }
+    try {
+        sessionStorage.removeItem(SW_INIT_RELOAD_KEY);
+    } catch {}
+    return "ready";
 }
 
 /**

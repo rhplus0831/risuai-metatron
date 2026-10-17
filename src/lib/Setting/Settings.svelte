@@ -281,7 +281,7 @@
                                 $SettingsMenuIndex = PROMPT_SETTINGS_MENU;
                             }}
                         />
-                    {:else if $SettingsMenuIndex === 15 && window.innerWidth >= 768}
+                    {:else if $SettingsMenuIndex === 15}
                         <HotkeySettings />
                     {:else if $SettingsMenuIndex === 77}
                         <ThanksPage />

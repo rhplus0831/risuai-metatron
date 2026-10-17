@@ -57,8 +57,9 @@ Verification
   instead: it prints only the failures and one summary line, and when the working tree has not
   changed since the last run it replays that run's output instead of running again (`--force`
   reruns, `--all` runs every test, `--tags-filter=slow` only the slow ones; details in
-  `build-test-platforms.md`). `pnpm build` bundles. The service worker and the Vite dev proxy have no automated tests and need manual
-  verification; server routes are covered by `server/src/tests/*.test.ts`.
+  `build-test-platforms.md`). `pnpm build` bundles. The Vite dev proxy and the service worker's asset and push routes have no
+  automated tests and need manual verification (its share route runs under `node:vm` in
+  `src/ts/sw.share.test.ts`); server routes are covered by `server/src/tests/*.test.ts`.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches
   happy-dom's `Node.prototype.nodeName` getter for DOMPurify (see `build-test-platforms.md`).

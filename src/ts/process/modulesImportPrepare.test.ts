@@ -263,7 +263,7 @@ describe("importModule with a lorebook it cannot convert", () => {
 
 describe("the module links of characterURLImport convert too", () => {
     const linkLocation = (hash: string) =>
-        vi.stubGlobal("location", { search: "", hash, href: "http://local/", reload: vi.fn() });
+        vi.stubGlobal("location", { search: "", hash, href: "http://local/", origin: "http://local", reload: vi.fn() });
 
     it("#import_module=", async () => {
         const { cards, list } = await boot();
@@ -277,12 +277,22 @@ describe("the module links of characterURLImport convert too", () => {
         expectUpgraded(list().at(-1).lorebook[0]);
     });
 
-    it("#share_module and a .risum behind #import=", async () => {
+    it("#share_module (a pending share in Cache Storage) and a .risum behind #import=", async () => {
         const { cards, modules, list } = await boot();
         const bytes = await modules.exportModuleLegacy(
             { name: "Shared", description: "", id: "s", lorebook: [oldLore("Shared")], regex: [], trigger: [] } as any,
             { saveData: false, alertEnd: false },
         );
+        // The share target's worker stored the file (slice 4f); the page reads it from Cache Storage and
+        // consumes it once imported. The `fetch` stub below serves only the `#import=` link.
+        const shareUrl = "http://local/sw/share/module";
+        const pending = new Map([[shareUrl, new Response(new Uint8Array(bytes))]]);
+        vi.stubGlobal("caches", {
+            open: async () => ({
+                match: async (key: URL) => pending.get(String(key))?.clone(),
+                delete: async (key: URL) => pending.delete(String(key)),
+            }),
+        });
         vi.stubGlobal(
             "fetch",
             vi.fn(
@@ -297,6 +307,7 @@ describe("the module links of characterURLImport convert too", () => {
         await cards.characterURLImport();
         expect(list()).toHaveLength(before + 1);
         expectUpgraded(list().at(-1).lorebook[0]);
+        expect(pending.has(shareUrl)).toBe(false);
         linkLocation("#import=http%3A%2F%2Flocal%2Fshared.risum");
         await cards.characterURLImport();
         expect(list()).toHaveLength(before + 2);

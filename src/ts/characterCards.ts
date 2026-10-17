@@ -317,6 +317,22 @@ export const getRealmInfo = async (realmPath: string) => {
 
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
+/** A pending share survives a failed or cancelled import, even without a controlling worker. */
+async function importPendingShare(
+    kind: "character" | "preset" | "module",
+    importer: (data: Uint8Array) => Promise<unknown>,
+) {
+    if (typeof caches === "undefined") {
+        return;
+    }
+    const cache = await caches.open("risuCache");
+    const url = new URL(`/sw/share/${kind}`, location.origin);
+    const pending = await cache.match(url);
+    if (pending && (await importer(new Uint8Array(await pending.arrayBuffer())))) {
+        await cache.delete(url);
+    }
+}
+
 export async function characterURLImport() {
     // Read now: the router (started later in `loadData`) writes URLs without a query or hash.
     const hash = location.hash;
@@ -403,44 +419,31 @@ export async function characterURLImport() {
         return;
     }
     if (hash.startsWith("#share_character")) {
-        const data = await fetch("/sw/share/character");
-        if (data.status !== 200) {
-            return;
-        }
-        const charx = new Uint8Array(await data.arrayBuffer());
-        await importCharacterProcess({
-            name: "shared.charx",
-            data: charx,
-        });
+        await importPendingShare("character", (data) => importCharacterProcess({ name: "shared.charx", data }));
     }
     if (hash.startsWith("#share_module")) {
-        const data = await fetch("/sw/share/module");
-        if (data.status !== 200) {
-            return;
-        }
-        const module = new Uint8Array(await data.arrayBuffer());
-        const md = await readModule(Buffer.from(module));
-        md.id = v4();
-        if (!(await prepareModuleImport(md))) {
-            return;
-        }
-        addModule(md);
-        alertNormal(language.successImport);
-        SettingsMenuIndex.set(14);
-        settingsOpen.set(true);
+        await importPendingShare("module", async (data) => {
+            const md = await readModule(Buffer.from(data));
+            md.id = v4();
+            if (!(await prepareModuleImport(md))) {
+                return false;
+            }
+            const id = addModule(md);
+            alertNormal(language.successImport);
+            SettingsMenuIndex.set(14);
+            settingsOpen.set(true);
+            return id;
+        });
     }
     if (hash.startsWith("#share_preset")) {
-        const data = await fetch("/sw/share/preset");
-        if (data.status !== 200) {
-            return;
-        }
-        const preset = new Uint8Array(await data.arrayBuffer());
-        await importPreset({
-            name: "shared.risup",
-            data: preset,
+        await importPendingShare("preset", async (data) => {
+            const id = await importPreset({ name: "shared.risup", data });
+            if (id) {
+                SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
+                settingsOpen.set(true);
+            }
+            return id;
         });
-        SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
-        settingsOpen.set(true);
     }
     if ("launchQueue" in window) {
         const handleFiles = async (files: FileSystemFileHandle[]) => {

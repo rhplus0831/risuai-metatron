@@ -216,8 +216,7 @@ export async function importPreset(
         pr.NAISettings.mirostat_lr = pre.parameters.mirostat_lr;
         pr.NAISettings.mirostat_tau = pre.parameters.mirostat_tau;
         pr.name = pre.name ?? "Imported";
-        addPreset(normalizePreset(pr));
-        return;
+        return addPreset(normalizePreset(pr));
     }
 
     if (Array.isArray(pre?.prompt_order?.[0]?.order) && Array.isArray(pre?.prompts)) {
@@ -320,8 +319,7 @@ export async function importPreset(
         }
         pr.promptTemplate = normalizePromptTemplate(pr.promptTemplate);
         pr.name = "Imported ST Preset";
-        addPreset(normalizePreset(pr));
-        return;
+        return addPreset(normalizePreset(pr));
     }
     pre.name ??= "Imported";
     // The context size override keeps the file's own size, else takes the compatibility `maxContext`
@@ -335,5 +333,5 @@ export async function importPreset(
     // (`docs/plan/split-preset.md`). Normalized first, as before: a converted value the file lacks (a
     // `NaN` from arithmetic on a missing parameter) becomes the field's default instead of refusing
     // the import.
-    addPreset(normalizePreset(pre));
+    return addPreset(normalizePreset(pre));
 }

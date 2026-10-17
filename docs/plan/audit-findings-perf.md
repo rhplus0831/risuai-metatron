@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02), 4d (EXT-02, EXT-04, SP-I1, NET-02) and 4e (MEDIA-01 to MEDIA-05) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02), 4d (EXT-02, EXT-04, SP-I1, NET-02), 4e (MEDIA-01 to MEDIA-05) and 4f (WEB-01 to WEB-03) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -611,6 +611,33 @@ group; order within the phase is free.
 - **4f. Browser and PWA** (`app-shell.md`, `build-test-platforms.md`). WEB-01
   (share target POST is 404), WEB-02 (a 503 on `/sw.js` blocks startup),
   WEB-03 (Hotkey settings blank below 768 px).
+  **Landed 2026-10-17.** WEB-01: the manifest's share target posts to the
+  worker's `/sw/share`; the worker's share branch handles POST only (the
+  first file in character, preset, module order into `risuCache` under an
+  absolute URL, a 303 to `/#share_<kind>`; no file or a GET → a 303 to `/`),
+  `registerCache` resolves relative URLs against the worker origin, and the
+  page reads the pending file from Cache Storage itself and deletes it only
+  after a successful import (a refused, cancelled, or throwing import keeps
+  it). WEB-02: `registerSw` returns `ready`, `unavailable`, or `reloading`
+  instead of throwing: a failed registration or `/sw/init` fetch boots
+  without the worker (object URLs, no `/sw/check`), a non-2xx `/sw/init`
+  reloads once per tab (a `sessionStorage` marker, cleared on success) and
+  stops `loadData` so an `#import=` hash survives the reload, and a repeat or
+  a throwing storage boots without the worker. WEB-03: `Settings.svelte`
+  mounts `HotkeySettings` at every width, so its own `screenTooSmall` branch
+  shows below 768 px. The audit probe records all three fixed (the share POST
+  reaches the worker, the Hotkey page shows the message at 390 px and 24 rows
+  at 1000 px, the 503 context boots). Tests: `sw.share.test.ts`,
+  `characterCards.share.test.ts`, `bootstrap.serviceWorker.test.ts`,
+  `Settings.hotkeys.test.ts` (28 cases). Stale: the `#share_module` case of
+  `modulesImportPrepare.test.ts` (now a Cache Storage stub), and the two
+  first-load e2e specs (`storedFileSrc`, `transformGolden`) that assumed an
+  uncontrolled first load since the worker claims clients; they now fail the
+  worker script with a context route. Left: no server fallback for a share
+  POST without a worker (the file is lost either way), shares and the other
+  deep links before first setup (`characterURLImport` runs only after it),
+  an installed app keeps `/receive-files/` until its manifest refreshes,
+  `window.innerWidth` is read at mount only, no physical-device check.
 
 ## Phase 5: Verification debt
 

@@ -497,16 +497,21 @@ test("a display trigger and additional assets render on the server path as the b
     expect(unexpected(errors)).toEqual([]);
 });
 
-test("on a page's first load the same render holds object URLs, a large image included, and is otherwise the recording", async ({
+test("on a page without a worker the same render holds object URLs, a large image included, and is otherwise the recording", async ({
     page,
     baseURL,
 }) => {
-    // The Stop B fix (Phase 6): on a first load `getFileSrc` answered `undefined` (and a later read
-    // of the path never settled). Its fallback is an object URL, not a data URL: the first asset
-    // pass runs before the text goes to the server transform, and a data URL of a large image
-    // (twice in the markup: `src` and `alt`) would pass the transform's text limit, so the display
-    // trigger and the scripts would not run.
+    // The Stop B fix (Phase 6): on a page the worker does not control `getFileSrc` answered
+    // `undefined` (and a later read of the path never settled). Its fallback is an object URL, not a
+    // data URL: the first asset pass runs before the text goes to the server transform, and a data
+    // URL of a large image (twice in the markup: `src` and `alt`) would pass the transform's text
+    // limit, so the display trigger and the scripts would not run. The worker claims every page at
+    // once, so the uncontrolled page is one whose worker script failed to load (slice 4f: the boot
+    // continues without the worker).
     const errors: string[] = [];
+    await page
+        .context()
+        .route("**/sw.js", (route) => route.fulfill({ status: 503, contentType: "text/javascript", body: "" }));
     await boot(page, baseURL!, errors, false);
     expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull();
     const chaId = "char-golden-first-load";

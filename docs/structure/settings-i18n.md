@@ -56,6 +56,8 @@ Pages, by kind:
 
 - `botpreset.svelte`: the preset list, by `kind`. A pick acts on what the screen shows (`docs/plan/chat-binding.md`, decision 8): through `pickBinding`, with a chat open it binds that chat (a list opened from a binding row, `{ chatRef }`, binds that row's chat and closes when the chat is gone), at home it selects for the tab; in chat mode the list marks the chat's bound record (`pickedId`) and names the chat, and a deletion's confirmation counts the chats bound to the preset (`chatsBoundTo`) and moves only the tab's selection. `prompt` (`openPresetList`): pick, reorder, copy, add from the OAI2 template, rename, delete, import (`importPreset`), export (`downloadPreset`), diff (`PromptDiffModal`), and the Ctrl+1..9 numbers. `model` (`openModelPresetList`): pick, reorder, copy (`copyModelPreset`, the slots naming the same profiles), add (`addModelPreset`), rename, and delete (`removeModelPreset`, never the last one). `App.svelte` mounts one per store. Each page's header names its selected preset and opens its list; `BindingScopeNote.svelte` marks it "This chat" or "Not set for this chat" while a chat is open, and shows nothing at home.
 - `lorepreset.svelte`: global lore-book list.
+- `src/ts/storage/presets.svelte.ts` `importPreset`: returns the new preset ID after a successful import, or no value when the picker is cancelled. The share receiver uses this result to consume a cached preset only after success.
+- `Pages/HotkeySettings.svelte`: Settings menu index 15 renders this page at every width; below 768 px it shows `language.screenTooSmall` instead of the table.
 
 Prompt and parameter editors:
 
@@ -134,6 +136,7 @@ Languages (`src/lang/`):
 - `src/ts/translator/presets.test.ts` (adjacent), `src/lib/UI/GUI/guiRendering.test.ts` (primitives).
 - `src/ts/storage/tests/settingsViews.test.ts` (the views, the root resolver, the registry over the real context), `src/ts/storage/tests/settingWrappers.test.ts` (the wrappers and `SettingRenderer`), `src/lib/Setting/Pages/PersonaSettings.test.ts`; listed in `persistence.md`.
 - `src/lib/Setting/botpreset.test.ts` (the list in both kinds: the model list selects, adds, copies, renames, and removes model presets only, with their key entries; the prompt-only actions stay on the prompt list), `src/lib/Setting/Pages/presetPages.test.ts` (each page names its preset, opens its own list, and writes into its own preset; the Connections tab's delete confirmation lists the translator presets with a step on the profile, disabled steps included, each once, translation slice 3.1), `src/ts/setting/botSettingsParamsData.test.ts` (each page's parameter items bind only its preset's fields).
+- `src/lib/Setting/Settings.hotkeys.test.ts` (happy-dom, `Settings.svelte` mounted with the other pages mocked and `HotkeySettings` real; slice 4f, audit WEB-03): menu index 15 at 390 and 767 px shows `language.screenTooSmall` and no table; at 768 and 1024 px the table has one row per active hotkey, labelled by `language.hotkeyDesc`, and no message.
 - Not tested: prompt editing, `changeLanguage`.
 
 ## Known Hazards

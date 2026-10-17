@@ -39,29 +39,17 @@ self.addEventListener('fetch', (event) => {
                 }
                 case 'share':{
                     event.respondWith((async () => {
-                        const formData = await event.request.formData();
-                        /**
-                         * @type {File}
-                        */
-                        const character = formData.get('character')
-                        const preset = formData.get('preset')
-                        const module = formData.get('module')
-                        if(character){
-                            const buf = await character.arrayBuffer()
-                            await registerCache(`/sw/share/character`, buf, true)
-                            return Response.redirect("/#share_character", 303)
+                        if(event.request.method === 'POST'){
+                            const formData = await event.request.formData()
+                            for(const kind of ['character', 'preset', 'module']){
+                                const file = formData.get(kind)
+                                if(file instanceof File){
+                                    await registerCache(`/sw/share/${kind}`, file.arrayBuffer(), true)
+                                    return Response.redirect(new URL(`/#share_${kind}`, self.location.origin), 303)
+                                }
+                            }
                         }
-                        if(preset){
-                            const buf = await preset.arrayBuffer()
-                            await registerCache(`/sw/share/preset`, buf, true)
-                            return Response.redirect("/#share_preset", 303)
-                        }
-                        if(module){
-                            const buf = await module.arrayBuffer()
-                            await registerCache(`/sw/share/module`, buf, true)
-                            return Response.redirect("/#share_module", 303)
-                        }
-                        return Response.redirect("/", 303)
+                        return Response.redirect(new URL('/', self.location.origin), 303)
 
                     })())
                     break
@@ -110,7 +98,7 @@ async function check(){
 
 async function registerCache(urlr, buffer, noContentType = false){
     const cache = await caches.open('risuCache')
-    const url = new URL(urlr)
+    const url = new URL(urlr, self.location.origin)
     if(!noContentType){
         let path = url.pathname.split('/')
         path[2] = 'img'
