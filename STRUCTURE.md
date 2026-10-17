@@ -71,8 +71,11 @@ Data and persistence:
   use the validated mutation modules. Save/conflict rules: [persistence](docs/structure/persistence.md).
 - D5. Cards (`.png` `chara`/`ccv3`, `.json`, `.charx`), modules (`.risum`), presets
   (`.risup`/`.risupreset`), translator presets (`.risutl`), and plugin scripts are
-  cross-user formats. Preserve old readers. Never renumber `LLMFlags`, `LLMFormat`,
-  `LLMProvider`, `LLMTokenizer`, or rename persisted discriminator values.
+  cross-user formats. Preserve old readers. The server's `.risum` reader
+  (`shared/moduleImport.ts`, `POST /api/import/module`) is a second reader of that
+  format: keep it byte-compatible with `exportModuleLegacy` and `readModule`. Never
+  renumber `LLMFlags`, `LLMFormat`, `LLMProvider`, `LLMTokenizer`, or rename persisted
+  discriminator values.
 
 Platform and network:
 

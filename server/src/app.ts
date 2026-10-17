@@ -40,6 +40,7 @@ import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
+import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
 import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/translate.ts";
 import { createTranslationRunner } from "./translation/runner.ts";
@@ -75,9 +76,10 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * All state (password, known keys, stream jobs, rate-limit counters, the resource database and its
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
- * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB). `generationRunner` runs
- * the generation jobs (tests inject one; the default runs `command` jobs and the sends and previews
- * of prompt assembly), and `generationRandom` is the default runner's random source.
+ * uploaded backup archive or module file (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB).
+ * `generationRunner` runs the generation jobs (tests inject one; the default runs `command` jobs
+ * and the sends and previews of prompt assembly), and `generationRandom` is the default runner's
+ * random source.
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -380,6 +382,8 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too.
         const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
+        // The module import is refused like the backup routes.
+        const moduleImport = c.req.path.replace(/\/+$/, "") === MODULE_IMPORT_PATH;
         // The request history and the diagnostics: refused during shutdown (the history's store closes at
         // dispose), and every answer is `no-store`, the limiter's 429 and the body limit's 413 included.
         const history =
@@ -391,7 +395,7 @@ export function createServerContext(options: {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || history)) {
+            if (shuttingDown && (resource || backup || moduleImport || history)) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
@@ -411,7 +415,8 @@ export function createServerContext(options: {
         }
     });
 
-    // The backup import streams its body to disk with its own cap; Hono's limiter would buffer it.
+    // The backup and module imports stream their bodies to disk with their own cap; Hono's limiter
+    // would buffer them.
     const limitBody = bodyLimit({
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
@@ -424,6 +429,7 @@ export function createServerContext(options: {
         const ownLimit =
             (c.req.method === "POST" &&
                 (route === BACKUP_IMPORT_PATH ||
+                    route === MODULE_IMPORT_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
@@ -557,6 +563,14 @@ export function createServerContext(options: {
     registerBackupRoutes(app, {
         savePath,
         store: resources,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maxImportBytes,
+        diagnostics,
+    });
+    registerModuleImportRoutes(app, {
+        savePath,
         snapshots,
         auth,
         limiter: authenticatedRouteLimiter.middleware,

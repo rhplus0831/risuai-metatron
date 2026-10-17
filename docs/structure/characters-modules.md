@@ -44,7 +44,7 @@
   - `processZip`: used by NovelAI image ZIPs.
 - `process/modules.ts`: modules.
   - `RisuModule`.
-  - Codecs: `exportModule` (CharX via character conversion), `exportModuleLegacy`/`readModule` (`.risum`: magic byte `111`, version `0`, RPack JSON plus asset records; the RPack codec is `shared/rpack.ts`: `encodeRPack`/`decodeRPack`, a synchronous byte map with in-place variants and the 512-byte map inlined, which `src/ts/rpack/rpack_js.js` re-exports for the client), `importModule` (JSON, lorebook JSON, regex JSON, `.risum`, `.charx`).
+  - Codecs: `exportModule` (CharX via character conversion), `exportModuleLegacy`/`readModule` (`.risum`: magic byte `111`, version `0`, RPack JSON plus asset records; the RPack codec is `shared/rpack.ts`: `encodeRPack`/`decodeRPack`, a synchronous byte map with in-place variants and the 512-byte map inlined, which `src/ts/rpack/rpack_js.js` re-exports for the client), `importModule` (JSON, lorebook JSON, regex JSON, `.risum`, `.charx`). The server reads `.risum` too: `shared/moduleImport.ts` (`readModuleFileHeader`, `decodeModuleMain`, the format's constants and NDJSON line types) and `server/src/routes/importModule.ts` (`POST /api/import/module`, [self-host server](self-host-server.md)); the client still parses the file locally with `readModule` until large-asset-import slice 2c switches its `.risum` imports to that route.
   - Effective sets: `getModules`, then `getModuleLorebooks`, `getModuleAssets`, `getModuleTriggers`, `getModuleRegexScripts`, `getModuleToggles`, `getModuleMcps`.
   - `applyModule`, `moduleUpdate` (the selected chat’s icon/background stores and one GUI reload when its effective elements/ids change).
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
@@ -148,7 +148,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 - Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, and the `character` type plus its default in the server's character normalizer (`normalizeCharacter`). Verify PNG, JSON, and CharX round trips and old Tavern input.
 - Add an asset kind: the tuple creation in `CharConfig.svelte`/`AssetInput.svelte`, the asset typing in `createBaseV3`, the embedding in `exportCharacterCard`, and the resolution in `importCharacterCardSpec`.
-- Add a module capability: `RisuModule`, `ModuleMenu.svelte`, `exportModuleLegacy`/`readModule`, a `getModule*` getter, and the consuming code path. Write through the record wrappers or collection mutations; membership and assets invalidate synchronously without a refresh call.
+- Add a module capability: `RisuModule`, `ModuleMenu.svelte`, `exportModuleLegacy`/`readModule` and the server reader (`shared/moduleImport.ts` `decodeModuleMain`, which returns the module as parsed, and `server/src/routes/importModule.ts`), a `getModule*` getter, and the consuming code path. Write through the record wrappers or collection mutations; membership and assets invalidate synchronously without a refresh call.
 - Change the lorebook editor: `LoreBookSetting`/`LoreBookList`/`LoreBookData`. Keep `mode`, `id`, `folder`, and `bookVersion`.
 - Change character CRUD: `characters.ts`, `GridCatalog.svelte`, `CharConfig.svelte`. Verify trash restore and groups.
 

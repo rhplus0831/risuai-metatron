@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -20,12 +19,13 @@ import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { readJsonBody } from "../http/body.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
+import { makeStaging, spool } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { decodeFileName, resolveStorageKey } from "./storage.ts";
 
 export const BACKUP_IMPORT_PATH = "/api/backups/import";
-/** Default cap on an uploaded archive; `RISU_MAX_IMPORT_BYTES` overrides it. */
+/** Default cap on an uploaded archive or module file; `RISU_MAX_IMPORT_BYTES` overrides it. */
 export const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_PARTIAL_ASSETS = 100_000;
@@ -63,13 +63,6 @@ export function registerBackupRoutes(
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
     let importing = false;
-
-    /** A unique staging folder under `save/.tmp`, which the storage routes empty at startup. */
-    async function makeStaging(prefix: string): Promise<string> {
-        const dir = path.join(tmpPath, `${prefix}-${randomUUID()}`);
-        await fs.mkdir(dir, { recursive: true });
-        return dir;
-    }
 
     app.get("/api/backups", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -151,7 +144,7 @@ export function registerBackupRoutes(
         const assets: { key: string; file: string }[] = [];
         const missing: string[] = [];
         const prepare = async () => {
-            staging = await makeStaging("export");
+            staging = await makeStaging(tmpPath, "export");
             if (signal.aborted) {
                 return;
             }
@@ -334,7 +327,7 @@ export function registerBackupRoutes(
         let staging: string | null = null;
         let handle: FileHandle | null = null;
         try {
-            staging = await makeStaging("import");
+            staging = await makeStaging(tmpPath, "import");
             const archiveFile = path.join(staging, "archive.bin");
             if (!(await spool(body, archiveFile, maxImportBytes))) {
                 return c.json({ error: "Archive too large" }, 413);
@@ -410,32 +403,6 @@ async function listAssetKeys(assetsPath: string): Promise<string[]> {
         }
     }
     return keys.sort();
-}
-
-/** Writes the request body to `file`, counting bytes; false (and the file removed) past `limit`. */
-async function spool(body: ReadableStream<Uint8Array>, file: string, limit: number): Promise<boolean> {
-    const out = await fs.open(file, "wx");
-    const reader = body.getReader();
-    let total = 0;
-    try {
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) {
-                return true;
-            }
-            total += value.byteLength;
-            if (total > limit) {
-                await reader.cancel().catch(() => {});
-                return false;
-            }
-            let written = 0;
-            while (written < value.byteLength) {
-                written += (await out.write(value, written, value.byteLength - written)).bytesWritten;
-            }
-        }
-    } finally {
-        await out.close();
-    }
 }
 
 /**
