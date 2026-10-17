@@ -103,12 +103,12 @@ import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { assembleChats, findChat, seedChats, selectChat, setMessageText } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { createSimpleCharacter } from "src/ts/stores.svelte";
+import { createSimpleCharacter, ReloadChatPointer } from "src/ts/stores.svelte";
 import Chat from "./Chat.svelte";
 
 const ref = { chaId: "c", chatId: "draft-chat" };
 const mounted: ReturnType<typeof mount>[] = [];
-function render(theme = "") {
+function render(theme = "", overrides: { message?: string; idx?: number; isComment?: boolean } = {}) {
     installFlatDatabase({
         characters: [
             {
@@ -164,6 +164,7 @@ function render(theme = "") {
             name: "C",
             role: "char",
             img: "",
+            ...overrides,
         },
     });
     mounted.push(instance);
@@ -184,12 +185,63 @@ function render(theme = "") {
 }
 
 beforeEach(() => {
+    ReloadChatPointer.set({});
     vi.mocked(setMessageText).mockClear();
     vi.mocked(risuChatParserForDisplay).mockClear();
 });
 afterEach(async () => {
     for (const instance of mounted.splice(0)) await unmount(instance);
     document.body.replaceChildren();
+    vi.mocked(ParseMarkdown)
+        .mockReset()
+        .mockImplementation(async (text) => `<p>${text}</p>`);
+    vi.useRealTimers();
+});
+
+describe("Chat render completion", () => {
+    it("whenRendered resolves immediately for comment and empty greeting rows without a body", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        vi.mocked(ParseMarkdown)
+            .mockClear()
+            .mockImplementation(() => new Promise(() => {}));
+        for (const overrides of [{ isComment: true }, { message: "", idx: -1 }]) {
+            const ui = render("", overrides);
+            const rendered = vi.fn();
+            const waiting = ui.instance.whenRendered().then(rendered);
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+            expect(ParseMarkdown).not.toHaveBeenCalled();
+            expect(rendered).toHaveBeenCalledOnce();
+            await waiting;
+        }
+    });
+
+    it("whenRendered waits for a body replaced by ReloadChatPointer mid-parse", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const parses: ((html: string) => void)[] = [];
+        vi.mocked(ParseMarkdown)
+            .mockClear()
+            .mockImplementation(() => new Promise<string>((resolve) => parses.push(resolve)));
+        const ui = render();
+        const rendered = vi.fn();
+        const waiting = ui.instance.whenRendered().then(() => rendered(ui.text()));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(ParseMarkdown).toHaveBeenCalledTimes(1);
+        expect(rendered).not.toHaveBeenCalled();
+        ReloadChatPointer.set({ "m:a": 1 });
+        flushSync();
+        expect(ParseMarkdown).toHaveBeenCalledTimes(2);
+        parses[0]("<p>Obsolete body</p>");
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect(rendered).not.toHaveBeenCalled();
+        expect(ui.text()).not.toBe("Obsolete body");
+        parses[1]("<p>Replacement body</p>");
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect(rendered).toHaveBeenCalledExactlyOnceWith("Replacement body");
+        await waiting;
+    });
 });
 
 describe("original message draft", () => {

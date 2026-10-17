@@ -27,6 +27,7 @@
         onTrim,
         suspendTrim = false,
         hasNewUnreadMessage = $bindable(false),
+        revealing = $bindable(false),
     }: {
         messages: readonly DeepReadonly<Message>[];
         currentCharacter: AnyClientCharacter;
@@ -39,6 +40,7 @@
         onTrim?: (keep: number) => number | undefined;
         suspendTrim?: boolean;
         hasNewUnreadMessage?: boolean;
+        revealing?: boolean;
     } = $props();
 
     let chatBody: HTMLDivElement = $state();
@@ -72,6 +74,108 @@
     const rows = new Map<string, Row>();
     const rowElements = new WeakMap<Element, Row>();
     const capturing = $derived(loadPages === Infinity);
+
+    type RevealRow = { row: Row; settled: boolean; wait?: AbortController };
+    type RevealBatch = { rows: RevealRow[]; next: number };
+    let revealBatch: RevealBatch | undefined;
+    let revealTimer: ReturnType<typeof setTimeout>;
+    let revealFrame: number | undefined;
+
+    function finishReveal() {
+        clearTimeout(revealTimer);
+        cancelAnimationFrame(revealFrame);
+        revealFrame = undefined;
+        const batch = revealBatch;
+        revealBatch = undefined;
+        for (const entry of batch?.rows ?? []) {
+            entry.wait?.abort();
+            entry.row.element.classList.remove("chat-row-pending");
+        }
+        revealing = false;
+    }
+
+    function advanceReveal() {
+        if (!revealBatch || revealFrame !== undefined) return;
+        revealFrame = requestAnimationFrame(() => {
+            revealFrame = undefined;
+            const batch = revealBatch;
+            if (!batch) return;
+            const scroller = chatBody.parentElement;
+            while (batch.next < batch.rows.length) {
+                const entry = batch.rows[batch.next];
+                // Removed rows no longer hold up the newest-to-oldest prefix.
+                if (!rowElements.has(entry.row.element)) {
+                    batch.next++;
+                    continue;
+                }
+                if (!entry.settled) return;
+                entry.row.element.classList.remove("chat-row-pending");
+                batch.next++;
+                if (scroller && entry.row.element.getBoundingClientRect().top <= scroller.getBoundingClientRect().top) {
+                    finishReveal();
+                    return;
+                }
+            }
+            finishReveal();
+        });
+    }
+
+    function waitForImage(image: HTMLImageElement, signal: AbortSignal) {
+        return new Promise<void>((resolve) => {
+            const done = () => {
+                image.removeEventListener("load", done);
+                image.removeEventListener("error", done);
+                signal.removeEventListener("abort", done);
+                resolve();
+            };
+            image.addEventListener("load", done);
+            image.addEventListener("error", done);
+            signal.addEventListener("abort", done, { once: true });
+            if (image.complete || signal.aborted) done();
+        });
+    }
+
+    async function settleRevealRow(entry: RevealRow) {
+        entry.wait?.abort();
+        const wait = new AbortController();
+        entry.wait = wait;
+        entry.settled = false;
+        try {
+            // createRow's effect mounts the instance on the next Svelte flush.
+            await tick();
+            if (wait.signal.aborted) return;
+            try {
+                await entry.row.instance?.whenRendered?.();
+            } catch {
+                // A failed parse must not strand the reveal queue.
+            }
+            if (wait.signal.aborted) return;
+            await Promise.all(
+                [...entry.row.element.querySelectorAll("img")].map((image) => waitForImage(image, wait.signal)),
+            );
+        } catch {
+            // Failed settle waits count as settled, just like an image error.
+        }
+        if (wait.signal.aborted) return;
+        entry.settled = true;
+        advanceReveal();
+    }
+
+    function startReveal(shown: Row[]) {
+        finishReveal();
+        if (capturing || suspendTrim) return;
+        const batch: RevealBatch = { rows: shown.map((row) => ({ row, settled: false })), next: 0 };
+        revealBatch = batch;
+        revealing = true;
+        for (const entry of batch.rows) entry.row.element.classList.add("chat-row-pending");
+        if (chatBody.parentElement) chatBody.parentElement.scrollTop = 0;
+        revealTimer = setTimeout(finishReveal, 1200);
+        for (const entry of batch.rows) void settleRevealRow(entry);
+    }
+
+    $effect(() => {
+        if (capturing || suspendTrim) finishReveal();
+    });
     // Names and images update in place; only character identity and portrait affect mounting.
     // Callbacks and the simple character are captured at mount.
     const context = $derived({
@@ -259,6 +363,9 @@
                                 disabled: message.disabled ?? false,
                             },
                         });
+                        // A replacement instance must settle again while its row is still hidden.
+                        const pending = revealBatch?.rows.slice(revealBatch.next).find((entry) => entry.row === row);
+                        if (pending) void settleRevealRow(pending);
                         observer?.unobserve(element);
                         observer?.observe(element);
                     }
@@ -293,6 +400,13 @@
         observer?.unobserve(row.element);
         rowElements.delete(row.element);
         row.element.remove();
+        const pending = revealBatch?.rows.find((entry) => entry.row === row);
+        if (pending) {
+            pending.wait?.abort();
+            pending.settled = true;
+            row.element.classList.remove("chat-row-pending");
+            advanceReveal();
+        }
         if (!row.instance) return;
         if (defer) {
             retired.add(row.instance);
@@ -332,6 +446,7 @@
             loadEnd = Math.max(0, folded - window);
         }
         const shown: Row[] = [];
+        let created = 0;
         const shownKeys = new Set<string>();
         for (let i = loadStart; i >= Math.max(0, loadEnd); i--) {
             const message = structure[i];
@@ -351,6 +466,7 @@
             if (!row) {
                 row = createRow(input);
                 rows.set(key, row);
+                created++;
             } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
                 row.input = input;
             }
@@ -368,6 +484,8 @@
             if (expected !== row.element) chatBody.insertBefore(row.element, expected);
             previous = row.element;
         }
+        // Only a wholly new window (opening/switching chats) gets a reveal batch.
+        if (shown.length > 0 && created === shown.length) startReveal(shown);
     }
 
     // Called before changing the DOM, only on an append at the bottom of this same open chat.
@@ -400,6 +518,7 @@
 
     let scrollTimer: ReturnType<typeof setTimeout>;
     onDestroy(() => {
+        finishReveal();
         clearTimeout(scrollTimer);
         cancelAnimationFrame(retireFrame);
         for (const instance of retired) unmount(instance);

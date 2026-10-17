@@ -620,6 +620,11 @@ annotation {
     display: none;
 }
 
+.chat-message-container.chat-row-pending,
+.risu-chat.chat-row-pending {
+    visibility: hidden;
+}
+
 /* Near rows stay uncontained so fixed overlays and overflowing highlights keep their viewport. */
 .chat-message-container.far {
     content-visibility: auto;

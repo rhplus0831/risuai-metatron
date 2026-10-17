@@ -114,6 +114,7 @@
      * next render is pending.
      */
     let parseRun = 0;
+    let pendingAutoTranslate: Promise<void> | undefined;
 
     function getCbsCondition() {
         try {
@@ -214,14 +215,19 @@
 
                     const lastTranslated = translated;
 
-                    setTimeout(() => {
-                        translated = translateText;
-                    }, 10);
+                    const translationUpdate = new Promise<void>((resolve) => {
+                        setTimeout(() => {
+                            translated = translateText;
+                            if (pendingAutoTranslate === translationUpdate) pendingAutoTranslate = undefined;
+                            resolve();
+                        }, 10);
+                    });
 
                     // State change of `translated` triggers markParsing again,
                     // causing redundant translation attempts. The empty body is what this
                     // render shows until then (the template's prune takes a string).
                     if (lastTranslated !== translateText) {
+                        pendingAutoTranslate = translationUpdate;
                         return "";
                     }
                 } catch (error) {
@@ -377,13 +383,14 @@
 
     let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++parseRun));
 
-    /** Screenshot capture waits for the current parse, including a replacement started meanwhile. */
+    /** Wait for a settled DOM render, including auto-translation and replacement parses. */
     export async function whenRendered() {
         while (!shouldRenderRawStreaming) {
             const pending = markParsingResult;
             await pending;
+            await pendingAutoTranslate;
             await tick();
-            if (pending === markParsingResult) return;
+            if (pending === markParsingResult && !pendingAutoTranslate) return;
         }
     }
 

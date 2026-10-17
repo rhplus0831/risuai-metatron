@@ -102,6 +102,7 @@
     let fileInput: string[] = $state([]);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
+    let revealing = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
     let isScrollingToMessage = $state(false);
     let takingScreenshot = $state(false);
@@ -1003,6 +1004,7 @@
 
             <Chats
                 bind:this={chatsInstance}
+                bind:revealing
                 {messages}
                 {loadPages}
                 suspendTrim={takingScreenshot || isScrollingToMessage}
@@ -1024,6 +1026,7 @@
                 {#if currentCharacter.type !== "group"}
                     <Chat
                         bind:this={greetingInstance}
+                        pendingReveal={revealing}
                         character={createSimpleCharacter(currentCharacter)}
                         name={currentCharacter.name}
                         message={(currentChat?.fmIndex ?? -1) === -1

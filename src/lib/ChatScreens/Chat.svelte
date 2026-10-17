@@ -135,7 +135,13 @@
     let parsedBody: { whenRendered: () => Promise<void> } | undefined = $state();
     export async function whenRendered() {
         await tick();
-        await parsedBody?.whenRendered();
+        while (true) {
+            const body = parsedBody;
+            await body?.whenRendered();
+            await tick();
+            // The reload key (including ReloadGUIPointer) can replace ChatBody mid-parse.
+            if (body === parsedBody) return;
+        }
     }
     interface Props {
         message?: string;
@@ -161,6 +167,7 @@
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
+        pendingReveal?: boolean;
     }
 
     let {
@@ -186,6 +193,7 @@
         isOptimizedStreamingMessage = false,
         streamingOptimizationMode = "off",
         rawStreamingText = message,
+        pendingReveal = false,
     }: Props = $props();
 
     let msgDisplay = $state("");
@@ -1806,6 +1814,7 @@
 {/if}
 <div
     class="flex max-w-full justify-center risu-chat"
+    class:chat-row-pending={pendingReveal}
     data-chat-index={idx}
     data-chat-id={currentChat?.message?.[idx]?.chatId ?? ""}
     style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}

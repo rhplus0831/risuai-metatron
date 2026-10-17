@@ -13,12 +13,30 @@ type Row = {
     element: HTMLElement;
     editing: boolean;
     destroyed: boolean;
+    rendered: Promise<void>;
+    settle: () => void;
+    reject: (error: Error) => void;
 };
 const state = vi.hoisted(() => ({ rows: [] as Row[] }));
 
 vi.mock("./Chat.svelte", () => ({
     default: (anchor: Node, props: RowProps) => {
-        const row: Row = { props, updates: [], element: anchor.parentElement!, editing: false, destroyed: false };
+        let settle!: () => void;
+        let reject!: (error: Error) => void;
+        const rendered = new Promise<void>((resolve, rejectRender) => {
+            settle = resolve;
+            reject = rejectRender;
+        });
+        const row: Row = {
+            props,
+            updates: [],
+            element: anchor.parentElement!,
+            editing: false,
+            destroyed: false,
+            rendered,
+            settle,
+            reject,
+        };
         row.element.dataset.messageId = props.messageId;
         state.rows.push(row);
         onDestroy(() => {
@@ -27,6 +45,7 @@ vi.mock("./Chat.svelte", () => ({
         return {
             updateRow: (update: Record<string, unknown>) => row.updates.push(update),
             isEditing: () => row.editing,
+            whenRendered: () => row.rendered,
         };
     },
 }));
@@ -102,7 +121,7 @@ const clearUpdates = () =>
     });
 const rect = (top: number, bottom: number) => new DOMRect(0, top, 300, bottom - top);
 
-function render(input = messages(6), window = input.length) {
+function render(input = messages(6), window = input.length, options = { suspendTrim: false, scrollTop: 0 }) {
     const props = $state({
         messages: input,
         currentCharacter: { chaId: "c", name: "Char", image: "char.png", type: "character", largePortrait: false },
@@ -112,14 +131,15 @@ function render(input = messages(6), window = input.length) {
         onReroll: () => {},
         unReroll: () => {},
         loadPages: window,
-        suspendTrim: false,
+        suspendTrim: options.suspendTrim,
+        revealing: false,
         hasNewUnreadMessage: false,
         onTrim: undefined as undefined | ((keep: number) => number | undefined),
     });
     const scroller = document.createElement("div");
     document.body.append(scroller);
     // happy-dom has no layout and clamps scroll offsets: provide a reversed scroller explicitly.
-    let scrollOffset = 0;
+    let scrollOffset = options.scrollTop;
     const scrollRead = vi.fn(() => scrollOffset);
     const scrollWrite = vi.fn((value: number) => {
         scrollOffset = value;
@@ -133,7 +153,8 @@ function render(input = messages(6), window = input.length) {
         },
     });
     vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(rect(100, 500));
-    instances.push(mount(Chats, { target: scroller, props: props as never }));
+    const instance = mount(Chats, { target: scroller, props: props as never });
+    instances.push(instance);
     flushSync();
     const ids = () =>
         [...scroller.querySelectorAll<HTMLElement>(".chat-message-container")].map((el) => el.dataset.messageId);
@@ -141,7 +162,7 @@ function render(input = messages(6), window = input.length) {
         props.messages.push({ chatId: `m${props.messages.length}`, data: "new reply", role });
         flushSync();
     };
-    return { props, scroller, ids, append, scrollRead, scrollWrite };
+    return { props, scroller, ids, append, scrollRead, scrollWrite, instance };
 }
 
 beforeEach(() => {
@@ -163,6 +184,7 @@ afterEach(async () => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
 });
 
 describe("chat row invalidation", () => {
@@ -279,6 +301,8 @@ function trimmable(visible = 5) {
     });
     ui.props.onTrim = onTrim;
     flushSync();
+    // The opening reveal batch wrote `scrollTop = 0` once at mount; the trim itself must not scroll.
+    ui.scrollWrite.mockClear();
     return { ...ui, onTrim };
 }
 
@@ -435,5 +459,232 @@ describe("new reply notification", () => {
         currentChatRef()!.chatId = "other";
         append();
         expect(ownRead).not.toHaveBeenCalled();
+    });
+});
+
+describe("opening row reveal", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+    });
+
+    // No row fills the viewport unless a test explicitly gives it that geometry.
+    function opening(input = messages(3), window = input.length, options = { suspendTrim: false, scrollTop: 0 }) {
+        const ui = render(input, window, options);
+        for (const row of state.rows) vi.spyOn(row.element, "getBoundingClientRect").mockReturnValue(rect(200, 280));
+        return {
+            ...ui,
+            pending: () =>
+                [...ui.scroller.querySelectorAll<HTMLElement>(".chat-row-pending")].map((el) => el.dataset.messageId),
+        };
+    }
+    async function flushSettles() {
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+    }
+    async function frame() {
+        await vi.advanceTimersByTimeAsync(16);
+        flushSync();
+    }
+
+    it("reveals only the newest-first settled prefix in an animation frame", async () => {
+        const ui = opening(messages(4));
+        expect(ui.ids()).toEqual(["m3", "m2", "m1", "m0"]);
+        expect(ui.pending()).toEqual(["m3", "m2", "m1", "m0"]);
+        const images = ["load", "error"].map(() => {
+            const img = document.createElement("img");
+            Object.defineProperty(img, "complete", { value: false });
+            latest("m2").element.append(img);
+            return img;
+        });
+        await flushSettles();
+        latest("m0").settle();
+        latest("m2").settle();
+        await frame();
+        expect(ui.pending()).toEqual(["m3", "m2", "m1", "m0"]);
+        latest("m3").settle();
+        await flushSettles();
+        expect(ui.pending()).toEqual(["m3", "m2", "m1", "m0"]);
+        await frame();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        images[0].dispatchEvent(new Event("load"));
+        await frame();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        images[1].dispatchEvent(new Event("error"));
+        await flushSettles();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        await frame();
+        expect(ui.pending()).toEqual(["m1", "m0"]);
+        latest("m1").reject(new Error("render failed"));
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        expect(ui.props.revealing).toBe(false);
+    });
+
+    it("never hides rows on append, load-more, mixed update, remount or unfold", async () => {
+        const ui = opening(messages(5), 3);
+        state.rows.forEach((row) => row.settle());
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        const assertVisible = () => {
+            expect(ui.pending()).toEqual([]);
+            expect(ui.props.revealing).toBe(false);
+            expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        };
+        ui.append();
+        expect(ui.ids()).toEqual(["m5", "m4", "m3"]);
+        assertVisible();
+        ui.props.loadPages = 6;
+        flushSync();
+        expect(ui.ids()).toEqual(["m5", "m4", "m3", "m2", "m1", "m0"]);
+        assertVisible();
+        ui.props.messages = ui.props.messages.filter((message) => message.chatId !== "m1");
+        ui.props.messages.push({ chatId: "replacement", role: "char", data: "new" });
+        flushSync();
+        expect(ui.ids()).toEqual(["replacement", "m5", "m4", "m3", "m2", "m0"]);
+        assertVisible();
+        ui.props.messages[0].data = "edited";
+        flushSync();
+        assertVisible();
+        folded.index = 2;
+        flushSync();
+        assertVisible();
+        ui.props.loadPages += ui.props.messages.length - folded.index;
+        folded.index = -1;
+        flushSync();
+        expect(ui.ids()).toEqual(["replacement", "m5", "m4", "m3", "m2", "m0"]);
+        assertVisible();
+        // All newly mounted instances are still waiting, so visibility cannot be due to settling.
+        await frame();
+        assertVisible();
+    });
+
+    it.each(["capture", "suspendTrim"] as const)(
+        "%s releases a batch immediately and skips opening gates",
+        async (mode) => {
+            const ui = opening(messages(3), 2);
+            expect(ui.pending()).toEqual(["m2", "m1"]);
+            expect(ui.props.revealing).toBe(true);
+            await vi.advanceTimersByTimeAsync(400);
+            if (mode === "capture") ui.props.loadPages = Infinity;
+            else ui.props.suspendTrim = true;
+            flushSync();
+            expect(ui.pending()).toEqual([]);
+            expect(ui.props.revealing).toBe(false);
+            expect(vi.getTimerCount()).toBe(0);
+            const skipped = opening(messages(2), mode === "capture" ? Infinity : 2, {
+                suspendTrim: mode === "suspendTrim",
+                scrollTop: -90,
+            });
+            expect(skipped.pending()).toEqual([]);
+            expect(skipped.props.revealing).toBe(false);
+            expect(skipped.scrollWrite).not.toHaveBeenCalled();
+            expect(vi.getTimerCount()).toBe(0);
+            // Turning the bypass off is not a new window and must not hide existing rows.
+            ui.props.loadPages = 3;
+            ui.props.suspendTrim = false;
+            flushSync();
+            state.rows.forEach((row) => row.settle());
+            await frame();
+            expect(ui.pending()).toEqual([]);
+            expect(vi.getTimerCount()).toBe(0);
+        },
+    );
+
+    it("releases every remaining row at one 1200 ms deadline from batch start", async () => {
+        const ui = opening();
+        await vi.advanceTimersByTimeAsync(1000);
+        ui.props.messages[1].data = "remounted near the deadline";
+        flushSync();
+        await vi.advanceTimersByTimeAsync(199);
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        expect(ui.props.revealing).toBe(true);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(ui.pending()).toEqual([]);
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("stops a removed unsettled row from blocking older settled rows", async () => {
+        const ui = opening();
+        latest("m2").settle();
+        latest("m0").settle();
+        await frame();
+        expect(ui.pending()).toEqual(["m1", "m0"]);
+        ui.props.messages.splice(1, 1);
+        flushSync();
+        expect(ui.ids()).toEqual(["m2", "m0"]);
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        expect(ui.props.revealing).toBe(false);
+    });
+
+    it("waits again for a hidden remount and ignores its obsolete instance settling", async () => {
+        const ui = opening();
+        const obsoleteNewest = latest("m2");
+        latest("m1").settle();
+        latest("m0").settle();
+        await frame();
+        ui.props.messages[1].data = "edited after settling but still hidden";
+        ui.props.messages[2].data = "edited while still waiting";
+        flushSync();
+        expect(latest("m2")).not.toBe(obsoleteNewest);
+        obsoleteNewest.settle();
+        await frame();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        latest("m2").settle();
+        await frame();
+        expect(ui.pending()).toEqual(["m1", "m0"]);
+        latest("m1").settle();
+        await frame();
+        expect(ui.pending()).toEqual([]);
+    });
+
+    it("releases the rest when the oldest revealed top reaches the scroller top", async () => {
+        const ui = opening(messages(4));
+        vi.mocked(latest("m3").element.getBoundingClientRect).mockReturnValue(rect(101, 180));
+        vi.mocked(latest("m2").element.getBoundingClientRect).mockReturnValue(rect(100, 101));
+        latest("m3").settle();
+        await frame();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        latest("m2").settle();
+        await flushSettles();
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("resets scrollTop and binds revealing for each opening, releasing on switch and destroy", async () => {
+        const ui = opening([], 3, { suspendTrim: false, scrollTop: -90 });
+        expect(ui.props.revealing).toBe(false);
+        expect(ui.scrollWrite).not.toHaveBeenCalled();
+        ui.props.messages = messages(3);
+        flushSync();
+        expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        expect(ui.scroller.scrollTop).toBe(0);
+        expect(ui.props.revealing).toBe(true);
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        const oldRows = [...state.rows];
+        await vi.advanceTimersByTimeAsync(600);
+        ui.scroller.scrollTop = -240;
+        ui.scrollWrite.mockClear();
+        currentChatRef()!.chatId = "other";
+        flushSync();
+        expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        expect(ui.scroller.scrollTop).toBe(0);
+        expect(oldRows.every((row) => !row.element.classList.contains("chat-row-pending"))).toBe(true);
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        expect(ui.props.revealing).toBe(true);
+        // The first chat's deadline and late completions must not release the replacement batch.
+        oldRows.forEach((row) => row.settle());
+        await vi.advanceTimersByTimeAsync(600);
+        expect(ui.pending()).toEqual(["m2", "m1", "m0"]);
+        const newRows = state.rows.slice(3);
+        await unmount(ui.instance);
+        instances.splice(instances.indexOf(ui.instance), 1);
+        expect(newRows.every((row) => !row.element.classList.contains("chat-row-pending"))).toBe(true);
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
     });
 });

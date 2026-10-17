@@ -47,6 +47,7 @@ afterEach(() => {
     }
     hoisted.parses.length = 0;
     document.body.innerHTML = "";
+    vi.useRealTimers();
 });
 
 /** Settles the parse of `text` and lets its `{#await}` render. */
@@ -59,6 +60,43 @@ async function settle(text: string) {
 }
 
 describe("ChatBody pending body", () => {
+    it("whenRendered waits for the auto-translate flip and the resulting body", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const target = document.createElement("div");
+        document.body.append(target);
+        const props = $state({
+            msgDisplay: "Translate me",
+            role: "char",
+            translated: false,
+            translating: false,
+            retranslate: false,
+            modelShortName: "",
+            autoTranslate: true,
+        });
+        const instance = mount(ChatBody, { target, props });
+        mounted.push(instance);
+        flushSync();
+        const rendered = vi.fn();
+        const waiting = instance.whenRendered().then(() => rendered(target.textContent));
+        await vi.advanceTimersByTimeAsync(9);
+        flushSync();
+        expect(props.translated).toBe(false);
+        expect(hoisted.parses).toHaveLength(0);
+        expect(target.textContent).toBe("");
+        expect(rendered).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        flushSync();
+        expect(props.translated).toBe(true);
+        expect(hoisted.parses.map((parse) => parse.text)).toEqual(["Translate me"]);
+        expect(rendered).not.toHaveBeenCalled();
+        hoisted.parses[0].resolve("<p>Translated body</p>");
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect(rendered).toHaveBeenCalledExactlyOnceWith("Translated body");
+        await waiting;
+    });
+
     it("keeps the newest render's body when an older render settles later", async () => {
         const target = document.createElement("div");
         document.body.appendChild(target);
