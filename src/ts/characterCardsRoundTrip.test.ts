@@ -1,5 +1,6 @@
 import crc32 from "crc/crc32";
 import * as fflate from "fflate";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -173,6 +174,106 @@ afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     server.current?.close();
+});
+
+describe("CharXImporter asset admission", () => {
+    it("holds about ten decoded unsaved assets while uploads of forty 96 KiB entries are stalled", async () => {
+        const { globalApi } = await boot();
+        const { CharXImporter, CharXWriter } = await import("./process/processzip");
+        const output = new globalApi.VirtualWriter();
+        const writer = new CharXWriter(output);
+        for (let i = 0; i < 40; i++) {
+            // Incompressible entries exceed a 64 KiB feed slice even after compression, so a
+            // single synchronous unzip push cannot complete more than one asset.
+            const data = randomBytes(96 * 1024);
+            data[0] = i;
+            await writer.write(`assets/${i}.png`, data, 6);
+        }
+        await writer.write("card.json", JSON.stringify(cardV3("Backpressure")));
+        await writer.end();
+        let release!: () => void;
+        const stalled = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        vi.mocked(globalApi.saveAsset).mockImplementation(async (data) => {
+            await stalled;
+            return `assets/saved-${data[0]}.png`;
+        });
+        const importer = new CharXImporter();
+        // Observe completed decodes at the real unzip boundary. Counting saves alone would miss
+        // decoded buffers retained by items waiting for admission to the save queue.
+        let decoded = 0;
+        const handle = importer.unzip.onfile!;
+        importer.unzip.onfile = (file) => {
+            handle(file);
+            if (file.ondata && file.name.startsWith("assets/")) {
+                const ondata = file.ondata;
+                file.ondata = (error, data, final) => {
+                    if (final) decoded++;
+                    ondata(error, data, final);
+                };
+            }
+        };
+        let parsed = false;
+        const parsing = importer.parse(output.buf.buffer).then(() => {
+            parsed = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const beforeRelease = { decoded, saves: vi.mocked(globalApi.saveAsset).mock.calls.length, parsed };
+        release();
+        await parsing;
+        await importer.done();
+        expect(beforeRelease.saves).toBe(10);
+        expect(beforeRelease.parsed).toBe(false);
+        // Keep the allowance for entries completed by one synchronous feed slice.
+        expect(beforeRelease.decoded).toBeLessThanOrEqual(12);
+        expect(Object.keys(importer.assets)).toHaveLength(40);
+        expect(JSON.parse(importer.cardData!).data.name).toBe("Backpressure");
+    });
+
+    it("skips a header-sized 50 MiB asset before decoding and lists it in excludedFiles", async () => {
+        const { globalApi } = await boot();
+        const { CharXImporter, CharXWriter } = await import("./process/processzip");
+        const output = new globalApi.VirtualWriter();
+        const writer = new CharXWriter(output);
+        const name = await writer.write("assets/oversized.png", new Uint8Array(1024), 6);
+        await writer.write("card.json", JSON.stringify(cardV3("Size limit")));
+        await writer.end();
+        const bytes = output.buf.buffer;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const central = Buffer.from(bytes).indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+        expect(central).toBeGreaterThan(0);
+        // CharXWriter streams with a trailing size descriptor. Supply the sizes in the first
+        // local header, as a non-streaming zip producer does. The deliberately small payload is
+        // a tripwire: a header-rejected file must never be inflated or reach saveAsset.
+        view.setUint16(6, view.getUint16(6, true) & ~8, true);
+        view.setUint32(18, view.getUint32(central + 20, true), true);
+        view.setUint32(22, 50 * 1024 * 1024, true);
+        view.setUint32(central + 24, 50 * 1024 * 1024, true);
+        const importer = new CharXImporter();
+        const handle = importer.unzip.onfile!;
+        const starts = vi.fn();
+        const sizes: number[] = [];
+        importer.unzip.onfile = (file) => {
+            if (file.name === name) {
+                sizes.push(file.originalSize!);
+                const start = file.start.bind(file);
+                file.start = () => {
+                    starts();
+                    start();
+                };
+            }
+            handle(file);
+        };
+        await importer.parse(bytes);
+        await importer.done();
+        expect(sizes).toEqual([50 * 1024 * 1024]);
+        expect(importer.excludedFiles).toEqual([name]);
+        expect(starts).not.toHaveBeenCalled();
+        expect(globalApi.saveAsset).not.toHaveBeenCalled();
+        expect(importer.assets).toEqual({});
+        expect(JSON.parse(importer.cardData!).data.name).toBe("Size limit");
+    });
 });
 
 describe("CharX export names its assets as the zip writer wrote them", () => {

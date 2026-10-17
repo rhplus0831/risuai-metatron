@@ -15,7 +15,8 @@ import {
 import type { customscript, loreBook, triggerscript } from "../storage/database.svelte";
 import { findChat, selectedChat } from "../storage/chatStore.svelte";
 import { AppendableBuffer, downloadFile, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte";
-import { checkPersonaBinded, selectSingleFile, sleep } from "../util";
+import { checkPersonaBinded, selectSingleFile } from "../util";
+import { saveAssets } from "../storage/assetQueue";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
@@ -181,55 +182,9 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
 
     let module = main.module;
 
-    const maxConcurrentAssetSaves = 10;
-    const retryDelayMs = 5000;
-    const maxRetries = 3;
-    const totalAssets = module.assets?.length ?? 0;
-    let completed = 0;
-
-    type AssetTask = {
-        index: number;
-        data: Uint8Array;
-    };
-
-    const runAssetTasks = async (tasks: AssetTask[]) => {
-        if (tasks.length === 0) {
-            return [];
-        }
-        const inFlight = new Set<Promise<void>>();
-        const failed: AssetTask[] = [];
-        const runTask = (task: AssetTask) => {
-            const promise = (async () => {
-                try {
-                    const decoded = await decodeRPack(task.data);
-                    if (!module.assets?.[task.index]) {
-                        throw new Error(`Missing asset metadata for index ${task.index}`);
-                    }
-                    module.assets[task.index][1] = await saveAsset(decoded);
-                    completed += 1;
-                } catch (error) {
-                    failed.push(task);
-                } finally {
-                    alertWait(`Loading... (Adding Assets ${completed} / ${totalAssets})`);
-                }
-            })();
-            inFlight.add(promise);
-            promise.finally(() => inFlight.delete(promise));
-        };
-
-        for (const task of tasks) {
-            while (inFlight.size >= maxConcurrentAssetSaves) {
-                await Promise.race(inFlight);
-            }
-            runTask(task);
-        }
-
-        await Promise.all(inFlight);
-        return failed;
-    };
-
-    const tasks: AssetTask[] = [];
-    let i = 0;
+    // Each asset record is decoded inside its queue item's `load()`, so no more than the queue's
+    // concurrency decoded copies exist at once; the asset client retries a refused write itself.
+    const assetRecords: Uint8Array[] = [];
     while (true) {
         const mark = readByte();
         if (mark === 0) {
@@ -240,25 +195,29 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
             return;
         }
         const len = readLength();
-        const data = readData(len);
-        tasks.push({
-            index: i,
-            data,
-        });
-        i++;
+        assetRecords.push(readData(len));
     }
 
+    const totalAssets = module.assets?.length ?? 0;
     try {
-        let failed = await runAssetTasks(tasks);
-        let retryCount = 0;
-        while (failed.length > 0 && retryCount < maxRetries) {
-            await sleep(retryDelayMs);
-            retryCount += 1;
-            failed = await runAssetTasks(failed);
-        }
-        if (failed.length > 0) {
-            throw new Error(`Failed to save ${failed.length} assets`);
-        }
+        const keys = await saveAssets(
+            assetRecords.map((record, index) => ({
+                load: () => {
+                    if (!module.assets?.[index]) {
+                        throw new Error(`Missing asset metadata for index ${index}`);
+                    }
+                    return decodeRPack(record);
+                },
+            })),
+            {
+                onProgress: (done) => {
+                    alertWait(`Loading... (Adding Assets ${done} / ${totalAssets})`);
+                },
+            },
+        );
+        keys.forEach((key, index) => {
+            module.assets[index][1] = key;
+        });
     } finally {
         alertClear();
     }

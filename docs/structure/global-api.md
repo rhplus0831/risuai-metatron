@@ -22,7 +22,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
 `src/ts/globalApi.svelte.ts` exports, grouped:
 
 - Storage and assets:
-  - `saveAsset`: hashes the bytes and stores them as `assets/<hash>.<ext>`.
+  - `saveAsset`: hashes the bytes and stores them as `assets/<hash>.<ext>`; an optional `{ signal }` aborts the write. Bulk imports save through `saveAssets` (`storage/assetQueue.ts`, see `persistence.md`).
   - `loadAsset`, `readImage`.
   - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when the service worker holds the file. With worker use enabled, known paths are remembered for the page; otherwise the page shares one `caches.open("risuCache")` promise and directly calls `cache.match("/sw/img/<hex>")`. A hit remembers the path without a worker round trip; a miss reads the bytes and posts to `/sw/register/<hex>` before remembering it. Missing Cache Storage or a failed lookup falls back to `/sw/check/<hex>` for that read, with a later read able to retry opening the cache. Each worker request is bounded at 10 s; a failed worker request falls back to an object URL (`blob:`, `image/png`) of its bytes pinned for the page by this plain read (including when boot continues without a ready worker; a data URL would inflate the text a display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and resolves `""`, as does a failed load, and either is dropped so the next read tries again. The message rich copy embeds `blob:` message images and icons like the other URLs it reads.
   - `holdFileSrc`: shares the same cached load as `getFileSrc`, but returns `{ src, release }` for previews. The last release revokes and drops an unpinned `blob:` URL after a 100 ms grace period, cancelled by a new hold or plain read so shifted list rows can reuse it. A release before loading finishes is applied after resolution unless the source was held or pinned again. Service-worker URLs are never revoked; plain reads stay pinned.
@@ -72,7 +72,6 @@ The request-log viewer, browser collector, reports, and support sharing are docu
 - UI data: `TagList`/`searchTagList`, `parseToggleSyntax` and the `sidebarToggle` union (re-exported from `shared/prompt/toggles.ts`), `sortableOptions`, `getCustomBackground`.
 - Concurrency and storage:
   - `sleep`.
-  - `Semaphore`.
   - `openKeypairStoreDB`/`saveKeypairStore`/`getKeypairStore`: IndexedDB `DPoPDB` store `dpop`.
   - `base64url`.
   - `simplifySchema`.

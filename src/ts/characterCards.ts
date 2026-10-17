@@ -43,6 +43,7 @@ import { PngChunk } from "./pngChunk";
 import type { OnnxModelFiles } from "./process/transformers";
 import { CharXImporter, CharXWriter } from "./process/processzip";
 import { exportModuleLegacy, prepareModuleImport, readModule, type RisuModule } from "./process/modules";
+import { saveAssets, type AssetSaveItem } from "./storage/assetQueue";
 
 export const hubURL = "/hub-proxy";
 
@@ -179,46 +180,62 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         returnTrimed: true,
     });
     const assets: { [key: string]: string } = {};
-    for await (const chunk of readGenerator) {
-        if (!chunk) {
-            continue;
+    // The asset chunks feed the save queue as they are read: the queue pulls the next chunk only when
+    // a slot is free, and each chunk's base64 is decoded inside its item's `load()`.
+    const assetIndices: string[] = [];
+    const showAssetProgress = () => {
+        if (pngChunks === 0) {
+            alertWait("Loading... (Loaded " + readedPngChunks + " Assets)");
+        } else {
+            alertStore.set({
+                type: "progress",
+                msg: "Loading... (Loading Assets)",
+                submsg: ((readedPngChunks / pngChunks) * 100).toFixed(2),
+            });
         }
-        if (chunk instanceof AppendableBuffer) {
-            img = chunk.buffer;
-            break;
-        }
-        if (chunk.key === "chara") {
-            //For memory reason, limit to 5MB
-            if (readedChara.length < 5 * 1024 * 1024) {
-                readedChara = chunk.value;
+    };
+    async function* assetChunks(): AsyncGenerator<AssetSaveItem> {
+        for await (const chunk of readGenerator) {
+            if (!chunk) {
+                continue;
             }
-            continue;
-        }
-        if (chunk.key === "ccv3") {
-            if (readedCCv3.length < 5 * 1024 * 1024) {
-                readedCCv3 = chunk.value;
+            if (chunk instanceof AppendableBuffer) {
+                img = chunk.buffer;
+                break;
             }
-            continue;
-        }
-        if (chunk.key.startsWith("chara-ext-asset_")) {
-            const assetIndex = chunk.key.replace("chara-ext-asset_:", "").replace("chara-ext-asset_", "");
-            const assetData = Buffer.from(chunk.value, "base64");
-            if (pngChunks === 0) {
-                alertWait("Loading... (Loaded " + readedPngChunks + " Assets)");
-            } else {
-                alertStore.set({
-                    type: "progress",
-                    msg: "Loading... (Loading Assets)",
-                    submsg: ((readedPngChunks / pngChunks) * 100).toFixed(2),
-                });
+            if (chunk.key === "chara") {
+                //For memory reason, limit to 5MB
+                if (readedChara.length < 5 * 1024 * 1024) {
+                    readedChara = chunk.value;
+                }
+                continue;
             }
-
-            readedPngChunks++;
-
-            const assetId = await saveAsset(assetData);
-            assets[assetIndex] = assetId;
+            if (chunk.key === "ccv3") {
+                if (readedCCv3.length < 5 * 1024 * 1024) {
+                    readedCCv3 = chunk.value;
+                }
+                continue;
+            }
+            if (chunk.key.startsWith("chara-ext-asset_")) {
+                const assetIndex = chunk.key.replace("chara-ext-asset_:", "").replace("chara-ext-asset_", "");
+                const value = chunk.value;
+                if (assetIndices.length === 0) {
+                    showAssetProgress();
+                }
+                assetIndices.push(assetIndex);
+                yield { load: () => Buffer.from(value, "base64") };
+            }
         }
     }
+    const assetIds = await saveAssets(assetChunks(), {
+        onProgress: (done) => {
+            readedPngChunks = done;
+            showAssetProgress();
+        },
+    });
+    assetIds.forEach((assetId, i) => {
+        assets[assetIndices[i]] = assetId;
+    });
 
     if (!readedChara && !readedCCv3) {
         alertError(language.errors.noData);
@@ -626,6 +643,56 @@ export async function exportChar(chaId: string): Promise<string> {
     return "";
 }
 
+/**
+ * Saves a card's embedded assets (v2 `emotions`, `additionalAssets`, `vits`) through the save queue
+ * and returns each entry's asset path in order: an `__asset:<key>` reference resolves through
+ * `assetDict` (a missing key throws before anything is saved); any other value is base64 (`normal`)
+ * or a hub resource id (`hub`, fetched inside the item's `load()`). The progress alert shows `msg`
+ * with the share of saved entries.
+ */
+async function saveEmbeddedAssets(
+    entries: { value: string; fileName?: string }[],
+    assetDict: { [key: string]: string },
+    mode: "hub" | "normal",
+    msg: string,
+): Promise<string[]> {
+    const paths: string[] = [];
+    const pending: number[] = [];
+    const items: AssetSaveItem[] = [];
+    for (let i = 0; i < entries.length; i++) {
+        const { value, fileName } = entries[i];
+        if (value.startsWith("__asset:")) {
+            const key = value.replace("__asset:", "");
+            const imgp = assetDict[key];
+            if (!imgp) {
+                throw new Error("Error while importing, asset " + key + " not found");
+            }
+            paths[i] = imgp;
+            continue;
+        }
+        pending.push(i);
+        items.push({
+            load: () => (mode === "hub" ? getHubResources(value) : Buffer.from(value, "base64")),
+            fileName: fileName || undefined,
+        });
+    }
+    const showProgress = (done: number) => {
+        alertStore.set({
+            type: "progress",
+            msg,
+            submsg: (items.length === 0 ? 100 : (done / items.length) * 100).toFixed(2),
+        });
+    };
+    if (entries.length > 0) {
+        showProgress(0);
+    }
+    const saved = await saveAssets(items, { onProgress: showProgress });
+    pending.forEach((entry, i) => {
+        paths[entry] = saved[i];
+    });
+    return paths;
+}
+
 async function importCharacterCardSpec<T extends boolean = false>(
     card: CharacterCardV2Risu | CharacterCardV3,
     img?: Uint8Array,
@@ -660,87 +727,38 @@ async function importCharacterCardSpec<T extends boolean = false>(
     let vits: null | OnnxModelFiles = null;
     if (risuext && card.spec === "chara_card_v2") {
         if (risuext.emotions) {
+            const paths = await saveEmbeddedAssets(
+                risuext.emotions.map((emotion) => ({ value: emotion[1] })),
+                assetDict,
+                mode,
+                "Loading... (Loading Emotions)",
+            );
             for (let i = 0; i < risuext.emotions.length; i++) {
-                alertStore.set({
-                    type: "progress",
-                    msg: `Loading... (Loading Emotions)`,
-                    submsg: ((i / risuext.emotions.length) * 100).toFixed(2),
-                });
-                await sleep(10);
-                if (risuext.emotions[i][1].startsWith("__asset:")) {
-                    const key = risuext.emotions[i][1].replace("__asset:", "");
-                    const imgp = assetDict[key];
-                    if (!imgp) {
-                        throw new Error("Error while importing, asset " + key + " not found");
-                    }
-                    emotions.push([risuext.emotions[i][0], imgp]);
-                    continue;
-                }
-                const imgp = await saveAsset(
-                    mode === "hub"
-                        ? await getHubResources(risuext.emotions[i][1])
-                        : Buffer.from(risuext.emotions[i][1], "base64"),
-                );
-                emotions.push([risuext.emotions[i][0], imgp]);
+                emotions.push([risuext.emotions[i][0], paths[i]]);
             }
         }
         if (risuext.additionalAssets) {
+            const fileNames = risuext.additionalAssets.map((asset) => (asset.length >= 3 ? asset[2] : ""));
+            const paths = await saveEmbeddedAssets(
+                risuext.additionalAssets.map((asset, i) => ({ value: asset[1], fileName: fileNames[i] })),
+                assetDict,
+                mode,
+                "Loading... (Loading Assets)",
+            );
             for (let i = 0; i < risuext.additionalAssets.length; i++) {
-                alertStore.set({
-                    type: "progress",
-                    msg: `Loading... (Loading Assets)`,
-                    submsg: ((i / risuext.additionalAssets.length) * 100).toFixed(2),
-                });
-
-                if (i % 100 === 0) {
-                    await sleep(10);
-                }
-                let fileName = "";
-                if (risuext.additionalAssets[i].length >= 3) fileName = risuext.additionalAssets[i][2];
-                if (risuext.additionalAssets[i][1].startsWith("__asset:")) {
-                    const key = risuext.additionalAssets[i][1].replace("__asset:", "");
-                    const imgp = assetDict[key];
-                    if (!imgp) {
-                        throw new Error("Error while importing, asset " + key + " not found");
-                    }
-                    extAssets.push([risuext.additionalAssets[i][0], imgp, fileName]);
-                    continue;
-                }
-                const imgp = await saveAsset(
-                    mode === "hub"
-                        ? await getHubResources(risuext.additionalAssets[i][1])
-                        : Buffer.from(risuext.additionalAssets[i][1], "base64"),
-                    "",
-                    fileName,
-                );
-                extAssets.push([risuext.additionalAssets[i][0], imgp, fileName]);
+                extAssets.push([risuext.additionalAssets[i][0], paths[i], fileNames[i]]);
             }
         }
         if (risuext.vits) {
             const keys = Object.keys(risuext.vits);
+            const paths = await saveEmbeddedAssets(
+                keys.map((key) => ({ value: risuext.vits[key] })),
+                assetDict,
+                mode,
+                "Loading... (Loading VITS)",
+            );
             for (let i = 0; i < keys.length; i++) {
-                alertStore.set({
-                    type: "progress",
-                    msg: `Loading... (Loading VITS)`,
-                    submsg: ((i / keys.length) * 100).toFixed(2),
-                });
-                await sleep(10);
-                const key = keys[i];
-                if (risuext.vits[key].startsWith("__asset:")) {
-                    const rkey = risuext.vits[key].replace("__asset:", "");
-                    const imgp = assetDict[rkey];
-                    if (!imgp) {
-                        throw new Error("Error while importing, asset " + rkey + " not found");
-                    }
-                    risuext.vits[key] = imgp;
-                    continue;
-                }
-                const imgp = await saveAsset(
-                    mode === "hub"
-                        ? await getHubResources(risuext.vits[key])
-                        : Buffer.from(risuext.vits[key], "base64"),
-                );
-                risuext.vits[key] = imgp;
+                risuext.vits[keys[i]] = paths[i];
             }
 
             if (keys.length > 0) {
@@ -763,46 +781,61 @@ async function importCharacterCardSpec<T extends boolean = false>(
     if (card.spec === "chara_card_v3") {
         const data = card.data; //required for type checking
         if (data.assets) {
+            // First pass: resolve the referenced keys and queue the `data:` URIs; the second pass
+            // (after the saves) builds the records in card order, `ccdefault:` reading `im` as it is
+            // at that entry (a preceding `icon`/`main` entry replaces it).
+            type Source = { kind: "key"; path: string } | { kind: "ccdefault" } | { kind: "saved"; item: number };
+            const sources: (Source | null)[] = [];
+            const items: AssetSaveItem[] = [];
             for (let i = 0; i < data.assets.length; i++) {
+                const uri = data.assets[i].uri;
+                if (uri.startsWith("__asset:") || uri.startsWith("embeded://")) {
+                    const key = uri.startsWith("__asset:")
+                        ? uri.replace("__asset:", "")
+                        : uri.replace("embeded://", "");
+                    const path = assetDict[key];
+                    if (!path) {
+                        throw new Error("Error while importing, asset " + key + " not found");
+                    }
+                    sources.push({ kind: "key", path });
+                } else if (uri === "ccdefault:") {
+                    sources.push({ kind: "ccdefault" });
+                } else if (uri.startsWith("data:")) {
+                    //data uri
+                    const b64 = uri.split(",")[1];
+                    if (b64.length < 50 * 1024 * 1024) {
+                        sources.push({ kind: "saved", item: items.length });
+                        items.push({ load: () => Buffer.from(b64, "base64") });
+                    } else {
+                        alertError("Data URI too large");
+                        sources.push(null);
+                    }
+                } else {
+                    sources.push(null);
+                }
+            }
+            const showProgress = (done: number) => {
                 alertStore.set({
                     type: "progress",
                     msg: `Loading... (Assets)`,
-                    submsg: ((i / data.assets.length) * 100).toFixed(2),
+                    submsg: (items.length === 0 ? 100 : (done / items.length) * 100).toFixed(2),
                 });
-                if (i % 100 === 0) {
-                    await sleep(10);
+            };
+            if (data.assets.length > 0) {
+                showProgress(0);
+            }
+            const saved = await saveAssets(items, { onProgress: showProgress });
+            for (let i = 0; i < data.assets.length; i++) {
+                const source = sources[i];
+                if (!source) {
+                    continue;
                 }
                 let fileName = "";
-                let imgp = "";
                 if (data.assets[i].name) {
                     fileName = data.assets[i].name;
                 }
-                if (data.assets[i].uri.startsWith("__asset:")) {
-                    const key = data.assets[i].uri.replace("__asset:", "");
-                    imgp = assetDict[key];
-                    if (!imgp) {
-                        throw new Error("Error while importing, asset " + key + " not found");
-                    }
-                } else if (data.assets[i].uri === "ccdefault:") {
-                    imgp = im;
-                } else if (data.assets[i].uri.startsWith("embeded://")) {
-                    const key = data.assets[i].uri.replace("embeded://", "");
-                    imgp = assetDict[key];
-                    if (!imgp) {
-                        throw new Error("Error while importing, asset " + key + " not found");
-                    }
-                } else if (data.assets[i].uri.startsWith("data:")) {
-                    //data uri
-                    const b64 = data.assets[i].uri.split(",")[1];
-                    if (b64.length < 50 * 1024 * 1024) {
-                        imgp = await saveAsset(Buffer.from(b64, "base64"));
-                    } else {
-                        alertError("Data URI too large");
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
+                const imgp =
+                    source.kind === "key" ? source.path : source.kind === "ccdefault" ? im : saved[source.item];
                 if (data.assets[i].type === "emotion") {
                     emotions.push([fileName, imgp]);
                 } else if (data.assets[i].type === "x-risu-asset") {

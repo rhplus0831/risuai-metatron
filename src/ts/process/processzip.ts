@@ -1,11 +1,15 @@
-import { AppendableBuffer, saveAsset, type LocalWriter, type VirtualWriter } from "../globalApi.svelte";
+import { AppendableBuffer, type LocalWriter, type VirtualWriter } from "../globalApi.svelte";
 import * as fflate from "fflate";
-import { asBuffer, Semaphore, sleep } from "../util";
+import { asBuffer } from "../util";
 import { alertStore } from "../alert";
+import { AssetSaveQueue } from "../storage/assetQueue";
 
 // File size and chunk size constants
 const MAX_ASSET_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 const CHUNK_SIZE_BYTES = 1024 * 1024; // 1MB
+// The CharX importer pushes zip input in slices this small, waiting for a free save slot before each,
+// so one push can only complete a few entries (see `CharXImporter.#feedChunk`).
+const UNZIP_PUSH_BYTES = 64 * 1024; // 64KB
 
 // Queue management constants
 const MAX_CONCURRENT_ASSET_SAVES = 10;
@@ -148,14 +152,16 @@ export class CharXWriter {
  * This class reads and imports character data by:
  * - Processing ZIP streams incrementally to handle large files efficiently
  * - Parsing metadata (card.json, module.risum) synchronously
- * - Saving assets to storage concurrently (limited to prevent memory exhaustion)
+ * - Saving assets to storage concurrently through the asset save queue (`AssetSaveQueue`,
+ *   MAX_CONCURRENT_ASSET_SAVES at once). The feed loop waits for a free save slot before pushing
+ *   more input, so only about MAX_CONCURRENT_ASSET_SAVES decoded, not yet saved assets are held.
  */
 export class CharXImporter {
     // ZIP streaming parser
     unzip: fflate.Unzip;
 
-    // Asset save semaphore
-    private semaphore: Semaphore;
+    // Asset save queue; its readiness gates the zip feed (backpressure)
+    private saveQueue: AssetSaveQueue;
 
     // Completion tracking
     private totalEnqueued: number = 0;
@@ -174,7 +180,7 @@ export class CharXImporter {
     // Temporary buffers for accumulating file chunks during streaming
     assetBuffers: { [key: string]: AppendableBuffer } = {};
 
-    // Files excluded due to size limits (> MAX_ASSET_SIZE_BYTES)
+    // Files excluded due to size limits (> MAX_ASSET_SIZE_BYTES, known from the header or after decoding)
     excludedFiles: string[] = [];
 
     // Extracted character card JSON content
@@ -191,7 +197,7 @@ export class CharXImporter {
         this.unzip.register(fflate.UnzipInflate);
         this.unzip.onfile = (file) => this.#handleFile(file);
 
-        this.semaphore = new Semaphore(MAX_CONCURRENT_ASSET_SAVES);
+        this.saveQueue = new AssetSaveQueue({ concurrency: MAX_CONCURRENT_ASSET_SAVES });
         this.onProgress = (done, total) => {
             if (this.alertInfo) {
                 alertStore.set({
@@ -246,11 +252,20 @@ export class CharXImporter {
     /**
      * Feeds a chunk of ZIP data to the streaming parser.
      * When final=true, marks input as complete and finalizes the save queue.
+     *
+     * Backpressure: the parser inflates synchronously inside `push` and queues every completed asset,
+     * so the chunk is pushed in UNZIP_PUSH_BYTES slices and each slice waits until no asset is
+     * waiting for a save slot and a slot is free. Decoded, not yet saved assets therefore stay at
+     * about MAX_CONCURRENT_ASSET_SAVES plus the few one slice completes.
      */
     async #feedChunk(data: Uint8Array, final: boolean = false) {
-        this.unzip.push(data, final);
-
+        for (let offset = 0; offset < data.byteLength; offset += UNZIP_PUSH_BYTES) {
+            await this.saveQueue.whenReady();
+            this.unzip.push(data.subarray(offset, Math.min(offset + UNZIP_PUSH_BYTES, data.byteLength)), false);
+        }
         if (final) {
+            await this.saveQueue.whenReady();
+            this.unzip.push(new Uint8Array(0), true);
             await this.#finalize();
         }
     }
@@ -326,14 +341,17 @@ export class CharXImporter {
      */
     #handleFile(file: fflate.UnzipFile) {
         const assetIndex = file.name;
-        this.assetBuffers[assetIndex] = new AppendableBuffer();
 
-        file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final);
-
-        // Only process files smaller than MAX_ASSET_SIZE_BYTES (50MB)
-        if (file.originalSize ?? 0 < MAX_ASSET_SIZE_BYTES) {
-            file.start();
+        // Skip a file the header already says is at least MAX_ASSET_SIZE_BYTES (50MB); an unknown size
+        // is inflated and checked after decoding (`#handleFileComplete`).
+        if (file.originalSize !== undefined && file.originalSize >= MAX_ASSET_SIZE_BYTES) {
+            this.excludedFiles.push(assetIndex);
+            return;
         }
+
+        this.assetBuffers[assetIndex] = new AppendableBuffer();
+        file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final);
+        file.start();
     }
 
     /**
@@ -374,21 +392,16 @@ export class CharXImporter {
     }
 
     /**
-     * Queues an asset for saving with concurrency control.
+     * Queues an asset for saving with concurrency control (the save queue; the asset client retries).
      */
     async #processAssetQueue(asset: { id: string; data: Uint8Array }) {
         this.totalEnqueued += 1;
-        let acquired = false;
         try {
-            await this.semaphore.acquire();
-            acquired = true;
-            this.assets[asset.id] = await saveAsset(asset.data);
+            const data = asset.data;
+            this.assets[asset.id] = await this.saveQueue.add({ load: () => data });
         } catch (error) {
             this.errors.push(error instanceof Error ? error : new Error(String(error)));
         } finally {
-            if (acquired) {
-                this.semaphore.release();
-            }
             this.totalCompleted += 1;
             this.onProgress?.(this.totalCompleted, this.totalEnqueued);
             this.#checkCompletion();

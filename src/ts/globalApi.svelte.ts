@@ -14,7 +14,7 @@ import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from
 import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
 import { setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
-import { readAsset, writeAsset } from "./storage/assetClient";
+import { readAsset, writeAsset, type AssetRequestOptions } from "./storage/assetClient";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
@@ -244,9 +244,15 @@ export async function readImage(data: string) {
  * @param {Uint8Array} data - The data of the asset file.
  * @param {string} [customId=''] - The custom ID for the asset file.
  * @param {string} [fileName=''] - The name of the asset file.
+ * @param {AssetRequestOptions} [options] - `signal` aborts the write (and its retries, `writeAsset`).
  * @returns {Promise<string>} - A promise that resolves to the path of the saved asset file.
  */
-export async function saveAsset(data: Uint8Array, customId: string = "", fileName: string = "") {
+export async function saveAsset(
+    data: Uint8Array,
+    customId: string = "",
+    fileName: string = "",
+    options: AssetRequestOptions = {},
+) {
     let id = "";
     if (customId !== "") {
         id = customId;
@@ -262,7 +268,7 @@ export async function saveAsset(data: Uint8Array, customId: string = "", fileNam
         fileExtension = fileName.split(".").pop();
     }
     let form = `assets/${id}.${fileExtension}`;
-    await writeAsset(form, data);
+    await writeAsset(form, data, options);
     return form;
 }
 

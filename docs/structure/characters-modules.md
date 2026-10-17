@@ -40,7 +40,7 @@
 - `pngChunk.ts` `PngChunk`: `read`, `readGenerator` (streaming), `trim`, `write`, `streamWriter`. Other chunks are preserved.
 - `process/processzip.ts`:
   - `CharXWriter`: sanitizes and uniquifies asset names, skips files over 50 MiB.
-  - `CharXImporter`: `parse`, then `done()` must be awaited.
+  - `CharXImporter`: `parse`, then `done()` must be awaited. Assets save through an `AssetSaveQueue` (10 at once); the feed loop pushes zip input in 64 KiB slices, each after `whenReady()`, so only about ten decoded, unsaved assets are held. An entry whose header size is at least 50 MiB is not inflated and is listed in `excludedFiles`.
   - `processZip`: used by NovelAI image ZIPs.
 - `process/modules.ts`: modules.
   - `RisuModule`.

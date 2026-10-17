@@ -158,6 +158,69 @@ afterEach(() => {
 });
 
 describe("importModule adds the module through addModule", () => {
+    it("a .risum save exhausted by retries makes readModule throw and importModule add nothing", async () => {
+        const { modules, list, sync, record } = await boot();
+        const { encodeRPack } = await import("../rpack/rpack_js");
+        const main = await encodeRPack(
+            encode({
+                type: "risuModule",
+                module: { name: "Failed assets", id: "file-id", lorebook: [], assets: [["icon", "", "png"]] },
+            }),
+        );
+        const asset = await encodeRPack(new Uint8Array([137, 80, 78, 71]));
+        const length = (n: number) => {
+            const bytes = Buffer.alloc(4);
+            bytes.writeUInt32LE(n);
+            return bytes;
+        };
+        const bytes = Buffer.concat([
+            Buffer.from([111, 0]),
+            length(main.length),
+            main,
+            Buffer.from([1]),
+            length(asset.length),
+            asset,
+            Buffer.from([0]),
+        ]);
+        const globalApi = await import("../globalApi.svelte");
+        // Keep saveAsset and writeAsset real; only the authenticated server response is replaced.
+        vi.mocked(globalApi.saveAsset).mockRestore();
+        const realFetch = server.current.fetch.bind(server.current) as (
+            url: string,
+            init?: RequestInit,
+        ) => Promise<Response>;
+        const fetch = vi.spyOn(server.current, "fetch");
+        fetch.mockImplementation((url: string, init?: RequestInit) =>
+            url === "/api/write" ? Promise.resolve(new Response(null, { status: 503 })) : realFetch(url, init),
+        );
+        const before = list();
+        const reading = modules.readModule(bytes).then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+        );
+        for (const wait of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000])
+            await vi.advanceTimersByTimeAsync(wait);
+        expect(await reading).toMatchObject({
+            error: {
+                name: "AssetSaveError",
+                failed: 1,
+                cause: "setItem Error",
+            },
+        });
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(8);
+        picker.file = { name: "failed.risum", data: bytes };
+        const importing = modules.importModule();
+        for (const wait of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000])
+            await vi.advanceTimersByTimeAsync(wait);
+        await importing;
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(16);
+        expect(list()).toEqual(before);
+        expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        await sync.flushResources();
+        expect(record("modules")).toEqual(before);
+    });
+
     it(".risum: the module the file carries, under a fresh id", async () => {
         const { modules, imported } = await boot();
         const source = {

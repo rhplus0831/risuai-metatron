@@ -7,7 +7,8 @@ import type {
     ImageToTextOutput,
 } from "@huggingface/transformers";
 import { unzip } from "fflate";
-import { loadAsset, saveAsset } from "src/ts/globalApi.svelte";
+import { loadAsset } from "src/ts/globalApi.svelte";
+import { saveAssets } from "src/ts/storage/assetQueue";
 import { selectSingleFile, asBuffer } from "src/ts/util";
 import { v4 } from "uuid";
 import type { OnnxModelFiles } from "../../../shared/settings.ts";
@@ -168,7 +169,7 @@ export const registerOnnxModel = async (): Promise<OnnxModelFiles> => {
         return;
     }
 
-    const unziped = await new Promise((res, rej) => {
+    const unziped = await new Promise<Record<string, Uint8Array>>((res, rej) => {
         unzip(
             modelFile.data,
             {
@@ -191,15 +192,13 @@ export const registerOnnxModel = async (): Promise<OnnxModelFiles> => {
     let fileIdMapped: { [key: string]: string } = {};
 
     const keys = Object.keys(unziped);
+    const fids = await saveAssets(keys.map((key) => ({ load: () => unziped[key] })));
     for (let i = 0; i < keys.length; i++) {
-        const key = keys[i];
-        const file = unziped[key];
-        const fid = await saveAsset(file);
-        let url = key;
+        let url = keys[i];
         if (url.startsWith("/")) {
             url = url.substring(1);
         }
-        fileIdMapped[url] = fid;
+        fileIdMapped[url] = fids[i];
     }
 
     return {
