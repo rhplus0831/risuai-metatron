@@ -284,6 +284,14 @@ export function createServerContext(options: {
         message: "Too many requests. Please retry shortly.",
         keyOf: clientIp,
     });
+    // The storage routes (`/api/read`, `/api/write`, `/api/assets/*`, ...) have their own bucket, so a
+    // burst of asset reads or writes (a module import or export) cannot 429 resource sync and the rest.
+    const storageRouteLimiter = createRateLimiter({
+        windowMs: 60 * 1000,
+        limit: 2000,
+        message: "Too many requests. Please retry shortly.",
+        keyOf: clientIp,
+    });
     const authRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
         limit: 2000,
@@ -319,6 +327,7 @@ export function createServerContext(options: {
         // Before the snapshot manager stops: the clients see the server going away (1001) and reconnect.
         eventSockets.close();
         authenticatedRouteLimiter.dispose();
+        storageRouteLimiter.dispose();
         authRouteLimiter.dispose();
         loginRouteLimiter.dispose();
         void snapshots.stop();
@@ -528,7 +537,7 @@ export function createServerContext(options: {
     registerStorageRoutes(app, {
         savePath,
         auth,
-        limiter: authenticatedRouteLimiter.middleware,
+        limiter: storageRouteLimiter.middleware,
         maintenance: snapshots.gate,
     });
     registerResourceRoutes(app, {

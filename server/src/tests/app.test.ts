@@ -6,7 +6,15 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
 import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
-import { createSigner, createTestServer, hex, json, TEST_INDEX_HTML } from "./testSupport.ts";
+import {
+    buildArchive,
+    createResourceTestClient,
+    createSigner,
+    createTestServer,
+    hex,
+    json,
+    TEST_INDEX_HTML,
+} from "./testSupport.ts";
 
 let server: ReturnType<typeof createTestServer>;
 const servers: ReturnType<typeof createTestServer>[] = [];
@@ -193,6 +201,98 @@ describe("auth routes", () => {
         const auth = await app.request("/api/test_auth");
         expect(auth.headers.get("RateLimit-Policy")).toBe("2000;w=60");
         expect(auth.headers.get("RateLimit-Remaining")).toBe("1999");
+    });
+});
+
+describe("storage rate limiter", () => {
+    async function authedServer() {
+        const s = await createResourceTestClient();
+        servers.push(s);
+        return s;
+    }
+
+    function expectQuota(res: Response, remaining: number, label?: string) {
+        expect(res.headers.get("RateLimit-Limit"), label).toBe("2000");
+        expect(res.headers.get("RateLimit-Policy"), label).toBe("2000;w=60");
+        expect(res.headers.get("RateLimit-Remaining"), label).toBe(String(remaining));
+    }
+
+    it("shares one bucket across all six storage routes, separate from the shared authenticated bucket", async () => {
+        const s = await authedServer();
+        const key = "assets/limiter.bin";
+        const storageRequests: [string, () => Promise<Response>][] = [
+            [
+                "/api/write",
+                () => s.request("/api/write", { method: "POST", headers: { "file-path": hex(key) }, body: "asset" }),
+            ],
+            ["/api/read", () => s.request("/api/read", { headers: { "file-path": hex(key) } })],
+            ["/api/list", () => s.request("/api/list")],
+            [
+                "/api/assets/write",
+                () =>
+                    s.request("/api/assets/write", {
+                        method: "POST",
+                        headers: { "content-type": "application/octet-stream" },
+                        body: buildArchive([["assets/batch.bin", "batch"]]) as RequestInit["body"],
+                    }),
+            ],
+            ["/api/assets/read", () => s.json("/api/assets/read", { keys: [key, "assets/batch.bin"] })],
+            ["/api/remove", () => s.request("/api/remove", { headers: { "file-path": hex(key) } })],
+        ];
+        const authenticatedRequests: [string, number, () => Promise<Response>][] = [
+            ["/api/resources", 200, () => s.request("/api/resources?kinds=ui")],
+            ["/api/resources/read", 200, () => s.json("/api/resources/read", { refs: [{ kind: "ui", id: "main" }] })],
+            ["/api/resources/revisions", 200, () => s.request("/api/resources/revisions")],
+            // Invalid bodies exercise the limiter without starting a generation or transform.
+            ["/api/generations", 400, () => s.json("/api/generations", {})],
+            ["/api/transform", 400, () => s.json("/api/transform", {})],
+            ["/api/resources/ui", 200, () => s.request("/api/resources/ui")],
+        ];
+
+        for (let i = 0; i < storageRequests.length; i++) {
+            const [storagePath, storageRequest] = storageRequests[i];
+            const storage = await storageRequest();
+            expect(storage.status, storagePath).toBe(200);
+            expectQuota(storage, 1999 - i, storagePath);
+            await storage.arrayBuffer();
+
+            const [authenticatedPath, status, authenticatedRequest] = authenticatedRequests[i];
+            const authenticated = await authenticatedRequest();
+            expect(authenticated.status, authenticatedPath).toBe(status);
+            // createResourceTestClient has already made one authenticated request to read the epoch.
+            expectQuota(authenticated, 1998 - i, authenticatedPath);
+            await authenticated.arrayBuffer();
+        }
+    });
+
+    it("allows 2000 storage requests then returns draft-6 headers and Retry-After without blocking resource sync", async () => {
+        const s = await authedServer();
+        const headers = await s.headers({ "file-path": hex("assets/missing.bin") });
+        // Freeze only the clock, so the 60-second header assertions do not depend on runner speed.
+        const now = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+        try {
+            let last!: Response;
+            for (let i = 0; i < 2000; i++) {
+                last = await s.app.request("/api/read", { headers });
+                expect(last.status, `storage request ${i + 1}`).toBe(200);
+                await last.arrayBuffer();
+            }
+            expectQuota(last, 0);
+            expect(last.headers.get("RateLimit-Reset")).toBe("60");
+
+            const blocked = await s.request("/api/list");
+            expect(blocked.status).toBe(429);
+            expectQuota(blocked, 0);
+            expect(blocked.headers.get("RateLimit-Reset")).toBe("60");
+            expect(blocked.headers.get("Retry-After")).toBe("60");
+            expect(await blocked.json()).toEqual({ error: "Too many requests. Please retry shortly." });
+
+            const resources = await s.request("/api/resources?kinds=ui");
+            expect(resources.status).toBe(200);
+            expectQuota(resources, 1998);
+        } finally {
+            now.mockRestore();
+        }
     });
 });
 
