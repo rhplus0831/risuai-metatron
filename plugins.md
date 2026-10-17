@@ -879,9 +879,13 @@ list with two entries of the same `chaId` is refused as a whole, and `setCharact
 
 ### Network Requests
 
-#### Risuai Fetch (Recommended)
+#### nativeFetch
 
-Uses Risuai's fetch with CORS handling and proxy support:
+`Risuai.nativeFetch(url, options?)` uses the host's native fetch transport (the userscript transport when installed, otherwise browser fetch, subject to CORS). Only `method`, `headers`, `body`, and `signal` are honored; internal routing, logging, and interceptor options are unavailable. Omitted options or `{}` make a GET. HEAD and empty POST requests are supported, and DELETE/PATCH retain their bodies. GET and HEAD reject a non-null body.
+
+Across the sandbox, headers must be a record or `[name, value][]` pairs. Bodies may be strings, ArrayBuffer, ArrayBufferView (typed arrays or DataView), or Blob (including File); `null` or `undefined` means no body. When no Content-Type is supplied, strings use `text/plain;charset=UTF-8` and Blob uses its nonempty `type`. `Headers`, `FormData`, `URLSearchParams`, and streams cannot cross the sandbox bridge. Pass `signal` from an AbortController to cancel.
+
+For example, send JSON:
 
 ```javascript
 const response = await Risuai.nativeFetch("https://api.example.com/data", {
@@ -897,9 +901,7 @@ const data = await response.json();
 console.log(`Received: ${JSON.stringify(data)}`);
 ```
 
-#### Native Fetch
-
-Direct browser fetch (may have CORS issues):
+A GET needs no options:
 
 ```javascript
 const response = await Risuai.nativeFetch("https://api.example.com/data");
@@ -1174,6 +1176,8 @@ await Risuai.registerMCP(
 // Later, unregister the MCP module
 await Risuai.unregisterMCP("plugin:my-tools");
 ```
+
+Both callbacks run with the invoking chat's plugin context: a server job's targets, or the tab request's captured chat and presets. Selection-dependent calls such as `getChar`, `setChar`, and `setDatabase` use those targets. The registration is removed automatically when the plugin unloads, unless another instance has replaced the same identifier.
 
 **Tool call content types** (`MCPToolCallContent`):
 

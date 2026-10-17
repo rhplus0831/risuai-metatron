@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04) and 4c (LLM-01, LLM-02) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02) and 4d (EXT-02, EXT-04, SP-I1, NET-02) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -547,6 +547,36 @@ group; order within the phase is free.
   skips an instance), EXT-04 (Dynamic Assets needs an unrelated regex script
   to exist), SP-I1 (an MCP callback acts on the selected chat, not its job's),
   NET-02 (`nativeFetch` rejects omitted options and HEAD).
+  **Landed 2026-10-17.** EXT-02: `loadV3Plugins` unloads a snapshot of the
+  instances, `loadPlugins` runs one reload at a time (each with the list it
+  captured), and a plugin's `registerMCP` registrations are removed when it
+  unloads (kept when a newer instance registered the same identifier);
+  `syncMCPs` resolves a `plugin:` client from the current registration on every
+  call and `unregisterMCPModule` drops it from the tab registry. EXT-04:
+  `runScriptTail` skips only the worker run when there are no regex scripts, so
+  the dynamic-asset step runs for `editoutput` and the display transform's
+  `editdisplay` with or without scripts, and the embedding processor is built on
+  the first marker that needs ranking (plain text embeds nothing). SP-I1:
+  `registerMCP` wraps `getToolList`/`callTool` with the instance's
+  `withContext`, `CustomPluginMCPClient` hands an optional context to them
+  through `invokeHook`, the job channel's `mcpList`/`mcpTool` pass the
+  callback's targets, and the tab request passes its `pluginContext` through
+  `getTools`/`callTool` (listings included; the two tab-internal MCPs get none).
+  NET-02: the plugin `nativeFetch` adapter forwards only `method`, `headers`,
+  `body`, and `signal`, defaults to GET, allows HEAD and an empty POST, keeps
+  DELETE/PATCH bodies, takes string/ArrayBuffer/ArrayBufferView/Blob bodies and
+  record or pair headers, and refuses GET/HEAD bodies and other body types with
+  a `TypeError`; `fetchNative` keeps its POST default, sends an empty body when
+  none is given, allows HEAD, and no longer logs bodies. All three audit probes
+  now fail their bug assertions. Tests: `pluginLifecycle.test.ts`,
+  `mcpContext.test.ts`, `nativeFetch.test.ts`, `globalApiNativeFetch.test.ts`,
+  `server/src/tests/dynamicAssets.test.ts` (41 cases). Stale: the `mcpTool` case
+  of `transport.test.ts` (the context is `callTool`'s fourth argument). Left:
+  the sandbox RPC still prints request bodies and headers (`factory.ts`
+  `Original request:`), an abort after the response headers does not reach the
+  host, the tab-internal `internal:graphmem`/`internal:risuai` still act on the
+  selected chat on the browser path, `providerOptions`/`customProviderStore` are
+  not reset on reload, and no real-iframe check was run.
 - **4e. Media and translation** (`media-aux.md`). MEDIA-01 (DeepLX batch
   deadlock), MEDIA-02 (non-LLM cache ignores language and provider), MEDIA-03
   (VOICEVOX text not URL-encoded), MEDIA-04 (Stop TTS stops only the newest

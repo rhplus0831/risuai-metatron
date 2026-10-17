@@ -1585,9 +1585,14 @@ interface RisuaiPluginAPI {
     // ========== Network APIs ==========
 
     /**
-     * Makes a native fetch request (bypasses Risuai networking)
+     * Makes a native fetch request; omitted options or {} make a GET.
+     * Only method, headers, body, and signal are honored. GET/HEAD reject a body.
+     * Sandbox headers: a record or [name, value][] pairs (not Headers).
+     * Sandbox bodies: string, ArrayBuffer, ArrayBufferView, or Blob; null/undefined means no body.
+     * FormData, URLSearchParams, and streams cannot cross the sandbox bridge.
+     * Strings default to text/plain;charset=UTF-8 and Blob to its nonempty type unless Content-Type is set.
      * @param url - Request URL
-     * @param options - Fetch options
+     * @param options - Supported fetch options; signal cancels the request
      * @returns Response promise
      */
     nativeFetch(url: string, options?: RequestInit): Promise<Response>;
@@ -1691,7 +1696,9 @@ interface RisuaiPluginAPI {
     // ========== MCP APIs ==========
 
     /**
-     * Registers a custom MCP (Model Context Protocol) module
+     * Registers a custom MCP (Model Context Protocol) module. Both callbacks run with the invoking
+     * chat's context (job targets or the browser request's captured chat and presets).
+     * Automatically unregistered on unload unless another client replaced the identifier.
      * @param arg - MCP module configuration
      * @param arg.identifier - Unique identifier (must start with 'plugin:')
      * @param arg.name - Display name of the MCP module

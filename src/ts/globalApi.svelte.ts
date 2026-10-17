@@ -837,7 +837,7 @@ export async function fetchNative(
     arg: {
         body?: string | Uint8Array | ArrayBuffer;
         headers?: { [key: string]: string };
-        method?: "POST" | "GET" | "PUT" | "DELETE";
+        method?: string;
         signal?: AbortSignal;
         useRisuTk?: boolean;
         chatId?: string;
@@ -845,20 +845,16 @@ export async function fetchNative(
         logFetch?: boolean;
         requestTimeoutMs?: number;
         networkRoute?: "auto" | "local_network";
-    },
+    } = {},
 ): Promise<Response> {
-    const useInterceptor = !!arg.interceptor;
-    console.log(arg.body, "body");
-    if (arg.body === undefined && (arg.method === "POST" || arg.method === "PUT")) {
-        throw new Error("Body is required for POST and PUT requests");
-    }
+    const useInterceptor = !!arg?.interceptor;
 
     arg.method = arg.method ?? "POST";
 
     let headers = arg.headers ?? {};
     let realBody: Uint8Array;
 
-    if (arg.method === "GET" || arg.method === "DELETE") {
+    if (arg.method === "GET" || arg.method === "HEAD" || arg.body === undefined) {
         realBody = undefined;
     } else if (typeof arg.body === "string") {
         let body: string = arg.body;

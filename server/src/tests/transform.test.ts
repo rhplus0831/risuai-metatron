@@ -419,7 +419,8 @@ describe("the transform's stages", () => {
                 ops: [
                     character("dyn", {
                         additionalAssets: [["smile", "assets/smile.png", "png"]],
-                        // The client returns before the dynamic assets when no regex script applies.
+                        // A script that never matches: the dynamic assets run after the regex scripts here;
+                        // the no-script path is covered by `dynamicAssets.test.ts` (slice 4d).
                         customscript: [rx("never-matches", "x")],
                     }),
                 ],

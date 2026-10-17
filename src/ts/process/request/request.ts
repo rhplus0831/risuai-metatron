@@ -351,7 +351,7 @@ async function requestPinnedChatData(
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
     const held = () => requestChatHeld(target, arg.chatOwner);
-    const tools = arg.tools ?? (await getTools(target));
+    const tools = arg.tools ?? (await getTools(target, pluginContext));
     if (!held()) {
         return requestChatGone();
     }

@@ -372,6 +372,8 @@ export async function importPlugin(
     }
 }
 
+let pluginReload: Promise<void> = Promise.resolve();
+
 export async function loadPlugins() {
     console.log("Loading plugins...");
 
@@ -379,8 +381,13 @@ export async function loadPlugins() {
         (p: RisuPlugin) => p.enabled && p.version === "3.0",
     );
 
-    clearPluginHooks();
-    await loadV3Plugins(enabledPlugins);
+    // Capture each caller's list now, but reset and reload only after the previous reload settles.
+    const reload = pluginReload.then(async () => {
+        clearPluginHooks();
+        await loadV3Plugins(enabledPlugins);
+    });
+    pluginReload = reload.catch(() => {});
+    await reload;
 }
 
 export const allowedDbKeys = [

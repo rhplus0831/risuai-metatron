@@ -77,7 +77,7 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 - `server/src/prompt/transformers.ts` and `transformersWorker.ts`: the local models in one child process (embeddings, the `distilbart` summarizer, the captioner, text generation), one task at a time. Model files come from `huggingface.co` into `save/models/transformers` (the browser's mirror is not used). The `GPU` embedding variants run the same model on the CPU.
 - HypaV3's local summarization models (`summarizationModel` other than `subModel`) need the browser's WebLLM engine: on the server a summary with such a preset fails with `Local summarization models are unsupported on the server`. A send that needs no new summary still works.
 - HypaV3's progress overlay is fed by `progress` notices; the tab closes an overlay a job left open when that job ends (`jobChannel.ts` `endJobChannel`), since an abort closes the job's channel before a closing notice can arrive. The random selection draws from the job's random source.
-- Other users of the server embeddings: `additionalInformations` and image captions in `assemblePrompt`, the dynamic-asset step of `server/src/prompt/scripts.ts` (never reached by the two server script modes yet), Lua `similarity` and `v2CheckSimilarity` (`LuaBindingServices.similarity`).
+- Other users of the server embeddings: `additionalInformations` and image captions in `assemblePrompt`, the dynamic-asset step of `server/src/prompt/scripts.ts` (`editoutput` and the display transform's `editdisplay` with `dynamicAssetsEditDisplay`, with or without regex scripts; embeddings start only for an uncached unknown marker), Lua `similarity` and `v2CheckSimilarity` (`LuaBindingServices.similarity`).
 
 ## State
 

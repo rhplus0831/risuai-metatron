@@ -1029,8 +1029,14 @@ describe("the callbacks", () => {
             ["{{char}}", { chatRef: { chaId: "other", chatId: "k" } }, scope],
         ]);
         expect(stubs.callTool).toHaveBeenCalledTimes(1);
-        // The tool call names the request's chat (Phase 6 slice 9b: its module MCP servers, not the selection's).
-        expect(stubs.callTool).toHaveBeenCalledWith("roll", { sides: 6 }, { chaId: "char-9", chatId: "chat-9" });
+        // The tool call names the request's chat (Phase 6 slice 9b: its module MCP servers, not the selection's)
+        // and carries the request's plugin context, so a plugin MCP tool acts on that chat (slice 4d, SP-I1).
+        expect(stubs.callTool).toHaveBeenCalledWith(
+            "roll",
+            { sides: 6 },
+            { chaId: "char-9", chatId: "chat-9" },
+            expect.objectContaining({ chatRef: { chaId: "char-9", chatId: "chat-9" }, ...scope }),
+        );
         const sent = answers();
         expect(sent.every((entry) => entry.path === "/api/llm/request/req-1/answer")).toBe(true);
         expect(sent.map((entry) => entry.body)).toEqual([

@@ -137,9 +137,7 @@ async function applyDynamicAssets(
         }
     }
 
-    const processer = new HypaProcesser(services.embeddings(nativeCtx));
-    await processer.addText(assetNames);
-    services.fence(nativeCtx);
+    let processer: HypaProcesser | undefined;
     const matches = data.matchAll(assetRegex);
 
     for (const match of matches) {
@@ -150,6 +148,11 @@ async function applyDynamicAssets(
             if (assetMatches.has(cacheKey)) {
                 data = data.replaceAll(match[0], `{{${type}::${assetMatches.get(cacheKey)}}}`);
             } else if (!assetNames.includes(assetName)) {
+                if (!processer) {
+                    processer = new HypaProcesser(services.embeddings(nativeCtx));
+                    await processer.addText(assetNames);
+                    services.fence(nativeCtx);
+                }
                 const searched = await processer.similaritySearch(assetName);
                 services.fence(nativeCtx);
                 const bestMatch = searched[0];
@@ -193,56 +196,54 @@ export async function runScriptTail(
     if (cached) {
         return cached;
     }
-    if (scripts.length === 0) {
-        cache.set(hash, data);
-        return data;
-    }
-
-    /** A host answer the engine would swallow: a fatal failure is latched (aborting the run) first. */
-    const guarded =
-        <A extends unknown[], R>(fn: (...args: A) => R) =>
-        (...args: A): R => {
-            try {
-                services.fence(nativeCtx);
-                return fn(...args);
-            } catch (error) {
-                if (error instanceof LuaJobFatalError || error instanceof GenerationRunnerError) {
-                    throw services.latch(error);
-                }
-                throw error;
-            }
-        };
-    const result = await scriptWorkers.runScripts(
-        { data, scripts, mode, chatID, identity: nativeCtx.identity },
-        {
-            signal: nativeCtx.signal,
-            host: {
-                parse: guarded(parse),
-                repeatBack: guarded(() => {
-                    // The chat `chatID` indexes, and its owner's greeting.
-                    const chat = services.liveChat();
-                    const owner = scope.db.characters.find((entry) => entry?.chaId === chatRef.chaId) as character;
-                    let lastChat =
-                        chat.fmIndex === -1 ? owner.firstMessage : owner.alternateGreetings[chat.fmIndex as number];
-                    let pointer = chatID - 1;
-                    while (pointer >= 0) {
-                        if (chat.message[pointer].role === chat.message[chatID].role) {
-                            lastChat = chat.message[pointer].data;
-                            break;
-                        }
-                        pointer--;
+    if (scripts.length > 0) {
+        /** A host answer the engine would swallow: a fatal failure is latched (aborting the run) first. */
+        const guarded =
+            <A extends unknown[], R>(fn: (...args: A) => R) =>
+            (...args: A): R => {
+                try {
+                    services.fence(nativeCtx);
+                    return fn(...args);
+                } catch (error) {
+                    if (error instanceof LuaJobFatalError || error instanceof GenerationRunnerError) {
+                        throw services.latch(error);
                     }
-                    return lastChat;
-                }),
-                effect: guarded(applyEffect),
+                    throw error;
+                }
+            };
+        const result = await scriptWorkers.runScripts(
+            { data, scripts, mode, chatID, identity: nativeCtx.identity },
+            {
+                signal: nativeCtx.signal,
+                host: {
+                    parse: guarded(parse),
+                    repeatBack: guarded(() => {
+                        // The chat `chatID` indexes, and its owner's greeting.
+                        const chat = services.liveChat();
+                        const owner = scope.db.characters.find((entry) => entry?.chaId === chatRef.chaId) as character;
+                        let lastChat =
+                            chat.fmIndex === -1 ? owner.firstMessage : owner.alternateGreetings[chat.fmIndex as number];
+                        let pointer = chatID - 1;
+                        while (pointer >= 0) {
+                            if (chat.message[pointer].role === chat.message[chatID].role) {
+                                lastChat = chat.message[pointer].data;
+                                break;
+                            }
+                            pointer--;
+                        }
+                        return lastChat;
+                    }),
+                    effect: guarded(applyEffect),
+                },
             },
-        },
-    );
-    setup.check();
-    if ("error" in result) {
-        throw new GenerationRunnerError(500, `Regex scripts: ${result.error}`, { stage: "script" });
+        );
+        setup.check();
+        if ("error" in result) {
+            throw new GenerationRunnerError(500, `Regex scripts: ${result.error}`, { stage: "script" });
+        }
+        data = result.data;
     }
-    data = await applyDynamicAssets(setup, deps.assetMatches, char, result.data, mode);
+    data = await applyDynamicAssets(setup, deps.assetMatches, char, data, mode);
     cache.set(hash, data);
     return data;
 }

@@ -1,6 +1,7 @@
 //Although these are TECHNICALLY not MCPs, but for the users, we will stick to that name
 
 import type { MCPTool, RPCToolCallContent } from "./mcplib";
+import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
 //template for MCPClient-like classes that can be used in the MCP system
 //Original MCPClient is located in src/ts/process/mcp/mcplib.ts
@@ -37,11 +38,12 @@ export class MCPClientLike {
         return this.serverInfo;
     }
 
-    async getToolList(): Promise<MCPTool[]> {
+    // Only plugin clients consume this context; internal clients keep their own targeting.
+    async getToolList(_context?: PluginCallContext): Promise<MCPTool[]> {
         return [];
     }
 
-    async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
+    async callTool(toolName: string, args: any, _context?: PluginCallContext): Promise<RPCToolCallContent[]> {
         return [
             {
                 type: "text",

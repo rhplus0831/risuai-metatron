@@ -363,6 +363,7 @@ export async function requestServer(
         clientId: body.clientId,
         parseChatRef,
         toolChatRef: chatRef,
+        pluginContext,
         scope,
         targetsHeld,
     });
@@ -393,6 +394,7 @@ async function parseInLoadedChat(
 }
 
 type ReadOptions = {
+    pluginContext?: PluginCallContext;
     controller: AbortController;
     detach: () => void;
     clientId: string;
@@ -474,6 +476,7 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
                     event.payload.name,
                     event.payload.args,
                     options.toolChatRef ?? options.parseChatRef,
+                    options.pluginContext,
                 );
             } else {
                 const target = event.payload.chatRef ?? options.parseChatRef;

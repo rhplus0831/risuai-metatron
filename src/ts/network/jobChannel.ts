@@ -528,8 +528,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             // tab (handshaken here: a directory picker, a credential prompt), shared with the
             // browser path's registry.
             const identifier = String(payload.identifier);
+            const isTabClient = TAB_MCP_IDENTIFIERS.includes(identifier);
             let client: MCPClientLike | undefined;
-            if (TAB_MCP_IDENTIFIERS.includes(identifier)) {
+            if (isTabClient) {
                 const registry = await import("../process/mcp/mcp");
                 // No picker or prompt is started for a callback the server already cancelled.
                 stillWanted();
@@ -542,7 +543,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             stillWanted();
             if (event.name === "mcpList") {
-                const tools = await client.getToolList();
+                const tools = await (isTabClient ? client.getToolList() : client.getToolList(context));
                 stillWanted();
                 return tools.map((tool) => ({
                     name: tool.name,
@@ -550,7 +551,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     inputSchema: tool.inputSchema,
                 }));
             }
-            const content = await client.callTool(String(payload.tool), payload.args);
+            const content = await (isTabClient
+                ? client.callTool(String(payload.tool), payload.args)
+                : client.callTool(String(payload.tool), payload.args, context));
             stillWanted();
             return content;
         }

@@ -8,6 +8,7 @@ import type { MCPClientLike } from "./internalmcp";
 import { registeredCustomPluginMCPs } from "./pluginmcp";
 import { type ChatRef, findChat, mergeChatMeta } from "src/ts/storage/chatStore.svelte";
 import { TAB_MCP_IDENTIFIERS } from "../../../../shared/jobs.ts";
+import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
 export type MCPToolWithURL = MCPTool & {
     mcpURL: string;
@@ -121,6 +122,18 @@ async function syncMCPs(
         }
     }
     for (const mcp of mcpUrls) {
+        if (mcp.startsWith("plugin:")) {
+            // Resolve every time: reloads can replace or remove a plugin's registered client.
+            const client = registeredCustomPluginMCPs.get(mcp);
+            if (client) {
+                MCPs[mcp] = client;
+                keep(mcp);
+                await client.checkHandshake();
+            } else {
+                delete MCPs[mcp];
+            }
+            continue;
+        }
         keep(mcp);
         if (!MCPs[mcp]) {
             let mcpUrl = mcp;
@@ -162,15 +175,6 @@ async function syncMCPs(
                 continue;
             }
 
-            if (mcp.startsWith("plugin:")) {
-                const customMCP = registeredCustomPluginMCPs.get(mcp);
-                if (customMCP) {
-                    MCPs[mcp] = customMCP;
-                    keep(mcp);
-                    await customMCP.checkHandshake();
-                    continue;
-                }
-            }
             if (mcp.startsWith("stdio:")) {
                 const MCPJSON = mcp.slice("stdio:".length);
                 try {
@@ -249,18 +253,20 @@ async function syncMCPs(
 }
 
 /** The tools of `chatRef`'s MCP servers (its own clients, leased while they are listed). */
-export async function getMCPTools(additionalMCPs?: string[], chatRef?: ModuleChatRef) {
+export async function getMCPTools(additionalMCPs?: string[], chatRef?: ModuleChatRef, context?: PluginCallContext) {
     const held: AnyMCPClient[] = [];
     try {
         const { active } = await syncMCPs(additionalMCPs, chatRef, held);
         const tools: MCPToolWithURL[] = [];
         for (const [key, client] of Object.entries(active)) {
-            const t = (await client.getToolList()).map((tool) => {
-                return {
-                    ...tool,
-                    mcpURL: key,
-                };
-            });
+            const t = (await (key.startsWith("plugin:") ? client.getToolList(context) : client.getToolList())).map(
+                (tool) => {
+                    return {
+                        ...tool,
+                        mcpURL: key,
+                    };
+                },
+            );
 
             tools.push(...t);
         }
@@ -284,16 +290,21 @@ export async function callMCPTool(
     methodName: string,
     args: any,
     chatRef?: ModuleChatRef,
+    context?: PluginCallContext,
 ): Promise<RPCToolCallContent[]> {
     const held: AnyMCPClient[] = [];
     try {
         const { active, callOnly } = await syncMCPs(undefined, chatRef, held);
         const combinedMCPs = { ...active, ...callOnly };
         for (const key of Object.keys(combinedMCPs)) {
-            const tools = await combinedMCPs[key].getToolList();
+            const client = combinedMCPs[key];
+            const isPlugin = key.startsWith("plugin:");
+            const tools = await (isPlugin ? client.getToolList(context) : client.getToolList());
             const tool = tools.find((t) => t.name === methodName);
             if (tool) {
-                return await combinedMCPs[key].callTool(methodName, args);
+                return await (isPlugin
+                    ? client.callTool(methodName, args, context)
+                    : client.callTool(methodName, args));
             }
         }
     } finally {
@@ -309,13 +320,13 @@ export async function callMCPTool(
 
 //Currently just a wrapper for getMCPTools, but can be extended later for more than MCPs
 /** The tools for a request of `chatRef`'s chat (default: the selected chat; its modules choose the MCP servers). */
-export async function getTools(chatRef?: ModuleChatRef) {
-    return await getMCPTools(undefined, chatRef);
+export async function getTools(chatRef?: ModuleChatRef, context?: PluginCallContext) {
+    return await getMCPTools(undefined, chatRef, context);
 }
 
 //Currently just a wrapper for callMCPTool, but can be extended later for more than MCPs
-export async function callTool(methodName: string, args: any, chatRef?: ModuleChatRef) {
-    return await callMCPTool(methodName, args, chatRef);
+export async function callTool(methodName: string, args: any, chatRef?: ModuleChatRef, context?: PluginCallContext) {
+    return await callMCPTool(methodName, args, chatRef, context);
 }
 
 export async function importMCPModule() {

@@ -88,7 +88,7 @@ import { language } from "src/lang";
 import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
 import { get } from "svelte/store";
-import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
+import { registerMCPModule, registeredCustomPluginMCPs, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
@@ -1240,15 +1240,44 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             return globalFetch(url, options);
         },
-        nativeFetch: (url, options) => {
+        nativeFetch: async (url: string, options: RequestInit = {}) => {
             for (const blocked of urlBlacklist) {
                 if (url.toLowerCase().includes(blocked)) {
                     throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
                 }
             }
 
-            //scan headers
-            const headers = options?.headers || {};
+            // Normalize both sandbox-supported forms before scanning or logging their names.
+            const normalizedHeaders = new Headers(options.headers ?? {});
+            let method = options.method ?? "GET";
+            const upperMethod = method.toUpperCase();
+            if (["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"].includes(upperMethod)) {
+                method = upperMethod;
+            }
+            if ((method === "GET" || method === "HEAD") && options.body != null) {
+                throw new TypeError(`Request with ${method} method cannot have a body`);
+            }
+            let body: string | Uint8Array | ArrayBuffer | undefined;
+            if (options.body == null) {
+                body = undefined;
+            } else if (typeof options.body === "string") {
+                body = options.body;
+                if (!normalizedHeaders.has("Content-Type")) {
+                    normalizedHeaders.set("Content-Type", "text/plain;charset=UTF-8");
+                }
+            } else if (options.body instanceof ArrayBuffer) {
+                body = options.body;
+            } else if (ArrayBuffer.isView(options.body)) {
+                body = new Uint8Array(options.body.buffer, options.body.byteOffset, options.body.byteLength);
+            } else if (options.body instanceof Blob) {
+                body = new Uint8Array(await options.body.arrayBuffer());
+                if (options.body.type && !normalizedHeaders.has("Content-Type")) {
+                    normalizedHeaders.set("Content-Type", options.body.type);
+                }
+            } else {
+                throw new TypeError(`Unsupported nativeFetch body: ${Object.prototype.toString.call(options.body)}`);
+            }
+            const headers = Object.fromEntries(normalizedHeaders.entries());
             for (const headerName in headers) {
                 if (authorizationHeaders.includes(headerName.toLowerCase())) {
                     console.warn(
@@ -1256,7 +1285,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     );
                 }
             }
-            return fetchNative(url, options);
+            // RequestInit is public; internal routing, logging and interceptor options are not.
+            return fetchNative(url, { method, headers, body, signal: options.signal });
         },
         getChar: () => getChar(currentContext(contextOwner)),
         setChar: (char: any) => setChar(currentContext(contextOwner), char),
@@ -1882,7 +1912,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             addPluginUnloadCallback(plugin.name, () => removePluginChatPanels(plugin.name));
             return { id };
         },
-        registerMCP: registerMCPModule,
+        registerMCP: (...[arg, getToolList, callTool]: Parameters<typeof registerMCPModule>) => {
+            const client = registerMCPModule(arg, withContext(getToolList), withContext(callTool));
+            addPluginUnloadCallback(plugin.name, () => {
+                if (registeredCustomPluginMCPs.get(arg.identifier) === client) {
+                    return unregisterMCPModule(arg.identifier);
+                }
+            });
+        },
         unregisterMCP: unregisterMCPModule,
         unregisterUIPart: (id: string) => {
             const removeFromMenuStore = (menuStore: MenuDef[]) => {
@@ -2188,7 +2225,7 @@ const v3PluginInstances: V3PluginInstance[] = [];
 
 export async function loadV3Plugins(plugins: RisuPlugin[]) {
     await Promise.all(
-        v3PluginInstances.map(async (instance) => {
+        [...v3PluginInstances].map(async (instance) => {
             await unloadV3Plugin(instance.name);
         }),
     );
