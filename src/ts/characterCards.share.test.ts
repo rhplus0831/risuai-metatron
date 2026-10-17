@@ -204,12 +204,15 @@ describe("characterURLImport pending shares", () => {
         await app.cards.characterURLImport();
         expectRead(share);
         expect(alerts.confirm).toHaveBeenCalledWith(language.bootstrap.resetLorebookQuestion);
+        // Declined before anything is sent (large-asset-import slice 2c).
+        expect(app.fake.requests.filter((request) => request.path === "/api/import/module")).toHaveLength(0);
         expect(app.settings.modules).toHaveLength(0);
         expect(get(app.stores.settingsOpen)).toBe(false);
         expect(share.cache.delete).not.toHaveBeenCalled();
         expect(new Uint8Array(await share.entries.get(share.url)!.clone().arrayBuffer())).toEqual(bytes);
         expect(alerts.normal).not.toHaveBeenCalled();
         await app.cards.characterURLImport();
+        expect(app.fake.requests.filter((request) => request.path === "/api/import/module")).toHaveLength(1);
         expect(app.settings.modules).toHaveLength(1);
         expect(share.entries.has(share.url)).toBe(false);
         expect(share.fetch).not.toHaveBeenCalled();
@@ -243,7 +246,7 @@ describe("characterURLImport pending shares", () => {
     it("retains a share when its importer throws", async () => {
         const app = await boot();
         const error = new Error("import failed");
-        vi.spyOn(app.modules, "readModule").mockRejectedValueOnce(error);
+        vi.spyOn(app.modules, "importModuleFile").mockRejectedValueOnce(error);
         const share = pendingShare("module", new Uint8Array([1, 2, 3]));
         await expect(app.cards.characterURLImport()).rejects.toBe(error);
         expectRead(share);

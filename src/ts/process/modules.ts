@@ -15,8 +15,13 @@ import {
 import type { customscript, loreBook, triggerscript } from "../storage/database.svelte";
 import { findChat, selectedChat } from "../storage/chatStore.svelte";
 import { AppendableBuffer, downloadFile, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte";
-import { checkPersonaBinded, selectSingleFile } from "../util";
+import { checkPersonaBinded, selectSingleFileHandle } from "../util";
 import { saveAssets } from "../storage/assetQueue";
+import {
+    importModuleOverServer,
+    ModuleImportFailedError,
+    ModuleImportRequestError,
+} from "../storage/moduleImportClient";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
@@ -30,6 +35,13 @@ import { convertCharacterToModule, convertModuleToCharacter } from "../interchan
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
 import { upgradeLorebook, type RisuModule } from "../../../shared/modules.ts";
 import { personaLinksModule, personaModuleIdSet } from "../../../shared/personas.ts";
+import {
+    decodeModuleMain,
+    MODULE_FILE_HEADER_BYTES,
+    ModuleFileError,
+    type ModuleImportResult,
+    readModuleFileHeader,
+} from "../../../shared/moduleImport.ts";
 
 export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
@@ -136,6 +148,10 @@ export async function exportModuleLegacy(
     return apb.buffer;
 }
 
+/**
+ * The in-tab `.risum` reader: the CharX-embedded `module.risum` (small) and tests. A `.risum` file
+ * goes through `importModuleFile` instead, which never holds the file (large-asset-import slice 2c).
+ */
 export async function readModule(buf: Buffer): Promise<RisuModule> {
     let pos = 0;
 
@@ -256,18 +272,143 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
     return true;
 }
 
+/**
+ * Imports a `.risum` file through the server (`docs/plan/large-asset-import.md` slice 2c); every
+ * `.risum` file entry point (the module dialog, the drop, `#share_module`, `#import=`, the launch
+ * queue) calls it, then adds the module itself. Only the file's header and main record are read
+ * here (`file.slice`, decoded with the reader the server uses, `shared/moduleImport.ts`), and on that
+ * module, before anything is sent, the low-level access question is asked and `prepareModuleImport`
+ * runs. Then the file itself is uploaded (`importModuleOverServer`, its progress in the wait alert),
+ * and only the stored assets' keys are taken from the server's result. Returns the prepared module
+ * under a fresh id, or null when nothing is to be added: a question was declined, or the failure is
+ * already alerted.
+ */
+export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
+    alertWait("Loading... (Reading)");
+    let module: RisuModule;
+    try {
+        module = await readModuleFileMain(file);
+    } catch (error) {
+        console.error(error);
+        alertError(language.errors.noData);
+        return null;
+    }
+    if (module.lowLevelAccess && !(await alertConfirm(language.lowLevelAccessConfirm))) {
+        return null;
+    }
+    if (!(await prepareModuleImport(module))) {
+        return null;
+    }
+    alertWait(language.moduleImportUploading);
+    let stored: ModuleImportResult;
+    try {
+        stored = await importModuleOverServer(file, {
+            onProgress: (done, total) => {
+                alertWait(`Loading... (Adding Assets ${done} / ${total})`);
+            },
+        });
+    } catch (error) {
+        // Each alert replaces the wait alert; nothing clears the store after it.
+        alertError(moduleImportErrorMessage(error));
+        return null;
+    }
+    if (!copyStoredKeys(module, stored.module)) {
+        console.error("[Module import] The server's module does not match the file's asset list");
+        alertError(language.errors.noData);
+        return null;
+    }
+    module.id = v4();
+    alertClear();
+    return module;
+}
+
+/**
+ * The module of a `.risum` file's main record, read from the file's first bytes only (its header,
+ * then its main record). Throws `ModuleFileError` for a file that is not a module file.
+ */
+async function readModuleFileMain(file: Blob): Promise<RisuModule> {
+    const header = new Uint8Array(await file.slice(0, MODULE_FILE_HEADER_BYTES).arrayBuffer());
+    const { mainLength } = readModuleFileHeader(header);
+    // A fresh buffer the decoder may decode in place.
+    const main = new Uint8Array(
+        await file.slice(MODULE_FILE_HEADER_BYTES, MODULE_FILE_HEADER_BYTES + mainLength).arrayBuffer(),
+    );
+    if (main.length !== mainLength) {
+        throw new ModuleFileError("The module file is truncated");
+    }
+    return decodeModuleMain(main);
+}
+
+/**
+ * Copies each asset's stored key (`assets[i][1]`) from the server's copy of the module into `module`.
+ * False, copying nothing, unless both asset lists have the same length (a missing list counts as an
+ * empty one) and every entry of the server's is a list.
+ */
+function copyStoredKeys(module: RisuModule, stored: RisuModule): boolean {
+    const local = module.assets ?? [];
+    const answer: unknown = stored.assets ?? [];
+    if (!Array.isArray(answer) || answer.length !== local.length || !answer.every((entry) => Array.isArray(entry))) {
+        return false;
+    }
+    (answer as unknown[][]).forEach((entry, index) => {
+        local[index][1] = entry[1] as string;
+    });
+    return true;
+}
+
+/**
+ * The alert for an upload that failed (slice 2c): by the answer's status and its `error` text where
+ * the server's texts tell refusals apart (every authentication failure is a 400 with its own text,
+ * shown as it is). A network failure may be a refusal the browser did not see (see
+ * `moduleImportClient.ts`).
+ */
+function moduleImportErrorMessage(error: unknown): string {
+    if (error instanceof ModuleImportRequestError) {
+        switch (error.status) {
+            case 400:
+                if (error.serverError === "Invalid module file") {
+                    return language.errors.noData;
+                }
+                break;
+            case 413:
+                if (error.serverError === "File too large") {
+                    return language.moduleImportFileTooLarge;
+                }
+                if (error.serverError === "Asset too large") {
+                    return language.moduleImportAssetTooLarge;
+                }
+                break;
+            case 408:
+                return language.moduleImportTimeout;
+            case 409:
+            case 429:
+                return language.moduleImportBusy;
+            case 503:
+                return language.moduleImportMaintenance;
+        }
+        return error.serverError ?? language.moduleImportRequestFailed.replace("{{status}}", String(error.status));
+    }
+    if (error instanceof ModuleImportFailedError) {
+        return language.moduleImportStopped.replace("{{error}}", error.message);
+    }
+    if (error instanceof TypeError) {
+        return language.moduleImportInterrupted;
+    }
+    console.error(error);
+    return language.errors.noData;
+}
+
 export async function importModule() {
-    const f = await selectSingleFile(["json", "lorebook", "risum", "charx"]);
-    if (!f) {
+    const file = await selectSingleFileHandle(["json", "lorebook", "risum", "charx"]);
+    if (!file) {
         return;
     }
-    let fileData = f.data;
-    if (f.name.endsWith(".charx")) {
+    if (file.name.endsWith(".charx")) {
         try {
-            const buf = Buffer.from(fileData);
+            // The picked `File` itself, which the CharX importer streams.
             const char = await importCharacterProcess({
-                name: f.name,
-                data: buf,
+                name: file.name,
+                data: file,
                 returnCharacter: true,
             });
             if (!char || typeof char === "string") {
@@ -285,13 +426,15 @@ export async function importModule() {
         }
         return;
     }
-    if (f.name.endsWith(".risum")) {
+    if (file.name.endsWith(".risum")) {
         try {
-            const buf = Buffer.from(fileData);
-            const module = await readModule(buf);
-            if (await prepareModuleImport(module)) {
-                addModule(module);
+            // Prepared already; null when declined or failed (alerted).
+            const module = await importModuleFile(file);
+            if (!module) {
+                return false;
             }
+            addModule(module);
+            alertNormal(language.successImport);
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
@@ -299,6 +442,7 @@ export async function importModule() {
         return;
     }
     try {
+        const fileData = new Uint8Array(await file.arrayBuffer());
         const importData = JSON.parse(Buffer.from(fileData).toString());
         if (importData.type === "risuModule") {
             if (!importData.name || !importData.id) {

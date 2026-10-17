@@ -104,7 +104,10 @@ async function boot() {
     vi.spyOn(globalApi, "saveAsset").mockResolvedValue("asset");
     const util = await import("../util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
-    vi.spyOn(util, "selectSingleFile").mockImplementation(async () => picker.file as any);
+    // The dialog answers the picked `File` itself (large-asset-import slice 2c), built from `picker.file`.
+    vi.spyOn(util, "selectSingleFileHandle").mockImplementation(async () =>
+        picker.file ? new File([new Uint8Array(picker.file.data)], picker.file.name) : null,
+    );
     const modules = await import("./modules");
     const cards = await import("../characterCards");
     const { settings, sync, record } = booted;

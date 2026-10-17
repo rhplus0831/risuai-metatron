@@ -1,5 +1,18 @@
+import { createHash } from "node:crypto";
 import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
 import { parseSecretPath, writeSecret } from "../../../../shared/llmSecrets.ts";
+import {
+    decodeModuleMain,
+    MODULE_ASSET_MARK,
+    MODULE_END_MARK,
+    MODULE_FILE_HEADER_BYTES,
+    MODULE_IMPORT_PATH,
+    ModuleFileError,
+    type ModuleImportLine,
+    readModuleFileHeader,
+} from "../../../../shared/moduleImport.ts";
+import type { RisuModule } from "../../../../shared/modules.ts";
+import { decodeRPack } from "../../../../shared/rpack.ts";
 import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../../shared/resources.ts";
 
 /**
@@ -9,8 +22,10 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
  * 409 union, the 400 validation messages, and the request cap. The route layer is reduced to what
  * the client relies on: the epoch fence, the operation count, the error mapping, and (Phase 5
  * slice 7b) the write-only kinds' contract: a kind's `project` on every read, its `prepareWrite` on
- * every plain write, and `/api/llm-secrets/*` for the credential writes. The hooks mirror
- * `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail requests.
+ * every plain write, and `/api/llm-secrets/*` for the credential writes; and (large-asset-import
+ * slice 2c) `POST /api/import/module`, the `.risum` import's answer without its asset store. The
+ * hooks mirror `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail
+ * requests.
  *
  * The server modules are loaded at run time (`create`) through a computed specifier: the client
  * `tsconfig.json` is not strict and must not type-check the strict server sources, so a static
@@ -281,11 +296,82 @@ export class StoreBackedServer {
         }
     }
 
+    /**
+     * `POST /api/import/module` (`server/src/routes/importModule.ts`) without its store: the file is
+     * read with the shared reader the route uses (`shared/moduleImport.ts`), its records walked to
+     * the end mark, and each record's key computed as the route stores it (`assets/<sha256 hex of
+     * the decoded bytes>.png`); no file is written (the tests spy `saveAsset`), so every record
+     * counts as written. The answer is the route's NDJSON: one `{ done, total }` line per record,
+     * then `{ module, assetsWritten, assetsSkipped }`; a malformed file is the route's 400.
+     */
+    private async importModuleRoute(raw: unknown): Promise<Response> {
+        const bytes =
+            raw instanceof Uint8Array
+                ? raw
+                : typeof (raw as Blob | null)?.arrayBuffer === "function"
+                  ? new Uint8Array(await (raw as Blob).arrayBuffer())
+                  : null;
+        if (!bytes) {
+            return Response.json({ error: "Module body required" }, { status: 400 });
+        }
+        let module: RisuModule;
+        const keys: string[] = [];
+        try {
+            const { mainLength } = readModuleFileHeader(bytes);
+            const recordsStart = MODULE_FILE_HEADER_BYTES + mainLength;
+            if (recordsStart > bytes.length) {
+                throw new ModuleFileError("The module file is truncated");
+            }
+            // A copy: the reader decodes it in place.
+            module = decodeModuleMain(bytes.slice(MODULE_FILE_HEADER_BYTES, recordsStart));
+            const assets = module.assets?.length ?? 0;
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            let position = recordsStart;
+            while (true) {
+                if (position >= bytes.length) {
+                    throw new ModuleFileError("The module file has no end mark");
+                }
+                if (bytes[position] === MODULE_END_MARK) {
+                    break;
+                }
+                if (bytes[position] !== MODULE_ASSET_MARK) {
+                    throw new ModuleFileError("The module file holds an unknown record");
+                }
+                if (keys.length === assets) {
+                    throw new ModuleFileError("The module file holds more records than assets");
+                }
+                if (position + 5 > bytes.length) {
+                    throw new ModuleFileError("The module file is truncated");
+                }
+                const end = position + 5 + view.getUint32(position + 1, true);
+                if (end > bytes.length) {
+                    throw new ModuleFileError("The module file is truncated");
+                }
+                const decoded = decodeRPack(bytes.subarray(position + 5, end));
+                keys.push(`assets/${createHash("sha256").update(decoded).digest("hex")}.png`);
+                position = end;
+            }
+        } catch (error) {
+            if (error instanceof ModuleFileError) {
+                return Response.json({ error: "Invalid module file" }, { status: 400 });
+            }
+            throw error;
+        }
+        const lines: ModuleImportLine[] = keys.map((key, index) => {
+            module.assets![index][1] = key;
+            return { done: index + 1, total: keys.length };
+        });
+        lines.push({ module, assetsWritten: keys.length, assetsSkipped: 0 });
+        const ndjson = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+        return new Response(ndjson, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+    }
+
     readonly fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
         const method = init.method ?? "GET";
-        const rawBody = typeof init.body === "string" ? init.body : null;
-        const body = rawBody ? JSON.parse(rawBody) : null;
         const url = new URL(path, "http://test");
+        // The module import's body is the file (a `Blob`, never parsed here): recorded as null.
+        const rawBody = typeof init.body === "string" && url.pathname !== MODULE_IMPORT_PATH ? init.body : null;
+        const body = rawBody ? JSON.parse(rawBody) : null;
         this.requests.push({ method, path: url.pathname, body });
         if (this.failNext && (!this.failNext.match || this.failNext.match(url.pathname))) {
             const failure = this.failNext;
@@ -300,6 +386,9 @@ export class StoreBackedServer {
         }
         const headers = new Headers(init.headers);
 
+        if (url.pathname === MODULE_IMPORT_PATH && method === "POST") {
+            return this.importModuleRoute(init.body);
+        }
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");
             // The boot read's two forms (the real route's query parameters): whole chats, or their summaries.

@@ -105,7 +105,10 @@ async function boot() {
     vi.spyOn(globalApi, "saveAsset").mockResolvedValue("asset");
     const util = await import("../util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
-    vi.spyOn(util, "selectSingleFile").mockImplementation(async () => picker.file as any);
+    // The dialog answers the picked `File` itself (large-asset-import slice 2c), built from `picker.file`.
+    vi.spyOn(util, "selectSingleFileHandle").mockImplementation(async () =>
+        picker.file ? new File([new Uint8Array(picker.file.data)], picker.file.name) : null,
+    );
     const modules = await import("./modules");
     const cards = await import("../characterCards");
     const { settings, sync, record } = booted;
@@ -158,7 +161,7 @@ afterEach(() => {
 });
 
 describe("importModule adds the module through addModule", () => {
-    it("a .risum save exhausted by retries makes readModule throw and importModule add nothing", async () => {
+    it("a .risum save exhausted by retries makes readModule throw; a refused upload makes importModule add nothing after one request", async () => {
         const { modules, list, sync, record } = await boot();
         const { encodeRPack } = await import("../rpack/rpack_js");
         const main = await encodeRPack(
@@ -208,14 +211,19 @@ describe("importModule adds the module through addModule", () => {
             },
         });
         expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(8);
+        // The dialog's `.risum` goes to the import route as the file itself (large-asset-import slice
+        // 2c): one request, never retried, no `/api/write`; a 503 is the maintenance alert.
+        server.current.failNext = { status: 503, times: 1, match: (p: string) => p === "/api/import/module" };
         picker.file = { name: "failed.risum", data: bytes };
         const importing = modules.importModule();
         for (const wait of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000])
             await vi.advanceTimersByTimeAsync(wait);
-        await importing;
-        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(16);
+        expect(await importing).toBe(false);
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/import/module")).toHaveLength(1);
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(8);
+        expect(server.current.failNext).toBeNull();
         expect(list()).toEqual(before);
-        expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
+        expect(alerts.error).toHaveBeenLastCalledWith(language.moduleImportMaintenance);
         expect(alerts.normal).not.toHaveBeenCalled();
         await sync.flushResources();
         expect(record("modules")).toEqual(before);
@@ -233,6 +241,7 @@ describe("importModule adds the module through addModule", () => {
         };
         const bytes = await modules.exportModuleLegacy(source as any, { saveData: false, alertEnd: false });
         const { module } = await imported({ name: "packed.risum", data: bytes });
+        expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
         expect(module.id).not.toBe("file-id");
         expect(module).toMatchObject({
             name: "Packed",
@@ -371,5 +380,330 @@ describe("a CharX whose converted module is refused", () => {
         expect(mirrorText()).toBe(mirror);
         await sync.flushResources();
         expect(record("modules")).toEqual(before);
+    });
+});
+
+// Slice 2c: drive the file boundary and its callers, keeping the module/save stores real.
+async function packedMain(text: string) {
+    const { encodeRPack } = await import("../rpack/rpack_js");
+    const main = await encodeRPack(new TextEncoder().encode(text));
+    const header = Buffer.alloc(6);
+    header[0] = 111;
+    header.writeUInt32LE(main.length, 2);
+    return Buffer.concat([header, main, Buffer.from([0])]);
+}
+
+const ndjson = (value: unknown) => JSON.stringify(value) + "\n";
+
+describe("server module file imports", () => {
+    // One case per local check: the header, the main record's length against the file, its content
+    // (the shared reader's other refusals are covered by server/src/tests/importModule.test.ts).
+    it.each(["magic", "short main", "wrong type"])("refuses an invalid %s locally before any upload", async (fault) => {
+        const { modules, list } = await boot();
+        let bytes = await packedMain(
+            JSON.stringify({ type: "risuModule", module: { name: "Invalid", id: "file-id" } }),
+        );
+        if (fault === "magic") bytes[0] = 0;
+        if (fault === "short main") bytes = bytes.subarray(0, bytes.length - 2);
+        if (fault === "wrong type") bytes = await packedMain('{"type":"character","module":{}}');
+        const before = list();
+        const fetch = vi.spyOn(server.current, "fetch");
+        expect(await modules.importModuleFile(new Blob([new Uint8Array(bytes)]))).toBeNull();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.errors.noData);
+        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(list()).toEqual(before);
+    });
+
+    it("declining low-level access stops before lorebook preparation or upload", async () => {
+        const { modules, list } = await boot();
+        const bytes = await modules.exportModuleLegacy(
+            { name: "Permission", id: "file-id", lowLevelAccess: true, lorebook: "corrupt" } as any,
+            { saveData: false, alertEnd: false },
+        );
+        const before = list();
+        const fetch = vi.spyOn(server.current, "fetch");
+        alerts.confirm.mockResolvedValueOnce(false);
+        picker.file = { name: "permission.risum", data: bytes };
+        await modules.importModule();
+        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(list()).toEqual(before);
+    });
+
+    it("reads only header and main, confirms before upload, streams progress, and keeps prepared fields with server keys", async () => {
+        const { modules, list, sync, record } = await boot();
+        const source = {
+            id: "file-id",
+            name: "Local name",
+            description: "Local description",
+            lowLevelAccess: true,
+            lorebook: "corrupt",
+            assets: [
+                ["Local icon", "", "webp"],
+                ["Local banner", "", "jpg"],
+            ],
+        };
+        const bytes = await packedMain(JSON.stringify({ type: "risuModule", module: source }));
+        const file = new File([new Uint8Array(bytes)], "bounded.risum");
+        const wholeRead = vi.spyOn(file, "arrayBuffer");
+        const slices = vi.spyOn(file, "slice");
+        const fileReader = vi.spyOn(FileReader.prototype, "readAsArrayBuffer");
+        const util = await import("../util");
+        vi.mocked(util.selectSingleFileHandle).mockResolvedValueOnce(file);
+        const { alertWait } = await import("../alert");
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                start(value) {
+                    controller = value;
+                },
+            }),
+        );
+        const realFetch = server.current.fetch.bind(server.current);
+        const fetch = vi.spyOn(server.current, "fetch").mockImplementation((url, init) => {
+            if (url !== "/api/import/module") return realFetch(url, init);
+            expect(alerts.confirm.mock.calls).toEqual([
+                [language.lowLevelAccessConfirm],
+                [language.bootstrap.resetLorebookQuestion],
+            ]);
+            return Promise.resolve(response);
+        });
+        const before = list();
+        const importing = modules.importModule();
+        await vi.advanceTimersByTimeAsync(0);
+        const requests = fetch.mock.calls.filter(([url]) => url === "/api/import/module");
+        expect(requests).toHaveLength(1);
+        expect((requests[0][1] as RequestInit).body).toBe(file);
+        expect(slices.mock.calls).toEqual([
+            [0, 6],
+            [6, 6 + bytes.readUInt32LE(2)],
+        ]);
+        expect(wholeRead).not.toHaveBeenCalled();
+        expect(fileReader).not.toHaveBeenCalled();
+        for (let done = 1; done <= 2; done++) {
+            controller.enqueue(encode({ done, total: 2 }));
+            controller.enqueue(new TextEncoder().encode("\n"));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertWait).toHaveBeenLastCalledWith(`Loading... (Adding Assets ${done} / 2)`);
+            expect(list()).toEqual(before);
+            expect(alerts.normal).not.toHaveBeenCalled();
+        }
+        controller.enqueue(
+            new TextEncoder().encode(
+                ndjson({
+                    module: {
+                        ...source,
+                        id: "server-id",
+                        name: "Server name",
+                        description: "Server description",
+                        lowLevelAccess: false,
+                        assets: [
+                            ["Server icon", "assets/icon.png", "png"],
+                            ["Server banner", "assets/banner.png", "png"],
+                        ],
+                    },
+                    assetsWritten: 1,
+                    assetsSkipped: 1,
+                }),
+            ),
+        );
+        controller.close();
+        await importing;
+        const added = list().filter((module) => !before.some((old) => old.id === module.id));
+        expect(added).toHaveLength(1);
+        expect(added[0]).toMatchObject({
+            ...source,
+            lorebook: [],
+            id: expect.stringMatching(UUID_V4),
+            assets: [
+                ["Local icon", "assets/icon.png", "webp"],
+                ["Local banner", "assets/banner.png", "jpg"],
+            ],
+        });
+        expect(added[0].id).not.toBe(source.id);
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+        await sync.flushResources();
+        expect(record("modules")).toEqual(list());
+    });
+
+    it.each([
+        { name: "invalid file", status: 400, error: "Invalid module file", message: () => language.errors.noData },
+        {
+            name: "file too large",
+            status: 413,
+            error: "File too large",
+            message: () => language.moduleImportFileTooLarge,
+        },
+        {
+            name: "asset too large",
+            status: 413,
+            error: "Asset too large",
+            message: () => language.moduleImportAssetTooLarge,
+        },
+        { name: "conflict", status: 409, error: "busy", message: () => language.moduleImportBusy },
+        { name: "rate limit", status: 429, error: "busy", message: () => language.moduleImportBusy },
+        { name: "timeout", status: 408, error: "expired", message: () => language.moduleImportTimeout },
+        {
+            name: "authentication text",
+            status: 400,
+            error: "Invalid authentication",
+            message: () => "Invalid authentication",
+        },
+        { name: "other 413 text", status: 413, error: "Proxy limit", message: () => "Proxy limit" },
+        { name: "other HTTP error text", status: 500, error: "Store unavailable", message: () => "Store unavailable" },
+        {
+            name: "non-JSON HTTP error",
+            status: 502,
+            message: () => language.moduleImportRequestFailed.replace("{{status}}", "502"),
+        },
+        {
+            name: "failure line",
+            body: ndjson({ error: "Disk full" }),
+            message: () => language.moduleImportStopped.replace("{{error}}", "Disk full"),
+        },
+        { name: "fetch disconnected", network: "fetch", message: () => language.moduleImportInterrupted },
+        { name: "body disconnected", network: "body", message: () => language.moduleImportInterrupted },
+        { name: "malformed answer", body: "not NDJSON\n", message: () => language.errors.noData },
+        {
+            name: "different asset count",
+            body: ndjson({
+                module: { id: "server-id", name: "Wrong", assets: [] },
+                assetsWritten: 0,
+                assetsSkipped: 0,
+            }),
+            message: () => language.errors.noData,
+        },
+    ])("alerts and adds nothing after one request: $name", async (testCase) => {
+        const { modules, list } = await boot();
+        // A shorter server list must be refused, even though copying zero keys would not throw.
+        const bytes = await packedMain(
+            JSON.stringify({
+                type: "risuModule",
+                module: { name: "Refused", id: "file-id", assets: [["icon", "", "png"]] },
+            }),
+        );
+        picker.file = { name: "refused.risum", data: bytes };
+        const before = list();
+        const realFetch = server.current.fetch.bind(server.current);
+        const fetch = vi.spyOn(server.current, "fetch").mockImplementation(async (url, init) => {
+            if (url !== "/api/import/module") return realFetch(url, init);
+            if (testCase.network === "fetch") throw new TypeError("network lost");
+            if (testCase.network === "body")
+                return new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            controller.error(new TypeError("body lost"));
+                        },
+                    }),
+                );
+            if (testCase.status)
+                return new Response(
+                    testCase.error ? JSON.stringify({ error: testCase.error }) : "<html>proxy failure</html>",
+                    { status: testCase.status },
+                );
+            return new Response(testCase.body);
+        });
+        let settled = false;
+        const importing = modules.importModule().finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(settled).toBe(true);
+        await importing;
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/import/module")).toHaveLength(1);
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(testCase.message());
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(list()).toEqual(before);
+    });
+
+    it("launch queue uploads the File and adds a fresh module with a success alert", async () => {
+        const { modules, cards, list } = await boot();
+        const bytes = await modules.exportModuleLegacy(
+            { id: "launch-id", name: "Launched", description: "" },
+            { saveData: false, alertEnd: false },
+        );
+        const file = new File([new Uint8Array(bytes)], "launched.risum");
+        const read = vi.spyOn(file, "arrayBuffer");
+        const fetch = vi.spyOn(server.current, "fetch");
+        const setConsumer = vi.fn();
+        vi.stubGlobal("launchQueue", { setConsumer });
+        vi.stubGlobal("location", new URL("http://localhost/"));
+        const before = list();
+        await cards.characterURLImport();
+        expect(setConsumer).toHaveBeenCalledTimes(1);
+        setConsumer.mock.calls[0][0]({ files: [{ name: file.name, getFile: async () => file }] });
+        await vi.advanceTimersByTimeAsync(0);
+        const requests = fetch.mock.calls.filter(([url]) => url === "/api/import/module");
+        expect(requests).toHaveLength(1);
+        expect((requests[0][1] as RequestInit).body).toBe(file);
+        // The fake server consumes the body once; the tab only reads slices.
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(read.mock.invocationCallOrder[0]).toBeGreaterThan(fetch.mock.invocationCallOrder[0]);
+        expect(list()).toHaveLength(before.length + 1);
+        expect(list().at(-1)).toMatchObject({ name: "Launched", id: expect.stringMatching(UUID_V4) });
+        expect(list().at(-1).id).not.toBe("launch-id");
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each(["#share_module", "#import=http://localhost/module.risum"])(
+        "%s hands the response Blob to importModuleFile without reading its bytes",
+        async (hash) => {
+            const { modules, cards, list } = await boot();
+            const file = new Blob(["opaque .risum bytes"]);
+            const response = new Response("opaque response", {
+                headers: { "content-disposition": 'attachment; filename="module.risum"' },
+            });
+            vi.spyOn(response, "blob").mockResolvedValue(file);
+            const readResponse = vi.spyOn(response, "arrayBuffer");
+            const readFile = vi.spyOn(file, "arrayBuffer");
+            // Stop at the handoff: successful link imports already have their own coverage.
+            const importFile = vi.spyOn(modules, "importModuleFile").mockResolvedValueOnce(null);
+            vi.stubGlobal("location", new URL("http://localhost/" + hash));
+            vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+            vi.stubGlobal(
+                "fetch",
+                vi.fn(async () => response),
+            );
+            vi.stubGlobal("caches", {
+                open: async () => ({ match: async () => response, delete: vi.fn() }),
+            });
+            const before = list();
+            await cards.characterURLImport();
+            expect(importFile).toHaveBeenCalledTimes(1);
+            expect(importFile.mock.calls[0][0]).toBe(file);
+            expect(readResponse).not.toHaveBeenCalled();
+            expect(readFile).not.toHaveBeenCalled();
+            expect(list()).toEqual(before);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(alerts.normal).not.toHaveBeenCalled();
+        },
+    );
+
+    it("CharX still reads its embedded module.risum locally", async () => {
+        const { modules, cards, characterList } = await boot();
+        const embedded = {
+            id: "embedded",
+            name: "Embedded",
+            lorebook: [lore("Embedded lore", "embedded content")],
+            regex: [regex("Embedded regex")],
+            trigger: [],
+        };
+        const bytes = await modules.exportModuleLegacy(embedded as any, { saveData: false, alertEnd: false });
+        const before = characterList().length;
+        const fetch = vi.spyOn(server.current, "fetch");
+        await cards.importCharacterProcess({
+            name: "embedded.charx",
+            data: charx(cardV3("Embedded card"), { "module.risum": bytes }),
+        });
+        expect(characterList()).toHaveLength(before + 1);
+        expect(characterList().at(-1)).toMatchObject({
+            globalLore: [expect.objectContaining(lore("Embedded lore", "embedded content"))],
+            customscript: embedded.regex,
+        });
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/import/module")).toHaveLength(0);
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 });

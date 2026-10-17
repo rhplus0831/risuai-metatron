@@ -42,7 +42,13 @@ import { reencodeImage } from "./process/files/inlays";
 import { PngChunk } from "./pngChunk";
 import type { OnnxModelFiles } from "./process/transformers";
 import { CharXImporter, CharXWriter } from "./process/processzip";
-import { exportModuleLegacy, prepareModuleImport, readModule, type RisuModule } from "./process/modules";
+import {
+    exportModuleLegacy,
+    importModuleFile,
+    prepareModuleImport,
+    readModule,
+    type RisuModule,
+} from "./process/modules";
 import { saveAssets, type AssetSaveItem } from "./storage/assetQueue";
 
 export const hubURL = "/hub-proxy";
@@ -334,10 +340,14 @@ export const getRealmInfo = async (realmPath: string) => {
 
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
-/** A pending share survives a failed or cancelled import, even without a controlling worker. */
+/**
+ * A pending share survives a failed or cancelled import, even without a controlling worker. The
+ * importer reads the cached answer itself: a module as its `Blob`, uploaded as it is (large-asset-import
+ * slice 2c), a card or a preset as bytes.
+ */
 async function importPendingShare(
     kind: "character" | "preset" | "module",
-    importer: (data: Uint8Array) => Promise<unknown>,
+    importer: (pending: Response) => Promise<unknown>,
 ) {
     if (typeof caches === "undefined") {
         return;
@@ -345,7 +355,7 @@ async function importPendingShare(
     const cache = await caches.open("risuCache");
     const url = new URL(`/sw/share/${kind}`, location.origin);
     const pending = await cache.match(url);
-    if (pending && (await importer(new Uint8Array(await pending.arrayBuffer())))) {
+    if (pending && (await importer(pending))) {
         await cache.delete(url);
     }
 }
@@ -396,8 +406,7 @@ export async function characterURLImport() {
             const res = await fetch(url, {
                 method: "GET",
             });
-            const data = new Uint8Array(await res.arrayBuffer());
-            await importFile(getFileName(res), data);
+            await importFile(getFileName(res), await res.blob());
             checkCharOrder();
         } catch (error) {
             alertError(language.errors.noData);
@@ -436,13 +445,15 @@ export async function characterURLImport() {
         return;
     }
     if (hash.startsWith("#share_character")) {
-        await importPendingShare("character", (data) => importCharacterProcess({ name: "shared.charx", data }));
+        await importPendingShare("character", async (pending) =>
+            importCharacterProcess({ name: "shared.charx", data: new Uint8Array(await pending.arrayBuffer()) }),
+        );
     }
     if (hash.startsWith("#share_module")) {
-        await importPendingShare("module", async (data) => {
-            const md = await readModule(Buffer.from(data));
-            md.id = v4();
-            if (!(await prepareModuleImport(md))) {
+        await importPendingShare("module", async (pending) => {
+            // Prepared under a fresh id; null when declined or failed (alerted).
+            const md = await importModuleFile(await pending.blob());
+            if (!md) {
                 return false;
             }
             const id = addModule(md);
@@ -453,8 +464,8 @@ export async function characterURLImport() {
         });
     }
     if (hash.startsWith("#share_preset")) {
-        await importPendingShare("preset", async (data) => {
-            const id = await importPreset({ name: "shared.risup", data });
+        await importPendingShare("preset", async (pending) => {
+            const id = await importPreset({ name: "shared.risup", data: new Uint8Array(await pending.arrayBuffer()) });
             if (id) {
                 SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
                 settingsOpen.set(true);
@@ -465,9 +476,7 @@ export async function characterURLImport() {
     if ("launchQueue" in window) {
         const handleFiles = async (files: FileSystemFileHandle[]) => {
             for (const f of files) {
-                const file = await f.getFile();
-                const data = new Uint8Array(await file.arrayBuffer());
-                await importFile(f.name, data);
+                await importFile(f.name, await f.getFile());
             }
         };
         //@ts-expect-error launchQueue is File Handling API for PWA, not yet in TypeScript's Window interface
@@ -479,18 +488,19 @@ export async function characterURLImport() {
         });
     }
 
-    async function importFile(name: string, data: Uint8Array) {
+    /** A `.risum` goes to the server as the `Blob` itself (slice 2c); the other kinds are read into bytes. */
+    async function importFile(name: string, data: Blob) {
         if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")) {
             await importCharacterProcess({
                 name: name,
-                data: data,
+                data: new Uint8Array(await data.arrayBuffer()),
             });
             return;
         }
         if (name.endsWith(".risupreset") || name.endsWith(".risup")) {
             await importPreset({
                 name: name,
-                data: data,
+                data: new Uint8Array(await data.arrayBuffer()),
             });
             SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
             settingsOpen.set(true);
@@ -498,9 +508,8 @@ export async function characterURLImport() {
             return;
         }
         if (name.endsWith("risum")) {
-            const md = await readModule(Buffer.from(data));
-            md.id = v4();
-            if (!(await prepareModuleImport(md))) {
+            const md = await importModuleFile(data);
+            if (!md) {
                 return;
             }
             addModule(md);

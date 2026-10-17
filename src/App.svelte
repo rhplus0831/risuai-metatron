@@ -30,7 +30,7 @@
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
     import { importPreset } from "./ts/storage/presets.svelte";
-    import { prepareModuleImport, readModule } from "./ts/process/modules";
+    import { importModuleFile } from "./ts/process/modules";
     import { alertNormal } from "./ts/alert";
     import { language } from "./lang";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
@@ -99,9 +99,10 @@
             await importPreset({ name: file.name, data });
             alertNormal(language.successImport);
         } else if (name.endsWith(".risum")) {
-            const data = new Uint8Array(await file.arrayBuffer());
-            const module = await readModule(Buffer.from(data));
-            if (await prepareModuleImport(module)) {
+            // The dropped `File` itself goes to the server (large-asset-import slice 2c); the module
+            // comes back prepared, or null when declined or failed (alerted).
+            const module = await importModuleFile(file);
+            if (module) {
                 addModule(module);
                 alertNormal(language.successImport);
             }

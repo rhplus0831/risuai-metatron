@@ -58,7 +58,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
   - `getEmotion`, `defaultEmotion`.
   - Persona accessors, including `checkPersonaBinded`.
 - Files:
-  - `selectSingleFile`, `selectMultipleFile`, `selectFileByDom`. Both selectors use the DOM picker.
+  - `selectSingleFile`, `selectMultipleFile`, `selectFileByDom`, and `selectSingleFileHandle` (the picked `File` itself, unread, or `null` when none is picked: the `.risum` import uploads it as it is). The selectors use the DOM picker.
 - Crypto: `encryptBuffer`/`decryptBuffer` (AES-GCM), `pickHashRand`, `sfc32`, `uuidtoNumber`.
 - Text:
   - `BufferToText`.

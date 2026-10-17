@@ -8,6 +8,13 @@ import { errorFields } from "./diagnostics/log.ts";
 
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
+/**
+ * Node's limit for receiving a whole request, raised from its default of 300 s: the backup import
+ * and the `.risum` module import (large-asset-import slice 2c) upload a whole file in one request,
+ * which the default fails with 408 under about 1.9 MB/s for a 580 MB file. Finite, so a stalled
+ * upload cannot hold an import slot forever; Node's default `headersTimeout` still bounds the headers.
+ */
+const REQUEST_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const sslPath = path.join(rootDir, "server/ssl/certificate");
 
 async function getHttpsOptions(): Promise<{ key: Buffer; cert: Buffer } | null> {
@@ -40,11 +47,14 @@ async function startServer() {
     const httpsOptions = await getHttpsOptions();
     const protocol = httpsOptions ? "https" : "http";
 
+    const serverOptions = { requestTimeout: REQUEST_TIMEOUT_MS };
     const server = serve(
         {
             fetch: context.app.fetch,
             port,
-            ...(httpsOptions ? { createServer: https.createServer, serverOptions: httpsOptions } : {}),
+            ...(httpsOptions
+                ? { createServer: https.createServer, serverOptions: { ...httpsOptions, ...serverOptions } }
+                : { serverOptions }),
         },
         (info) => {
             console.log(`[Server] ${protocol.toUpperCase()} server is running.`);

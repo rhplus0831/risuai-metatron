@@ -47,9 +47,17 @@ export function checkNullish(data: any) {
 }
 
 export async function selectSingleFile(ext: string[]) {
-    const v = await selectFileByDom(ext, "single");
-    const file = v[0];
+    const file = await selectSingleFileHandle(ext);
     return { name: file.name, data: await readFileAsUint8Array(file) };
+}
+
+/**
+ * The picked file as the `File` itself, read by nobody here (`docs/plan/large-asset-import.md`
+ * slice 2c: a `.risum` is uploaded as it is, never held in the tab); `null` when none is picked.
+ */
+export async function selectSingleFileHandle(ext: string[]): Promise<File | null> {
+    const files = await selectFileByDom(ext, "single");
+    return files?.[0] ?? null;
 }
 
 export async function selectMultipleFile(ext: string[]) {
