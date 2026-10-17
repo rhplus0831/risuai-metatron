@@ -1,12 +1,22 @@
+import {
+    ASSET_BATCH_READ_PATH,
+    ASSET_BATCH_WRITE_PATH,
+    type AssetRecord,
+    AssetRecordParser,
+    encodeAssetRecordHeader,
+} from "../../../shared/assetBatch.ts";
 import { authFetch } from "./serverAuth";
 
 /**
  * The asset files on the self-host server (Phase 6 slice 10, split out of the old storage client):
  * bytes under a logical key (`assets/<id>.<ext>`), read with `GET /api/read` and written with `POST /api/write`.
  * The key travels hex-encoded (UTF-8) in the `file-path` header; the request is authenticated
- * (`authFetch`). The routes are the server's (`server/src/routes/storage.ts`).
+ * (`authFetch`). The routes are the server's (`server/src/routes/storage.ts`). `writeAssets` and
+ * `readAssets` move many assets per request through the batch routes (`/api/assets/write`,
+ * `/api/assets/read`) in the backup archive's record framing (`shared/assetBatch.ts`), each record
+ * named by its key.
  *
- * Both calls retry an answer of 429 or 503 and a network failure (`fetch` throwing): the wait is the
+ * Every call retries an answer of 429 or 503 and a network failure (`fetch` throwing): the wait is the
  * answer's `Retry-After` (capped at {@link MAX_RETRY_AFTER_MS}) when it has one, else
  * {@link BASE_RETRY_DELAY_MS} doubling to {@link MAX_BACKOFF_MS}, for at most
  * {@link MAX_ASSET_ATTEMPTS} attempts in all; the last answer or error then decides as without a
@@ -23,11 +33,18 @@ export const BASE_RETRY_DELAY_MS = 1_000;
 export const MAX_BACKOFF_MS = 30_000;
 /** The cap of a server-sent `Retry-After`. */
 export const MAX_RETRY_AFTER_MS = 60_000;
+/** Most record bytes (headers included) of one `writeAssets` request; a single larger asset goes alone. */
+export const ASSET_BATCH_CLIENT_BYTES = 64 * 1024 * 1024;
+/** Most records of one `writeAssets` or `readAssets` request (the server takes up to `MAX_ASSET_BATCH_RECORDS`). */
+export const ASSET_BATCH_CLIENT_RECORDS = 500;
 
 export type AssetRequestOptions = {
     /** Aborts the pending wait and the request in flight. */
     signal?: AbortSignal;
 };
+
+/** One asset for `writeAssets`. */
+export type AssetWriteItem = { key: string; bytes: Uint8Array };
 
 function encodedPath(key: string) {
     return Buffer.from(key, "utf-8").toString("hex");
@@ -192,4 +209,160 @@ export async function readAsset(key: string, options: AssetRequestOptions = {}):
         return null;
     }
     return data;
+}
+
+/** A record of a write batch: its encoded header and its bytes. */
+type WriteRecord = { header: Uint8Array; bytes: Uint8Array };
+
+/**
+ * Splits the items into request batches of at most {@link ASSET_BATCH_CLIENT_RECORDS} records and
+ * {@link ASSET_BATCH_CLIENT_BYTES} record bytes, a larger single record alone. Every header is
+ * encoded first, so an item the framing cannot carry throws before anything is sent.
+ */
+function writeBatches(items: readonly AssetWriteItem[]): WriteRecord[][] {
+    const batches: WriteRecord[][] = [];
+    let batch: WriteRecord[] = [];
+    let size = 0;
+    for (const { key, bytes } of items) {
+        const header = encodeAssetRecordHeader(key, bytes.byteLength);
+        const recordSize = header.byteLength + bytes.byteLength;
+        if (
+            batch.length > 0 &&
+            (batch.length >= ASSET_BATCH_CLIENT_RECORDS || size + recordSize > ASSET_BATCH_CLIENT_BYTES)
+        ) {
+            batches.push(batch);
+            batch = [];
+            size = 0;
+        }
+        batch.push({ header, bytes });
+        size += recordSize;
+    }
+    if (batch.length > 0) {
+        batches.push(batch);
+    }
+    return batches;
+}
+
+/** A write batch's request body: its records back to back. */
+function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
+    let total = 0;
+    for (const { header, bytes } of batch) {
+        total += header.byteLength + bytes.byteLength;
+    }
+    const body = new Uint8Array(total);
+    let at = 0;
+    for (const { header, bytes } of batch) {
+        body.set(header, at);
+        at += header.byteLength;
+        body.set(bytes, at);
+        at += bytes.byteLength;
+    }
+    return body;
+}
+
+/**
+ * Writes every item under its key with `POST /api/assets/write`, one batch at a time (see
+ * {@link writeBatches}), each request retried as described above; the server always overwrites, and
+ * a zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
+ * for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
+ * batches before the failing one, and possibly some of its records, stay written.
+ */
+export async function writeAssets(items: readonly AssetWriteItem[], options: AssetRequestOptions = {}): Promise<void> {
+    const { signal } = options;
+    for (const batch of writeBatches(items)) {
+        const body = joinRecords(batch);
+        const da = await requestWithRetry(
+            ASSET_BATCH_WRITE_PATH,
+            () => ({
+                method: "POST",
+                body: body as any,
+                headers: {
+                    "content-type": "application/octet-stream",
+                },
+            }),
+            signal,
+        );
+        if (da.status < 200 || da.status >= 300) {
+            throw "setItem Error";
+        }
+        let data: any;
+        try {
+            data = await da.json();
+        } catch (error) {
+            rethrow(error, signal);
+        }
+        if (data.error) {
+            throw data.error;
+        }
+    }
+}
+
+/**
+ * The records of a batch read answer, parsed as the body arrives (all at once when the answer has no
+ * body stream). Throws `"getItem Error"` when the body breaks off or is malformed, or the signal's
+ * reason when the signal fired.
+ */
+async function readRecords(res: Response, signal: AbortSignal | undefined): Promise<AssetRecord[]> {
+    const parser = new AssetRecordParser();
+    const records: AssetRecord[] = [];
+    const reader = res.body?.getReader();
+    try {
+        if (reader) {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    break;
+                }
+                records.push(...parser.push(value));
+            }
+        } else {
+            records.push(...parser.push(new Uint8Array(await res.arrayBuffer())));
+        }
+        parser.end();
+    } catch {
+        void reader?.cancel().catch(() => {});
+        throwIfAborted(signal);
+        throw "getItem Error";
+    }
+    return records;
+}
+
+/**
+ * Reads the bytes under every key with `POST /api/assets/read`, one batch of at most
+ * {@link ASSET_BATCH_CLIENT_RECORDS} keys at a time, each request retried as described above: one
+ * entry per key in the order asked (duplicates included), `null` when there are none (a missing or
+ * empty file, or a key with no storage location). Nothing is sent for an empty list. Throws
+ * `"getItem Error"` for a non-2xx answer or one that is not exactly the records asked for.
+ */
+export async function readAssets(
+    keys: readonly string[],
+    options: AssetRequestOptions = {},
+): Promise<(Buffer | null)[]> {
+    const { signal } = options;
+    const results: (Buffer | null)[] = [];
+    for (let start = 0; start < keys.length; start += ASSET_BATCH_CLIENT_RECORDS) {
+        const batch = keys.slice(start, start + ASSET_BATCH_CLIENT_RECORDS);
+        const da = await requestWithRetry(
+            ASSET_BATCH_READ_PATH,
+            () => ({
+                method: "POST",
+                body: JSON.stringify({ keys: batch }),
+                headers: {
+                    "content-type": "application/json",
+                },
+            }),
+            signal,
+        );
+        if (da.status < 200 || da.status >= 300) {
+            throw "getItem Error";
+        }
+        const records = await readRecords(da, signal);
+        if (records.length !== batch.length || records.some((record, index) => record.name !== batch[index])) {
+            throw "getItem Error";
+        }
+        for (const { bytes } of records) {
+            results.push(bytes.byteLength === 0 ? null : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+        }
+    }
+    return results;
 }

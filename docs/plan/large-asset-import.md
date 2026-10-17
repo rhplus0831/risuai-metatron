@@ -111,18 +111,49 @@ migration; unbounded persona and preset decoders (small files in practice).
   `Retry-After`, the cap, abort) and a queue test (admission blocks, order of
   progress, one failure rejects after the others settle). Closes C1's
   backpressure half and the retry half of every B finding.
-- **1b. Batch asset routes** (_hard_, `self-host-server.md`).
-  `POST /api/assets/write` and `POST /api/assets/read`, both
-  `application/octet-stream` in the archive record framing: write takes
-  `[header(name, length), bytes]*` and answers `{ keys: string[] }` after
-  hashing each record and writing it with `writeStorageFile` under the
-  maintenance gate (skip an existing key); read takes a JSON key list and
-  streams records back (a missing key is a zero-length record). Both under
-  the global 100 MiB body limit and the normal limiter; the client splits
-  batches to 64 MiB / 500 records. Client: `writeAssets(items)` and
-  `readAssets(keys)` in `assetClient.ts`. Tests: `server/src/tests/assets.test.ts`
-  (framing, hash equals the client's, maintenance 503, oversized 413, a
-  symlinked key refused) and the client codec round trip.
+- **1b. Batch asset routes** (_hard_, `self-host-server.md`, `persistence.md`). The design the
+  2026-10-17 challenge settled on. A shared codec, `shared/assetBatch.ts`: the route paths,
+  `MAX_ASSET_BATCH_RECORDS` (2000, the server's cap per request), `MAX_ASSET_BATCH_NAME_BYTES`
+  (4096), `encodeAssetRecordHeader` (the backup archive's `u32le nameLength`, UTF-8 name,
+  `u32le dataLength` framing; `archive.ts` `encodeRecordHeader` now calls it), and the incremental
+  `AssetRecordParser` (`push` returns whole records, `events` yields `start`/`data`/`end` so a
+  streaming reader never holds a record, `end` refuses a trailing partial record; a zero-length,
+  over-cap, or non-strict-UTF-8 name and a record past the cap are `AssetBatchFormatError`).
+  `POST /api/assets/write` (`checkAuth`, raw body): each record's name is the client's full logical
+  key, resolved with `resolveStorageKey` (no server-side hashing: `saveAsset`'s `customId` and uuid
+  fallbacks and the inlays name their own keys, and `/api/write` already takes any key). Its bytes
+  stream into a `save/.tmp/<uuid>.tmp` staging file as they arrive (memory holds a chunk, not a
+  record); once the record is complete the route enters the maintenance gate for that record only,
+  renames the file into place (always overwriting, as `/api/write` does, so `customId` keys such as
+  inlays keep overwriting; a zero-length record is an empty file), and leaves. The gate is never
+  held across the body read, because `withMaintenance` waits for every admitted mutation. The
+  answer is `{ success: true, written }`. At the first failure (a key with no storage location:
+  400 `{ error: "Invaild Path", index }`; a malformed or truncated body: 400
+  `{ error: "Invalid asset batch" }`; the gate closed: 503 with `Retry-After: 5`; a filesystem
+  error: 500) the route stops writing and removes the staged file, but reads the rest of the body
+  to its end before it answers: `@hono/node-server` resets a connection whose body is left unread
+  (after 500 ms or 64 MiB), which the client would see as a network failure and resend. Records
+  renamed before the failure stay in place; the client resends the whole batch, overwriting them.
+  `POST /api/assets/read` (`checkAuth`, JSON `{ keys }` of 1 to 2000 keys, else 400) answers a
+  chunked `application/octet-stream` with `Cache-Control: no-store`: one record per key in the
+  order asked, duplicates kept, each file read as the backup export reads it (`fileRecord` and
+  `iteratorStream`, moved to `server/src/http/recordStream.ts`: no symlinks, size and bytes from one
+  handle, a file that shrinks fails the stream), and a zero-length record for a key with no storage
+  location, a missing file, a symlink, or a non-regular file (the `/api/read` rule). A client that
+  leaves cancels the stream, which closes the open file. Both routes stay under the global 100 MiB
+  body limit (Hono passes a `Content-Length` body through untouched; an asset over it fails with
+  413, as through `/api/write`) and the 2000/min limiter. Client: `writeAssets(items, { signal })`
+  and `readAssets(keys, { signal })` in `assetClient.ts`, over 1a's retry, one batch at a time:
+  writes in batches of at most 500 records and 64 MiB of record bytes (a larger single asset goes
+  alone), reads in batches of 500 keys; `null` for a zero-length record; `"setItem Error"` /
+  `"getItem Error"` for a non-2xx answer, and `"getItem Error"` for a truncated or malformed answer.
+  `saveAsset`, `loadAsset`, and the save queue are rewired in 3a and 3c. Tests:
+  `server/src/tests/assets.test.ts` (a write batch lands files byte-for-byte readable through
+  `/api/read`; an invalid key mid-batch is a 400 with the earlier records kept and the body
+  drained; a truncated body is a 400; the gate 503; an oversized body 413; a read batch returns the
+  bytes, and a zero-length record for a missing key, a key with no location, and a symlinked file;
+  it refuses a non-array or empty `keys` and keeps duplicates in order; the record cap) and a client
+  test (the codec round trip and the batch splitting).
 - **1c. Storage limiter bucket** (_small_, `self-host-server.md`). Give
   `/api/read`, `/api/write`, `/api/assets/*` their own `createRateLimiter`
   bucket so an asset burst cannot 429 resource sync (`rateLimit.ts` already

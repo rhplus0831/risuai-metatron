@@ -259,6 +259,8 @@ export const ROUTE_TEMPLATES = [
     "/api/remove",
     "/api/list",
     "/api/write",
+    "/api/assets/write",
+    "/api/assets/read",
     "/api/resources",
     "/api/resources/read",
     "/api/resources/batch",

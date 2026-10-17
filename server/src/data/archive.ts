@@ -1,9 +1,11 @@
 import fs, { type FileHandle } from "node:fs/promises";
+import { encodeAssetRecordHeader } from "../../../shared/assetBatch.ts";
 
 /**
  * The local backup archive container: concatenated records of `u32le nameLength`, the UTF-8 name,
  * `u32le dataLength`, and the bytes. It has no header or footer of its own; format version 2 starts
- * with a `manifest.json` record (`BackupArchiveManifest`).
+ * with a `manifest.json` record (`BackupArchiveManifest`). The batch asset routes use the same
+ * framing (`shared/assetBatch.ts`), whose encoder writes every header.
  */
 export const MAX_ARCHIVE_RECORD_BYTES = 0xffffffff;
 const MAX_ARCHIVE_NAME_BYTES = 4096;
@@ -26,16 +28,12 @@ export class ArchiveFormatError extends Error {
 
 export type ArchiveRecord = { name: string; offset: number; length: number };
 
+/** A record header (`encodeAssetRecordHeader`), refused with `ArchiveFormatError` past the archive's caps. */
 export function encodeRecordHeader(name: string, length: number): Uint8Array {
-    const nameBytes = Buffer.from(name, "utf-8");
-    if (length > MAX_ARCHIVE_RECORD_BYTES || nameBytes.length > MAX_ARCHIVE_NAME_BYTES) {
+    if (length > MAX_ARCHIVE_RECORD_BYTES || Buffer.byteLength(name, "utf-8") > MAX_ARCHIVE_NAME_BYTES) {
         throw new ArchiveFormatError(`Archive record ${name} is too large`);
     }
-    const header = Buffer.alloc(8 + nameBytes.length);
-    header.writeUInt32LE(nameBytes.length, 0);
-    nameBytes.copy(header, 4);
-    header.writeUInt32LE(length, 4 + nameBytes.length);
-    return header;
+    return encodeAssetRecordHeader(name, length);
 }
 
 /**

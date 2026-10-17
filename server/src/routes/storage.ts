@@ -1,10 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { constants, type Dirent, mkdirSync, rmSync } from "node:fs";
+import { type Dirent, mkdirSync, rmSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { createStreamBody } from "@hono/node-server/utils/stream";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import {
+    ASSET_BATCH_READ_PATH,
+    ASSET_BATCH_WRITE_PATH,
+    AssetBatchFormatError,
+    type AssetRecordEvent,
+    AssetRecordParser,
+    MAX_ASSET_BATCH_NAME_BYTES,
+    MAX_ASSET_BATCH_RECORDS,
+} from "../../../shared/assetBatch.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
+import { readJsonBody } from "../http/body.ts";
+import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
@@ -24,9 +35,6 @@ const HEX_FALLBACK_PREFIX = "~";
 const hexHeaderRegex = /^(?:[0-9a-fA-F]{2})+$/;
 const readableByteRegex = /^[a-z0-9._-]$/;
 const windowsReservedStem = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
-const missingFileCodes = new Set(["ENOENT", "ENOTDIR", "ELOOP"]);
-// No symlinks, and a FIFO opens without blocking so the `isFile` check can reject it.
-const readFlags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /** Decodes bytes as UTF-8, or null when they are not valid UTF-8 (no replacement characters). */
 function decodeUtf8Strict(bytes: Buffer): string | null {
@@ -137,7 +145,7 @@ export async function readStorageFile(savePath: string, key: string): Promise<Ui
     }
     let handle: FileHandle;
     try {
-        handle = await fs.open(fullPath, readFlags);
+        handle = await fs.open(fullPath, STORAGE_READ_FLAGS);
     } catch (error) {
         if (isMissingFileError(error)) {
             return null;
@@ -193,15 +201,43 @@ export async function writeStorageFile(savePath: string, key: string, bytes: Uin
     }
 }
 
-function isMissingFileError(error: unknown): boolean {
-    return missingFileCodes.has((error as NodeJS.ErrnoException)?.code ?? "");
+/** Writes every byte of `bytes` at the handle's current position. */
+async function writeAll(out: FileHandle, bytes: Uint8Array): Promise<void> {
+    let done = 0;
+    while (done < bytes.byteLength) {
+        done += (await out.write(bytes, done, bytes.byteLength - done)).bytesWritten;
+    }
+}
+
+/** A batch read's key list: 1 to `MAX_ASSET_BATCH_RECORDS` keys, each one a record name the framing can carry. */
+function isBatchKeyList(keys: unknown): keys is string[] {
+    return (
+        Array.isArray(keys) &&
+        keys.length > 0 &&
+        keys.length <= MAX_ASSET_BATCH_RECORDS &&
+        keys.every(
+            (key) =>
+                typeof key === "string" &&
+                key.length > 0 &&
+                Buffer.byteLength(key, "utf-8") <= MAX_ASSET_BATCH_NAME_BYTES,
+        )
+    );
+}
+
+/** A batch read's answer: one record per key, in order (`storedFileRecord`). */
+async function* storedRecords(savePath: string, keys: string[]): AsyncGenerator<Uint8Array> {
+    for (const key of keys) {
+        yield* storedFileRecord(key, resolveStorageKey(savePath, key));
+    }
 }
 
 /**
  * `/api/*` storage routes over `save/`. The client sends each logical key hex-encoded in the
  * `file-path` header; the server maps it with `resolveStorageKey`. One server process owns `save/`.
  * Writes and removals answer 503 while a restore or an import holds `maintenance`; one admitted
- * before maintenance began finishes first (`MaintenanceGate.enter`).
+ * before maintenance began finishes first (`MaintenanceGate.enter`). The batch routes
+ * (`/api/assets/write`, `/api/assets/read`) carry many assets per request in the backup archive's
+ * record framing (`shared/assetBatch.ts`), each record named by its logical key.
  */
 export function registerStorageRoutes(
     app: Hono<AppEnv>,
@@ -248,7 +284,7 @@ export function registerStorageRoutes(
         }
         let handle: FileHandle;
         try {
-            handle = await fs.open(fullPath, readFlags);
+            handle = await fs.open(fullPath, STORAGE_READ_FLAGS);
         } catch (error) {
             if (isMissingFileError(error)) {
                 return c.body(null, 200);
@@ -380,5 +416,145 @@ export function registerStorageRoutes(
             admitted.leave();
         }
         return c.json({ success: true });
+    });
+
+    // Records named by their logical keys, written as `/api/write` writes (always overwriting; a
+    // zero-length record is an empty file) but streamed: each record's bytes go into a staged file as
+    // they arrive, so memory holds a chunk, not a record. Only the rename into place holds the gate,
+    // one record at a time and never across the body read, because maintenance waits for every
+    // admitted mutation. At the first failure the writing stops and the staged file is removed, but
+    // the rest of the body is still read and dropped before the answer: `@hono/node-server` resets a
+    // connection whose body is left unread, which the client would see as a network failure and
+    // resend. Records renamed before the failure stay in place (the client resends the whole batch,
+    // overwriting them).
+    app.post(ASSET_BATCH_WRITE_PATH, limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const parser = new AssetRecordParser();
+        let written = 0;
+        /** The record whose bytes are being staged. */
+        let staged: { target: string; file: string; out: FileHandle } | null = null;
+        /** The first failure: the answer, or the error that becomes a 500, once the body is read. */
+        let failure: { response: Response } | { error: unknown } | null = null;
+        const refuse = (error: unknown) =>
+            error instanceof AssetBatchFormatError
+                ? { response: c.json({ error: "Invalid asset batch" }, 400) }
+                : { error };
+        const dropStaged = async () => {
+            const current = staged;
+            staged = null;
+            if (current) {
+                await current.out.close().catch(() => {});
+                await fs.rm(current.file, { force: true }).catch(() => {});
+            }
+        };
+        /** Applies one parser event; an answer when it refuses the batch. */
+        const apply = async (event: AssetRecordEvent): Promise<Response | null> => {
+            if (event.type === "start") {
+                const target = resolveStorageKey(savePath, event.name);
+                if (target === null) {
+                    return c.json({ error: "Invaild Path", index: event.index }, 400);
+                }
+                await fs.mkdir(tmpPath, { recursive: true });
+                const file = path.join(tmpPath, `${randomUUID()}.tmp`);
+                staged = { target, file, out: await fs.open(file, "wx") };
+                return null;
+            }
+            const current = staged!;
+            if (event.type === "data") {
+                await writeAll(current.out, event.bytes);
+                return null;
+            }
+            await current.out.close();
+            const admitted = enterMaintenanceGate(c);
+            if ("closed" in admitted) {
+                return admitted.closed;
+            }
+            try {
+                await fs.mkdir(path.dirname(current.target), { recursive: true });
+                await fs.rename(current.file, current.target);
+            } finally {
+                admitted.leave();
+            }
+            staged = null;
+            written += 1;
+            return null;
+        };
+
+        const body = c.req.raw.body;
+        if (body) {
+            const reader = body.getReader();
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    if (failure) {
+                        continue;
+                    }
+                    try {
+                        for (const event of parser.events(value)) {
+                            const refused = await apply(event);
+                            if (refused) {
+                                failure = { response: refused };
+                                break;
+                            }
+                        }
+                    } catch (error) {
+                        failure = refuse(error);
+                    }
+                    if (failure) {
+                        await dropStaged();
+                    }
+                }
+            } catch (error) {
+                // The body could not be read to its end: the client is gone.
+                await dropStaged();
+                throw error;
+            }
+        }
+        if (!failure) {
+            try {
+                parser.end();
+            } catch (error) {
+                failure = refuse(error);
+                await dropStaged();
+            }
+        }
+        if (failure) {
+            if ("error" in failure) {
+                throw failure.error;
+            }
+            return failure.response;
+        }
+        return c.json({ success: true, written });
+    });
+
+    // One record per asked key, in the order asked (duplicates included), each read as the backup
+    // export reads a file (no symlinks, size and bytes from one handle). A key with no storage
+    // location, a missing file, a symlink, or a non-regular file is a zero-length record, as `/api/read`
+    // answers an empty 200. A file that cannot be read fails the stream. Like `/api/read`, it stays
+    // open under maintenance.
+    app.post(ASSET_BATCH_READ_PATH, limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const parsed = await readJsonBody(c);
+        if (!parsed.ok) {
+            return parsed.response;
+        }
+        const keys: unknown = parsed.body.keys;
+        if (!isBatchKeyList(keys)) {
+            return c.json({ error: `keys must be a list of 1 to ${MAX_ASSET_BATCH_RECORDS} keys` }, 400);
+        }
+        c.header("Content-Type", "application/octet-stream");
+        c.header("Cache-Control", "no-store");
+        // Files open one at a time inside the stream; a client that leaves cancels it, which closes
+        // the open one (`iteratorStream`).
+        return c.body(iteratorStream(storedRecords(savePath, keys)), 200);
     });
 }

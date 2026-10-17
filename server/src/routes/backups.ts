@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants, type Dirent } from "node:fs";
+import type { Dirent } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
@@ -19,6 +19,7 @@ import { ResourceEpochError, type ResourceStore, ResourceValidationError } from 
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { readJsonBody } from "../http/body.ts";
+import { fileRecord, iteratorStream } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { decodeFileName, resolveStorageKey } from "./storage.ts";
@@ -29,7 +30,6 @@ export const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_PARTIAL_ASSETS = 100_000;
 const ASSET_PREFIX = "assets/";
-const readFlags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /** A refused archive; the route answers 400 with the message. */
 class ArchiveRejectedError extends Error {}
@@ -410,60 +410,6 @@ async function listAssetKeys(assetsPath: string): Promise<string[]> {
         }
     }
     return keys.sort();
-}
-
-/**
- * One archive record streamed from a file. The size comes from the open handle, so an atomic replace
- * of the file meanwhile cannot mix two versions. A file that cannot be read any more fails the
- * stream (the manifest already lists it as included), so the download ends in an error instead of a
- * silently incomplete archive.
- */
-async function* fileRecord(name: string, file: string): AsyncGenerator<Uint8Array> {
-    const handle = await fs.open(file, readFlags);
-    try {
-        const { size } = await handle.stat();
-        yield encodeRecordHeader(name, size);
-        let done = 0;
-        while (done < size) {
-            const chunk = Buffer.alloc(Math.min(1024 * 1024, size - done));
-            const { bytesRead } = await handle.read(chunk, 0, chunk.length, done);
-            if (bytesRead === 0) {
-                throw new Error(`Backup export: ${name} shrank while it was read`);
-            }
-            done += bytesRead;
-            yield bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead);
-        }
-    } finally {
-        await handle.close();
-    }
-}
-
-/**
- * A pull-based stream over an async iterator; cancelling it (client gone) finishes the iterator and
- * then runs `finalize` (a generator that never started has no `finally` to run).
- */
-function iteratorStream(
-    iterator: AsyncGenerator<Uint8Array>,
-    finalize: () => Promise<void>,
-): ReadableStream<Uint8Array> {
-    return new ReadableStream<Uint8Array>({
-        async pull(controller) {
-            try {
-                const { value, done } = await iterator.next();
-                if (done) {
-                    controller.close();
-                } else {
-                    controller.enqueue(value);
-                }
-            } catch (error) {
-                controller.error(error);
-            }
-        },
-        async cancel() {
-            await iterator.return(undefined);
-            await finalize();
-        },
-    });
 }
 
 /** Writes the request body to `file`, counting bytes; false (and the file removed) past `limit`. */
