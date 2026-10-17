@@ -30,7 +30,13 @@
         "largePortrait": false
       }
     ],
-    "globalChatVariables": { "bonus": "5", "toggle_dark": "1" },
+    "globalChatVariables": {
+      "bonus": "5",
+      "toggle_dark": "1",
+      "toggle_priority": "legacy",
+      "toggle_cleared": "legacy text"
+    },
+    "customPromptTemplateToggle": "default_check=Default checkbox\ndefault_select=Default select=select=First,Second\ndefault_text=Default text=text\npriority=Priority=text\ncleared=Cleared=text",
     "templateDefaultVariables": "tmpl=T",
     "enabledModules": [],
     "modules": [],
@@ -42,6 +48,7 @@
         "firstMessage": "Sel greets.",
         "alternateGreetings": [],
         "defaultVariables": "dflt=D",
+        "customModuleToggle": "owner_area=Owner area=textarea",
         "chatPage": 0,
         "customscript": [],
         "emotionImages": [],
@@ -53,6 +60,7 @@
             "localLore": [],
             "fmIndex": -1,
             "scriptstate": { "$hp": "7", "$mood": "calm" },
+            "GLGlobalVariables": { "toggle_priority": "chat", "toggle_cleared": "" },
             "message": [
               { "chatId": "m-s1", "role": "user", "data": "first user line" },
               { "chatId": "m-s2", "role": "char", "data": "Sel answers {{user}}." }
@@ -160,6 +168,11 @@
     ]
   },
   "cases": [
+    {
+      "name": "toggle defaults and kind-aware overrides agree across global reads, conditions, and calculator",
+      "input": "[{{getglobalvar::toggle_default_check}}|{{getglobalvar::toggle_default_select}}|{{getglobalvar::toggle_default_text}}|{{getglobalvar::toggle_owner_area}}|{{getglobalvar::toggle_undefined}}|{{getglobalvar::plain_unset}}|{{getglobalvar::toggle_priority}}|{{getglobalvar::toggle_cleared}}] {{#when::toggle::default_check}}ON{{:else}}OFF{{/when}} {{#when::default_select::tis::0}}FIRST{{:else}}WRONG{{/when}} {{#when::default_check::tisnot::0}}WRONG{{:else}}ZERO{{/when}} {{? @toggle_default_check + @toggle_default_select + 2}}",
+      "expected": "[0|0|||null|null|chat|] OFF FIRST ZERO 2"
+    },
     {
       "name": "recursive function through #func and call",
       "input": "[{{#func count n}}{{#when::{{arg::1}}::>::0}}{{arg::1}} {{call::count::{{? {{arg::1}}-1}}}}{{/when}}{{/func}}{{call::count::3}}]",

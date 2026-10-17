@@ -581,14 +581,14 @@ export function getModuleRegexScripts(chatRef?: ModuleChatRef) {
     return customscripts;
 }
 
-export function getModuleToggles(chatRef?: ModuleChatRef) {
-    const modules = getModules(chatRef);
+export function getModuleToggles(chatRef?: ModuleChatRef, scope?: PresetScope) {
+    const modules = getModules(chatRef, scope);
     let costomModuleToggles: string = "";
     for (const module of modules) {
         if (!module) {
             continue;
         }
-        if (module.customModuleToggle) {
+        if (typeof module.customModuleToggle === "string" && module.customModuleToggle) {
             costomModuleToggles += "\n" + module.customModuleToggle + "\n";
         }
     }

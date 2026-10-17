@@ -1,6 +1,8 @@
 # Per-Chat Toggles and Toggle Presets Plan
 
-Status: planned on 2026-10-17; nothing landed. Sources: the current code at
+Status: slice 1 landed with kind-aware empty strings (`""` stays set for text/textarea); slices 2–4 remain planned.
+
+Planned on 2026-10-17. Sources: the code at
 `bfdcfd508` (anchors below are from that commit; re-verify before editing) and
 the sibling fork `/home/codex/risuai-fastify`, whose "Saved Toggles" feature
 (`src/ts/chatGenerationTogglePresets.ts`, `…Planning.ts`, `…Records.ts`,

@@ -22,6 +22,7 @@
     } from "src/ts/parser/chatVar.svelte";
     import { PinIcon } from "@lucide/svelte";
     import { supaMemoryOnCount } from "../../../shared/characters.ts";
+    import { toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
@@ -90,7 +91,7 @@
 
     let groupedToggles = $derived.by(() => {
         const ungrouped = parseToggleSyntax(
-            activePreset.customPromptTemplateToggle + "\n" + getModuleToggles() + "\n" + charToggle,
+            toggleDefinitionsText(activePreset.customPromptTemplateToggle, getModuleToggles(), charToggle),
         );
 
         let groupOpen = false;
@@ -109,14 +110,6 @@
             return acc;
         }, []);
     });
-
-    const getGlobalChatVarNH = (key: string) => {
-        const value = getGlobalChatVar(key);
-        if (value === "null") {
-            return "";
-        }
-        return value;
-    };
 </script>
 
 {#snippet localToggle(toggle: sidebarToggle)}
@@ -148,7 +141,7 @@
                 <span>{@render getToggleDisplayName(toggle)}</span>
                 <SelectInput
                     className="w-32"
-                    value={getGlobalChatVarNH(`toggle_${toggle.key}`)}
+                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
                     onchange={(e) => {
                         setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.value);
                     }}
@@ -163,7 +156,7 @@
                 <span>{@render getToggleDisplayName(toggle)}</span>
                 <TextInput
                     className="w-32"
-                    value={getGlobalChatVarNH(`toggle_${toggle.key}`)}
+                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
                     onchange={(e) => {
                         setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.value);
                     }}
@@ -175,7 +168,7 @@
                 <TextAreaInput
                     className="w-32"
                     height="20"
-                    value={getGlobalChatVarNH(`toggle_${toggle.key}`)}
+                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
                     onchange={(e) => {
                         //check is div
                         if (e.currentTarget instanceof HTMLDivElement) {
@@ -203,13 +196,13 @@
         {:else}
             <div class="w-full flex mt-2 items-center">
                 <CheckInput
-                    check={getGlobalChatVarNH(`toggle_${toggle.key}`) === "1"}
+                    check={getGlobalChatVar(`toggle_${toggle.key}`) === "1"}
                     {reverse}
                     name={toggle.value}
                     onChange={() => {
                         setGlobalChatVar(
                             `toggle_${toggle.key}`,
-                            getGlobalChatVarNH(`toggle_${toggle.key}`) === "1" ? "0" : "1",
+                            getGlobalChatVar(`toggle_${toggle.key}`) === "1" ? "0" : "1",
                         );
                     }}
                 >

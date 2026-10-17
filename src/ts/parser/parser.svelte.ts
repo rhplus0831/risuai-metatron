@@ -35,6 +35,7 @@ import { get } from "svelte/store";
 import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { calcString } from "../process/infunctions";
+import { calcString as calcStringWith } from "../../../shared/cbs/calc.ts";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
 import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
 import { getInlayMedia, getInlayObjectUrl } from "../process/files/inlays";
@@ -1424,6 +1425,14 @@ export function risuChatParserScoped(
             // The preset-owned reads (variable defaults, module integration) are the scope's too;
             // stored chat variables stay the parse's chat's.
             getChatVar: (key, chatRef) => (chatRef ? getChatVarOf(chatRef, key, scope) : getChatVar(key, scope)),
+            getGlobalChatVar: (key, chatRef) =>
+                chatRef ? getGlobalChatVarOf(chatRef, key, scope) : getGlobalChatVar(key, scope),
+            // The calculator stays bound to the selected chat, with this parse's preset defaults.
+            calcString: (text) =>
+                calcStringWith(text, {
+                    getChatVar: (key) => getChatVar(key, scope),
+                    getGlobalChatVar: (key) => getGlobalChatVar(key, scope),
+                }),
             getModules: (chatRef) => getModules(chatRef, scope),
             getModuleLorebooks: (chatRef) => getModuleLorebooks(chatRef, scope),
             getModelInfo: (id) => getModelInfo(id, scope),

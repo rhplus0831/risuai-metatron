@@ -11,6 +11,8 @@ import PopupList from "src/lib/UI/PopupList.svelte";
 
 // Shared with the server (Phase 5 slice 8a) so CBS and lore pick the same values.
 export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
+export { parseToggleSyntax } from "../../shared/prompt/toggles.ts";
+export type { sidebarToggle, sidebarToggleGroup, sidebarToggleGroupEnd } from "../../shared/prompt/toggles.ts";
 
 export interface Messagec extends Message {
     index: number;
@@ -989,87 +991,6 @@ export function parseKeyValue(template: string) {
 
         return keyValue;
     } catch (error) {
-        return [];
-    }
-}
-
-export type sidebarToggleGroup = {
-    key?: string;
-    value?: string;
-    type: "group";
-    children: sidebarToggle[];
-};
-
-export type sidebarToggleGroupEnd = {
-    key?: string;
-    value?: string;
-    type: "groupEnd";
-};
-
-export type sidebarToggle =
-    | sidebarToggleGroup
-    | sidebarToggleGroupEnd
-    | {
-          key?: string;
-          value?: string;
-          type: "caption";
-      }
-    | {
-          key?: string;
-          value?: string;
-          type: "divider";
-      }
-    | {
-          key: string;
-          value: string;
-          type: "select";
-          options: string[];
-      }
-    | {
-          key: string;
-          value: string;
-          type: "text" | "textarea" | undefined;
-          options?: string[];
-      };
-
-export function parseToggleSyntax(template: string) {
-    try {
-        if (!template) {
-            return [];
-        }
-
-        const keyValue: sidebarToggle[] = [];
-
-        const splited = template.split("\n");
-
-        for (const line of splited) {
-            const [key, value, type, option] = line.split("=");
-            if (type === "group" || type === "groupEnd" || type === "divider") {
-                keyValue.push({
-                    key,
-                    value,
-                    type,
-                    children: [],
-                });
-            } else if (type === "caption" && value) {
-                keyValue.push({
-                    key,
-                    value,
-                    type,
-                });
-            } else if (key && value) {
-                keyValue.push({
-                    key,
-                    value,
-                    type: type === "select" || type === "text" || type === "textarea" ? type : undefined,
-                    options: option?.split(",") ?? [],
-                });
-            }
-        }
-
-        return keyValue;
-    } catch (error) {
-        console.error(error);
         return [];
     }
 }

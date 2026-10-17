@@ -3,6 +3,7 @@ import type { Chat, Database, character, groupChat } from "../../../shared/datab
 import { calcString } from "../../../shared/cbs/calc.ts";
 import { createCbsEvaluator, type CbsHost } from "../../../shared/cbs/evaluator.ts";
 import type { matcherArg } from "../../../shared/cbs/types.ts";
+import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
 type ChatRef = matcherArg["chatRef"];
 
@@ -68,11 +69,14 @@ export function createNodeCbsHost(db: Database, options: NodeCbsHostOptions): Cb
         return state.toString();
     };
     const getGlobalChatVar = (key: string, ref?: ChatRef): string => {
-        const local = chatOf(ref)?.GLGlobalVariables?.[key];
-        if (local !== "null" && local) {
-            return local;
-        }
-        return db.globalChatVariables[key] ?? "null";
+        return resolveGlobalChatVar(key, chatOf(ref)?.GLGlobalVariables, db.globalChatVariables, () => {
+            const char = characterOf(ref);
+            return toggleDefinitionsText(
+                db.customPromptTemplateToggle,
+                "",
+                char?.type !== "group" ? char?.customModuleToggle : "",
+            );
+        });
     };
     const findCharacterById = (id: string): character => {
         for (const char of db.characters) {

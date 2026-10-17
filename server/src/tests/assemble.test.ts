@@ -450,6 +450,8 @@ describe("assemblePrompt final token recheck", () => {
         };
         return {
             tokenizer,
+            host,
+            chat,
             run: () =>
                 assemblePrompt(host, {
                     chatAdditonalTokens: 3,
@@ -459,6 +461,75 @@ describe("assemblePrompt final token recheck", () => {
                 }),
         };
     }
+
+    it("snapshots toggle labels and raw text using chat, legacy, and kind defaults including the owner", async () => {
+        const { host, chat, run } = assembly([{ chatId: "m", data: "hello" }], "");
+        Object.assign(host.db, {
+            promptInfoInsideChat: true,
+            botPresets: [{ name: "Snapshot preset" }],
+            botPresetsId: 0,
+            customPromptTemplateToggle: [
+                "mode=Default mode=select=First,Second",
+                "pick=Picked mode=select=First,Second",
+                "text=Cleared text=text",
+                "area=Raw area=textarea",
+                "empty_text=Unset text=text",
+                "empty_area=Unset area=textarea",
+                "on=Enabled checkbox",
+                "off=Disabled checkbox",
+                "odd=Non-one checkbox",
+                "unset=Unset checkbox",
+                "first=Preset first=text",
+                "section=Section=group",
+                "end=End=groupEnd",
+                "rule=Rule=divider",
+                "help=Help=caption",
+            ].join("\n"),
+            globalChatVariables: {
+                toggle_pick: "0",
+                toggle_text: "legacy text",
+                toggle_area: "legacy\narea",
+                toggle_on: "1",
+                toggle_off: "1",
+            },
+        });
+        chat.GLGlobalVariables = {
+            toggle_pick: "1",
+            toggle_text: "",
+            toggle_off: "0",
+            toggle_odd: "true",
+            toggle_owner: "owner raw",
+        };
+        host.moduleToggles = () =>
+            "module=Module mode=select=Module first,Module second\nfirst=Module duplicate\nmodule_first=Module first=text";
+        host.owner = {
+            ...host.owner,
+            customModuleToggle:
+                "owner=Owner text=textarea\nowner_mode=Owner mode=select=Owner first,Owner second\nmodule_first=Owner duplicate",
+        } as AssemblyHost["owner"];
+        // A group speaker can differ from the chat owner. Its toggles must not enter this snapshot.
+        host.speaker = { ...host.speaker, customModuleToggle: "speaker=Speaker-only text=text" };
+        const result = await run();
+        expect(result.type).toBe("prompt");
+        if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+        expect(result.promptInfo).toMatchObject({
+            promptName: "Snapshot preset",
+            promptToggles: [
+                { key: "Default mode", value: "First" },
+                { key: "Picked mode", value: "Second" },
+                { key: "Cleared text", value: "" },
+                { key: "Raw area", value: "legacy\narea" },
+                { key: "Unset text", value: "" },
+                { key: "Unset area", value: "" },
+                { key: "Enabled checkbox", value: "ON" },
+                { key: "Preset first", value: "" },
+                { key: "Module mode", value: "Module first" },
+                { key: "Module first", value: "" },
+                { key: "Owner text", value: "owner raw" },
+                { key: "Owner mode", value: "Owner first" },
+            ],
+        });
+    });
 
     it("removes the whole trimmed message including its images and reports the returned prompt's token count", async () => {
         for (const suffix of [" {{inlay::first}} {{inlay::second}}", ""]) {

@@ -22,7 +22,9 @@ vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
 import { language } from "src/lang";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { settings } from "src/ts/storage/settingsViews.svelte";
+import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { getModuleToggles } from "src/ts/process/modules";
+import { setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import Toggles from "./Toggles.svelte";
 
@@ -44,9 +46,11 @@ function render() {
 }
 
 beforeEach(() => {
+    vi.mocked(getModuleToggles).mockReturnValue("");
     sessionStorage.clear();
     localStorage.clear();
     installFlatDatabaseWithChats({
+        botPresets: [{ id: "toggles", name: "Toggles", customPromptTemplateToggle: "" }],
         characters: [
             {
                 chaId: "c",
@@ -64,6 +68,31 @@ beforeEach(() => {
         hanuraiEnable: false,
     } as any);
     selectCharacter("c");
+});
+
+it("renders unset selects at option zero and empty text controls from preset, module, and owner definitions", () => {
+    activePreset.customPromptTemplateToggle = "mode=Mode=select=First,Second\ntitle=Title=text\nflag=Flag";
+    vi.mocked(getModuleToggles).mockReturnValue("module_mode=Module mode=select=Module first,Module second");
+    Object.assign(selectedCharacter()!, {
+        customModuleToggle: "owner_mode=Owner mode=select=Owner first,Owner second\nnotes=Notes=textarea",
+    });
+    const { target, checkbox } = render();
+    const selects = [...target.querySelectorAll("select")];
+    expect(selects.map((select) => [select.value, select.selectedOptions[0]?.textContent])).toEqual([
+        ["0", "First"],
+        ["0", "Module first"],
+        ["0", "Owner first"],
+    ]);
+    expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("");
+    expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+    expect(checkbox("Flag")!.checked).toBe(false);
+
+    settings.globalChatVariables = { toggle_title: "legacy title", toggle_notes: "legacy notes", toggle_mode: "1" };
+    setChatMeta({ chaId: "c", chatId: "k" }, { GLGlobalVariables: { toggle_title: "", toggle_notes: "" } });
+    flushSync();
+    expect(selects[0].value).toBe("1");
+    expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("");
+    expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
 });
 
 afterEach(() => {

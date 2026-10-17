@@ -69,7 +69,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
   - `replaceAsync`.
   - `jsonOutputTrimmer`.
   - `asBuffer`.
-- UI data: `TagList`/`searchTagList`, `parseToggleSyntax` (the `sidebarToggle` union), `sortableOptions`, `getCustomBackground`.
+- UI data: `TagList`/`searchTagList`, `parseToggleSyntax` and the `sidebarToggle` union (re-exported from `shared/prompt/toggles.ts`), `sortableOptions`, `getCustomBackground`.
 - Concurrency and storage:
   - `sleep`.
   - `Semaphore`.

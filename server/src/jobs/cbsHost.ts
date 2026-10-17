@@ -10,6 +10,7 @@ import { pickHashRand } from "../../../shared/hashRand.ts";
 import { personaLinksModule, personaModuleIdSet } from "../../../shared/personas.ts";
 import type { GenerationClientEnv } from "../../../shared/jobs.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
+import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 import type { JobScope } from "./jobScope.ts";
 
 type ChatRef = matcherArg["chatRef"];
@@ -144,11 +145,18 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
         return state.toString();
     };
     const getGlobalChatVar = (key: string, ref?: ChatRef): string => {
-        const local = chatOf(ref)?.GLGlobalVariables?.[key];
-        if (local !== "null" && local) {
-            return local;
-        }
-        return db.globalChatVariables[key] ?? "null";
+        return resolveGlobalChatVar(key, chatOf(ref)?.GLGlobalVariables, db.globalChatVariables, () => {
+            const char = characterOf(ref);
+            // The scope forwards the job's preset roots; even a cross-chat ref has only that preset.
+            // The shared resolver caches by text so live character overlays can change definitions.
+            return toggleDefinitionsText(
+                db.customPromptTemplateToggle,
+                jobModules(scope, ref)
+                    .map((module) => (typeof module.customModuleToggle === "string" ? module.customModuleToggle : ""))
+                    .join("\n"),
+                char?.type !== "group" ? char?.customModuleToggle : "",
+            );
+        });
     };
     const findCharacterById = (id: string): character => {
         for (const char of db.characters) {

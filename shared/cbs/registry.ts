@@ -908,7 +908,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         },
         alias: [],
         description:
-            "Gets the value of a global chat variable by name. Global variables are shared across all chats and characters. Returns empty string if variable doesn't exist.\n\nUsage:: {{getglobalvar::variableName}}",
+            'Gets a global chat variable by name, preferring the chat override over the legacy global value. Unset defined toggle_ variables return "0" for checkbox/select or "" for text/textarea; other unset variables return "null". An empty text/textarea value stays empty.\n\nUsage:: {{getglobalvar::variableName}}',
     });
 
     registerFunction({

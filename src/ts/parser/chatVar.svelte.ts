@@ -4,6 +4,8 @@ import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { parseKeyValue } from "../util";
 import { setCurrentChatMeta } from "../storage/chatEdits";
 import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
+import { getModuleToggles } from "../process/modules";
+import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
 /**
  * A chat variable of the selected chat, else its default: the character's, then the prompt preset's
@@ -76,13 +78,11 @@ export function setChatVarOf(ref: ChatRef | null, key: string, value: string): b
 }
 
 export function getGLChatVar(key: string): string {
-    console.log("getGLChatVar", key);
     const chat = selectedChat();
     return chat?.GLGlobalVariables?.[key];
 }
 
 export function setGLChatVar(key: string, value: string) {
-    console.log("setGLChatVar", key, value);
     const chat = selectedChat();
     if (chat) {
         setCurrentChatMeta({ GLGlobalVariables: { ...$state.snapshot(chat.GLGlobalVariables ?? {}), [key]: value } });
@@ -99,21 +99,34 @@ function deleteGLChatVar(key: string) {
     }
 }
 
-/** `getGlobalChatVar` for a given chat (its per-chat overrides; nothing local when it is gone). */
-export function getGlobalChatVarOf(ref: ChatRef | null, key: string): string {
-    const vt = ref ? findChat(ref)?.GLGlobalVariables?.[key] : undefined;
-    if (vt !== "null" && vt) {
-        return vt;
-    }
-    return settings.globalChatVariables[key] ?? "null";
+/** The preset, enabled modules, and owner definitions, read only when a toggle needs them. */
+function globalToggleDefinitions(ref?: ChatRef | null, scope?: PresetScope): string {
+    const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
+    const presetText =
+        scope || ref
+            ? readPresetFieldOf(scope ?? chatDisplayIds(ref!), "customPromptTemplateToggle")
+            : activePreset.customPromptTemplateToggle;
+    return toggleDefinitionsText(
+        presetText,
+        getModuleToggles(ref, scope),
+        char?.type !== "group" ? char?.customModuleToggle : "",
+    );
 }
 
-export function getGlobalChatVar(key: string): string {
-    const vt = getGLChatVar(key);
-    if (vt !== "null" && vt) {
-        return vt;
-    }
-    return settings.globalChatVariables[key] ?? "null";
+/** `getGlobalChatVar` for a given chat; toggle defaults use its display preset or captured scope. */
+export function getGlobalChatVarOf(ref: ChatRef | null, key: string, scope?: PresetScope): string {
+    return resolveGlobalChatVar(
+        key,
+        ref ? findChat(ref)?.GLGlobalVariables : undefined,
+        settings.globalChatVariables,
+        () => globalToggleDefinitions(ref, scope),
+    );
+}
+
+export function getGlobalChatVar(key: string, scope?: PresetScope): string {
+    return resolveGlobalChatVar(key, selectedChat()?.GLGlobalVariables, settings.globalChatVariables, () =>
+        globalToggleDefinitions(undefined, scope),
+    );
 }
 
 export function setGlobalChatVar(key: string, value: string) {

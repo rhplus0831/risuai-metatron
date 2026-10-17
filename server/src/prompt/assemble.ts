@@ -13,6 +13,13 @@ import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import type { PromptItem, PromptItemPlain, PromptItemTyped } from "../../../shared/prompt.ts";
 import type { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
+import {
+    parseToggleSyntax,
+    resolveGlobalChatVar,
+    toggleDefinitionsText,
+    toggleStorageKey,
+    valueToggles,
+} from "../../../shared/prompt/toggles.ts";
 import { HypaProcesser } from "./embeddings.ts";
 import { hanuraiMemory } from "./memory/hanurai.ts";
 import type { MemoryHost } from "./memory/host.ts";
@@ -168,37 +175,6 @@ async function additionalInformations(host: AssemblyHost, char: character, chats
     return "";
 }
 
-/** `parseToggleSyntax` of `src/ts/util.ts` (the fields the prompt info reads). */
-export function parseToggleSyntax(
-    template: string,
-): { key: string; value: string; type?: string; options?: string[] }[] {
-    try {
-        if (!template) {
-            return [];
-        }
-        const keyValue: { key: string; value: string; type?: string; options?: string[]; children?: [] }[] = [];
-        for (const line of template.split("\n")) {
-            const [key, value, type, option] = line.split("=");
-            if (type === "group" || type === "groupEnd" || type === "divider") {
-                keyValue.push({ key, value, type, children: [] });
-            } else if (type === "caption" && value) {
-                keyValue.push({ key, value, type });
-            } else if (key && value) {
-                keyValue.push({
-                    key,
-                    value,
-                    type: type === "select" || type === "text" || type === "textarea" ? type : undefined,
-                    options: option?.split(",") ?? [],
-                });
-            }
-        }
-        return keyValue;
-    } catch (error) {
-        console.error(error);
-        return [];
-    }
-}
-
 /** `getAuthorNoteDefaultText` of `src/ts/util.ts`. */
 function getAuthorNoteDefaultText(db: Database): string {
     const template = db.promptTemplate;
@@ -327,12 +303,24 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     let promptInfo: MessagePresetInfo = {};
     if (db.promptInfoInsideChat) {
         const initialPresetNameForPromptInfo = db.botPresets[db.botPresetsId]?.name ?? "";
-        const initialPromptTogglesForPromptInfo = parseToggleSyntax(
-            db.customPromptTemplateToggle + host.moduleToggles(),
-        ).flatMap((toggle) => {
-            const raw = db.globalChatVariables[`toggle_${toggle.key}`];
-            if (toggle.type === "select" || toggle.type === "text") {
-                return [{ key: toggle.value, value: toggle.options![raw as unknown as number] }];
+        const definitions = toggleDefinitionsText(
+            db.customPromptTemplateToggle,
+            host.moduleToggles(),
+            nowChatroom.type !== "group" ? nowChatroom.customModuleToggle : "",
+        );
+        const chatVariables = host.chat().GLGlobalVariables;
+        const initialPromptTogglesForPromptInfo = valueToggles(parseToggleSyntax(definitions)).flatMap((toggle) => {
+            const raw = resolveGlobalChatVar(
+                toggleStorageKey(toggle.key),
+                chatVariables,
+                db.globalChatVariables,
+                definitions,
+            );
+            if (toggle.type === "select") {
+                return [{ key: toggle.value, value: toggle.options[raw as unknown as number] }];
+            }
+            if (toggle.type === "text" || toggle.type === "textarea") {
+                return [{ key: toggle.value, value: raw }];
             }
             if (raw === "1") {
                 return [{ key: toggle.value, value: "ON" }];
