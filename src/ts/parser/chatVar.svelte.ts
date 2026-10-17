@@ -3,7 +3,7 @@ import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { parseKeyValue } from "../util";
 import { setCurrentChatMeta } from "../storage/chatEdits";
-import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
+import { type ChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
 import { getModuleToggles } from "../process/modules";
 import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
@@ -77,30 +77,8 @@ export function setChatVarOf(ref: ChatRef | null, key: string, value: string): b
     return true;
 }
 
-export function getGLChatVar(key: string): string {
-    const chat = selectedChat();
-    return chat?.GLGlobalVariables?.[key];
-}
-
-export function setGLChatVar(key: string, value: string) {
-    const chat = selectedChat();
-    if (chat) {
-        setCurrentChatMeta({ GLGlobalVariables: { ...$state.snapshot(chat.GLGlobalVariables ?? {}), [key]: value } });
-    }
-}
-
-/** Removes a per-chat global variable of the selected chat. */
-function deleteGLChatVar(key: string) {
-    const chat = selectedChat();
-    if (chat?.GLGlobalVariables && Object.hasOwn(chat.GLGlobalVariables, key)) {
-        const next = { ...$state.snapshot(chat.GLGlobalVariables) };
-        delete next[key];
-        setCurrentChatMeta({ GLGlobalVariables: next });
-    }
-}
-
 /** The preset, enabled modules, and owner definitions, read only when a toggle needs them. */
-function globalToggleDefinitions(ref?: ChatRef | null, scope?: PresetScope): string {
+export function globalToggleDefinitions(ref?: ChatRef | null, scope?: PresetScope): string {
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
     const presetText =
         scope || ref
@@ -127,30 +105,4 @@ export function getGlobalChatVar(key: string, scope?: PresetScope): string {
     return resolveGlobalChatVar(key, selectedChat()?.GLGlobalVariables, settings.globalChatVariables, () =>
         globalToggleDefinitions(undefined, scope),
     );
-}
-
-export function setGlobalChatVar(key: string, value: string) {
-    if (currentChatRef() && !selectedChat()) {
-        // The selected chat loads: whether it keeps global variables locally is not known yet.
-        throw new Error("The chat is not loaded");
-    }
-    if (selectedChat()?.useLocallySetGlobalVariables) {
-        setGLChatVar(key, value);
-        return;
-    } else if (getGLChatVar(key) !== undefined) {
-        deleteGLChatVar(key);
-    }
-    settings.globalChatVariables[key] = value;
-}
-
-export function isLocallyHandledGlobalChatVar(key: string): boolean {
-    return !!getGLChatVar(key);
-}
-
-export function removeLocallyHandledGlobalChatVar(key: string): boolean {
-    if (getGLChatVar(key) !== undefined) {
-        deleteGLChatVar(key);
-        return true;
-    }
-    return false;
 }

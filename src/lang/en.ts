@@ -1913,7 +1913,6 @@ export const languageEnglish = {
     successfullyConverted: "Successfully converted.",
     convertToModule: "Convert to Module",
     applyAdditionalParamsToAll: "Apply Additional Parameters to All Models",
-    localToggles: "Local Toggles",
 } satisfies I18nTranslation;
 
 type I18nTranslationFunction = (...args: any[]) => string;

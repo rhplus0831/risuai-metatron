@@ -1215,7 +1215,7 @@ export interface Chat {
     lastDate?: number;
     bookmarks?: string[];
     bookmarkNames?: { [chatId: string]: string };
-    useLocallySetGlobalVariables?: boolean;
+    /** The chat's prompt toggle map, with `toggle_<key>` keys and string values. */
     GLGlobalVariables?: { [key: string]: string };
     /**
      * The remembered tool calls of this chat (`rememberToolUsage`), by call id: what a

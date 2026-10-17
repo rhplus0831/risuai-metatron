@@ -48,5 +48,5 @@
         {/key}
     {/if}
 
-    <Toggles {chara} noContainer />
+    <Toggles {chara} chatRef={currentRef} />
 </div>

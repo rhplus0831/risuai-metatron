@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { onMount } from "svelte";
     import { popUpEditorStore } from "../../ts/stores.svelte";
@@ -21,6 +22,8 @@
 
         try {
             $state.snapshot(settings.globalChatVariables);
+            const ref = currentChatRef();
+            $state.snapshot(ref ? findChat(ref)?.GLGlobalVariables : undefined);
         } catch (error) {}
         return risuChatParserForDisplay(popUpEditorStore.value);
     });
@@ -109,7 +112,7 @@
 
                     {#if showToggles}
                         <div class="w-96 border-l border-darkborderc overflow-y-auto p-4">
-                            <Toggles noContainer />
+                            <Toggles chatRef={currentChatRef()} />
                         </div>
                     {/if}
                 </div>

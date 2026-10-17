@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
@@ -434,7 +434,7 @@
         <span class="text-textcolor2 mb-6 text-sm">{tokens.localNote} {language.tokens}</span>
     {/if}
 
-    <Toggles chara={currentCharacter} noContainer />
+    <Toggles chara={currentCharacter} chatRef={currentChatRef()} />
 
     {#if currentCharacter.type === "group"}
         <div class="flex mt-2 items-center">

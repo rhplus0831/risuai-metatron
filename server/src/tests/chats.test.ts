@@ -482,12 +482,24 @@ describe("chat.toolCalls (slice 11b)", () => {
         expect(prepared.needsCurrent).toBe(false);
         const groupRejects = (op: unknown, error: string) =>
             rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
-        groupRejects({ op: "meta", merge: { note: { a: 1 } } }, "meta.merge takes entries for toolCalls");
-        groupRejects({ op: "meta", merge: { toolCalls: "x" } }, "meta.merge takes entries for toolCalls");
-        groupRejects({ op: "meta", merge: { toolCalls: [] } }, "meta.merge takes entries for toolCalls");
-        groupRejects({ op: "meta", merge: { toolCalls: null } }, "meta.merge takes entries for toolCalls");
-        groupRejects({ op: "meta", merge: 5 }, "meta.merge takes entries for toolCalls");
-        groupRejects({ op: "meta", merge: [] }, "meta.merge takes entries for toolCalls");
+        groupRejects(
+            { op: "meta", merge: { note: { a: 1 } } },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+        );
+        groupRejects(
+            { op: "meta", merge: { toolCalls: "x" } },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+        );
+        groupRejects(
+            { op: "meta", merge: { toolCalls: [] } },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+        );
+        groupRejects(
+            { op: "meta", merge: { toolCalls: null } },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+        );
+        groupRejects({ op: "meta", merge: 5 }, "meta.merge takes entries for toolCalls, GLGlobalVariables");
+        groupRejects({ op: "meta", merge: [] }, "meta.merge takes entries for toolCalls, GLGlobalVariables");
         groupRejects(
             { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
             "meta merges a field it also sets or unsets",

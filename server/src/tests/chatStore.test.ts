@@ -1555,6 +1555,39 @@ describe("snapshots", () => {
     });
 });
 
+describe("per-chat toggle metadata", () => {
+    it("accepts GLGlobalVariables meta.merge on an older revision and keeps both writers' entries", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        const first = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { GLGlobalVariables: { toggle_flag: "0" } } }])],
+        });
+        const second = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { GLGlobalVariables: { toggle_title: "second tab" } } }])],
+        });
+        expect(second.chats[0].revision).not.toBe(first.chats[0].revision);
+        expect(chat(store, "k")!.data.GLGlobalVariables).toEqual({ toggle_flag: "0", toggle_title: "second tab" });
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { GLGlobalVariables: { toggle_flag: "1" } } }])],
+        });
+        expect(chat(store, "k")!.data.GLGlobalVariables).toEqual({ toggle_flag: "1", toggle_title: "second tab" });
+    });
+
+    it("a whole-map set still replaces GLGlobalVariables instead of merging its entries", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        store.applyChanges({
+            chats: [
+                group("k", base, [{ op: "meta", set: { GLGlobalVariables: { toggle_old: "old", toggle_flag: "1" } } }]),
+            ],
+        });
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", set: { GLGlobalVariables: { toggle_flag: "0" } } }])],
+        });
+        expect(chat(store, "k")!.data.GLGlobalVariables).toEqual({ toggle_flag: "0" });
+    });
+});
+
 describe("meta merge (slice 11b)", () => {
     const record = (id: string, text = id) => ({
         call: { id, name: "t", arg: {} },

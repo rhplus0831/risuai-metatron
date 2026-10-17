@@ -1,36 +1,37 @@
 <script lang="ts">
-    import { selectedCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
+    import { type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
-    import { getModuleToggles } from "src/ts/process/modules";
     import { parseToggleSyntax, type sidebarToggle, type sidebarToggleGroup } from "src/ts/util";
     import { language } from "src/lang";
     import type { PromptItem } from "src/ts/process/prompt";
-    import { type character, type groupChat } from "src/ts/storage/database.svelte";
-    import { selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Accordion from "../UI/Accordion.svelte";
-    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import {
-        getGlobalChatVar,
-        isLocallyHandledGlobalChatVar,
-        removeLocallyHandledGlobalChatVar,
-        setGlobalChatVar,
-    } from "src/ts/parser/chatVar.svelte";
-    import { PinIcon } from "@lucide/svelte";
+    import { getGlobalChatVar, getGlobalChatVarOf } from "src/ts/parser/chatVar.svelte";
+    import { chatToggleDefinitions, setChatToggle } from "src/ts/toggles/chatToggles.svelte";
     import { supaMemoryOnCount } from "../../../shared/characters.ts";
-    import { toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
-    const currentCharacter = $derived(selectedCharacter());
     interface Props {
         chara?: AnyClientCharacter;
-        noContainer?: boolean;
+        chatRef: ChatRef | null;
     }
 
-    let { chara = $bindable(), noContainer }: Props = $props();
+    let { chara = $bindable(), chatRef }: Props = $props();
+
+    const chat = $derived(chatRef ? findChat(chatRef) : undefined);
+    const loaded = $derived(chat !== undefined);
+    const valueOf = (key: string) => (chatRef ? getGlobalChatVarOf(chatRef, key) : getGlobalChatVar(key));
+
+    /** Re-check the target at event time: it may have unloaded or disappeared since rendering. */
+    function write(key: string, value: string) {
+        if (chatRef && findChat(chatRef)) {
+            setChatToggle(chatRef, key, value);
+        }
+    }
 
     // Turning memory on counts (`supaMemoryOnCount`): it voids every chat's "don't ask again" answer to
     // the no-memory trim question.
@@ -75,24 +76,8 @@
         return templateUsesJailbreakToggle(template);
     });
 
-    // let getToggleDisplayName = (toggle: sidebarToggle) => {
-    //     if(isLocallyHandledGlobalChatVar(`toggle_${toggle.key}`)){
-    //         return toggle.value + ' (📌)'
-    //     }
-    //     return toggle.value
-    // }
-    let charToggle = $state((selectedCharacter() as character)?.customModuleToggle);
-    $effect(() => {
-        const charToggleTemp = (currentCharacter as character)?.customModuleToggle;
-        if (charToggleTemp !== charToggle) {
-            charToggle = charToggleTemp;
-        }
-    });
-
     let groupedToggles = $derived.by(() => {
-        const ungrouped = parseToggleSyntax(
-            toggleDefinitionsText(activePreset.customPromptTemplateToggle, getModuleToggles(), charToggle),
-        );
+        const ungrouped = parseToggleSyntax(chatToggleDefinitions(chatRef));
 
         let groupOpen = false;
         // group toggles together between group ... groupEnd
@@ -112,22 +97,6 @@
     });
 </script>
 
-{#snippet localToggle(toggle: sidebarToggle)}
-    {#if isLocallyHandledGlobalChatVar(`toggle_${toggle.key}`)}
-        <button
-            onclick={() => {
-                removeLocallyHandledGlobalChatVar(`toggle_${toggle.key}`);
-            }}
-        >
-            📌
-        </button>
-    {/if}
-{/snippet}
-
-{#snippet getToggleDisplayName(toggle: sidebarToggle)}
-    {toggle.value}{@render localToggle(toggle)}
-{/snippet}
-
 {#snippet toggles(items: sidebarToggle[], reverse: boolean = false)}
     {#each items as toggle, index}
         {#if toggle.type === "group" && toggle.children.length > 0}
@@ -138,12 +107,12 @@
             </div>
         {:else if toggle.type === "select"}
             <div class="w-full flex gap-2 mt-2 items-center">
-                <span>{@render getToggleDisplayName(toggle)}</span>
+                <span>{toggle.value}</span>
                 <SelectInput
                     className="w-32"
-                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
+                    value={valueOf(`toggle_${toggle.key}`)}
                     onchange={(e) => {
-                        setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.value);
+                        write(`toggle_${toggle.key}`, e.currentTarget.value);
                     }}
                 >
                     {#each toggle.options as option, i}
@@ -153,28 +122,28 @@
             </div>
         {:else if toggle.type === "text"}
             <div class="w-full flex gap-2 mt-2 items-center">
-                <span>{@render getToggleDisplayName(toggle)}</span>
+                <span>{toggle.value}</span>
                 <TextInput
                     className="w-32"
-                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
+                    value={valueOf(`toggle_${toggle.key}`)}
                     onchange={(e) => {
-                        setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.value);
+                        write(`toggle_${toggle.key}`, e.currentTarget.value);
                     }}
                 />
             </div>
         {:else if toggle.type === "textarea"}
             <div class="w-full flex gap-2 mt-2 items-start">
-                <span class="mt-1.5">{@render getToggleDisplayName(toggle)}</span>
+                <span class="mt-1.5">{toggle.value}</span>
                 <TextAreaInput
                     className="w-32"
                     height="20"
-                    value={getGlobalChatVar(`toggle_${toggle.key}`)}
+                    value={valueOf(`toggle_${toggle.key}`)}
                     onchange={(e) => {
                         //check is div
                         if (e.currentTarget instanceof HTMLDivElement) {
-                            setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.innerText);
+                            write(`toggle_${toggle.key}`, e.currentTarget.innerText);
                         } else {
-                            setGlobalChatVar(`toggle_${toggle.key}`, e.currentTarget.value);
+                            write(`toggle_${toggle.key}`, e.currentTarget.value);
                         }
                     }}
                 />
@@ -188,7 +157,7 @@
             {#if index === 0 || items[index - 1]?.type !== "divider" || items[index - 1]?.value !== toggle.value}
                 <div class="w-full min-h-5 flex gap-2 mt-2 items-center" class:justify-end={!reverse}>
                     {#if toggle.value}
-                        <span class="shrink-0">{@render getToggleDisplayName(toggle)}</span>
+                        <span class="shrink-0">{toggle.value}</span>
                     {/if}
                     <hr class="border-t border-darkborderc m-0 grow" />
                 </div>
@@ -196,82 +165,35 @@
         {:else}
             <div class="w-full flex mt-2 items-center">
                 <CheckInput
-                    check={getGlobalChatVar(`toggle_${toggle.key}`) === "1"}
+                    check={valueOf(`toggle_${toggle.key}`) === "1"}
                     {reverse}
                     name={toggle.value}
-                    onChange={() => {
-                        setGlobalChatVar(
-                            `toggle_${toggle.key}`,
-                            getGlobalChatVar(`toggle_${toggle.key}`) === "1" ? "0" : "1",
-                        );
-                    }}
-                >
-                    {@render localToggle(toggle)}
-                </CheckInput>
+                    onChange={(check) => write(`toggle_${toggle.key}`, check ? "1" : "0")}
+                />
             </div>
         {/if}
     {/each}
 {/snippet}
 
-{#if !noContainer && groupedToggles.length > 4}
-    <div class="h-48 border-darkborderc p-2 border rounded-sm flex flex-col items-start mt-2 overflow-y-auto">
-        {#if hasJailbreakPrompt}
-            <div class="flex mt-2 items-center w-full">
-                <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} reverse />
-            </div>
-        {/if}
-
-        {@render toggles(groupedToggles, true)}
-        {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
-            <div class="flex mt-2 items-center w-full">
-                <CheckInput
-                    bind:check={getMemoryToggle, setMemoryToggle}
-                    reverse
-                    name={settings.memoryTranslateMedia.hypaV3
-                        ? language.ToggleHypaMemory
-                        : settings.memoryTranslateMedia.hanuraiEnable
-                          ? language.hanuraiMemory
-                          : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
-                            ? language.ToggleHypaMemory
-                            : language.ToggleSuperMemory}
-                />
-            </div>
-        {/if}
+{#if hasJailbreakPrompt}
+    <div class="flex mt-2 items-center">
+        <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} />
     </div>
-{:else}
-    {#if hasJailbreakPrompt}
-        <div class="flex mt-2 items-center">
-            <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} />
-        </div>
-    {/if}
+{/if}
+<fieldset disabled={!loaded} class="m-0 min-w-0 border-0 p-0">
     {@render toggles(groupedToggles)}
-    {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
-        <div class="flex mt-2 items-center">
-            <CheckInput
-                bind:check={getMemoryToggle, setMemoryToggle}
-                name={settings.memoryTranslateMedia.hypaV3
+</fieldset>
+{#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
+    <div class="flex mt-2 items-center">
+        <CheckInput
+            bind:check={getMemoryToggle, setMemoryToggle}
+            name={settings.memoryTranslateMedia.hypaV3
+                ? language.ToggleHypaMemory
+                : settings.memoryTranslateMedia.hanuraiEnable
+                  ? language.hanuraiMemory
+                  : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
                     ? language.ToggleHypaMemory
-                    : settings.memoryTranslateMedia.hanuraiEnable
-                      ? language.hanuraiMemory
-                      : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
-                        ? language.ToggleHypaMemory
-                        : language.ToggleSuperMemory}
-            />
-        </div>
-    {/if}
-
-    {#if chara}
-        <div class="flex mt-2 items-center w-full">
-            <CheckInput
-                check={selectedChat()?.useLocallySetGlobalVariables}
-                name={language.localToggles}
-                onChange={() => {
-                    const chat = selectedChat();
-                    if (chat) {
-                        setCurrentChatMeta({ useLocallySetGlobalVariables: !chat.useLocallySetGlobalVariables });
-                    }
-                }}
-            />
-        </div>
-    {/if}
+                    : language.ToggleSuperMemory}
+        />
+    </div>
 {/if}

@@ -11,7 +11,7 @@ import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "activeStreamingDisplayOptimizationMode"];
 
 /** The chat fields a `meta` op may `merge` entries into. */
-export const CHAT_META_MERGE_KEYS = ["toolCalls"];
+export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables"];
 
 /** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
 export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;

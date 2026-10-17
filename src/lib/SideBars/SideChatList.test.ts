@@ -44,7 +44,14 @@ import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/pre
 import { language } from "src/lang";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
-import { chatEntry, chatList, findChat, selectChat, selectedChatId } from "src/ts/storage/chatStore.svelte";
+import {
+    chatEntry,
+    chatList,
+    findChat,
+    selectChat,
+    selectedChatId,
+    setChatMeta,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
@@ -159,6 +166,35 @@ const strip = (entry: Record<string, unknown>) => {
     const { id, name, fmIndex, ...rest } = entry;
     return rest;
 };
+
+describe("new chat toggle inheritance", () => {
+    it.each(["sidebar", "modal"] as const)(
+        "the %s button copies the selected chat's map, and the empty policy omits it",
+        (surface) => {
+            const source = { chaId: "c", chatId: "j" };
+            const toggles = { toggle_flag: "0", toggle_title: "selected chat" };
+            setChatMeta({ chaId: "c", chatId: "k" }, { GLGlobalVariables: { toggle_title: "first chat" } });
+            setChatMeta(source, { GLGlobalVariables: toggles });
+            settings.globalChatVariables = { toggle_title: "legacy" };
+            settings.ui.newChatBinding = "inherit";
+            selectCharacter("c");
+            selectChat("c", "j");
+            const list = surface === "sidebar" ? renderSide("c") : renderModal();
+            list.newChat().click();
+            flushSync();
+            const created = { chaId: "c", chatId: ids("c")[0] };
+            expect(created.chatId).not.toBe("j");
+            expect(findChat(created)!.GLGlobalVariables).toEqual(toggles);
+            setChatMeta(created, { GLGlobalVariables: { toggle_flag: "1", toggle_title: "edited new chat" } });
+            expect(findChat(source)!.GLGlobalVariables).toEqual(toggles);
+            settings.ui.newChatBinding = "empty";
+            list.newChat().click();
+            flushSync();
+            expect(findChat({ chaId: "c", chatId: ids("c")[0] })!.GLGlobalVariables).toBeUndefined();
+            expect(settings.globalChatVariables).toEqual({ toggle_title: "legacy" });
+        },
+    );
+});
 
 describe("the sidebar's new chat button", () => {
     it("inherits the selected chat's existing ids (not the first chat's, not the tab's), without the review, and selects the new chat", () => {

@@ -1484,5 +1484,4 @@ export const languageChineseTraditional = {
     successfullyConverted: "轉換成功",
     convertToModule: "轉換為模組",
     applyAdditionalParamsToAll: "將額外參數套用至所有模型",
-    localToggles: "本對話獨立設定",
 } satisfies DeepPartial<typeof import("./en").languageEnglish>;

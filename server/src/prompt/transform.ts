@@ -379,7 +379,6 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 canonical({
                     scriptstate: chat.scriptstate ?? {},
                     GLGlobalVariables: chat.GLGlobalVariables ?? {},
-                    useLocallySetGlobalVariables: chat.useLocallySetGlobalVariables ?? false,
                     note: chat.note ?? "",
                     localLore: chat.localLore ?? [],
                     name: chat.name ?? "",

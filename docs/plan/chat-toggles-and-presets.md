@@ -1,6 +1,6 @@
 # Per-Chat Toggles and Toggle Presets Plan
 
-Status: slice 1 landed with kind-aware empty strings (`""` stays set for text/textarea); slices 2–4 remain planned.
+Status: slices 1–2 landed; slices 3–4 remain planned. Slice 1 keeps kind-aware empty strings (`""` stays set for text/textarea). Slice 2 adds `GLGlobalVariables` to `CHAT_META_MERGE_KEYS` for per-key writes (unchanged stored values skip; unloaded targets return false), removes Local Toggles, and inherits only a loaded source chat's map; an unloaded source starts without a map because chat summaries do not carry it. These decisions supersede the whole-map write and loading behavior described below.
 
 Planned on 2026-10-17. Sources: the code at
 `bfdcfd508` (anchors below are from that commit; re-verify before editing) and
@@ -35,7 +35,7 @@ And one defect fixed on the way:
    default everywhere (`"0"` for checkbox and select, `""` for text and textarea),
    client and server alike.
 
-## Current code (what the plan changes)
+## Original code (historical baseline for this plan)
 
 Toggle definitions: a prompt preset's `customPromptTemplateToggle`
 (`shared/presets.ts:168`, edited in `PromptSettings.svelte:310`), every enabled

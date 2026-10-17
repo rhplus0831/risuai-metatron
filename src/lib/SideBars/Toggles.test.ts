@@ -24,18 +24,26 @@ import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { getModuleToggles } from "src/ts/process/modules";
-import { setChatMeta } from "src/ts/storage/chatStore.svelte";
+import {
+    assembleChats,
+    findChat,
+    selectChat,
+    setChatMeta,
+    setChatWorkListener,
+    type ChatRef,
+} from "src/ts/storage/chatStore.svelte";
+import { setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import Toggles from "./Toggles.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
 
-function render() {
+function render(chatRef: ChatRef | null = { chaId: "c", chatId: "k" }) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     // The selected character's record, as `CharConfig.svelte` passes it (a writable wrapper).
     const chara = selectedCharacter()!;
-    mounted.push(mount(Toggles, { target, props: { chara, noContainer: true } }));
+    mounted.push(mount(Toggles, { target, props: { chara, chatRef } }));
     flushSync();
     /** The checkbox of the label that carries `name`, or none. */
     const checkbox = (name: string) => {
@@ -66,6 +74,7 @@ beforeEach(() => {
         hypav2: false,
         hypaV3: false,
         hanuraiEnable: false,
+        jailbreakToggle: false,
     } as any);
     selectCharacter("c");
 });
@@ -96,10 +105,184 @@ it("renders unset selects at option zero and empty text controls from preset, mo
 });
 
 afterEach(() => {
+    setChatWorkListener(null);
+    setRecordWriteListener(null);
     for (const component of mounted.splice(0)) {
         unmount(component);
     }
     document.body.innerHTML = "";
+});
+
+describe("per-chat prompt toggles", () => {
+    const ref = { chaId: "c", chatId: "k" };
+    const definitions = "flag=Flag\nmode=Mode=select=First,Second\ntitle=Title=text\nnotes=Notes=textarea";
+    const legacy = { toggle_flag: "0", toggle_mode: "0", toggle_title: "legacy", toggle_notes: "legacy notes" };
+    const change = (input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement, value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    const unload = () =>
+        assembleChats(
+            [{ chaId: "c" }],
+            [{ characterId: "c", id: "k", revision: "r1", name: "K", fmIndex: -1 }],
+            [{ characterId: "c", revision: "o1", ids: ["k"] }],
+        );
+
+    it("checkbox, select, text, and textarea edits preserve other chat keys and never write legacy settings", () => {
+        activePreset.customPromptTemplateToggle = definitions;
+        settings.globalChatVariables = { ...legacy };
+        setChatMeta(ref, { GLGlobalVariables: { toggle_keep: "keep me" } });
+        const recordsWritten = vi.fn();
+        setRecordWriteListener(recordsWritten);
+        const { target, checkbox } = render();
+        expect(target.querySelector("fieldset")!.disabled).toBe(false);
+        expect(target.textContent).not.toContain("Local Toggles");
+        expect(target.textContent).not.toContain("📌");
+
+        checkbox("Flag")!.click();
+        flushSync();
+        expect(findChat(ref)!.GLGlobalVariables).toEqual({ toggle_keep: "keep me", toggle_flag: "1" });
+        change(target.querySelector("select")!, "1");
+        change(target.querySelector<HTMLInputElement>('input[type="text"]')!, "chat title");
+        change(target.querySelector("textarea")!, "chat notes");
+        expect(findChat(ref)!.GLGlobalVariables).toEqual({
+            toggle_keep: "keep me",
+            toggle_flag: "1",
+            toggle_mode: "1",
+            toggle_title: "chat title",
+            toggle_notes: "chat notes",
+        });
+        expect(settings.globalChatVariables).toEqual(legacy);
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("uses the supplied chat's preset, module, owner definitions and values while another chat is selected", () => {
+        installFlatDatabaseWithChats({
+            botPresets: [
+                { id: "a", name: "A", customPromptTemplateToggle: "title=Title A=text\nflag=Flag A" },
+                { id: "b", name: "B", customPromptTemplateToggle: "title=Title B=text\nflag=Flag B" },
+            ],
+            characters: [
+                {
+                    chaId: "a",
+                    type: "character",
+                    name: "A",
+                    customModuleToggle: "owner=Owner A",
+                    chats: [
+                        {
+                            id: "a-chat",
+                            name: "A",
+                            message: [],
+                            promptPresetId: "a",
+                            GLGlobalVariables: { toggle_title: "A title", toggle_flag: "1" },
+                        },
+                    ],
+                },
+                {
+                    chaId: "b",
+                    type: "character",
+                    name: "B",
+                    customModuleToggle: "owner=Owner B",
+                    chats: [
+                        {
+                            id: "b-chat",
+                            name: "B",
+                            message: [],
+                            promptPresetId: "b",
+                            GLGlobalVariables: { toggle_title: "B title", toggle_flag: "0" },
+                        },
+                    ],
+                },
+            ],
+        });
+        selectCharacter("b");
+        const aRef = { chaId: "a", chatId: "a-chat" };
+        vi.mocked(getModuleToggles).mockImplementation((target) =>
+            target?.chaId === "a" ? "module=Module A" : "module=Module B",
+        );
+        const { target, checkbox } = render(aRef);
+        expect(target.textContent).toContain("Title A");
+        expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("A title");
+        expect(checkbox("Flag A")!.checked).toBe(true);
+        expect(checkbox("Module A")).not.toBeNull();
+        expect(checkbox("Owner A")).not.toBeNull();
+        expect(target.textContent).not.toMatch(/Title B|Flag B|Module B|Owner B/);
+        change(target.querySelector<HTMLInputElement>('input[type="text"]')!, "A edited");
+        expect(findChat(aRef)!.GLGlobalVariables).toEqual({ toggle_title: "A edited", toggle_flag: "1" });
+        expect(findChat({ chaId: "b", chatId: "b-chat" })!.GLGlobalVariables).toEqual({
+            toggle_title: "B title",
+            toggle_flag: "0",
+        });
+    });
+
+    it.each(["unloaded", "null"] as const)(
+        "disables per-chat inputs for a %s ref but keeps jailbreak and memory enabled",
+        (state) => {
+            activePreset.customPromptTemplateToggle = definitions;
+            activePreset.jailbreak = "Jailbreak prompt";
+            activePreset.promptTemplate = null;
+            settings.ui.jailbreakToggle = false;
+            settings.globalChatVariables = { ...legacy };
+            setChatMeta(ref, { GLGlobalVariables: { toggle_title: "selected chat title" } });
+            if (state === "unloaded") unload();
+            const { target, chara, checkbox } = render(state === "null" ? null : ref);
+            const fieldset = target.querySelector("fieldset")!;
+            expect(fieldset.disabled).toBe(true);
+            expect(fieldset.querySelectorAll("input, select, textarea")).toHaveLength(4);
+            expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe(
+                state === "null" ? "selected chat title" : "legacy",
+            );
+            const jailbreak = checkbox(language.jailbreakToggle)!;
+            const memory = checkbox(language.ToggleSuperMemory)!;
+            for (const input of [jailbreak, memory]) {
+                expect(input.disabled).toBe(false);
+                expect(input.closest("fieldset[disabled]")).toBeNull();
+                input.click();
+                flushSync();
+            }
+            expect(settings.ui.jailbreakToggle).toBe(true);
+            expect(chara.supaMemory).toBe(true);
+            expect(settings.globalChatVariables).toEqual(legacy);
+        },
+    );
+
+    it("opening an existing chat and mounting the panel neither seeds defaults nor writes settings", () => {
+        activePreset.customPromptTemplateToggle = definitions;
+        settings.globalChatVariables = { ...legacy };
+        const chatWritten = vi.fn();
+        const recordsWritten = vi.fn();
+        setChatWorkListener(chatWritten);
+        setRecordWriteListener(recordsWritten);
+        selectCharacter(null);
+        selectChat("c", "k");
+        selectCharacter("c");
+        render();
+        flushSync();
+        expect(findChat(ref)!.GLGlobalVariables).toBeUndefined();
+        expect(settings.globalChatVariables).toEqual(legacy);
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
+    });
+
+    it("ignores an input event when its chat unloaded after render, before the disabled state flushed", () => {
+        activePreset.customPromptTemplateToggle = "title=Title=text";
+        settings.globalChatVariables = { ...legacy };
+        const { target } = render();
+        const input = target.querySelector<HTMLInputElement>('input[type="text"]')!;
+        const chatWritten = vi.fn();
+        const recordsWritten = vi.fn();
+        setChatWorkListener(chatWritten);
+        setRecordWriteListener(recordsWritten);
+        unload();
+        expect(findChat(ref)).toBeUndefined();
+        change(input, "too late");
+        expect(chatWritten).not.toHaveBeenCalled();
+        expect(recordsWritten).not.toHaveBeenCalled();
+        expect(settings.globalChatVariables).toEqual(legacy);
+        expect(findChat(ref)).toBeUndefined();
+        expect(target.querySelector("fieldset")!.disabled).toBe(true);
+    });
 });
 
 describe("the memory toggle", () => {
