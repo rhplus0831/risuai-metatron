@@ -10,7 +10,7 @@ Active planning and implementation:
   are listed in its Status; deferred work and Phase 5 verification remain separate.
 - [Large Asset Import and Export](large-asset-import.md): server-side `.risum`/CharX
   import, batch asset routes, asset client retry, export batching, paged emotion
-  list; slices 1a and 1b landed 2026-10-17, the rest planned.
+  list; slices 1a, 1b, and 1c landed 2026-10-17, the rest planned.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
