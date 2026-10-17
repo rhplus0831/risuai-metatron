@@ -108,7 +108,7 @@ try {
     const single = async (kind) => (await api(`/api/resources/${kind}/main`)).body;
 
     const settingsButton = page.locator("button:has(svg.lucide-settings)").first();
-    // Loaded: the main screen, or (a fresh store) the first-run welcome.
+    // Loaded: the main screen (its "Welcome to RisuAI!" sidebar header).
     const welcome = page.getByText("Welcome to Risuai!");
     const open = async () => {
         await page.goto(base);

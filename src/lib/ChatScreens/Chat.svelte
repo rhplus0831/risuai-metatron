@@ -207,7 +207,7 @@
 
     // The stored translation (`docs/plan/translation.md` slice 1.4): the LLM translator on
     // `llmTranslationTarget: "message"`, for a row of a stored message. Rows without a message id (the
-    // greeting, bookmark previews, the welcome screen) keep the rendered path. Every read below is
+    // greeting, bookmark previews) keep the rendered path. Every read below is
     // tracked: the held chats are deep state, so a refresh that brings a translation re-derives it
     // without remounting the row.
     let storedPath = $derived(usesStoredTranslation() && !!messageId && displayedChat !== null);

@@ -26,7 +26,6 @@
     import PushPrompt from "./lib/Others/PushPrompt.svelte";
     import RealmPopUp from "./lib/UI/Realm/RealmPopUp.svelte";
     import GridChars from "./lib/Others/GridCatalog.svelte";
-    import WelcomeRisu from "./lib/Others/WelcomeRisu.svelte";
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
@@ -51,7 +50,6 @@
     import IrisModal from "./lib/Others/IrisModal.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
-    let didFirstSetup: boolean = $derived(settings.ui.didFirstSetup);
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
     let keepingSessionAlive = $state(false);
@@ -232,8 +230,6 @@
         </div>
     {:else if $CustomGUISettingMenuStore}
         <CustomGUISettingMenu />
-    {:else if !didFirstSetup}
-        <WelcomeRisu />
     {:else if $settingsOpen}
         <Settings />
     {:else}

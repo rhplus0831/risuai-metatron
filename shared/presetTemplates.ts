@@ -3,7 +3,7 @@ import type { NAISettings } from "./settings.ts";
 
 /**
  * Built-in preset templates and the default prompt strings. Pure data shared by the client (the
- * new-preset button, the welcome screen, `importPreset`) and the server preset normalizer. A
+ * new-preset button, `importPreset`) and the server preset normalizer. A
  * template has no `id`: every use goes through `normalizePreset` (`shared/presets.ts`), which
  * assigns one.
  */

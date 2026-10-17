@@ -85,10 +85,10 @@ afterEach(() => {
     mocks.server?.close();
 });
 
-async function app() {
+async function app(options: { firstBoot?: boolean } = {}) {
     mocks.server = await StoreBackedServer.create();
     const ui = mocks.server.record("ui", "main")!.data;
-    mocks.server.set("ui", "main", { ...ui, didFirstSetup: true });
+    mocks.server.set("ui", "main", { ...ui, didFirstSetup: !options.firstBoot });
     const stores = await import("./stores.svelte");
     const { loadData } = await import("./bootstrap");
     const globalApi = await import("./globalApi.svelte");
@@ -134,6 +134,30 @@ async function expectFallback(current: Awaited<ReturnType<typeof app>>, phase: s
     expect(current.fetch.mock.calls.map(([url]) => url)).not.toContain(`/sw/check/${hex}`);
     URL.revokeObjectURL(src);
 }
+
+describe("loadData on a store's first boot", () => {
+    async function firstBoot(browserLanguage: string) {
+        const current = await app({ firstBoot: true });
+        vi.spyOn(navigator, "language", "get").mockReturnValue(browserLanguage);
+        await current.loadData();
+        const { settings } = await import("./storage/settingsViews.svelte");
+        const { language } = await import("src/lang");
+        return { current, settings, language };
+    }
+
+    it("takes the browser's language when the UI has it and marks the setup done", async () => {
+        const { current, settings, language } = await firstBoot("ko-KR");
+        expect(get(current.stores.loadedStore)).toBe(true);
+        expect(settings.ui).toMatchObject({ didFirstSetup: true, language: "ko" });
+        expect(language.settings).toBe("설정");
+        expect(mocks.importShare).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the default language for a browser language the UI lacks", async () => {
+        const { settings } = await firstBoot("fr-FR");
+        expect(settings.ui).toMatchObject({ didFirstSetup: true, language: "en" });
+    });
+});
 
 describe("loadData with service worker failures", () => {
     it("finishes boot with blob assets and registerFailed when registration rejects", async () => {

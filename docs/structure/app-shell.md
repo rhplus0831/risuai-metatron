@@ -18,6 +18,7 @@
 - `src/ts/bootstrap.ts`:
   - `loadData`: the server resources are read and installed into the records, then maintenance, theme, `startResourceSync` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
   - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built.
+  - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen, and every other setting keeps the server's default until the settings pages change it.
   - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default.
   - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload, and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also records the sync event and flushes diagnostics.
 - `src/ts/stores.svelte.ts`: all global UI stores (see State).
@@ -60,10 +61,9 @@ Screen selection. `App.svelte` checks these in order:
 1. April Fools branch.
 2. Loading.
 3. `CustomGUISettingMenuStore`.
-4. `!settings.ui.didFirstSetup` → `WelcomeRisu`.
-5. `$settingsOpen` → `Settings`.
-6. `$gridOpenStore` → `GridChars`.
-7. Otherwise `Sidebar` + `ChatScreen`.
+4. `$settingsOpen` → `Settings`.
+5. `$gridOpenStore` → `GridChars`.
+6. Otherwise `Sidebar` + `ChatScreen`.
 
 Inside `DefaultChatScreen.svelte`:
 

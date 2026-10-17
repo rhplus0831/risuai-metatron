@@ -25,7 +25,7 @@ import { activeMainProfile, currentPresetRecord, settings } from "./settingsView
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
 /*
- * The preset actions of the preset lists and the welcome screen (Phase 6 slice 10, out of
+ * The preset actions of the preset lists (Phase 6 slice 10, out of
  * `database.svelte.ts`; split into prompt and model presets by `docs/plan/split-preset.md`): copy,
  * switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
  * `modelPresets` collection (`settingsViews.svelte.ts`). Every preset field lives in its own preset

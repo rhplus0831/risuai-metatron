@@ -152,7 +152,7 @@ rg --files util/playwright
 The browser inventory includes API-key and lazy-chat specs as well as preset,
 persona/binding, transform, storage, settings, character, and navigation flows.
 `e2e/0-idleReload.spec.ts` must run first because it asserts the shared stack's first
-boot; `e2e/welcomeAndChatSettings.spec.ts` runs last and resets onboarding state.
+boot; `e2e/welcomeAndChatSettings.spec.ts` runs last because it changes the shared stack's settings.
 Domain guides retain their specific assertions and browser gaps.
 
 - `src/ts/sw.share.test.ts` (node) runs `public/sw.js` under `node:vm` with a fake `self`, an in-memory `caches`, and Node's `Request`/`Response`/`FormData`: the manifest's `share_target` (read from `public/manifest.json`) posts to the worker's `/sw/share`, a multipart POST stores the first file (character, then preset, then module) under the absolute `/sw/share/<kind>` URL and answers a 303 to `/#share_<kind>`, a POST without one and a GET answer a 303 to `/` without reading the form, and `/sw/register` with a URL object still stores the bytes. Slice 4f (audit WEB-01). The worker's other routes, Web Push handlers, and the userscript have no automated tests; verify those manually.

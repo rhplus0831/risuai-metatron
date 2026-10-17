@@ -54,6 +54,7 @@ export async function loadData() {
             // This client's preset and lorebook page; the installation checks the ids.
             loadSelection();
             installBootRecords(snapshot);
+            applyFirstBootDefaults();
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
@@ -66,9 +67,7 @@ export async function loadData() {
                 recordClientEvent({ kind: "serviceWorker", phase: "unsupported" });
                 setUsingSw(false);
             }
-            if (settings.ui.didFirstSetup) {
-                characterURLImport();
-            }
+            characterURLImport();
             try {
                 const isInStandaloneMode =
                     window.matchMedia("(display-mode: standalone)").matches ||
@@ -202,6 +201,25 @@ export function installBootRecords(snapshot: ResourceReadKindsResult) {
     initializeRecords(fields);
     reconcileSelection();
     changeLanguage(settings.ui.language);
+}
+
+const BROWSER_UI_LANGUAGES = ["de", "en", "ko", "cn", "vi", "zh-Hant"];
+
+/**
+ * The first boot of a store (`didFirstSetup` unset): the UI language follows the browser's when it is
+ * one the UI has, as the removed first-run wizard's language step did. Every other setting keeps the
+ * server's default; the settings pages change them.
+ */
+function applyFirstBootDefaults() {
+    if (settings.ui.didFirstSetup) {
+        return;
+    }
+    const browserLang = navigator.language?.split("-")[0];
+    if (browserLang && BROWSER_UI_LANGUAGES.includes(browserLang)) {
+        settings.ui.language = browserLang;
+        changeLanguage(browserLang);
+    }
+    settings.ui.didFirstSetup = true;
 }
 
 /** A live update of the plugin permissions: read again, retried a few times (5 s apart) after a failed read. */
