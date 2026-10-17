@@ -1,4 +1,13 @@
 import { createHash } from "node:crypto";
+import { unzipSync } from "fflate";
+import {
+    CHARX_IMPORT_PATH,
+    charxEntryKind,
+    type CharxImportLine,
+    decodeCharxCard,
+    INVALID_CHARX_FILE,
+    MAX_CHARX_ENTRY_BYTES,
+} from "../../../../shared/charxImport.ts";
 import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
 import { parseSecretPath, writeSecret } from "../../../../shared/llmSecrets.ts";
 import {
@@ -23,7 +32,8 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
  * the client relies on: the epoch fence, the operation count, the error mapping, and (Phase 5
  * slice 7b) the write-only kinds' contract: a kind's `project` on every read, its `prepareWrite` on
  * every plain write, and `/api/llm-secrets/*` for the credential writes; and (large-asset-import
- * slice 2c) `POST /api/import/module`, the `.risum` import's answer without its asset store. The
+ * slice 2c) `POST /api/import/module`, the `.risum` import's answer without its asset store, and
+ * (slice 2d) `POST /api/import/charx`, the CharX import's answer without its asset store. The
  * hooks mirror `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail
  * requests.
  *
@@ -347,8 +357,7 @@ export class StoreBackedServer {
                 if (end > bytes.length) {
                     throw new ModuleFileError("The module file is truncated");
                 }
-                const decoded = decodeRPack(bytes.subarray(position + 5, end));
-                keys.push(`assets/${createHash("sha256").update(decoded).digest("hex")}.png`);
+                keys.push(assetKey(decodeRPack(bytes.subarray(position + 5, end))));
                 position = end;
             }
         } catch (error) {
@@ -362,15 +371,74 @@ export class StoreBackedServer {
             return { done: index + 1, total: keys.length };
         });
         lines.push({ module, assetsWritten: keys.length, assetsSkipped: 0 });
-        const ndjson = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
-        return new Response(ndjson, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+        return ndjsonResponse(lines);
+    }
+
+    /**
+     * `POST /api/import/charx` (`server/src/routes/importCharx.ts`) without its store: the file is a
+     * plain zip (the test zips of `importFixtures.ts` `charx()`; no `charxJpeg` prefix), read whole with
+     * fflate's `unzipSync` instead of the route's central-directory walk, each entry taken by the
+     * shared entry rules (`shared/charxImport.ts`: `card.json` the card's text, `module.risum` its bytes
+     * base64-encoded, another `*.json` ignored, anything else an asset under `assets/<sha256 hex of its
+     * bytes>.png`), and an entry that decodes past `MAX_CHARX_ENTRY_BYTES` excluded. No file is written
+     * (the tests spy `saveAsset`). The answer is the route's NDJSON: one `{ done, total }` line per asset
+     * entry, then `{ card, moduleData, assets, excluded }`; a body that is not a zip, or a zip without a
+     * `card.json`, is the route's 400 `Invalid character file`.
+     */
+    private async importCharxRoute(raw: unknown): Promise<Response> {
+        const bytes =
+            raw instanceof Uint8Array
+                ? raw
+                : typeof (raw as Blob | null)?.arrayBuffer === "function"
+                  ? new Uint8Array(await (raw as Blob).arrayBuffer())
+                  : null;
+        if (!bytes) {
+            return Response.json({ error: "CharX body required" }, { status: 400 });
+        }
+        let entries: [string, Uint8Array][];
+        try {
+            entries = Object.entries(unzipSync(bytes));
+        } catch {
+            return Response.json({ error: INVALID_CHARX_FILE }, { status: 400 });
+        }
+        if (!entries.some(([name]) => charxEntryKind(name) === "card")) {
+            return Response.json({ error: INVALID_CHARX_FILE }, { status: 400 });
+        }
+        const total = entries.filter(([name]) => charxEntryKind(name) === "asset").length;
+        let card: string | null = null;
+        let moduleData: string | null = null;
+        // No prototype: an entry may be named `__proto__` (as the route keeps it).
+        const assets: Record<string, string> = Object.create(null);
+        const excluded: string[] = [];
+        const lines: CharxImportLine[] = [];
+        for (const [name, data] of entries) {
+            const kind = charxEntryKind(name);
+            if (kind === "ignored") {
+                continue;
+            }
+            if (data.length > MAX_CHARX_ENTRY_BYTES) {
+                excluded.push(name);
+            } else if (kind === "card") {
+                card = decodeCharxCard(data);
+            } else if (kind === "module") {
+                moduleData = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("base64");
+            } else {
+                assets[name] = assetKey(data);
+            }
+            if (kind === "asset") {
+                lines.push({ done: lines.length + 1, total });
+            }
+        }
+        lines.push({ card, moduleData, assets, excluded });
+        return ndjsonResponse(lines);
     }
 
     readonly fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
         const method = init.method ?? "GET";
         const url = new URL(path, "http://test");
-        // The module import's body is the file (a `Blob`, never parsed here): recorded as null.
-        const rawBody = typeof init.body === "string" && url.pathname !== MODULE_IMPORT_PATH ? init.body : null;
+        // The module and CharX imports' body is the file (a `Blob`, never parsed here): recorded as null.
+        const fileImport = url.pathname === MODULE_IMPORT_PATH || url.pathname === CHARX_IMPORT_PATH;
+        const rawBody = typeof init.body === "string" && !fileImport ? init.body : null;
         const body = rawBody ? JSON.parse(rawBody) : null;
         this.requests.push({ method, path: url.pathname, body });
         if (this.failNext && (!this.failNext.match || this.failNext.match(url.pathname))) {
@@ -388,6 +456,9 @@ export class StoreBackedServer {
 
         if (url.pathname === MODULE_IMPORT_PATH && method === "POST") {
             return this.importModuleRoute(init.body);
+        }
+        if (url.pathname === CHARX_IMPORT_PATH && method === "POST") {
+            return this.importCharxRoute(init.body);
         }
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");
@@ -516,4 +587,15 @@ export class StoreBackedServer {
         }
         return Response.json({ error: `Unhandled ${method} ${url.pathname}` }, { status: 500 });
     };
+}
+
+/** The key the import routes store an asset's bytes under (`saveAsset`'s, with its default extension). */
+function assetKey(bytes: Uint8Array): string {
+    return `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
+}
+
+/** An import route's 200 answer: one JSON line per item (`application/x-ndjson`). */
+function ndjsonResponse(lines: readonly unknown[]): Response {
+    const ndjson = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+    return new Response(ndjson, { status: 200, headers: { "content-type": "application/x-ndjson" } });
 }

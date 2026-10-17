@@ -1121,6 +1121,10 @@ export const languageKorean = {
     moduleImportStopped: "서버가 모듈 임포트를 중단했습니다 ({{error}}). 모듈은 추가되지 않았습니다.",
     moduleImportInterrupted:
         "업로드가 중단되었습니다. 서버가 파일을 거부했거나(다른 임포트 진행 중, 너무 큰 파일, 점검 중) 연결이 끊어졌을 수 있습니다. 다시 시도하세요.",
+    charxImportUploading: "캐릭터 파일을 업로드하는 중... 큰 파일은 몇 분 걸릴 수 있습니다.",
+    charxImportFileTooLarge: "캐릭터 파일이 서버가 받을 수 있는 크기보다 큽니다.",
+    charxImportRequestFailed: "캐릭터 파일 임포트에 실패했습니다 (HTTP {{status}}).",
+    charxImportStopped: "서버가 캐릭터 파일 임포트를 중단했습니다 ({{error}}). 아무것도 추가되지 않았습니다.",
     download: "다운로드",
     edit: "수정",
     enableGlobal: "글로벌 활성화",

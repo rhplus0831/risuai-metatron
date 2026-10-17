@@ -23,6 +23,7 @@ import { createRequestShares } from "./diagnostics/share.ts";
 import { errorFields } from "./diagnostics/log.ts";
 import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
+import { createImportSlot } from "./http/fileImport.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
 import type { GenerationRunnerDeps } from "./jobs/runSetup.ts";
@@ -40,6 +41,7 @@ import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
+import { CHARX_IMPORT_PATH, registerCharxImportRoutes } from "./routes/importCharx.ts";
 import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
 import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/translate.ts";
@@ -382,8 +384,9 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too.
         const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
-        // The module import is refused like the backup routes.
-        const moduleImport = c.req.path.replace(/\/+$/, "") === MODULE_IMPORT_PATH;
+        // The module and CharX imports are refused like the backup routes.
+        const fileImportRoute = c.req.path.replace(/\/+$/, "");
+        const fileImport = fileImportRoute === MODULE_IMPORT_PATH || fileImportRoute === CHARX_IMPORT_PATH;
         // The request history and the diagnostics: refused during shutdown (the history's store closes at
         // dispose), and every answer is `no-store`, the limiter's 429 and the body limit's 413 included.
         const history =
@@ -395,7 +398,7 @@ export function createServerContext(options: {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || moduleImport || history)) {
+            if (shuttingDown && (resource || backup || fileImport || history)) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
@@ -415,8 +418,8 @@ export function createServerContext(options: {
         }
     });
 
-    // The backup and module imports stream their bodies to disk with their own cap; Hono's limiter
-    // would buffer them.
+    // The backup, module, and CharX imports stream their bodies to disk with their own cap; Hono's
+    // limiter would buffer them.
     const limitBody = bodyLimit({
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
@@ -430,6 +433,7 @@ export function createServerContext(options: {
             (c.req.method === "POST" &&
                 (route === BACKUP_IMPORT_PATH ||
                     route === MODULE_IMPORT_PATH ||
+                    route === CHARX_IMPORT_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
@@ -569,6 +573,8 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
     });
+    // One module or CharX import at a time: both hold a spooled file and a write loop.
+    const importSlot = createImportSlot();
     registerModuleImportRoutes(app, {
         savePath,
         snapshots,
@@ -576,6 +582,16 @@ export function createServerContext(options: {
         limiter: authenticatedRouteLimiter.middleware,
         maxImportBytes,
         diagnostics,
+        slot: importSlot,
+    });
+    registerCharxImportRoutes(app, {
+        savePath,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maxImportBytes,
+        diagnostics,
+        slot: importSlot,
     });
 
     diagnostics.record({ kind: "lifecycle", phase: "boot" });

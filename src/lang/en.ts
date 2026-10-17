@@ -1190,6 +1190,10 @@ export const languageEnglish = {
     moduleImportStopped: "The server stopped the module import ({{error}}). No module was added.",
     moduleImportInterrupted:
         "The upload was interrupted. The server may have refused the file (another import running, a file too large, or maintenance), or the connection was lost. Try again.",
+    charxImportUploading: "Uploading the character file... A large file can take several minutes.",
+    charxImportFileTooLarge: "The character file is larger than the server accepts.",
+    charxImportRequestFailed: "The character file import failed (HTTP {{status}}).",
+    charxImportStopped: "The server stopped the character file import ({{error}}). Nothing was added.",
     download: "Download",
     edit: "Edit",
     enableGlobal: "Enable Globally",

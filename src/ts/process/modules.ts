@@ -17,11 +17,8 @@ import { findChat, selectedChat } from "../storage/chatStore.svelte";
 import { AppendableBuffer, downloadFile, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte";
 import { checkPersonaBinded, selectSingleFileHandle } from "../util";
 import { saveAssets } from "../storage/assetQueue";
-import {
-    importModuleOverServer,
-    ModuleImportFailedError,
-    ModuleImportRequestError,
-} from "../storage/moduleImportClient";
+import { importModuleOverServer } from "../storage/moduleImportClient";
+import { ServerImportFailedError, ServerImportRequestError } from "../storage/serverImportClient";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
@@ -356,26 +353,41 @@ function copyStoredKeys(module: RisuModule, stored: RisuModule): boolean {
     return true;
 }
 
+/** The texts one server file import route's failures map to (`serverImportErrorMessage`). */
+export type ServerImportTexts = {
+    /** The route's `error` text for a file it cannot read (a 400, or a failure line): shown as `noData`. */
+    invalidFile: string;
+    /** A 413 `File too large`. */
+    fileTooLarge: string;
+    /** A 413 `Asset too large` (the module import's). */
+    assetTooLarge?: string;
+    /** Another non-2xx answer without an `error` text (`{{status}}`). */
+    requestFailed: string;
+    /** A failure line (`{{error}}`). */
+    stopped: string;
+};
+
 /**
- * The alert for an upload that failed (slice 2c): by the answer's status and its `error` text where
- * the server's texts tell refusals apart (every authentication failure is a 400 with its own text,
- * shown as it is). A network failure may be a refusal the browser did not see (see
- * `moduleImportClient.ts`).
+ * The alert for a file upload to a server import route that failed (slices 2c and 2d): by the
+ * answer's status and its `error` text where the server's texts tell refusals apart (every
+ * authentication failure is a 400 with its own text, shown as it is). Busy, maintenance, a timeout,
+ * and an interrupted upload share the module import's texts. A network failure may be a refusal the
+ * browser did not see (see `serverImportClient.ts`).
  */
-function moduleImportErrorMessage(error: unknown): string {
-    if (error instanceof ModuleImportRequestError) {
+export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
+    if (error instanceof ServerImportRequestError) {
         switch (error.status) {
             case 400:
-                if (error.serverError === "Invalid module file") {
+                if (error.serverError === texts.invalidFile) {
                     return language.errors.noData;
                 }
                 break;
             case 413:
                 if (error.serverError === "File too large") {
-                    return language.moduleImportFileTooLarge;
+                    return texts.fileTooLarge;
                 }
-                if (error.serverError === "Asset too large") {
-                    return language.moduleImportAssetTooLarge;
+                if (texts.assetTooLarge !== undefined && error.serverError === "Asset too large") {
+                    return texts.assetTooLarge;
                 }
                 break;
             case 408:
@@ -386,16 +398,30 @@ function moduleImportErrorMessage(error: unknown): string {
             case 503:
                 return language.moduleImportMaintenance;
         }
-        return error.serverError ?? language.moduleImportRequestFailed.replace("{{status}}", String(error.status));
+        return error.serverError ?? texts.requestFailed.replace("{{status}}", String(error.status));
     }
-    if (error instanceof ModuleImportFailedError) {
-        return language.moduleImportStopped.replace("{{error}}", error.message);
+    if (error instanceof ServerImportFailedError) {
+        if (error.message === texts.invalidFile) {
+            return language.errors.noData;
+        }
+        return texts.stopped.replace("{{error}}", error.message);
     }
     if (error instanceof TypeError) {
         return language.moduleImportInterrupted;
     }
     console.error(error);
     return language.errors.noData;
+}
+
+/** The alert for a `.risum` upload that failed (slice 2c). */
+function moduleImportErrorMessage(error: unknown): string {
+    return serverImportErrorMessage(error, {
+        invalidFile: "Invalid module file",
+        fileTooLarge: language.moduleImportFileTooLarge,
+        assetTooLarge: language.moduleImportAssetTooLarge,
+        requestFailed: language.moduleImportRequestFailed,
+        stopped: language.moduleImportStopped,
+    });
 }
 
 export async function importModule() {
@@ -405,12 +431,17 @@ export async function importModule() {
     }
     if (file.name.endsWith(".charx")) {
         try {
-            // The picked `File` itself, which the CharX importer streams.
+            // The picked `File` itself, which goes to the server's CharX import (large-asset-import
+            // slice 2d).
             const char = await importCharacterProcess({
                 name: file.name,
                 data: file,
                 returnCharacter: true,
             });
+            if (char === null || char === undefined) {
+                // Alerted already: no card, or the upload's failure (busy, too large, interrupted).
+                return;
+            }
             if (!char || typeof char === "string") {
                 alertError(language.errors.noData);
                 return;

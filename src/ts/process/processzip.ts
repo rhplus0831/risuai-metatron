@@ -3,9 +3,10 @@ import * as fflate from "fflate";
 import { asBuffer } from "../util";
 import { alertStore } from "../alert";
 import { AssetSaveQueue } from "../storage/assetQueue";
+// The entry cap both CharX readers share (50MB; the server's is `POST /api/import/charx`).
+import { MAX_CHARX_ENTRY_BYTES as MAX_ASSET_SIZE_BYTES } from "../../../shared/charxImport.ts";
 
-// File size and chunk size constants
-const MAX_ASSET_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
+// Chunk size constant
 const CHUNK_SIZE_BYTES = 1024 * 1024; // 1MB
 // The CharX importer pushes zip input in slices this small, waiting for a free save slot before each,
 // so one push can only complete a few entries (see `CharXImporter.#feedChunk`).

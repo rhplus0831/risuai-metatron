@@ -48,8 +48,11 @@ import {
     prepareModuleImport,
     readModule,
     type RisuModule,
+    serverImportErrorMessage,
 } from "./process/modules";
 import { saveAssets, type AssetSaveItem } from "./storage/assetQueue";
+import { importCharxOverServer } from "./storage/charxImportClient";
+import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
 
 export const hubURL = "/hub-proxy";
 
@@ -77,9 +80,19 @@ export async function importCharacter() {
     }
 }
 
+/**
+ * Imports one card file, dispatched by its name (`.json`, `.charx`/`.jpg`/`.jpeg`, `.png`). A CharX
+ * (or a `charxJpeg`) given as a `File` or `Blob` is uploaded as it is to the server's CharX import
+ * (`importCharxOverServer`, large-asset-import slice 2d), so the tab never holds the file; one given
+ * as bytes or a stream is read by the in-tab `CharXImporter`. Every input is told apart without
+ * `instanceof Blob`: a `Uint8Array` or a `ReadableStream` is read in the tab, anything else is a
+ * `Blob` (a test's `Response.blob()` is not the environment's `Blob`). The PNG reader takes a `File`,
+ * bytes, or a stream; another `Blob` is read into bytes first. Returns the new character's id (with
+ * `returnCharacter`, the character), or null/undefined once the failure is alerted.
+ */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
-    data: Uint8Array | File | ReadableStream<Uint8Array>;
+    data: Uint8Array | Blob | ReadableStream<Uint8Array>;
     returnCharacter?: T; //note That this option only works with v3 charx
 }): Promise<T extends true ? character | string | null : string | null> {
     if (f.name.endsWith("json")) {
@@ -104,16 +117,41 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     incrementStatic("imports");
 
     if (f.name.endsWith("charx") || f.name.endsWith("jpg") || f.name.endsWith("jpeg")) {
-        console.log("reading charx");
-        alertStore.set({
-            type: "wait",
-            msg: "Loading... (Reading)",
-        });
-
-        const importer = new CharXImporter();
-        importer.alertInfo = true;
-        await importer.parse(f.data);
-        const cardData = importer.cardData;
+        // The in-tab reader for bytes and streams (tests); a `File`/`Blob` goes to the server.
+        let importer: CharXImporter | null = null;
+        let cardData: string | null | undefined;
+        let moduleData: Buffer | null = null;
+        let assets: { [key: string]: string } = {};
+        if (f.data instanceof Uint8Array || f.data instanceof ReadableStream) {
+            console.log("reading charx");
+            alertStore.set({
+                type: "wait",
+                msg: "Loading... (Reading)",
+            });
+            importer = new CharXImporter();
+            importer.alertInfo = true;
+            await importer.parse(f.data);
+            cardData = importer.cardData;
+            moduleData = importer.moduleData ? Buffer.from(importer.moduleData) : null;
+        } else {
+            alertWait(language.charxImportUploading);
+            let stored: CharxImportResult;
+            try {
+                stored = await importCharxOverServer(f.data, {
+                    onProgress: (done, total) => {
+                        alertWait(`Loading... (Saving Assets ${done}/${total})`);
+                    },
+                });
+            } catch (error) {
+                // Each alert replaces the wait alert; nothing clears the store after it.
+                alertError(charxImportErrorMessage(error));
+                return null;
+            }
+            cardData = stored.card;
+            // The embedded module only (small): the file itself never reaches the tab.
+            moduleData = stored.moduleData === null ? null : Buffer.from(stored.moduleData, "base64");
+            assets = stored.assets;
+        }
         if (!cardData) {
             alertError(language.errors.noData);
             return;
@@ -124,8 +162,8 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             return;
         }
         let lorebook: loreBook[] = null;
-        if (importer.moduleData) {
-            const md = await readModule(Buffer.from(importer.moduleData));
+        if (moduleData) {
+            const md = await readModule(moduleData);
             card.data.extensions ??= {};
             card.data.extensions.risuai ??= {};
             card.data.extensions.risuai.triggerscript = md.trigger ?? [];
@@ -134,8 +172,11 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
                 lorebook = md.lorebook;
             }
         }
-        await importer.done();
-        let v = await importCharacterCardSpec(card, undefined, "normal", importer.assets, lorebook, f.returnCharacter);
+        if (importer) {
+            await importer.done();
+            assets = importer.assets;
+        }
+        let v = await importCharacterCardSpec(card, undefined, "normal", assets, lorebook, f.returnCharacter);
         if (f.returnCharacter) {
             return v as any;
         }
@@ -145,6 +186,11 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     if (!f.name.endsWith("png")) {
         alertError(language.errors.noData);
         return;
+    }
+    // `PngChunk.readGenerator` streams a `File` and reads bytes or a stream; no caller hands a PNG as
+    // another `Blob` (`importFile` reads it into bytes), but one would be read into bytes here.
+    if (!(f.data instanceof Uint8Array) && !(f.data instanceof ReadableStream) && !(f.data instanceof File)) {
+        f.data = new Uint8Array(await f.data.arrayBuffer());
     }
 
     alertStore.set({
@@ -324,6 +370,16 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     return ((await importCharacterCardSpec(parsed, img, "normal", assets)) || null) as any;
 }
 
+/** The alert for a CharX upload that failed (slice 2d); `Invalid character file` is `noData`. */
+function charxImportErrorMessage(error: unknown): string {
+    return serverImportErrorMessage(error, {
+        invalidFile: INVALID_CHARX_FILE,
+        fileTooLarge: language.charxImportFileTooLarge,
+        requestFailed: language.charxImportRequestFailed,
+        stopped: language.charxImportStopped,
+    });
+}
+
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
@@ -445,8 +501,9 @@ export async function characterURLImport() {
         return;
     }
     if (hash.startsWith("#share_character")) {
+        // The cached answer's `Blob`, uploaded as it is (large-asset-import slice 2d).
         await importPendingShare("character", async (pending) =>
-            importCharacterProcess({ name: "shared.charx", data: new Uint8Array(await pending.arrayBuffer()) }),
+            importCharacterProcess({ name: "shared.charx", data: await pending.blob() }),
         );
     }
     if (hash.startsWith("#share_module")) {
@@ -488,9 +545,16 @@ export async function characterURLImport() {
         });
     }
 
-    /** A `.risum` goes to the server as the `Blob` itself (slice 2c); the other kinds are read into bytes. */
+    /**
+     * A `.risum` (slice 2c) and a CharX (`.charx`, a `charxJpeg`'s `.jpg`/`.jpeg`; slice 2d) go to the
+     * server as the `Blob` itself; the other kinds (a `.png` card, a preset) are read into bytes.
+     */
     async function importFile(name: string, data: Blob) {
-        if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")) {
+        if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+            await importCharacterProcess({ name: name, data: data });
+            return;
+        }
+        if (name.endsWith(".png")) {
             await importCharacterProcess({
                 name: name,
                 data: new Uint8Array(await data.arrayBuffer()),
@@ -1752,9 +1816,10 @@ export async function downloadRisuHub(
                 res.headers.get("content-type") === "application/zip" ||
                 res.headers.get("content-type") === "application/charx"
             ) {
+                // The answer's `Blob`, uploaded as it is to the server's CharX import (slice 2d).
                 imported = await importCharacterProcess({
                     name: "realm.charx",
-                    data: new Uint8Array(await res.arrayBuffer()),
+                    data: await res.blob(),
                 });
             } else {
                 imported = await importCharacterProcess({
