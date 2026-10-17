@@ -4,7 +4,7 @@
 
 - Owns: boot sequence, top-level screen selection, the URL routes and the history, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
 - Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/startApp.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
-- Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers → `settings-i18n.md`.
+- Not here: DB shape and migrations → `persistence.md`. The save loop → [persistence](persistence.md); `globalFetch` → [global-api](global-api.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers → `settings-i18n.md`.
 
 ## Files
 
@@ -29,7 +29,7 @@
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
   - `activeHotkeys`: the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off (the dispatch and `HotkeySettings.svelte` read through it).
-  - Ctrl+1..9 pick the prompt preset through `pickBinding` (`docs/plan/chat-binding.md`): the open chat's binding, else the tab's selection at home; nothing while a picker list or the binding dialog is open.
+  - Ctrl+1..9 pick the prompt preset through `pickBinding` ([chat bindings](persistence.md)): the open chat's binding, else the tab's selection at home; nothing while a picker list or the binding dialog is open.
 - `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
   - BGM sync is queued only for `risu-ctrl` attribute changes or added/removed element subtrees matching or containing `[risu-ctrl]`, keeping streamed text mutations out of the document-wide scan while preserving initial sync, macrotask coalescing, document order and grace timers.
@@ -152,7 +152,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - `src/boot.test.ts`: the entry's order over stubbed modules (request history slice 8): importing `boot.ts` evaluates the collector only, and `boot()` starts it before `startApp.ts` is loaded and started.
 - `src/ts/bootstrap.serviceWorker.test.ts` (slice 4f, audit WEB-02): `loadData` over a store-backed server with a fake `navigator.serviceWorker`, `fetch`, `location.reload`, and `sessionStorage`: a rejected registration or `/sw/init` fetch records its diagnostic and the boot completes (`loadedStore` true, `characterURLImport` and `startRouter` run once) with `getFileSrc` answering an object URL and never fetching `/sw/check`; a non-2xx `/sw/init` reloads once with the marker set and the diagnostics flushed, and nothing after the worker step runs; the marker present, or a throwing `sessionStorage`, boots without the worker and without a reload; a 2xx clears the marker and `getFileSrc` answers `/sw/img/<hex>`; a missing `navigator.serviceWorker` keeps the `unsupported` path.
-- None cover screen precedence, platform detection, the hotkey dispatch, or `Mutex`.
+- `src/ts/hotkey.test.ts`: Ctrl+1–9 preset routing, suppression by picker/dialog layers, and Escape layer order. Screen precedence, platform detection, the other hotkey actions, and `Mutex` lack focused unit coverage.
 - `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
 - Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked by hand).
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked. `src/ts/observer.markers.test.ts`: the BGM sync's document-wide `[risu-ctrl]` scan does not run for text or plain HTML mutations and runs once for an added or removed marker element (nested or not) and for a `risu-ctrl` attribute change, with the playback that follows.
@@ -160,6 +160,8 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Some tests mock `stores.svelte` and `platform` (the parser tests). They exercise consumers, not these modules.
 
 ## Known Hazards
+
+- `src/etc/patchNote.ts` has no importers; it does not drive the current release UI.
 
 - The router's accepted limits (it waits for nothing, never loops, never traverses to an entry the Navigation API does not list, and the URL catches up by the next store change):
   - a click made between a back and its landing is undone by the landing;

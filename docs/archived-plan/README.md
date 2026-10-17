@@ -1,46 +1,88 @@
-# Archived Plans
+# Archived Plans and Migration History
 
-Finished plans leave `docs/plan/` and are recorded here. Their files are not
-kept in the tree: each entry names the commit whose tree holds their last
-versions. The codebase and current architecture guides remain the source of
-truth for shipped behavior; the guides and code comments may still name an
-archived plan by its old path (`docs/plan/<name>.md`).
+Completed plans are removed from `docs/plan/`; their last versions remain in the
+commit trees below. Current guides describe shipped behavior. Historical decision
+labels (O1–O9, R/H items, numbered binding decisions, translation slices) refer to
+these archived designs, not to live files in the working tree.
 
-To archive a plan, delete its file and its link from `docs/plan/README.md`,
-and add an entry below that names the commit holding its last version and any
-open follow-ups.
+Documentation audit: 2026-10-17. Archiving an implemented design does not certify
+its pending manual checks. [Active work](../plan/README.md) remains separate.
 
-## Archived
+## Retrieve a Historical Plan
 
-- The server-owned data plan (Phases 0–6, `STRUCTURE.md`, "Migration History")
-  closed out at commit `9d09288b`; its last version, `PLAN.md` and `phases/`,
-  is in that commit's tree.
-- Split Preset (`split-preset.md`: the bot preset split into model and prompt
-  presets) and Chat Binding (`chat-binding.md`: each chat binds its model
-  preset, prompt preset, and persona, and is not sent until all three are
-  bound) closed out at commit `809b35cc`; their last versions are in that
-  commit's tree. The guides and code comments still name them by path (and
-  Chat Binding's decisions by number).
-- Shared API Keys (`shared-api-keys.md`: LLM credentials as a named key list
-  each model binds to) and Model Profiles (`model-profiles.md`: the model
-  preset split into model profiles and the slots that pick them) closed out at
-  commit `317a97ce`; their last versions are in that commit's tree. The guides,
-  code comments, and tests still name them by path (and Model Profiles'
-  decisions as O1–O9). Their open follow-ups: named keys for the `/proxy2`
-  auxiliary operations and `getFreeOpenRouterModels` (`llm-requests.md` "Known
-  Hazards"), the `submodel` mode as its own slot (O3), and the global provider
-  behavior toggles (O7: `openrouterMiddleOut`, `openrouterFallback`, the
-  caching flags, `autofillRequestUrl`, `reverseProxyOobaMode`, `vertexRegion`)
-  moving to the profile.
-- Translation (`translation.md`: translations stored on the message, per-chat
-  translation settings, server auto-translation, bilingual display, and
-  multi-step translator presets; slices 1.1–1.5, 2.1–2.4, and 3.1–3.4 done)
-  and URL Routes (`url-routes.md`: each screen a history-mode address kept in
-  sync with the stores, closes going back in history; slices 1–5 done) closed
-  out at commit `df25006f`; their last versions are in that commit's tree. The
-  guides, code comments, and tests still name them by path (and Translation's
-  slices and decisions, URL Routes' R and H items, by number). Their open
-  follow-ups: Translation's optional phase 4 (greeting translation, bilingual
-  partial edit) and the bilingual display's manual check; URL Routes' manual
-  checks (Chrome desktop, Android Chrome, the Android PWA, iOS Safari), H1's
-  among them, and H1's fallback if they fail.
+Use the commit and original path together, for example:
+
+```sh
+git show 317a97ce:docs/plan/model-profiles.md
+git show df25006f:docs/plan/translation.md
+git show e148f7276:docs/plan/web-push.md
+git show ab11ea9d0:docs/plan/request-history-diagnostics.md
+git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
+```
+
+For another entry, substitute its commit/path. A historical reference such as
+`docs/plan/chat-binding.md` is retrievable with `git show 809b35cc:docs/plan/chat-binding.md`;
+it is not a current architecture guide.
+
+## Completed Plans
+
+| Design                             | Last tree / original paths                                                | Current owner                                                                                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server-owned data, Phases 0–6      | `9d09288b`: `docs/plan/PLAN.md`, `docs/plan/phases/`                      | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md)                                                          |
+| Split Preset and Chat Binding      | `809b35cc`: `docs/plan/split-preset.md`, `docs/plan/chat-binding.md`      | [persistence](../structure/persistence.md), [settings](../structure/settings-i18n.md)                                                           |
+| Shared API Keys and Model Profiles | `317a97ce`: `docs/plan/shared-api-keys.md`, `docs/plan/model-profiles.md` | [LLM requests](../structure/llm-requests.md)                                                                                                    |
+| Translation and URL Routes         | `df25006f`: `docs/plan/translation.md`, `docs/plan/url-routes.md`         | [media/translation](../structure/media-aux.md), [app shell/routes](../structure/app-shell.md)                                                   |
+| Web Push                           | `e148f7276`: `docs/plan/web-push.md`                                      | [browser notifications](../structure/global-api.md), [worker](../structure/build-test-platforms.md), [server](../structure/self-host-server.md) |
+| Request History and Diagnostics    | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                         |
+
+The archived Web Push file still says “planned”; the implementation shipped in
+`e148f7276`. Its historical status text must not be used as the current feature state.
+Request History and Diagnostics records both implementation phases as done.
+
+## Server-Owned Data Chronology
+
+These boundaries matter to old saves, archives, and fixtures. This chronology was
+moved from `STRUCTURE.md`; the compact router links here instead.
+
+| Step    | Change                                                                                                    | Last commit |
+| ------- | --------------------------------------------------------------------------------------------------------- | ----------- |
+| Phase 0 | Shared schema and server resource store                                                                   | `a82359f7`  |
+| Phase 1 | Per-collection resources; block save and remote saving removed without migration                          | `46d63674`  |
+| Phase 2 | Server chat records, explicit mutation API, generation fence                                              | `577c43ae`  |
+| Phase 3 | Settings sections/collections (store version 3), no root record, preset/persona ids, separate credentials | `e9e608ad`  |
+| Phase 4 | External contracts write through mutation modules                                                         | `ce43f2b9`  |
+| Phase 5 | Server generation, prompts, scripts, providers; `12ed3bae` cutover removed browser generation             | `ee57e2e9`  |
+| Phase 6 | Thin client, write-through records, live updates, lazy chats, no whole-database object                    | `9d09288b`  |
+
+## Remaining Follow-Ups
+
+These are retained design/verification debt, not unimplemented versions of the
+features above. Confirm current code and the owner's Known Hazards before acting.
+
+- Model profiles: named keys for remaining `/proxy2` auxiliary operations and
+  `getFreeOpenRouterModels`; a distinct `submodel` slot (O3); global provider toggles
+  moving to profiles (O7: `openrouterMiddleOut`, `openrouterFallback`, caching,
+  `autofillRequestUrl`, `reverseProxyOobaMode`, `vertexRegion`).
+- Translation: optional phase 4 (greeting translation and bilingual partial edit),
+  plus manual bilingual-display verification.
+- URL routes: manual checks on desktop Chrome, Android Chrome/PWA, and iOS Safari,
+  including H1 and its fallback if those checks fail.
+- Web Push: real browser permission/subscription/reload behavior, hidden/closed and
+  visible-tab completion without duplicates, notification click routing, Firefox,
+  Android PWA over HTTPS, available iOS Home Screen app, insecure-LAN fallback,
+  and service-worker update behavior. These were not run by this documentation audit.
+- Request history/diagnostics: full viewer/error-alert workflow across request
+  sources, content-off rows while earlier content stays, restore leaving history
+  unchanged, and production Docker+sftp isolation. Verify the restricted account
+  can read `state.json`, `events/`, `reports/`, and `shared/` but cannot read
+  `save/data/`; pull a job share, withdraw it, and save/pull a phone browser report.
+  The application does not configure the sftp account or chroot.
+- Consolidated browser/production verification debt remains tracked in the active
+  [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
+
+## Archive Procedure
+
+Remove a completed/retired plan and its active-list link, then add its last existing
+commit/path, current guide ownership, and unresolved follow-ups here. Verify with
+`git show <commit>:<path>` before deleting it. Keep operational contracts in current
+guides rather than asking readers to load a historical plan.

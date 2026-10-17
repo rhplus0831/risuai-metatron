@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02), 4d (EXT-02, EXT-04, SP-I1, NET-02), 4e (MEDIA-01 to MEDIA-05) and 4f (WEB-01 to WEB-03) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02), 4d (EXT-02, EXT-04, SP-I1, NET-02), 4e (MEDIA-01 to MEDIA-05) and 4f (WEB-01 to WEB-03) on 2026-10-17; the rest is planned. The phases below group slices by work area. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -693,11 +693,14 @@ as `image/png`), and the two load-only test flakes (`cbsLimitsHost.test.ts`
 | e2e first-load fixtures, `checkStreamingModes`, `measureChats`                                     | 0a, 0b |
 | memory: never-checked-in-browser items, load flakes                                                | 5      |
 
-## Suggested start
+## Continue Remaining Work
 
-Run 1a, 1b and 1c first, as three parallel worktree sessions: they touch
-different files, they are the only items that can take the shared server
-down, and 1a is small enough to land the same day. 2a next, alone, because it
-is the only P1 data loss and `DefaultChatScreen.svelte` must not have two
-writers. Phase 3 then starts with 3a and 3b in parallel; 3c to 3e follow in
-any order. Phases 4 and 5 fill gaps between the others.
+The Status above records the landed slices; do not restart 1a–4f from their original
+implementation instructions. Re-open a landed slice only for a reproduced regression.
+
+Continue with the explicitly deferred portions of 3c (compression) and 3d (inlay
+media), any remaining fixture/harness work in Phase 0, and [Phase 5 verification
+debt](#phase-5-verification-debt). Preserve the individual slice's limits and reasons
+for deferral before choosing new implementation work. Phase 5's browser and production
+checks are pending until their results are recorded; a landed fix does not imply
+those checks passed.

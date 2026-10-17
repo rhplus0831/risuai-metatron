@@ -6,7 +6,7 @@
 
 [![Svelte](https://img.shields.io/badge/svelte-5-red?logo=svelte)](https://svelte.dev/) [![Typescript](https://img.shields.io/badge/typescript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/) [![Vite](https://img.shields.io/badge/vite-8-%23646CFF?logo=vite)](https://vite.dev/) [![Tailwind CSS](https://img.shields.io/badge/tailwindcss-4-%2306B6D4?logo=tailwindcss)](https://tailwindcss.com/)
 
-Risuai, or Risu for short, is a cross platform AI chatting software / web application with powerful features such as multiple API support, assets in the chat, regex functions and much more.
+This metatron fork of Risuai is an AI roleplay chat client served by its Hono/Node self-host server. It supports multiple model providers, chat assets, regex scripts, and a PWA install. The built client requires the server; there is no standalone static, desktop, or mobile build.
 
 # Screenshots
 
@@ -57,7 +57,7 @@ This fork runs only through its self-host server: the built client stores its da
 ```
 pnpm install
 pnpm build
-pnpm runserver
+pnpm run server
 ```
 
 Then open `http://localhost:6001/`. The server listens on `PORT` (default 6001) and switches to HTTPS when `server/ssl/certificate/server.key` and `server.crt` exist.
@@ -67,7 +67,7 @@ Then open `http://localhost:6001/`. The server listens on `PORT` (default 6001) 
 Run the self-host server and the Vite dev server side by side:
 
 ```
-pnpm runserver
+pnpm run server
 pnpm dev
 ```
 

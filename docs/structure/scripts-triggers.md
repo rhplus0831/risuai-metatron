@@ -112,6 +112,8 @@ v2 layout:
 
 ## Tests
 
+- Additional server boundaries: `server/src/tests/manualTriggerMetadata.test.ts` covers bounded reads and coalesced metadata writes; `server/src/tests/chatResult.test.ts` covers final trigger-copy application; `server/src/tests/scriptWorker.test.ts` pins Lua host answers (`nil`, false, zero, empty string).
+
 - `src/ts/translator/edittransRegex.test.ts`: the `edittrans` path only.
 - `server/src/tests/regex.test.ts` (node): the shared engine: mode filter and `<order n>`, skipped scripts (empty or malformed pattern), flag cleanup, `<cbs>` patterns, `@@move_top`/`@@move_bottom`, the effects in script order and `applyEffect` at the match (a later script's `{{lastmessage}}` reads the write; a throwing sink skips the rest of that script only), `@@repeat_back` (positions, the null-match skip, a throwing source), and the cache key and eviction. The legacy quirks are pinned by name (`{{data}}` stays literal; an `@@inject` without a message index or a `@@repeat_back` whose text already matches write the directive text).
 - `server/src/tests/luaBindings.test.ts` and `server/src/tests/luaBindingsFences.test.ts` (node; `self-host-server.md`): the server Lua host functions through the real worker and the production bindings (the 54-name contract, guards per trigger provenance, the chat writes by id, the fatal latch, the cancellation fences).
@@ -128,11 +130,12 @@ v2 layout:
 
 ## Known Hazards
 
+- `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
+
 - `GlobalRegex.svelte` ignores the return value of `importRegex()`.
 - `triggercode` effects have no runtime case. Only `triggerlua` executes.
 - `GlobalRegex.svelte` edits `db.globalscript`, which no runtime reads.
 - The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key (pre-existing; a separate task).
-- After a Lua setter writes the live character inside a trigger, the native getters (`v2GetCharacterDesc`, ...) still read the working copy taken at run start, so a native set fed from them can restore the old value (the server runtime updates the working copies of the running triggers: that residual is closed there).
 - Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write.
 - Trigger character effects write one patch per effect; a long run that writes a whole `globalLore` array from its starting copy overwrites lore edits made after that copy was taken.
 - A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.

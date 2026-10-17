@@ -65,7 +65,7 @@ Embedding routing:
 - `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom or OpenAI APIs through `globalFetch`.
 - Vector records are cached in LocalForage `hypaVector`.
 
-## Server
+### Server
 
 A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate and priority of the former browser `sendChat`). The browser code above serves the HypaV3 modal and the playground.
 
@@ -133,7 +133,6 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 - `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section: the tab reads them, and the job's settings projection holds them. Only `supaMemoryKey` is write-only.
 - The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses the old vectors. The Voyage group hash is a 32-bit hash of the group's texts. Both are the client's rules, kept on the server, where the cache is shared by every client.
 - The server and the tab do not share vectors or model files, and their local models can differ in weights revision and kernels: a ranking near a tie can differ between the two paths.
-- In the tab, `parseChatML` evaluates a summary prompt's CBS without a chat context (the selection as it is when the summary runs), while the summary request carries the send's or the modal action's context. The server evaluates both for the job's chat.
 - On the server, HypaV3's dot products and sorts still run on the main thread, outside the CBS limits. Summary separator matching runs on script workers under deadlines; a task's deadline starts when a worker takes it, so queue wait can extend the chunking step beyond its budget.
 - The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`; `gpt2-large-conversational` has no usable file in either place.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.

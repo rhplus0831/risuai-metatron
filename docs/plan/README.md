@@ -1,17 +1,13 @@
 # Active Plans
 
-Temporary implementation plans live here only while their changes are in
-progress. The codebase and current architecture guides remain the source of
-truth for shipped behavior.
-
-Keep only links to plans whose work is actively in progress in this README.
-When a plan is completed, retired, or no longer active, archive it: remove its
-file and its link here, and record it in
-[`docs/archived-plan/README.md`](../archived-plan/README.md).
-When no plans are active, keep the list below set to `None`.
+Plans live here while work is in progress. Current architecture guides describe
+shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
+historical paths/commits, retrieval commands, and pending manual follow-ups.
 
 Active planning and implementation:
 
-- [Web Push](web-push.md): chat completion notifications through Web Push, with a per-character message
-- [Request History and Diagnostics](request-history-diagnostics.md): a durable LLM request history, structured job failures, and a content-free diagnostics folder pulled over sftp
-- [Audit Findings and Performance Leftovers](audit-findings-perf.md): the two 2026-10-15 audit reports and the memory's performance leftovers, sorted into slices by harm and file cluster
+- [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
+  are listed in its Status; deferred work and Phase 5 verification remain separate.
+
+When a plan is completed or retired, remove its file and active link and record it
+in the archive. Use `None` here when no plans remain active.
