@@ -96,6 +96,8 @@ const FILE_SOURCE_RELEASE_GRACE_MS = 100;
 
 /** How long a service-worker request may take before the read falls back to an object URL. */
 const SW_REQUEST_TIMEOUT_MS = 10_000;
+const knownSwPaths = new Set<string>();
+let swCache: Promise<Cache> | undefined;
 
 /**
  * Gets the source URL of a file: the service worker's URL when the worker holds it (registered once
@@ -183,10 +185,21 @@ async function loadFileSrc(loc: string): Promise<string> {
         if (usingSw) {
             try {
                 const encoded = Buffer.from(loc, "utf-8").toString("hex");
-                const check = await fetch("/sw/check/" + encoded, {
-                    signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
-                });
-                const hasCache: boolean = (await check.json()).able;
+                const url = "/sw/img/" + encoded;
+                if (knownSwPaths.has(loc)) return url;
+                let hasCache: boolean;
+                try {
+                    // The page shares Cache Storage with the worker; a hit needs no worker request.
+                    const cache = await (swCache ??= caches.open("risuCache"));
+                    hasCache = !!(await cache.match(url));
+                } catch {
+                    // Cache Storage can be unavailable or denied even with a controlling worker.
+                    swCache = undefined;
+                    const check = await fetch("/sw/check/" + encoded, {
+                        signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
+                    });
+                    hasCache = (await check.json()).able;
+                }
                 if (!hasCache) {
                     const registered = await fetch("/sw/register/" + encoded, {
                         method: "POST",
@@ -198,7 +211,8 @@ async function loadFileSrc(loc: string): Promise<string> {
                     }
                     await sleep(10);
                 }
-                return "/sw/img/" + encoded;
+                knownSwPaths.add(loc);
+                return url;
             } catch (error) {
                 if (error instanceof MissingFileError) {
                     throw error;

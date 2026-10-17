@@ -288,3 +288,204 @@ describe("held file sources", () => {
         expect(revoke).not.toHaveBeenCalled();
     });
 });
+
+describe("worker cache lookup", () => {
+    let api: typeof import("./globalApi.svelte");
+    let create: ReturnType<typeof vi.spyOn>;
+    let revoke: ReturnType<typeof vi.spyOn>;
+    let match: ReturnType<typeof vi.fn>;
+    let open: ReturnType<typeof vi.fn>;
+    const workerUrl = (loc: string, operation = "img") =>
+        `/sw/${operation}/${Buffer.from(loc, "utf8").toString("hex")}`;
+
+    beforeEach(async () => {
+        // A new module models a new page; no cache handle or known path leaks across cases.
+        vi.resetModules();
+        api = await import("./globalApi.svelte");
+        api.setUsingSw(true);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:worker-fallback");
+        revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+        match = vi.fn().mockResolvedValue(undefined);
+        open = vi.fn().mockResolvedValue({ match });
+        vi.stubGlobal("caches", { open });
+    });
+
+    it("reads risuCache directly and shares an in-flight hit without worker or asset I/O", async () => {
+        const loc = "assets/한글 image.png";
+        const lookup = deferred<Response>();
+        match.mockReturnValue(lookup.promise);
+        const a = api.holdFileSrc(loc);
+        const b = api.getFileSrc(loc);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(open).toHaveBeenCalledExactlyOnceWith("risuCache");
+        expect(match).toHaveBeenCalledExactlyOnceWith(workerUrl(loc));
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(readAsset).not.toHaveBeenCalled();
+        lookup.resolve(new Response("cached bytes"));
+        expect(await a.src).toBe(workerUrl(loc));
+        expect(await b).toBe(workerUrl(loc));
+        a.release();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(create).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("registers bytes only on a direct miss and waits for the shared POST to finish", async () => {
+        const loc = path();
+        const bytes = Buffer.from([137, 80, 78, 71]);
+        vi.mocked(readAsset).mockResolvedValue(bytes);
+        const registration = deferred<{ ok: boolean }>();
+        fetchMock.mockReturnValue(registration.promise);
+        const a = api.holdFileSrc(loc);
+        const b = api.holdFileSrc(loc);
+        let resolved = false;
+        void a.src.then(() => {
+            resolved = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(match).toHaveBeenCalledExactlyOnceWith(workerUrl(loc));
+        expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+            workerUrl(loc, "register"),
+            expect.objectContaining({
+                method: "POST",
+                body: bytes,
+            }),
+        );
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+        expect(resolved).toBe(false);
+        registration.resolve({ ok: true });
+        expect(await a.src).toBe(workerUrl(loc));
+        expect(await b.src).toBe(workerUrl(loc));
+        a.release();
+        a.release();
+        b.release();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(await api.getFileSrc(loc)).toBe(workerUrl(loc));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(create).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+    });
+
+    it("remembers a known path for the page after a cache hit and releases", async () => {
+        const loc = path();
+        match.mockResolvedValue(new Response("cached"));
+        const held = api.holdFileSrc(loc);
+        expect(await held.src).toBe(workerUrl(loc));
+        held.release();
+        await vi.advanceTimersByTimeAsync(200);
+        open.mockClear().mockRejectedValue(new Error("later cache denied"));
+        match.mockClear().mockRejectedValue(new Error("later lookup denied"));
+        fetchMock.mockClear().mockRejectedValue(new Error("worker unavailable"));
+        vi.mocked(readAsset).mockClear();
+        api.setUsingSw(false);
+        api.setUsingSw(true);
+        const again = api.holdFileSrc(loc);
+        expect(await again.src).toBe(workerUrl(loc));
+        again.release();
+        expect(await api.getFileSrc(loc)).toBe(workerUrl(loc));
+        expect(open).not.toHaveBeenCalled();
+        expect(match).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(readAsset).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+    });
+
+    it.each(["missing caches", "match throws"])("falls back to check for hits and misses when %s", async (failure) => {
+        if (failure === "missing caches") vi.stubGlobal("caches", undefined);
+        if (failure === "match throws") match.mockRejectedValue(new Error("match denied"));
+        const hit = path();
+        const miss = path();
+        fetchMock
+            .mockResolvedValueOnce({ json: async () => ({ able: true }) })
+            .mockResolvedValueOnce({ json: async () => ({ able: false }) })
+            .mockResolvedValueOnce({ ok: true });
+        expect(await api.getFileSrc(hit)).toBe(workerUrl(hit));
+        expect(readAsset).not.toHaveBeenCalled();
+        expect(await api.getFileSrc(miss)).toBe(workerUrl(miss));
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            workerUrl(hit, "check"),
+            workerUrl(miss, "check"),
+            workerUrl(miss, "register"),
+        ]);
+        expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST", body: Buffer.from([1, 2, 3]) });
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(miss);
+        expect(create).not.toHaveBeenCalled();
+        // Failure is per read: later paths can use page-side Cache Storage again.
+        vi.stubGlobal("caches", { open });
+        open.mockResolvedValue({ match });
+        match.mockResolvedValue(new Response("now available"));
+        const later = path();
+        expect(await api.getFileSrc(later)).toBe(workerUrl(later));
+        expect(match).toHaveBeenLastCalledWith(workerUrl(later));
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it.each(["missing", "empty"])("does not register a %s asset or remember it as available", async (kind) => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        const loc = path();
+        vi.mocked(readAsset).mockResolvedValueOnce(kind === "empty" ? Buffer.alloc(0) : (null as never));
+        expect(await api.getFileSrc(loc)).toBe("");
+        expect(match).toHaveBeenCalledExactlyOnceWith(workerUrl(loc));
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        fetchMock.mockResolvedValue({ ok: true });
+        expect(await api.getFileSrc(loc)).toBe(workerUrl(loc));
+        expect(match).toHaveBeenCalledTimes(2);
+        expect(readAsset).toHaveBeenCalledTimes(2);
+        expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+            workerUrl(loc, "register"),
+            expect.objectContaining({ method: "POST" }),
+        );
+    });
+
+    it.each(["rejects", "returns not ok"])(
+        "keeps blob hold, revoke and pin lifetimes when registration %s",
+        async (failure) => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            if (failure === "rejects") fetchMock.mockRejectedValue(new Error("worker failed"));
+            else fetchMock.mockResolvedValue({ ok: false });
+            const loc = path();
+            const a = api.holdFileSrc(loc);
+            const b = api.holdFileSrc(loc);
+            expect(await a.src).toBe("blob:worker-fallback");
+            expect(await b.src).toBe("blob:worker-fallback");
+            expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+                workerUrl(loc, "register"),
+                expect.objectContaining({ method: "POST" }),
+            );
+            expect(readAsset).toHaveBeenCalledTimes(1);
+            a.release();
+            a.release();
+            await vi.advanceTimersByTimeAsync(200);
+            expect(revoke).not.toHaveBeenCalled();
+            b.release();
+            await vi.advanceTimersByTimeAsync(99);
+            expect(revoke).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:worker-fallback");
+            const pinned = api.holdFileSrc(loc);
+            expect(await api.getFileSrc(loc)).toBe(await pinned.src);
+            pinned.release();
+            await vi.advanceTimersByTimeAsync(200);
+            expect(match).toHaveBeenCalledTimes(2);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            expect(readAsset).toHaveBeenCalledTimes(2);
+            expect(create).toHaveBeenCalledTimes(2);
+            expect(revoke).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    it("uses the object-URL path without cache or worker I/O while worker use is disabled", async () => {
+        api.setUsingSw(false);
+        const loc = path();
+        expect(await api.getFileSrc(loc)).toBe("blob:worker-fallback");
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+        expect(open).not.toHaveBeenCalled();
+        expect(match).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(create).toHaveBeenCalledTimes(1);
+    });
+});
