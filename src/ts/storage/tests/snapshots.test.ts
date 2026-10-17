@@ -138,8 +138,9 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed after the slice: the saved toggle presets (`docs/plan/chat-toggles-and-presets.md`, slice 3)
- * hold free user text like `globalChatVariables` and `customPromptTemplateToggle`.
+ * Removed after the slice: the saved toggle presets (historical `docs/plan/chat-toggles-and-presets.md`,
+ * slice 3; retrieve from `154711858` via `docs/archived-plan/README.md`) hold free user text like
+ * `globalChatVariables` and `customPromptTemplateToggle`.
  */
 const LATER_REMOVED_KEYS = ["togglePresets"];
 

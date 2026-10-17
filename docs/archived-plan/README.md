@@ -17,6 +17,7 @@ git show 317a97ce:docs/plan/model-profiles.md
 git show df25006f:docs/plan/translation.md
 git show e148f7276:docs/plan/web-push.md
 git show ab11ea9d0:docs/plan/request-history-diagnostics.md
+git show 154711858:docs/plan/chat-toggles-and-presets.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -26,14 +27,15 @@ it is not a current architecture guide.
 
 ## Completed Plans
 
-| Design                             | Last tree / original paths                                                | Current owner                                                                                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Server-owned data, Phases 0–6      | `9d09288b`: `docs/plan/PLAN.md`, `docs/plan/phases/`                      | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md)                                                          |
-| Split Preset and Chat Binding      | `809b35cc`: `docs/plan/split-preset.md`, `docs/plan/chat-binding.md`      | [persistence](../structure/persistence.md), [settings](../structure/settings-i18n.md)                                                           |
-| Shared API Keys and Model Profiles | `317a97ce`: `docs/plan/shared-api-keys.md`, `docs/plan/model-profiles.md` | [LLM requests](../structure/llm-requests.md)                                                                                                    |
-| Translation and URL Routes         | `df25006f`: `docs/plan/translation.md`, `docs/plan/url-routes.md`         | [media/translation](../structure/media-aux.md), [app shell/routes](../structure/app-shell.md)                                                   |
-| Web Push                           | `e148f7276`: `docs/plan/web-push.md`                                      | [browser notifications](../structure/global-api.md), [worker](../structure/build-test-platforms.md), [server](../structure/self-host-server.md) |
-| Request History and Diagnostics    | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                         |
+| Design                              | Last tree / original paths                                                | Current owner                                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server-owned data, Phases 0–6       | `9d09288b`: `docs/plan/PLAN.md`, `docs/plan/phases/`                      | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md)                                                          |
+| Split Preset and Chat Binding       | `809b35cc`: `docs/plan/split-preset.md`, `docs/plan/chat-binding.md`      | [persistence](../structure/persistence.md), [settings](../structure/settings-i18n.md)                                                           |
+| Shared API Keys and Model Profiles  | `317a97ce`: `docs/plan/shared-api-keys.md`, `docs/plan/model-profiles.md` | [LLM requests](../structure/llm-requests.md)                                                                                                    |
+| Translation and URL Routes          | `df25006f`: `docs/plan/translation.md`, `docs/plan/url-routes.md`         | [media/translation](../structure/media-aux.md), [app shell/routes](../structure/app-shell.md)                                                   |
+| Web Push                            | `e148f7276`: `docs/plan/web-push.md`                                      | [browser notifications](../structure/global-api.md), [worker](../structure/build-test-platforms.md), [server](../structure/self-host-server.md) |
+| Request History and Diagnostics     | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                         |
+| Per-Chat Toggles and Toggle Presets | `154711858`: `docs/plan/chat-toggles-and-presets.md`                      | [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [CBS/rendering](../structure/cbs-rendering.md)            |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -77,6 +79,23 @@ features above. Confirm current code and the owner's Known Hazards before acting
   can read `state.json`, `events/`, `reports/`, and `shared/` but cannot read
   `save/data/`; pull a job share, withdraw it, and save/pull a phone browser report.
   The application does not configure the sftp account or chroot.
+- Per-chat toggles/presets: drop the read-only legacy `globalChatVariables`
+  collection with a one-time seed of each chat's map after a release has passed;
+  decide an explicit default in the toggle grammar (a cross-user `.risup` format
+  change); similarity sorting and partial apply; `.risutoggle` export/import;
+  plugin, MCP, and chat-command exposure of presets; writing toggle values from
+  CBS, Lua, or triggers.
+- Toggle preset persistence/cache: `togglePresets` saves as a whole record, so two
+  tabs saving at once can drop one tab's new preset while its chat link lands as
+  "deleted". Every collection, including this one, enters the job scope and
+  render-cache key, so saving a preset invalidates cached renders. An exclusion
+  list in `server/src/jobs/jobScope.ts` would avoid that unnecessary invalidation.
+- Per-chat toggle verification: browser checks still to record for isolation
+  across two chats of one character, New Chat under both inherit/empty policies,
+  and prompt info showing the chat's values. Record the dedicated
+  `e2e/0-idleReload.spec.ts` result too; the slice 4 smoke already checked idle
+  reload, preset workflows, reload persistence, preview controls, and mobile
+  width. Archiving does not certify these remaining checks.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 
