@@ -1,5 +1,4 @@
 import { settings } from "../storage/settingsViews.svelte";
-import { get } from "svelte/store";
 import { type character } from "../storage/database.svelte";
 import { requestChatData } from "./request/request";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
@@ -76,13 +75,21 @@ export async function stableDiff(
     return await generateAIImage(genPrompt, currentChar, neg, "");
 }
 
+function deliverGeneratedImage(img: string, currentChar: character, returnSdData: string): string {
+    if (returnSdData === "inlay") return img;
+    CharEmotion.update((emotions) => ({
+        ...emotions,
+        [currentChar.chaId]: [[img, img, Date.now()]],
+    }));
+    return returnSdData;
+}
+
 export async function generateAIImage(
     genPrompt: string,
     currentChar: character,
     neg: string,
     returnSdData: string,
 ): Promise<string | false> {
-    console.log(settings.memoryTranslateMedia.sdProvider);
     if (settings.memoryTranslateMedia.sdProvider === "webui") {
         const uri = new URL(settings.memoryTranslateMedia.webUiUrl);
         uri.pathname = "/sdapi/v1/txt2img";
@@ -107,26 +114,11 @@ export async function generateAIImage(
                 },
             });
 
-            if (returnSdData === "inlay") {
-                if (da.ok) {
-                    return `data:image/png;base64,${da.data.images[0]}`;
-                } else {
-                    alertError(JSON.stringify(da.data));
-                    return "";
-                }
-            } else if (da.ok) {
-                let charemotions = get(CharEmotion);
-                const img = `data:image/png;base64,${da.data.images[0]}`;
-                console.log(img);
-                const emos: [string, string, number][] = [[img, img, Date.now()]];
-                charemotions[currentChar.chaId] = emos;
-                CharEmotion.set(charemotions);
-            } else {
+            if (!da.ok) {
                 alertError(JSON.stringify(da.data));
-                return false;
+                return returnSdData === "inlay" ? "" : false;
             }
-
-            return returnSdData;
+            return deliverGeneratedImage(`data:image/png;base64,${da.data.images[0]}`, currentChar, returnSdData);
         } catch (error) {
             alertError(error);
             return false;
@@ -415,26 +407,11 @@ export async function generateAIImage(
         try {
             const da = await globalFetch(settings.memoryTranslateMedia.NAIImgUrl, reqlist);
 
-            if (returnSdData === "inlay") {
-                if (da.ok) {
-                    const img = await processZip(da.data);
-                    return img;
-                } else {
-                    alertError(Buffer.from(da.data).toString());
-                    return "";
-                }
-            } else if (da.ok) {
-                let charemotions = get(CharEmotion);
-                const img = await processZip(da.data);
-                const emos: [string, string, number][] = [[img, img, Date.now()]];
-                charemotions[currentChar.chaId] = emos;
-                CharEmotion.set(charemotions);
-            } else {
+            if (!da.ok) {
                 alertError(Buffer.from(da.data).toString());
-                return false;
+                return returnSdData === "inlay" ? "" : false;
             }
-
-            return returnSdData;
+            return deliverGeneratedImage(await processZip(da.data), currentChar, returnSdData);
         } catch (error) {
             alertError(error);
             return false;
@@ -461,23 +438,19 @@ export async function generateAIImage(
                 alertError(JSON.stringify(da.data));
                 return "";
             }
-            return `data:image/png;base64,${res}`;
+            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData);
         } else if (da.ok) {
-            let charemotions = get(CharEmotion);
             let img = da?.data?.data?.[0]?.b64_json;
             if (!img) {
                 alertError(JSON.stringify(da.data));
                 return false;
             }
             img = `data:image/png;base64,${img}`;
-            const emos: [string, string, number][] = [[img, img, Date.now()]];
-            charemotions[currentChar.chaId] = emos;
-            CharEmotion.set(charemotions);
+            return deliverGeneratedImage(img, currentChar, returnSdData);
         } else {
             alertError(Buffer.from(da.data).toString());
             return false;
         }
-        return returnSdData;
     }
     if (settings.memoryTranslateMedia.sdProvider === "stability") {
         const formData = new FormData();
@@ -517,16 +490,8 @@ export async function generateAIImage(
             return false;
         }
 
-        if (returnSdData === "inlay") {
-            return `data:image/png;base64,${Buffer.from(res).toString("base64")}`;
-        }
-
-        let charemotions = get(CharEmotion);
         const img = `data:image/png;base64,${Buffer.from(res).toString("base64")}`;
-        const emos: [string, string, number][] = [[img, img, Date.now()]];
-        charemotions[currentChar.chaId] = emos;
-        CharEmotion.set(charemotions);
-        return returnSdData;
+        return deliverGeneratedImage(img, currentChar, returnSdData);
     }
 
     if (
@@ -626,17 +591,7 @@ export async function generateAIImage(
             );
             const img64 = Buffer.from(await imgResponse.arrayBuffer()).toString("base64");
 
-            if (returnSdData === "inlay") {
-                return `data:image/png;base64,${img64}`;
-            } else {
-                let charemotions = get(CharEmotion);
-                const img = `data:image/png;base64,${img64}`;
-                const emos: [string, string, number][] = [[img, img, Date.now()]];
-                charemotions[currentChar.chaId] = emos;
-                CharEmotion.set(charemotions);
-            }
-
-            return returnSdData;
+            return deliverGeneratedImage(`data:image/png;base64,${img64}`, currentChar, returnSdData);
         } catch (error) {
             alertError(error);
             return false;
@@ -694,14 +649,7 @@ export async function generateAIImage(
             return false;
         }
 
-        if (returnSdData === "inlay") {
-            return image;
-        } else {
-            let charemotions = get(CharEmotion);
-            const emos: [string, string, number][] = [[image, image, Date.now()]];
-            charemotions[currentChar.chaId] = emos;
-            CharEmotion.set(charemotions);
-        }
+        return deliverGeneratedImage(image, currentChar, returnSdData);
     }
     if (settings.memoryTranslateMedia.sdProvider === "Imagen") {
         const model = settings.memoryTranslateMedia.ImagenModel;
@@ -753,7 +701,7 @@ export async function generateAIImage(
         }
 
         const mimeType = res.data?.predictions?.[0]?.mimeType || "image/png";
-        return `data:${mimeType};base64,${img64}`;
+        return deliverGeneratedImage(`data:${mimeType};base64,${img64}`, currentChar, returnSdData);
     }
     if (settings.memoryTranslateMedia.sdProvider === "openai-compat") {
         const config = settings.secrets.openaiCompatImage;
@@ -792,25 +740,21 @@ export async function generateAIImage(
                 alertError(JSON.stringify(da.data));
                 return "";
             }
-            return `data:image/png;base64,${res}`;
+            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData);
         }
 
         if (da.ok) {
-            let charemotions = get(CharEmotion);
             let img = da?.data?.data?.[0]?.b64_json;
             if (!img) {
                 alertError(JSON.stringify(da.data));
                 return false;
             }
             img = `data:image/png;base64,${img}`;
-            const emos: [string, string, number][] = [[img, img, Date.now()]];
-            charemotions[currentChar.chaId] = emos;
-            CharEmotion.set(charemotions);
+            return deliverGeneratedImage(img, currentChar, returnSdData);
         } else {
             alertError(JSON.stringify(da.data));
             return false;
         }
-        return returnSdData;
     }
     if (settings.memoryTranslateMedia.sdProvider === "wavespeed") {
         const config = settings.secrets.wavespeedImage;
@@ -949,17 +893,7 @@ export async function generateAIImage(
                 const res = Buffer.from(binary).toString("base64");
                 const img = `data:${mimeType};base64,${res}`;
 
-                // inlay mode
-                if (returnSdData === "inlay") {
-                    return img;
-                }
-                // default mode
-                else {
-                    let charemotions = get(CharEmotion);
-                    charemotions[currentChar.chaId] = [[img, img, Date.now()]];
-                    CharEmotion.set(charemotions);
-                    return returnSdData;
-                }
+                return deliverGeneratedImage(img, currentChar, returnSdData);
             } else {
                 alertError(JSON.stringify(resultResponse.data));
                 return false;

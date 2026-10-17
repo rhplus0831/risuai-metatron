@@ -1,6 +1,6 @@
 # Audit Findings and Performance Leftovers Plan
 
-Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02) and 4d (EXT-02, EXT-04, SP-I1, NET-02) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
+Status: slices 1a (PERF-01) and 1b (MEM-01, MEM-02) landed on 2026-10-15, 1c (LLM-03), 1d (UI-01, UI-04), 2a (GEN-01, JOB-01), 2b (JOB-02), 2c (UI-02, UI-03), 2d (DATA-01, PERSIST-01), 2e (IO-01 to IO-04), 2f (EXT-01), 3a (PERF-02, the read half and the coalesced setter writes), 3b (API-01, API-02, API-03, API-05) 3c (sync traffic during generation, compression deferred) 3d (tab retention, inlay media deferred) 3e (module membership/assets cache and bounded fuzzy scans) and 3f (chat row effects, offscreen containment and append-time trimming) on 2026-10-16, 3g (remaining whole-record transport), 3h (asset list name filters), 4a (GEN-03, GEN-04), 4b (GEN-02, API-06, API-04), 4c (LLM-01, LLM-02), 4d (EXT-02, EXT-04, SP-I1, NET-02) and 4e (MEDIA-01 to MEDIA-05) on 2026-10-17; the rest is planned. Five phases, each a list of slices. One
 slice is one session, one commit, one file cluster.
 
 This plan merges three sources that overlap but use different vocabularies:
@@ -581,6 +581,33 @@ group; order within the phase is free.
   deadlock), MEDIA-02 (non-LLM cache ignores language and provider), MEDIA-03
   (VOICEVOX text not URL-encoded), MEDIA-04 (Stop TTS stops only the newest
   source), MEDIA-05 (Imagen result discarded in image-view mode).
+  **Landed 2026-10-17.** MEDIA-01: `translateHTML` collects its DOM jobs
+  first and dispatches after the traversal: DeepLX in sequential ■-joined
+  batches of at most 5000 characters (a node over the limit alone, each node
+  of a batch on its own when the reply's separator count disagrees), the
+  other providers at most ten at a time, and Combine Translation's
+  display-script and Markdown step on every provider path. MEDIA-02: the
+  non-LLM memory cache is keyed by a configuration context (the language pair
+  with the model's `ja`/`en` choice, the provider, the input language, the
+  experimental Google flag, the DeepLX URL, DeepL free/paid) captured before
+  the request; only `translate` writes it, after its request and only while
+  the context still matches, and never a failed result; direct
+  `runTranslator` callers (VOICEVOX, Hugging Face TTS, the playground) no
+  longer fill it. MEDIA-03: the VOICEVOX URLs are built with `URL` and
+  `URLSearchParams` over the base without trailing slashes (an empty URL now
+  alerts `Invalid URL`). MEDIA-04: every started source is registered with
+  its `AudioContext`, `stopTTS` stops and closes them all and bumps a
+  generation captured when `sayTTS` starts, so a request or decode in flight
+  at Stop starts nothing; finished sources are retired; the Stop entry shows
+  for every mode but `""` and `vits`. MEDIA-05: one `deliverGeneratedImage`
+  for every backend (the URI for inlays, else `CharEmotion.update` at write
+  time and `returnSdData`), so Imagen's image-view result is shown and
+  NovelAI no longer writes a pre-await snapshot. All three audit probes now
+  fail their bug assertions (the Stop case in a copy whose mock has `close`).
+  Tests: `translatorMedia.test.ts`, `ttsPlayback.test.ts`,
+  `imageDelivery.test.ts` (22 cases). Stale: none. Left: VOICEVOX stays on
+  raw `fetch`, `runVITS` playback cannot be stopped, the Stop entry's
+  visibility is untested, no real-browser audio or provider check.
 - **4f. Browser and PWA** (`app-shell.md`, `build-test-platforms.md`). WEB-01
   (share target POST is 404), WEB-02 (a 503 on `/sw.js` blocks startup),
   WEB-03 (Hotkey settings blank below 768 px).

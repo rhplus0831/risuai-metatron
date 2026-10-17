@@ -19,7 +19,47 @@ import {
     type AfterTTSResult,
 } from "./ttsHooks";
 
-let sourceNode: AudioBufferSourceNode = null;
+type SpeechPlayback = { source: AudioBufferSourceNode; context: AudioContext };
+type TTSPlaybackContext = { ttsMode: string; characterId: string; generation: number };
+const activeSpeech = new Set<SpeechPlayback>();
+let stopGeneration = 0;
+
+function retireSpeech(playback: SpeechPlayback) {
+    if (!activeSpeech.delete(playback)) return;
+    playback.source.onended = null;
+    void playback.context.close().catch(() => {});
+}
+
+/** Both buffered playback paths share cancellation and context cleanup. */
+async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, volume = 1) {
+    if (ctx.generation !== stopGeneration) return;
+    const context = new AudioContext();
+    try {
+        const decoded = await context.decodeAudioData(audio);
+        const source = context.createBufferSource();
+        source.buffer = decoded;
+        if (volume !== 1) {
+            const gain = context.createGain();
+            gain.gain.value = volume;
+            source.connect(gain);
+            gain.connect(context.destination);
+        } else {
+            source.connect(context.destination);
+        }
+        // Stop may have run during a fetch, hook, or decode belonging to this speech.
+        if (ctx.generation !== stopGeneration) {
+            void context.close().catch(() => {});
+            return;
+        }
+        const playback = { source, context };
+        source.onended = () => retireSpeech(playback);
+        source.start();
+        activeSpeech.add(playback);
+    } catch (error) {
+        void context.close().catch(() => {});
+        throw error;
+    }
+}
 
 /**
  * Run every registered TTS postprocessor hook against the audio bytes, honoring
@@ -69,23 +109,15 @@ async function runPostprocessorPipeline(
     return { audio: currentAudio, mimeType: currentMime, skip: false };
 }
 
-async function playAudio(
-    audio: ArrayBuffer,
-    mimeType: string,
-    ctx: { ttsMode: string; characterId: string },
-): Promise<void> {
+async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackContext): Promise<void> {
     const processed = await runPostprocessorPipeline(audio, mimeType, ctx);
     if (processed.skip) return;
 
-    const audioContext = new AudioContext();
-    const decoded = await audioContext.decodeAudioData(processed.audio);
-    sourceNode = audioContext.createBufferSource();
-    sourceNode.buffer = decoded;
-    sourceNode.connect(audioContext.destination);
-    sourceNode.start();
+    await playProcessedAudio(processed.audio, ctx);
 }
 
 export async function sayTTS(character: ClientCharacter, text: string) {
+    const generation = stopGeneration;
     try {
         if (!character) {
             const v = selectedCharacter();
@@ -115,10 +147,11 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             ttsMode: character.ttsMode ?? "",
             characterId: character.chaId,
         });
-        if (beforeResult.skip) {
+        if (beforeResult.skip || generation !== stopGeneration) {
             return;
         }
         text = beforeResult.ctx.text;
+        const hookCtx = { ttsMode: character.ttsMode ?? "", characterId: character.chaId, generation };
 
         switch (character.ttsMode) {
             case "webspeech": {
@@ -151,10 +184,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 if (da.status >= 200 && da.status < 300) {
                     const buffer = await da.arrayBuffer();
                     const mimeType = da.headers.get("content-type") || "audio/mpeg";
-                    await playAudio(buffer, mimeType, {
-                        ttsMode: character.ttsMode ?? "",
-                        characterId: character.chaId,
-                    });
+                    await playAudio(buffer, mimeType, hookCtx);
                 } else {
                     alertError(await da.text());
                 }
@@ -162,13 +192,14 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
             case "VOICEVOX": {
                 const jpText = await translateVox(text);
-                const query = await fetch(
-                    `${settings.memoryTranslateMedia.voicevoxUrl}/audio_query?text=${jpText}&speaker=${character.ttsSpeech}`,
-                    {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                    },
-                );
+                const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
+                const queryUrl = new URL(base + "/audio_query");
+                queryUrl.searchParams.set("text", jpText);
+                queryUrl.searchParams.set("speaker", String(character.ttsSpeech));
+                const query = await fetch(queryUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                });
                 if (query.status == 200) {
                     const queryJson = await query.json();
                     const bodyData = {
@@ -183,19 +214,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                         outputStereo: queryJson.outputStereo,
                         kana: queryJson.kana,
                     };
-                    const getVoice = await fetch(
-                        `${settings.memoryTranslateMedia.voicevoxUrl}/synthesis?speaker=${character.ttsSpeech}`,
-                        {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(bodyData),
-                        },
-                    );
+                    const synthesisUrl = new URL(base + "/synthesis");
+                    synthesisUrl.searchParams.set("speaker", String(character.ttsSpeech));
+                    const getVoice = await fetch(synthesisUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(bodyData),
+                    });
                     if (getVoice.status == 200 && getVoice.headers.get("content-type") === "audio/wav") {
-                        await playAudio(await getVoice.arrayBuffer(), "audio/wav", {
-                            ttsMode: character.ttsMode ?? "",
-                            characterId: character.chaId,
-                        });
+                        await playAudio(await getVoice.arrayBuffer(), "audio/wav", hookCtx);
                     }
                 }
                 break;
@@ -245,10 +272,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 if (res.ok) {
                     try {
                         const audio = Buffer.from(dat).buffer;
-                        await playAudio(audio, "audio/mpeg", {
-                            ttsMode: character.ttsMode ?? "",
-                            characterId: character.chaId,
-                        });
+                        await playAudio(audio, "audio/mpeg", hookCtx);
                     } catch (error) {
                         alertError(language.errors.httpError + `${error}`);
                     }
@@ -279,10 +303,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 });
 
                 if (response.ok) {
-                    await playAudio(response.data.buffer, "audio/wav", {
-                        ttsMode: character.ttsMode ?? "",
-                        characterId: character.chaId,
-                    });
+                    await playAudio(response.data.buffer, "audio/wav", hookCtx);
                 } else {
                     alertError("Error fetching or decoding audio data");
                 }
@@ -319,10 +340,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     } else if (response.status === 200) {
                         const buffer = await response.arrayBuffer();
                         const mimeType = response.headers.get("content-type") || "audio/wav";
-                        await playAudio(buffer, mimeType, {
-                            ttsMode: character.ttsMode ?? "",
-                            characterId: character.chaId,
-                        });
+                        await playAudio(buffer, mimeType, hookCtx);
                     } else {
                         alertError("Error fetching or decoding audio data");
                     }
@@ -398,7 +416,6 @@ export async function sayTTS(character: ClientCharacter, text: string) {
 
                 if (response.ok) {
                     const mimeType = "audio/wav";
-                    const hookCtx = { ttsMode: character.ttsMode ?? "", characterId: character.chaId };
                     const volume = character.gptSoVitsConfig.volume;
                     if (volume !== undefined && volume !== 1.0) {
                         // Volume != 1.0 requires a GainNode in the graph, so we can't
@@ -407,15 +424,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                         // build the gain-enabled graph with the final bytes.
                         const processed = await runPostprocessorPipeline(response.data.buffer, mimeType, hookCtx);
                         if (!processed.skip) {
-                            const audioContext = new AudioContext();
-                            const decoded = await audioContext.decodeAudioData(processed.audio);
-                            sourceNode = audioContext.createBufferSource();
-                            sourceNode.buffer = decoded;
-                            const gainNode = audioContext.createGain();
-                            gainNode.gain.value = volume;
-                            sourceNode.connect(gainNode);
-                            gainNode.connect(audioContext.destination);
-                            sourceNode.start();
+                            await playProcessedAudio(processed.audio, hookCtx, volume);
                         }
                     } else {
                         await playAudio(response.data.buffer, mimeType, hookCtx);
@@ -455,10 +464,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 console.log(response);
 
                 if (response.ok) {
-                    await playAudio(response.data.buffer, "audio/mpeg", {
-                        ttsMode: character.ttsMode ?? "",
-                        characterId: character.chaId,
-                    });
+                    await playAudio(response.data.buffer, "audio/mpeg", hookCtx);
                 } else {
                     const textBuffer: Uint8Array = response.data.buffer;
                     const text = Buffer.from(textBuffer).toString("utf-8");
@@ -475,8 +481,14 @@ export async function sayTTS(character: ClientCharacter, text: string) {
 export const oaiVoices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
 
 export function stopTTS() {
-    if (sourceNode) {
-        sourceNode.stop();
+    stopGeneration++;
+    for (const playback of activeSpeech) {
+        try {
+            playback.source.stop();
+        } catch {
+            // A source that already ended still needs its context retired.
+        }
+        retireSpeech(playback);
     }
     if (speechSynthesis && SpeechSynthesisUtterance) {
         speechSynthesis.cancel();
@@ -502,7 +514,8 @@ export async function getElevenTTSVoices() {
 }
 
 export async function getVOICEVOXVoices() {
-    const speakerData = await fetch(`${settings.memoryTranslateMedia.voicevoxUrl}/speakers`);
+    const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
+    const speakerData = await fetch(new URL(base + "/speakers"));
     const speakerList = await speakerData.json();
     const speakersInfo = speakerList.map((speaker) => {
         const styles = speaker.styles.map((style) => {

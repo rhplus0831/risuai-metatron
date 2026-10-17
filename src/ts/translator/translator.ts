@@ -36,7 +36,7 @@ import sendSound from "../../etc/send.mp3";
  * every frame, so the least recently used pairs leave once the strings plus a fixed overhead for
  * each pair's Set and two Map entries pass `MEMORY_CACHE_CHARS` (UTF-16 code units).
  */
-type MemoryCacheEntry = { origin: string; trans: string };
+type MemoryCacheEntry = { context: string; origin: string; trans: string };
 const MEMORY_CACHE_CHARS = 4_000_000;
 const MEMORY_CACHE_ENTRY_OVERHEAD = 64;
 /** Every pair, least recently used first. */
@@ -45,8 +45,8 @@ const memoryCacheByOrigin = new Map<string, MemoryCacheEntry>();
 const memoryCacheByTrans = new Map<string, MemoryCacheEntry>();
 let memoryCacheChars = 0;
 
-function readMemoryCache(text: string, reverse: boolean): string | undefined {
-    const entry = (reverse ? memoryCacheByTrans : memoryCacheByOrigin).get(text);
+function readMemoryCache(context: string, text: string, reverse: boolean): string | undefined {
+    const entry = (reverse ? memoryCacheByTrans : memoryCacheByOrigin).get(context + text);
     if (!entry) {
         return undefined;
     }
@@ -57,29 +57,29 @@ function readMemoryCache(text: string, reverse: boolean): string | undefined {
 
 function dropMemoryCacheEntry(entry: MemoryCacheEntry): void {
     memoryCacheEntries.delete(entry);
-    if (memoryCacheByOrigin.get(entry.origin) === entry) {
-        memoryCacheByOrigin.delete(entry.origin);
+    if (memoryCacheByOrigin.get(entry.context + entry.origin) === entry) {
+        memoryCacheByOrigin.delete(entry.context + entry.origin);
     }
-    if (memoryCacheByTrans.get(entry.trans) === entry) {
-        memoryCacheByTrans.delete(entry.trans);
+    if (memoryCacheByTrans.get(entry.context + entry.trans) === entry) {
+        memoryCacheByTrans.delete(entry.context + entry.trans);
     }
     memoryCacheChars -= entry.origin.length + entry.trans.length + MEMORY_CACHE_ENTRY_OVERHEAD;
 }
 
 /** Adds a pair; one already holding either side is replaced, so each side maps to one pair. */
-function writeMemoryCache(origin: string, trans: string): void {
-    const byOrigin = memoryCacheByOrigin.get(origin);
-    const byTrans = memoryCacheByTrans.get(trans);
+function writeMemoryCache(context: string, origin: string, trans: string): void {
+    const byOrigin = memoryCacheByOrigin.get(context + origin);
+    const byTrans = memoryCacheByTrans.get(context + trans);
     if (byOrigin) {
         dropMemoryCacheEntry(byOrigin);
     }
     if (byTrans && byTrans !== byOrigin) {
         dropMemoryCacheEntry(byTrans);
     }
-    const entry = { origin, trans };
+    const entry = { context, origin, trans };
     memoryCacheEntries.add(entry);
-    memoryCacheByOrigin.set(origin, entry);
-    memoryCacheByTrans.set(trans, entry);
+    memoryCacheByOrigin.set(context + origin, entry);
+    memoryCacheByTrans.set(context + trans, entry);
     memoryCacheChars += origin.length + trans.length + MEMORY_CACHE_ENTRY_OVERHEAD;
     for (const oldest of memoryCacheEntries) {
         if (memoryCacheChars <= MEMORY_CACHE_CHARS) {
@@ -104,27 +104,45 @@ export function getCurrentTranslatorPreset(): TranslatorPreset {
 }
 
 /**
- * The in-memory cache below is keyed by the text alone, so the LLM translator skips it: its results
- * depend on the preset and are cached by `translateLLM` under the pipeline's key.
+ * LLM translations use their own pipeline-aware cache in `translateLLM`.
  */
 function usesMemoryCache(): boolean {
     return settings.memoryTranslateMedia.translatorType !== "llm";
 }
 
+/** Both directions of the input box share one configuration and one pair cache. */
+function memoryTranslationContext() {
+    const from = settings.memoryTranslateMedia.translator;
+    const target = getModelInfoForMode("model").id.startsWith("novellist") ? "ja" : "en";
+    const key = JSON.stringify([
+        from,
+        target,
+        settings.memoryTranslateMedia.translatorType,
+        settings.memoryTranslateMedia.translatorInputLanguage,
+        settings.memoryTranslateMedia.useExperimentalGoogleTranslator,
+        settings.secrets.deeplXOptions?.url,
+        settings.secrets.deeplOptions?.freeApi,
+    ]);
+    return { from, target, key };
+}
+
 export async function translate(text: string, reverse: boolean) {
-    if (usesMemoryCache()) {
-        const cached = readMemoryCache(text, reverse);
+    const context = memoryTranslationContext();
+    const memoryCache = usesMemoryCache();
+    if (memoryCache) {
+        const cached = readMemoryCache(context.key, text, reverse);
         if (cached !== undefined) {
             return cached;
         }
     }
 
-    return runTranslator(
-        text,
-        reverse,
-        settings.memoryTranslateMedia.translator,
-        getModelInfoForMode("model").id.startsWith("novellist") ? "ja" : "en",
-    );
+    const failure = { failed: false };
+    const result = await runTranslator(text, reverse, context.from, context.target, { failure });
+    // A settings/chat switch can change providers between chunks. Never cache that mixed result.
+    if (memoryCache && !failure.failed && usesMemoryCache() && memoryTranslationContext().key === context.key) {
+        writeMemoryCache(context.key, reverse ? result : text, reverse ? text : result);
+    }
+    return result;
 }
 
 export async function runTranslator(
@@ -133,11 +151,8 @@ export async function runTranslator(
     from: string,
     target: string,
     /** `globalPreset`: translate with the global translator preset, not the selected chat's (the playground). */
-    exarg?: { translatorNote?: string; globalPreset?: boolean },
+    exarg?: { translatorNote?: string; globalPreset?: boolean; failure?: { failed: boolean } },
 ) {
-    // Whether the result may enter the memory cache, decided now: a translator switched meanwhile
-    // must not put an LLM result there.
-    const memoryCache = usesMemoryCache();
     const arg = {
         from: reverse ? from : target,
 
@@ -167,7 +182,7 @@ export async function runTranslator(
     // stripped text.
     const excludeThoughts = llm && arg.preset.excludeThoughts === true;
     const source = excludeThoughts ? stripTranslatorReasoning(text) : text;
-    const failure = { failed: false };
+    const failure = exarg?.failure ?? { failed: false };
     const chunkArg = excludeThoughts ? { ...arg, inputPrepared: true, failure } : arg;
     const texts = source.split("\n");
     let chunks: [string, boolean][] = [["", true]];
@@ -202,6 +217,7 @@ export async function runTranslator(
             }
 
             if (result.startsWith("ERR::")) {
+                failure.failed = true;
                 alertError(result);
                 return text;
             }
@@ -213,10 +229,6 @@ export async function runTranslator(
     }
 
     const result = fullResult.join("\n").trim();
-
-    if (memoryCache && usesMemoryCache()) {
-        writeMemoryCache(reverse ? result : text, reverse ? text : result);
-    }
 
     return result;
 }
@@ -426,109 +438,17 @@ export async function translateHTML(
     }
     const dom = new DOMParser().parseFromString(html, "text/html");
 
-    let promises: Promise<void>[] = [];
-    let translationChunks: {
-        chunks: string[];
-        resolvers: ((text: string) => void)[];
-    }[] = [
-        {
-            chunks: [],
-            resolvers: [],
-        },
-    ];
+    const jobs: { node: Node; text: string; reprocessDisplayScript: boolean }[] = [];
 
-    async function translateTranslationChunks(force: boolean = false, additionalChunkLength = 0) {
-        if (translationChunks.length === 0 || !needSuperChunkedTranslate()) {
-            return;
-        }
-
-        const currentChunk = translationChunks[translationChunks.length - 1];
-        const text: string = currentChunk.chunks.join("\n■\n");
-
-        if (!force && text.length + additionalChunkLength < 5000) {
-            return;
-        }
-
-        translationChunks.push({
-            chunks: [],
-            resolvers: [],
-        });
-
-        if (!text) {
-            return;
-        }
-
-        const translated = await translate(text, reverse);
-
-        const split = translated.split("■");
-
-        if (split.length !== currentChunk.chunks.length) {
-            //try translating one by one
-            for (let i = 0; i < currentChunk.chunks.length; i++) {
-                currentChunk.resolvers[i](await translate(currentChunk.chunks[i], reverse));
-            }
-        }
-
-        for (let i = 0; i < split.length; i++) {
-            currentChunk.resolvers[i](split[i]);
+    function collectNodeText(node: Node, reprocessDisplayScript = false) {
+        const text = node.textContent || "";
+        if (text.trim().length !== 0) {
+            jobs.push({ node, text, reprocessDisplayScript });
         }
     }
 
-    async function translateNodeText(node: Node, reprocessDisplayScript: boolean = false) {
-        if (node.textContent.trim().length !== 0) {
-            if (needSuperChunkedTranslate()) {
-                const prm = new Promise<string>((resolve) => {
-                    translateTranslationChunks(false, node.textContent.length);
-                    translationChunks[translationChunks.length - 1].resolvers.push(resolve);
-                    translationChunks[translationChunks.length - 1].chunks.push(node.textContent);
-                });
-
-                node.textContent = await prm;
-                return;
-            }
-
-            const translateChunks = (node.textContent || "").split(/\n\n+/g);
-            let translatedChunksPromises: Promise<string>[] = [];
-            for (const chunk of translateChunks) {
-                const translatedPromise = translate(chunk, reverse);
-                translatedChunksPromises.push(translatedPromise);
-            }
-
-            const translatedChunks = await Promise.all(translatedChunksPromises);
-            let translated = translatedChunks.join("\n\n");
-            if (!reprocessDisplayScript) {
-                node.textContent = translated;
-                return;
-            }
-
-            const { data: processedTranslated } = transform
-                ? await serverProcessScript(
-                      alwaysExistChar,
-                      translated,
-                      "editdisplay",
-                      chatID,
-                      {},
-                      transform,
-                      "translation",
-                  )
-                : { data: translated };
-            // If the translation is the same, don't replace the node
-            if (translated == processedTranslated) {
-                node.textContent = processedTranslated;
-                applyMarkdownToNode(node);
-                return;
-            }
-
-            // Replace the old node with the new one
-            const newNode = document.createElement(node.nodeType === Node.TEXT_NODE ? "span" : node.nodeName);
-            newNode.innerHTML = processedTranslated;
-            node.parentNode.replaceChild(newNode, node);
-            applyMarkdownToNode(newNode);
-        }
-    }
-
-    // Recursive function to translate all text nodes
-    async function translateNode(node: Node, parent?: Node): Promise<void> {
+    // Collect the entire DOM before dispatching: no traversal can wait on an unflushed batch.
+    function collectNode(node: Node, parent?: Node): void {
         if (node.nodeType === Node.TEXT_NODE) {
             // Translate the text content of the node
             if (node.textContent && parent) {
@@ -536,11 +456,7 @@ export async function translateHTML(
                 if (parentName === "script" || parentName === "style") {
                     return;
                 }
-                if (promises.length > 10) {
-                    await Promise.all(promises);
-                    promises = [];
-                }
-                promises.push(translateNodeText(node));
+                collectNodeText(node);
             }
         } else if (node.nodeType === Node.ELEMENT_NODE) {
             // Translate child nodes
@@ -568,13 +484,13 @@ export async function translateHTML(
                             const newNode = document.createElement("span");
                             newNode.textContent = sentence;
                             node.appendChild(newNode);
-                            await translateNodeText(newNode, true);
+                            collectNodeText(newNode, true);
                             node.appendChild(document.createElement("br"));
                         }
                     } else {
                         // Single sentence
                         node.innerHTML = sentences[0];
-                        await translateNodeText(node, true);
+                        collectNodeText(node, true);
                     }
                     return;
                 }
@@ -584,17 +500,87 @@ export async function translateHTML(
                 if (node.nodeType === Node.ELEMENT_NODE && (node as Element)?.getAttribute("translate") === "no") {
                     continue;
                 }
-                await translateNode(child, node);
+                collectNode(child, node);
             }
         }
     }
 
-    // Start translation from the body element
-    await translateNode(dom.body);
+    collectNode(dom.body);
 
-    await translateTranslationChunks(true, 0);
+    const results: string[] = new Array(jobs.length);
+    if (needSuperChunkedTranslate()) {
+        // Keep each node intact; an oversized job forms a batch of its own.
+        let batch: number[] = [];
+        let batchLength = 0;
+        async function translateBatch() {
+            if (batch.length === 0) return;
+            const translated = await translate(batch.map((i) => jobs[i].text).join("\n■\n"), reverse);
+            const split = translated.split("■");
+            if (split.length !== batch.length) {
+                // A provider can remove or add separators. Only use the individual results then.
+                for (const i of batch) {
+                    results[i] = await translate(jobs[i].text, reverse);
+                }
+            } else {
+                batch.forEach((i, index) => {
+                    results[i] = split[index];
+                });
+            }
+            batch = [];
+            batchLength = 0;
+        }
+        for (let i = 0; i < jobs.length; i++) {
+            if (batchLength + (batch.length ? 3 : 0) + jobs[i].text.length > 5000) {
+                await translateBatch();
+            }
+            batchLength += (batch.length ? 3 : 0) + jobs[i].text.length;
+            batch.push(i);
+        }
+        await translateBatch();
+    } else {
+        let nextJob = 0;
+        async function translateJobs() {
+            while (nextJob < jobs.length) {
+                const i = nextJob++;
+                const chunks: string[] = [];
+                for (const chunk of jobs[i].text.split(/\n\n+/g)) {
+                    chunks.push(await translate(chunk, reverse));
+                }
+                results[i] = chunks.join("\n\n");
+            }
+        }
+        await Promise.all(Array.from({ length: Math.min(10, jobs.length) }, () => translateJobs()));
+    }
 
-    await Promise.all(promises);
+    // Every provider uses the same display-script and Markdown application path.
+    for (let i = 0; i < jobs.length; i++) {
+        const { node, reprocessDisplayScript } = jobs[i];
+        const translated = results[i];
+        if (!reprocessDisplayScript) {
+            node.textContent = translated;
+            continue;
+        }
+        const { data: processedTranslated } = transform
+            ? await serverProcessScript(
+                  alwaysExistChar,
+                  translated,
+                  "editdisplay",
+                  chatID,
+                  {},
+                  transform,
+                  "translation",
+              )
+            : { data: translated };
+        if (translated === processedTranslated) {
+            node.textContent = processedTranslated;
+            applyMarkdownToNode(node);
+        } else {
+            const newNode = document.createElement(node.nodeType === Node.TEXT_NODE ? "span" : node.nodeName);
+            newNode.innerHTML = processedTranslated;
+            node.parentNode.replaceChild(newNode, node);
+            applyMarkdownToNode(newNode);
+        }
+    }
     // Serialize the DOM back to HTML
     const serializer = new XMLSerializer();
     let translatedHTML = serializer.serializeToString(dom);
