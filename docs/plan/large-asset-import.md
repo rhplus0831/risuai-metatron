@@ -1,6 +1,6 @@
 # Large Asset Import and Export Plan
 
-Status: slices 1a (a034d709b), 1b (b30ed11a3), 1c (0b4ff36e0), 2a (6e05701ad), 2b (e827f55ef), and 2c (278ac122b) landed on 2026-10-17 and 2026-10-18; the rest is planned. Each slice is one session, one
+Status: slices 1a (a034d709b), 1b (b30ed11a3), 1c (0b4ff36e0), 2a (6e05701ad), 2b (e827f55ef), 2c (278ac122b), and 2d (7faeb8546) landed on 2026-10-17 and 2026-10-18; the rest is planned. Each slice is one session, one
 commit, one file cluster. Re-verify the cited identifiers before editing.
 
 ## Problem
@@ -210,11 +210,13 @@ migration; unbounded persona and preset decoders (small files in practice).
   stays for `Uint8Array` inputs (tests, the preview path). Tests: server route
   over an in-test `CharXWriter` zip; `characterCardsRoundTrip.test.ts` export →
   server import. Closes C1.
-- **2e. Streaming entry points** (_small_, `characters-modules.md`). Realm
-  download passes `res.body`; launchQueue and `#import=` pass the `File`; the
-  PNG import drops the `tee()` prereader (progress shows a running count, or
-  the count comes from a first pass over `file.slice` only when the input is a
-  `File`). Closes C3 and P1's buffering half.
+- **2e. Streaming entry points** (_small_, `characters-modules.md`). The Realm
+  PNG download passes `res.body` (its `.charx` download, launchQueue, and
+  `#import=` already hand the `Blob`/`File` to the server routes since 2c and
+  2d; the `.png` card and the presets of `importFile` and the shares still read
+  into bytes); the PNG import drops the `tee()` prereader (progress shows a
+  running count, or the count comes from a first pass over `file.slice` only
+  when the input is a `File`). Closes C3 and P1's buffering half.
 
 ## Phase 3: Exports and the remaining writers
 
