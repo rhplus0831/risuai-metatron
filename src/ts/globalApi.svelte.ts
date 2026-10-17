@@ -815,7 +815,15 @@ export class AppendableBuffer {
      * @returns {Uint8Array} - The sliced buffer.
      */
     slice(start: number, end: number) {
-        return this.buffer.slice(start - this.deapended, end - this.deapended);
+        // Slices the backing array directly (the `buffer` getter would copy the whole window first),
+        // resolving the indices against the used length as `buffer.slice` would, so the unused tail
+        // is never included.
+        const length = this.#byteLength;
+        const resolve = (index: number) => {
+            const i = Math.trunc(index) || 0;
+            return i < 0 ? Math.max(length + i, 0) : Math.min(i, length);
+        };
+        return this.#buffer.slice(resolve(start - this.deapended), resolve(end - this.deapended));
     }
 
     /**

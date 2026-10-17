@@ -86,9 +86,11 @@ export async function importCharacter() {
  * (`importCharxOverServer`, large-asset-import slice 2d), so the tab never holds the file; one given
  * as bytes or a stream is read by the in-tab `CharXImporter`. Every input is told apart without
  * `instanceof Blob`: a `Uint8Array` or a `ReadableStream` is read in the tab, anything else is a
- * `Blob` (a test's `Response.blob()` is not the environment's `Blob`). The PNG reader takes a `File`,
- * bytes, or a stream; another `Blob` is read into bytes first. Returns the new character's id (with
- * `returnCharacter`, the character), or null/undefined once the failure is alerted.
+ * `Blob` (a test's `Response.blob()` is not the environment's `Blob`). The PNG reader
+ * (`PngChunk.readGenerator`) takes bytes, a stream, or a `Blob`, which it streams: a stream is read
+ * once (a running asset count), bytes or a `Blob` are counted in a first pass. Returns the new
+ * character's id (with `returnCharacter`, the character), or null/undefined once the failure is
+ * alerted.
  */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
@@ -187,12 +189,6 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         alertError(language.errors.noData);
         return;
     }
-    // `PngChunk.readGenerator` streams a `File` and reads bytes or a stream; no caller hands a PNG as
-    // another `Blob` (`importFile` reads it into bytes), but one would be read into bytes here.
-    if (!(f.data instanceof Uint8Array) && !(f.data instanceof ReadableStream) && !(f.data instanceof File)) {
-        f.data = new Uint8Array(await f.data.arrayBuffer());
-    }
-
     alertStore.set({
         type: "wait",
         msg: "Loading... (Reading)",
@@ -206,19 +202,11 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     let pngChunks = 0;
     let readedPngChunks = 0;
 
-    {
-        let readData: File | Uint8Array | ReadableStream<Uint8Array>;
-        if (f.data instanceof ReadableStream) {
-            const tee = f.data.tee();
-            f.data = tee[0];
-            readData = tee[1];
-        } else {
-            readData = f.data;
-        }
-
-        const prereader = PngChunk.readGenerator(readData, {});
-
-        for await (const chunk of prereader) {
+    // A stream is read once, so its asset progress is a running count (`pngChunks` stays 0). Bytes or a
+    // `Blob` (streamed again by `PngChunk.readGenerator`, never read into bytes) can be read twice: a first
+    // pass counts the asset chunks for the percentage.
+    if (!(f.data instanceof ReadableStream)) {
+        for await (const chunk of PngChunk.readGenerator(f.data, {})) {
             if (chunk instanceof AppendableBuffer) {
                 break;
             }
@@ -444,10 +432,10 @@ export async function characterURLImport() {
                     "content-type": "application/json",
                 },
             });
-            const img = new Uint8Array(await chara.arrayBuffer());
+            // The response stream itself: the card is read once as it downloads.
             await importCharacterProcess({
                 name: "charahub.png",
-                data: img,
+                data: chara.body,
             });
         }
     } catch (error) {
@@ -547,18 +535,12 @@ export async function characterURLImport() {
 
     /**
      * A `.risum` (slice 2c) and a CharX (`.charx`, a `charxJpeg`'s `.jpg`/`.jpeg`; slice 2d) go to the
-     * server as the `Blob` itself; the other kinds (a `.png` card, a preset) are read into bytes.
+     * server as the `Blob` itself, and a `.png` card goes to the PNG reader as the `Blob` itself, which
+     * streams it (slice 2e). Only a preset is read into bytes: `importPreset` decompresses it in memory.
      */
     async function importFile(name: string, data: Blob) {
-        if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+        if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")) {
             await importCharacterProcess({ name: name, data: data });
-            return;
-        }
-        if (name.endsWith(".png")) {
-            await importCharacterProcess({
-                name: name,
-                data: new Uint8Array(await data.arrayBuffer()),
-            });
             return;
         }
         if (name.endsWith(".risupreset") || name.endsWith(".risup")) {

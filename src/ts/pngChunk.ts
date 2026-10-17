@@ -122,18 +122,28 @@ export const PngChunk = {
         return chunks;
     },
 
+    /**
+     * Reads a PNG's chunks in order, yielding each `tEXt` chunk (and, with `returnTrimed`, the PNG without
+     * them last). Bytes are read in place; a stream is read once through a sliding window; a `Blob` (a
+     * `File` is one) is streamed with `stream()`, or read into bytes where `stream` is missing (happy-dom).
+     * A `Blob` is anything that is neither bytes nor a stream: no `instanceof Blob`, since in tests
+     * `Response.blob()` is not the environment's `Blob`.
+     */
     readGenerator: async function* (
-        data: File | Uint8Array | ReadableStream<Uint8Array>,
+        input: Blob | Uint8Array | ReadableStream<Uint8Array>,
         arg: { checkCrc?: boolean; returnTrimed?: boolean } = {},
     ): AsyncGenerator<{ key: string; value: string } | AppendableBuffer, null> {
-        if (data instanceof File) {
-            if (typeof data.stream === "function") {
-                data = data.stream();
-            } else {
-                data = await blobToUint8Array(data);
-            }
+        let data: Uint8Array | null = null;
+        let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+        if (input instanceof Uint8Array) {
+            data = input;
+        } else if (input instanceof ReadableStream) {
+            reader = input.getReader();
+        } else if (typeof input.stream === "function") {
+            reader = input.stream().getReader();
+        } else {
+            data = await blobToUint8Array(input);
         }
-        const reader = data instanceof ReadableStream ? data.getReader() : null;
         let readableStreamData = new AppendableBuffer();
         const trimedData = new AppendableBuffer();
 
@@ -144,7 +154,7 @@ export const PngChunk = {
         }
 
         async function slice(start: number, end: number): Promise<Uint8Array> {
-            if (data instanceof Uint8Array) {
+            if (data) {
                 return data.slice(start, end);
             } else {
                 while (end > readableStreamData.length()) {
@@ -157,25 +167,28 @@ export const PngChunk = {
                     }
                     readableStreamData.append(rs.value);
                 }
-                const data = readableStreamData.slice(start, end);
-
-                if (start - readableStreamData.deapended > 200000) {
-                    readableStreamData.deappend(50000);
-                }
-
-                return data;
+                return readableStreamData.slice(start, end);
             }
         }
 
         await appendTrimed(await slice(0, 8));
         let pos = 8;
-        const size = data instanceof Uint8Array ? data.length : Infinity;
+        const size = data ? data.length : Infinity;
         while (pos < size) {
+            // A stream keeps only the current chunk: a chunk's reads never go back before its start, so
+            // the bytes before `pos` are dropped once they pass 200 KB (bounded by what was read: a `tEXt`
+            // chunk's CRC is skipped unread).
+            if (reader) {
+                const consumed = Math.min(pos, readableStreamData.length()) - readableStreamData.deapended;
+                if (consumed > 200000) {
+                    readableStreamData.deappend(consumed);
+                }
+            }
             const dataPart = await slice(pos, pos + 4);
             const len = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
             const type = await slice(pos + 4, pos + 8);
             const typeString = new TextDecoder().decode(type);
-            if (arg.checkCrc && !(data instanceof ReadableStream)) {
+            if (arg.checkCrc && data) {
                 //crc check is not supported for stream
                 const dataPart = await slice(pos + 8 + len, pos + 12 + len);
                 const crc = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
