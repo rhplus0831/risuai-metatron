@@ -1,6 +1,6 @@
 # Large Asset Import and Export Plan
 
-Status: slices 1a (a034d709b), 1b (b30ed11a3), 1c (0b4ff36e0), 2a (6e05701ad), and 2b (e827f55ef) landed on 2026-10-17 and 2026-10-18; the rest is planned. Each slice is one session, one
+Status: slices 1a (a034d709b), 1b (b30ed11a3), 1c (0b4ff36e0), 2a (6e05701ad), 2b (e827f55ef), and 2c (278ac122b) landed on 2026-10-17 and 2026-10-18; the rest is planned. Each slice is one session, one
 commit, one file cluster. Re-verify the cited identifiers before editing.
 
 ## Problem
