@@ -121,7 +121,11 @@ const clearUpdates = () =>
     });
 const rect = (top: number, bottom: number) => new DOMRect(0, top, 300, bottom - top);
 
-function render(input = messages(6), window = input.length, options = { suspendTrim: false, scrollTop: 0 }) {
+function render(
+    input = messages(6),
+    window = input.length,
+    options: { suspendTrim: boolean; scrollTop: number; clientHeight?: number } = { suspendTrim: false, scrollTop: 0 },
+) {
     const props = $state({
         messages: input,
         currentCharacter: { chaId: "c", name: "Char", image: "char.png", type: "character", largePortrait: false },
@@ -145,7 +149,7 @@ function render(input = messages(6), window = input.length, options = { suspendT
         scrollOffset = value;
     });
     Object.defineProperties(scroller, {
-        clientHeight: { value: 400 },
+        clientHeight: { get: () => options.clientHeight ?? 400, configurable: true },
         scrollTop: {
             get: scrollRead,
             set: scrollWrite,
@@ -291,6 +295,9 @@ describe("chat row invalidation", () => {
 
 function trimmable(visible = 5) {
     const ui = render(messages(200), 250);
+    // The opening window mounts only its newest rows; scrolling up mounts the rest before the append.
+    ui.scroller.dispatchEvent(new Event("wheel"));
+    flushSync();
     for (const row of state.rows)
         vi.spyOn(row.element, "getBoundingClientRect").mockReturnValue(
             row.props.idx >= 200 - visible ? rect(100, 120) : rect(60, 80),
@@ -685,6 +692,330 @@ describe("opening row reveal", () => {
         instances.splice(instances.indexOf(ui.instance), 1);
         expect(newRows.every((row) => !row.element.classList.contains("chat-row-pending"))).toBe(true);
         expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+});
+
+describe("opening staged mounting", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+    });
+
+    const longMessages = (count = 12) => messages(count).map((message) => ({ ...message, data: "x".repeat(2400) }));
+    const containers = (ui: ReturnType<typeof render>) => [
+        ...ui.scroller.querySelectorAll<HTMLElement>(".chat-message-container"),
+    ];
+    const mountedIds = () => state.rows.filter((row) => !row.destroyed).map((row) => row.props.messageId);
+    async function flushWaits(ms = 0) {
+        await vi.advanceTimersByTimeAsync(ms);
+        flushSync();
+    }
+    function staged() {
+        const ui = render(longMessages(), 12, { suspendTrim: false, scrollTop: -90 });
+        // Keep reveal geometry independent of happy-dom's zero-sized rectangles.
+        for (const element of containers(ui))
+            vi.spyOn(element, "getBoundingClientRect").mockReturnValue(rect(200, 280));
+        return ui;
+    }
+
+    // Literal expectations from min(480, 48 + length * .2), independent of production helpers.
+    it.each([
+        { label: "exact viewport", length: 260, height: 400, count: 12, expected: 4 }, // 4 * 100
+        { label: "minimum three", length: 2400, height: 400, count: 12, expected: 3 },
+        { label: "maximum eight", length: 0, height: 1000, count: 12, expected: 8 },
+        { label: "zero-height scroller", length: 2400, height: 0, count: 12, expected: 8 },
+        { label: "short window", length: 2400, height: 400, count: 2, expected: 2 },
+    ])("mounts the newest viewport estimate: $label", ({ length, height, count, expected }) => {
+        const input = messages(count).map((message) => ({ ...message, data: "x".repeat(length) }));
+        const ui = render(input, count, { suspendTrim: false, scrollTop: -90, clientHeight: height });
+        const elements = containers(ui);
+        expect(mountedIds()).toEqual(Array.from({ length: expected }, (_, i) => `m${count - 1 - i}`));
+        expect(elements).toHaveLength(count);
+        expect(state.rows.map((row) => row.element)).toEqual(elements.slice(0, expected));
+        expect(elements.slice(expected).every((element) => element.childNodes.length === 0)).toBe(true);
+        expect(elements.every((element) => element.classList.contains("chat-row-pending"))).toBe(true);
+        expect(ui.props.revealing).toBe(true);
+        expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        // Arming fills the existing containers, preserving newest-to-oldest DOM order.
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        flushSync();
+        expect(containers(ui)).toEqual(elements);
+        expect(ui.ids()).toEqual(input.map((message) => message.chatId).reverse());
+    });
+
+    it("uses newest-row text lengths rather than older rows to fill the viewport", () => {
+        const input = longMessages();
+        for (const message of input.slice(-5)) message.data = "x".repeat(260); // newest four are 400px
+        const ui = render(input);
+        expect(mountedIds()).toEqual(["m11", "m10", "m9", "m8"]);
+        expect(containers(ui)).toHaveLength(12);
+    });
+
+    it("arms after every first-stage render settles or rejects without waiting for images", async () => {
+        const ui = staged();
+        const first = [...state.rows];
+        const image = document.createElement("img");
+        Object.defineProperty(image, "complete", { value: false });
+        first[0].element.append(image);
+        await flushWaits();
+        first[0].settle();
+        first[1].reject(new Error("failed parse"));
+        await flushWaits();
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        first[2].settle();
+        await flushWaits();
+        expect(ui.ids()).toEqual(
+            longMessages()
+                .map((message) => message.chatId)
+                .reverse(),
+        );
+        expect(state.rows).toHaveLength(12);
+        await flushWaits(16);
+        // The newest image still blocks visibility, but no longer blocks mounting older rows.
+        expect(containers(ui).every((element) => element.classList.contains("chat-row-pending"))).toBe(true);
+        image.dispatchEvent(new Event("load"));
+        await flushWaits(16);
+        expect(containers(ui).filter((element) => !element.classList.contains("chat-row-pending"))).toEqual(
+            first.map((row) => row.element),
+        );
+        latest("m0").settle();
+        await flushWaits(16);
+        expect(latest("m0").element.classList.contains("chat-row-pending")).toBe(true);
+        for (const row of state.rows.slice(3)) row.settle();
+        await flushWaits(16);
+        expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("follows a pending first-stage remount instead of its obsolete render promise", async () => {
+        const ui = staged();
+        const obsolete = latest("m11");
+        await flushWaits();
+        ui.props.messages[11].data = "edited before parsing finished";
+        flushSync();
+        expect(obsolete.destroyed).toBe(true);
+        expect(latest("m11")).not.toBe(obsolete);
+        obsolete.settle();
+        latest("m10").settle();
+        latest("m9").settle();
+        await flushWaits();
+        expect(mountedIds()).toHaveLength(3);
+        latest("m11").settle();
+        await flushWaits();
+        expect(mountedIds()).toHaveLength(12);
+    });
+
+    it("reveals at 1200ms but mounts deferred rows only at the 3000ms batch deadline", async () => {
+        const ui = staged();
+        await flushWaits(1199);
+        expect(containers(ui).every((element) => element.classList.contains("chat-row-pending"))).toBe(true);
+        await flushWaits(1);
+        expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(ui.props.revealing).toBe(false);
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        ui.props.messages[0].data = "edited after visibility release";
+        flushSync();
+        await flushWaits(1799);
+        expect(mountedIds()).toHaveLength(3);
+        await flushWaits(1);
+        expect(mountedIds()).toHaveLength(12);
+        expect(latest("m0").props.message).toBe("edited after visibility release");
+        expect(latest("m0").updates).toEqual([]);
+        expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("viewport-filled visibility release does not arm deferred rows", async () => {
+        const ui = staged();
+        vi.mocked(latest("m11").element.getBoundingClientRect).mockReturnValue(rect(100, 200));
+        latest("m11").settle();
+        await flushWaits(16);
+        expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(ui.props.revealing).toBe(false);
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        latest("m10").settle();
+        latest("m9").settle();
+        await flushWaits();
+        expect(mountedIds()).toHaveLength(12);
+    });
+
+    it("does no component or transcript work for deferred stream chunks", async () => {
+        Object.assign(streamingState, { chaId: "c", chatId: "chat", messageId: "m0", mode: "off" });
+        const input = longMessages();
+        const structureRead = vi.fn(() => "char" as const);
+        Object.defineProperty(input[2], "role", { enumerable: true, get: structureRead });
+        const ui = render(input);
+        const first = [...state.rows];
+        const geometry = vi.spyOn(ui.scroller, "clientHeight", "get");
+        structureRead.mockClear();
+        clearUpdates();
+        for (const text of ["chunk one", "chunk two", "latest chunk"]) {
+            ui.props.messages[0].data = text;
+            flushSync();
+        }
+        expect(state.rows).toEqual(first);
+        expect(state.rows).toHaveLength(3);
+        expect(state.rows.flatMap((row) => row.updates)).toEqual([]);
+        expect(state.rows.some((row) => row.destroyed)).toBe(false);
+        expect(structureRead).not.toHaveBeenCalled();
+        expect(geometry).not.toHaveBeenCalled();
+        expect(ui.scrollRead).not.toHaveBeenCalled();
+        expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        first.forEach((row) => row.settle());
+        await flushWaits();
+        expect(latest("m0").props).toMatchObject({ message: "latest chunk", rawStreamingText: "latest chunk" });
+        expect(latest("m0").updates).toEqual([]);
+        expect(state.rows).toHaveLength(12);
+    });
+
+    it("applies deferred text edits only at mount and never mounts a removed deferred row", async () => {
+        const ui = staged();
+        const elements = containers(ui);
+        ui.props.messages[0].data = "first edit";
+        flushSync();
+        ui.props.messages[0].data = "final edit";
+        ui.props.messages[1].data = "removed before mounting";
+        flushSync();
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        expect(state.rows.flatMap((row) => row.updates)).toEqual([]);
+        ui.props.messages.splice(1, 1);
+        flushSync();
+        expect(state.rows.some((row) => row.props.messageId === "m1")).toBe(false);
+        expect(elements[10].isConnected).toBe(false);
+        expect(latest("m0").props).toMatchObject({ message: "final edit", idx: 0 });
+        expect(latest("m0").updates).toEqual([]);
+        expect(mountedIds()).toHaveLength(11);
+        await flushWaits(3000);
+        expect(state.rows.some((row) => row.props.messageId === "m1")).toBe(false);
+    });
+
+    it.each(["append", "load-more", "unfold", "name context", "image context"])(
+        "%s arms all rows immediately without starting another reveal batch",
+        (change) => {
+            if (change === "unfold") folded.index = 8;
+            const ui = render(longMessages(20), 12);
+            expect(state.rows).toHaveLength(3);
+            const oldElements = containers(ui);
+            if (change === "append") ui.append();
+            if (change === "load-more") ui.props.loadPages = 20;
+            if (change === "unfold") {
+                ui.props.loadPages = 20;
+                folded.index = -1;
+            }
+            if (change === "name context") ui.props.currentUsername = "New user";
+            if (change === "image context") ui.props.currentCharacter.image = "new.png";
+            flushSync();
+            const expected = ui.props.messages
+                .slice(-ui.props.loadPages)
+                .map((message) => message.chatId)
+                .reverse();
+            expect(ui.ids()).toEqual(expected);
+            expect(mountedIds()).toHaveLength(expected.length);
+            expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+            for (const element of containers(ui).filter((element) => !oldElements.includes(element)))
+                expect(element.classList.contains("chat-row-pending")).toBe(false);
+            if (change === "name context") expect(latest("m17").updates).toEqual([{ name: "New user" }]);
+            if (change === "name context") expect(latest("m9").props.name).toBe("New user");
+            if (change === "image context") expect(latest("m8").props).toMatchObject({ img: "image:new.png" });
+        },
+    );
+
+    it.each(["wheel", "touchmove", "pointerdown"])(
+        "%s on the scroller arms rows before render waits settle",
+        (event) => {
+            const ui = staged();
+            expect(mountedIds()).toHaveLength(3);
+            ui.scroller.dispatchEvent(new Event(event));
+            flushSync();
+            expect(mountedIds()).toHaveLength(12);
+            expect(containers(ui).every((element) => element.classList.contains("chat-row-pending"))).toBe(true);
+            expect(ui.props.revealing).toBe(true);
+            expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+        },
+    );
+
+    it.each(["capture", "suspendTrim"])("%s arms an active batch and bypasses staging on open", (mode) => {
+        const ui = staged();
+        expect(mountedIds()).toHaveLength(3);
+        if (mode === "capture") ui.props.loadPages = Infinity;
+        else ui.props.suspendTrim = true;
+        flushSync();
+        expect(mountedIds()).toHaveLength(12);
+        expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        const bypassed = render(longMessages(), mode === "capture" ? Infinity : 12, {
+            suspendTrim: mode === "suspendTrim",
+            scrollTop: -90,
+        });
+        expect(state.rows).toHaveLength(24);
+        expect(bypassed.ids()).toEqual(
+            longMessages()
+                .map((message) => message.chatId)
+                .reverse(),
+        );
+        expect(bypassed.scroller.querySelector(".chat-row-pending")).toBeNull();
+        expect(bypassed.props.revealing).toBe(false);
+        expect(bypassed.scrollWrite).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([false, true])(
+        "whenRendered arms every row before waiting (pending opening diff: %s)",
+        async (pendingDiff) => {
+            const ui = staged();
+            if (pendingDiff) currentChatRef()!.chatId = "switch-before-flush";
+            let done = false;
+            const wait = ui.instance.whenRendered().then(() => {
+                done = true;
+            });
+            await flushWaits();
+            expect(mountedIds()).toHaveLength(12);
+            expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
+            expect(ui.props.revealing).toBe(false);
+            expect(done).toBe(false);
+            for (const row of state.rows.filter((row) => !row.destroyed && row.props.messageId !== "m0")) row.settle();
+            await flushWaits();
+            expect(done).toBe(false);
+            latest("m0").settle();
+            await wait;
+            expect(done).toBe(true);
+            expect(vi.getTimerCount()).toBe(0);
+        },
+    );
+
+    it("a new opening and destroy cancel old staging without mounting removed rows", async () => {
+        const ui = staged();
+        const oldElements = containers(ui);
+        const oldRows = [...state.rows];
+        await flushWaits(1000);
+        currentChatRef()!.chatId = "other";
+        flushSync();
+        expect(state.rows).toHaveLength(6);
+        expect(oldRows.every((row) => row.destroyed)).toBe(true);
+        expect(
+            oldElements.every((element) => !element.isConnected && !element.classList.contains("chat-row-pending")),
+        ).toBe(true);
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        expect(ui.scrollWrite.mock.calls).toEqual([[0], [0]]);
+        oldRows.forEach((row) => row.settle());
+        await flushWaits(200); // old visibility deadline
+        expect(ui.props.revealing).toBe(true);
+        await flushWaits(1800); // old mounting deadline; replacement has only aged 2000ms
+        expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+        const replacementElements = containers(ui);
+        await unmount(ui.instance);
+        instances.splice(instances.indexOf(ui.instance), 1);
+        expect(state.rows).toHaveLength(6);
+        expect(state.rows.every((row) => row.destroyed)).toBe(true);
+        expect(replacementElements.every((element) => !element.classList.contains("chat-row-pending"))).toBe(true);
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        state.rows.forEach((row) => row.settle());
+        await flushWaits(3000);
+        expect(state.rows).toHaveLength(6);
         expect(vi.getTimerCount()).toBe(0);
     });
 });

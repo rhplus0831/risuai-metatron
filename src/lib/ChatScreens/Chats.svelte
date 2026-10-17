@@ -69,11 +69,51 @@
         };
         element: HTMLDivElement;
         input: RowInput;
+        armed: boolean;
         dispose: () => void;
     };
     const rows = new Map<string, Row>();
     const rowElements = new WeakMap<Element, Row>();
     const capturing = $derived(loadPages === Infinity);
+
+    // Mounting outlives the visibility batch: neither images nor its 1200 ms deadline arm rows.
+    type MountBatch = { pending: Map<Row, Row["instance"]>; deferred: Row[] };
+    let mountBatch: MountBatch | undefined;
+    let mountTimer: ReturnType<typeof setTimeout>;
+
+    function armDeferredRows() {
+        clearTimeout(mountTimer);
+        const batch = mountBatch;
+        mountBatch = undefined;
+        for (const row of batch?.deferred ?? []) {
+            if (rowElements.has(row.element)) row.armed = true;
+        }
+    }
+
+    async function settleFirstStageRow(batch: MountBatch, row: Row) {
+        const instance = row.instance;
+        batch.pending.set(row, instance);
+        try {
+            await tick();
+            if (mountBatch !== batch || batch.pending.get(row) !== instance) return;
+            await instance.whenRendered?.();
+        } catch {
+            // Failed renders must not strand the older rows either.
+        }
+        if (mountBatch !== batch || batch.pending.get(row) !== instance) return;
+        batch.pending.delete(row);
+        if (batch.pending.size === 0) armDeferredRows();
+    }
+
+    $effect(() => {
+        const scroller = chatBody?.parentElement;
+        if (!scroller) return;
+        const events = ["wheel", "touchmove", "pointerdown"] as const;
+        for (const event of events) scroller.addEventListener(event, armDeferredRows, { passive: true });
+        return () => {
+            for (const event of events) scroller.removeEventListener(event, armDeferredRows);
+        };
+    });
 
     type RevealRow = { row: Row; settled: boolean; wait?: AbortController };
     type RevealBatch = { rows: RevealRow[]; next: number };
@@ -136,6 +176,7 @@
     }
 
     async function settleRevealRow(entry: RevealRow) {
+        if (!entry.row.armed) return;
         entry.wait?.abort();
         const wait = new AbortController();
         entry.wait = wait;
@@ -143,7 +184,7 @@
         try {
             // createRow's effect mounts the instance on the next Svelte flush.
             await tick();
-            if (wait.signal.aborted) return;
+            if (wait.signal.aborted || !entry.row.instance) return;
             try {
                 await entry.row.instance?.whenRendered?.();
             } catch {
@@ -174,7 +215,10 @@
     }
 
     $effect(() => {
-        if (capturing || suspendTrim) finishReveal();
+        if (capturing || suspendTrim) {
+            armDeferredRows();
+            finishReveal();
+        }
     });
     // Names and images update in place; only character identity and portrait affect mounting.
     // Callbacks and the simple character are captured at mount.
@@ -227,13 +271,13 @@
             );
             for (const row of rows.values()) {
                 if (capture) row.element.classList.remove("far");
-                observer.observe(row.element);
+                if (row.instance) observer.observe(row.element);
             }
         };
         observe();
         const refresh = (element: Element) => {
             const row = rowElements.get(element);
-            if (!row) return;
+            if (!row?.instance) return;
             row.element.classList.remove("far");
             observer?.unobserve(element);
             observer?.observe(element);
@@ -281,10 +325,11 @@
         };
     });
 
-    function createRow(input: RowInput): Row {
+    function createRow(input: RowInput, initiallyArmed: boolean): Row {
         const element = document.createElement("div");
         element.classList.add("chat-message-container");
         let currentInput = $state.raw(input);
+        let armed = $state(initiallyArmed);
         const row: Row = {
             element,
             get input() {
@@ -292,6 +337,12 @@
             },
             set input(value) {
                 currentInput = value;
+            },
+            get armed() {
+                return armed;
+            },
+            set armed(value) {
+                armed = value;
             },
             instance: undefined,
             dispose: () => {},
@@ -303,6 +354,7 @@
             let imageSource: string | undefined;
             let sent: RowUpdate | undefined;
             $effect(() => {
+                if (!row.armed) return;
                 const { message, idx, streaming, optimized, mode } = row.input;
                 const ctx = context;
                 const data = message.data;
@@ -363,6 +415,7 @@
                                 disabled: message.disabled ?? false,
                             },
                         });
+                        if (mountBatch?.pending.has(row)) void settleFirstStageRow(mountBatch, row);
                         // A replacement instance must settle again while its row is still hidden.
                         const pending = revealBatch?.rows.slice(revealBatch.next).find((entry) => entry.row === row);
                         if (pending) void settleRevealRow(pending);
@@ -400,6 +453,7 @@
         observer?.unobserve(row.element);
         rowElements.delete(row.element);
         row.element.remove();
+        if (mountBatch?.pending.delete(row) && mountBatch.pending.size === 0) armDeferredRows();
         const pending = revealBatch?.rows.find((entry) => entry.row === row);
         if (pending) {
             pending.wait?.abort();
@@ -445,8 +499,7 @@
             loadStart = folded;
             loadEnd = Math.max(0, folded - window);
         }
-        const shown: Row[] = [];
-        let created = 0;
+        const inputs: { key: string; input: RowInput }[] = [];
         const shownKeys = new Set<string>();
         for (let i = loadStart; i >= Math.max(0, loadEnd); i--) {
             const message = structure[i];
@@ -462,11 +515,29 @@
                 optimized: streaming && i === streamingIndex,
                 mode,
             };
+            inputs.push({ key, input });
+        }
+        // Decide deferral before creating effects, including duplicate-id fallback keys.
+        const opening = inputs.length > 0 && inputs.every(({ key }) => !rows.has(key));
+        armDeferredRows();
+        if (opening) finishReveal();
+        let firstStage = inputs.length;
+        if (opening && !capturing && !suspendTrim) {
+            const height = chatBody.parentElement?.clientHeight ?? 0;
+            firstStage = 0;
+            let estimated = 0;
+            while (firstStage < inputs.length && firstStage < 8 && (firstStage < 3 || !height || estimated < height)) {
+                // Cheap opening-only estimate: 48px shell plus text, capped at 480px per row.
+                estimated += Math.min(480, 48 + inputs[firstStage].input.message.data.length * 0.2);
+                firstStage++;
+            }
+        }
+        const shown: Row[] = [];
+        for (const { key, input } of inputs) {
             let row = rows.get(key);
             if (!row) {
-                row = createRow(input);
+                row = createRow(input, shown.length < firstStage);
                 rows.set(key, row);
-                created++;
             } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
                 row.input = input;
             }
@@ -485,7 +556,16 @@
             previous = row.element;
         }
         // Only a wholly new window (opening/switching chats) gets a reveal batch.
-        if (shown.length > 0 && created === shown.length) startReveal(shown);
+        if (opening) {
+            if (firstStage < shown.length) {
+                mountBatch = {
+                    pending: new Map(shown.slice(0, firstStage).map((row) => [row, undefined])),
+                    deferred: shown.slice(firstStage),
+                };
+                mountTimer = setTimeout(armDeferredRows, 3000);
+            }
+            startReveal(shown);
+        }
     }
 
     // Called before changing the DOM, only on an append at the bottom of this same open chat.
@@ -518,6 +598,7 @@
 
     let scrollTimer: ReturnType<typeof setTimeout>;
     onDestroy(() => {
+        armDeferredRows();
         finishReveal();
         clearTimeout(scrollTimer);
         cancelAnimationFrame(retireFrame);
@@ -532,7 +613,12 @@
     }
 
     export async function whenRendered() {
-        await tick();
+        do {
+            armDeferredRows();
+            finishReveal();
+            await tick();
+            // A pending opening diff can create a batch during this flush.
+        } while (mountBatch);
         await Promise.all([...rows.values()].map((row) => row.instance?.whenRendered?.()));
     }
 
