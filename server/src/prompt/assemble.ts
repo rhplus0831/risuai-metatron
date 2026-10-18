@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/database.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
+import { mergeHypaV2Write, mergeHypaV3Write, type SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import type { PromptItem, PromptItemPlain, PromptItemTyped } from "../../../shared/prompt.ts";
 import type { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
@@ -100,8 +101,10 @@ export type AssemblyHost = {
     /** The memory algorithms' services of this run (`memory-on-server`). */
     memory: MemoryHost;
     /**
-     * `setChatMeta(chatTarget, set)` of the memory step: `build` gets the chat as stored now and
-     * returns the fields to set (nothing for null).
+     * `setChatMeta(chatTarget, set)` of the memory step: `build` gets the chat as stored now (read
+     * again right before the write, in the same turn) and returns the fields to set (nothing for
+     * null). A value an algorithm computed before an await is placed onto that stored value
+     * (`mergeHypaV3Write`, `mergeHypaV2Write`), never written over it.
      */
     writeMemory(build: (chat: Chat) => Record<string, unknown> | null): void;
     /** The memory step ended (a result, an error, an abort): a progress notice left open is closed. */
@@ -1054,12 +1057,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 chats = hn.chats;
                 currentTokens = hn.tokens;
             } else if (db.hypav2) {
+                const room = detachedChat();
+                // The value the algorithm reads: its result is placed onto the value stored at the write.
+                const baseline = structuredClone(room.hypaV2Data);
                 const sp = await hypaMemoryV2(
                     memory,
                     chats,
                     currentTokens,
                     maxContextTokens,
-                    detachedChat(),
+                    room,
                     nowChatroom,
                     memoryTokenizer,
                 );
@@ -1071,34 +1077,55 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 currentTokens = sp.currentTokens;
                 if (sp.memory) {
                     const data = sp.memory;
-                    host.writeMemory(() => ({ hypaV2Data: data }));
+                    host.writeMemory((stored) => {
+                        const merged = mergeHypaV2Write(baseline, data, stored.hypaV2Data);
+                        if (!merged) {
+                            console.warn(
+                                "[HypaV2] The memory data changed during the summary; this summary is not saved",
+                            );
+                        }
+                        return merged ? { hypaV2Data: merged } : null;
+                    });
                 }
 
                 currentChat = host.chat();
             } else if (db.hypaV3) {
+                const room = detachedChat();
+                // The value the algorithm reads: its result is placed onto the value stored at the write.
+                const baseline = structuredClone(room.hypaV3Data);
+                const writeHypaV3 = (data: SerializableHypaV3Data, metricsRecomputed: boolean) => {
+                    host.writeMemory((stored) => {
+                        const merged = mergeHypaV3Write(baseline, data, stored.hypaV3Data, metricsRecomputed);
+                        if (!merged) {
+                            console.warn(
+                                "[HypaV3] The memory data changed during the summary; this summary is not saved",
+                            );
+                        }
+                        return merged ? { hypaV3Data: merged } : null;
+                    });
+                };
                 const sp = await hypaMemoryV3(
                     memory,
                     chats,
                     currentTokens,
                     maxContextTokens,
-                    detachedChat(),
+                    room,
                     nowChatroom,
                     memoryTokenizer,
                 );
                 host.fence();
                 if (sp.error) {
-                    // Save new summary
+                    // Save new summary (an error return carries the metrics as read)
                     if (sp.memory) {
-                        const data = sp.memory;
-                        host.writeMemory(() => ({ hypaV3Data: data }));
+                        writeHypaV3(sp.memory, false);
                     }
                     return { type: "error", error: sp.error };
                 }
                 chats = sp.chats;
                 currentTokens = sp.currentTokens;
                 if (sp.memory) {
-                    const data = sp.memory;
-                    host.writeMemory(() => ({ hypaV3Data: data }));
+                    // A run that ends with summaries selects from them and records that selection.
+                    writeHypaV3(sp.memory, sp.memory.summaries.length > 0);
                 }
 
                 currentChat = host.chat();

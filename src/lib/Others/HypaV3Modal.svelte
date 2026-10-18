@@ -3,7 +3,7 @@
     import { untrack } from "svelte";
     import { ChevronUpIcon, ChevronDownIcon } from "@lucide/svelte";
     import { type SerializableSummary, summarize } from "src/ts/process/memory/hypav3";
-    import { alertNormalWait } from "src/ts/alert";
+    import { alertError, alertNormalWait } from "src/ts/alert";
     import { hypaV3ModalOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { translateHTML } from "src/ts/translator/translator";
@@ -32,7 +32,9 @@
     import { shouldShowSummary, isGuidLike, parseSelectionInput } from "./HypaV3Modal/utils";
     import type { OpenAIChat } from "src/ts/process/index.svelte";
 
-    import { currentChatRef, setChatMeta, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { type ChatRef, currentChatRef, setChatMeta, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
+    import { sendingChatRef } from "src/ts/process/index.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
 
@@ -44,6 +46,22 @@
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
     // summary made by a send) replaces the copy.
+    //
+    // While a send of this tab or a job this tab knows of runs in the chat, nothing is written: the
+    // job writes the memory data from the chat as stored then (`mergeHypaV3Write`), and a whole value
+    // written from this copy afterwards would drop the job's summaries. A refused change is undone in
+    // the copy with the notice (never kept to be written later); the job's write replaces the copy
+    // when it reaches the chat.
+
+    /** Whether a send of this tab or a job this tab knows of runs in `ref` (reactive). */
+    function memoryWriteFenced(ref: ChatRef): boolean {
+        const sending = $sendingChatRef;
+        return (
+            (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
+            generatingChatKeys().has(chatStatusKey(ref))
+        );
+    }
+
     /** The memory data of a chat that has none yet. */
     function emptyHypaV3Data(): SerializableHypaV3Data {
         return {
@@ -73,21 +91,44 @@
     });
     $effect(() => {
         const text = JSON.stringify($state.snapshot(hypaV3Data));
+        const ref = currentChatRef();
+        const fenced = ref !== null && memoryWriteFenced(ref);
         untrack(() => {
-            const ref = currentChatRef();
-            if (text !== syncedHypaV3Text && text !== undefined && ref) {
-                syncedHypaV3Text = text;
-                setChatMeta(ref, { hypaV3Data: JSON.parse(text) });
+            if (text === syncedHypaV3Text || text === undefined || !ref) {
+                return;
             }
+            // The empty default is not an edit, even after a fenced initialization was refused.
+            const chatText = syncedHypaV3Text ?? JSON.stringify(emptyHypaV3Data());
+            if (text === chatText) {
+                return;
+            }
+            if (fenced) {
+                alertError(language.chatGenerating);
+                hypaV3Data = JSON.parse(chatText);
+                return;
+            }
+            syncedHypaV3Text = text;
+            setChatMeta(ref, { hypaV3Data: JSON.parse(text) });
         });
     });
 
-    /** Writes new memory data to the selected chat (the copy follows). */
-    function writeHypaV3Data(data: SerializableHypaV3Data) {
+    /**
+     * Writes new memory data to the selected chat (the copy follows). False when nothing was written:
+     * no chat, or a send runs in it (with the notice, unless `quiet`).
+     */
+    function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false): boolean {
         const ref = currentChatRef();
-        if (ref) {
-            setChatMeta(ref, { hypaV3Data: data });
+        if (!ref) {
+            return false;
         }
+        if (untrack(() => memoryWriteFenced(ref))) {
+            if (!quiet) {
+                alertError(language.chatGenerating);
+            }
+            return false;
+        }
+        setChatMeta(ref, { hypaV3Data: data });
+        return true;
     }
 
     let categories = $derived(
@@ -148,7 +189,7 @@
 
         untrack(() => {
             if (!chatHypaV3Data) {
-                writeHypaV3Data(emptyHypaV3Data());
+                writeHypaV3Data(emptyHypaV3Data(), true);
             }
 
             expandedMessageState = null;
@@ -622,7 +663,7 @@
         const char = currentCharacter;
         const chat = selectedChat();
 
-        return chat?.hypaV3Data?.summaries?.length === 0 && chat.hypaV2Data != null;
+        return (chat?.hypaV3Data?.summaries?.length ?? 0) === 0 && chat?.hypaV2Data != null;
     }
 
     function convertHypaV2ToV3(): { success: boolean; error?: string } {
@@ -678,7 +719,10 @@
                 })),
             };
 
-            writeHypaV3Data(newHypaV3Data);
+            // Refused while a send runs in the chat (the notice is shown).
+            if (!writeHypaV3Data(newHypaV3Data)) {
+                return { success: false };
+            }
 
             return {
                 success: true,
@@ -747,7 +791,7 @@
 
                                         if (conversionResult.success) {
                                             await alertNormalWait(language.hypaV3Modal.convertSuccessMessage);
-                                        } else {
+                                        } else if (conversionResult.error) {
                                             await alertNormalWait(
                                                 language.hypaV3Modal.convertErrorMessage.replace(
                                                     "{0}",

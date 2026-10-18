@@ -690,6 +690,101 @@ describe("HypaV3", () => {
         SLOW,
     );
 
+    // Slice 1c of `docs/plan/data-loss-concurrency.md` (audit A2): the job's `hypaV3Data` write is
+    // placed onto the value stored at the write (`mergeHypaV3Write`), not written over it.
+    const seeded = { text: "Seeded summary.", chatMemos: ["m0", "m1"], isImportant: false };
+    const edited = { ...seeded, text: "Seeded summary, edited meanwhile.", isImportant: true, tags: ["mine"] };
+    /** Seeds `hypaV3Data` with one summary and edits it (or `set`s another value) at the first summary request. */
+    async function seedAndEditDuringSummary(set: Record<string, unknown> = { summaries: [edited] }) {
+        const chaId = await seedCharacter();
+        await setChatMeta(chaId, { hypaV3Data: { summaries: [seeded], categories: [{ id: "c1", name: "Mine" }] } });
+        let done = false;
+        state.holdSummary = async () => {
+            if (!done) {
+                done = true;
+                await setChatMeta(chaId, { hypaV3Data: { ...set, categories: [{ id: "c1", name: "Mine" }] } });
+            }
+        };
+        return chaId;
+    }
+    const skipped = () => logged.some((line) => line.includes("[HypaV3] The memory data changed during the summary"));
+
+    it.each([
+        ["standard", false],
+        ["experimental", true],
+    ])(
+        "%s: a summary edit saved during the summarization await survives the job's write, and the job's new summaries survive the edit",
+        async (_mode, useExperimentalImpl) => {
+            await patchSettings({ hypaV3: true });
+            await patchHypaV3({ useExperimentalImpl, summarizationMaxConcurrent: 1, embeddingMaxConcurrent: 1 });
+            try {
+                const chaId = await seedAndEditDuringSummary();
+                const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(summaries().length).toBeGreaterThan(0);
+                const data = (await readChat(chaId)).data.hypaV3Data as {
+                    summaries: { text: string; chatMemos: string[]; isImportant: boolean; tags?: string[] }[];
+                    categories: unknown;
+                    metrics?: Record<string, number[]>;
+                };
+                // The edit as saved, the job's summaries after it, none covering the seeded messages again.
+                expect(data.summaries[0]).toEqual(edited);
+                expect(data.summaries.length).toBe(1 + summaries().length);
+                expect(data.summaries.slice(1).map((s) => s.text)).toEqual(
+                    summaries().map((_, i) => `Summary ${i + 1}: events happened.\n\nPart two of ${i + 1}.`),
+                );
+                expect(data.summaries.slice(1).flatMap((s) => s.chatMemos)).not.toEqual(expect.arrayContaining(["m0"]));
+                expect(data.categories).toEqual([{ id: "c1", name: "Mine" }]);
+                // The run selected from the merged list: every index resolves.
+                expect(data.metrics).toBeDefined();
+                const indices = Object.values(data.metrics!).flat();
+                expect(indices.length).toBeGreaterThan(0);
+                expect(indices.every((index) => index >= 0 && index < data.summaries.length)).toBe(true);
+                expect(skipped()).toBe(false);
+                // The merge is of the write only: the prompt carried the algorithm's own memory card.
+                expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            } finally {
+                await patchHypaV3({ useExperimentalImpl: false });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a returned-error write places the summary made onto the edit saved meanwhile",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            state.summaries = ["First landed.", { fail: "summary provider down" }];
+            const chaId = await seedAndEditDuringSummary();
+            const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+            expect(terminal).toMatchObject({ type: "error", message: expect.stringMatching(/Summarization failed/) });
+            const data = (await readChat(chaId)).data.hypaV3Data;
+            expect(data.summaries.map((s: any) => s.text)).toEqual([edited.text, "First landed."]);
+            expect(data.summaries[0]).toEqual(edited);
+            expect(data.categories).toEqual([{ id: "c1", name: "Mine" }]);
+            expect(skipped()).toBe(false);
+        },
+        SLOW,
+    );
+
+    it(
+        "a reset saved during the summarization await skips the job's write: the stored value stands and the send goes on",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedAndEditDuringSummary({ summaries: [] });
+            const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toHaveLength(1);
+            expect((await readChat(chaId)).data.hypaV3Data).toEqual({
+                summaries: [],
+                categories: [{ id: "c1", name: "Mine" }],
+            });
+            expect(skipped()).toBe(true);
+        },
+        SLOW,
+    );
+
     it(
         "an abort during a summary makes no later request, no memory write, and no cache row",
         async () => {
