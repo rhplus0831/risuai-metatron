@@ -115,6 +115,33 @@ it("renders unset selects at option zero and empty text controls from preset, mo
     expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
 });
 
+it("nests rows between keyless group and groupEnd lines and closes a named group at ==groupEnd", () => {
+    activePreset.customPromptTemplateToggle = [
+        "=Style=group",
+        "inside=Inside",
+        "==groupEnd",
+        "==divider",
+        "named=Named=group",
+        "nested=Nested",
+        "==groupEnd",
+        "outside=Outside",
+    ].join("\n");
+    const { target, checkbox } = render();
+    const groupButton = (name: string) =>
+        [...target.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === name);
+    expect(groupButton("Style")).toBeDefined();
+    expect(groupButton("Named")).toBeDefined();
+    expect(target.querySelectorAll("hr")).toHaveLength(1);
+    // Grouped rows stay hidden in their closed accordions; the row after the last groupEnd does not.
+    expect(checkbox("Inside")).toBeNull();
+    expect(checkbox("Nested")).toBeNull();
+    expect(checkbox("Outside")).not.toBeNull();
+    groupButton("Style")!.click();
+    flushSync();
+    expect(checkbox("Inside")).not.toBeNull();
+    expect(checkbox("Nested")).toBeNull();
+});
+
 afterEach(() => {
     setChatWorkListener(null);
     setRecordWriteListener(null);

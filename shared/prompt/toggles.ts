@@ -37,19 +37,23 @@ export type sidebarToggle =
           options?: string[];
       };
 
-/** `key=label[=type[=options]]` lines; select values are option indices. */
+/**
+ * `key=label[=type[=options]]` lines; select values are option indices. Layout rows need no key:
+ * `=Label=group`, `==groupEnd` and `==divider` are kept, a caption needs only its label.
+ */
 export function parseToggleSyntax(template: string): sidebarToggle[] {
     const toggles: sidebarToggle[] = [];
     for (const line of template.split("\n")) {
         const [key, value, type, option] = line.split("=");
-        if (!key || !value) {
-            continue;
-        }
         if (type === "group") {
             toggles.push({ key, value, type, children: [] });
-        } else if (type === "groupEnd" || type === "divider" || type === "caption") {
+        } else if (type === "groupEnd" || type === "divider") {
             toggles.push({ key, value, type });
-        } else {
+        } else if (type === "caption") {
+            if (value) {
+                toggles.push({ key, value, type });
+            }
+        } else if (key && value) {
             toggles.push({
                 key,
                 value,

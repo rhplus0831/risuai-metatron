@@ -34,6 +34,35 @@ describe("prompt toggle syntax and resolution", () => {
         ]);
     });
 
+    it("keeps keyless group, groupEnd and divider rows and captions only with a label", () => {
+        expect(
+            parseToggleSyntax(
+                [
+                    "=Style=group",
+                    "a=A",
+                    "==groupEnd",
+                    "==divider",
+                    "=Section=divider",
+                    "=Help text=caption",
+                    "==caption",
+                    "named=Named=group",
+                    "b=B",
+                    "==groupEnd",
+                ].join("\n"),
+            ),
+        ).toEqual([
+            { key: "", value: "Style", type: "group", children: [] },
+            { key: "a", value: "A", type: undefined, options: [] },
+            { key: "", value: "", type: "groupEnd" },
+            { key: "", value: "", type: "divider" },
+            { key: "", value: "Section", type: "divider" },
+            { key: "", value: "Help text", type: "caption" },
+            { key: "named", value: "Named", type: "group", children: [] },
+            { key: "b", value: "B", type: undefined, options: [] },
+            { key: "", value: "", type: "groupEnd" },
+        ]);
+    });
+
     it("defaults only defined value toggles and lets the first value definition choose the kind", () => {
         const definitions = [
             "flag=Flag",
