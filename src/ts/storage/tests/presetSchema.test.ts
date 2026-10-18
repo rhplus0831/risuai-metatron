@@ -27,6 +27,7 @@ import {
     PRESET_ROOT_ALIASES,
     presetFieldOwner,
     PROMPT_PRESET_FIELDS,
+    PROMPT_PRESET_LOCAL_FIELDS,
     defaultOoba,
     presetTemplate,
     type ModelPresetField,
@@ -121,6 +122,7 @@ describe("PRESET_DEFAULTS", () => {
         expect(PRESET_FIELDS).not.toContain("apiType");
         const unset = PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined).sort();
         expect(unset).toEqual([
+            "archived",
             "credentialId",
             "koboldURL",
             "localStopStrings",
@@ -133,7 +135,11 @@ describe("PRESET_DEFAULTS", () => {
 
 /** The model preset's and the model profile's fields: never on a prompt preset. */
 const modelFields = new Set<string>([...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS]);
-const promptRecordFields: readonly PresetField[] = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS];
+const promptRecordFields: readonly PresetField[] = [
+    ...PRESET_RECORD_FIELDS,
+    ...PROMPT_PRESET_LOCAL_FIELDS,
+    ...PROMPT_PRESET_FIELDS,
+];
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
 
 describe("normalizePreset", () => {
@@ -186,6 +192,30 @@ describe("normalizePreset", () => {
         expect(a.formatingOrder).not.toBe(b.formatingOrder);
         expect(a.ooba).not.toBe(PRESET_DEFAULTS.ooba);
         expect(a.NAISettings).not.toBe(PRESET_DEFAULTS.NAISettings);
+    });
+
+    // The archive feature (the port of risuai-fastify `ee5382a9a`): `archived` is list metadata the
+    // stored record keeps, with no default, so an existing record without it normalizes to itself.
+    it("keeps a boolean `archived`, drops any other value, and leaves an absent one absent", () => {
+        expect(PRESET_FIELD_KINDS.archived).toBe("boolean");
+        expect(PRESET_DEFAULTS.archived).toBeUndefined();
+        const kept = normalizePreset({ name: "p", archived: true });
+        expect(kept.archived).toBe(true);
+        expect(normalizePreset({ name: "p", archived: false }).archived).toBe(false);
+        for (const value of ["yes", 1, null, {}, []]) {
+            const dropped = normalizePreset({ name: "p", archived: value });
+            expect(Object.hasOwn(dropped, "archived"), JSON.stringify(value)).toBe(false);
+        }
+        expect(Object.hasOwn(normalizePreset({ name: "p" }), "archived")).toBe(false);
+        // Normalizing again changes nothing: a stored archived preset is its own fixed point.
+        expect(normalizePreset(kept)).toEqual(kept);
+        // The collection keeps each preset's own flag.
+        const list = normalizePresets([{ id: "a", archived: true }, { id: "b" }]);
+        expect(list.map((preset) => preset.archived)).toEqual([true, undefined]);
+        expect(Object.hasOwn(list[1], "archived")).toBe(false);
+        // It is no prompt field: never forwarded to a root name, so neither served by `activePreset`.
+        expect(FORWARDED_PRESET_KEYS as readonly string[]).not.toContain("archived");
+        expect(FORWARDED_ROOT_KEYS as readonly string[]).not.toContain("archived");
     });
 
     it("keeps only the canonical fields: extra, credential, and legacy global keys are dropped", () => {
@@ -633,11 +663,21 @@ type NotADatabaseKey = Exclude<ListedKey, keyof Database | "modelCredentials">;
 const everyDatabaseKeyIsListed: [UnlistedDatabaseKey] extends [never] ? true : false = true;
 const everyListedKeyIsADatabaseKey: [NotADatabaseKey] extends [never] ? true : false = true;
 // The three owners partition the schema at the type level too: a field of two, or of none, is `never`.
+// The prompt preset's list metadata (`PROMPT_PRESET_LOCAL_FIELDS`) is the record's, like `name`/`image`.
 type OwnedTwice =
     | Extract<ModelPresetField, PromptPresetField>
     | Extract<ModelProfileField, PromptPresetField>
-    | Extract<ModelPresetField, ModelProfileField>;
-type Unowned = Exclude<PresetField, ModelPresetField | ModelProfileField | PromptPresetField | "name" | "image">;
+    | Extract<ModelPresetField, ModelProfileField>
+    | Extract<(typeof PROMPT_PRESET_LOCAL_FIELDS)[number], PromptPresetField>;
+type Unowned = Exclude<
+    PresetField,
+    | ModelPresetField
+    | ModelProfileField
+    | PromptPresetField
+    | "name"
+    | "image"
+    | (typeof PROMPT_PRESET_LOCAL_FIELDS)[number]
+>;
 const noFieldIsOwnedTwice: [OwnedTwice] extends [never] ? true : false = true;
 const everyFieldIsOwned: [Unowned] extends [never] ? true : false = true;
 
@@ -682,20 +722,27 @@ describe("field-to-resource partition", () => {
     });
 
     it("splits the schema between the three owners: disjoint, exhaustive, in schema order, the design's model and profile tables exactly", () => {
-        // `name` and `image` are the records' own; every other field has exactly one owner.
+        // `name` and `image` are the records' own, and `archived` the prompt preset's list metadata
+        // (no prompt field: not forwarded, not exported); every other field has exactly one owner.
         expect(PRESET_RECORD_FIELDS).toEqual(["name", "image"]);
+        expect(PROMPT_PRESET_LOCAL_FIELDS).toEqual(["archived"]);
         const owned = [...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS, ...PROMPT_PRESET_FIELDS];
         expect(new Set(owned).size).toBe(owned.length);
-        expect([...owned, ...PRESET_RECORD_FIELDS].sort()).toEqual([...PRESET_FIELDS].sort());
+        expect([...owned, ...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_LOCAL_FIELDS].sort()).toEqual(
+            [...PRESET_FIELDS].sort(),
+        );
         expect(PROMPT_PRESET_FIELDS).toEqual(
             PRESET_FIELDS.filter(
                 (field) =>
                     !(MODEL_PRESET_FIELDS as readonly string[]).includes(field) &&
                     !(MODEL_PROFILE_FIELDS as readonly string[]).includes(field) &&
+                    !(PROMPT_PRESET_LOCAL_FIELDS as readonly string[]).includes(field) &&
                     field !== "name" &&
                     field !== "image",
             ),
         );
+        expect(PROMPT_PRESET_FIELDS as readonly string[]).not.toContain("archived");
+        expect(presetFieldOwner("archived")).toBe("prompt");
         for (const field of PRESET_FIELDS) {
             const owner = presetFieldOwner(field);
             if (field === "name" || field === "image") {
@@ -782,7 +829,9 @@ describe("field-to-resource partition", () => {
         }
         expect(MODEL_PRESET_FIELDS).toHaveLength(4);
         expect(MODEL_PROFILE_FIELDS).toHaveLength(36);
-        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 4 - 36 - 2);
+        expect(PROMPT_PRESET_FIELDS).toHaveLength(
+            PRESET_FIELDS.length - 4 - 36 - PRESET_RECORD_FIELDS.length - PROMPT_PRESET_LOCAL_FIELDS.length,
+        );
     });
 
     it("derives the forwarded lists from the owners: 47 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {

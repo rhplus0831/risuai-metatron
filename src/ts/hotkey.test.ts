@@ -115,6 +115,36 @@ describe("preset hotkeys", () => {
         expect(selection.presetId).toBe("c");
     });
 
+    it("count the active presets only, in list order, as the list's active view numbers them", async () => {
+        // The archive feature (risuai-fastify `ee5382a9a` port): an archived preset has no number.
+        settings.presets[1].archived = true;
+        press("2");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("c");
+        expect(alertToast).toHaveBeenLastCalledWith("Changed to Preset: C");
+
+        // The archived one is unreachable by number, and the count is of the active ones.
+        press("3");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("c");
+        expect(alertToast).toHaveBeenCalledTimes(1);
+
+        // A restore puts it back at its list position.
+        settings.presets[1].archived = false;
+        press("2");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("b");
+
+        // Every preset archived: no number picks anything, and the selection stays.
+        for (const preset of settings.presets) {
+            preset.archived = true;
+        }
+        press("1");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("b");
+        expect(alertToast).toHaveBeenCalledTimes(2);
+    });
+
     it("do nothing while the popup editor is open, and work again once it closes", async () => {
         popUpEditorStore.open = true;
         press("2");

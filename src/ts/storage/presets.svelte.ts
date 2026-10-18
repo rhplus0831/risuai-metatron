@@ -32,7 +32,7 @@ import { maxContextOverrideOf } from "../../../shared/sections.ts";
  * (the views write them there directly), so a switch only changes this tab's selection.
  */
 
-/** Adds a copy of prompt preset `id` under a new id. */
+/** Adds a copy of prompt preset `id` under a new id; the copy starts active (never archived). */
 export function copyPreset(id: string) {
     const presets = settings.presets;
     const source = presets.find((preset) => preset.id === id);
@@ -40,6 +40,7 @@ export function copyPreset(id: string) {
         return;
     }
     const copy = plainClone(source);
+    delete copy.archived;
     presets.push(normalizePreset({ ...copy, name: `${copy.name} Copy` }, { id: newPresetId() }));
 }
 
@@ -91,7 +92,7 @@ export function removeModelPreset(id: string): boolean {
 
 /**
  * Replaces the selected prompt preset's settings with `template` (a prebuilt preset), keeping its
- * id, name, and image. The template's model fields are not applied (`normalizePreset` drops them).
+ * id, name, image, and `archived`. The template's model fields are not applied (`normalizePreset` drops them).
  */
 export function applyPresetTemplate(template: Omit<botPreset, "id">) {
     const current = currentPresetRecord();
@@ -101,7 +102,7 @@ export function applyPresetTemplate(template: Omit<botPreset, "id">) {
     const presets = settings.presets;
     const index = presets.findIndex((preset) => preset.id === current.id);
     presets[index] = normalizePreset(
-        { ...plainClone(template), name: current.name, image: current.image },
+        { ...plainClone(template), name: current.name, image: current.image, archived: current.archived },
         { id: current.id },
     );
 }
@@ -332,6 +333,8 @@ export async function importPreset(
     // a prompt preset: the model fields and a `proxyKey` the file carries are ignored
     // (`docs/plan/split-preset.md`). Normalized first, as before: a converted value the file lacks (a
     // `NaN` from arithmetic on a missing parameter) becomes the field's default instead of refusing
-    // the import.
+    // the import. A file's `archived` (another fork exports it) is list metadata of the exporting
+    // install: an imported preset starts active.
+    delete pre.archived;
     return addPreset(normalizePreset(pre));
 }
