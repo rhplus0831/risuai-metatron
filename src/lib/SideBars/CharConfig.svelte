@@ -84,7 +84,6 @@
     const currentChat = $derived(selectedChat());
     let iconRemoveMode = $state(false);
     let viewSubMenu = $state(0);
-    let emos: [string, string][] = $state([]);
     let iconButtonSize = window.innerWidth > 360 ? (24 as const) : (20 as const);
     let tokens = $state({
         desc: 0,
@@ -143,11 +142,14 @@
         matchedAssets?.slice(0, shownAssets) ??
             Array.from({ length: Math.min(shownAssets, assetCount) }, (_, index) => index),
     );
-    let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
-
-    $effect.pre(() => {
-        emos = currentCharacter.emotionImages;
+    // The emotion list pages the same way, reset per character; rows read the live list by index.
+    let shownEmotions = $derived.by(() => {
+        assetsOwnerId;
+        return ASSET_LIST_PAGE;
     });
+    const emotionCount = $derived(currentCharacter.emotionImages?.length ?? 0);
+    const emotionIndices = $derived(Array.from({ length: Math.min(shownEmotions, emotionCount) }, (_, index) => index));
+    let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
 
     $effect.pre(() => {
         const chara = currentCharacter;
@@ -637,32 +639,48 @@
                                 <td colspan="3">{language.noImages}</td>
                             </tr>
                         {:else}
-                            {#each emos as emo, i}
+                            {#each emotionIndices as index}
                                 <tr>
-                                    {#await getCharImage(emo[1], "plain")}
-                                        <td class="font-medium truncate w-1/3"></td>
-                                    {:then im}
-                                        <td class="font-medium truncate w-1/3"
-                                            ><img src={im} alt="img" class="w-full" /></td
-                                        >
-                                    {/await}
+                                    <td class="font-medium truncate w-1/3">
+                                        {#if settings.ui.hideAllImages}
+                                            <img src="/none.webp" alt="img" class="w-full" />
+                                        {:else}
+                                            <LazyFileSrc path={currentCharacter.emotionImages[index][1]}>
+                                                {#snippet children(src)}
+                                                    <img {src} alt="img" class="w-full" />
+                                                {/snippet}
+                                            </LazyFileSrc>
+                                        {/if}
+                                    </td>
                                     <td class="font-medium truncate w-1/2">
                                         <TextInput
                                             marginBottom
                                             size="lg"
-                                            bind:value={currentCharacter.emotionImages[i][0]}
+                                            bind:value={currentCharacter.emotionImages[index][0]}
                                         />
                                     </td>
                                     <td>
                                         <button
                                             class="font-medium cursor-pointer hover:text-green-500"
                                             onclick={() => {
-                                                rmCharEmotion(currentCharacter.chaId, i);
+                                                rmCharEmotion(currentCharacter.chaId, index);
                                             }}><TrashIcon /></button
                                         >
                                     </td>
                                 </tr>
                             {/each}
+                            {#if emotionCount > shownEmotions}
+                                <tr>
+                                    <td colspan="3">
+                                        <Button
+                                            className="w-full mt-2"
+                                            onclick={() => (shownEmotions += ASSET_LIST_PAGE)}
+                                        >
+                                            {language.loadMore}
+                                        </Button>
+                                    </td>
+                                </tr>
+                            {/if}
                         {/if}
                     </tbody>
                 </table>
