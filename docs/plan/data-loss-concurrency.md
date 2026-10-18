@@ -56,11 +56,7 @@ frame that announced it, and a feed `hello` drops them all. 5b rebases only adde
 modelPresets, modelProfiles; appended after the server's list), a changed, removed or
 reordered saved item still conflicts; `addImportedModule` shows `successImport` after
 `flushResources({ scope })`, `moduleImportDiscarded`/`moduleImportUnconfirmed` otherwise.
-Known interaction found at this point: `resourceSyncHydration.test.ts` "handles an ordinary
-conflict and a generating refusal in one batch" fails on the base since 2a landed over 4a
-(`recoverFromConflict` shows the reload notice once for the dropped locked edits and once for
-the record reload; the test's alert mock does not latch as `alertReloadNotice` does). The fix
-is assigned to 4b, which owns that notice path.
+Known interaction found at this point: `resourceSyncHydration.test.ts` "handles an ordinary conflict and a generating refusal in one batch" failed on the base once 2a landed over 4a (`recoverFromConflict` showed the reload notice once for the dropped locked edits and once for the record reload). 4b fixed it: `recoverFromConflict` now shows the notice once in a `finally`, when the recovery discarded anything. 4b's decisions: no "notice owed" flag crosses cycles (a `try/finally` around the recovery shows the notice in the same run even when a read throws; the remaining `hydrate` entries are the next cycle's stage, which notices its own discards); the post-acknowledgement membership refresh is a separate `listRefresh` set applied through `applyRemoteCollection` with `keepPendingOrder` (this tab's order kept, new chats appended, the reorder held back by `holdOrders` until the refresh and then sent on the new revision), and a kept chat with a held revision missing from the server's list discards the reorder with the report and notice; a discarded reorder is reported as `chats/<chaId>`, the order-obligation key; a reorder whose retry conflicted is settled without a report (its answer may have been lost); a queued chat delete that another tab's character deletion fulfils is settled silently; the two tests the slice placed in `resourceSync.test.ts` live in `resourceSyncChats.test.ts` (that file's fake server has no chats).
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -562,9 +558,7 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Landed slices are in the Status line. Next: 4b (both sequences; it also fixes the failing
-hydration test above), then 6c (after 4b lands, same adapter file), 6a after 4b, 7b after 6c,
-6b after 6a, 6d last. Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Next: 6a and 6c in parallel (both after 4b; 6a owns `server/src/data/chatStore.ts`, `shared/chats.ts` and `chatStore.svelte.ts`, 6c owns `resourceSync.svelte.ts`), then 7b after 6c, 6b after 6a, 6d last. Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
