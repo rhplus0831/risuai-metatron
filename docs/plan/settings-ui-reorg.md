@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
