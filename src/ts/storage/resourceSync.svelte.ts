@@ -2052,11 +2052,15 @@ function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscar
  * the remote-change listeners (caches derived from the record). Not for a create, a delete, another
  * kind, a character whose reload already waits for its generation, or a taken field the mirror object
  * only inherits (`assignsInherited`). A `pluginStorage` record is merged key by key instead
- * (`mergePluginStorageChange`), a create included.
+ * (`mergePluginStorageChange`), and an item list of `ITEM_LIST_MERGE_KINDS` item by item
+ * (`mergeItemListChange`: this client's added items over the server's list), a create included.
  */
 function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     if (item.kind === RESOURCE_KIND.pluginStorage) {
         return mergePluginStorageChange(item, key);
+    }
+    if (ITEM_LIST_MERGE_KINDS.has(item.kind)) {
+        return mergeItemListChange(item, key);
     }
     const isCharacter = item.kind === RESOURCE_KIND.characters;
     if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
@@ -2174,6 +2178,96 @@ function mergePluginStorageChange(item: RemoteItem, key: string): boolean {
     const taken = !isEqual(merged, JSON.parse(projected));
     applyRaw(RESOURCE_KIND.pluginStorage, merged);
     adoptMergedBase(item, item.revision, key, taken);
+    return true;
+}
+
+/**
+ * The item lists whose items are independent records addressed by their id, so an item this client
+ * added can go over another writer's list (`mergeItemAdds`). Other lists that pass `itemIds` are not
+ * here: `characterOrder`'s folders hold character membership, and `loreBook`, `plugins`, `hotkeys`,
+ * and `authRefreshes` are addressed by page, name, action, or URL, whatever ids their items carry.
+ */
+const ITEM_LIST_MERGE_KINDS = new Set<string>([
+    RESOURCE_KIND.modules,
+    RESOURCE_KIND.presets,
+    COLLECTION_KIND.personas,
+    COLLECTION_KIND.credentials,
+    COLLECTION_KIND.modelPresets,
+    COLLECTION_KIND.modelProfiles,
+]);
+
+/**
+ * An item list merged from a conflict, or null when it cannot be: the server's list (its items and
+ * order) with the items this client added (an id neither the saved base nor the server's list has)
+ * after it, in this client's order. Every other change of this client must be one the server already
+ * holds: each saved item as saved or as the server has it (an edit or removal only the server made is
+ * taken; one this client made conflicts, even of an item the server left alone), the saved items in
+ * the saved order or the server's, and an item both added under one id equal on both sides. All three
+ * lists need unique item ids (`itemIds`).
+ */
+function mergeItemAdds(base: unknown, theirs: unknown, ours: unknown): Record<string, unknown>[] | null {
+    const [baseIds, theirIds, ourIds] = [itemIds(base), itemIds(theirs), itemIds(ours)];
+    if (!baseIds || !theirIds || !ourIds) {
+        return null;
+    }
+    const byId = (list: unknown, ids: string[]) =>
+        new Map(ids.map((id, index) => [id, (list as Record<string, unknown>[])[index]]));
+    const [saved, remote, local] = [byId(base, baseIds), byId(theirs, theirIds), byId(ours, ourIds)];
+    const valueOf = (items: Map<string, unknown>, id: string) => (items.has(id) ? items.get(id) : ABSENT);
+    for (const id of baseIds) {
+        const value = valueOf(local, id);
+        if (!isEqual(value, valueOf(saved, id)) && !isEqual(value, valueOf(remote, id))) {
+            return null;
+        }
+    }
+    const kept = ourIds.filter((id) => saved.has(id));
+    const savedOrder = baseIds.filter((id) => local.has(id));
+    const remoteOrder = theirIds.filter((id) => saved.has(id) && local.has(id));
+    if (!isEqual(kept, savedOrder) && !isEqual(kept, remoteOrder)) {
+        return null;
+    }
+    const added: Record<string, unknown>[] = [];
+    for (const id of ourIds) {
+        if (saved.has(id)) {
+            continue;
+        }
+        if (remote.has(id)) {
+            if (!isEqual(local.get(id), remote.get(id))) {
+                return null;
+            }
+            continue;
+        }
+        added.push(local.get(id)!);
+    }
+    return [...(theirs as Record<string, unknown>[]), ...added];
+}
+
+/**
+ * A conflicting item list of `ITEM_LIST_MERGE_KINDS` (`mergeItemAdds`): a module this tab imported
+ * while another tab renamed a different one keeps both. The merge goes into the mirror raw (the
+ * selections are resolved against it, `applyToMirror`), and the key stays dirty (`adoptMergedBase`),
+ * so the next cycle sends the added items on the server's revision: no discard, no notice. A list
+ * both tabs created merges against an empty base.
+ */
+function mergeItemListChange(item: RemoteItem, key: string): boolean {
+    const projected = projectRecord(item.kind, item.id);
+    if (item.revision === null || projected === undefined) {
+        return false;
+    }
+    const base = persisted.get(key);
+    let local: unknown;
+    let merged: Record<string, unknown>[] | null;
+    try {
+        local = JSON.parse(projected);
+        merged = mergeItemAdds(base ? JSON.parse(base.text) : [], item.data, local);
+    } catch {
+        return false;
+    }
+    if (!merged) {
+        return false;
+    }
+    applyToMirror(item.kind, item.id, merged);
+    adoptMergedBase(item, item.revision, key, !isEqual(merged, local));
     return true;
 }
 

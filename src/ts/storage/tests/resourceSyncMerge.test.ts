@@ -971,3 +971,201 @@ describe("the pluginStorage record every plugin shares (data-loss plan slice 5a)
         expect(last).toEqual([{ pluginStorage: ["k"], localPluginStorage: [], customStorage: false }]);
     });
 });
+
+// Data-loss plan slice 5b (`mergeItemAdds`, `ITEM_LIST_MERGE_KINDS`, persistence.md Save step 5): a
+// conflicting item list keeps the items this client added over the server's list (its items and
+// order), appended in this client's order, with no discard and no notice; every other local change
+// of the list (an edit, removal, or reorder of a saved item, an add under an id the server added
+// with another value, a list without valid ids) conflicts as before, and so does a list of a kind
+// outside the set, whatever ids its items carry.
+describe("item lists: this tab's adds over another tab's list (data-loss plan slice 5b)", () => {
+    type CollectionStore = typeof import("../collectionStore.svelte");
+    const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+    const names = (list: unknown) => (plain(list) as any[]).map((entry) => entry.name);
+    const presets = [
+        { id: "pa", name: "p1" },
+        { id: "pb", name: "p2" },
+    ];
+    /** Boots with two saved presets `pa` and `pb`, and returns the collection store of the graph. */
+    async function bootPresets(prepare?: (fake: FakeResourceServer) => void) {
+        const h = await boot({
+            prepare: (fake) => {
+                fake.set("presets", "main", presets);
+                prepare?.(fake);
+            },
+        });
+        const collection: CollectionStore = await import("../collectionStore.svelte");
+        return { ...h, collection };
+    }
+    /** Nothing more is written: the merged write was the last one, no echo of the server's copy. */
+    async function idle(fake: FakeResourceServer, sync: Sync) {
+        const batches = fake.batchCount();
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.batchCount()).toBe(batches);
+    }
+    const noNotice = () => {
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    };
+    /** The conflict replaced the local list with the server's, the discard reported and the notice shown. */
+    const discarded = async (h: { fake: FakeResourceServer; sync: Sync; settings: any }, kind: string) => {
+        expect((await h.sync.flushResources()).discarded).toEqual([`${kind}/main`]);
+        expect(plain(h.settings[kind])).toEqual(h.fake.data(kind, "main"));
+        expect(h.sync.heldRecordRevision(kind, "main")).toBe(h.fake.get(kind, "main")!.revision);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        // The rejected batch only: nothing of this tab's was written.
+        expect(h.fake.batchCount()).toBe(1);
+    };
+
+    it("presets: an added preset over another tab's rename of a saved one: both kept, written once on the server's revision, no discard, no notice, the listener told, no echo", async () => {
+        const { fake, sync, settings, remote, changed, collection } = await bootPresets();
+        remote("presets", "main", (data) => (data[1].name = "theirs"));
+        const id = collection.addPreset({ name: "mine" });
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(names(fake.data("presets", "main"))).toEqual(["p1", "theirs", "mine"]);
+        expect(fake.data("presets", "main")[2].id).toBe(id);
+        expect(names(settings.presets)).toEqual(["p1", "theirs", "mine"]);
+        expect(plain(settings.presets)).toEqual(fake.data("presets", "main"));
+        expect(sync.heldRecordRevision("presets", "main")).toBe(fake.get("presets", "main")!.revision);
+        noNotice();
+        expect(changed).toEqual(["presets/main"]);
+        // The rejected batch and the merged write.
+        expect(fake.batchCount()).toBe(2);
+        await idle(fake, sync);
+    });
+
+    it("personas: both tabs add (different ids) and the server removes a saved one this tab left alone: the server's list, then this tab's add; the selection follows by id", async () => {
+        const { fake, sync, settings, remote, changed } = await boot({
+            prepare: (fake) =>
+                fake.set("personas", "main", [
+                    { id: "ua", name: "A", icon: "", personaPrompt: "", note: "" },
+                    { id: "ub", name: "B", icon: "", personaPrompt: "", note: "" },
+                ]),
+        });
+        const collection: CollectionStore = await import("../collectionStore.svelte");
+        const selection = await import("../selection.svelte");
+        remote("personas", "main", (data) => {
+            data.splice(0, 1);
+            data.push({ id: "theirs", name: "Theirs", icon: "", personaPrompt: "", note: "" });
+        });
+        const id = collection.addPersona({ name: "Mine" });
+        selection.selectPersona(id);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(names(fake.data("personas", "main"))).toEqual(["B", "Theirs", "Mine"]);
+        expect(names(settings.personas)).toEqual(["B", "Theirs", "Mine"]);
+        expect(plain(settings.personas)[2].id).toBe(id);
+        expect(selection.selection.personaId).toBe(id);
+        expect(sync.heldRecordRevision("personas", "main")).toBe(fake.get("personas", "main")!.revision);
+        noNotice();
+        expect(changed).toEqual(["personas/main"]);
+        expect(fake.batchCount()).toBe(2);
+        await idle(fake, sync);
+    });
+
+    it("appends several adds in this tab's order, wherever this tab inserted them, after the server's list in the server's order", async () => {
+        const { fake, sync, settings, remote } = await bootPresets();
+        // The other tab reversed the saved items and renamed one; this tab put `x` first and `y` last.
+        remote("presets", "main", (data) => data.reverse() && (data[0].name = "theirs"));
+        settings.presets.unshift({ id: "x", name: "X" } as any);
+        settings.presets.push({ id: "y", name: "Y" } as any);
+        expect(names(settings.presets)).toEqual(["X", "p1", "p2", "Y"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(plain(settings.presets)).toEqual([
+            { id: "pb", name: "theirs" },
+            { id: "pa", name: "p1" },
+            { id: "x", name: "X" },
+            { id: "y", name: "Y" },
+        ]);
+        expect(fake.data("presets", "main")).toEqual(plain(settings.presets));
+        noNotice();
+        expect(fake.batchCount()).toBe(2);
+        await idle(fake, sync);
+    });
+
+    it("takes an item both tabs added under one id with equal values once, with nothing written back", async () => {
+        const { fake, sync, settings, remote, changed } = await bootPresets();
+        remote("presets", "main", (data) => {
+            data[0].name = "theirs";
+            data.push({ id: "x", name: "X" });
+        });
+        settings.presets.push({ id: "x", name: "X" } as any);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(plain(settings.presets)).toEqual([
+            { id: "pa", name: "theirs" },
+            { id: "pb", name: "p2" },
+            { id: "x", name: "X" },
+        ]);
+        expect(fake.data("presets", "main")).toEqual(plain(settings.presets));
+        expect(sync.heldRecordRevision("presets", "main")).toBe(fake.get("presets", "main")!.revision);
+        noNotice();
+        expect(changed).toEqual(["presets/main"]);
+        // The merge equals the server's list: the rejected batch was the only write.
+        expect(fake.batchCount()).toBe(1);
+        await idle(fake, sync);
+    });
+
+    it("conflicts for an item both tabs added under one id with different values", async () => {
+        const h = await bootPresets();
+        h.remote("presets", "main", (data) => data.push({ id: "x", name: "X" }));
+        h.settings.presets.push({ id: "x", name: "Other" } as any);
+        await discarded(h, "presets");
+        expect(names(h.settings.presets)).toEqual(["p1", "p2", "X"]);
+    });
+
+    it.each(["edit", "remove", "reorder"])(
+        "conflicts for this tab's %s of a saved item (the server changed only another item), losing the add alongside it",
+        async (change) => {
+            const h = await bootPresets();
+            const { settings, remote, collection } = h;
+            remote("presets", "main", (data) => (data[1].name = "theirs"));
+            if (change === "edit") {
+                settings.presets[0].name = "mine";
+            } else if (change === "remove") {
+                settings.presets.splice(0, 1);
+            } else {
+                settings.presets = [plain(settings.presets[1]), plain(settings.presets[0])];
+            }
+            collection.addPreset({ name: "added" });
+            await discarded(h, "presets");
+            expect(names(settings.presets)).toEqual(["p1", "theirs"]);
+        },
+    );
+
+    it("keeps a local removal or reorder the server made too, and a server-only edit of a saved item", async () => {
+        const { fake, sync, settings, remote, collection } = await bootPresets();
+        // Both tabs removed `pa` and the server renamed `pb`; this tab adds one.
+        remote("presets", "main", (data) => {
+            data.splice(0, 1);
+            data[0].name = "theirs";
+        });
+        settings.presets.splice(0, 1);
+        collection.addPreset({ name: "added" });
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(names(settings.presets)).toEqual(["theirs", "added"]);
+        expect(fake.data("presets", "main")).toEqual(plain(settings.presets));
+        noNotice();
+        expect(fake.batchCount()).toBe(2);
+        await idle(fake, sync);
+    });
+
+    it.each([
+        ["missing", { name: "no id" }],
+        ["repeated", { id: "pa", name: "dup" }],
+    ])("conflicts as before when a local item's id is %s", async (_case, item) => {
+        const h = await bootPresets();
+        h.remote("presets", "main", (data) => (data[1].name = "theirs"));
+        h.settings.presets.push(item as any);
+        await discarded(h, "presets");
+        expect(names(h.settings.presets)).toEqual(["p1", "theirs"]);
+    });
+
+    it("conflicts as before for a kind outside the set (plugins), even for disjoint adds with valid ids", async () => {
+        const h = await boot();
+        const collection: CollectionStore = await import("../collectionStore.svelte");
+        h.remote("plugins", "main", (data) => data.push({ id: "q", name: "theirs" }));
+        collection.upsertPlugin({ id: "p", name: "mine" });
+        await discarded(h, "plugins");
+        expect(names(h.settings.plugins)).toEqual(["theirs"]);
+    });
+});

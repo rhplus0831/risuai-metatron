@@ -23,8 +23,14 @@ import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
-import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
+import {
+    alertStore as currentAlertStore,
+    HideIconStore,
+    moduleBackgroundEmbedding,
+    ReloadGUIPointer,
+} from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
+import { beginMutationScope, flushResources, GenerationBlockedError } from "../storage/resourceSync.svelte";
 import { get } from "svelte/store";
 import { moduleMembershipRevision, moduleAssetsRevision, moduleFieldPlain } from "../storage/records.svelte";
 import { untrack } from "svelte";
@@ -444,6 +450,54 @@ function moduleImportErrorMessage(error: unknown): string {
     });
 }
 
+/**
+ * Adds an imported module and waits until the server holds it: the save runs at once
+ * (`flushResources` in a mutation scope begun before the add), with `moduleImportSaving` in the wait
+ * alert. True when the module is saved; replaces only its own wait alert with success or clears it.
+ * A conflict that replaced this tab's modules with another writer's (`modules/main` in the scope's
+ * `discarded`: a change of the same module, or any change of this tab's other than adding the module)
+ * dropped it:
+ * `moduleImportDiscarded`. A flush that fails (a generation this tab's other changes wait for, a
+ * refused or unreachable save) is `moduleImportUnconfirmed`; the module stays in the list unless a
+ * conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails.
+ * The flush saves every pending change, not only the module.
+ */
+async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
+    const scope = beginMutationScope();
+    const id = addModule(module);
+    alertWait(language.moduleImportSaving);
+    let discarded: string[];
+    try {
+        ({ discarded } = await flushResources({ scope }));
+    } catch (error) {
+        if (!settings.modules.some((entry) => entry.id === id)) {
+            alertError(language.moduleImportDiscarded);
+            return false;
+        }
+        const reason =
+            error instanceof GenerationBlockedError
+                ? language.chatGenerating
+                : error instanceof Error
+                  ? error.message
+                  : String(error);
+        alertError(language.moduleImportUnconfirmed.replace("{{error}}", reason));
+        return false;
+    }
+    if (discarded.includes("modules/main")) {
+        alertError(language.moduleImportDiscarded);
+        return false;
+    }
+    const alert = get(currentAlertStore);
+    if (alert.type === "wait" && alert.msg === language.moduleImportSaving) {
+        if (announce) {
+            alertNormal(language.successImport);
+        } else {
+            alertClear();
+        }
+    }
+    return true;
+}
+
 export async function importModule() {
     const file = await selectSingleFileHandle(["json", "lorebook", "risum", "charx"]);
     if (!file) {
@@ -468,8 +522,7 @@ export async function importModule() {
             }
             const module = convertCharacterToModule(char);
             if (await prepareModuleImport(module)) {
-                addModule(module);
-                alertNormal(language.successImport);
+                await addImportedModule(module, { announce: true });
             }
         } catch (error) {
             console.error(error);
@@ -484,8 +537,7 @@ export async function importModule() {
             if (!module) {
                 return false;
             }
-            addModule(module);
-            alertNormal(language.successImport);
+            await addImportedModule(module, { announce: true });
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
@@ -509,7 +561,7 @@ export async function importModule() {
                 }
             }
             if (await prepareModuleImport(importData)) {
-                addModule(importData);
+                await addImportedModule(importData, { announce: false });
             }
             return;
         }
@@ -524,7 +576,7 @@ export async function importModule() {
                 id: v4(),
             };
             if (await prepareModuleImport(importModule)) {
-                addModule(importModule);
+                await addImportedModule(importModule, { announce: false });
             }
             return;
         }
@@ -537,7 +589,7 @@ export async function importModule() {
                 id: v4(),
             };
             if (await prepareModuleImport(importModule)) {
-                addModule(importModule);
+                await addImportedModule(importModule, { announce: false });
             }
             return;
         }
@@ -549,7 +601,7 @@ export async function importModule() {
                 regex: regexs,
                 id: v4(),
             };
-            addModule(importModule);
+            await addImportedModule(importModule, { announce: false });
             return;
         }
     } catch (error) {

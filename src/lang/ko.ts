@@ -1132,6 +1132,10 @@ export const languageKorean = {
     editModule: "모듈 수정",
     importModule: "모듈 임포트",
     moduleImportUploading: "모듈 파일을 업로드하는 중... 큰 파일은 몇 분 걸릴 수 있습니다.",
+    moduleImportSaving: "가져온 모듈을 저장하는 중...",
+    moduleImportDiscarded:
+        "다른 탭이나 기기에서 같은 때에 모듈을 바꿔 그쪽 버전이 유지되었습니다. 가져온 모듈은 추가되지 않았으니 다시 가져오세요.",
+    moduleImportUnconfirmed: "모듈을 추가했지만 저장되었는지 확인하지 못했습니다 ({{error}}).",
     moduleImportFileTooLarge: "모듈 파일이 서버가 받을 수 있는 크기보다 큽니다.",
     moduleImportAssetTooLarge: "모듈 파일의 에셋 중 서버가 받을 수 있는 크기보다 큰 것이 있습니다.",
     moduleImportBusy: "서버가 바쁩니다. 다른 임포트가 진행 중일 수 있습니다. 나중에 다시 시도하세요.",

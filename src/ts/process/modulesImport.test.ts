@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
@@ -15,17 +16,28 @@ import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 // whose converted module `addModule` refuses reports `noData` only, never success, and inserts nothing
 // (Astra challenge point 1).
 
-const { server, alerts, picker } = vi.hoisted(() => ({
-    server: { current: null as any },
-    alerts: {
-        error: vi.fn(),
-        normal: vi.fn(),
+const { server, alerts, picker } = vi.hoisted(() => {
+    // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
+    // (`boot` installs it in `current`): `addImportedModule` reads it back to replace only its own
+    // wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls for the assertions.
+    const alerts = {
+        current: null as null | { set: (data: { type: string; msg: string }) => void },
+        show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),
+        error: vi.fn((msg: unknown) => alerts.show("error")(msg)),
+        normal: vi.fn((msg: unknown) => alerts.show("normal")(msg)),
+        wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
+        clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
+        reload: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
         store: { set: vi.fn(), subscribe: vi.fn() },
-    },
-    picker: { file: null as { name: string; data: Uint8Array } | null },
-}));
+    };
+    return {
+        server: { current: null as any },
+        alerts,
+        picker: { file: null as { name: string; data: Uint8Array } | null },
+    };
+});
 
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -36,13 +48,14 @@ vi.mock("../alert", () => ({
     alertNormal: alerts.normal,
     alertNormalWait: alerts.normalWait,
     alertConfirm: alerts.confirm,
+    alertReloadNotice: alerts.reload,
     alertStore: alerts.store,
-    alertWait: vi.fn(),
+    alertWait: alerts.wait,
     alertInput: vi.fn(async () => ""),
     alertSelect: vi.fn(async () => ""),
     alertAddCharacter: vi.fn(),
     alertCardExport: vi.fn(),
-    alertClear: vi.fn(),
+    alertClear: alerts.clear,
     alertModuleSelect: vi.fn(),
     alertMd: vi.fn(),
     waitAlert: vi.fn(),
@@ -112,6 +125,12 @@ async function boot() {
     const modules = await import("./modules");
     const cards = await import("../characterCards");
     const { settings, sync, record } = booted;
+    alerts.current = booted.stores.alertStore;
+    /** The alert on screen (the booted graph's `alertStore`), as `{ type, msg }`. */
+    const shown = () => {
+        const { type, msg } = get(booted.stores.alertStore);
+        return { type, msg };
+    };
     const list = () => plain(settings.modules) as any[];
     /** Imports `file` and returns the module added (the only new entry), checked on the server after a cycle. */
     const imported = async (file: { name: string; data: Uint8Array }) => {
@@ -126,7 +145,7 @@ async function boot() {
         return { module: added[0], result };
     };
     const order = () => plain(settings.characterOrder) as unknown[];
-    return { ...booted, modules, cards, list, imported, order };
+    return { ...booted, modules, cards, list, imported, order, shown };
 }
 
 // The first boot compiles the module graph; done once here so no test pays for it, in the
@@ -149,6 +168,7 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     picker.file = null;
+    alerts.current = null;
 });
 
 afterEach(() => {
@@ -380,6 +400,214 @@ describe("a CharX whose converted module is refused", () => {
         expect(mirrorText()).toBe(mirror);
         await sync.flushResources();
         expect(record("modules")).toEqual(before);
+    });
+});
+
+// Data-loss plan slice 5b: `importModule` adds through `addImportedModule`, which flushes the save
+// in a mutation scope and alerts only after the acknowledgement: `successImport` (`.risum`, CharX) or
+// a cleared wait alert (the JSON kinds) while its own `moduleImportSaving` wait alert is still on
+// screen; `moduleImportDiscarded` when a conflict replaced this tab's modules (also when the flush
+// fails afterwards); `moduleImportUnconfirmed` when the flush fails with the module still listed.
+describe("the import alert waits for the acknowledgement (data-loss plan slice 5b)", () => {
+    const names = (list: any[]) => list.map((entry) => entry.name);
+    /**
+     * Whether `alertClear` ran after the last `moduleImportSaving` wait alert (the `.risum` upload
+     * clears its own progress alert before the add, which is not the helper's clear).
+     */
+    const clearedAfterSaving = () => {
+        const saving = alerts.wait.mock.calls.flatMap((call, index) =>
+            call[0] === language.moduleImportSaving ? [alerts.wait.mock.invocationCallOrder[index]] : [],
+        );
+        expect(saving.length).toBeGreaterThan(0);
+        const last = Math.max(...saving);
+        return alerts.clear.mock.invocationCallOrder.some((order) => order > last);
+    };
+    /** A `.risum` of a module named `name` (the dialog's announcing branch). */
+    const risum = async (modules: Awaited<ReturnType<typeof boot>>["modules"], name: string) => ({
+        name: `${name}.risum`,
+        data: await modules.exportModuleLegacy(
+            { id: "file-id", name, description: "" },
+            { saveData: false, alertEnd: false },
+        ),
+    });
+    /** A native module JSON (the dialog's silent branch). */
+    const json = (name: string) => ({
+        name: `${name}.json`,
+        data: encode({ type: "risuModule", name, id: "old", description: "", lorebook: [] }),
+    });
+    /** Routes every request through the real server, with `around` run per request (a hook before, or a hold after, the answer). */
+    const intercept = (around: (url: string, answer: () => Promise<Response>) => Promise<Response>) => {
+        const realFetch = server.current.fetch.bind(server.current) as (
+            url: string,
+            init?: RequestInit,
+        ) => Promise<Response>;
+        return vi
+            .spyOn(server.current, "fetch")
+            .mockImplementation((url: string, init?: RequestInit) => around(url, () => realFetch(url, init)));
+    };
+    /** Saves a module `m0` so a later conflict has a saved item to be about. */
+    const saved = async (h: Awaited<ReturnType<typeof boot>>) => {
+        const id = h.collectionStore.addModule({ id: "m0", name: "m0", lorebook: [] });
+        await h.sync.flushResources();
+        h.fake.requests.length = 0;
+        return id;
+    };
+    /** Another tab's write of the server's modules: `change` applied to the stored list. */
+    const remote = (fake: any, change: (list: any[]) => void) => {
+        const list = JSON.parse(JSON.stringify(fake.record("modules", "main").data));
+        change(list);
+        fake.set("modules", "main", list);
+    };
+
+    it("shows successImport only once the batch is acknowledged: the saving wait alert meanwhile, one batch, the module on the server", async () => {
+        const h = await boot();
+        const { modules, list, record, fake, shown } = h;
+        picker.file = await risum(modules, "Waited");
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        intercept(async (url, answer) => {
+            const response = await answer();
+            if (url === "/api/resources/batch") {
+                await held;
+            }
+            return response;
+        });
+        let settled = false;
+        const importing = modules.importModule().finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(2_000);
+        // The server applied the batch; its answer is held: the module is listed, nothing announced yet.
+        expect(settled).toBe(false);
+        expect(names(list())).toEqual(["Waited"]);
+        expect(names(record("modules"))).toEqual(["Waited"]);
+        expect(shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(clearedAfterSaving()).toBe(false);
+        release();
+        await importing;
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+        expect(shown()).toEqual({ type: "normal", msg: language.successImport });
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(fake.batchCount()).toBe(1);
+    });
+
+    it("a JSON import stays silent: its wait alert is cleared after the acknowledgement, no success alert", async () => {
+        const { modules, list, record, shown } = await boot();
+        picker.file = json("Quiet");
+        await modules.importModule();
+        expect(names(list())).toEqual(["Quiet"]);
+        expect(names(record("modules"))).toEqual(["Quiet"]);
+        expect(alerts.wait).toHaveBeenCalledWith(language.moduleImportSaving);
+        expect(alerts.clear).toHaveBeenCalledTimes(1);
+        expect(shown()).toEqual({ type: "none", msg: "" });
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("an import alone survives another tab's rename of a different module: both saved, success announced, no notice", async () => {
+        const h = await boot();
+        const { modules, list, record, fake, sync } = h;
+        await saved(h);
+        remote(fake, (modules) => (modules[0].name = "theirs"));
+        picker.file = await risum(modules, "Mine");
+        await modules.importModule();
+        expect(names(list())).toEqual(["theirs", "Mine"]);
+        expect(names(record("modules"))).toEqual(["theirs", "Mine"]);
+        expect(sync.heldRecordRevision("modules", "main")).toBe(fake.record("modules", "main")!.revision);
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.reload).not.toHaveBeenCalled();
+        // The rejected batch and the merged retry.
+        expect(fake.batchCount()).toBe(2);
+    });
+
+    it("a conflict that discards this tab's modules (an unsent edit of a saved module alongside the import) reports moduleImportDiscarded, never success", async () => {
+        const h = await boot();
+        const { modules, list, record, fake, collectionStore } = h;
+        const m0 = await saved(h);
+        collectionStore.updateModule(m0, { name: "mine" });
+        remote(fake, (modules) => (modules[0].name = "theirs"));
+        picker.file = await risum(modules, "Lost");
+        await modules.importModule();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(clearedAfterSaving()).toBe(false);
+        expect(alerts.reload).toHaveBeenCalledTimes(1);
+        expect(names(list())).toEqual(["theirs"]);
+        expect(names(record("modules"))).toEqual(["theirs"]);
+    });
+
+    it("a discard followed by a failing flush (another record's save) still reports the discard, not an unconfirmed save", async () => {
+        const h = await boot();
+        const { modules, list, record, fake, sync, collectionStore } = h;
+        const m0 = await saved(h);
+        collectionStore.updateModule(m0, { name: "mine" });
+        collectionStore.addPreset({ name: "p3" });
+        remote(fake, (modules) => (modules[0].name = "theirs"));
+        // The first batch (modules and presets) conflicts; the presets retry fails.
+        let batches = 0;
+        intercept(async (url, answer) => {
+            if (url === "/api/resources/batch" && ++batches === 2) {
+                return Response.json({ error: "down" }, { status: 503 });
+            }
+            return answer();
+        });
+        picker.file = await risum(modules, "Lost");
+        await modules.importModule();
+        expect(batches).toBe(2);
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(names(list())).toEqual(["theirs"]);
+        expect(names(record("modules"))).toEqual(["theirs"]);
+        // The preset is saved by the ordinary retry.
+        await vi.advanceTimersByTimeAsync(35_000);
+        await sync.flushResources();
+        expect(names(record("presets"))).toContain("p3");
+    });
+
+    it("a failed flush with the module still listed reports moduleImportUnconfirmed with the reason; the module is saved later", async () => {
+        const h = await boot();
+        const { modules, list, record, fake, sync } = h;
+        fake.failNext = { status: 0, times: 1, match: (path: string) => path === "/api/resources/batch" };
+        picker.file = await risum(modules, "Unconfirmed");
+        await modules.importModule();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+            language.moduleImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
+        );
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(names(list())).toEqual(["Unconfirmed"]);
+        expect(record("modules") ?? []).toEqual([]);
+        await vi.advanceTimersByTimeAsync(35_000);
+        await sync.flushResources();
+        expect(names(record("modules"))).toEqual(["Unconfirmed"]);
+    });
+
+    it("keeps an error alert that appeared while the import waited: no success alert and no clear over it", async () => {
+        const { modules, list, record, fake, shown } = await boot();
+        // An unrelated failure alerted during the save (as a refused credential write would be).
+        intercept(async (url, answer) => {
+            const response = await answer();
+            if (url === "/api/resources/batch") {
+                alerts.error("unrelated failure");
+            }
+            return response;
+        });
+        picker.file = await risum(modules, "Announced");
+        await modules.importModule();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(clearedAfterSaving()).toBe(false);
+        expect(shown()).toEqual({ type: "error", msg: "unrelated failure" });
+        expect(names(list())).toEqual(["Announced"]);
+        expect(names(record("modules"))).toEqual(["Announced"]);
+
+        alerts.error.mockClear();
+        picker.file = json("Silent");
+        await modules.importModule();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(clearedAfterSaving()).toBe(false);
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith("unrelated failure");
+        expect(shown()).toEqual({ type: "error", msg: "unrelated failure" });
+        expect(names(record("modules"))).toEqual(["Announced", "Silent"]);
+        expect(fake.batchCount()).toBe(2);
     });
 });
 

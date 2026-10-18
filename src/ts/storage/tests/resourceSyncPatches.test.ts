@@ -838,7 +838,7 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(0);
         noNotice();
     }, 20_000);
-    it("leaves a patch alone while this tab has an unsent module change; the save then conflicts and reloads with the notice (modules have no merge)", async () => {
+    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts, data-loss plan slice 5b)", async () => {
         const { fake, sync, settings, changed, record, reads, patchModules, agree } = await boot();
         settings.modules[2].name = "mine";
         await tick();
@@ -856,6 +856,116 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(1);
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
+    }, 20_000);
+    // Data-loss plan slice 5b (`mergeItemAdds`, persistence.md Save step 5): an item this tab added
+    // goes over another tab's list; the feed patch still waits behind the unsent add, and the
+    // conflict's recovery rebuilds the server's record from it and merges.
+    it("rebases an unsent module add over another tab's rename of a different module: both changes kept, the retry on the server's revision, no discard, no notice, no read, no echo; the added module is then patched like any other", async () => {
+        const {
+            fake,
+            sync,
+            settings,
+            collectionStore,
+            changed,
+            record,
+            reads,
+            revision,
+            ops,
+            patchModules,
+            agree,
+            settle,
+            noNotice,
+        } = await boot();
+        const base = revision("modules");
+        collectionStore.addModule(module("m4", { lorebook: [] }));
+        await tick();
+        const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
+        // The patch waits: this tab has an unsent change of the record.
+        expect(plain(settings.modules[1]).name).toBe("m2");
+        expect(changed).toEqual([]);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
+        expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
+        expect(record("modules")[0].additionalAssets).toHaveLength(5_000);
+        agree("modules");
+        // The server's rename was taken into the mirror: the listeners hear of it.
+        expect(changed).toEqual(["modules/main"]);
+        noNotice();
+        // The rejected add (on the boot revision) and its retry on the other tab's revision, as an
+        // item patch of the added module only (with the id order, which the append changed).
+        expect(fake.batchCount()).toBe(2);
+        const [rejected, retry] = ops();
+        expect(rejected).toEqual(expect.objectContaining({ kind: "modules", id: "main", baseRevision: base }));
+        expect(retry).toEqual({
+            kind: "modules",
+            id: "main",
+            baseRevision: patched,
+            patch: { items: [module("m4", { lorebook: [] })], changes: [], order: ["m1", "m2", "m3", "m4"] },
+        });
+        // The waiting patch rebuilt the server's record: no read.
+        expect(reads()).toBe(0);
+        // No echo of the server's copy afterwards.
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fake.batchCount()).toBe(2);
+        fake.requests.length = 0;
+
+        // The rebased module (a fresh element in the mirror) is edited and patched like a saved one.
+        const next = revision("modules");
+        settings.modules[3].name = "m4 renamed";
+        await settle();
+        expect(ops()).toEqual([
+            {
+                kind: "modules",
+                id: "main",
+                baseRevision: next,
+                patch: { items: [], changes: [{ id: "m4", set: { name: "m4 renamed" }, remove: [] }] },
+            },
+        ]);
+        expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4 renamed"]);
+        agree("modules");
+        expect(reads()).toBe(0);
+        noNotice();
+    }, 20_000);
+    it("merges the same add after an HTTP read when the matching patch is not available (live delivery paused)", async () => {
+        const {
+            fake,
+            sync,
+            settings,
+            collectionStore,
+            live,
+            flushFeed,
+            changed,
+            record,
+            reads,
+            revision,
+            ops,
+            patchModules,
+            agree,
+            noNotice,
+        } = await boot();
+        live.paused = true;
+        collectionStore.addModule(module("m4", { lorebook: [] }));
+        await tick();
+        const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        // No waiting patch: the conflict read the record back, then merged the same way.
+        expect(reads()).toBe(1);
+        expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
+        expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
+        agree("modules");
+        expect(changed).toEqual(["modules/main"]);
+        expect(fake.batchCount()).toBe(2);
+        expect(ops()[1]).toEqual(expect.objectContaining({ baseRevision: patched }));
+        expect(revision("modules")).not.toBe(patched);
+        noNotice();
+        // The held frames (the other tab's patch, this tab's own echo) are stale now: nothing follows.
+        live.paused = false;
+        flushFeed();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fake.batchCount()).toBe(2);
+        expect(reads()).toBe(1);
+        agree("modules");
+        noNotice();
     }, 20_000);
     it("drops the echo of this tab's own modules patch before its acknowledgement, and holds another tab's patch that lands during the save until after it, without a read", async () => {
         const { fake, sync, settings, intercept, patchModules, reads, settle, agree, revision, noNotice } =

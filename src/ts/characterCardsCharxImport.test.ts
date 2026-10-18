@@ -4,16 +4,22 @@ import { language } from "src/lang";
 import { cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-const { server, alerts } = vi.hoisted(() => ({
-    server: { current: null as any },
-    alerts: {
-        error: vi.fn(),
-        normal: vi.fn(),
-        wait: vi.fn(),
+const { server, alerts } = vi.hoisted(() => {
+    // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
+    // (`boot` installs it in `current`): the module dialog's `addImportedModule` reads it back to
+    // replace only its own wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls.
+    const alerts = {
+        current: null as null | { set: (data: { type: string; msg: string }) => void },
+        show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),
+        error: vi.fn((msg: unknown) => alerts.show("error")(msg)),
+        normal: vi.fn((msg: unknown) => alerts.show("normal")(msg)),
+        wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
+        clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         confirm: vi.fn(async () => true),
         store: { set: vi.fn(), subscribe: vi.fn() },
-    },
-}));
+    };
+    return { server: { current: null as any }, alerts };
+});
 vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
@@ -24,12 +30,13 @@ vi.mock("./alert", () => ({
     alertWait: alerts.wait,
     alertNormalWait: vi.fn(async () => undefined),
     alertConfirm: alerts.confirm,
+    alertReloadNotice: vi.fn(),
     alertStore: alerts.store,
     alertInput: vi.fn(async () => ""),
     alertSelect: vi.fn(async () => ""),
     alertAddCharacter: vi.fn(),
     alertCardExport: vi.fn(),
-    alertClear: vi.fn(),
+    alertClear: alerts.clear,
     alertModuleSelect: vi.fn(),
     alertMd: vi.fn(),
     waitAlert: vi.fn(),
@@ -81,6 +88,7 @@ async function boot() {
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
+    alerts.current = booted.stores.alertStore;
     const globalApi = await import("./globalApi.svelte");
     const saveAsset = vi.spyOn(globalApi, "saveAsset").mockImplementation(async (data: Uint8Array) => keyOf(data));
     const util = await import("./util");
@@ -102,6 +110,7 @@ beforeAll(async () => {
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    alerts.current = null;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", new URL("http://localhost/"));
     vi.stubGlobal("safeStructuredClone", (value: unknown) =>
