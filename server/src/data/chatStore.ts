@@ -8,6 +8,7 @@ import type {
     ChatRecord,
     ChatSummary,
     CheckpointOutcome,
+    TargetOutcome,
     TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
@@ -880,6 +881,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let messageIds: string[] | undefined;
         const checkpoints: CheckpointOutcome[] = [];
         const translations: TranslationOutcome[] = [];
+        // Per message-editing op: whether its message was there (reported only when one was not).
+        const targets: TargetOutcome[] = [];
         let deleted = false;
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
@@ -988,6 +991,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     } else {
                         const anchor = selectMessage.get(chatSeq, op.anchor.after) as MessageRow | undefined;
                         if (!anchor) {
+                            // The client re-anchors it after reading the chat back (`recoverChatConflicts`).
                             conflictHere(row);
                         }
                         after = anchor!.position;
@@ -1020,8 +1024,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     const id = op.op === "setMessage" ? op.message.id : op.id;
                     const existing = selectMessage.get(chatSeq, id) as MessageRow | undefined;
                     if (!existing) {
-                        conflictHere(row);
+                        // Another writer removed it: this op changes nothing, the group's others apply.
+                        targets.push("missing");
+                        if (op.op !== "patchMessage" && op.generation) {
+                            checkpoints.push("ignored");
+                        }
+                        break;
                     }
+                    targets.push("applied");
                     if (op.op !== "patchMessage" && op.generation) {
                         const outcome = admitGeneration(chatSeq, id, existing!, op.generation);
                         checkpoints.push(outcome);
@@ -1093,6 +1103,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 case "begin": {
                     const existing = selectMessage.get(chatSeq, op.id) as MessageRow | undefined;
                     if (!existing) {
+                        // Still a conflict, not a `missing` target: the job took the message's lock
+                        // before this write, and only the refusal gives it back.
                         conflictHere(row);
                     }
                     if (isKnownGeneration(existing!, op.generationId)) {
@@ -1112,8 +1124,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     // Not a text write: the generation fence is left as it is.
                     const existing = selectMessage.get(chatSeq, op.id) as MessageRow | undefined;
                     if (!existing) {
-                        conflictHere(row);
+                        targets.push("missing");
+                        translations.push("ignored");
+                        break;
                     }
+                    targets.push("applied");
                     const message = JSON.parse(existing!.data) as Record<string, unknown>;
                     if (
                         op.translation !== null &&
@@ -1166,6 +1181,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         }
         if (translations.length > 0) {
             result.translations = translations;
+        }
+        if (targets.includes("missing")) {
+            result.targets = targets;
         }
         const patch =
             patchBase && applied > 0 && !reappended

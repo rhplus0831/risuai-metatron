@@ -416,21 +416,23 @@ describe("the reload notice (audit item B2)", () => {
     it("shows nothing for a deferred reload that replaced no chat (a new job locked it during the read), and shows the notice when the reload replaces it", async () => {
         const { fake, chat, mirrorChat } = await boot();
         const { reloadNotice } = await import("../../alert");
-        // A job of this tab streams into `k`; another tab removes `b`, which this tab edits: the
-        // edit conflicts and the chat's reload waits for the job.
+        // A job of this tab streams into `k`; another tab edits `b`, and this tab removes `a` and `b`
+        // (a bulk removal needs the current revision): the removal conflicts and the chat's reload
+        // waits for the job. (An edit of a message the other tab removed would be acknowledged as
+        // `missing` instead, with no reload: data-loss slice 6a.)
         chat.applyServerGeneration(refK, { jobId: "J", messageId: "c", generationId: "cg", text: "so far", seq: 0 });
         fake.chatBatch([
             {
                 characterId: "c",
                 chatId: "k",
                 baseRevision: fake.chat("c", "k")!.revision,
-                ops: [{ op: "remove", ids: ["b"] } as any],
+                ops: [{ op: "setText", id: "b", text: "remote" } as any],
             },
         ]);
-        chat.setMessageText(refK, "b", "local");
+        chat.removeMessages(refK, ["a", "b"]);
         await vi.advanceTimersByTimeAsync(3000);
         expect(fake.batchCount()).toBe(1);
-        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "b", "c"]);
+        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["c"]);
         expect(get(reloadNotice)).toBeNull();
         // The job ends; while the deferred chat's read is answered, a new job of this tab locks it.
         let lockDuringRead = true;
@@ -459,13 +461,13 @@ describe("the reload notice (audit item B2)", () => {
         chat.endServerJob("J");
         await vi.advanceTimersByTimeAsync(3000);
         expect(reads).toEqual([[{ characterId: "c", id: "k" }]]);
-        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "b", "c"]);
+        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["c"]);
         expect(get(reloadNotice)).toBeNull();
-        // The second job ends: the reload replaces the chat, discarding the edit, with the notice.
+        // The second job ends: the reload replaces the chat, discarding the removal, with the notice.
         chat.endServerJob("J2");
         await vi.advanceTimersByTimeAsync(3000);
         expect(reads).toHaveLength(2);
-        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "c"]);
+        expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "remote", "C"]);
         expect(get(reloadNotice)).toBe("reloaded");
     });
 });

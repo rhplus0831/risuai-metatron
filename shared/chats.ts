@@ -30,10 +30,17 @@ export type MessageGeneration = { id: string; seq: number; final?: boolean };
 
 /**
  * One chat operation. `create`, `delete`, `replace`, and a `remove` of several ids need the chat's
- * current revision; the others apply on a stale revision as long as their target exists (Decision 4),
- * except a `begin` that starts a generation the message does not know yet: it needs the current
- * revision unless the message was inserted by the same group. A `begin` of the message's current or
- * an earlier generation is a replay and changes nothing.
+ * current revision; the others apply on a stale revision (Decision 4), except a `begin` that starts a
+ * generation the message does not know yet: it needs the current revision unless the message was
+ * inserted by the same group. A `begin` of the message's current or an earlier generation is a replay
+ * and changes nothing.
+ *
+ * A `setText`, `setMessage`, `patchMessage`, or `setTranslation` whose message is gone when it runs
+ * changes nothing and is reported `missing` (`ChatGroupResult.targets`); the rest of the group still
+ * applies. A single-id `remove` of a missing message is a no-op. These still conflict (the whole
+ * batch rolls back): an `append` whose `after` anchor is gone, a `remove` of several ids one of which
+ * is missing, and a `begin` of a missing message (its writer, a generation job, takes the message's
+ * lock before the write and needs the refusal to give it back).
  *
  * `setMessage` replaces the whole row, also on a stale revision: a sender whose copy is behind
  * reverts every field another writer changed meanwhile, so it needs the current revision for the
@@ -92,15 +99,22 @@ export type ChatOrderChange = { characterId: string; baseRevision: string; ids: 
 /**
  * What a generation-carrying write did: `applied`; `duplicate` (a replay of a write of the message's
  * current generation, whose seq is not higher: that generation still owns the message); or `ignored`
- * (another generation took the message over, or it was closed).
+ * (another generation took the message over, it was closed, or the message is gone).
  */
 export type CheckpointOutcome = "applied" | "duplicate" | "ignored";
 
 /**
  * What a `setTranslation` did: `applied` (stored, cleared, or already stored as given) or `ignored`
- * (the message's text no longer matches the translation's `sourceHash`).
+ * (the message's text no longer matches the translation's `sourceHash`, or the message is gone).
  */
 export type TranslationOutcome = "applied" | "ignored";
+
+/**
+ * Whether the message a `setText`, `setMessage`, `patchMessage`, or `setTranslation` names was there
+ * when the op ran: `applied` (it was; what the op then did is in `checkpoints` or `translations`) or
+ * `missing` (it was gone: the op changed nothing, and the group's other ops still applied).
+ */
+export type TargetOutcome = "applied" | "missing";
 
 export type ChatGroupResult = {
     characterId: string;
@@ -113,6 +127,11 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /** One entry per `setTranslation` op, in op order. */
     translations?: TranslationOutcome[];
+    /**
+     * One entry per `setText`, `setMessage`, `patchMessage`, and `setTranslation` op, in op order;
+     * present only when one of them was `missing` (absent: every such op found its message).
+     */
+    targets?: TargetOutcome[];
     /**
      * The group was applied on an older revision (by-id ops allow that): the chat holds changes the
      * client has not seen. The client keeps its older base until an idle read refreshes the mirror

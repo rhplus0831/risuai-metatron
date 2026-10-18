@@ -3462,7 +3462,9 @@ export function ackChatWork(
                 // installed a later read while the group was in flight) is not moved back.
                 holdChatRevision(group.key, result.revision);
             }
-            if (result.stale && result.revision !== null) {
+            if ((result.stale || result.targets?.includes("missing")) && result.revision !== null) {
+                // A `missing` target (another writer removed its message) changed nothing and is not
+                // a discard: the idle read removes the message from the mirror.
                 staleChats.add(group.key);
             }
             if (result.messageIds) {
@@ -3623,7 +3625,8 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * queued again. For each conflicting chat, with the server's copy read back: our own create or
  * delete that already landed (a replay) keeps the local state and the rest of its work; a chat a
  * server job locks is deferred (excluded from batches, reloaded when the job ends); a chat that is
- * gone is dropped with its work and its character's chat list is to be refreshed (`refresh`); any
+ * gone is dropped with its work and its character's chat list is to be refreshed (`refresh`); a group
+ * refused for an `append` whose anchor is gone is retried at the end (`reanchorGoneAppends`); any
  * other is replaced by the server copy and its local work discarded. Reorders that conflicted are
  * settled without a discard report (their answer may have been lost), and the caller reads their
  * lists again; `acceptRemoteCollection` reports a reorder queued since. A group refused for a
@@ -3693,6 +3696,15 @@ export function recoverChatConflicts(
             refresh.add(group.characterId);
             continue;
         }
+        const reanchored = server.revision !== null && server.data ? reanchorGoneAppends(group, server) : null;
+        if (reanchored) {
+            // An append whose anchor another writer removed: retried at the end, nothing discarded
+            // (also while a job streams here, since the chat is not replaced). The chat is read
+            // whole once its work has landed, which puts the messages in the server's order.
+            retry.push({ ...group, ops: reanchored });
+            staleChats.add(group.key);
+            continue;
+        }
         if (isChatStreamedHere(ref)) {
             // A server job streams into it: replacing the chat now would drop the streamed text.
             deferred.add(group.key);
@@ -3733,6 +3745,68 @@ export function recoverChatConflicts(
         }
     }
     return { reloaded, refresh, blocked };
+}
+
+/**
+ * A group refused because an `append`'s `after` anchor is gone on the server (another writer removed
+ * it; the server copy was read back): rewrites each such append, in the refused group and in the
+ * chat's newer unsent work, to `{ end: true }`. Anchors are checked against the message ids as the
+ * ops in order leave them (appends add theirs, a single-id `remove` takes its id away). Only for
+ * by-id work on the same chat incarnation: a group, or newer work it is requeued with, holding an
+ * op that needs the current revision (`create`, `delete`, `replace`, a multi-id `remove`) or a
+ * `begin` would conflict again on the older base, so it is left to the ordinary recovery. Returns the
+ * refused group's rewritten ops, or null when none of its appends had a gone anchor (the conflict
+ * has another cause; the newer work is then left as it is). A retried group whose conflict has
+ * another cause finds no gone anchor on its next recovery.
+ */
+function reanchorGoneAppends(group: SentChatGroup, server: RemoteChat): ChatOp[] | null {
+    const newer = pending.get(group.key);
+    const base = parseRevisionToken(group.baseRevision);
+    const read = parseRevisionToken(server.revision);
+    if (
+        !base ||
+        !read ||
+        base.epoch !== read.epoch ||
+        base.seq !== read.seq ||
+        newer?.create ||
+        newer?.resend ||
+        [...group.ops, ...(newer?.ops ?? [])].some(
+            (op) =>
+                op.op === "create" ||
+                op.op === "delete" ||
+                op.op === "replace" ||
+                op.op === "begin" ||
+                (op.op === "remove" && op.ids.length > 1),
+        )
+    ) {
+        return null;
+    }
+    const present = new Set(server.data!.message.map((message) => message.chatId!));
+    const reanchor = (ops: ChatOp[]): boolean => {
+        let rewritten = false;
+        ops.forEach((op, index) => {
+            if (op.op === "append") {
+                if ("after" in op.anchor && !present.has(op.anchor.after)) {
+                    ops[index] = { ...op, anchor: { end: true } };
+                    rewritten = true;
+                }
+                for (const message of op.messages) {
+                    present.add(message.chatId!);
+                }
+            } else if (op.op === "remove") {
+                present.delete(op.ids[0]);
+            }
+        });
+        return rewritten;
+    };
+    const ops = [...group.ops];
+    if (!reanchor(ops)) {
+        return null;
+    }
+    if (newer) {
+        reanchor(newer.ops);
+    }
+    return ops;
 }
 
 /** Whether an op rewrites or removes one of `locked` by id (a multi-id `remove` does not count). */

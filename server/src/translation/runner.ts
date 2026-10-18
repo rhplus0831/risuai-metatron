@@ -376,6 +376,10 @@ export function createTranslationRunner(deps: {
             },
             { epoch },
         );
+        if (applied.chats[0]?.targets?.[0] === "missing") {
+            // Removed while it was translated: the write changed nothing.
+            return failure(404, "The message no longer exists");
+        }
         const outcome = applied.chats[0]?.translations?.[0] ?? "ignored";
         return { ok: true, outcome, translation: outcome === "applied" ? translation : null };
     }
@@ -393,8 +397,8 @@ export function createTranslationRunner(deps: {
             if (chatConflicts.some((conflict) => conflict.reason === "generating")) {
                 return failure(409, "generating");
             }
-            // A by-id op conflicts when its message or chat is gone, or the chat was replaced by
-            // another of the same id: tell them apart by reading again.
+            // The write conflicts when its chat is gone or was replaced by another of the same id (a
+            // gone message is a `missing` target instead): tell them apart by reading again.
             if (store.chatRevision(request.characterId, request.chatId) === null) {
                 return failure(404, "The chat no longer exists");
             }

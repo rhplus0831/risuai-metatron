@@ -431,15 +431,14 @@ describe("revision rules", () => {
                 JSON.stringify(ops),
             ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current }]);
         }
-        // A by-id op whose target is gone conflicts even on a stale revision; so does a missing anchor.
+        // A begin of a gone message and an append after a gone anchor conflict even on a stale
+        // revision, and roll back the group's earlier op with them.
         for (const ops of [
-            [{ op: "setText", id: "c", text: "gone" }],
-            [{ op: "setMessage", message: m("c") }],
             [{ op: "begin", id: "c", generationId: "g" }],
             [{ op: "append", messages: [m("e")], anchor: { after: "c" } }],
             [
                 { op: "meta", set: { note: "applied first" } },
-                { op: "setText", id: "c", text: "gone" },
+                { op: "append", messages: [m("e")], anchor: { after: "c" } },
             ],
         ] as ChatOp[][]) {
             expect(
@@ -449,6 +448,41 @@ describe("revision rules", () => {
         }
         expect(snapshotState(store)).toBe(state);
         expect(store.writeCount()).toBe(writes);
+        // A setText or setMessage of a gone message changes nothing and is reported `missing`
+        // (data-loss slice 6a); alone, it moves nothing.
+        for (const ops of [
+            [{ op: "setText", id: "c", text: "gone" }],
+            [{ op: "setMessage", message: m("c") }],
+        ] as ChatOp[][]) {
+            expect(store.applyChanges({ chats: [group("k", stale, ops)] }).chats[0], JSON.stringify(ops)).toEqual({
+                characterId: "c",
+                id: "k",
+                revision: current,
+                stale: true,
+                targets: ["missing"],
+            });
+        }
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // With another op in the group, that one commits.
+        const partly = store.applyChanges({
+            chats: [
+                group("k", stale, [
+                    { op: "meta", set: { note: "applied first" } },
+                    { op: "setText", id: "c", text: "gone" },
+                ]),
+            ],
+        }).chats[0];
+        expect(partly).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(current, 1),
+            stale: true,
+            targets: ["missing"],
+        });
+        current = partly.revision!;
+        expect(chat(store, "k")!.data).toMatchObject({ note: "applied first" });
+        expect(messageIds(store, "k")).toEqual(["a", "b", "d"]);
 
         // With the current revision the destructive ops land.
         current = store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["a", "b"] }])] }).chats[0]
@@ -609,27 +643,28 @@ describe("patchMessage (data-loss slice 1a)", () => {
         store.applyChanges({ chats: [group("k", base, [{ op: "setMessage", message: m("b", "B3") }])] });
         expect(row(store, "b")).toEqual(m("b", "B3"));
 
-        // A patch whose target is gone conflicts even on an older revision, and the group's earlier
-        // op is rolled back with it.
+        // A patch whose target is gone changes nothing and is reported `missing` (data-loss slice
+        // 6a); the group's earlier op commits.
         const current = chat(store, "k")!.revision!;
         store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["c"] }])] });
         const after = chat(store, "k")!.revision!;
-        const state = snapshotState(store);
-        const writes = store.writeCount();
-        expect(
-            conflictsOf(() =>
-                store.applyChanges({
-                    chats: [
-                        group("k", base, [
-                            { op: "meta", merge: { scriptstate: { $x: "1" } } },
-                            patch("c", { set: { disabled: true } }),
-                        ]),
-                    ],
-                }),
-            ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: after }]);
-        expect(snapshotState(store)).toBe(state);
-        expect(store.writeCount()).toBe(writes);
+        const gone = store.applyChanges({
+            chats: [
+                group("k", base, [
+                    { op: "meta", merge: { scriptstate: { $x: "1" } } },
+                    patch("c", { set: { disabled: true } }),
+                ]),
+            ],
+        }).chats[0];
+        expect(gone).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(after, 1),
+            stale: true,
+            targets: ["missing"],
+        });
+        expect((chat(store, "k")!.data as { scriptstate?: unknown }).scriptstate).toEqual({ $x: "1" });
+        expect(messageIds(store, "k")).toEqual(["a", "b"]);
     });
 
     it("never changes a stored translation, closes an open generation fence, and applies whatever the stored row's key order", () => {
@@ -2110,16 +2145,19 @@ describe("message translations (translation slice 1.1)", () => {
         });
         revision = r.revision!;
 
-        // A missing message is a conflict (the whole batch rolls back).
-        const before = snapshotState(store);
-        expect(
-            conflictsOf(() =>
-                store.applyChanges({
-                    chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
-                }),
-            ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision }]);
-        expect(snapshotState(store)).toBe(before);
+        // A missing message: its translation is `ignored` and its target `missing` (data-loss slice
+        // 6a); the group's meta op commits.
+        const gone = store.applyChanges({
+            chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
+        }).chats[0];
+        expect(gone).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(revision, 1),
+            translations: ["ignored"],
+            targets: ["missing"],
+        });
+        expect(chat(store, "k")!.data).toMatchObject({ note: "n" });
     });
 
     it("setMessage never changes a stored translation or its absence, setText leaves it to go stale by hash, a generation's checkpoints keep it, setTranslation leaves the fence open, and replace writes what it carries", () => {
@@ -2335,5 +2373,141 @@ describe("message translations (translation slice 1.1)", () => {
             ],
         });
         expect(stored("a")).toEqual(m("a", "A"));
+    });
+});
+
+describe("missing targets (data-loss slice 6a)", () => {
+    const tr = (source: string, text = "translated"): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+    });
+    const patch = (id: string, set: Record<string, unknown>): ChatOp => ({ op: "patchMessage", id, set }) as ChatOp;
+    /** A feed-backed store with `k` (a, b, c), a generation `gb` open on `b`, and `c` removed on the current revision. */
+    function setup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const base = seed(store).chat;
+        const begun = store.applyChanges({ chats: [group("k", base, [{ op: "begin", id: "b", generationId: "gb" }])] })
+            .chats[0].revision!;
+        const current = store.applyChanges({ chats: [group("k", begun, [{ op: "remove", ids: ["c"] }])] }).chats[0]
+            .revision!;
+        return { store, events, base, current };
+    }
+
+    it("reports a gone message per op in op order, aligned with the checkpoint and translation outcomes, and commits the group's other ops", () => {
+        const { store, events, base, current } = setup();
+        const result = store.applyChanges({
+            chats: [
+                group("k", base, [
+                    { op: "setText", id: "c", text: "gone", generation: { id: "gc", seq: 1 } },
+                    { op: "append", messages: [m("d", "D")], anchor: { end: true } },
+                    { op: "setText", id: "b", text: "B2", generation: { id: "gb", seq: 1 } },
+                    patch("c", { disabled: true }),
+                    { op: "setTranslation", id: "c", translation: null },
+                    { op: "setTranslation", id: "b", translation: tr("B2") },
+                    { op: "setMessage", message: m("c", "C2") },
+                    { op: "setText", id: "a", text: "A2" },
+                ]),
+            ],
+        }).chats[0];
+        expect(result).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(current, 4),
+            stale: true,
+            checkpoints: ["ignored", "applied"],
+            translations: ["ignored", "applied"],
+            targets: ["missing", "applied", "missing", "missing", "applied", "missing", "applied"],
+        });
+        expect(chat(store, "k")!.data.message).toEqual([
+            m("a", "A2"),
+            { ...m("b", "B2"), translation: tr("B2") },
+            m("d", "D"),
+        ]);
+        // The feed patch carries the rows the group changed, from the actual base; nothing of `c`.
+        expect(events.at(-1)!.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: result.revision,
+                patch: {
+                    baseRevision: current,
+                    count: 3,
+                    messages: [
+                        { after: null, message: m("a", "A2") },
+                        { after: "a", message: { ...m("b", "B2"), translation: tr("B2") } },
+                        { after: "b", message: m("d", "D") },
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it("moves nothing for a group whose every target is gone: the revision and the write count stay, and the feed carries no patch, on an older and on the current revision", () => {
+        const { store, events, base, current } = setup();
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        const ops: ChatOp[] = [
+            { op: "setText", id: "c", text: "gone" },
+            patch("c", { disabled: true }),
+            { op: "setTranslation", id: "c", translation: null },
+            { op: "setMessage", message: m("c", "C2") },
+        ];
+        expect(store.applyChanges({ chats: [group("k", base, ops)] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: current,
+            stale: true,
+            translations: ["ignored"],
+            targets: ["missing", "missing", "missing", "missing"],
+        });
+        expect(store.applyChanges({ chats: [group("k", current, ops)] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: current,
+            translations: ["ignored"],
+            targets: ["missing", "missing", "missing", "missing"],
+        });
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // Published at the unchanged revision without a patch (as a replayed append is): a client
+        // holding that revision ignores it.
+        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: current }]);
+    });
+
+    it("still rolls the whole group back for an append after a gone anchor, a multi-id remove with a gone id, and a begin of a gone message", () => {
+        const { store, base, current } = setup();
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        for (const ops of [
+            [
+                { op: "setText", id: "c", text: "gone" },
+                { op: "append", messages: [m("d", "D")], anchor: { after: "c" } },
+            ],
+            [
+                { op: "setText", id: "a", text: "A2" },
+                { op: "remove", ids: ["a", "c"] },
+            ],
+            [
+                { op: "setText", id: "a", text: "A2" },
+                { op: "begin", id: "c", generationId: "gc" },
+            ],
+        ] as ChatOp[][]) {
+            for (const revision of [base, current]) {
+                expect(
+                    conflictsOf(() => store.applyChanges({ chats: [group("k", revision, ops)] })),
+                    JSON.stringify(ops),
+                ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current }]);
+            }
+        }
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
     });
 });
