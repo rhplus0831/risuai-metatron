@@ -1,6 +1,6 @@
 <script lang="ts">
     import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { changeChar, getCharImage, removeChar, restoreChar } from "../../ts/characters";
+    import { changeChar, removeChar, restoreChar } from "../../ts/characters";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { ArrowLeft, User, Users, SquareMousePointer, TrashIcon, Undo2Icon } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
@@ -8,6 +8,7 @@
     import { language } from "src/lang";
     import { parseMultilangString } from "src/ts/util";
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
+    import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     interface Props {
         endGrid?: any;
     }
@@ -115,12 +116,16 @@
                     {#each formatChars(search) as char}
                         <div class="flex items-center text-textcolor">
                             {#if char.image}
-                                <BarIcon
-                                    onClick={() => {
-                                        changeChar(char.chaId);
-                                    }}
-                                    additionalStyle={getCharImage(char.image, "css")}
-                                ></BarIcon>
+                                <LazyCharImage path={char.image} type="css">
+                                    {#snippet children(image)}
+                                        <BarIcon
+                                            onClick={() => {
+                                                changeChar(char.chaId);
+                                            }}
+                                            additionalStyle={image}
+                                        ></BarIcon>
+                                    {/snippet}
+                                </LazyCharImage>
                             {:else}
                                 <BarIcon
                                     onClick={() => {
@@ -144,12 +149,16 @@
         {:else if selected === 1}
             {#each formatChars(search) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
-                    <BarIcon
-                        onClick={() => {
-                            changeChar(char.chaId);
-                        }}
-                        additionalStyle={getCharImage(char.image, "css")}
-                    ></BarIcon>
+                    <LazyCharImage path={char.image} type="css" class="shrink-0">
+                        {#snippet children(image)}
+                            <BarIcon
+                                onClick={() => {
+                                    changeChar(char.chaId);
+                                }}
+                                additionalStyle={image}
+                            ></BarIcon>
+                        {/snippet}
+                    </LazyCharImage>
                     <div class="flex-1 flex flex-col ml-2">
                         <h4 class="text-textcolor font-bold text-lg mb-1">{char.name || "Unnamed"}</h4>
                         <span class="text-textcolor2"
@@ -182,12 +191,16 @@
             <span class="text-textcolor2 text-sm mb-2">{language.trashDesc}</span>
             {#each formatChars(search, true) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
-                    <BarIcon
-                        onClick={() => {
-                            changeChar(char.chaId);
-                        }}
-                        additionalStyle={getCharImage(char.image, "css")}
-                    ></BarIcon>
+                    <LazyCharImage path={char.image} type="css" class="shrink-0">
+                        {#snippet children(image)}
+                            <BarIcon
+                                onClick={() => {
+                                    changeChar(char.chaId);
+                                }}
+                                additionalStyle={image}
+                            ></BarIcon>
+                        {/snippet}
+                    </LazyCharImage>
                     <div class="flex-1 flex flex-col ml-2">
                         <h4 class="text-textcolor font-bold text-lg mb-1">{char.name || "Unnamed"}</h4>
                         <span class="text-textcolor2"

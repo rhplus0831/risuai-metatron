@@ -6,6 +6,7 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import LazyCharImage from "src/lib/UI/GUI/LazyCharImage.svelte";
     import { alertConfirm, alertSelect } from "src/ts/alert";
     import { getCharImage } from "src/ts/characters";
     import { changeUserPersona, exportUserPersona, importUserPersona, selectUserImg } from "src/ts/persona";
@@ -122,18 +123,22 @@
                         class:ring-3={persona.id === selectedPersonaId}
                     ></div>
                 {:else}
-                    {#await getCharImage(persona.icon, "css")}
-                        <div
-                            class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
-                            class:ring-3={persona.id === selectedPersonaId}
-                        ></div>
-                    {:then im}
-                        <div
-                            class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
-                            style={im}
-                            class:ring-3={persona.id === selectedPersonaId}
-                        ></div>
-                    {/await}
+                    <LazyCharImage path={persona.icon} type="css">
+                        {#snippet children(image)}
+                            {#await image}
+                                <div
+                                    class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
+                                    class:ring-3={persona.id === selectedPersonaId}
+                                ></div>
+                            {:then im}
+                                <div
+                                    class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
+                                    style={im}
+                                    class:ring-3={persona.id === selectedPersonaId}
+                                ></div>
+                            {/await}
+                        {/snippet}
+                    </LazyCharImage>
                 {/if}
             </button>
         {/each}

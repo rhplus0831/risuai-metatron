@@ -3,7 +3,8 @@
     import { chatCount } from "src/ts/storage/chatStore.svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
-    import { addCharacter, changeChar, getCharImage } from "src/ts/characters";
+    import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
+    import { addCharacter, changeChar } from "src/ts/characters";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
     import { makeCharacterAgoText } from "../UI/mainMenuProjection";
 
@@ -62,7 +63,11 @@
                     endGrid();
                 }}
             >
-                <BarIcon additionalStyle={getCharImage(char.image, "css")}></BarIcon>
+                <LazyCharImage path={char.image} type="css" class="shrink-0">
+                    {#snippet children(image)}
+                        <BarIcon additionalStyle={image}></BarIcon>
+                    {/snippet}
+                </LazyCharImage>
                 <div class="flex flex-1 w-full flex-col justify-start items-start text-start">
                     <span>{char.name}</span>
                     <div class="text-sm text-textcolor2 flex items-center w-full flex-wrap">

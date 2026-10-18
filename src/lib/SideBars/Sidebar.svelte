@@ -28,11 +28,12 @@
         WrenchIcon,
         User2Icon,
     } from "@lucide/svelte";
-    import { addCharacter, changeChar, getCharImage } from "../../ts/characters";
+    import { addCharacter, changeChar } from "../../ts/characters";
     import CharConfig from "./CharConfig.svelte";
     import { language } from "../../lang";
     import isEqual from "lodash/isEqual";
     import SidebarAvatar from "./SidebarAvatar.svelte";
+    import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import BaseRoundedButton from "../UI/BaseRoundedButton.svelte";
     import { getCharacterIndexObject, selectSingleFile } from "src/ts/util";
     import { v4 } from "uuid";
@@ -588,126 +589,143 @@
                         }}
                     >
                         {#if char.type === "normal"}
-                            <SidebarAvatar
-                                src={char.img ? getCharImage(char.img, "plain") : "/none.webp"}
-                                size="56"
-                                rounded={IconRounded}
-                                name={char.name}
-                                chaId={char.chaId}
-                            />
-                        {:else if char.type === "folder"}
-                            {#key char.color}
-                                {#key char.name}
+                            <LazyCharImage path={char.img ?? ""} type="plain">
+                                {#snippet children(image)}
                                     <SidebarAvatar
-                                        src="slot"
+                                        src={char.img ? image : "/none.webp"}
                                         size="56"
                                         rounded={IconRounded}
-                                        bordered
                                         name={char.name}
-                                        color={char.color}
-                                        backgroundimg={char.img ? getCharImage(char.img, "plain") : ""}
-                                        oncontextmenu={async (e) => {
-                                            e.preventDefault();
-                                            // The folder this menu was opened for (the row can move during the dialogs).
-                                            const folderId = char.id;
-                                            const folderName = char.name;
-                                            const sel = parseInt(
-                                                await alertSelect([
-                                                    language.renameFolder,
-                                                    language.changeFolderColor,
-                                                    language.changeFolderImage,
-                                                    language.cancel,
-                                                ]),
-                                            );
-                                            if (sel === 0) {
-                                                const v = await alertInput(language.changeFolderName, [], folderName);
-                                                if (v) {
-                                                    const oder = folderById(folderId);
-                                                    if (!oder) {
+                                        chaId={char.chaId}
+                                    />
+                                {/snippet}
+                            </LazyCharImage>
+                        {:else if char.type === "folder"}
+                            <LazyCharImage path={char.img ?? ""} type="plain">
+                                {#snippet children(image)}
+                                    {#key char.color}
+                                        {#key char.name}
+                                            <SidebarAvatar
+                                                src="slot"
+                                                size="56"
+                                                rounded={IconRounded}
+                                                bordered
+                                                name={char.name}
+                                                color={char.color}
+                                                backgroundimg={char.img ? image : ""}
+                                                oncontextmenu={async (e) => {
+                                                    e.preventDefault();
+                                                    // The folder this menu was opened for (the row can move during the dialogs).
+                                                    const folderId = char.id;
+                                                    const folderName = char.name;
+                                                    const sel = parseInt(
+                                                        await alertSelect([
+                                                            language.renameFolder,
+                                                            language.changeFolderColor,
+                                                            language.changeFolderImage,
+                                                            language.cancel,
+                                                        ]),
+                                                    );
+                                                    if (sel === 0) {
+                                                        const v = await alertInput(
+                                                            language.changeFolderName,
+                                                            [],
+                                                            folderName,
+                                                        );
+                                                        if (v) {
+                                                            const oder = folderById(folderId);
+                                                            if (!oder) {
+                                                                return;
+                                                            }
+                                                            oder.name = v;
+                                                        }
+                                                    } else if (sel === 1) {
+                                                        const colors = [
+                                                            "red",
+                                                            "green",
+                                                            "blue",
+                                                            "yellow",
+                                                            "indigo",
+                                                            "purple",
+                                                            "pink",
+                                                            "default",
+                                                        ];
+                                                        const sel = parseInt(await alertSelect(colors));
+                                                        const oder = folderById(folderId);
+                                                        if (!oder) {
+                                                            return;
+                                                        }
+                                                        oder.color = colors[sel].toLocaleLowerCase();
+                                                    } else if (sel === 2) {
+                                                        const sel = parseInt(
+                                                            await alertSelect([
+                                                                "Reset to Default Image",
+                                                                "Select Image File",
+                                                            ]),
+                                                        );
+                                                        const oder = folderById(folderId);
+                                                        if (!oder) {
+                                                            return;
+                                                        }
+
+                                                        switch (sel) {
+                                                            case 0:
+                                                                oder.imgFile = null;
+                                                                oder.img = "";
+                                                                break;
+
+                                                            case 1:
+                                                                const folderImage = await selectSingleFile([
+                                                                    "png",
+                                                                    "jpg",
+                                                                    "webp",
+                                                                ]);
+
+                                                                if (!folderImage) {
+                                                                    return;
+                                                                }
+
+                                                                const folderImageData = await saveAsset(
+                                                                    folderImage.data,
+                                                                );
+                                                                // Found again: the folder can be removed during the dialog and the save.
+                                                                const target = folderById(folderId);
+                                                                if (!target) {
+                                                                    return;
+                                                                }
+                                                                target.imgFile = folderImageData;
+                                                                // Shown from `imgFile`; a resolved URL is page-local.
+                                                                target.img = "";
+                                                                break;
+                                                        }
+                                                    }
+                                                }}
+                                                onClick={() => {
+                                                    if (char.type !== "folder") {
                                                         return;
                                                     }
-                                                    oder.name = v;
-                                                }
-                                            } else if (sel === 1) {
-                                                const colors = [
-                                                    "red",
-                                                    "green",
-                                                    "blue",
-                                                    "yellow",
-                                                    "indigo",
-                                                    "purple",
-                                                    "pink",
-                                                    "default",
-                                                ];
-                                                const sel = parseInt(await alertSelect(colors));
-                                                const oder = folderById(folderId);
-                                                if (!oder) {
-                                                    return;
-                                                }
-                                                oder.color = colors[sel].toLocaleLowerCase();
-                                            } else if (sel === 2) {
-                                                const sel = parseInt(
-                                                    await alertSelect(["Reset to Default Image", "Select Image File"]),
-                                                );
-                                                const oder = folderById(folderId);
-                                                if (!oder) {
-                                                    return;
-                                                }
-
-                                                switch (sel) {
-                                                    case 0:
-                                                        oder.imgFile = null;
-                                                        oder.img = "";
-                                                        break;
-
-                                                    case 1:
-                                                        const folderImage = await selectSingleFile([
-                                                            "png",
-                                                            "jpg",
-                                                            "webp",
-                                                        ]);
-
-                                                        if (!folderImage) {
-                                                            return;
-                                                        }
-
-                                                        const folderImageData = await saveAsset(folderImage.data);
-                                                        // Found again: the folder can be removed during the dialog and the save.
-                                                        const target = folderById(folderId);
-                                                        if (!target) {
-                                                            return;
-                                                        }
-                                                        target.imgFile = folderImageData;
-                                                        // Shown from `imgFile`; a resolved URL is page-local.
-                                                        target.img = "";
-                                                        break;
-                                                }
-                                            }
-                                        }}
-                                        onClick={() => {
-                                            if (char.type !== "folder") {
-                                                return;
-                                            }
-                                            if (openFolders.includes(char.id)) {
-                                                openFolders.splice(openFolders.indexOf(char.id), 1);
-                                            } else {
-                                                openFolders.push(char.id);
-                                            }
-                                            openFolders = openFolders;
-                                        }}
-                                    >
-                                        {#if settings.ui.showFolderName}
-                                            <div class="h-full w-full flex justify-center items-center">
-                                                <span class="hyphens-auto truncate font-bold">{char.name}</span>
-                                            </div>
-                                        {:else if openFolders.includes(char.id)}
-                                            <FolderOpenIcon />
-                                        {:else}
-                                            <FolderIcon />
-                                        {/if}
-                                    </SidebarAvatar>
-                                {/key}
-                            {/key}
+                                                    if (openFolders.includes(char.id)) {
+                                                        openFolders.splice(openFolders.indexOf(char.id), 1);
+                                                    } else {
+                                                        openFolders.push(char.id);
+                                                    }
+                                                    openFolders = openFolders;
+                                                }}
+                                            >
+                                                {#if settings.ui.showFolderName}
+                                                    <div class="h-full w-full flex justify-center items-center">
+                                                        <span class="hyphens-auto truncate font-bold">{char.name}</span>
+                                                    </div>
+                                                {:else if openFolders.includes(char.id)}
+                                                    <FolderOpenIcon />
+                                                {:else}
+                                                    <FolderIcon />
+                                                {/if}
+                                            </SidebarAvatar>
+                                        {/key}
+                                    {/key}
+                                {/snippet}
+                            </LazyCharImage>
                         {/if}
                     </div>
                 </div>
@@ -804,13 +822,17 @@
                                             }
                                         }}
                                     >
-                                        <SidebarAvatar
-                                            src={char2.img ? getCharImage(char2.img, "plain") : "/none.webp"}
-                                            size="56"
-                                            rounded={IconRounded}
-                                            name={char2.name}
-                                            chaId={char2.chaId}
-                                        />
+                                        <LazyCharImage path={char2.img ?? ""} type="plain">
+                                            {#snippet children(image)}
+                                                <SidebarAvatar
+                                                    src={char2.img ? image : "/none.webp"}
+                                                    size="56"
+                                                    rounded={IconRounded}
+                                                    name={char2.name}
+                                                    chaId={char2.chaId}
+                                                />
+                                            {/snippet}
+                                        </LazyCharImage>
                                     </div>
                                 </div>
                                 <div
