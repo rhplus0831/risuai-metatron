@@ -11,10 +11,21 @@ Decisions made by landed slices: 1a keeps `setMessage` as a by-id op that applie
 stale revision and documents it as "needs the current revision for the fields it does not
 own" (not enforced); `patchMessage` carries no generation (refused with 400) and always
 closes an open generation fence; `meta` ops with `mergeUnset` are not coalesced on the
-client. 1b must add `patchMessage` to the unload op list and the post-create id rewrite in
-`chatStore.svelte.ts`, teach `mergeChatMeta` entry removal, and test `coalesce`. 7a's
+client. 1b added `patchMessage` to the unload op list and the post-create id rewrite in
+`chatStore.svelte.ts`, taught `mergeChatMeta` entry removal and tested `coalesce`. 7a's
 `chatFolderOf` is used by `SideChatList.svelte` only: the pinned rail and the modal chat
 list do not group chats by chat folder; a drag does not clear a dangling `folderId`.
+1b also moved the DevTool variable editor to `mergeChatMeta` and made `applyChatResult`
+merge the `CHAT_META_MERGE_KEYS` map fields entry by entry (a plugin `setChat` that changes
+one variable no longer replaces the map); `/setvar` on an unloaded chat is a no-op. 1c's
+merge rule (`shared/memory.ts` `mergeHypaV3Write`/`mergeHypaV2Write`): a summary's identity
+is its `chatMemos` (a V2 main chunk's its id plus them); the job's orphan removals and
+appended summaries are placed onto the stored value, every other stored summary stays as
+stored, and the write is skipped with a server warning when the stored tail moved, an
+identity is duplicated, or a new summary covers a covered message. The tab-side fence
+uses `sendingChatRef` and `generatingChatKeys()` (not `isChatGenerating`, which misses the
+pre-lock memory step and previews); a refused change is undone in the copy, not replayed
+after the job; the modal no longer writes the empty default of a chat without memory data.
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -516,8 +527,8 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Landed slices are in the Status line. Continue sequence A with 1b and, in parallel
-sessions, the independent slices (1c, 3, 8) and sequence B from 4a. Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Continue sequence A with 2a and, in parallel
+sessions, slice 3 and sequence B from 4a. Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
