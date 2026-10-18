@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
@@ -49,7 +48,7 @@ import {
 import { ndjsonLine } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import { storageFileExists, writeStorageFile } from "./storage.ts";
+import { writeContentAsset } from "../http/contentAsset.ts";
 
 export { CHARX_IMPORT_PATH };
 
@@ -73,7 +72,7 @@ type CharxPlanEntry = {
 };
 
 /** A validated file: its entries in file order, and how many asset entries will be read. */
-type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
+export type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
 
 /**
  * `POST /api/import/charx` (historical `docs/plan/large-asset-import.md` slice 2d): a CharX file (a zip, or a
@@ -125,89 +124,96 @@ export function registerCharxImportRoutes(
             stagingPrefix: "charx",
             fileName: "file.charx",
             missingBody: "CharX body required",
-            prepare: planCharxFile,
+            prepare: (handle) => planCharxFile(handle),
             refusal,
-            lines,
+            lines: (plan, stream) => charxLines({ savePath, snapshots, diagnostics }, plan, stream),
         }),
     );
+}
 
-    // Never throws once the stream has started (a failure is the last line), and sends its last
-    // line once `finalize` has run, as the module import does.
-    async function* lines(
-        { entries, total }: CharxFilePlan,
-        { handle, signal, finalize }: FileImportStream,
-    ): AsyncGenerator<Uint8Array> {
-        try {
-            let card: string | null = null;
-            let moduleData: string | null = null;
-            // No prototype: an entry may be named `__proto__`.
-            const assets: Record<string, string> = Object.create(null);
-            const excluded: string[] = [];
-            let done = 0;
-            let lastLine = performance.now();
-            for (const entry of entries) {
-                if (signal.aborted) {
+/** What a CharX read needs beyond its file: the storage, its maintenance gate, and the journal. */
+export type CharxLinesDeps = {
+    savePath: string;
+    snapshots: SnapshotManager;
+    diagnostics?: DiagnosticsRecorder;
+};
+
+/**
+ * The CharX import's lines (see the route comment), shared with the Realm download
+ * (`routes/importRealm.ts`): `phase` names the diagnostics lifecycle event (`charxImport` by
+ * default) and `kind`, when given, is added to the result line. Never throws once the stream has
+ * started (a failure is the last line), and sends its last line once `finalize` has run, as the
+ * module import does.
+ */
+export async function* charxLines(
+    { savePath, snapshots, diagnostics }: CharxLinesDeps,
+    { entries, total }: CharxFilePlan,
+    { handle, signal, finalize }: FileImportStream,
+    options: { phase?: "charxImport" | "realmImport"; kind?: "charx" } = {},
+): AsyncGenerator<Uint8Array> {
+    try {
+        let card: string | null = null;
+        let moduleData: string | null = null;
+        // No prototype: an entry may be named `__proto__`.
+        const assets: Record<string, string> = Object.create(null);
+        const excluded: string[] = [];
+        let done = 0;
+        let lastLine = performance.now();
+        for (const entry of entries) {
+            if (signal.aborted) {
+                return;
+            }
+            if (entry.excluded) {
+                excluded.push(entry.name);
+                continue;
+            }
+            if (entry.kind === "ignored") {
+                continue;
+            }
+            const bytes = await readEntry(handle, entry);
+            if (bytes === null) {
+                excluded.push(entry.name);
+            } else if (entry.kind === "card") {
+                card = decodeCharxCard(bytes);
+            } else if (entry.kind === "module") {
+                moduleData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+            } else {
+                // The client's key (`saveAsset` with its default extension; decision 4).
+                const key = await writeContentAsset(savePath, snapshots, bytes, signal);
+                if (key === null) {
                     return;
                 }
-                if (entry.excluded) {
-                    excluded.push(entry.name);
-                    continue;
-                }
-                if (entry.kind === "ignored") {
-                    continue;
-                }
-                const bytes = await readEntry(handle, entry);
-                if (bytes === null) {
-                    excluded.push(entry.name);
-                } else if (entry.kind === "card") {
-                    card = decodeCharxCard(bytes);
-                } else if (entry.kind === "module") {
-                    moduleData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-                } else {
-                    // The client's key (`saveAsset` with its default extension; decision 4).
-                    const key = `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
-                    if (!(await storageFileExists(savePath, key))) {
-                        if (signal.aborted) {
-                            return;
-                        }
-                        const leave = snapshots.gate.enter();
-                        try {
-                            await writeStorageFile(savePath, key, bytes);
-                        } finally {
-                            leave();
-                        }
-                    }
-                    assets[entry.name] = key;
-                }
-                if (entry.kind === "asset") {
-                    done += 1;
-                    const now = performance.now();
-                    if (done === total || now - lastLine >= PROGRESS_INTERVAL_MS) {
-                        lastLine = now;
-                        yield ndjsonLine({ done, total } satisfies CharxImportProgress);
-                    }
+                assets[entry.name] = key;
+            }
+            if (entry.kind === "asset") {
+                done += 1;
+                const now = performance.now();
+                if (done === total || now - lastLine >= PROGRESS_INTERVAL_MS) {
+                    lastLine = now;
+                    yield ndjsonLine({ done, total } satisfies CharxImportProgress);
                 }
             }
-            const result = ndjsonLine({ card, moduleData, assets, excluded } satisfies CharxImportResult);
-            recordSafely(diagnostics, { kind: "lifecycle", phase: "charxImport" });
-            await finalize();
-            yield result;
-        } catch (error) {
-            const known = error instanceof MaintenanceError || error instanceof CharxFileError;
-            if (!known) {
-                console.error("[Server] CharX import failed:", error);
-            }
-            await finalize();
-            const message =
-                error instanceof MaintenanceError
-                    ? error.message
-                    : error instanceof CharxFileError
-                      ? INVALID_CHARX_FILE
-                      : "Import failed";
-            yield ndjsonLine({ error: message } satisfies CharxImportFailure);
-        } finally {
-            await finalize();
         }
+        const fields = { card, moduleData, assets, excluded } satisfies CharxImportResult;
+        const result = ndjsonLine(options.kind ? { kind: options.kind, ...fields } : fields);
+        recordSafely(diagnostics, { kind: "lifecycle", phase: options.phase ?? "charxImport" });
+        await finalize();
+        yield result;
+    } catch (error) {
+        const known = error instanceof MaintenanceError || error instanceof CharxFileError;
+        if (!known) {
+            console.error("[Server] CharX import failed:", error);
+        }
+        await finalize();
+        const message =
+            error instanceof MaintenanceError
+                ? error.message
+                : error instanceof CharxFileError
+                  ? INVALID_CHARX_FILE
+                  : "Import failed";
+        yield ndjsonLine({ error: message } satisfies CharxImportFailure);
+    } finally {
+        await finalize();
     }
 }
 
@@ -216,7 +222,7 @@ export function registerCharxImportRoutes(
  * end records, the central directory, and each local header and data descriptor (never an entry's
  * bytes). Throws `CharxFileError` for a file the route refuses.
  */
-async function planCharxFile(handle: FileHandle): Promise<CharxFilePlan> {
+export async function planCharxFile(handle: FileHandle): Promise<CharxFilePlan> {
     const size = (await handle.stat()).size;
     const tailLength = Math.min(size, ZIP_END_SEARCH_BYTES);
     const end = findZipEnd(await readAt(handle, new Uint8Array(tailLength), size - tailLength), size - tailLength);

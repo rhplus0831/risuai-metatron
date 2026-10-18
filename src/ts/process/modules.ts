@@ -391,6 +391,8 @@ export type ServerImportTexts = {
     requestFailed: string;
     /** A failure line (`{{error}}`). */
     stopped: string;
+    /** A network failure (the Realm download's own text); default the module import's upload text. */
+    interrupted?: string;
 };
 
 /**
@@ -433,7 +435,7 @@ export function serverImportErrorMessage(error: unknown, texts: ServerImportText
         return texts.stopped.replace("{{error}}", error.message);
     }
     if (error instanceof TypeError) {
-        return language.moduleImportInterrupted;
+        return texts.interrupted ?? language.moduleImportInterrupted;
     }
     console.error(error);
     return language.errors.noData;

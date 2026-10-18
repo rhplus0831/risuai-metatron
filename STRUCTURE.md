@@ -77,7 +77,12 @@ Data and persistence:
   server's CharX reader (`shared/charxImport.ts`, `POST /api/import/charx`) is a
   second reader of `.charx`/`charxJpeg`: it delimits entries by the central directory
   where the in-tab `CharXImporter` scans for signatures (the intended difference); both
-  apply the same entry rules. Never
+  apply the same entry rules. The server's PNG card reader
+  (`server/src/routes/importPng.ts`, the Realm download) is a second reader of `.png`
+  cards: keep its chunk rules, asset bytes and keys (base64 decoded by the tab's `buffer`
+  package), and trimmed image byte-identical to `PngChunk.readGenerator` and
+  `importCharacterProcess`; it refuses more than the tab does (no PNG signature, a
+  truncated chunk, no card chunk, size and count caps: the intended difference). Never
   renumber `LLMFlags`, `LLMFormat`, `LLMProvider`, `LLMTokenizer`, or rename persisted
   discriminator values.
 

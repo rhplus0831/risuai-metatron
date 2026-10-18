@@ -5,7 +5,7 @@ import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
-const hubURL = "https://sv.risuai.xyz";
+const DEFAULT_HUB_URL = "https://sv.risuai.xyz";
 
 // fetch() already decoded the body, so the upstream length/encoding/framing no longer apply.
 const strippedProxyResponseHeaders = [
@@ -142,9 +142,12 @@ export function registerProxyRoutes(
         llmSecrets: () => Record<string, unknown> | null;
         /** Resolve a stored profile's credential binding; no store reads belong in this route. */
         auxCredential?: (profileId: string) => AuxCredential;
+        /** The `/hub-proxy` target (tests replace it); default `https://sv.risuai.xyz`. */
+        hubURL?: string;
     },
 ) {
     const { auth, limiter, clientIp, llmSecrets } = arg;
+    const hubURL = arg.hubURL ?? DEFAULT_HUB_URL;
 
     /**
      * A `risu-aux-op` request (`server/src/llm/auxOps.ts`): JWT only, the row's exact endpoint, the
@@ -367,17 +370,15 @@ export function registerProxyRoutes(
     app.post("/proxy", limiter, reverseProxy("POST"));
     app.post("/proxy2", limiter, reverseProxy("POST"));
 
-    /** Realm hub proxy (GET only, no auth). */
+    /**
+     * Realm hub proxy (GET only, no auth): only ever the hub. The path and query after `/hub-proxy`
+     * go to `hubURL`; one redirect within the hub's origin is followed, and a redirect elsewhere (the
+     * hub's documentation links) is answered to the browser as it is, never fetched by this server.
+     */
     app.get("/hub-proxy/*", limiter, async (c) => {
         try {
-            const pathHeader = c.req.header("x-risu-node-path");
-            let externalURL: string;
-            if (pathHeader) {
-                externalURL = decodeURIComponent(pathHeader);
-            } else {
-                const url = new URL(c.req.url);
-                externalURL = hubURL + url.pathname.replace(/^\/hub-proxy/, "") + url.search;
-            }
+            const url = new URL(c.req.url);
+            const externalURL = hubURL + url.pathname.replace(/^\/hub-proxy/, "") + url.search;
 
             const headersToSend = Object.fromEntries(c.req.raw.headers);
             delete headersToSend.host;
@@ -399,9 +400,13 @@ export function registerProxyRoutes(
             let response = await request(externalURL);
             const location = response.headers.get("location");
             if (response.status >= 300 && response.status < 400 && location) {
-                // Follow exactly one redirect; relative locations resolve against the first URL.
-                await response.body?.cancel().catch(() => {});
-                response = await request(new URL(location, externalURL).toString());
+                // Follow exactly one redirect, and only within the hub's origin; relative locations
+                // resolve against the first URL.
+                const next = new URL(location, externalURL);
+                if (next.origin === new URL(hubURL).origin) {
+                    await response.body?.cancel().catch(() => {});
+                    response = await request(next.toString());
+                }
             }
 
             const body = ownBody(nullBodyStatuses.has(response.status) ? null : response.body, {

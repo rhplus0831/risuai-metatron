@@ -19,7 +19,9 @@ import { makeStaging, spool } from "./spool.ts";
  * 2. The lifetime is tracked (`snapshots.track`; 503 once shutdown stopped admissions), the slot
  *    taken, and the body spooled to `save/.tmp/<prefix>-<uuid>/<fileName>` under `maxImportBytes`
  *    (413 past it), then opened (`fs.open`, read-only) and validated by the route (`prepare`) before
- *    anything is written. A client gone by then is 400 `Request aborted`.
+ *    anything is written. A client gone by then is 400 `Request aborted`. A route with a `source`
+ *    (the Realm download) has no declared-length or missing-body refusal: once the slot is taken it
+ *    opens its source, whose body is spooled under the source's own cap, and the finalizer cancels it.
  * 3. The 200 answer is `application/x-ndjson` and `no-store`, streamed from the route's generator
  *    (`lines`), which never throws: a failure is its last line.
  *
@@ -50,22 +52,46 @@ export type FileImportDeps = {
     slot: ImportSlot;
 };
 
-/** What a route's lines get: the spooled file, the request's signal, and the finalizer to await before the last line. */
+/**
+ * What a route's lines get: the spooled file, its staging folder (removed by the finalizer, so a
+ * route may stage more files there), the request's signal, and the finalizer to await before the
+ * last line.
+ */
 export type FileImportStream = {
     handle: FileHandle;
+    staging: string;
     signal: AbortSignal;
     finalize: () => Promise<void>;
 };
 
-export type FileImportRoute<Plan> = {
+/**
+ * Where a route's file comes from when it is not the request body (the Realm download): the bytes to
+ * spool, the cap they are spooled under, what the route's `prepare` needs to know about them, and
+ * `cancel`, which stops the source (an upstream body) and is called by the finalizer.
+ */
+export type FileImportSource<Meta> = {
+    body: ReadableStream<Uint8Array>;
+    limit: number;
+    meta: Meta;
+    cancel(): void;
+};
+
+export type FileImportRoute<Plan, Meta = undefined> = {
     /** The staging folder's prefix: `<prefix>-<uuid>` under `save/.tmp`. */
     stagingPrefix: string;
     /** The spooled file's name in that folder. */
     fileName: string;
-    /** The 400 `error` text for a request without a body. */
+    /** The 400 `error` text for a request without a body (a route with a `source` never sends it). */
     missingBody: string;
+    /**
+     * The file's source when it is not the request body: called once the import holds the slot and
+     * its lifetime is tracked, before anything is spooled. A `Response` is the answer (a refusal); a
+     * throw goes to `refusal`. Without it the request body is the file, under `maxImportBytes` and
+     * its declared length.
+     */
+    source?(c: Context<AppEnv>, signal: AbortSignal): Promise<FileImportSource<Meta> | Response>;
     /** Validates the whole spooled file before anything is written; throws to refuse it. */
-    prepare(handle: FileHandle): Promise<Plan>;
+    prepare(handle: FileHandle, meta: Meta, signal: AbortSignal): Promise<Plan>;
     /**
      * The answer to an error a step before the stream threw, or null for one the route does not know:
      * a `MaintenanceError` is then a 503 with `Retry-After: 5`, any other error the app's 500.
@@ -76,19 +102,21 @@ export type FileImportRoute<Plan> = {
 };
 
 /** Serves one file import request (see the file comment). Call it after the route's limiter. */
-export async function serveFileImport<Plan>(
+export async function serveFileImport<Plan, Meta = undefined>(
     c: Context<AppEnv>,
     deps: FileImportDeps,
-    route: FileImportRoute<Plan>,
+    route: FileImportRoute<Plan, Meta>,
 ): Promise<Response> {
     const { savePath, snapshots, auth, maxImportBytes, slot } = deps;
     const denied = await auth.checkAuth(c);
     if (denied) {
         return denied;
     }
-    const declared = Number(c.req.header("content-length") ?? "0");
-    if (declared > maxImportBytes) {
-        return c.json({ error: "File too large" }, 413);
+    if (!route.source) {
+        const declared = Number(c.req.header("content-length") ?? "0");
+        if (declared > maxImportBytes) {
+            return c.json({ error: "File too large" }, 413);
+        }
     }
     if (slot.busy) {
         return c.json({ error: "Another import is running" }, 409);
@@ -96,13 +124,16 @@ export async function serveFileImport<Plan>(
     if (snapshots.gate.active) {
         return refuse(c, new MaintenanceError(), route);
     }
-    const body = c.req.raw.body;
-    if (!body) {
+    const requestBody = c.req.raw.body;
+    if (!route.source && !requestBody) {
         return c.json({ error: route.missingBody }, 400);
     }
 
-    // The import's lifetime (spool, validation, and stream) is tracked, so shutdown waits for it.
-    const signal = c.req.raw.signal;
+    // The import's lifetime (spool, validation, and stream) is tracked, so shutdown waits for it. Its
+    // signal aborts when the request does or when the answer is cancelled (before the generator is
+    // returned, so a step in progress stops at its next check).
+    const cancelled = new AbortController();
+    const signal = AbortSignal.any([c.req.raw.signal, cancelled.signal]);
     let release!: () => void;
     const lifetime = new Promise<void>((resolve) => (release = resolve));
     try {
@@ -113,9 +144,15 @@ export async function serveFileImport<Plan>(
     slot.busy = true;
     let staging: string | null = null;
     let handle: FileHandle | null = null;
+    let cancelSource: (() => void) | null = null;
     let finalized: Promise<void> | null = null;
     const finalize = () =>
         (finalized ??= (async () => {
+            try {
+                cancelSource?.();
+            } catch {
+                // The source is stopped as far as it can be.
+            }
             await handle?.close().catch(() => {});
             if (staging) {
                 await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
@@ -126,16 +163,32 @@ export async function serveFileImport<Plan>(
 
     let file: FileHandle;
     let plan: Plan;
+    let stagingFolder: string;
     try {
-        staging = await makeStaging(path.join(savePath, ".tmp"), route.stagingPrefix);
-        const spooled = path.join(staging, route.fileName);
-        if (!(await spool(body, spooled, maxImportBytes))) {
+        stagingFolder = await makeStaging(path.join(savePath, ".tmp"), route.stagingPrefix);
+        staging = stagingFolder;
+        let body: ReadableStream<Uint8Array>;
+        let limit = maxImportBytes;
+        let meta = undefined as Meta;
+        if (route.source) {
+            const source = await route.source(c, signal);
+            if (source instanceof Response) {
+                await finalize();
+                return source;
+            }
+            cancelSource = () => source.cancel();
+            ({ body, limit, meta } = source);
+        } else {
+            body = requestBody!;
+        }
+        const spooled = path.join(stagingFolder, route.fileName);
+        if (!(await spool(body, spooled, limit))) {
             await finalize();
             return c.json({ error: "File too large" }, 413);
         }
         file = await fs.open(spooled, "r");
         handle = file;
-        plan = await route.prepare(file);
+        plan = await route.prepare(file, meta, signal);
     } catch (error) {
         await finalize();
         return refuse(c, error, route);
@@ -145,7 +198,7 @@ export async function serveFileImport<Plan>(
         return c.json({ error: "Request aborted" }, 400);
     }
 
-    const iterator = route.lines(plan, { handle: file, signal, finalize });
+    const iterator = route.lines(plan, { handle: file, staging: stagingFolder, signal, finalize });
     signal.addEventListener(
         "abort",
         () => {
@@ -158,11 +211,14 @@ export async function serveFileImport<Plan>(
     );
     c.header("Content-Type", "application/x-ndjson");
     c.header("Cache-Control", "no-store");
-    return c.body(iteratorStream(iterator, finalize), 200);
+    return c.body(
+        iteratorStream(iterator, finalize, () => cancelled.abort()),
+        200,
+    );
 }
 
 /** The route's answer to a refusal before the stream started; maintenance is a 503, any other error the app's 500. */
-function refuse<Plan>(c: Context<AppEnv>, error: unknown, route: FileImportRoute<Plan>): Response {
+function refuse<Plan, Meta>(c: Context<AppEnv>, error: unknown, route: FileImportRoute<Plan, Meta>): Response {
     const answer = route.refusal(c, error);
     if (answer) {
         return answer;

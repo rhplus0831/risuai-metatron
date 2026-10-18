@@ -35,6 +35,7 @@
   - `UserSettings.svelte`: local backup buttons, internal backup restore, dataset export.
 - PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
 - Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
+- Realm download: `downloadRisuHub(id)` asks the server to download the card (`importRealmOverServer`, `POST /api/import/realm`, `self-host-server.md`); the tab never fetches realm.risuai.net or holds the file. The server reads a CharX or PNG card, stores its assets, and answers the card text and stored keys, from which the tab builds the character (`importCharxCard`/`importPngCard` in `characterCards.ts`); a legacy JSON answer is passed through and imported in hub mode as before (its portrait and hub-mode assets fetched through `/hub-proxy`). The lowLevelAccess confirmation and an `rcc` card's password still come after the server stored the assets and the image.
 
 ## State
 

@@ -140,8 +140,6 @@ describe("CharX files through the server and real records", () => {
         "share",
         "deep link",
         "launch queue",
-        "Realm zip",
-        "Realm charx",
     ])("%s uploads the File/Blob once and persists embedded assets and module fields", async (entry) => {
         const b = await boot();
         const module = await b.modules.exportModuleLegacy(embedded as any, { saveData: false, alertEnd: false });
@@ -153,7 +151,7 @@ describe("CharX files through the server and real records", () => {
         const response = new Response(new Uint8Array(zip), {
             headers: {
                 "content-disposition": 'attachment; filename="uploaded.charx"',
-                "content-type": entry === "Realm zip" ? "application/zip" : "application/charx",
+                "content-type": "application/charx",
             },
         });
         // Response.blob() is a different realm's Blob in this harness. The importer must
@@ -161,7 +159,7 @@ describe("CharX files through the server and real records", () => {
         const downloaded = await response.blob();
         vi.spyOn(response, "blob").mockResolvedValue(downloaded);
         const responseRead = vi.spyOn(response, "arrayBuffer");
-        const input = ["share", "deep link", "Realm zip", "Realm charx"].includes(entry) ? downloaded : file;
+        const input = ["share", "deep link"].includes(entry) ? downloaded : file;
         const wholeRead = vi.spyOn(input, "arrayBuffer");
         const fileReader = vi.spyOn(FileReader.prototype, "readAsArrayBuffer");
         const before = b.ids();
@@ -180,12 +178,6 @@ describe("CharX files through the server and real records", () => {
             await b.cards.characterURLImport();
             setConsumer.mock.calls[0][0]({ files: [{ name: file.name, getFile: async () => file }] });
             await vi.advanceTimersByTimeAsync(0);
-        } else if (entry.startsWith("Realm")) {
-            vi.stubGlobal(
-                "fetch",
-                vi.fn(async () => response),
-            );
-            await b.cards.downloadRisuHub("fixture");
         } else {
             vi.stubGlobal(
                 "location",

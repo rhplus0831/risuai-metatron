@@ -43,6 +43,7 @@ import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } fr
 import { registerGenerationRoutes } from "./routes/generations.ts";
 import { CHARX_IMPORT_PATH, registerCharxImportRoutes } from "./routes/importCharx.ts";
 import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
+import { REALM_IMPORT_PATH, registerRealmImportRoutes } from "./routes/importRealm.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
 import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/translate.ts";
 import { createTranslationRunner } from "./translation/runner.ts";
@@ -94,6 +95,8 @@ export function createServerContext(options: {
     generationRandom?: () => number;
     /** Web Push delivery (tests inject one; the default is `web-push`). */
     pushTransport?: PushTransport;
+    /** The Realm download's origin and the `/hub-proxy` target (tests replace them). */
+    realm?: { downloadOrigin?: string; hubURL?: string };
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -384,9 +387,12 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too.
         const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
-        // The module and CharX imports are refused like the backup routes.
+        // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
-        const fileImport = fileImportRoute === MODULE_IMPORT_PATH || fileImportRoute === CHARX_IMPORT_PATH;
+        const fileImport =
+            fileImportRoute === MODULE_IMPORT_PATH ||
+            fileImportRoute === CHARX_IMPORT_PATH ||
+            fileImportRoute === REALM_IMPORT_PATH;
         // The request history and the diagnostics: refused during shutdown (the history's store closes at
         // dispose), and every answer is `no-store`, the limiter's 429 and the body limit's 413 included.
         const history =
@@ -424,9 +430,9 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    // The script transform's, the translation's, the push subscription's, the diagnostic report's, and
-    // the request history share's routes authenticate first and cap their bodies themselves (8 MiB,
-    // 16 KiB, 16 KiB, 1 MiB, 4 KiB).
+    // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
+    // request history share's, and the Realm import's routes cap their bodies themselves (8 MiB,
+    // 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -434,6 +440,7 @@ export function createServerContext(options: {
                 (route === BACKUP_IMPORT_PATH ||
                     route === MODULE_IMPORT_PATH ||
                     route === CHARX_IMPORT_PATH ||
+                    route === REALM_IMPORT_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
@@ -468,6 +475,7 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         clientIp,
+        hubURL: options.realm?.hubURL,
         llmSecrets: () =>
             llmSecretsKind
                 ? ((resources.get(llmSecretsKind, SINGLETON_RESOURCE_ID)?.data as
@@ -573,7 +581,7 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
     });
-    // One module or CharX import at a time: both hold a spooled file and a write loop.
+    // One module, CharX, or Realm import at a time: each holds a spooled file and a write loop.
     const importSlot = createImportSlot();
     registerModuleImportRoutes(app, {
         savePath,
@@ -592,6 +600,16 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
         slot: importSlot,
+    });
+    registerRealmImportRoutes(app, {
+        savePath,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maxImportBytes,
+        diagnostics,
+        slot: importSlot,
+        realmOrigin: options.realm?.downloadOrigin,
     });
 
     diagnostics.record({ kind: "lifecycle", phase: "boot" });

@@ -51,7 +51,10 @@ import {
 } from "./process/modules";
 import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/assetQueue";
 import { importCharxOverServer } from "./storage/charxImportClient";
+import { importRealmOverServer } from "./storage/realmImportClient";
+import { ServerImportRequestError } from "./storage/serverImportClient";
 import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
+import { REALM_DOWNLOAD_FAILED, type RealmImportResult } from "../../shared/realmImport.ts";
 
 export const hubURL = "/hub-proxy";
 
@@ -153,35 +156,14 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             moduleData = stored.moduleData === null ? null : Buffer.from(stored.moduleData, "base64");
             assets = stored.assets;
         }
-        if (!cardData) {
-            alertError(language.errors.noData);
-            return;
-        }
-        const card: CharacterCardV3 = JSON.parse(cardData);
-        if (card.spec !== "chara_card_v3") {
-            alertError(language.errors.noData);
-            return;
-        }
-        let lorebook: loreBook[] = null;
-        if (moduleData) {
-            const md = await readModule(moduleData);
-            card.data.extensions ??= {};
-            card.data.extensions.risuai ??= {};
-            card.data.extensions.risuai.triggerscript = md.trigger ?? [];
-            card.data.extensions.risuai.customScripts = md.regex ?? [];
-            if (md.lorebook) {
-                lorebook = md.lorebook;
+        const readAssets = async () => {
+            if (importer) {
+                await importer.done();
+                return importer.assets;
             }
-        }
-        if (importer) {
-            await importer.done();
-            assets = importer.assets;
-        }
-        let v = await importCharacterCardSpec(card, undefined, "normal", assets, lorebook, f.returnCharacter);
-        if (f.returnCharacter) {
-            return v as any;
-        }
-        return (v || null) as any;
+            return assets;
+        };
+        return (await importCharxCard(cardData, moduleData, readAssets, f.returnCharacter)) as any;
     }
 
     if (!f.name.endsWith("png")) {
@@ -290,6 +272,62 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         return;
     }
 
+    return (await importPngCard(readedChara, img, assets)) as any;
+}
+
+/**
+ * Builds the character of a CharX file from its read parts, the in-tab `CharXImporter`'s or the
+ * server's (`importCharxOverServer`, the Realm download): the card's text, the embedded module's
+ * bytes, and `readAssets`, which answers each asset entry's stored key (read only once the card and
+ * the module are read). Returns the new character's id (with `returnCharacter`, the character), or
+ * null/undefined once the failure is alerted.
+ */
+async function importCharxCard(
+    cardData: string | null | undefined,
+    moduleData: Buffer | null,
+    readAssets: () => Promise<{ [key: string]: string }>,
+    returnCharacter?: boolean,
+): Promise<character | string | false | null | undefined> {
+    if (!cardData) {
+        alertError(language.errors.noData);
+        return;
+    }
+    const card: CharacterCardV3 = JSON.parse(cardData);
+    if (card.spec !== "chara_card_v3") {
+        alertError(language.errors.noData);
+        return;
+    }
+    let lorebook: loreBook[] = null;
+    if (moduleData) {
+        const md = await readModule(moduleData);
+        card.data.extensions ??= {};
+        card.data.extensions.risuai ??= {};
+        card.data.extensions.risuai.triggerscript = md.trigger ?? [];
+        card.data.extensions.risuai.customScripts = md.regex ?? [];
+        if (md.lorebook) {
+            lorebook = md.lorebook;
+        }
+    }
+    const assets = await readAssets();
+    const v = await importCharacterCardSpec(card, undefined, "normal", assets, lorebook, returnCharacter);
+    if (returnCharacter) {
+        return v;
+    }
+    return v || null;
+}
+
+/**
+ * Builds the character of a PNG card from its read parts, the in-tab reader's or the server's (the
+ * Realm download): the card chunk's text (`ccv3`, else `chara`: base64 JSON, or an `rcc||` card), the
+ * image without its text chunks (bytes, or the key the server stored it under), and each asset
+ * chunk's stored key by index. Returns the new character's id, or null/undefined once the failure is
+ * alerted.
+ */
+async function importPngCard(
+    readedChara: string,
+    img: Uint8Array | string,
+    assets: { [key: string]: string },
+): Promise<string | false | null | undefined> {
     if (readedChara.startsWith("rcc||")) {
         const parts = readedChara.split("||");
         const type = parts[1];
@@ -315,7 +353,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
                         const charaData: CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString("utf-8"));
                         const imported = await importCharacterCardSpec(charaData, img, "normal", assets);
                         if (imported) {
-                            return imported as any;
+                            return imported;
                         } else {
                             throw new Error("Error while importing");
                         }
@@ -330,7 +368,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
                     const charaData: CharacterCardV2Risu = JSON.parse(Buffer.from(decrypted).toString("utf-8"));
                     const imported = await importCharacterCardSpec(charaData, img, "normal", assets);
                     if (imported) {
-                        return imported as any;
+                        return imported;
                     }
                 } catch (error) {
                     alertError(language.errors.noData);
@@ -349,12 +387,12 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
 
     if (parsed.spec !== "chara_card_v2" && parsed.spec !== "chara_card_v3") {
         const charaData: OldTavernChar = JSON.parse(Buffer.from(readedChara, "base64").toString("utf-8"));
-        const imgp = await saveAsset(img);
+        const imgp = typeof img === "string" ? img : await saveAsset(img);
         const chaId = addCharacter(convertOffSpecCards(charaData, imgp));
         alertNormal(language.importedCharacter);
-        return chaId as any;
+        return chaId;
     }
-    return ((await importCharacterCardSpec(parsed, img, "normal", assets)) || null) as any;
+    return (await importCharacterCardSpec(parsed, img, "normal", assets)) || null;
 }
 
 /** The alert for a CharX upload that failed (slice 2d); `Invalid character file` is `noData`. */
@@ -364,6 +402,27 @@ function charxImportErrorMessage(error: unknown): string {
         fileTooLarge: language.charxImportFileTooLarge,
         requestFailed: language.charxImportRequestFailed,
         stopped: language.charxImportStopped,
+    });
+}
+
+/**
+ * The alert for a Realm download that failed: a download the server could not make is its own text;
+ * a Realm refusal is Realm's text (a 502 with it); `Invalid character file` is `noData`.
+ */
+function realmImportErrorMessage(error: unknown): string {
+    if (
+        error instanceof ServerImportRequestError &&
+        error.status === 502 &&
+        error.serverError === REALM_DOWNLOAD_FAILED
+    ) {
+        return language.realmImportDownloadFailed;
+    }
+    return serverImportErrorMessage(error, {
+        invalidFile: INVALID_CHARX_FILE,
+        fileTooLarge: language.realmImportFileTooLarge,
+        requestFailed: language.realmImportRequestFailed,
+        stopped: language.realmImportStopped,
+        interrupted: language.realmImportInterrupted,
     });
 }
 
@@ -749,7 +808,7 @@ async function saveEmbeddedAssets(
 
 async function importCharacterCardSpec<T extends boolean = false>(
     card: CharacterCardV2Risu | CharacterCardV3,
-    img?: Uint8Array,
+    img?: Uint8Array | string,
     mode: "hub" | "normal" = "normal",
     assetDict: { [key: string]: string } = {},
     overrideLorebook: loreBook[] = null,
@@ -762,7 +821,8 @@ async function importCharacterCardSpec<T extends boolean = false>(
     console.log(`Importing ${card.spec}, mode is ${mode}`);
 
     const data = card.data;
-    let im = img ? await saveAsset(img) : undefined;
+    // A string is the key the server already stored the image under (the Realm download).
+    let im = typeof img === "string" ? img : img ? await saveAsset(img) : undefined;
     const risuext = safeStructuredClone(data.extensions.risuai);
     let emotions: [string, string][] = [];
     let bias: [string, number][] = [];
@@ -1828,36 +1888,35 @@ export async function downloadRisuHub(
                 msg: "Downloading...",
             });
         }
-        const res = await fetch("https://realm.risuai.net/api/v1/download/dynamic/" + id + "?cors=true", {
-            headers: {
-                "x-risu-api-version": "4",
-            },
-        });
-        if (res.status !== 200) {
-            alertError(await res.text());
+        // The server downloads the card, stores its assets, and answers the read parts
+        // (`POST /api/import/realm`): the tab never fetches Realm or holds the file.
+        let download: RealmImportResult;
+        try {
+            download = await importRealmOverServer(id, {
+                onProgress: (done, total) => {
+                    alertWait(`Loading... (Saving Assets ${done}/${total})`);
+                },
+            });
+        } catch (error) {
+            alertError(realmImportErrorMessage(error));
             return;
         }
 
-        if (
-            res.headers.get("content-type") === "image/png" ||
-            res.headers.get("content-type") === "application/zip" ||
-            res.headers.get("content-type") === "application/charx"
-        ) {
-            let imported: string | null;
-            if (
-                res.headers.get("content-type") === "application/zip" ||
-                res.headers.get("content-type") === "application/charx"
-            ) {
-                // The answer's `Blob`, uploaded as it is to the server's CharX import (slice 2d).
-                imported = await importCharacterProcess({
-                    name: "realm.charx",
-                    data: await res.blob(),
-                });
+        if (download.kind !== "json") {
+            incrementStatic("imports");
+            let imported: string | null | undefined | false;
+            if (download.kind === "charx") {
+                const { card, moduleData, assets } = download;
+                imported = (await importCharxCard(
+                    card,
+                    moduleData === null ? null : Buffer.from(moduleData, "base64"),
+                    async () => assets,
+                )) as string | null | undefined;
+            } else if (download.card === null) {
+                alertError(language.errors.noData);
+                imported = null;
             } else {
-                imported = await importCharacterProcess({
-                    name: "realm.png",
-                    data: res.body,
-                });
+                imported = await importPngCard(download.card, download.image, download.assets);
             }
             checkCharOrder();
             if (imported && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
@@ -1866,7 +1925,7 @@ export async function downloadRisuHub(
             return;
         }
 
-        const result = await res.json();
+        const result = JSON.parse(download.body);
         const data: CharacterCardV3 = result.card;
         const img: string = result.img;
 

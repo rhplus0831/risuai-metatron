@@ -108,6 +108,7 @@ export const LIFECYCLE_PHASES = [
     "import",
     "moduleImport",
     "charxImport",
+    "realmImport",
 ] as const;
 
 /** The model of a request whose id is not in the built-in catalog (a custom or user-entered model). */
@@ -277,6 +278,7 @@ export const ROUTE_TEMPLATES = [
     "/api/backups/:id/restore",
     "/api/import/module",
     "/api/import/charx",
+    "/api/import/realm",
     "/proxy",
     "/proxy2",
     "/hub-proxy/*",
