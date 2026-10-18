@@ -1024,6 +1024,20 @@ interface SafeMutationObserver {
 // ============================================================================
 
 /**
+ * What an `onStorageDiscarded` listener receives: the storage keys whose unsaved value another tab's
+ * or device's write replaced.
+ */
+interface StorageDiscardedEvent {
+    type: "storageDiscarded";
+    /** Keys of `risuai.pluginStorage` */
+    pluginStorage: string[];
+    /** Keys of `getLocalPluginStorage()` */
+    localPluginStorage: string[];
+    /** Whether other values were replaced too, such as custom keys written through `setDatabase` (their names are not listed) */
+    customStorage: boolean;
+}
+
+/**
  * Plugin-specific storage that syncs with save files
  *
  * **All methods return Promises** due to iframe message passing.
@@ -1053,20 +1067,20 @@ interface PluginStorage {
      * Sets an item in storage
      * @param key - Storage key
      * @param value - Value to store (any JSON-serializable value)
-     * @returns Promise that resolves when item is stored
+     * @returns Promise that resolves when the write is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     setItem(key: string, value: any): Promise<void>;
 
     /**
      * Removes an item from storage
      * @param key - Storage key
-     * @returns Promise that resolves when item is removed
+     * @returns Promise that resolves when the removal is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     removeItem(key: string): Promise<void>;
 
     /**
      * Clears all items from storage
-     * @returns Promise that resolves when storage is cleared
+     * @returns Promise that resolves when the clear is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     clear(): Promise<void>;
 
@@ -1126,14 +1140,14 @@ interface SafeLocalPluginStorage {
      * Sets an item in storage
      * @param key - Storage key
      * @param value - Value to store (any JSON-serializable value)
-     * @returns Promise that resolves when item is stored
+     * @returns Promise that resolves when the write is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     setItem<T>(key: string, value: T): Promise<void>;
 
     /**
      * Removes an item from storage
      * @param key - Storage key
-     * @returns Promise that resolves when item is removed
+     * @returns Promise that resolves when the removal is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     removeItem(key: string): Promise<void>;
 
@@ -1145,7 +1159,7 @@ interface SafeLocalPluginStorage {
 
     /**
      * Clears all items from storage
-     * @returns Promise that resolves when storage is cleared
+     * @returns Promise that resolves when the clear is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     clear(): Promise<void>;
 }
@@ -2073,6 +2087,28 @@ interface RisuaiPluginAPI {
      * Registers an unload function called when plugin is unloaded
      */
     onUnload(func: () => void | Promise<void>): Promise<void>;
+
+    /**
+     * Registers a listener told when unsaved storage writes were discarded.
+     *
+     * Storage writes (`pluginStorage`, `getLocalPluginStorage()`, and the custom keys of
+     * `setDatabase`) resolve as soon as they are queued for background saving, not when they are saved. When
+     * another tab or device saved a different value under the same key first, this browser's
+     * unsaved values are replaced by the saved ones, and every listener is called once with the
+     * keys whose value was lost. Writes of different keys from two tabs are both kept and raise
+     * nothing. The storage is shared by all plugins, so the keys may be another plugin's.
+     * The listener is removed when the plugin unloads.
+     *
+     * @example
+     * ```typescript
+     * await risuai.onStorageDiscarded(async (event) => {
+     *     if (event.pluginStorage.includes('settings')) {
+     *         settings = await risuai.pluginStorage.getItem('settings');
+     *     }
+     * });
+     * ```
+     */
+    onStorageDiscarded(listener: (event: StorageDiscardedEvent) => void | Promise<void>): Promise<void>;
 
     /**
      * Gets the fetch logs

@@ -41,6 +41,7 @@ import {
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertReloadNotice, alertTerminal } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
+import { PLUGIN_STORAGE_KEY, SAFE_LOCAL_PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
 import { CHARACTER_SHAPE_FIELDS, normalizeCharacter } from "../../../shared/characters.ts";
@@ -294,6 +295,16 @@ const deferredHydrations = new Map<string, HydrationRecord>();
 type RemoteChangeListener = (kind: string, id: string) => void;
 const remoteChangeListeners = new Set<RemoteChangeListener>();
 /**
+ * What a conflict discarded of this client's unsaved `pluginStorage` edits: the keys of the two
+ * reserved dictionaries whose local value the server copy replaced, and whether any other top-level
+ * value (a `setDatabase` custom key, a reserved name replaced by a value that is no dictionary, or a
+ * reserved dictionary this client created, removed, or turned from a list into an object) was
+ * replaced too. Custom key names are not listed: reading them takes the plugin `db` permission.
+ */
+export type PluginStorageDiscard = { pluginStorage: string[]; localPluginStorage: string[]; customStorage: boolean };
+type PluginStorageDiscardListener = (lost: PluginStorageDiscard) => void;
+const pluginStorageDiscardListeners = new Set<PluginStorageDiscardListener>();
+/**
  * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
  * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
  * held unsent when the server's siblings had changed too; the entry waits for that local text to
@@ -350,6 +361,18 @@ export function onRemoteRecordApplied(listener: RemoteChangeListener): () => voi
     remoteChangeListeners.add(listener);
     return () => {
         remoteChangeListeners.delete(listener);
+    };
+}
+
+/**
+ * Registers a listener called after a conflict discarded unsaved `pluginStorage` edits of this
+ * client (the record's entry in the discard report, `flushResources`), with what it lost; it is
+ * not called when the conflict was merged (`mergeConcurrentChange`) or lost nothing.
+ */
+export function onPluginStorageDiscarded(listener: PluginStorageDiscardListener): () => void {
+    pluginStorageDiscardListeners.add(listener);
+    return () => {
+        pluginStorageDiscardListeners.delete(listener);
     };
 }
 
@@ -1736,6 +1759,11 @@ type RemoteItem = { kind: string; id: string; revision: string | null; data: unk
  */
 function acceptRemote(item: RemoteItem) {
     const key = recordKey(item.kind, item.id);
+    // What the plugins lose, taken before the mirror changes and told after the record is settled.
+    const lost =
+        item.kind === RESOURCE_KIND.pluginStorage && pluginStorageDiscardListeners.size > 0
+            ? pluginStorageLosses(key, item)
+            : null;
     quarantinedRecords.delete(key);
     applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
@@ -1755,6 +1783,19 @@ function acceptRemote(item: RemoteItem) {
             listener(item.kind, item.id);
         } catch (error) {
             console.error("[Save]", error);
+        }
+    }
+    if (lost) {
+        for (const listener of pluginStorageDiscardListeners) {
+            try {
+                listener({
+                    ...lost,
+                    pluginStorage: [...lost.pluginStorage],
+                    localPluginStorage: [...lost.localPluginStorage],
+                });
+            } catch (error) {
+                console.error("[Save]", error);
+            }
         }
     }
 }
@@ -1853,6 +1894,155 @@ function benignChanges(
     return changes;
 }
 
+/** The reserved `pluginStorage` dictionaries (`pluginStorageStore.svelte.ts`), merged key by key. */
+const PLUGIN_STORAGE_NAMESPACES = new Set([PLUGIN_STORAGE_KEY, SAFE_LOCAL_PLUGIN_STORAGE_KEY]);
+const CONFLICT = Symbol("conflict");
+
+/** An own data property, so an inherited name (`__proto__`, `constructor`) stays an ordinary key. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown) {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/**
+ * A reserved dictionary as the plugin storage module reads it (`dictionary`): an object as it is, a
+ * list as its entries (the first write converts it), an absent one empty; null for any other value.
+ */
+function dictionaryView(value: unknown): Record<string, unknown> | null {
+    if (value === ABSENT) {
+        return {};
+    }
+    if (Array.isArray(value)) {
+        return Object.fromEntries(Object.entries(value));
+    }
+    return isPlainObject(value) ? value : null;
+}
+
+/**
+ * A three-way merge of a dictionary's keys: a key the server holds as saved or as this client does
+ * is kept as this client has it; a key this client left as saved takes the server's value (ABSENT:
+ * removed); a key both changed, differently, goes to `mergeField` (null: a conflict, the default).
+ * Returns a fresh object of own keys, or null.
+ */
+function mergeDictionary(
+    base: Record<string, unknown>,
+    theirs: Record<string, unknown>,
+    ours: Record<string, unknown>,
+    mergeField: (field: string, base: unknown, theirs: unknown, ours: unknown) => unknown = () => CONFLICT,
+): Record<string, unknown> | null {
+    const merged: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(ours)) {
+        setOwn(merged, field, value);
+    }
+    for (const field of new Set([...Object.keys(base), ...Object.keys(theirs), ...Object.keys(ours)])) {
+        const [b, t, o] = [fieldOf(base, field), fieldOf(theirs, field), fieldOf(ours, field)];
+        if (isEqual(t, b) || isEqual(t, o)) {
+            continue;
+        }
+        const value = isEqual(o, b) ? t : mergeField(field, b, t, o);
+        if (value === CONFLICT) {
+            return null;
+        }
+        if (value === ABSENT) {
+            delete merged[field];
+        } else {
+            setOwn(merged, field, value);
+        }
+    }
+    return merged;
+}
+
+/**
+ * Both sides changed a top-level `pluginStorage` field: a reserved dictionary that both still hold as
+ * a dictionary (or neither has) is merged one level down; anything else is a conflict.
+ */
+function mergePluginNamespace(field: string, base: unknown, theirs: unknown, ours: unknown): unknown {
+    const saved = dictionaryView(base);
+    if (
+        !PLUGIN_STORAGE_NAMESPACES.has(field) ||
+        !saved ||
+        !(theirs === ABSENT || isPlainObject(theirs)) ||
+        !(ours === ABSENT || isPlainObject(ours))
+    ) {
+        return CONFLICT;
+    }
+    const merged = mergeDictionary(saved, dictionaryView(theirs)!, dictionaryView(ours)!);
+    if (!merged) {
+        return CONFLICT;
+    }
+    return ours === ABSENT && Object.keys(merged).length === 0 ? ABSENT : merged;
+}
+
+/**
+ * The `pluginStorage` record merged from a conflict, or null when it cannot be: every key the server
+ * changed against the saved base must be one this client did not touch, inside each reserved
+ * dictionary (`_pluginStorage`, `_safeLocalPluginStorage`) and at the top level (the `setDatabase`
+ * custom keys, each compared whole). A key both sides changed to different values conflicts.
+ */
+function mergePluginStorage(saved: unknown, remote: unknown, local: unknown): Record<string, unknown> | null {
+    if (!isPlainObject(saved) || !isPlainObject(remote) || !isPlainObject(local)) {
+        return null;
+    }
+    return mergeDictionary(saved, remote, local, mergePluginNamespace);
+}
+
+/** What a reserved `pluginStorage` name holds, apart from its entries. */
+function namespaceShape(value: unknown): "absent" | "list" | "dictionary" | "value" {
+    if (value === ABSENT) {
+        return "absent";
+    }
+    return Array.isArray(value) ? "list" : isPlainObject(value) ? "dictionary" : "value";
+}
+
+/** The keys this client changed against the base whose value the server copy does not hold. */
+function lostKeys(base: Record<string, unknown>, theirs: Record<string, unknown>, ours: Record<string, unknown>) {
+    return [...new Set([...Object.keys(base), ...Object.keys(theirs), ...Object.keys(ours)])].filter((field) => {
+        const [b, t, o] = [fieldOf(base, field), fieldOf(theirs, field), fieldOf(ours, field)];
+        return !isEqual(o, b) && !isEqual(o, t);
+    });
+}
+
+/**
+ * What replacing this client's `pluginStorage` with a server copy discards (`acceptRemote`): taken
+ * from the saved base (empty when this client never saved the record: a create race), the mirror,
+ * and the server copy. Null when nothing is lost.
+ */
+function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscard | null {
+    const projected = projectRecord(item.kind, item.id);
+    if (projected === undefined) {
+        return null;
+    }
+    const held = persisted.get(key);
+    let records: unknown[];
+    try {
+        records = [held ? JSON.parse(held.text) : {}, item.revision === null ? {} : item.data, JSON.parse(projected)];
+    } catch {
+        return null;
+    }
+    const [base, theirs, ours] = records.map((record) => (isPlainObject(record) ? record : {}));
+    const lost: PluginStorageDiscard = { pluginStorage: [], localPluginStorage: [], customStorage: false };
+    for (const field of lostKeys(base, theirs, ours)) {
+        if (!PLUGIN_STORAGE_NAMESPACES.has(field)) {
+            lost.customStorage = true;
+            continue;
+        }
+        const raw = [fieldOf(base, field), fieldOf(theirs, field), fieldOf(ours, field)];
+        const [b, t, o] = raw.map(dictionaryView);
+        // A reserved name holding something that is no dictionary was replaced as a custom value, and
+        // so was a dictionary whose own shape this client changed (created, removed, a list turned into
+        // an object) when the server copy has another: its entries may all be unchanged.
+        const [baseShape, theirShape, ourShape] = raw.map(namespaceShape);
+        if (t === null || o === null || (ourShape !== baseShape && ourShape !== theirShape)) {
+            lost.customStorage = true;
+        }
+        lost[field === PLUGIN_STORAGE_KEY ? "pluginStorage" : "localPluginStorage"] = lostKeys(
+            b ?? {},
+            t ?? {},
+            o ?? {},
+        );
+    }
+    return lost.pluginStorage.length > 0 || lost.localPluginStorage.length > 0 || lost.customStorage ? lost : null;
+}
+
 /**
  * A conflicting character or `statics` record whose server change this client can take
  * (`benignChanges`): a send job stamped the character (its `lastInteraction`), filled in a
@@ -1861,9 +2051,13 @@ function benignChanges(
  * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
  * the remote-change listeners (caches derived from the record). Not for a create, a delete, another
  * kind, a character whose reload already waits for its generation, or a taken field the mirror object
- * only inherits (`assignsInherited`).
+ * only inherits (`assignsInherited`). A `pluginStorage` record is merged key by key instead
+ * (`mergePluginStorageChange`), a create included.
  */
 function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
+    if (item.kind === RESOURCE_KIND.pluginStorage) {
+        return mergePluginStorageChange(item, key);
+    }
     const isCharacter = item.kind === RESOURCE_KIND.characters;
     if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
         return false;
@@ -1920,18 +2114,32 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
         }
         applyRaw(COLLECTION_KIND.statics, target);
     }
-    // The saved base is the server's record. The local projection stands for it when the two are
-    // equal (no echo write for a key-order difference); otherwise the next cycle writes the merge.
-    // Its parts belong to the local text only: held with the server's text, they would hide the local edit.
+    adoptMergedBase(
+        item,
+        item.revision,
+        key,
+        prepared.some(([field]) => !(isCharacter && field === "lastInteraction")),
+    );
+    return true;
+}
+
+/**
+ * After a merge wrote the mirror: the saved base becomes the server's record and the key stays dirty.
+ * The local projection stands for the base when the two are equal (no echo write for a key-order
+ * difference); otherwise the next cycle writes the merge. Its parts belong to the local text only:
+ * held with the server's text, they would hide the local edit. `announce`: a value was taken from
+ * the server, so the remote-change listeners hear of it.
+ */
+function adoptMergedBase(item: RemoteItem, revision: string, key: string, announce: boolean) {
     const merged = projectEntry(item.kind, item.id)!;
     persisted.set(
         key,
         isEqual(JSON.parse(merged.text), item.data)
-            ? { revision: item.revision, ...merged }
-            : { revision: item.revision, text: recordText(item.kind, item.data) },
+            ? { revision, ...merged }
+            : { revision, text: recordText(item.kind, item.data) },
     );
     markKey(key);
-    if (prepared.some(([field]) => !(isCharacter && field === "lastInteraction"))) {
+    if (announce) {
         for (const listener of remoteChangeListeners) {
             try {
                 listener(item.kind, item.id);
@@ -1940,6 +2148,32 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
             }
         }
     }
+}
+
+/**
+ * A conflicting `pluginStorage` record (`mergePluginStorage`): every plugin shares it, so two tabs
+ * writing different keys meet here. The merge goes into the mirror raw, and the key stays dirty
+ * (`adoptMergedBase`), so the next cycle writes it on the server's revision: no discard, no notice.
+ * A record both tabs created (a plugin's first write creates it) merges against an empty base.
+ */
+function mergePluginStorageChange(item: RemoteItem, key: string): boolean {
+    const projected = projectRecord(item.kind, item.id);
+    if (item.revision === null || projected === undefined) {
+        return false;
+    }
+    const base = persisted.get(key);
+    let merged: Record<string, unknown> | null;
+    try {
+        merged = mergePluginStorage(base ? JSON.parse(base.text) : {}, item.data, JSON.parse(projected));
+    } catch {
+        return false;
+    }
+    if (!merged) {
+        return false;
+    }
+    const taken = !isEqual(merged, JSON.parse(projected));
+    applyRaw(RESOURCE_KIND.pluginStorage, merged);
+    adoptMergedBase(item, item.revision, key, taken);
     return true;
 }
 

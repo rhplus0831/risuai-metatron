@@ -670,7 +670,7 @@ await Risuai.setArgument("max_retries", 5);
 `pluginStorage` is **save-file specific** and **syncs between devices**:
 
 ```javascript
-// All operations are synchronous (wrapper around sync storage)
+// Every call returns a Promise (iframe message passing)
 await Risuai.pluginStorage.setItem("user_preference", "dark_mode");
 await Risuai.pluginStorage.setItem("last_sync", Date.now().toString());
 
@@ -687,6 +687,31 @@ await Risuai.pluginStorage.clear(); // Remove all items
 - You want data to sync across devices
 - Data is specific to a save file
 - Storing user preferences or plugin state
+
+#### When a write is saved
+
+`setItem`, `removeItem`, and `clear` (and the same calls of `getLocalPluginStorage()`, and the custom keys
+`setDatabase` stores) resolve as soon as the change is queued for background saving, not when it is saved.
+All plugins share one storage record: when two tabs or devices write different keys at the same time,
+both writes are kept. When another tab or device saved a different value under the **same** key first,
+this browser's unsaved value is replaced by the saved one and the user sees the reload notice. Register
+`onStorageDiscarded` (before writing) to hear of it:
+
+```javascript
+await Risuai.onStorageDiscarded(async (event) => {
+  // event.type === "storageDiscarded"
+  // event.pluginStorage: keys of pluginStorage whose unsaved value was lost
+  // event.localPluginStorage: the same for getLocalPluginStorage()
+  // event.customStorage: true when other values were lost too (custom keys written through setDatabase)
+  if (event.pluginStorage.includes("user_preference")) {
+    const saved = await Risuai.pluginStorage.getItem("user_preference"); // the saved value
+    applyPreference(saved);
+  }
+});
+```
+
+The event says which keys lost a value, not which plugin wrote them (the keys may be another plugin's).
+The listener is removed when the plugin unloads.
 
 ### Safe Local Storage
 

@@ -7,7 +7,11 @@ import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness
 // storage write of the API reaches the `pluginStorage` record because its mutation marks the
 // record: v3 `pluginStorage` set, remove, and clear, `getLocalPluginStorage()` set, remove, and
 // clear, a custom key and its deletion, and a whole-root replacement. Detached reads mark nothing,
-// and a record reloaded after a conflict (server data) is not echoed back. The other setters land
+// and a record reloaded after a conflict (server data) is not echoed back. Data-loss plan slice 5a:
+// two tabs writing different keys are merged (both kept, no notice, no event); the same key written
+// to two values discards this tab's unsaved values with the notice, and `onStorageDiscarded` tells
+// every listening plugin the lost keys (a rejecting listener is logged, an unloaded plugin's is
+// removed). The other setters land
 // in their owners' records: an argument in `plugins`, a color scheme in `ui`, a forwarded key in
 // the selected preset of `presets`, and an explicit `characterOrder` sent before the `characters`
 // it names in `characterOrder`.
@@ -65,6 +69,7 @@ vi.mock("./factory", () => ({
             return Promise.resolve();
         }
         dispose() {}
+        terminate() {}
     },
 }));
 
@@ -83,8 +88,18 @@ async function boot() {
     expect(captured.api).not.toBeNull();
     const api = captured.api!;
     const storage = () => booted.record("pluginStorage");
-    return { ...booted, api, storage };
+    /** Loads a second plugin on the same graph and captures its API object. */
+    const loadPlugin = async (name: string) => {
+        captured.api = null;
+        await v3.executePluginV3({ name, script: "", version: "3.0" } as any);
+        expect(captured.api).not.toBeNull();
+        return captured.api!;
+    };
+    return { ...booted, api, storage, v3, loadPlugin };
 }
+
+/** Lets the not-awaited listener calls of a discard run. */
+const settled = () => vi.advanceTimersByTimeAsync(0);
 
 beforeEach(() => {
     localStorage.clear();
@@ -173,27 +188,114 @@ describe("plugin storage writes sent without the watcher", () => {
         expect(await api._getPluginStorage("k")).toEqual({ a: 1 });
     });
 
-    it("a record another tab changed is reloaded on the conflict and not echoed back", async () => {
+    it("a record another tab changed under the same key is reloaded on the conflict, not echoed back, and the plugin hears the lost key", async () => {
         const { api, sync, storage, fake, settings } = await boot();
+        const events: unknown[] = [];
+        await api.onStorageDiscarded((event: unknown) => events.push(event));
         await api._setPluginStorage("k", 1);
         await sync.flushResources();
-        // Another tab writes the record; this client's next write is stale and is discarded.
-        fake.set("pluginStorage", "main", { _pluginStorage: { k: 1, remote: true } });
+        // Another tab writes `k` too; this client's write of `k` is stale and is discarded.
+        fake.set("pluginStorage", "main", { _pluginStorage: { k: 9, remote: true } });
         await api._setPluginStorage("k", 2);
         const result = await sync.flushResources();
+        await settled();
         expect(result.discarded).toEqual(["pluginStorage/main"]);
-        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: 1, remote: true } });
+        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: 9, remote: true } });
         expect(await api._getPluginStorage("remote")).toBe(true);
-        expect(await api._getPluginStorage("k")).toBe(1);
+        expect(await api._getPluginStorage("k")).toBe(9);
+        expect(alerts.normal).toHaveBeenCalled();
+        expect(events).toEqual([
+            { type: "storageDiscarded", pluginStorage: ["k"], localPluginStorage: [], customStorage: false },
+        ]);
         // The hydrated data is the saved state: nothing is echoed back.
         const batches = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(batches);
-        expect(storage()).toEqual({ _pluginStorage: { k: 1, remote: true } });
+        expect(storage()).toEqual({ _pluginStorage: { k: 9, remote: true } });
         // The next write starts from the reloaded record.
         await api._setPluginStorage("k", 3);
         await sync.flushResources();
         expect(storage()).toEqual({ _pluginStorage: { k: 3, remote: true } });
+        expect(events).toHaveLength(1);
+    });
+
+    it("two tabs writing different keys both keep them: merged on the conflict, no notice, no event, no echo", async () => {
+        const { api, sync, storage, fake } = await boot();
+        const events: unknown[] = [];
+        await api.onStorageDiscarded((event: unknown) => events.push(event));
+        await api._setPluginStorage("k", 1);
+        await sync.flushResources();
+        fake.set("pluginStorage", "main", {
+            _pluginStorage: { k: 1, remote: true },
+            _safeLocalPluginStorage: { s: 1 },
+        });
+        await api._setPluginStorage("k", 2);
+        await api.getLocalPluginStorage().setItem("mine", "m");
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        await settled();
+        expect(storage()).toEqual({
+            _pluginStorage: { k: 2, remote: true },
+            _safeLocalPluginStorage: { s: 1, mine: "m" },
+        });
+        expect(await api._getPluginStorage("remote")).toBe(true);
+        expect(await api._getPluginStorage("k")).toBe(2);
+        expect(await api.getLocalPluginStorage().getItem("s")).toBe(1);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+        const batches = fake.batchCount();
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.batchCount()).toBe(batches);
+    });
+
+    it("every listening plugin hears a discard (local storage keys, a custom key as a flag), a rejecting listener is logged, and an unloaded plugin's listener is removed", async () => {
+        const { api, sync, fake, v3, loadPlugin } = await boot();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        await api.onStorageDiscarded(async () => {
+            throw new Error("listener failed");
+        });
+        const other = await loadPlugin("other");
+        const events: unknown[] = [];
+        await other.onStorageDiscarded((event: unknown) => events.push(event));
+        await api.getLocalPluginStorage().setItem("a", 1);
+        await api.setDatabase({ custom: 1 });
+        await sync.flushResources();
+
+        fake.set("pluginStorage", "main", { _safeLocalPluginStorage: { a: 2 }, custom: 1 });
+        await api.getLocalPluginStorage().setItem("a", 3);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        await settled();
+        expect(events).toEqual([
+            { type: "storageDiscarded", pluginStorage: [], localPluginStorage: ["a"], customStorage: false },
+        ]);
+        expect(errors).toHaveBeenCalledWith(
+            "[RisuAI Plugin: plug] storageDiscarded listener failed",
+            expect.objectContaining({ message: "listener failed" }),
+        );
+
+        fake.set("pluginStorage", "main", { _safeLocalPluginStorage: { a: 2 }, custom: 2 });
+        await api.setDatabase({ custom: 3 });
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        await settled();
+        expect(events[1]).toEqual({
+            type: "storageDiscarded",
+            pluginStorage: [],
+            localPluginStorage: [],
+            customStorage: true,
+        });
+
+        // Unloaded plugins hear nothing more.
+        errors.mockClear();
+        await v3.loadV3Plugins([]);
+        fake.set("pluginStorage", "main", { _safeLocalPluginStorage: { a: 5 }, custom: 2 });
+        await api.getLocalPluginStorage().setItem("a", 6);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        await settled();
+        expect(events).toHaveLength(2);
+        expect(errors).not.toHaveBeenCalledWith(
+            "[RisuAI Plugin: plug] storageDiscarded listener failed",
+            expect.anything(),
+        );
     });
 });
 

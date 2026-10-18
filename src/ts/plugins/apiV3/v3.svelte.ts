@@ -40,6 +40,7 @@ import {
     setPluginCustomValue,
     setPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
+import { onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
@@ -635,6 +636,14 @@ type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider"
 
 /** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
 type PluginIdentity = { readonly name: string; readonly script: string };
+
+/** What `onStorageDiscarded` listeners get (`risuai.d.ts` `StorageDiscardedEvent`). */
+type StorageDiscardedEvent = {
+    type: "storageDiscarded";
+    pluginStorage: string[];
+    localPluginStorage: string[];
+    customStorage: boolean;
+};
 
 /** Answers given this page load, per plugin and permission; cleared when the plugin unloads. */
 const permissionAnswers = new Map<string, boolean>();
@@ -1947,6 +1956,25 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         onUnload: (callback: () => void) => {
             addPluginUnloadCallback(plugin.name, callback);
+        },
+        //Storage writes resolve when queued; a conflict that discards unsaved ones (another tab or
+        //device wrote the same key) is told to every listener, not to the write's promise
+        onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
+            const unsubscribe = onPluginStorageDiscarded((lost) => {
+                const event: StorageDiscardedEvent = {
+                    type: "storageDiscarded",
+                    pluginStorage: lost.pluginStorage,
+                    localPluginStorage: lost.localPluginStorage,
+                    customStorage: lost.customStorage,
+                };
+                // Not awaited: the save adapter goes on; a sandbox that is gone rejects the call.
+                Promise.resolve()
+                    .then(() => callback(event))
+                    .catch((error) => {
+                        console.error(`[RisuAI Plugin: ${plugin.name}] storageDiscarded listener failed`, error);
+                    });
+            });
+            addPluginUnloadCallback(plugin.name, unsubscribe);
         },
         getFetchLogs: async () => {
             const unsafeFetchLog = getFetchLogs();

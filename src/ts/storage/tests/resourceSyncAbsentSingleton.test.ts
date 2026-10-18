@@ -8,7 +8,9 @@ import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 // slice 2d) over the real store and its change feed: another client's creation of the record is
 // adopted from the live update and from a reconnect's revision listing, with no outgoing write, and
 // a later local plugin write is an update on the held revision. A tab that wrote its own record
-// first keeps the concurrent-create policy: its create conflicts and the server copy wins.
+// first meets the other tab's creation as a conflict: since data-loss plan slice 5a the two creates
+// are merged key by key against an empty base (both keys stay, no notice); only the same key written
+// to two values keeps the old policy (the server copy wins, the discard reported to the plugins).
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -133,17 +135,42 @@ it("adopts it from a reconnect's revision listing when the live update was misse
     expect(h.fake.batchCount()).toBe(0);
 });
 
-it("control: a tab whose own record is unsaved keeps the concurrent-create policy (its create conflicts, the server copy wins)", async () => {
+it("merges a concurrent creation with its own unsaved record when the keys differ: both keys on the server, no discard, no notice", async () => {
     const h = await boot();
+    const discards: unknown[] = [];
+    h.sync.onPluginStorageDiscarded((lost) => discards.push(lost));
     h.storage.setPluginStorageItem("newLocalSetting", "local value");
     h.fake.set("pluginStorage", "main", REMOTE);
     await vi.advanceTimersByTimeAsync(100);
-    // The notice waits: the local record is not overwritten before its save decides.
+    // The live update waits: the local record is not overwritten before its save decides.
     expect(h.storage.getPluginStorageValue("newLocalSetting")).toBe("local value");
     expect(h.storage.getPluginStorageValue("remoteSetting")).toBeNull();
 
+    expect((await h.sync.flushResources()).discarded).toEqual([]);
+    const merged = { _pluginStorage: { remoteSetting: "saved elsewhere", newLocalSetting: "local value" } };
+    expect(h.fake.record("pluginStorage", "main")!.data).toEqual(merged);
+    expect(h.storage.getPluginStorageValue("remoteSetting")).toBe("saved elsewhere");
+    expect(h.storage.getPluginStorageValue("newLocalSetting")).toBe("local value");
+    expect(h.sync.heldRecordRevision("pluginStorage", "main")).toBe(h.fake.record("pluginStorage", "main")!.revision);
+    expect(alerts.normal).not.toHaveBeenCalled();
+    expect(discards).toEqual([]);
+    // Idle afterwards: nothing is echoed back.
+    const batches = h.fake.batchCount();
+    await h.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.fake.batchCount()).toBe(batches);
+    expect(h.fake.record("pluginStorage", "main")!.data).toEqual(merged);
+});
+
+it("control: a concurrent creation of the same key keeps the old policy (the server copy wins, the plugins are told)", async () => {
+    const h = await boot();
+    const discards: unknown[] = [];
+    h.sync.onPluginStorageDiscarded((lost) => discards.push(lost));
+    h.storage.setPluginStorageItem("remoteSetting", "local value");
+    h.fake.set("pluginStorage", "main", REMOTE);
     expect((await h.sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
     expect(h.storage.getPluginStorageValue("remoteSetting")).toBe("saved elsewhere");
-    expect(h.storage.getPluginStorageValue("newLocalSetting")).toBeNull();
     expect(h.fake.record("pluginStorage", "main")!.data).toEqual(REMOTE);
+    expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+    expect(discards).toEqual([{ pluginStorage: ["remoteSetting"], localPluginStorage: [], customStorage: false }]);
 });

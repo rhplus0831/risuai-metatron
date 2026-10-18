@@ -716,3 +716,258 @@ describe("statics counts (best effort)", () => {
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 });
+
+describe("the pluginStorage record every plugin shares (data-loss plan slice 5a)", () => {
+    type PluginStorageStore = typeof import("../pluginStorageStore.svelte");
+    /** The plugin storage module of the booted graph, with a discard listener recording its calls. */
+    async function pluginStorage(sync: Sync) {
+        const store: PluginStorageStore = await import("../pluginStorageStore.svelte");
+        const discards: any[] = [];
+        sync.onPluginStorageDiscarded((lost) => discards.push(lost));
+        return { store, discards };
+    }
+    const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+    /** Nothing more is written: the merged write was the last one, no echo of the server's copy. */
+    async function idle(fake: FakeResourceServer, sync: Sync) {
+        const batches = fake.batchCount();
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.batchCount()).toBe(batches);
+    }
+
+    it("keeps both tabs' writes of different keys (both creating the namespace): merged, written once on the server's revision, no discard, no notice, no event, no echo", async () => {
+        const { fake, sync, settings, remote, changed } = await boot();
+        const { store, discards } = await pluginStorage(sync);
+        remote("pluginStorage", "main", (data) => (data._pluginStorage = { remote: 1 }));
+        store.setPluginStorageItem("local", { v: 2 });
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        const merged = { _pluginStorage: { remote: 1, local: { v: 2 } } };
+        expect(fake.data("pluginStorage", "main")).toEqual(merged);
+        expect(plain(settings.pluginStorage)).toEqual(merged);
+        expect(store.getPluginStorageValue("remote")).toBe(1);
+        expect(sync.heldRecordRevision("pluginStorage", "main")).toBe(fake.get("pluginStorage", "main")!.revision);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(discards).toEqual([]);
+        // The key taken from the server is announced (caches derived from the record).
+        expect(changed).toEqual(["pluginStorage/main"]);
+        // The rejected batch and the merged write.
+        expect(fake.batchCount()).toBe(2);
+        await idle(fake, sync);
+    });
+
+    it("takes a namespace only the other tab added, and merges the other reserved namespace and custom keys the same way", async () => {
+        const { fake, sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { custom: 1 }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        remote("pluginStorage", "main", (data) => {
+            data._safeLocalPluginStorage = { theirs: "s" };
+            data.other = 2;
+        });
+        store.setPluginStorageItem("k", 1);
+        store.setSafeLocalPluginValue("mine", "m");
+        store.setPluginCustomValue("custom", { changed: true });
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({
+            custom: { changed: true },
+            other: 2,
+            _pluginStorage: { k: 1 },
+            _safeLocalPluginStorage: { theirs: "s", mine: "m" },
+        });
+        expect(store.getSafeLocalPluginValue("theirs")).toBe("s");
+        expect(discards).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        await idle(fake, sync);
+    });
+
+    it("merges removals and a clear per key, and a key both tabs set to the same value", async () => {
+        const { fake, sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: { a: 1, b: 2, c: 3 } }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        // The other tab removes `a`; this tab changes `b`.
+        remote("pluginStorage", "main", (data) => delete data._pluginStorage.a);
+        store.setPluginStorageItem("b", 20);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { b: 20, c: 3 } });
+        expect(store.getPluginStorageValue("a")).toBeNull();
+
+        // This tab removes `c` and sets `same`; the other tab changes `b` and sets `same` to the same value.
+        remote("pluginStorage", "main", (data) => {
+            data._pluginStorage.b = 200;
+            data._pluginStorage.same = { x: 1 };
+        });
+        store.removePluginStorageItem("c");
+        store.setPluginStorageItem("same", { x: 1 });
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { b: 200, same: { x: 1 } } });
+        expect(store.getPluginStorageValue("b")).toBe(200);
+
+        // This tab clears the namespace while the other tab adds `d`: the clear removes the saved keys only.
+        remote("pluginStorage", "main", (data) => (data._pluginStorage.d = 4));
+        store.clearPluginStorage();
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { d: 4 } });
+        expect(store.pluginStorageKeys()).toEqual(["d"]);
+        expect(discards).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        await idle(fake, sync);
+    });
+
+    it("discards the whole unsaved record on a same-key race, with the notice, and tells the listeners every lost key after the record is settled", async () => {
+        const { fake, sync, settings, remote, changed } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: { k: 1 }, custom: 1 }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        const seen: unknown[] = [];
+        sync.onPluginStorageDiscarded((lost) => {
+            // After the mirror holds the server copy and the base moved to its revision.
+            seen.push([
+                store.getPluginStorageValue("k"),
+                sync.heldRecordRevision("pluginStorage", "main") === fake.get("pluginStorage", "main")!.revision,
+                lost.pluginStorage.slice(),
+            ]);
+        });
+        remote("pluginStorage", "main", (data) => (data._pluginStorage.k = 2));
+        store.setPluginStorageItem("k", 3);
+        store.setPluginStorageItem("other", "lost too");
+        store.setSafeLocalPluginValue("s", 1);
+        store.setPluginCustomValue("custom", 9);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: 2 }, custom: 1 });
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { k: 2 }, custom: 1 });
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        expect(changed).toEqual(["pluginStorage/main"]);
+        expect(discards).toEqual([{ pluginStorage: ["k", "other"], localPluginStorage: ["s"], customStorage: true }]);
+        expect(seen).toEqual([[2, true, ["k", "other"]]]);
+        // Nothing is echoed back, and the next write starts from the reloaded record.
+        await idle(fake, sync);
+        store.setPluginStorageItem("k", 4);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { k: 4 }, custom: 1 });
+        expect(discards).toHaveLength(1);
+    });
+
+    it("conflicts for a custom key both tabs changed (flagged, never named) and for a remote deletion of a key this tab changed", async () => {
+        const { fake, sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: { k: 1 }, custom: 1 }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        remote("pluginStorage", "main", (data) => (data.custom = 2));
+        store.setPluginCustomValue("custom", 3);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(fake.data("pluginStorage", "main").custom).toBe(2);
+        expect(discards).toEqual([{ pluginStorage: [], localPluginStorage: [], customStorage: true }]);
+
+        remote("pluginStorage", "main", (data) => delete data._pluginStorage.k);
+        store.setPluginStorageItem("k", 5);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: {}, custom: 2 });
+        expect(store.getPluginStorageValue("k")).toBeNull();
+        expect(discards[1]).toEqual({ pluginStorage: ["k"], localPluginStorage: [], customStorage: false });
+    });
+
+    it("reads a saved list namespace as its entries when both tabs converted it, and keeps a list the server holds now atomic", async () => {
+        const { fake, sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: ["old"] }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        // Both tabs' first write turned the list into the dictionary of its entries, each adding a key.
+        remote("pluginStorage", "main", (data) => (data._pluginStorage = { "0": "old", r: 1 }));
+        store.setPluginStorageItem("l", 2);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { "0": "old", r: 1, l: 2 } });
+        expect(discards).toEqual([]);
+
+        // The other tab replaced the dictionary with a list (`setDatabase`): a value, so a conflict.
+        remote("pluginStorage", "main", (data) => (data._pluginStorage = [9]));
+        store.setPluginStorageItem("l", 3);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: [9] });
+        expect(store.getPluginStorageValue("0")).toBe(9);
+        expect(discards).toEqual([{ pluginStorage: ["l"], localPluginStorage: [], customStorage: false }]);
+    });
+
+    it("reports a lost namespace shape (a list turned into an object, an empty namespace created here) under customStorage even when no entry differs", async () => {
+        const { fake, sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: [1] }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        // This tab wrote the dictionary form through `setDatabase`; the other tab wrote another list.
+        store.setPluginCustomValue("_pluginStorage", { "0": 1 });
+        remote("pluginStorage", "main", (data) => (data._pluginStorage = [2]));
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: [2] });
+        expect(discards).toEqual([{ pluginStorage: [], localPluginStorage: [], customStorage: true }]);
+
+        // A `clear` of the never-written local namespace creates it empty; it goes with another key's conflict.
+        store.setPluginStorageItem("k", 2);
+        store.clearSafeLocalPluginStorage();
+        remote("pluginStorage", "main", (data) => (data._pluginStorage = { "0": 2, k: 3 }));
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { "0": 2, k: 3 } });
+        expect(discards[1]).toEqual({ pluginStorage: ["k"], localPluginStorage: [], customStorage: true });
+    });
+
+    it("keeps inherited names as own keys at both levels: no prototype change, both tabs' keys on the server", async () => {
+        const { fake, sync, settings, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", JSON.parse('{"_pluginStorage":{"k":1}}')),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        fake.set(
+            "pluginStorage",
+            "main",
+            JSON.parse(
+                '{"_pluginStorage":{"k":1,"constructor":"ext","__proto__":{"polluted":true}},"__proto__":{"top":true}}',
+            ),
+        );
+        store.setPluginStorageItem("toString", "local");
+        store.setPluginStorageItem("mine", 1);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        const saved = fake.data("pluginStorage", "main");
+        expect(Object.hasOwn(saved, "__proto__")).toBe(true);
+        expect(Object.getOwnPropertyDescriptor(saved, "__proto__")!.value).toEqual({ top: true });
+        expect(Object.getOwnPropertyDescriptor(saved._pluginStorage, "__proto__")!.value).toEqual({ polluted: true });
+        expect(saved._pluginStorage).toMatchObject({ k: 1, constructor: "ext", toString: "local", mine: 1 });
+        expect(Object.getPrototypeOf(saved._pluginStorage)).toBe(Object.prototype);
+        expect(({} as any).polluted).toBeUndefined();
+        expect(({} as any).top).toBeUndefined();
+        expect(store.getPluginStorageValue("constructor")).toBe("ext");
+        expect(store.getPluginStorageValue("__proto__")).toEqual({ polluted: true });
+        expect(JSON.stringify(settings.pluginStorage)).toContain('"__proto__":{"top":true}');
+        expect(discards).toEqual([]);
+
+        // This tab now writes the `__proto__` key while the other tab adds another: still a key merge.
+        remote("pluginStorage", "main", (data) => (data._pluginStorage.k2 = 2));
+        store.setPluginStorageItem("__proto__", "mine");
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        const next = fake.data("pluginStorage", "main")._pluginStorage;
+        expect(Object.getOwnPropertyDescriptor(next, "__proto__")!.value).toBe("mine");
+        expect(next.k2).toBe(2);
+        expect(remote).toBeDefined();
+        await idle(fake, sync);
+    });
+
+    it("isolates a throwing discard listener and gives every listener its own copy of the keys", async () => {
+        const { sync, remote } = await boot({
+            prepare: (fake) => fake.set("pluginStorage", "main", { _pluginStorage: { k: 1 } }),
+        });
+        const { store, discards } = await pluginStorage(sync);
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        sync.onPluginStorageDiscarded(() => {
+            throw new Error("listener");
+        });
+        sync.onPluginStorageDiscarded((lost) => {
+            lost.pluginStorage.push("mutated");
+            lost.customStorage = true;
+        });
+        const last: unknown[] = [];
+        sync.onPluginStorageDiscarded((lost) => last.push(lost));
+        remote("pluginStorage", "main", (data) => (data._pluginStorage.k = 2));
+        store.setPluginStorageItem("k", 3);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        expect(errors).toHaveBeenCalled();
+        expect(discards).toEqual([{ pluginStorage: ["k"], localPluginStorage: [], customStorage: false }]);
+        expect(last).toEqual([{ pluginStorage: ["k"], localPluginStorage: [], customStorage: false }]);
+    });
+});
