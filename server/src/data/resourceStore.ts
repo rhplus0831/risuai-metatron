@@ -34,6 +34,7 @@ import {
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
+import type { ChatStreaming } from "../../../shared/events.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
 import { diffRecordText } from "./recordPatchText.ts";
 import {
@@ -114,6 +115,17 @@ export class JobTokenError extends Error {
     constructor() {
         super("The generation job has ended");
         this.name = "JobTokenError";
+    }
+}
+
+/**
+ * A write committed (and was published), but the work its caller ran after the commit
+ * (`applyChanges`' `committed`) threw: `cause`. Nothing of the write is undone.
+ */
+export class CommittedWriteError extends Error {
+    constructor(cause: unknown) {
+        super("The write committed, but its follow-up failed", { cause });
+        this.name = "CommittedWriteError";
     }
 }
 
@@ -218,6 +230,8 @@ type ChangeAccumulator = {
     resources: Map<string, ChangeSet["resources"][number]>;
     chats: Map<string, ChangeSet["chats"][number]>;
     chatOrders: Map<string, ChangeSet["chatOrders"][number]>;
+    /** Generation locks per chat (`characterId\0id`); the last list given for a chat wins. */
+    streaming: Map<string, ChatStreaming>;
 };
 
 /**
@@ -408,6 +422,10 @@ export function createResourceStore(options: {
         );
     }
 
+    function recordStreaming(entry: ChatStreaming) {
+        changes?.streaming.set(`${entry.characterId}\u0000${entry.id}`, entry);
+    }
+
     function recordOrder(characterId: string, revision: string | null) {
         changes?.chatOrders.set(characterId, { characterId, revision });
     }
@@ -431,7 +449,12 @@ export function createResourceStore(options: {
         if (changes) {
             return fn();
         }
-        const scope: ChangeAccumulator = { resources: new Map(), chats: new Map(), chatOrders: new Map() };
+        const scope: ChangeAccumulator = {
+            resources: new Map(),
+            chats: new Map(),
+            chatOrders: new Map(),
+            streaming: new Map(),
+        };
         changes = scope;
         let result: T;
         try {
@@ -439,7 +462,10 @@ export function createResourceStore(options: {
         } finally {
             changes = null;
         }
-        if (feed && (scope.resources.size > 0 || scope.chats.size > 0 || scope.chatOrders.size > 0)) {
+        if (
+            feed &&
+            (scope.resources.size > 0 || scope.chats.size > 0 || scope.chatOrders.size > 0 || scope.streaming.size > 0)
+        ) {
             feed.publish({
                 type: "change",
                 epoch,
@@ -448,6 +474,7 @@ export function createResourceStore(options: {
                     chats: [...scope.chats.values()],
                     chatOrders: [...scope.chatOrders.values()],
                 },
+                ...(scope.streaming.size > 0 ? { streaming: [...scope.streaming.values()] } : {}),
             });
         }
         return result;
@@ -1109,6 +1136,12 @@ export function createResourceStore(options: {
          * is the owner's; that check precedes the revision checks. A generation job's own write
          * (`server/src/jobs/`) passes its `epoch` and `jobToken`: the epoch is asserted and the token
          * must be live (`JobTokenError` otherwise), in the same synchronous call as the write.
+         *
+         * `options.committed` (a generation job's write): runs once the write has committed, before
+         * its change is published, and returns the generation locks of the chats it touched, which
+         * the published change carries (`streaming`). It runs whether or not a feed is attached and
+         * must not write to the store. If it throws, the committed change is still published (without
+         * its lists) and the error is rethrown as `CommittedWriteError`: the write is not undone.
          */
         applyChanges(
             batch: {
@@ -1116,10 +1149,48 @@ export function createResourceStore(options: {
                 chats?: unknown;
                 chatOrders?: unknown;
             },
-            options: { epoch?: string; jobToken?: string } = {},
+            options: {
+                epoch?: string;
+                jobToken?: string;
+                committed?: (applied: AppliedChanges) => readonly ChatStreaming[];
+            } = {},
         ): AppliedChanges {
             assertWritable();
-            return publishing(() => applyChangesInScope(batch, options));
+            const { committed } = options;
+            if (!committed) {
+                return publishing(() => applyChangesInScope(batch, options));
+            }
+            const failure: { error?: unknown } = {};
+            const applied = publishing(() => {
+                const result = applyChangesInScope(batch, options);
+                try {
+                    for (const entry of committed(result)) {
+                        recordStreaming(entry);
+                    }
+                } catch (error) {
+                    failure.error = error;
+                }
+                return result;
+            });
+            if ("error" in failure) {
+                throw new CommittedWriteError(failure.error);
+            }
+            return applied;
+        },
+
+        /**
+         * Publishes generation locks without a write (`streaming` of a change with no refs): a
+         * generation job's end released them. Inside a publishing write it goes with that write.
+         */
+        publishStreaming(entries: readonly ChatStreaming[]) {
+            if (entries.length === 0) {
+                return;
+            }
+            publishing(() => {
+                for (const entry of entries) {
+                    recordStreaming(entry);
+                }
+            });
         },
 
         /**

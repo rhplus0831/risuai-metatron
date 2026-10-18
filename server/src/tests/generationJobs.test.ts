@@ -5,8 +5,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
+import { type ChangeFeedEvent, createChangeFeed } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import { CommittedWriteError, createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager, type SnapshotManager } from "../data/snapshots.ts";
 import {
     createGenerationJobs,
@@ -63,18 +64,45 @@ afterEach(async () => {
     }
 });
 
-function setup() {
+/**
+ * `feed`: build the store with the change feed and record what it publishes (`events`). `failCommitted`:
+ * while `current`, the store the jobs write through throws from a write's `committed` hook after the
+ * job's own bookkeeping ran (slice 2b: a `CommittedWriteError`).
+ */
+function setup(options: { feed?: boolean; failCommitted?: { current: boolean } } = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-generation-jobs-"));
     const lock = createGenerationLock();
+    const feed = options.feed ? createChangeFeed() : undefined;
+    const events: ChangeFeedEvent[] = [];
+    feed?.subscribe((event) => events.push(event));
     const store: ResourceStore = createResourceStore({
         file: path.join(dir, "data", "resources.sqlite"),
         kinds,
         guard: lock,
+        feed,
     });
+    const failing = options.failCommitted;
+    const jobStore: ResourceStore = failing
+        ? Object.assign(Object.create(store) as ResourceStore, {
+              applyChanges: ((batch, writeOptions) =>
+                  store.applyChanges(batch, {
+                      ...writeOptions,
+                      committed:
+                          writeOptions?.committed &&
+                          ((applied) => {
+                              const lists = writeOptions.committed!(applied);
+                              if (failing.current) {
+                                  throw new Error("bookkeeping failed");
+                              }
+                              return lists;
+                          }),
+                  })) satisfies ResourceStore["applyChanges"],
+          })
+        : store;
     const snapshots: SnapshotManager = createSnapshotManager({ store, dir: path.join(dir, "backups") });
     let runner: GenerationRunner = async () => {};
     const jobs = createGenerationJobs({
-        store,
+        store: jobStore,
         kinds,
         gate: snapshots.gate,
         snapshots,
@@ -158,7 +186,7 @@ function setup() {
     };
     const ended = (jobId: string) => waitFor(() => jobs.status(jobId, "tab")?.state === "ended");
     const owner = (messageId: string) => lock.ownerOf({ ...ref, messageId })?.generationId ?? null;
-    return { dir, lock, store, snapshots, jobs, revision, text, context, create, run, ended, owner, bound };
+    return { dir, lock, store, snapshots, jobs, revision, text, context, create, run, ended, owner, bound, events };
 }
 
 describe("admission", () => {
@@ -775,5 +803,116 @@ describe("maintenance and shutdown", () => {
             terminal: { type: "error", reason: "shutdown", status: 503 },
         });
         jobs.dispose();
+    });
+});
+
+// Data-loss slice 2b: the change feed carries the generation locks. A job's write publishes, with its
+// change, every lock of each chat it touched (`chatStreaming` from the committed hook: a `begin`'s new
+// owner, a checkpoint's watermark, a final write's release), and the job's end publishes the chats it
+// locked once more with no refs (`publishStreaming`), so a release reaches every tab without a write.
+describe("the locks a job's writes and end publish (slice 2b)", () => {
+    const locks = (event: ChangeFeedEvent | undefined) => {
+        if (event?.type !== "change") throw new Error("expected a committed change");
+        return event.streaming;
+    };
+    const chatK = (streaming: { messageId: string; generationId: string; seq: number }[]) => ({
+        characterId: "c",
+        id: "k",
+        streaming,
+    });
+
+    it("lists the new owner on `begin`, the watermark on a checkpoint, the release on the final write, and the empty list again at the job's end", async () => {
+        const { jobs, create, run, ended, revision, events } = setup({ feed: true });
+        const outcome = run(async (job) => {
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g1")])] }));
+            expect(events.at(-1)).toMatchObject({ changes: { chats: [{ characterId: "c", id: "k" }] } });
+            expect(locks(events.at(-1))).toEqual([chatK([{ messageId: "r", generationId: "g1", seq: 0 }])]);
+            // The listed `seq` is the write's `covers` claim (the newest stream chunk the stored text
+            // includes), as the job's own chat events list it; a write without a claim is 0.
+            job.write(() => ({ chats: [group(revision(), [checkpoint("r", "g1", 1, "one")])] }), {
+                covers: [{ messageId: "r", generationId: "g1", seq: 3 }],
+            });
+            expect(locks(events.at(-1))).toEqual([chatK([{ messageId: "r", generationId: "g1", seq: 3 }])]);
+            // A duplicate checkpoint changes nothing stored (the claim stays) but still announces the locks.
+            job.write(() => ({ chats: [group(revision(), [checkpoint("r", "g1", 1, "one")])] }));
+            expect(locks(events.at(-1))).toEqual([chatK([{ messageId: "r", generationId: "g1", seq: 3 }])]);
+            job.write(() => ({ chats: [group(revision(), [checkpoint("r", "g1", 4, "one two", true)])] }));
+            // The final write's own frame already carries the release.
+            expect(events.at(-1)).toMatchObject({ changes: { chats: [{ characterId: "c", id: "k" }] } });
+            expect(locks(events.at(-1))).toEqual([chatK([])]);
+            const published = events.length;
+            job.emit({ type: "done", revision: revision(), messageId: "r" });
+            return published;
+        });
+        const jobId = create();
+        const published = await outcome;
+        await ended(jobId);
+        // The end publishes the chat's (empty) list again, with no refs.
+        const end = events.slice(published).filter((event) => event.type === "change" && event.streaming);
+        expect(end).toEqual([
+            {
+                type: "change",
+                epoch: expect.any(String),
+                changes: { resources: [], chats: [], chatOrders: [] },
+                streaming: [chatK([])],
+            },
+        ]);
+    });
+
+    it("a handoff lists only the generation that owns the message now, each chat lists its own locks, and an abort without a final write releases every locked chat at the end", async () => {
+        const { jobs, store, create, run, ended, revision, owner, events } = setup({ feed: true });
+        const outcome = run(async (job) => {
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "one")])] }));
+            job.write(() => ({
+                chats: [group(revision(), [checkpoint("r", "g1", 2, "one two", true), begin("r", "g2")])],
+            }));
+            expect(owner("r")).toBe("g2");
+            // g1's final applied and released g1; the begin of g2 in the same write keeps r locked by g2,
+            // whose stored text holds no chunk of g2 yet.
+            expect(locks(events.at(-1))).toEqual([chatK([{ messageId: "r", generationId: "g2", seq: 0 }])]);
+            // A write touching another chat lists that chat's locks only.
+            job.write(() => ({ chats: [group(store.chatRevision("c", "j"), [begin("x", "gJ")], "j")] }));
+            expect(locks(events.at(-1))).toEqual([
+                { characterId: "c", id: "j", streaming: [{ messageId: "x", generationId: "gJ", seq: 0 }] },
+            ]);
+            await aborted(job);
+        });
+        const jobId = create();
+        expect(jobs.abort(jobId, "tab")).toBe(true);
+        await outcome;
+        await ended(jobId);
+        expect(owner("r")).toBeNull();
+        // No final write: the end's frame releases both chats the job locked, in the order it locked them.
+        expect(locks(events.at(-1))).toEqual([chatK([]), { characterId: "c", id: "j", streaming: [] }]);
+        expect(events.at(-1)).toMatchObject({ changes: { resources: [], chats: [], chatOrders: [] } });
+    });
+
+    it("a `committed` that throws surfaces as `CommittedWriteError`: the committed write and its owner stand, nothing is restored or retried, and the job's later writes and end still publish", async () => {
+        const failing = { current: false };
+        const { create, run, ended, revision, owner, text, events } = setup({ feed: true, failCommitted: failing });
+        const outcome = run(async (job) => {
+            failing.current = true;
+            const before = events.length;
+            expect(() =>
+                job.write(() => ({ chats: [group(revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "one")])] })),
+            ).toThrow(CommittedWriteError);
+            // The write committed and was published (without lists); the lock it took is kept.
+            expect(text("r")).toBe("one");
+            expect(owner("r")).toBe("g1");
+            expect(events).toHaveLength(before + 1);
+            expect(events.at(-1)).toMatchObject({ changes: { chats: [{ characterId: "c", id: "k" }] } });
+            expect(events.at(-1)).not.toHaveProperty("streaming");
+            failing.current = false;
+            job.write(() => ({ chats: [group(revision(), [checkpoint("r", "g1", 2, "one two")])] }), {
+                covers: [{ messageId: "r", generationId: "g1", seq: 2 }],
+            });
+            expect(locks(events.at(-1))).toEqual([chatK([{ messageId: "r", generationId: "g1", seq: 2 }])]);
+            job.emit({ type: "done", revision: revision(), messageId: "r" });
+        });
+        const jobId = create();
+        await outcome;
+        await ended(jobId);
+        expect(owner("r")).toBeNull();
+        expect(locks(events.at(-1))).toEqual([chatK([])]);
     });
 });

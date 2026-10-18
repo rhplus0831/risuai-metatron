@@ -42,7 +42,12 @@ export function createEventSockets(options: {
     const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {
         const frame: EventFeedFrame =
             event.type === "change"
-                ? { type: "change", epoch: event.epoch, changes: event.changes }
+                ? {
+                      type: "change",
+                      epoch: event.epoch,
+                      changes: event.changes,
+                      ...(event.streaming ? { streaming: event.streaming } : {}),
+                  }
                 : { type: "epoch", epoch: event.epoch };
         const text = JSON.stringify(frame);
         for (const ws of sockets) {

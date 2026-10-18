@@ -2,6 +2,7 @@ import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts"
 import { epochMismatch, getResourceEpoch, listRevisions, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
+import { noteRemoteStreaming, releaseFeedLocks } from "../storage/chatStore.svelte";
 import { recordClientEvent } from "../diagnostics/collector";
 
 /**
@@ -11,6 +12,11 @@ import { recordClientEvent } from "../diagnostics/collector";
  * tab reconciles against the revision listing, so nothing committed while it was disconnected is
  * missed. Every connection signs a fresh JWT (they live five minutes). A frame of another epoch, or
  * an `epoch` frame, means a restore replaced the data: the save loop halts and the page reloads.
+ * A `change` frame's refs are dispatched before its generation locks (`streaming`) go to the
+ * chat module (`noteRemoteStreaming`), so a fitting `begin` patch puts the row in the mirror
+ * before its lock. For a chat the mirror lacks, an unloaded chat, or a patch that does not fit,
+ * the lock is installed by id and the row arrives locked with the read. A `hello` drops the
+ * feed's locks, since a release may have been sent while disconnected.
  */
 
 const MAX_BACKOFF_MS = 30_000;
@@ -63,6 +69,8 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
                 epochMismatch(frame.epoch);
                 return;
             }
+            // Nothing is replayed: a running job announces its locks again with its next write.
+            releaseFeedLocks();
             if (connectedSocket !== ws) {
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
@@ -73,6 +81,9 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
         case "change":
             if (frame.epoch === loaded) {
                 noteRemoteChanges(frame.changes);
+                if (frame.streaming) {
+                    noteRemoteStreaming(frame.streaming, frame.changes);
+                }
             }
             return;
         case "epoch":

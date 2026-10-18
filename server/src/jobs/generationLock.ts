@@ -119,6 +119,13 @@ export function createGenerationLock() {
                 }));
         },
 
+        /** Every owned message of a chat (any job), with its owner. */
+        ownedIn(characterId: string, chatId: string): (MessageOwner & { messageId: string })[] {
+            return [...owned.values()]
+                .filter((entry) => entry.characterId === characterId && entry.chatId === chatId)
+                .map(({ messageId, jobId, generationId, token }) => ({ messageId, jobId, generationId, token }));
+        },
+
         /** The owner of a message, or null. */
         ownerOf(ref: MessageRef): MessageOwner | null {
             const entry = owned.get(keyOf(ref));

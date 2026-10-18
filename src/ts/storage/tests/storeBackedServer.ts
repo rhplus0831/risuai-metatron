@@ -76,19 +76,35 @@ export type ServerStore = {
     };
     applyChanges(
         batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown },
-        options?: { epoch?: string; jobToken?: string },
+        options?: {
+            epoch?: string;
+            jobToken?: string;
+            /** A generation job's post-commit hook (slice 2b): its lists ride on the published change. */
+            committed?: (applied: unknown) => readonly ServerChatStreaming[];
+        },
     ): {
         results: { kind: string; id: string; revision: string | null }[];
         chats: any[];
         chatOrders: any[];
     };
+    /** A job's end: its released locks published without a write (slice 2b). */
+    publishStreaming(entries: readonly ServerChatStreaming[]): void;
     /** The revision listing (`GET /api/resources/revisions`, Phase 6 live updates). */
     listRevisions(): ResourceRevisionListing;
     transaction<T>(fn: () => T): T;
 };
 
+/** A chat's generation locks on a published change (`shared/events.ts` `ChatStreaming`). */
+export type ServerChatStreaming = {
+    characterId: string;
+    id: string;
+    streaming: { messageId: string; generationId: string; seq: number }[];
+};
+
 /** What the server's change feed publishes (`server/src/data/changeFeed.ts`). */
-export type ServerFeedEvent = { type: "change"; epoch: string; changes: ChangeSet } | { type: "epoch"; epoch: string };
+export type ServerFeedEvent =
+    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ServerChatStreaming[] }
+    | { type: "epoch"; epoch: string };
 
 type ServerFeed = { subscribe(listener: (event: ServerFeedEvent) => void): () => void };
 type FeedModule = { createChangeFeed(): ServerFeed };

@@ -13,9 +13,10 @@ import type {
     MessageAnchor,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
+import type { ChatStreaming } from "../../../shared/events.ts";
 import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
-import { type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
+import { type ChangeSet, type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -175,6 +176,14 @@ const serverGenerations = new Map<string, { jobId: string; generationId: string;
 const serverWatermarks = new Map<string, { generationId: string; seq: number }>();
 /** Server generations that ended or were replaced: their late events are dropped. */
 const retiredGenerations = new Set<string>();
+/**
+ * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
+ * device (`noteRemoteStreaming`) → the generation and the chat revision of the frame that announced
+ * it (null: none). A lock only: no stream text, no watermark, no retirement, and it never holds the
+ * save loop's reads, patches, or reloads (`isChatStreamedHere`). Independent of this tab's job
+ * events: losing a follow does not release the feed lock.
+ */
+const feedLocks = new Map<string, { generationId: string; revision: string | null }>();
 /**
  * Per chat: the revision of the newest job chat event whose job metadata (streaming, releases) was
  * taken, applied or not; an older event's metadata is ignored.
@@ -850,7 +859,17 @@ export function isMessageLocked(ref: ChatRef | null, messageId: string | undefin
     if (ref === null || messageId === undefined) {
         return false;
     }
-    return serverGenerations.has(messageKeyOf(ref, messageId));
+    return isLockedKey(messageKeyOf(ref, messageId));
+}
+
+/** A message key locked by this tab's job or by a job the change feed announced. */
+function isLockedKey(messageKey: string): boolean {
+    return serverGenerations.has(messageKey) || feedLocks.has(messageKey);
+}
+
+/** The message keys of every lock (this tab's jobs' and the change feed's). */
+function lockedKeys(): string[] {
+    return [...serverGenerations.keys(), ...feedLocks.keys()];
 }
 
 /**
@@ -868,20 +887,29 @@ export function isStreamingMessage(ref: ChatRef | null, messageId: string | unde
     );
 }
 
-/** Whether any message of a chat is locked (reactive). */
+/** Whether any message of a chat is locked (reactive), by this tab's job or one the change feed announced. */
 export function isChatGenerating(ref: ChatRef): boolean {
     void lockState.version;
+    const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
+    return lockedKeys().some((key) => key.startsWith(prefix));
+}
+
+/**
+ * Whether a job of this tab streams into a chat (a lock of its job events, not a feed lock): the
+ * save loop's reads, patches, and reloads of the chat wait, since they would replace the streamed text.
+ */
+function isChatStreamedHere(ref: ChatRef): boolean {
     const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
     return [...serverGenerations.keys()].some((key) => key.startsWith(prefix));
 }
 
-/** The distinct chat keys with server generation locks (reactive). */
+/** The distinct chat keys with server generation locks, the change feed's included (reactive). */
 export function lockedChatKeys(): ReadonlySet<string> {
     void lockState.version;
-    return new Set([...serverGenerations.keys()].map((key) => key.slice(0, key.lastIndexOf("\u0000"))));
+    return new Set(lockedKeys().map((key) => key.slice(0, key.lastIndexOf("\u0000"))));
 }
 
-/** Whether any chat of a character has a running generation. */
+/** Whether any chat of a character has one of this tab's job locks. */
 export function isCharacterGenerating(chaId: string): boolean {
     const prefix = `${chaId}\u0000`;
     return [...serverGenerations.keys()].some((key) => key.startsWith(prefix));
@@ -890,7 +918,7 @@ export function isCharacterGenerating(chaId: string): boolean {
 /** Throws when a server job locks any of these messages. */
 function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[]) {
     for (const id of messageIds) {
-        if (id !== undefined && serverGenerations.has(messageKeyOf(ref, id))) {
+        if (id !== undefined && isLockedKey(messageKeyOf(ref, id))) {
             throw new Error("This message is being generated; wait until it finishes");
         }
     }
@@ -1102,6 +1130,85 @@ export function endServerJob(jobId: string) {
         // A job that locked nothing (a command job) can still leave its chat stale (a patch that did
         // not fit): its end lets the idle refresh read it.
         notifyWork();
+    }
+}
+
+/**
+ * The generation locks a change-feed frame announces (`ChatStreaming`: every job's locks of a chat
+ * after a job's write or end, `[]` when none is left), so a tab that does not follow the job (an
+ * observer, or an owner whose follow was lost) shows the generating reply locked: its edit, delete,
+ * and regenerate are off (`isMessageLocked`), and `assertUnlocked` refuses its edits. Each chat's
+ * list replaces that chat's feed locks: a message no longer listed, or listed with another
+ * generation, is released. The feed socket delivers these full lists in order, independently of
+ * this tab's job events. The lock is by message id, so a message or chat the mirror does not hold
+ * yet is locked when it arrives. `changes`: the frame's refs, whose revision
+ * of the chat is the lock's (`dropFeedLocksOf`); none: null. Call after the frame's refs went to the
+ * save loop. Nothing is queued, read, or discarded.
+ */
+export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes?: ChangeSet) {
+    let moved = false;
+    for (const chat of streaming) {
+        const prefix = `${keyOf(chat.characterId, chat.id)}\u0000`;
+        const revision =
+            changes?.chats.find((entry) => entry.characterId === chat.characterId && entry.id === chat.id)?.revision ??
+            null;
+        const listed = new Map(chat.streaming.map((entry) => [entry.messageId, entry.generationId]));
+        for (const [messageKey, lock] of [...feedLocks]) {
+            if (messageKey.startsWith(prefix) && listed.get(messageKey.slice(prefix.length)) !== lock.generationId) {
+                feedLocks.delete(messageKey);
+                moved = true;
+            }
+        }
+        for (const [messageId, generationId] of listed) {
+            const messageKey = `${prefix}${messageId}`;
+            moved ||= !feedLocks.has(messageKey);
+            feedLocks.set(messageKey, { generationId, revision });
+        }
+    }
+    if (moved) {
+        lockState.version += 1;
+    }
+}
+
+/**
+ * Releases every feed lock whose message key starts with `prefix` (all of them by default): the
+ * change feed reconnected, so a release frame may have been missed (a job that is still running
+ * announces its locks again with its next write), or the character is gone. Not retired.
+ */
+export function releaseFeedLocks(prefix = "") {
+    let moved = false;
+    for (const messageKey of [...feedLocks.keys()]) {
+        if (messageKey.startsWith(prefix)) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    if (moved) {
+        lockState.version += 1;
+    }
+}
+
+/**
+ * A chat's whole read was adopted (`revision`; null: the chat is gone): its feed locks announced at
+ * an older revision (or with none) are released, since a read carries no locks and a missed release
+ * frame must not keep the reply locked. A lock announced at the read's revision or later stays (the
+ * read a lock frame's unfitting patch caused). Not retired: the job's next write announces a lock
+ * that is still held.
+ */
+function dropFeedLocksOf(key: string, revision: string | null) {
+    const prefix = `${key}\u0000`;
+    let moved = false;
+    for (const [messageKey, lock] of [...feedLocks]) {
+        if (
+            messageKey.startsWith(prefix) &&
+            (revision === null || lock.revision === null || (compareRevision(revision, lock.revision) ?? 1) > 0)
+        ) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    if (moved) {
+        lockState.version += 1;
     }
 }
 
@@ -3046,6 +3153,7 @@ export function adoptCharacter(chaId: string) {
 /** Drops all chat state of a character that is deleted (the server deletes its chats with it). */
 export function forgetCharacter(chaId: string) {
     const prefix = `${chaId}\u0000`;
+    releaseFeedLocks(prefix);
     for (const key of [...staleChats, ...deferred, ...noticedChats.keys()]) {
         if (key.startsWith(prefix)) {
             staleChats.delete(key);
@@ -3543,7 +3651,7 @@ export function recoverChatConflicts(
             refresh.add(group.characterId);
             continue;
         }
-        if (isChatGenerating(ref)) {
+        if (isChatStreamedHere(ref)) {
             // A server job streams into it: replacing the chat now would drop the streamed text.
             deferred.add(group.key);
             retry.push(group);
@@ -3683,6 +3791,7 @@ export function acceptRemoteChat(server: RemoteChat, seq = 0) {
 function applyRemoteChat(server: RemoteChat) {
     const key = keyOf(server.characterId, server.id);
     staleChats.delete(key);
+    dropFeedLocksOf(key, server.revision);
     if (findCharacter(server.characterId)) {
         const ref = { chaId: server.characterId, chatId: server.id };
         if (server.revision === null || !server.data) {
@@ -3711,7 +3820,7 @@ function canRefreshChat(ref: ChatRef): boolean {
     return (
         !pending.has(key) &&
         !inflight.has(key) &&
-        !isChatGenerating(ref) &&
+        !isChatStreamedHere(ref) &&
         !deferred.has(key) &&
         !quarantined.has(key) &&
         !isJobBlocked(key)
@@ -3880,6 +3989,7 @@ function adoptChatRead(server: RemoteChat, notice: number, issued: string | null
 function removeRemoteChat(chaId: string, chatId: string) {
     const key = keyOf(chaId, chatId);
     staleChats.delete(key);
+    dropFeedLocksOf(key, null);
     const ids = findCharacter(chaId) ? memberIds(chaId) : [];
     const index = ids.indexOf(chatId);
     if (index !== -1 && ids.length === 1) {
@@ -4218,7 +4328,7 @@ export function acceptRemoteCollection(collection: {
             // Not on the server yet (never sent, or a create whose attempt was rolled back or is
             // unresolved): it stays and its create goes out.
             next.push(mine);
-        } else if (isChatGenerating({ chaId, chatId: id })) {
+        } else if (isChatStreamedHere({ chaId, chatId: id })) {
             next.push(mine);
             deferred.add(key);
         } else {
@@ -4438,6 +4548,7 @@ function installRead(
     delete holding.summaries[slot(id)];
     loadedKeys.add(key);
     holdChatRevision(key, server.revision);
+    dropFeedLocksOf(key, server.revision);
     if (!busy) {
         settleNotice(key, server.revision);
     }
@@ -4622,7 +4733,7 @@ export function deferredReloads(): ChatRef[] {
             const [chaId, chatId] = key.split("\u0000");
             return { chaId, chatId };
         })
-        .filter((ref) => !isChatGenerating(ref) && !inflight.has(keyOf(ref.chaId, ref.chatId)));
+        .filter((ref) => !isChatStreamedHere(ref) && !inflight.has(keyOf(ref.chaId, ref.chatId)));
 }
 
 /** Applies a deferred chat's reload (after a successful read) and ends its deferral. */
@@ -4630,7 +4741,7 @@ export function finishDeferredReload(server: RemoteChat): string | null {
     const key = keyOf(server.characterId, server.id);
     const ref = { chaId: server.characterId, chatId: server.id };
     // A new job may have locked the chat while the read was in flight.
-    if (!deferred.has(key) || isChatGenerating(ref) || inflight.has(key)) {
+    if (!deferred.has(key) || isChatStreamedHere(ref) || inflight.has(key)) {
         return null;
     }
     deferred.delete(key);
@@ -4692,7 +4803,7 @@ export function isChatDeferred(key: string): boolean {
         return false;
     }
     const [chaId, chatId] = key.split("\u0000");
-    return isChatGenerating({ chaId, chatId });
+    return isChatStreamedHere({ chaId, chatId });
 }
 
 /** Chat keys discarded after `sequence` (for `flushResources`' report). */

@@ -28,8 +28,10 @@ import {
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
+import type { ChatStreaming } from "../../../shared/events.ts";
 import {
     type AppliedChanges,
+    CommittedWriteError,
     ResourceBatchConflictError,
     type ResourceBatchOperation,
     type ResourceStore,
@@ -254,6 +256,8 @@ type Job = {
     pendingFlush?: (() => void) | null;
     /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
     generated: Set<string>;
+    /** Every chat this job locked a message in (`chatKey`): the job's end publishes their locks again. */
+    lockChats: Map<string, { characterId: string; chatId: string }>;
     terminal: GenerationTerminalEvent | null;
     listeners: Set<(message: unknown) => void>;
     finished: Promise<void>;
@@ -443,6 +447,25 @@ export function createGenerationJobs(options: {
                     seq: mark?.generationId === ref.generationId ? mark.seq : 0,
                 };
             });
+    }
+
+    /**
+     * Every message of a chat a generation job owns (any job, as the change feed announces them), each
+     * with the newest chunk its owner's stored text includes (as `streamingIn`).
+     */
+    function chatStreaming(characterId: string, chatId: string): ChatStreaming {
+        return {
+            characterId,
+            id: chatId,
+            streaming: lock.ownedIn(characterId, chatId).map((owner) => {
+                const mark = jobs.get(owner.jobId)?.watermarks.get(owner.messageId);
+                return {
+                    messageId: owner.messageId,
+                    generationId: owner.generationId,
+                    seq: mark?.generationId === owner.generationId ? mark.seq : 0,
+                };
+            }),
+        };
     }
 
     /** The chat's current server copy as a `resource` event, or null (gone, or another epoch). */
@@ -719,6 +742,16 @@ export function createGenerationJobs(options: {
         }
         try {
             lock.endJob(job.token);
+            try {
+                // Every chat the job ever locked, with its locks now: a final write normally published
+                // the same already; this covers a release that write could not publish and a job that
+                // ended without a final write.
+                store.publishStreaming(
+                    [...job.lockChats.values()].map(({ characterId, chatId }) => chatStreaming(characterId, chatId)),
+                );
+            } catch (error) {
+                logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
+            }
             const key = chatKey(job.context.characterId, job.context.chatId);
             if (chatSlots.get(key) === job.id) {
                 chatSlots.delete(key);
@@ -796,65 +829,91 @@ export function createGenerationJobs(options: {
                             const ref = { characterId: group.characterId, chatId: group.chatId, messageId: op.id };
                             const owner = { jobId: job.id, generationId: op.generationId, token: job.token };
                             acquired.push({ ref, previous: lock.acquire(ref, owner) });
+                            job.lockChats.set(chatKey(group.characterId, group.chatId), {
+                                characterId: group.characterId,
+                                chatId: group.chatId,
+                            });
                         }
                     }
                 }
-                const applied = store.applyChanges(changes, { epoch: job.epoch, jobToken: job.token });
-                (changes.chats ?? []).forEach((group, index) => {
-                    const outcomes = applied.chats[index]?.checkpoints ?? [];
-                    let checkpoint = 0;
-                    if (group.characterId === job.context.characterId && group.chatId === job.context.chatId) {
-                        const result = applied.chats[index];
-                        job.metaWrite =
-                            group.baseRevision &&
-                            result?.revision &&
-                            !result.stale &&
-                            group.ops.every((op) => op.op === "meta")
-                                ? { baseRevision: group.baseRevision, revision: result.revision }
-                                : undefined;
-                        for (const op of group.ops) {
-                            if (op.op === "begin") {
-                                // The client's copy of it can hold streamed text: patches carry its row.
-                                job.generated.add(op.id);
+                const applied = store.applyChanges(changes, {
+                    epoch: job.epoch,
+                    jobToken: job.token,
+                    // After the commit and before the change is published, so the published locks
+                    // already show a final write's release and a `begin`'s new owner.
+                    committed: (result) => {
+                        (changes.chats ?? []).forEach((group, index) => {
+                            const outcomes = result.chats[index]?.checkpoints ?? [];
+                            let checkpoint = 0;
+                            if (group.characterId === job.context.characterId && group.chatId === job.context.chatId) {
+                                const written = result.chats[index];
+                                job.metaWrite =
+                                    group.baseRevision &&
+                                    written?.revision &&
+                                    !written.stale &&
+                                    group.ops.every((op) => op.op === "meta")
+                                        ? { baseRevision: group.baseRevision, revision: written.revision }
+                                        : undefined;
+                                for (const op of group.ops) {
+                                    if (op.op === "begin") {
+                                        // The client's copy of it can hold streamed text: patches carry its row.
+                                        job.generated.add(op.id);
+                                    }
+                                }
                             }
-                        }
-                    }
-                    for (const op of group.ops) {
-                        if ((op.op === "setText" || op.op === "setMessage") && op.generation) {
-                            const outcome = outcomes[checkpoint];
-                            checkpoint += 1;
-                            const written = op.op === "setText" ? op.id : op.message.chatId!;
-                            const cover = covers.find(
-                                (entry) => entry.messageId === written && entry.generationId === op.generation!.id,
-                            );
-                            if (outcome === "applied") {
-                                // The stored text is this write's: its claim (none: 0) replaces the last.
-                                job.watermarks.set(written, { generationId: op.generation.id, seq: cover?.seq ?? 0 });
+                            for (const op of group.ops) {
+                                if ((op.op === "setText" || op.op === "setMessage") && op.generation) {
+                                    const outcome = outcomes[checkpoint];
+                                    checkpoint += 1;
+                                    const written = op.op === "setText" ? op.id : op.message.chatId!;
+                                    const cover = covers.find(
+                                        (entry) =>
+                                            entry.messageId === written && entry.generationId === op.generation!.id,
+                                    );
+                                    if (outcome === "applied") {
+                                        // The stored text is this write's: its claim (none: 0) replaces the last.
+                                        job.watermarks.set(written, {
+                                            generationId: op.generation.id,
+                                            seq: cover?.seq ?? 0,
+                                        });
+                                    }
+                                    if (
+                                        op.generation.final &&
+                                        outcome === "applied" &&
+                                        job.current?.messageId === written &&
+                                        job.current.generationId === op.generation.id
+                                    ) {
+                                        // That reply is final: a reconnect gets it from the chat, not the stream.
+                                        job.current = null;
+                                    }
+                                    if (op.generation.final && outcome === "applied") {
+                                        // Only the generation that owns the message now: a `begin` later in
+                                        // the same write keeps its new generation locked.
+                                        const messageId = op.op === "setText" ? op.id : op.message.chatId!;
+                                        lock.release(
+                                            { characterId: group.characterId, chatId: group.chatId, messageId },
+                                            job.token,
+                                            op.generation.id,
+                                        );
+                                    }
+                                }
                             }
-                            if (
-                                op.generation.final &&
-                                outcome === "applied" &&
-                                job.current?.messageId === written &&
-                                job.current.generationId === op.generation.id
-                            ) {
-                                // That reply is final: a reconnect gets it from the chat, not the stream.
-                                job.current = null;
-                            }
-                            if (op.generation.final && outcome === "applied") {
-                                // Only the generation that owns the message now: a `begin` later in
-                                // the same write keeps its new generation locked.
-                                const messageId = op.op === "setText" ? op.id : op.message.chatId!;
-                                lock.release(
-                                    { characterId: group.characterId, chatId: group.chatId, messageId },
-                                    job.token,
-                                    op.generation.id,
-                                );
-                            }
-                        }
-                    }
+                        });
+                        const chats = new Map(
+                            (changes.chats ?? []).map((group) => [
+                                chatKey(group.characterId, group.chatId),
+                                chatStreaming(group.characterId, group.chatId),
+                            ]),
+                        );
+                        return [...chats.values()];
+                    },
                 });
                 return applied;
             } catch (error) {
+                if (error instanceof CommittedWriteError) {
+                    // The write is in the store and was published: nothing to restore or retry.
+                    throw error;
+                }
                 for (const { ref, previous } of acquired.reverse()) {
                     lock.restore(ref, previous);
                 }
@@ -1100,6 +1159,7 @@ export function createGenerationJobs(options: {
             // The chat at the revision the owner named (checked above): the first patch's base.
             sentChat: admittedChat(characterId, chatId),
             generated: new Set(),
+            lockChats: new Map(),
             terminal: null,
             listeners: new Set(),
             finished,

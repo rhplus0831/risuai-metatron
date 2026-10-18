@@ -176,7 +176,10 @@ export type GenerationChunkEvent = {
     seq: number;
 };
 
-/** A message a job is still generating, and the newest chunk its stored text includes. */
+/**
+ * A message a job is still generating, and the newest chunk its stored text includes. The job's
+ * chat events list the job's own; the change feed's `ChatStreaming` lists every job's in a chat.
+ */
 export type StreamingMessage = { messageId: string; generationId: string; seq: number };
 
 /** A record the job changed, as the server holds it (updates only: never a deletion). */

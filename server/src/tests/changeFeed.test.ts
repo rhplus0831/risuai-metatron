@@ -6,6 +6,7 @@ import { MAX_FEED_PATCH_BYTES } from "../../../shared/resources.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import {
+    CommittedWriteError,
     createResourceStore,
     JobTokenError,
     ResourceBatchConflictError,
@@ -867,5 +868,224 @@ describe("item patches in the feed", () => {
                 patch: { baseRevision: m, items: [], changes: [{ id: "b", set: { name: "B" }, remove: [] }] },
             },
         ]);
+    });
+});
+
+// Data-loss slice 2b: a generation job's write runs `committed` after the commit and before the
+// change is published, and the lists it returns ride on that change as `streaming`; a job's end
+// publishes its released locks without a write (`publishStreaming`).
+describe("the store publishes generation locks (slice 2b)", () => {
+    const lockOf = (messageId: string, generationId: string, seq = 0) => [
+        { characterId: "c", id: "k", streaming: [{ messageId, generationId, seq }] },
+    ];
+    const setupChat = () => {
+        const context = setup();
+        context.store.put(characters, "c", { chaId: "c", name: "C" }, null);
+        context.store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [chatCreate("k", [{ chatId: "r", data: "", role: "char" }])],
+                },
+            ],
+        });
+        context.lock.addToken("T");
+        context.events.length = 0;
+        return context;
+    };
+    const change = (event: ChangeFeedEvent | undefined) => {
+        if (event?.type !== "change") throw new Error("expected a committed change");
+        return event;
+    };
+
+    it("runs `committed` after the commit and before publication, and the published change carries its lists", () => {
+        const { store, events } = setupChat();
+        let hookSaw: { revision: string | null; published: number } | null = null;
+        const applied = store.applyChanges(
+            {
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("c", "k"),
+                        ops: [{ op: "setText", id: "r", text: "one", generation: { id: "g1", seq: 1 } }],
+                    },
+                ],
+            },
+            {
+                epoch: store.epoch(),
+                jobToken: "T",
+                committed: (result) => {
+                    // The write is committed when the hook runs (the store's revision is the write's),
+                    // and nothing was published yet.
+                    hookSaw = { revision: store.chatRevision("c", "k"), published: events.length };
+                    expect(result.chats[0].revision).toBe(store.chatRevision("c", "k"));
+                    return lockOf("r", "g1", 1);
+                },
+            },
+        );
+        expect(hookSaw).toEqual({ revision: applied.chats[0].revision, published: 0 });
+        expect(events).toHaveLength(1);
+        expect(change(events[0])).toEqual({
+            type: "change",
+            epoch: store.epoch(),
+            changes: {
+                resources: [],
+                chats: [expect.objectContaining({ characterId: "c", id: "k", revision: applied.chats[0].revision })],
+                chatOrders: [],
+            },
+            streaming: lockOf("r", "g1", 1),
+        });
+        // A write whose hook returns no lists publishes a plain change (no `streaming` key at all).
+        events.length = 0;
+        store.applyChanges(
+            {
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("c", "k"),
+                        ops: [{ op: "setText", id: "r", text: "two", generation: { id: "g1", seq: 2, final: true } }],
+                    },
+                ],
+            },
+            { epoch: store.epoch(), jobToken: "T", committed: () => [] },
+        );
+        expect(Object.keys(change(events[0]))).toEqual(["type", "epoch", "changes"]);
+    });
+
+    it("runs `committed` without a feed attached (the job's bookkeeping does not depend on one)", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        store.put(characters, "c", { chaId: "c", name: "C" }, null);
+        lock.addToken("T");
+        const committed = vi.fn(() => lockOf("r", "g1"));
+        store.applyChanges(
+            { chats: [{ characterId: "c", chatId: "k", baseRevision: null, ops: [chatCreate("k")] }] },
+            { epoch: store.epoch(), jobToken: "T", committed },
+        );
+        expect(committed).toHaveBeenCalledTimes(1);
+        expect(store.chatRevision("c", "k")).not.toBeNull();
+    });
+
+    it("a `committed` that throws: the change is still published without lists, the write stands, and `CommittedWriteError` carries the cause", () => {
+        const { store, events } = setupChat();
+        const base = store.chatRevision("c", "k")!;
+        const failure = new Error("bookkeeping failed");
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: base,
+                            ops: [{ op: "setText", id: "r", text: "one" }],
+                        },
+                    ],
+                },
+                {
+                    epoch: store.epoch(),
+                    jobToken: "T",
+                    committed: () => {
+                        throw failure;
+                    },
+                },
+            ),
+        ).toThrow(CommittedWriteError);
+        const revision = store.chatRevision("c", "k")!;
+        expect(revision).not.toBe(base);
+        expect(events).toHaveLength(1);
+        expect(change(events[0]).changes.chats).toEqual([expect.objectContaining({ id: "k", revision })]);
+        expect(change(events[0])).not.toHaveProperty("streaming");
+        // The marker never fails to construct, whatever was thrown: the cause is kept untouched.
+        for (const cause of [failure, Object.create(null), "text", undefined]) {
+            let caught: unknown;
+            try {
+                store.applyChanges(
+                    {
+                        chats: [
+                            {
+                                characterId: "c",
+                                chatId: "k",
+                                baseRevision: store.chatRevision("c", "k"),
+                                ops: [{ op: "meta", set: { note: String(Math.random()) } }],
+                            },
+                        ],
+                    } as never,
+                    {
+                        epoch: store.epoch(),
+                        jobToken: "T",
+                        committed: () => {
+                            throw cause;
+                        },
+                    },
+                );
+            } catch (error) {
+                caught = error;
+            }
+            expect(caught).toBeInstanceOf(CommittedWriteError);
+            expect((caught as CommittedWriteError).cause).toBe(cause);
+            expect((caught as CommittedWriteError).message).toBe("The write committed, but its follow-up failed");
+        }
+        // A conflict (a stale whole-chat replace) throws before the hook: nothing published, the hook never ran.
+        events.length = 0;
+        const committed = vi.fn(() => lockOf("r", "g1"));
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: base,
+                            ops: [
+                                { op: "replace", chat: { id: "k", name: "x", note: "", localLore: [], message: [] } },
+                            ],
+                        },
+                    ],
+                } as never,
+                { epoch: store.epoch(), jobToken: "T", committed },
+            ),
+        ).toThrow(ResourceBatchConflictError);
+        expect(committed).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+    });
+
+    it("`publishStreaming` publishes a change with no refs, nothing for an empty list, and folds into an open transaction (gone with its rollback)", () => {
+        const { store, events } = setupChat();
+        store.publishStreaming([]);
+        expect(events).toEqual([]);
+        store.publishStreaming([{ characterId: "c", id: "k", streaming: [] }]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                changes: empty,
+                streaming: [{ characterId: "c", id: "k", streaming: [] }],
+            },
+        ]);
+        events.length = 0;
+        // Inside a transaction: one frame, the write's refs with the lists; the last list of a chat wins.
+        store.transaction(() => {
+            store.publishStreaming(lockOf("r", "g1"));
+            store.put(ui, "main", { language: "de" }, store.get(ui, "main")!.revision);
+            store.publishStreaming(lockOf("r", "g2"));
+            expect(events).toEqual([]);
+        });
+        expect(events).toHaveLength(1);
+        expect(change(events[0]).changes.resources).toEqual([expect.objectContaining({ kind: "ui", id: "main" })]);
+        expect(change(events[0]).streaming).toEqual(lockOf("r", "g2"));
+        events.length = 0;
+        expect(() =>
+            store.transaction(() => {
+                store.publishStreaming(lockOf("r", "g3"));
+                throw new Error("rolled back");
+            }),
+        ).toThrow("rolled back");
+        expect(events).toEqual([]);
     });
 });

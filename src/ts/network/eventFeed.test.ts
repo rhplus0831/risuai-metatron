@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => {
         epochMismatch: vi.fn(),
         noteRemoteChanges: vi.fn(),
         reconcileRemote: vi.fn(),
+        /** The chat module's side of a frame's generation locks (data-loss slice 2b). */
+        noteRemoteStreaming: vi.fn(),
+        releaseFeedLocks: vi.fn(),
         EpochMismatch,
         /** `recordClientEvent`: the feed's diagnostics (request history slice 8). */
         record: vi.fn<(input: unknown) => void>(),
@@ -34,6 +37,10 @@ vi.mock("../storage/serverAuth", () => ({
 vi.mock("../storage/resourceSync.svelte", () => ({
     noteRemoteChanges: mocks.noteRemoteChanges,
     reconcileRemote: mocks.reconcileRemote,
+}));
+vi.mock("../storage/chatStore.svelte", () => ({
+    noteRemoteStreaming: mocks.noteRemoteStreaming,
+    releaseFeedLocks: mocks.releaseFeedLocks,
 }));
 vi.mock("../diagnostics/collector", () => ({ recordClientEvent: mocks.record }));
 
@@ -201,6 +208,57 @@ describe("the live-update socket client", () => {
         expect(ws.closed).toBe(true);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(FakeSocket.instances).toHaveLength(1);
+    });
+});
+
+// Data-loss slice 2b: a `change` frame's generation locks go to the chat module after its refs, and a
+// `hello` of the loaded epoch drops the feed's locks (a release may have been sent while disconnected).
+describe("the frame's generation locks (slice 2b)", () => {
+    const streaming = [{ characterId: "c", id: "k", streaming: [{ messageId: "r", generationId: "g1", seq: 0 }] }];
+    const chats = { resources: [], chats: [{ characterId: "c", id: "k", revision: "E1:1:5" }], chatOrders: [] };
+
+    it("passes a change's `streaming` with its refs after the refs were dispatched, and nothing without it", async () => {
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        ws.frame({ type: "change", epoch: "E1", changes: chats, streaming });
+        expect(mocks.noteRemoteChanges).toHaveBeenCalledWith(chats);
+        expect(mocks.noteRemoteStreaming).toHaveBeenCalledWith(streaming, chats);
+        expect(mocks.noteRemoteStreaming.mock.invocationCallOrder[0]).toBeGreaterThan(
+            mocks.noteRemoteChanges.mock.invocationCallOrder[0],
+        );
+        // A release without a write: empty refs, the lists alone.
+        const release = [{ characterId: "c", id: "k", streaming: [] }];
+        ws.frame({ type: "change", epoch: "E1", changes: listing, streaming: release });
+        expect(mocks.noteRemoteStreaming).toHaveBeenLastCalledWith(release, listing);
+        ws.frame({ type: "change", epoch: "E1", changes: change });
+        expect(mocks.noteRemoteChanges).toHaveBeenCalledTimes(3);
+        expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops the feed's locks on every `hello` of the loaded epoch, and touches no lock for another epoch's frames", async () => {
+        const ws = await started();
+        ws.frame({ type: "change", epoch: "E1", changes: chats, streaming });
+        expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(1);
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(1);
+        expect(mocks.releaseFeedLocks.mock.invocationCallOrder[0]).toBeLessThan(
+            mocks.reconcileRemote.mock.invocationCallOrder[0],
+        );
+        // A reconnect's hello drops again.
+        ws.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const next = FakeSocket.instances.at(-1)!;
+        next.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(2);
+        // Another epoch halts: its locks are neither installed nor dropped here.
+        next.frame({ type: "change", epoch: "E0", changes: chats, streaming });
+        next.frame({ type: "hello", epoch: "E2" });
+        expect(mocks.epochMismatch).toHaveBeenCalledWith("E2");
+        expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(1);
+        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(2);
     });
 });
 

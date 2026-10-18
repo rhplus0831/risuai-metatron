@@ -125,11 +125,15 @@ async function boot(options: { summaries?: boolean } = {}) {
     fake.requests.length = 0;
     fake.feedEvents.length = 0;
 
-    // The live-update socket's stand-in: each `change` of the loaded epoch goes to `noteRemoteChanges`.
+    // The live-update socket's stand-in: each `change` of the loaded epoch goes to `noteRemoteChanges`,
+    // then its generation locks to the chat module (`eventFeed.ts` `receive`).
     const live = { paused: false, queue: [] as ServerFeedEvent[] };
     const deliver = (event: ServerFeedEvent) => {
         if (event.type === "change" && event.epoch === client.getResourceEpoch()) {
             sync.noteRemoteChanges(event.changes);
+            if (event.streaming) {
+                chatModule.noteRemoteStreaming(event.streaming, event.changes);
+            }
         }
     };
     fake.onFeed = (event) => (live.paused ? live.queue.push(event) : deliver(event));
@@ -329,4 +333,218 @@ describe("feed patches through the tab save adapter", () => {
             expect(alerts.normal).not.toHaveBeenCalled();
         },
     );
+});
+
+// Data-loss slice 2b: the change feed carries the generation locks, so a tab that does not follow the
+// job (an observer, or an owner whose follow was lost) shows the generating reply locked from the
+// job's first write's frame to its final write's (or its end's) frame, with no job socket. A feed
+// lock is a lock only: the observer keeps taking the checkpoint patches. The edit race before the
+// lock frame still goes through slice 2a's discard.
+describe("the feed's generation locks (slice 2b)", () => {
+    const B = { characterId: "c", chatId: "k", messageId: "b" };
+    const lockOf = (messageId: string, generationId: string, seq = 0) => ({ messageId, generationId, seq });
+    const jobLock = (b: Booted, generationId = "g") => {
+        b.fake.lock!.addToken("T");
+        b.fake.lock!.acquire(B, { jobId: "J", generationId, token: "T" });
+    };
+    /**
+     * The job's own write (its token) with the locks its committed hook announces, as `writeAsJob`
+     * publishes them; `release`: the final write releases `b` before the list is built.
+     */
+    const jobWrite = (
+        b: Booted,
+        ops: ChatOp[],
+        streaming: ReturnType<typeof lockOf>[],
+        options: { release?: string } = {},
+    ) =>
+        b.fake.store.applyChanges(
+            { chats: [{ characterId: "c", chatId: "k", baseRevision: b.fake.chat("c", "k")!.revision, ops }] },
+            {
+                epoch: b.fake.store.epoch(),
+                jobToken: "T",
+                committed: () => {
+                    if (options.release) b.fake.lock!.release(B, "T", options.release);
+                    return [{ characterId: "c", id: "k", streaming }];
+                },
+            },
+        );
+    /** The job's end: its locks released and published again without a write (`finalize`). */
+    const jobEnd = (b: Booted) => {
+        b.fake.lock!.endJob("T");
+        b.fake.store.publishStreaming([{ characterId: "c", id: "k", streaming: [] }]);
+    };
+    const locked = (b: Booted, id = "b") => b.chat.isMessageLocked(refK, id);
+    const setText = (op: "setText", id: string, text: string): ChatOp => ({ op, id, text });
+
+    it("locks the reply from the job's first write's frame, keeps taking its checkpoint patches, hands it to another generation, and releases it on the final write's frame", async () => {
+        const b = await boot();
+        const scope = b.sync.beginMutationScope();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        expect(locked(b)).toBe(true);
+        expect(b.chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(true);
+        expect(b.chat.lockedChatKeys()).toEqual(new Set(["c\u0000k"]));
+        // A feed lock is a message and chat lock, not a character one (the save loop's character hydration goes on).
+        expect(b.chat.isCharacterGenerating("c")).toBe(false);
+        expect(() => b.chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
+        expect(() => b.chat.removeMessages(refK, ["b"])).toThrow(/being generated/);
+        // The checkpoint's feed patch applied at once: the observer sees progress, with no read.
+        expect(mirror(b).message[1].data).toBe("one");
+        expect(reads(b)).toEqual([]);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        jobWrite(b, [setText("setText", "b", "one two")], [lockOf("b", "g", 2)]);
+        expect(mirror(b).message[1].data).toBe("one two");
+        expect(locked(b)).toBe(true);
+        // A handoff: the frame lists the message under the next generation; it stays locked.
+        jobWrite(b, [setText("setText", "b", "one two three")], [lockOf("b", "g2", 0)]);
+        expect(locked(b)).toBe(true);
+        // The final write's frame carries the release.
+        jobWrite(b, [setText("setText", "b", "FINAL")], [], { release: "g2" });
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        expect(b.chat.lockedChatKeys()).toEqual(new Set());
+        expect(mirror(b).message[1].data).toBe("FINAL");
+        jobEnd(b);
+        expect(locked(b)).toBe(false);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+        // Unlocked: an edit goes out as usual.
+        b.chat.setMessageText(refK, "b", "edited after");
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(b.fake.texts("c", "k")).toEqual(["A", "edited after", "C"]);
+    });
+
+    it("an edit sent before the lock frame arrives goes through slice 2a's discard; the frame then refuses edits, the read keeps the lock, and the final reply wins", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        // No lock here yet: the edit is accepted locally and refused by the server (409 `generating`).
+        b.chat.setMessageText(refK, "b", "edited");
+        await expect(b.sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+        expect(b.fake.texts("c", "k")).toEqual(["A", "one", "C"]);
+        expect(alerts.normal.mock.calls.map(([value]) => value).sort()).toEqual(["generating", "reloaded"]);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+        // The lock frame arrives (its patch does not fit the stale chat): the reply is locked now.
+        b.live.paused = false;
+        b.flushFeed();
+        expect(locked(b)).toBe(true);
+        expect(() => b.chat.setMessageText(refK, "b", "again")).toThrow(/being generated/);
+        // The idle read that puts the server's reply back is at the frame's revision: the lock stays.
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(mirror(b).message[1].data).toBe("one");
+        expect(b.chat.isChatStale(refK)).toBe(false);
+        expect(locked(b)).toBe(true);
+        jobWrite(b, [setText("setText", "b", "FINAL")], [], { release: "g" });
+        expect(locked(b)).toBe(false);
+        expect(mirror(b).message[1].data).toBe("FINAL");
+        jobEnd(b);
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(b.fake.texts("c", "k")).toEqual(["A", "FINAL", "C"]);
+        expect(b.fake.batchCount()).toBe(1);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("keeps the feed lock when this tab's follow of the job is lost, through the job's later frames, until the job's end frame", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        // The owner follows its job: its own lock joins the feed's.
+        expect(
+            b.chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", seq: 1, text: "one" }),
+        ).toBe(true);
+        expect(locked(b)).toBe(true);
+        // The follow ends `lost` (`releaseGenerationJob` → `endServerJob`) while the server job goes on.
+        b.chat.endServerJob("J");
+        expect(locked(b)).toBe(true);
+        expect(b.chat.isChatGenerating(refK)).toBe(true);
+        expect(() => b.chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
+        // The next checkpoint's frame announces the same generation again: still locked, and the
+        // whole read the lost follow caused (at that frame's revision) keeps it.
+        jobWrite(b, [setText("setText", "b", "one two")], [lockOf("b", "g", 2)]);
+        expect(locked(b)).toBe(true);
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(mirror(b).message[1].data).toBe("one two");
+        expect(locked(b)).toBe(true);
+        // The job ends without a final write (an abort): its end frame, with no refs, releases.
+        jobEnd(b);
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+    });
+
+    it("the owner's job events of a generation the feed already released still apply: the two locks are independent", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        jobWrite(b, [setText("setText", "b", "FINAL")], [], { release: "g" });
+        expect(locked(b)).toBe(false);
+        // The job socket is behind the feed: its stream and terminal arrive after the feed's release.
+        expect(
+            b.chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", seq: 1, text: "one" }),
+        ).toBe(true);
+        expect(locked(b)).toBe(true);
+        expect(mirror(b).message[1].data).toBe("one");
+        b.chat.endServerJob("J");
+        expect(locked(b)).toBe(false);
+        // The reverse: the owner's end first, then a late lock frame and its release frame.
+        jobLock(b, "g3");
+        jobWrite(b, [setText("setText", "b", "three")], [lockOf("b", "g3", 1)]);
+        expect(locked(b)).toBe(true);
+        jobEnd(b);
+        expect(locked(b)).toBe(false);
+    });
+
+    it("locks by id a chat held as its summary and a message the mirror does not hold yet; the chat loads locked at the frame's revision", async () => {
+        const b = await boot({ summaries: true });
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(locked(b)).toBe(true);
+        expect(b.chat.isChatGenerating(refK)).toBe(true);
+        const loaded = await b.chat.loadChat(refK);
+        expect(loaded!.message[1].data).toBe("one");
+        expect(locked(b)).toBe(true);
+        // A frame naming a message the mirror lacks (a `begin` whose patch did not fit): locked by id.
+        b.chat.noteRemoteStreaming([
+            { characterId: "c", id: "k", streaming: [lockOf("b", "g", 1), lockOf("zz", "g9", 0)] },
+        ]);
+        expect(b.chat.isMessageLocked(refK, "zz")).toBe(true);
+        jobWrite(b, [setText("setText", "b", "FINAL")], [], { release: "g" });
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isMessageLocked(refK, "zz")).toBe(false);
+    });
+
+    it("a whole read releases a lock announced at an older revision and keeps one at its own; `hello`, a chat's removal, and a character's forgetting drop locks without retiring the generation", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
+        const server = () => b.fake.chat("c", "k")! as any;
+        b.chat.acceptRemoteChat(server());
+        expect(locked(b)).toBe(true);
+        // Another writer's change advances the revision with no lock frame (the socket missed it).
+        b.live.paused = true;
+        remote(b, [{ op: "meta", set: { note: "other writer" } }]);
+        b.live.queue.length = 0;
+        b.live.paused = false;
+        expect(locked(b)).toBe(true);
+        b.chat.acceptRemoteChat(server());
+        expect(locked(b)).toBe(false);
+        // The job's next write announces the lock again: not retired.
+        jobWrite(b, [setText("setText", "b", "one two")], [lockOf("b", "g", 2)]);
+        expect(locked(b)).toBe(true);
+        b.chat.releaseFeedLocks();
+        expect(locked(b)).toBe(false);
+        jobWrite(b, [setText("setText", "b", "one two three")], [lockOf("b", "g", 3)]);
+        expect(locked(b)).toBe(true);
+        // A chat gone on the server (its read answers null) and a forgotten character drop their locks.
+        b.chat.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
+        expect(locked(b)).toBe(false);
+        b.chat.noteRemoteStreaming([{ characterId: "c", id: "j", streaming: [lockOf("x", "gx", 0)] }]);
+        expect(b.chat.isMessageLocked({ chaId: "c", chatId: "j" }, "x")).toBe(true);
+        b.chat.forgetCharacter("c");
+        expect(b.chat.lockedChatKeys()).toEqual(new Set());
+    });
 });
