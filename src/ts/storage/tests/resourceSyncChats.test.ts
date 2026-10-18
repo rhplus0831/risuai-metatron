@@ -499,6 +499,126 @@ describe("one chat's trouble does not block the rest", () => {
         expect(mirrorIds()).toEqual(fake.order("c")!.ids);
         expect(mirrorIds()).toContain("r");
         expect((fake.chat("c", "j")!.data as any).note).toBe("must save");
+        // Data-loss slice 4b: the refresh after the acknowledgement keeps the reorder queued after it
+        // (this client's order first, the other tab's chat after), nothing is discarded, no notice.
+        expect(fake.order("c")!.ids).toEqual(["local", "k", "j", "r"]);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("discards and reports a reorder the acknowledgement's refresh cannot rebase (a kept chat with work is gone on the server), then that chat's work", async () => {
+        const { fake, sync, chat, mirrorIds } = await boot();
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "r",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { id: "r", name: "R", message: [] } as any }],
+            },
+        ]);
+        chat.createChat("c", { id: "local", name: "L", message: [] } as any);
+        await sync.flushResources();
+        // Before the list is read again: another tab deletes `j`, this tab edits it and reorders.
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: fake.chat("c", "j")!.revision,
+                ops: [{ op: "delete" } as any],
+            },
+        ]);
+        chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
+        chat.reorderChats("c", ["local", "k", "j"]);
+        const result = await sync.flushResources();
+        // The refresh keeps busy `j`, so the reorder could not be a permutation of the server's list:
+        // it is discarded (`chats/c`) with the notice; `j`'s edit then conflicts and is discarded too.
+        expect(result.discarded.sort()).toEqual(["chats/c", "chats/c/j"]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        expect(alerts.error).not.toHaveBeenCalled();
+        // The reorder was never sent; the server's order stands.
+        expect(fake.batchBodies().flatMap((batch) => batch.chatOrders ?? [])).toEqual([]);
+        expect(fake.order("c")!.ids).toEqual(["k", "local", "r"]);
+        expect(mirrorIds()).toEqual(["k", "local", "r"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("settles a reorder whose answer was lost without a discard report when the retry conflicts", async () => {
+        const { fake, sync, chat, mirrorIds } = await boot();
+        chat.reorderChats("c", ["j", "k"]);
+        fake.dropNextBatchResponse = true;
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.order("c")!.ids).toEqual(["j", "k"]);
+        // The resend conflicts on the old order revision; the server already holds the reorder.
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual([]);
+        expect(fake.order("c")!.ids).toEqual(["j", "k"]);
+        expect(mirrorIds()).toEqual(["j", "k"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("reports the unsent work and the queued reorder of a character another tab deleted (the live update), with the notice", async () => {
+        const { fake, sync, chat, characters } = await boot();
+        const scope = sync.beginMutationScope();
+        chat.appendMessage(refK, m("z", "unsent"));
+        chat.reorderChats("c", ["j", "k"]);
+        fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
+        sync.noteRemoteChanges({
+            resources: [{ kind: "characters", id: "c", revision: null }],
+            chats: [],
+            chatOrders: [],
+        });
+        await vi.advanceTimersByTimeAsync(700);
+        const result = await sync.flushResources({ scope });
+        expect(result.discarded.sort()).toEqual(["chats/c", "chats/c/k"]);
+        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
+        expect(characters()).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("settles a queued chat delete that another tab's deletion of the character fulfils, without a report or notice", async () => {
+        const { fake, sync, chat, characters } = await boot();
+        const scope = sync.beginMutationScope();
+        chat.deleteChat(refJ);
+        fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
+        sync.noteRemoteChanges({
+            resources: [{ kind: "characters", id: "c", revision: null }],
+            chats: [],
+            chatOrders: [],
+        });
+        await vi.advanceTimersByTimeAsync(700);
+        const result = await sync.flushResources({ scope });
+        expect(result.discarded).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(characters()).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("shows one reload notice when the recovery's chat-list read fails after its discards, and none more on the loss-free retry", async () => {
+        const { fake, sync, chat, settings, mirrorIds } = await boot();
+        const scope = sync.beginMutationScope();
+        settings.ui.theme = "mine";
+        fake.set("ui", "main", { ...(fake.record("ui", "main")!.data as object), theme: "theirs" });
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: fake.chat("c", "j")!.revision,
+                ops: [{ op: "delete" } as any],
+            },
+        ]);
+        chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
+        // The conflict read succeeds; the chat-list read after the discards fails.
+        let reads = 0;
+        fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" && ++reads === 2 };
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        expect(reads).toBe(2);
+        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
+        expect(settings.ui.theme).toBe("theirs");
+        const result = await sync.flushResources({ scope });
+        expect(result.discarded.sort()).toEqual(["chats/c/j", "ui/main"]);
+        expect(alerts.normal).toHaveBeenCalledTimes(1);
+        expect(mirrorIds()).toEqual(["k"]);
+        expect(chat.hasChatWork()).toBe(false);
     });
 });
 

@@ -3150,9 +3150,15 @@ export function adoptCharacter(chaId: string) {
     }
 }
 
-/** Drops all chat state of a character that is deleted (the server deletes its chats with it). */
-export function forgetCharacter(chaId: string) {
+/**
+ * Drops all chat state of a character that is deleted (the server deletes its chats with it). With
+ * `discard` (another writer deleted it), the chats' unsent work and a queued reorder count as
+ * discarded (the flush and `MutationScope` reports, `markDiscarded`); returns whether there was any.
+ * A queued delete the deletion fulfils is settled. This tab's own deletion settles them all instead.
+ */
+export function forgetCharacter(chaId: string, options: { discard?: boolean } = {}): boolean {
     const prefix = `${chaId}\u0000`;
+    let discardedWork = false;
     releaseFeedLocks(prefix);
     for (const key of [...staleChats, ...deferred, ...noticedChats.keys()]) {
         if (key.startsWith(prefix)) {
@@ -3161,11 +3167,18 @@ export function forgetCharacter(chaId: string) {
             deferred.delete(key);
         }
     }
-    for (const key of [...pending.keys()]) {
-        if (key.startsWith(prefix)) {
-            settleKey(key, workSeq(key));
-            pending.delete(key);
+    // A remote deletion also counts work only in flight (an unload request that may still answer).
+    for (const key of new Set([...pending.keys(), ...(options.discard ? inflight.keys() : [])])) {
+        if (!key.startsWith(prefix)) {
+            continue;
         }
+        if (options.discard && !hasUnsentDelete(key)) {
+            markDiscarded(key, workSeq(key));
+            discardedWork = true;
+        } else {
+            settleKey(key, workSeq(key));
+        }
+        pending.delete(key);
     }
     for (const key of [...chatRevisions.keys(), ...jobBlocked.keys()]) {
         if (key.startsWith(prefix)) {
@@ -3175,7 +3188,12 @@ export function forgetCharacter(chaId: string) {
     }
     const orderSeq = pendingOrders.get(chaId);
     if (orderSeq !== undefined) {
-        settleOrder(chaId, orderSeq);
+        if (options.discard) {
+            markOrderDiscarded(chaId, orderSeq);
+            discardedWork = true;
+        } else {
+            settleOrder(chaId, orderSeq);
+        }
     }
     pendingOrders.delete(chaId);
     orderRevisions.delete(chaId);
@@ -3184,6 +3202,7 @@ export function forgetCharacter(chaId: string) {
     delete chosen[slot(chaId)];
     dropLoadState(chaId);
     renewLifetime(chaId);
+    return discardedWork;
 }
 
 /** Whether the server knows a character's chats (its order exists) or this batch creates it. */
@@ -3202,9 +3221,13 @@ function memberIndex(entry: Pending): number {
  * same batch creates; chat work of characters not yet on the server waits. A chat with more unsent
  * ops than `maxOps` (the server's cap on one request) sends the first `maxOps` now and the rest
  * once those are acknowledged, on the revision they produce; its work counts as saved only when the
- * last part is.
+ * last part is. The reorders of `holdOrders` (characters whose chat list is still to be read after an
+ * acknowledgement showed another writer's chats) wait: their base would be stale.
  */
-export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: number } = {}): ChatWork {
+export function takeChatWork(
+    creating: ReadonlySet<string>,
+    options: { maxOps?: number; holdOrders?: ReadonlySet<string> } = {},
+): ChatWork {
     const maxOps = options.maxOps ?? Infinity;
     // A quarantined character create may be removed or re-keyed before ever reaching the server.
     // There is no persisted character deletion to clear its old chat obligations in that case.
@@ -3302,7 +3325,13 @@ export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: 
     const orders: SentChatOrder[] = [];
     for (const [chaId, seq] of pendingOrders) {
         const base = orderRevisions.get(chaId);
-        if (base === undefined || !findCharacter(chaId) || inflightOrders.has(chaId) || isOrderQuarantined(chaId)) {
+        if (
+            base === undefined ||
+            !findCharacter(chaId) ||
+            inflightOrders.has(chaId) ||
+            isOrderQuarantined(chaId) ||
+            options.holdOrders?.has(chaId)
+        ) {
             continue;
         }
         const visible = new Set(memberIds(chaId));
@@ -3576,6 +3605,16 @@ function markDiscarded(key: string, seq: number) {
     settleKey(key, seq);
 }
 
+/**
+ * A queued reorder replaced by the server's order: keyed by the character id alone, as the order
+ * obligations are, so the flush report names it `chats/<characterId>`.
+ */
+function markOrderDiscarded(chaId: string, seq: number) {
+    discardSequence += 1;
+    discarded.set(chaId, discardSequence);
+    settleOrder(chaId, seq);
+}
+
 /** The server's copy of a chat (revision and data null: it is gone), for conflict recovery. */
 export type RemoteChat = { characterId: string; id: string; revision: string | null; data: Chat | null };
 
@@ -3584,12 +3623,15 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * queued again. For each conflicting chat, with the server's copy read back: our own create or
  * delete that already landed (a replay) keeps the local state and the rest of its work; a chat a
  * server job locks is deferred (excluded from batches, reloaded when the job ends); a chat that is
- * gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
- * is replaced by the server copy and its local work discarded. Reorders that conflicted are dropped
- * (the caller refreshes those characters). A group refused for a generating message (`generating`:
- * `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, not reloaded, except its edits of
- * the locked messages the conflict names (`lockedMessages`, see `dropLockedEdits`). Returns whether
- * a chat was reloaded (or had edits dropped) and whether retained work was blocked by a generation.
+ * gone is dropped with its work and its character's chat list is to be refreshed (`refresh`); any
+ * other is replaced by the server copy and its local work discarded. Reorders that conflicted are
+ * settled without a discard report (their answer may have been lost), and the caller reads their
+ * lists again; `acceptRemoteCollection` reports a reorder queued since. A group refused for a
+ * generating message (`generating`: `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`,
+ * not reloaded, except its edits of the locked messages the conflict names (`lockedMessages`, see
+ * `dropLockedEdits`). Returns `{ reloaded, refresh, blocked }`: `reloaded` decides the reload notice,
+ * `refresh` names the lists to read, and `blocked` signals retained work blocked by a generation.
+ * A refused create's quarantine has its own alert.
  */
 export function recoverChatConflicts(
     work: ChatWork,
@@ -3658,10 +3700,12 @@ export function recoverChatConflicts(
             continue;
         }
         if (server.revision === null) {
-            // Gone on the server (another tab deleted it): the character's list is read again.
+            // Gone on the server (another tab deleted it): the character's list is read again. Its
+            // work is discarded now, with the notice, also when that read waits for a generation.
             discardChatWork(group.key, group.seq);
             chatRevisions.delete(group.key);
             refresh.add(group.characterId);
+            reloaded = true;
             continue;
         }
         if (!isMember(ref)) {
@@ -3681,9 +3725,11 @@ export function recoverChatConflicts(
     requeueChatWork({ groups: [], orders });
     for (const order of work.orders) {
         if (conflictedOrders.has(order.characterId)) {
+            // Settle this reorder and read the list again; its answer may have been lost.
             inflightOrders.delete(order.characterId);
             settleOrder(order.characterId, order.seq);
             refresh.add(order.characterId);
+            reloaded = true;
         }
     }
     return { reloaded, refresh, blocked };
@@ -4117,17 +4163,26 @@ export function canApplyRemoteCollection(chaId: string): boolean {
 
 /**
  * Applies a character's chat list from a live update (another writer created, deleted, or reordered
- * its chats), never discarding local work: callers check `canApplyRemoteCollection` first, and an
- * older order than the held one is ignored. The list's chats are whole chats or summaries (the save
- * loop reads summaries). A chat with unsent or in-flight work, a running generation, a deferral, or a
- * quarantine keeps its local copy; a chat deleted here and not yet on the server stays out; a local
- * chat not on the server yet stays (after the server's); an idle local chat the server no longer has
- * is removed, only while its held revision is the one in `issued` (the revisions held when the list
- * was read). A newer server chat that is not loaded here (or new to the list) takes the summary and
- * revision; a loaded one takes a whole chat when the list has it, else keeps its copy and held
- * revision and is marked stale (the next cycle reads it whole). A chat's notice is dropped only when
- * the adopted state covers it. Nothing is queued. Returns false when the character's order work is
- * busy or a removal was fenced (the caller reads the list again later).
+ * its chats), keeping local work except for the reorder below: callers check
+ * `canApplyRemoteCollection`, and an older order than the held one is ignored. The list's chats are
+ * whole chats or summaries (the save loop reads summaries). A chat with unsent or in-flight work, a
+ * running generation, a deferral, or a quarantine keeps its local copy; a chat deleted here and not
+ * yet on the server stays out; a local chat not on the server yet stays (after the server's). An
+ * idle local chat the server no longer has is removed, only while its held revision is the one in
+ * `issued` (the revisions held when the list was read). A newer server chat that is not loaded here
+ * (or new to the list) takes the summary and revision; a loaded one takes a whole chat when the
+ * list has it, else keeps its copy and held revision and is marked stale (the next cycle reads it
+ * whole). A chat's notice is dropped only when the adopted state covers it. Nothing is queued.
+ * Returns false when the character's order work is busy or a removal was fenced (the caller reads
+ * the list again later).
+ *
+ * With `keepPendingOrder` (the membership refresh after this client's own acknowledgement), a queued
+ * reorder does not refuse the list: the chats this client listed keep its order, the chats new to it
+ * follow in the server's order, and the reorder stays queued, so it is sent next on the new order
+ * revision as a permutation of the server's list. When a chat this client keeps and holds a revision
+ * of is missing from the server's list, the reorder could not be such a permutation: it is discarded
+ * and reported as `chats/<characterId>` (the caller shows the notice), and the server's order and
+ * revision are adopted. An order in flight still refuses.
  */
 export function applyRemoteCollection(
     collection: {
@@ -4136,9 +4191,11 @@ export function applyRemoteCollection(
         chats: readonly ListedChat[];
     },
     issued?: ReadonlyMap<string, string>,
+    options: { keepPendingOrder?: boolean } = {},
 ): boolean {
     const chaId = collection.characterId;
-    if (!canApplyRemoteCollection(chaId)) {
+    const rebase = options.keepPendingOrder === true && pendingOrders.has(chaId) && !inflightOrders.has(chaId);
+    if (!canApplyRemoteCollection(chaId) && !rebase) {
         return false;
     }
     if (!collection.order || !findCharacter(chaId)) {
@@ -4212,6 +4269,21 @@ export function applyRemoteCollection(
         }
         return true;
     }
+    let entries = next;
+    if (rebase) {
+        if (next.some((entry) => !placed.has(entry.id) && chatRevisions.has(keyOf(chaId, entry.id)))) {
+            markOrderDiscarded(chaId, pendingOrders.get(chaId)!);
+            pendingOrders.delete(chaId);
+        } else {
+            const localIndex = new Map(localIds.map((id, index) => [id, index]));
+            entries = [
+                ...next
+                    .filter((entry) => localIndex.has(entry.id))
+                    .sort((a, b) => localIndex.get(a.id)! - localIndex.get(b.id)!),
+                ...next.filter((entry) => !localIndex.has(entry.id)),
+            ];
+        }
+    }
     orderRevisions.set(chaId, collection.order.revision);
     for (const { key, revision } of adopted) {
         holdChatRevision(key, revision);
@@ -4228,7 +4300,7 @@ export function applyRemoteCollection(
         noticedChats.delete(key);
         changed(key);
     }
-    setChatList(chaId, next);
+    setChatList(chaId, entries);
     mutationToken += 1;
     syncSelection(chaId);
     remoteListener?.({ chaId, chatId: "" });
@@ -4247,21 +4319,26 @@ export function applyRemoteCollection(
  * waits). An idle chat takes the server's state: a whole chat when it is loaded and the list has one,
  * the summary and revision when it is not loaded (or new to the list); a loaded chat the list gives
  * only a newer summary of keeps its copy and held revision and is marked stale (read whole next).
+ * A queued reorder and a dropped chat's work count as discarded (`markOrderDiscarded`,
+ * `markDiscarded`: the flush and `MutationScope` reports); returns whether there was any. A dropped
+ * idle chat discards nothing.
  */
 export function acceptRemoteCollection(collection: {
     characterId: string;
     order: ChatOrderRecord | null;
     chats: readonly ListedChat[];
-}) {
+}): boolean {
     const chaId = collection.characterId;
     const character = findCharacter(chaId);
+    let discardedWork = false;
     const orderSeq = pendingOrders.get(chaId);
     if (orderSeq !== undefined) {
-        settleOrder(chaId, orderSeq);
+        markOrderDiscarded(chaId, orderSeq);
+        discardedWork = true;
     }
     pendingOrders.delete(chaId);
     if (!collection.order || !character) {
-        return;
+        return discardedWork;
     }
     orderRevisions.set(chaId, collection.order.revision);
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
@@ -4332,7 +4409,13 @@ export function acceptRemoteCollection(collection: {
             next.push(mine);
             deferred.add(key);
         } else {
-            discardChatWork(key, 0);
+            if (pending.has(key) || inflight.has(key)) {
+                discardChatWork(key, 0);
+                discardedWork = true;
+            } else {
+                staleChats.delete(key);
+                jobBlocked.delete(key);
+            }
             chatRevisions.delete(key);
             changed(key);
         }
@@ -4350,6 +4433,7 @@ export function acceptRemoteCollection(collection: {
     if (outdated) {
         notifyWork();
     }
+    return discardedWork;
 }
 
 // ---------------------------------------------------------------------------------------------

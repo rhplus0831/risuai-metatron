@@ -272,6 +272,14 @@ let timerDeadline = 0;
 let backoffUntil = 0;
 /** Characters whose chat list must be read from the server (a recovery inserted or emptied them). */
 const hydrate = new Set<string>();
+/**
+ * Characters whose chat list an acknowledgement of this client's own write showed another writer
+ * changed (`ackChatWork`): read and applied as a live update that keeps a queued reorder
+ * (`applyRemoteCollection` with `keepPendingOrder`), unless a kept chat with a held revision is
+ * missing from the server's list: then the reorder is discarded with the notice and report. Their
+ * reorders wait until then.
+ */
+const listRefresh = new Set<string>();
 let inFlight: Promise<void> | null = null;
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
@@ -402,6 +410,7 @@ function hasPendingWork(): boolean {
         hasPendingMembership(true) ||
         hasChatWork(canSaveCharacter) ||
         hydrate.size > 0 ||
+        listRefresh.size > 0 ||
         llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
         hasRemoteWork()
     ) {
@@ -1206,7 +1215,12 @@ function collectOperations(): {
             }
         }
     }
-    return { ops, captured, membership, chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS }) };
+    return {
+        ops,
+        captured,
+        membership,
+        chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS, holdOrders: listRefresh }),
+    };
 }
 
 /** One request of a cycle: resource ops, then chat groups and reorders. */
@@ -1351,11 +1365,21 @@ async function cycle() {
     if (halted || trackedCharacters() === undefined) {
         return;
     }
-    for (const stage of [reloadDeferredChats, hydrateCharacters, applyRemoteUpdates, refreshIdleChats]) {
-        await stage();
+    const stages: (() => Promise<boolean | void>)[] = [
+        reloadDeferredChats,
+        hydrateCharacters,
+        applyRemoteUpdates,
+        refreshIdleChats,
+    ];
+    for (const stage of stages) {
+        const discardedWork = await stage();
         if (halted) {
             // A restore replaced the data meanwhile: nothing more is applied or sent.
             return;
+        }
+        if (discardedWork) {
+            // At once: a later stage's failure must not swallow it.
+            showReloadedNotice();
         }
     }
     const { ops, captured, membership, chatWork } = collectOperations();
@@ -1428,7 +1452,7 @@ async function cycle() {
                 }
             });
             for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
-                hydrate.add(characterId);
+                listRefresh.add(characterId);
             }
         }
     }
@@ -2314,8 +2338,27 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
  * Another tab or device wrote records this batch was based on. Rebuilds an already received revision
  * or reads it back, then puts the server version into the mirror, unless the server already holds
  * exactly what this client sent (a retry after a lost response). The rest of the batch goes out in the next cycle.
+ * The reload notice is shown once per recovery, when it discarded anything, also when a read after
+ * the first discard throws.
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
+    const notice = { owed: false };
+    try {
+        await recoverConflictedWork(error, batch, work, notice);
+    } finally {
+        if (notice.owed && !halted) {
+            showReloadedNotice();
+        }
+    }
+}
+
+/** The body of `recoverFromConflict`: sets `notice.owed` as soon as anything is discarded. */
+async function recoverConflictedWork(
+    error: ResourceConflictError,
+    batch: readonly PendingOp[],
+    work: ChatWork,
+    notice: { owed: boolean },
+) {
     const sent = new Map(batch.map((op) => [op.key, op]));
     const refs: { kind: string; id: string }[] = [];
     const rebuilt: RemoteItem[] = [];
@@ -2380,7 +2423,7 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         showGeneratingNotice();
     }
     if (generatingRecovery.reloaded) {
-        showReloadedNotice();
+        notice.owed = true;
     }
     const remainingWork = {
         groups: work.groups.filter((group) => !generatingChats.has(group.key)),
@@ -2400,7 +2443,9 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         conflictedOrders,
         (read.chats ?? []) as RemoteChat[],
     );
-    let reloaded = recovered.reloaded;
+    if (recovered.reloaded) {
+        notice.owed = true;
+    }
     for (const characterId of recovered.refresh) {
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
         hydrate.add(characterId);
@@ -2423,27 +2468,34 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
             hydrate.add(item.id);
         }
         acceptRemote(item);
-        reloaded = true;
+        notice.owed = true;
     }
-    if (hydrate.size > 0) {
-        reloaded = (await hydrateCharacters()) || reloaded;
-    }
-    if (reloaded) {
-        showReloadedNotice();
+    if (hydrate.size > 0 && (await hydrateCharacters())) {
+        notice.owed = true;
     }
 }
 
 /**
  * Reads the chat lists of characters a recovery inserted or whose chats changed on the server (their
  * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
- * listed until its read succeeds.
+ * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
+ * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
+ * generation runs on it; an acknowledgement's (`listRefresh`) is applied as a live update that keeps
+ * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
+ * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
+ * and stays listed while the list cannot be applied yet. Returns whether anything was discarded
+ * (the caller shows the reload notice), not whether anything was read.
  */
 async function hydrateCharacters(): Promise<boolean> {
-    // A character with a running generation waits until it ends.
-    const ids = [...hydrate].filter((id) => !isCharacterGenerating(id));
+    // A recovery's character with a running generation waits until it ends.
+    const ids = [
+        ...[...hydrate].filter((id) => !isCharacterGenerating(id)),
+        ...[...listRefresh].filter((id) => !hydrate.has(id)),
+    ];
     if (ids.length === 0) {
         return false;
     }
+    const issued = heldChatRevisionsByCharacter(ids);
     const read = await readRefs(
         ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
         { chatSummaryCollections: ids },
@@ -2451,20 +2503,39 @@ async function hydrateCharacters(): Promise<boolean> {
     if (halted) {
         return false;
     }
+    let discardedWork = false;
     const records = new Map(read.items.map((item) => [item.id, item]));
     for (const collection of read.chatSummaryCollections ?? []) {
-        const record = records.get(collection.characterId);
+        const id = collection.characterId;
+        const record = records.get(id);
+        if (!hydrate.has(id)) {
+            if (!listRefresh.has(id)) {
+                continue;
+            }
+            // Without an order (gone on the server) nothing is applied here: the live update or this
+            // client's next save removes the character, with the notice when that discards anything.
+            const discardsBefore = chatDiscardSequence();
+            if (!collection.order || applyRemoteCollection(collection, issued.get(id), { keepPendingOrder: true })) {
+                listRefresh.delete(id);
+            }
+            if (chatDiscardSequence() > discardsBefore) {
+                discardedWork = true;
+            }
+            continue;
+        }
         if (!collection.order && record && record.revision === null) {
             // The character itself is gone on the server: remove it with its chats.
             acceptRemote(record);
+            discardedWork = true;
         } else if (collection.order) {
-            acceptRemoteCollection(collection);
+            discardedWork = acceptRemoteCollection(collection) || discardedWork;
         } else {
-            console.error(`[Save] Character ${collection.characterId} has no chat order on the server`);
+            console.error(`[Save] Character ${id} has no chat order on the server`);
         }
-        hydrate.delete(collection.characterId);
+        hydrate.delete(id);
+        listRefresh.delete(id);
     }
-    return true;
+    return discardedWork;
 }
 
 /** The raw `$state` object of a character in the mirror (reads and raw writes; no wrapper). */
@@ -2476,19 +2547,19 @@ function findMirrorCharacter(id: string): (character | groupChat) | undefined {
 /**
  * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
  * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
- * The reload notice is shown only when a chat was replaced or removed (its work discarded), not
- * when every chat was skipped (a new job locked it, or the read did not list it).
+ * Returns whether a chat was replaced or removed (its work discarded: the cycle shows the reload
+ * notice); false when every chat was skipped (a new job locked it, or the read did not list it).
  */
-async function reloadDeferredChats() {
+async function reloadDeferredChats(): Promise<boolean> {
     const released = deferredReloads();
     if (released.length === 0) {
-        return;
+        return false;
     }
     const read = await readRefs([], {
         chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
     if (halted) {
-        return;
+        return false;
     }
     const discardsBefore = chatDiscardSequence();
     for (const chat of read.chats ?? []) {
@@ -2497,9 +2568,7 @@ async function reloadDeferredChats() {
             hydrate.add(refresh);
         }
     }
-    if (chatDiscardSequence() > discardsBefore) {
-        showReloadedNotice();
-    }
+    return chatDiscardSequence() > discardsBefore;
 }
 
 /**
@@ -2604,15 +2673,16 @@ function applySettingsRecord(
 /**
  * Puts a server record into the mirror (data null: the record is gone): a settings record through
  * `applyRaw` (nothing is marked), a character in place. After `presets`, `modelPresets`, or
- * `personas`, this tab's selections are resolved against the new list.
+ * `personas`, this tab's selections are resolved against the new list. A character removed by
+ * another writer discards its chats' unsent work (`forgetCharacter`); returns whether it had any.
  */
-function applyToMirror(kind: string, id: string, data: unknown) {
+function applyToMirror(kind: string, id: string, data: unknown): boolean {
     if (isSection(kind) || isSettingsCollection(kind)) {
         applySettingsRecord(kind, data);
         if (kind === COLLECTION_KIND.personas || kind === COLLECTION_KIND.modelPresets) {
             reconcileSelection();
         }
-        return;
+        return false;
     }
     switch (kind) {
         case RESOURCE_KIND.presets:
@@ -2625,24 +2695,25 @@ function applyToMirror(kind: string, id: string, data: unknown) {
                     reconcileSelection();
                 }
             }
-            return;
+            return false;
         case RESOURCE_KIND.characters: {
             const existed = findMirrorCharacter(id) !== undefined;
             noteMirrorReplaced();
             if (data === null && !existed) {
-                return;
+                return false;
             }
             // The raw path: the server record has only the character's own fields, so its render key
             // is kept and its chats stay the chat module's; a new one's chats arrive with a
             // collection read (`recoverFromConflict`). A removed selected character selects home.
             applyRawCharacter(id, data as Record<string, unknown> | null);
             if (data === null) {
-                forgetCharacter(id);
                 characterTexts.delete(id);
+                return forgetCharacter(id, { discard: true });
             }
-            return;
+            return false;
         }
     }
+    return false;
 }
 
 /**
@@ -3067,14 +3138,18 @@ function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): bo
     return false;
 }
 
-/** Puts a live update into the mirror as the server holds it: no discard, no settled key, no notice. */
+/**
+ * Puts a live update into the mirror as the server holds it: no settled resource key, no notice.
+ * Nothing of the record is discarded (`canApplyRemote` held it while it had a local change); a deleted
+ * character's unsent chat work is, and this returns whether there was any.
+ */
 function applyRemoteRecord(
     item: { kind: string; id: string; revision: string | null; data: unknown },
     collection?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] },
-) {
+): boolean {
     const key = recordKey(item.kind, item.id);
     const isNew = item.kind === RESOURCE_KIND.characters && !persisted.has(key);
-    applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
+    const discardedWork = applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
         persisted.delete(key);
     } else {
@@ -3087,6 +3162,7 @@ function applyRemoteRecord(
         applyRemoteCollection(collection);
     }
     notifyRemoteListeners(item.kind, item.id);
+    return discardedWork;
 }
 
 /**
@@ -3096,9 +3172,10 @@ function applyRemoteRecord(
  * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
  * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
  * issued for, or a later one its answer covers. A deletion applies only if the held revision is
- * unchanged since the read was issued; otherwise it is read again.
+ * unchanged since the read was issued; otherwise it is read again. Returns whether a character
+ * deletion discarded unsent chat work (the cycle shows the reload notice).
  */
-async function applyRemoteUpdates() {
+async function applyRemoteUpdates(): Promise<boolean> {
     settleRemoteRecords();
     for (const entry of [...remoteRecords.values()]) {
         if (entry.patch) {
@@ -3119,7 +3196,7 @@ async function applyRemoteUpdates() {
         MAX_REMOTE_READS,
     );
     if (records.length === 0 && collections.length === 0) {
-        return;
+        return false;
     }
     const issuedEntries = new Map(records);
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
@@ -3131,8 +3208,9 @@ async function applyRemoteUpdates() {
     );
     await tick();
     if (halted) {
-        return;
+        return false;
     }
+    let discardedWork = false;
     const collectionOf = new Map((read.chatSummaryCollections ?? []).map((entry) => [entry.characterId, entry]));
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
@@ -3157,7 +3235,7 @@ async function applyRemoteUpdates() {
             if (held.revision !== issuedHeld.get(key) || !canApplyRemote(key, entry)) {
                 continue;
             }
-            applyRemoteRecord(item);
+            discardedWork = applyRemoteRecord(item) || discardedWork;
             if (settled) {
                 remoteRecords.delete(key);
             }
@@ -3194,6 +3272,7 @@ async function applyRemoteUpdates() {
             remoteCollections.delete(id);
         }
     }
+    return discardedWork;
 }
 
 function notifyRemoteListeners(kind: string, id: string) {
@@ -3376,14 +3455,14 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
     const firstChatDiscard = options.scope?.chat ?? chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
-    const hydrating = new Set(hydrate);
+    const hydrating = new Set([...hydrate, ...listRefresh]);
     const secretTarget = new Set(llmSecretState.queue.map((op) => op.id));
     const pending = () =>
         llmSecretState.queue.some((op) => secretTarget.has(op.id)) ||
         unsettled().length > 0 ||
         membershipAcked < membershipTarget ||
         unsettledChatObligations(chatObligations).length > 0 ||
-        [...hydrating].some((id) => hydrate.has(id));
+        [...hydrating].some((id) => hydrate.has(id) || listRefresh.has(id));
     for (let attempt = 0; attempt < 10 && pending(); attempt += 1) {
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");

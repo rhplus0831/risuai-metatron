@@ -1078,6 +1078,60 @@ describe("a refusal for a generating message", () => {
     });
 });
 
+// Data-loss slice 4b: a chat another device deleted while this tab generates in a sibling chat of
+// the same character. Its conflicting edit is discarded with the notice at once, although the
+// character's list read waits for the job; the list read after the job reports what it discards.
+describe("a sibling chat deleted during this tab's generation", () => {
+    const refJ = { chaId: "c", chatId: "j" };
+    const mirrorIds = (chat: ChatModule) => chat.chatList("c").map((entry) => entry.id);
+    const deleteJ = (fake: StoreBackedServer) =>
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: fake.chat("c", "j")!.revision,
+                ops: [{ op: "delete" } as any],
+            },
+        ]);
+
+    it("discards the edit with the notice at once, and after the job reports a later edit discarded by the list read", async () => {
+        const { fake, sync, chat } = await boot();
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", text: "streamed", seq: 0 });
+        deleteJ(fake);
+        chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["chats/c/j"]);
+        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
+        // The list read waits for the job: the chat is still shown.
+        expect(mirrorIds(chat)).toEqual(["k", "j"]);
+        expect(chat.isCharacterGenerating("c")).toBe(true);
+        const scope = sync.beginMutationScope();
+        chat.setChatMeta(refJ, { note: "later edit" });
+        chat.endServerJob("J");
+        const after = await sync.flushResources({ scope });
+        expect(after.discarded).toEqual(["chats/c/j"]);
+        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded", "reloaded"]);
+        expect(mirrorIds(chat)).toEqual(["k"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("discards nothing more at the list read after the job when nothing was edited meanwhile", async () => {
+        const { fake, sync, chat } = await boot();
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", text: "streamed", seq: 0 });
+        deleteJ(fake);
+        chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
+        await sync.flushResources();
+        expect(alerts.normal).toHaveBeenCalledTimes(1);
+        const scope = sync.beginMutationScope();
+        chat.endServerJob("J");
+        const after = await sync.flushResources({ scope });
+        expect(after.discarded).toEqual([]);
+        expect(alerts.normal).toHaveBeenCalledTimes(1);
+        expect(mirrorIds(chat)).toEqual(["k"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+});
+
 // Data-loss slice 2a: a group the server refused for a generating message names the locked
 // messages it targets (`messageIds`); the edits of those messages are dropped (the flush report, the
 // reload notice, the chat marked stale and read back when idle) instead of being retried over the
