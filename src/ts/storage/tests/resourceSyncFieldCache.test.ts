@@ -64,6 +64,12 @@ const character = (chaId: string, name: string, extra: Record<string, unknown> =
 /** A large array field: `count` entries of about 60 UTF-16 units each. */
 const big = (count: number) => Array.from({ length: count }, (_, i) => ({ i, text: `entry ${i} ${"x".repeat(40)}` }));
 
+// Every case boots the client/store/bootstrap graph after `vi.resetModules()` and flushes the
+// real save loop inside its timed body: about 1 s alone, over 30 s for the first case on one CPU
+// shared with eight busy processes and two other test workers. Vitest's default 5 s runner
+// timeout is a load gauge here, not a check; this one only catches a hang.
+const INTEGRATION_TIMEOUT = 60_000;
+
 async function boot(prepare: (fake: FakeResourceServer) => void = () => {}) {
     vi.resetModules();
     const fake = new FakeResourceServer();
@@ -129,7 +135,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-describe("cache reuse", () => {
+describe("cache reuse", { timeout: INTEGRATION_TIMEOUT }, () => {
     it("does not serialize an unchanged large field again after a small edit, and does after a write under it", async () => {
         const { fake, c, rawOf, flush, ops, serialized, agree } = await boot();
         c("a").assets = big(3000);
@@ -194,7 +200,7 @@ describe("cache reuse", () => {
     });
 });
 
-describe("every write path saves the mirror's text", () => {
+describe("every write path saves the mirror's text", { timeout: INTEGRATION_TIMEOUT }, () => {
     it("set at depth, delete, defineProperty, each mutator, replaceRecordList, moveRecordListItem, batched writes, same-field reuse", async () => {
         const { c, records, flush, agree } = await boot();
         const a = c("a");
@@ -328,7 +334,7 @@ describe("every write path saves the mirror's text", () => {
     });
 });
 
-describe("the challenge's reproductions, end to end", () => {
+describe("the challenge's reproductions, end to end", { timeout: INTEGRATION_TIMEOUT }, () => {
     it("a sort comparator writing a raw owned object into another field: the character is saved whole and right (point 1)", async () => {
         const { fake, c, rawOf, flush, agree } = await boot();
         c("a").left = { n: 1 };

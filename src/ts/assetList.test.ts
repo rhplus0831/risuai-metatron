@@ -142,7 +142,7 @@ describe("asset list name caches", () => {
         expect(moduleFieldPlain(module(), "assets")).toEqual([["Remote", "r", "png"]]);
     });
 
-    it("scans 100k cached names cheaply across successive queries for both record owners", () => {
+    it("reuses 100k cached names across successive queries for both record owners", () => {
         const assets = (): Asset[] =>
             Array.from({ length: 100_000 }, (_, i) => [`Asset ${i}`, `assets/${i}.png`, "png"]);
         initializeRecords({
@@ -156,9 +156,8 @@ describe("asset list name caches", () => {
         expect(characterNames).toHaveLength(100_000);
         expect(moduleNames).toHaveLength(100_000);
 
-        // Exclude the initial copy and DOM work. A generous 3s for 80 scans guards against
-        // walking 8 million record tuples per keystroke, not differences in machine speed.
-        const start = performance.now();
+        // Identity, not time, guards against walking 8 million record tuples per keystroke: a
+        // wall-clock bound here failed under CPU load without any regression.
         for (let i = 0; i < 40; i++) {
             const query = `asset ${99_960 + i}`;
             const nextCharacterNames = characterAssetNames("c", liveCharacter.additionalAssets);
@@ -169,7 +168,6 @@ describe("asset list name caches", () => {
             expect(matchingAssetIndices(nextCharacterNames, query)).toEqual([99_960 + i]);
             expect(matchingAssetIndices(nextModuleNames, query)).toEqual([99_960 + i]);
         }
-        expect(performance.now() - start).toBeLessThan(3_000);
         expect(characterAssetNames("c", liveCharacter.additionalAssets)).toBe(characterNames);
         expect(moduleAssetNames(liveModule)).toBe(moduleNames);
     });

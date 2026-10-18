@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { calcString } from "../../../shared/cbs/calc.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
-import { CbsLimitError, type CbsUsage } from "../../../shared/cbs/limits.ts";
+import { CbsLimitError, type CbsLimits, type CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { Chat, Message, character, triggerscript } from "../../../shared/database.ts";
 import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
@@ -83,8 +83,18 @@ function plainScope(options: { defaultVariables?: string; templateDefaultVariabl
     return { scope, char, chat };
 }
 
-const hostOf = (scope: JobScope, usage: CbsUsage = { usedMs: 0 }) =>
-    createJobCbsHost(scope, { rootDir: REPO_ROOT, setChatVar: () => false, limits: serverCbsLimits(usage) });
+const hostOf = (scope: JobScope, usage: CbsUsage = { usedMs: 0 }, limits: CbsLimits = serverCbsLimits(usage)) =>
+    createJobCbsHost(scope, { rootDir: REPO_ROOT, setChatVar: () => false, limits });
+
+/**
+ * A clock that advances `tick` ms per read (`cbsLimits.test.ts` has the evaluator's version). The
+ * exact work-limit message needs the work allowance to end before the real 5 s wall limit, which a
+ * starved test worker cannot promise; under this clock a `HUGE` parse reads it about 2,500 times.
+ */
+function tickingClock(tick = 1) {
+    let time = 0;
+    return () => (time += tick);
+}
 
 describe("the server host", () => {
     it("carries the server limits: 10,000,000 work units and 5 s per parse, 60 s of evaluation per job", () => {
@@ -96,7 +106,8 @@ describe("the server host", () => {
         const { scope } = plainScope({});
         const host = hostOf(scope, usage);
         expect(host.limits).toEqual(limits);
-        const ev = createCbsEvaluator(host);
+        // The same limits under a controlled clock, so the work allowance ends first.
+        const ev = createCbsEvaluator(hostOf(scope, usage, { ...limits, now: tickingClock() }));
         const error = (() => {
             try {
                 ev.risuChatParser(HUGE);
@@ -340,6 +351,9 @@ describe("the bindings", () => {
         const setup = bindingsSetup({ desc: HUGE });
         cleanups.push(setup.cleanup);
         const bindings = setup.make(undefined);
+        // The bindings build the server limits themselves; a stopped clock keeps the real 5 s wall
+        // limit out of this latch test, so the exact work message holds on a starved worker too.
+        vi.spyOn(performance, "now").mockReturnValue(0);
         // Through `services.parse` (what the native triggers, lore and the regex scripts call).
         let caught: unknown;
         try {

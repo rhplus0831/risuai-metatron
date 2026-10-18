@@ -642,31 +642,37 @@ describe("runaway templates end (in a child process, so a broken limit cannot ha
         return JSON.parse(run.stdout);
     }
 
-    it("the stuck range, an endless roll, a huge repetition, a deep nesting and a quadratic filter all end with the limit error", () => {
-        const cases: [string, RegExp][] = [
-            ["{{range::[0,1e18]}}", /more than 10000000 steps/],
-            ["{{range::[5000000]}}", /more than 10000000 steps/],
-            ["{{dice::100000000d6}}", /more than 10000000 steps/],
-            ["{{cbr::10000000}}", /more than 10000000 steps/],
-            [`{{replace::${"a".repeat(20_000)}::a::${"b".repeat(5000)}}}`, /more than 10000000 steps/],
-            ["{{".repeat(2_000_000), /more than 10000000 steps/],
-            [
-                `{{filter::${JSON.stringify(Array.from({ length: 200_000 }, (_, i) => `v${i}`))}::unique}}`,
-                /more than 10000000 steps/,
-            ],
-            [
-                `{{#each ${JSON.stringify(Array(20_000).fill("x"))} as x}}${"y".repeat(1000)}{{/each}}`,
-                /more than 10000000 steps/,
-            ],
-        ];
-        for (const [text, message] of cases) {
-            const result = probe(text);
-            expect(result.error, text.slice(0, 40)).toMatch(message);
-            expect(result.reason, text.slice(0, 40)).toBe("work");
-            // Cooperative, not instant: well inside the 5 s wall limit all the same.
-            expect(result.ms, text.slice(0, 40)).toBeLessThan(SERVER_CBS_MAX_MS);
-        }
-    }, 120_000);
+    // The real 5 s wall limit competes with the work limit in a fresh process: a starved run can
+    // end with the time error. Slow, like the other production-limit checks.
+    it(
+        "the stuck range, an endless roll, a huge repetition, a deep nesting and a quadratic filter all end with the limit error",
+        { tags: ["slow"], timeout: 120_000 },
+        () => {
+            const cases: [string, RegExp][] = [
+                ["{{range::[0,1e18]}}", /more than 10000000 steps/],
+                ["{{range::[5000000]}}", /more than 10000000 steps/],
+                ["{{dice::100000000d6}}", /more than 10000000 steps/],
+                ["{{cbr::10000000}}", /more than 10000000 steps/],
+                [`{{replace::${"a".repeat(20_000)}::a::${"b".repeat(5000)}}}`, /more than 10000000 steps/],
+                ["{{".repeat(2_000_000), /more than 10000000 steps/],
+                [
+                    `{{filter::${JSON.stringify(Array.from({ length: 200_000 }, (_, i) => `v${i}`))}::unique}}`,
+                    /more than 10000000 steps/,
+                ],
+                [
+                    `{{#each ${JSON.stringify(Array(20_000).fill("x"))} as x}}${"y".repeat(1000)}{{/each}}`,
+                    /more than 10000000 steps/,
+                ],
+            ];
+            for (const [text, message] of cases) {
+                const result = probe(text);
+                expect(result.error, text.slice(0, 40)).toMatch(message);
+                expect(result.reason, text.slice(0, 40)).toBe("work");
+                // Cooperative, not instant: well inside the 5 s wall limit all the same.
+                expect(result.ms, text.slice(0, 40)).toBeLessThan(SERVER_CBS_MAX_MS);
+            }
+        },
+    );
 
     it("a non-advancing range answers [] under the server's limits (it used to spend the whole work budget)", () => {
         const result = probe("{{range::[0,1,0]}}");
@@ -674,9 +680,9 @@ describe("runaway templates end (in a child process, so a broken limit cannot ha
         expect(result.length).toBe("[]".length);
     });
 
-    it("an ordinary large text passes under the server's limits", () => {
+    it("an ordinary large text passes under the server's limits", { tags: ["slow"], timeout: 120_000 }, () => {
         const result = probe("{{char}} ".repeat(100_000) + "x".repeat(SERVER_CBS_MAX_WORK / 4));
         expect(result.error).toBeUndefined();
         expect(result.length).toBe("Sel ".length * 100_000 + SERVER_CBS_MAX_WORK / 4);
-    }, 120_000);
+    });
 });

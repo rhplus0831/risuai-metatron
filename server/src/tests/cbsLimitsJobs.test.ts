@@ -25,7 +25,10 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
 // A range too large for the work limit (a non-advancing one answers `[]` since slice 1d of the audit plan).
 const STUCK = "{{range::[0,1e18]}}";
-const LIMIT = /^CBS limit reached: one template took more than 10000000 steps \((.+)\)$/;
+// Which allowance ends the template is the evaluator's business (`cbsLimits.test.ts`, under a
+// controlled clock); these jobs assert the fatal propagation, so a starved run that reaches the
+// 5 s wall limit first is the same terminal.
+const LIMIT = /^CBS limit reached: one template took more than (?:10000000 steps|5000 ms) \((.+)\)$/;
 
 const bodies: any[] = [];
 const provider = http.createServer(async (req, res) => {

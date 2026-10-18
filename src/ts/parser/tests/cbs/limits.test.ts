@@ -43,6 +43,12 @@ holdMockedChats(characters);
 
 const HUGE = "{{range::[0,1e18]}}";
 const WORK_MESSAGE = "CBS limit reached: one template took more than 10000000 steps";
+/**
+ * The exact work-limit message needs the work allowance to end first: the tab's 2 s wall limit
+ * (`CLIENT_CBS_LIMITS`) reads `performance.now()`, and a starved test worker can reach it before
+ * the 10,000,000 steps. A stopped clock leaves only the work limit.
+ */
+const stopClock = () => vi.spyOn(performance, "now").mockReturnValue(0);
 
 beforeEach(() => {
     vi.resetAllMocks();
@@ -54,6 +60,7 @@ afterEach(() => {
 
 describe("the client CBS budget", () => {
     test("a huge range ends with the work limit on the plain wrapper", () => {
+        stopClock();
         let error: unknown;
         try {
             risuChatParser(HUGE);
@@ -77,6 +84,7 @@ describe("the client CBS budget", () => {
     });
 
     test("the display wrapper answers the localized text for a limit, with the reason, and warns once", () => {
+        stopClock();
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         expect(risuChatParserForDisplay("before " + HUGE)).toBe(
             language.cbsLimitReached.replace("{{reason}}", WORK_MESSAGE),
