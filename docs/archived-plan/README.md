@@ -19,6 +19,7 @@ git show e148f7276:docs/plan/web-push.md
 git show ab11ea9d0:docs/plan/request-history-diagnostics.md
 git show 154711858:docs/plan/chat-toggles-and-presets.md
 git show 1bb0c8eee:docs/plan/large-asset-import.md
+git show f5895b925:docs/plan/sidebar-chat-status.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -38,12 +39,14 @@ it is not a current architecture guide.
 | Request History and Diagnostics     | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                                                                                                                |
 | Per-Chat Toggles and Toggle Presets | `154711858`: `docs/plan/chat-toggles-and-presets.md`                      | [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [CBS/rendering](../structure/cbs-rendering.md)                                                                                                   |
 | Large Asset Import and Export       | `1bb0c8eee`: `docs/plan/large-asset-import.md`                            | [characters/modules](../structure/characters-modules.md), [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [asset client](../structure/global-api.md), [UI/theming](../structure/ui-theming.md) |
+| Sidebar Chat Status                 | `f5895b925`: `docs/plan/sidebar-chat-status.md`                           | [UI/theming](../structure/ui-theming.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                           |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
 Request History and Diagnostics records both implementation phases as done.
 Large Asset Import and Export landed every slice (1a–4b) on 2026-10-17 and 2026-10-18;
 its commits are listed in the archived Status line.
+Sidebar Chat Status landed all three slices on 2026-10-18 (`1b409eceb`, `94b981be3`, `f5895b925`).
 
 ## Server-Owned Data Chronology
 
@@ -125,6 +128,16 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   fallback that keeps whole exports, "Export All Chats" building a whole history, the
   one-time legacy browser-local inlay migration, and unbounded persona and preset
   decoders.
+- Sidebar chat status:
+  - Unseen/recovery marks are per tab and dropped by a reload (decision 4).
+  - A chat generating in another tab and not loaded here shows nothing (decision 5).
+  - `SideChatList.svelte` rows have no badge; the home cards got theirs in slice 3.
+  - The badge's `title` tooltip does not show because it takes no pointer events;
+    the status is in the row's name instead.
+  - The generating badge also shows on the open chat's own pin and folder (while collapsed).
+  - The recovery badge requires a manual check with the server killed mid-stream;
+    this archive did not run that check.
+  - The browser check's `--base` production mode was implemented but not exercised.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 
