@@ -3,6 +3,7 @@ import {
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
+    TRANSLATION_SETTINGS_MENU,
 } from "../settingsMenu";
 
 /*
@@ -23,6 +24,7 @@ export const SETTINGS_PAGES = {
     bot: 2,
     display: 3,
     language: 10,
+    translation: TRANSLATION_SETTINGS_MENU,
     accessibility: 11,
     modules: 14,
     plugins: 4,

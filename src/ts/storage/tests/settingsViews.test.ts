@@ -79,7 +79,6 @@ import {
     type SettingsRootKey,
 } from "../settingsViews.svelte";
 import { getFullSettingsData, getSettingValue, setSettingValue } from "../../setting/utils";
-import { languageSettingsItems } from "../../setting/languageSettingsData.svelte";
 import { displayOtherSettingsItems } from "../../setting/displaySettingsData.svelte";
 import type { SettingContext, SettingItem } from "../../setting/types";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
@@ -356,7 +355,7 @@ function registryItems(): SettingItem[] {
         out.push(item);
         item.options?.children?.forEach(visit);
     };
-    [...getFullSettingsData(), ...languageSettingsItems].forEach(visit);
+    getFullSettingsData().forEach(visit);
     return out;
 }
 

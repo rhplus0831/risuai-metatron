@@ -15,7 +15,7 @@
 import type { Component } from "svelte";
 
 // Import custom components here
-import TranslatorPresetSettings from "src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte";
+import TranslatorPresetSettings from "src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte";
 import BanCharacterSetSettings from "src/lib/Setting/Pages/Advanced/BanCharacterSetSettings.svelte";
 import CustomModelsSettings from "src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte";
 import SettingsExportButtons from "src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte";

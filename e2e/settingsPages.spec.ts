@@ -34,6 +34,7 @@ const PAGES: [number, string][] = [
     [2, "other bots"],
     [3, "display"],
     [10, "language"],
+    [21, "translation"],
     [11, "accessibility"],
     [14, "modules"],
     [4, "plugins"],

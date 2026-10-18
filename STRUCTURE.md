@@ -186,7 +186,7 @@ refer to **Choose By Task**; each guide's `Files` section has identifiers.
 - **media-aux**: `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`,
   `src/ts/translator/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`,
   `src/lib/UI/3DLoader.svelte`,
-  `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`,
+  `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`,
   `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`, remaining `src/lib/Playground/`
   tools. `src/lib/Playground/PlaygroundMenu.svelte` belongs to **ui-theming**.
 - **chat-pipeline**: `shared/lore/`, remaining `shared/prompt/` and `src/ts/process/`.

@@ -252,13 +252,6 @@ export const advancedSettingsItems: SettingItem[] = [
     },
     { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle", classes: "mt-4" },
     {
-        id: "adv.noWaitTrans",
-        type: "check",
-        labelKey: "noWaitForTranslate",
-        bindKey: "noWaitForTranslate",
-        classes: "mt-4",
-    },
-    {
         id: "adv.newImgBeta",
         type: "check",
         labelKey: "newImageHandlingBeta",
@@ -440,16 +433,6 @@ export const advancedSettingsItems: SettingItem[] = [
 
     // More Experimental (Condition: useExperimental)
     {
-        id: "adv.exp.googleTrans",
-        type: "check",
-        fallbackLabel: "New Google Translate Experimental",
-        bindKey: "useExperimentalGoogleTranslator",
-        condition: (ctx) => ctx.settings.ui.useExperimental,
-        helpKey: "unrecommended",
-        helpUnrecommended: true,
-        classes: "mt-4",
-    },
-    {
         id: "adv.exp.claudeRet",
         type: "check",
         labelKey: "claudeCachingRetrival",
@@ -560,7 +543,6 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.autoCont",
             "adv.remIncomp",
             "adv.newOai",
-            "adv.noWaitTrans",
             "adv.newImgBeta",
             "adv.dynamicModelRegistry",
             "adv.cot",
@@ -572,7 +554,6 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.claudeBatch",
             "adv.personaNote",
             "adv.bookmark",
-            "adv.exp.googleTrans",
             "adv.banChar",
             "adv.customModels",
         ]),

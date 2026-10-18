@@ -23,6 +23,8 @@ import {
 } from "./botSettingsParamsData";
 import { chatFormatSettingsItems } from "./chatFormatSettingsData";
 import { displaySettingsItems } from "./displaySettingsData.svelte";
+import { languageSettingsItems } from "./languageSettingsData.svelte";
+import { translationSettingsItems } from "./translationSettingsData";
 
 /** The current language's string for a flat key (`language.xxx`), or `""` when it has none. */
 export function languageText(key: string | undefined): string {
@@ -136,6 +138,8 @@ export function getFullSettingsData(searchTerm = "") {
         modelSpecificParameterItems,
         chatFormatSettingsItems,
         displaySettingsItems,
+        languageSettingsItems,
+        translationSettingsItems,
     );
 
     if (!searchTerm) return full;

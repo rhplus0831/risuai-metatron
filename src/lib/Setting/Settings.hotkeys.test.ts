@@ -13,6 +13,7 @@ vi.mock("./Pages/OtherBotSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/PluginSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/AdvancedSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/LanguageSettings.svelte", () => ({ default: () => {} }));
+vi.mock("./Pages/TranslationSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/AccessibilitySettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/PersonaSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/PromptSettings.svelte", () => ({ default: () => {} }));

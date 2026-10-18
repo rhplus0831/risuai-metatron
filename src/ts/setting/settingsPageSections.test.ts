@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
 import { itemsById } from "./sections";
+import {
+    translationSettingsHeader,
+    translationSettingsItems,
+    translationSettingsSections,
+} from "./translationSettingsData";
 import type { SettingItem, SettingSection } from "./types";
 import { getFullSettingsData } from "./utils";
 
 // Settings UI plan (`docs/plan/settings-ui-reorg.md`) slice 2: a sectioned page builds its sections by
 // id from its leaf arrays, so every leaf item is placed exactly once and the catalog
-// (`getFullSettingsData`) still lists it once. Later slices add their pages to `PAGES`.
+// (`getFullSettingsData`) still lists it once. Later slices add their pages to `PAGES`. An item moved
+// to another page moves its definition into that page's leaf array (slice 6), so the placement check
+// runs over every sectioned page at once.
 
 interface SectionedPage {
     name: string;
@@ -25,12 +32,27 @@ const PAGES: SectionedPage[] = [
         header: advancedSettingsHeader,
         sections: advancedSettingsSections,
     },
+    {
+        name: "translation",
+        leaves: [translationSettingsItems],
+        header: translationSettingsHeader,
+        sections: translationSettingsSections,
+    },
 ];
 
 /** Item pairs whose second item's condition reads the first: they must share a section. */
 const DEPENDENT_PAIRS: [string, string][] = [
     ["adv.dynAssets", "adv.dynAssetsEdit"],
     ["adv.promptInfo", "adv.promptTextInfo"],
+    ["lang.translatorLang", "lang.translatorType"],
+    ["lang.translatorType", "lang.deeplKey"],
+    ["lang.translatorType", "lang.deeplFree"],
+    ["lang.translatorType", "lang.deeplXUrl"],
+    ["lang.translatorType", "lang.deeplXToken"],
+    ["lang.translatorType", "lang.llmPresets"],
+    ["lang.translatorType", "lang.llmTranslationTarget"],
+    ["lang.translatorType", "lang.googleSourceLang"],
+    ["lang.llmTranslationTarget", "lang.translatorHistoryMaxTokens"],
 ];
 
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -44,30 +66,47 @@ describe("settings page sections", () => {
         expect(duplicates(PAGES.flatMap((page) => page.sections.map((section) => section.id)))).toEqual([]);
     });
 
-    for (const page of PAGES) {
-        it(`places every ${page.name} leaf item in exactly one section, as the leaf array's own object`, () => {
-            const leaves = page.leaves.flat();
-            const placed = page.sections.flatMap((section) => section.items);
-            expect(duplicates(placed.map((item) => item.id))).toEqual([]);
-            for (const item of [...placed, ...page.header]) {
-                expect(leaves, item.id).toContain(item);
-            }
-            const headerIds = new Set(page.header.map((item) => item.id));
-            const placedIds = new Set(placed.map((item) => item.id));
-            expect(placed.filter((item) => headerIds.has(item.id)).map((item) => item.id)).toEqual([]);
+    it("places every leaf item of the sectioned pages in exactly one section, as a leaf array's own object", () => {
+        const leaves = PAGES.flatMap((page) => page.leaves.flat());
+        const headers = PAGES.flatMap((page) => page.header);
+        const placed = PAGES.flatMap((page) => page.sections.flatMap((section) => section.items));
+        expect(duplicates(leaves.map((item) => item.id))).toEqual([]);
+        expect(duplicates(placed.map((item) => item.id))).toEqual([]);
+        for (const item of [...placed, ...headers]) {
+            expect(leaves, item.id).toContain(item);
+        }
+        const headerIds = new Set(headers.map((item) => item.id));
+        const placedIds = new Set(placed.map((item) => item.id));
+        expect(placed.filter((item) => headerIds.has(item.id)).map((item) => item.id)).toEqual([]);
+        expect(
+            leaves.filter((item) => !headerIds.has(item.id) && !placedIds.has(item.id)).map((item) => item.id),
+        ).toEqual([]);
+        // Every placed item and header is in the catalog once (the sections hold no copies).
+        const catalog = getFullSettingsData();
+        for (const item of [...placed, ...headers]) {
             expect(
-                leaves.filter((item) => !headerIds.has(item.id) && !placedIds.has(item.id)).map((item) => item.id),
-            ).toEqual([]);
-            // Every placed item is in the catalog once (the sections hold no copies).
-            const catalog = getFullSettingsData();
-            for (const item of placed) {
-                expect(
-                    catalog.filter((entry) => entry === item),
-                    item.id,
-                ).toHaveLength(1);
+                catalog.filter((entry) => entry === item),
+                item.id,
+            ).toHaveLength(1);
+        }
+    });
+
+    for (const page of PAGES) {
+        it(`builds the ${page.name} page's header and sections from its own leaf arrays`, () => {
+            const leaves = page.leaves.flat();
+            for (const item of [...page.header, ...page.sections.flatMap((section) => section.items)]) {
+                expect(leaves, item.id).toContain(item);
             }
         });
     }
+
+    it("keeps the Translation page's way in visible: the translator language select comes first, with no condition", () => {
+        const select = translationSettingsItems.find((item) => item.id === "lang.translatorLang");
+        expect(select).toBeDefined();
+        expect(select!.condition).toBeUndefined();
+        expect(translationSettingsSections[0].items[0]).toBe(select);
+        expect(translationSettingsSections[0].collapsible).toBeFalsy();
+    });
 
     it("gives every section an English heading, description, and badge for the keys it names", () => {
         const keys = PAGES.flatMap((page) =>

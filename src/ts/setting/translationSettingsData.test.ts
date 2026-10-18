@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The language page's translation items (`docs/plan/translation.md` slice 1.4, `media-aux.md`):
-// `lang.llmTranslationTarget` is shown for the LLM translator only; `legacyTranslation` for every
+// The Translation page's items (`docs/plan/translation.md` slice 1.4, `media-aux.md`; on the Language
+// page until settings UI plan slice 6): `lang.llmTranslationTarget` is shown for the LLM translator only; `legacyTranslation` for every
 // translator but the LLM one on `"message"` (it drives the rendered path); `translateBeforeHTML` and
 // `autoTranslateCachedOnly` only for the LLM translator on `"rendered"`. The conditions read
 // `ctx.settings.memoryTranslateMedia` alone, so a minimal context stands in for the real one.
@@ -32,7 +32,7 @@ vi.mock("../translator/translator", () => ({
 
 import { translatorHistoryMaxTokens } from "../../../shared/translation/historySlots.ts";
 import { languageEnglish } from "src/lang/en";
-import { languageSettingsItems } from "./languageSettingsData.svelte";
+import { translationSettingsItems } from "./translationSettingsData";
 import type { SettingContext, SettingItem } from "./types";
 import { getSettingValue, updateSettingValue } from "./utils";
 
@@ -42,7 +42,7 @@ const ctx = (media: Media): SettingContext =>
     ({ settings: { memoryTranslateMedia: media } }) as unknown as SettingContext;
 
 const item = (id: string): SettingItem => {
-    const found = languageSettingsItems.find((entry) => entry.id === id);
+    const found = translationSettingsItems.find((entry) => entry.id === id);
     expect(found, id).toBeDefined();
     return found!;
 };
@@ -57,7 +57,7 @@ const WATCHED = [
 ];
 const visible = (media: Media) => WATCHED.filter((id) => shown(id, media));
 
-describe("the language page's stored-translation items", () => {
+describe("the Translation page's stored-translation items", () => {
     it("lang.llmTranslationTarget binds the field, offers the two targets by their labelKey entries, and has a help entry", () => {
         const select = item("lang.llmTranslationTarget");
         expect(select.type).toBe("select");
@@ -71,7 +71,7 @@ describe("the language page's stored-translation items", () => {
         expect(languageEnglish.llmTranslationTargetRendered).toBeTypeOf("string");
         expect(languageEnglish.help.llmTranslationTarget).toBeTypeOf("string");
         // It follows the preset editor, before the Google source language.
-        const ids = languageSettingsItems.map((entry) => entry.id);
+        const ids = translationSettingsItems.map((entry) => entry.id);
         expect(ids.indexOf("lang.llmTranslationTarget")).toBe(ids.indexOf("lang.llmPresets") + 1);
     });
 
@@ -101,21 +101,23 @@ describe("the language page's stored-translation items", () => {
             "llm",
             "deeplX",
         ]);
-        expect(languageSettingsItems.some((entry) => entry.id === "lang.bergamotHtml")).toBe(false);
+        expect(translationSettingsItems.some((entry) => entry.id === "lang.bergamotHtml")).toBe(false);
         // `bindKey` is typed by the settings root keys, so a build fails on the dropped field already.
-        expect(languageSettingsItems.some((entry) => (entry.bindKey as string) === "htmlTranslation")).toBe(false);
+        expect(translationSettingsItems.some((entry) => (entry.bindKey as string) === "htmlTranslation")).toBe(false);
         expect(Object.hasOwn(languageEnglish, "htmlTranslation")).toBe(false);
     });
 
     it("has no global auto-translate item (a chat setting since docs/plan/translation.md slice 2.1) and keeps the cache buttons for the LLM translator on either target", () => {
-        expect(languageSettingsItems.some((entry) => entry.id === "lang.autoTranslate")).toBe(false);
+        expect(translationSettingsItems.some((entry) => entry.id === "lang.autoTranslate")).toBe(false);
         // `bindKey` is typed by the settings root keys, so a build fails on the dropped field already.
-        expect(languageSettingsItems.some((entry) => (entry.bindKey as string) === "autoTranslate")).toBe(false);
+        expect(translationSettingsItems.some((entry) => (entry.bindKey as string) === "autoTranslate")).toBe(false);
         // The label stays: the chat panel's auto-translate row uses it.
         expect(languageEnglish.autoTranslation).toBeTypeOf("string");
         for (const target of ["message", "rendered"]) {
             const media = { translator: "ko", translatorType: "llm", llmTranslationTarget: target };
-            const cacheButtons = languageSettingsItems.filter((entry) => /^lang\.(export|import)Cache$/.test(entry.id));
+            const cacheButtons = translationSettingsItems.filter((entry) =>
+                /^lang\.(export|import)Cache$/.test(entry.id),
+            );
             expect(cacheButtons.length).toBeGreaterThan(0);
             for (const button of cacheButtons) {
                 expect(button.condition ? button.condition(ctx(media)) : true, `${button.id} ${target}`).toBe(true);
@@ -151,7 +153,7 @@ describe("the history budget item", () => {
         expect(languageEnglish.help.translatorHistoryMaxTokens).toBeTypeOf("string");
         expect(languageEnglish.help.translatorPrompt).toContain("{{slot::history::N}}");
         expect(languageEnglish.help.translatorPrompt).toContain("{{slot::historytrans::N}}");
-        const ids = languageSettingsItems.map((entry) => entry.id);
+        const ids = translationSettingsItems.map((entry) => entry.id);
         expect(ids.indexOf(BUDGET)).toBe(ids.indexOf("lang.llmTranslationTarget") + 1);
     });
 

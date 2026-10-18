@@ -9,3 +9,5 @@ export const API_KEYS_SETTINGS_MENU = 17;
 export const MODEL_PROFILES_SETTINGS_MENU = 18;
 /** The settings page of the prompt preset (`PromptPresetSettings.svelte`); its template editor is menu 13. */
 export const PROMPT_SETTINGS_MENU = 16;
+/** The translator and its options (`TranslationSettings.svelte`); the UI language stays on menu 10. */
+export const TRANSLATION_SETTINGS_MENU = 21;

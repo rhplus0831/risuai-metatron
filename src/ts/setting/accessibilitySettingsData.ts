@@ -145,13 +145,6 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ["bulk", "enable", "multiple"],
     },
     {
-        id: "acc.showTranslationLoading",
-        type: "check",
-        labelKey: "showTranslationLoading",
-        bindKey: "showTranslationLoading",
-        keywords: ["translation", "loading", "indicator"],
-    },
-    {
         id: "acc.autoScrollToNewMessage",
         type: "check",
         labelKey: "autoScrollToNewMessage",

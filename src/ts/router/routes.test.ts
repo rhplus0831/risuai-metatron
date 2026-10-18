@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CLIENT_ROUTE_SEGMENTS, isClientRoutePath } from "../../../shared/routes.ts";
+import { TRANSLATION_SETTINGS_MENU } from "../settingsMenu";
 import {
     formatRoute,
     parseRoute,
@@ -96,6 +97,14 @@ describe("slug tables", () => {
         }
         expect(new Set(Object.values(SETTINGS_PAGES)).size).toBe(settingsPages.length);
         expect(new Set(Object.values(PLAYGROUND_TOOLS)).size).toBe(playgroundTools.length);
+    });
+
+    it("give the Language and Translation pages their own slugs (settings UI plan slice 6)", () => {
+        expect(SETTINGS_PAGES.language).toBe(10);
+        expect(SETTINGS_PAGES.translation).toBe(TRANSLATION_SETTINGS_MENU);
+        expect(TRANSLATION_SETTINGS_MENU).toBe(21);
+        expect(settingsPageOf(TRANSLATION_SETTINGS_MENU)).toBe("translation");
+        expect(parseRoute("/settings/translation")).toEqual({ kind: "settings", page: "translation" });
     });
 
     it("give no slug to the values without a route", () => {

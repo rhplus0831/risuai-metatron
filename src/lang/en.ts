@@ -243,7 +243,7 @@ export const languageEnglish = {
         extractJson:
             'If it is not blank, it will extract specific JSON data from the response. For example, if you want to extract `response.text[0]` in response `{"response": {"text": ["hello"]}}`, you can put `response.text.0`.',
         translatorNote:
-            "Here, you can add a unique translation prompt for each character. This option only applies when using the Ax. model for translation. To apply it, include `{{slot::tnote}}` in the language settings. It doesn't work in group chats.",
+            "Here, you can add a unique translation prompt for each character. This option only applies when using the Ax. model for translation. To apply it, include `{{slot::tnote}}` in the translation settings. It doesn't work in group chats.",
         groupInnerFormat:
             "This defines a format that is used in group chat for characters that isn't speaker. If it is not blank, it will use this format instead of the default format. If `Group Other Bot Role` is `assistant`, it will also be applied to the speaker.",
         groupOtherBotRole: "This defines a role that is used in group chat for characters that isn't speaker.",
@@ -703,6 +703,12 @@ export const languageEnglish = {
     settingsSectionExperimentalDesc: "These may be unstable. They appear only while experimental features are enabled.",
     settingsSectionLegacy: "Legacy options",
     settingsSectionLegacyDesc: "Old behavior kept for compatibility.",
+    settingsSectionTranslator: "Translator",
+    settingsSectionTranslatorDesc:
+        "Choose a translator language to turn translation on; the translator's options appear below it.",
+    settingsSectionTranslationBehavior: "Behavior",
+    settingsSectionTranslationCache: "Translation cache",
+    settingsSectionTranslationCacheDesc: "Translations the Ax. Model translator cached in this browser.",
     formatingOrder: "Formatting Order",
     authorNote: "Author's Note",
     firstMessage: "First Message",
@@ -777,6 +783,8 @@ export const languageEnglish = {
     emotionWarn: "Auxiliary model is used.",
     plugin: "Plugin",
     language: "Language",
+    // The Translation settings page (settings UI plan slice 6): its menu entry and heading.
+    translationSettings: "Translation",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",
     importCharacter: "Import Character",

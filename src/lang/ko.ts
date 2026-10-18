@@ -182,7 +182,7 @@ export const languageKorean = {
         extractJson:
             '비워두지 않으면 응답에서 특정 JSON 데이터를 추출합니다. 예를 들어 `{"response": {"text": ["hello"]}}` 응답에서 `response.text[0]`을 추출하려면 `response.text.0`을 입력하세요.',
         translatorNote:
-            "여기에서 캐릭터마다 별도의 번역 프롬프트를 넣을 수 있습니다. 해당 옵션은  Ax. model 번역을 사용할 때만 적용됩니다. 언어 설정에서 `{{slot::tnote}}`를 넣으세요. 그룹챗에서는 작동하지 않습니다.",
+            "여기에서 캐릭터마다 별도의 번역 프롬프트를 넣을 수 있습니다. 해당 옵션은  Ax. model 번역을 사용할 때만 적용됩니다. 번역 설정에서 `{{slot::tnote}}`를 넣으세요. 그룹챗에서는 작동하지 않습니다.",
         groupInnerFormat:
             "화자가 아닌 캐릭터를 위해 그룹 채팅에서 사용되는 포맷을 정의합니다. 비워두지 않으면 기본 포맷 대신 이 포맷을 사용합니다. `그룹 내 기타 봇 역할`이 `assistant`인 경우 화자에게도 적용됩니다.",
         groupOtherBotRole: "그룹 채팅에서 화자가 아닌 캐릭터에 사용되는 역할을 정의합니다.",
@@ -623,6 +623,11 @@ export const languageKorean = {
     settingsSectionExperimentalDesc: "불안정할 수 있습니다. 실험적 기능을 켰을 때만 보입니다.",
     settingsSectionLegacy: "레거시 옵션",
     settingsSectionLegacyDesc: "호환성을 위해 남겨 둔 예전 동작입니다.",
+    settingsSectionTranslator: "번역기",
+    settingsSectionTranslatorDesc: "번역기 언어를 고르면 번역이 켜지고, 그 아래에 번역기 옵션이 나타납니다.",
+    settingsSectionTranslationBehavior: "동작",
+    settingsSectionTranslationCache: "번역 캐시",
+    settingsSectionTranslationCacheDesc: "Ax. Model 번역기가 이 브라우저에 캐시한 번역입니다.",
     formatingOrder: "포맷 순서",
     authorNote: "작가의 노트",
     firstMessage: "첫 메시지",
@@ -697,6 +702,7 @@ export const languageKorean = {
     emotionWarn: "채팅 분석에는 보조 모델을 사용합니다.",
     plugin: "플러그인",
     language: "언어",
+    translationSettings: "번역",
     UiLanguage: "UI 언어",
     createfromScratch: "새 캐릭터 생성",
     importCharacter: "캐릭터 임포트",

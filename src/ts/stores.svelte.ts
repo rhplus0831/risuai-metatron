@@ -50,6 +50,7 @@ export {
     API_KEYS_SETTINGS_MENU,
     MODEL_PROFILES_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
+    TRANSLATION_SETTINGS_MENU,
 } from "./settingsMenu";
 export const ReloadGUIPointer = writable(0);
 /** Re-render counters of chat rows, by `reloadChatKey` (the message id, so an index shift keeps them). */
