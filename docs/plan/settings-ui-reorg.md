@@ -8,6 +8,14 @@ session, one commit. Owning guide: [settings-i18n](../structure/settings-i18n.md
 [app-shell](../structure/app-shell.md) for the new routes and [media-aux](../structure/media-aux.md)
 for the image, TTS and translation pages it owns.
 
+Decisions made by landed slices: 1 keeps Ctrl+Q a default hotkey (the key handler matches
+through `enabledHotkeys`, the table lists `activeHotkeys` without it) and also deleted the
+pages only menu indexes 7–9 rendered. 2's API was confirmed by the user as built
+(`SettingSection`, `itemsById` in `src/ts/setting/sections.ts`, `SettingsSections.svelte`;
+a section whose items all hide renders nothing); collapsible sections carry no badge (the
+`badgeKey` field and the Accordion `badge` prop stay, unused); Advanced keeps a temporary
+`advanced.other` section that slice 4 empties; `adv.diagnostics` (an h2) was dropped.
+
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
 are taken apart, and the sidebar is grouped. No persisted field, default, migration or

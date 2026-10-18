@@ -1,17 +1,10 @@
 <script lang="ts">
-    import {
-        activeModelPreset,
-        activeMainProfile,
-        activePreset,
-        settings,
-        activePersona,
-        type ModelProfileView,
-    } from "src/ts/storage/settingsViews.svelte";
+    import type { ModelProfileView } from "src/ts/storage/settingsViews.svelte";
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import type { LLMModel } from "src/ts/model/types";
     import { getModelInfoForMode } from "src/ts/model/modellist";
     import { settingRegistry } from "src/ts/setting/settingRegistry";
-    import { checkCondition } from "src/ts/setting/utils";
+    import { checkCondition, settingContext } from "src/ts/setting/utils";
 
     interface Props {
         items: SettingItem[];
@@ -30,15 +23,9 @@
     let effectiveSubModelInfo = $derived(subModelInfo ?? getModelInfoForMode("submodel"));
 
     // Build context for condition checks
-    let ctx: SettingContext = $derived({
-        settings,
-        preset: activePreset,
-        modelPreset: activeModelPreset,
-        modelProfile: modelProfile ?? activeMainProfile,
-        persona: activePersona,
-        modelInfo: effectiveModelInfo,
-        subModelInfo: effectiveSubModelInfo,
-    });
+    let ctx: SettingContext = $derived(
+        settingContext({ modelProfile, modelInfo: effectiveModelInfo, subModelInfo: effectiveSubModelInfo }),
+    );
 </script>
 
 {#each items as item (item.id)}

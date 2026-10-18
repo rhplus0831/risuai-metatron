@@ -7,8 +7,8 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // write them, so every settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
 // accordion it holds) mounts without a page error and without writing anything; an edit made through
 // the page's own controls (a section field bound with `bind:checked`, a nested section field bound
-// with `bind:value`) is saved and survives a reload. The community page (index 7) and the supporter
-// page (77) are left out: they fetch from public services, which this context refuses.
+// with `bind:value`) is saved and survives a reload. The supporter page (77) is left out: it fetches from public services,
+// which this context refuses.
 
 /** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(2500);
@@ -40,8 +40,6 @@ const PAGES: [number, string][] = [
     [0, "files"],
     [15, "hotkeys"],
     [6, "advanced"],
-    [8, "global lorebook"],
-    [9, "global regex"],
 ];
 
 const openSettings = (page: Page, index: number) =>

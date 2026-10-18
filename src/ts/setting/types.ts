@@ -202,6 +202,29 @@ export interface SettingItem {
 }
 
 /**
+ * A named group of items on a settings page, rendered by `SettingsSections.svelte`: an always-visible
+ * region with a heading, or a closed accordion when `collapsible` (only for advanced, experimental,
+ * developer, and legacy groups).
+ *
+ * Section ids are independent of item ids. An item keeps its `SettingItem.id` when it moves between
+ * sections or pages. `items` holds the leaf array's own objects, looked up with `itemsById`
+ * (`sections.ts`), never copies, so `getFullSettingsData` lists each item once.
+ */
+export interface SettingSection {
+    /** Unique across every sectioned page; stable (tests and browser checks address it). */
+    id: string;
+    /** Language key for the heading (language.xxx) */
+    labelKey: string;
+    /** Language key for a short description under the heading */
+    descriptionKey?: string;
+    /** Language key for a small pill beside the heading, such as "Experimental" */
+    badgeKey?: string;
+    /** Render as a closed accordion instead of a visible region */
+    collapsible?: boolean;
+    items: SettingItem[];
+}
+
+/**
  * Category definition for grouping settings
  */
 export interface SettingCategory {

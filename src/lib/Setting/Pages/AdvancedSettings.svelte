@@ -1,6 +1,8 @@
 <script lang="ts">
-    import { advancedSettingsItems } from "src/ts/setting/advancedSettingsData";
+    import { advancedSettingsHeader, advancedSettingsSections } from "src/ts/setting/advancedSettingsData";
     import SettingRenderer from "../SettingRenderer.svelte";
+    import SettingsSections from "../SettingsSections.svelte";
 </script>
 
-<SettingRenderer items={advancedSettingsItems} />
+<SettingRenderer items={advancedSettingsHeader} />
+<SettingsSections sections={advancedSettingsSections} />

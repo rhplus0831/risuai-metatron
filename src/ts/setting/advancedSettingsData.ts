@@ -1,4 +1,5 @@
-import type { SettingItem } from "./types";
+import type { SettingItem, SettingSection } from "./types";
+import { itemsById } from "./sections";
 
 export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
@@ -487,13 +488,126 @@ export const advancedSettingsItems: SettingItem[] = [
     { type: "custom", id: "adv.customModels", componentId: "CustomModelsSettings" },
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },
 
-    // Diagnostics (docs/plan/request-history-diagnostics.md slice 9)
-    { type: "header", id: "adv.diagnostics", labelKey: "diagnostics", options: { level: "h2" }, classes: "mt-8" },
+    // Diagnostics (docs/plan/request-history-diagnostics.md slice 9); the "Developer & diagnostics"
+    // section is its heading (its own `adv.diagnostics` header went with settings UI plan slice 2).
     {
         type: "custom",
         id: "adv.diagnosticsPanel",
         labelKey: "diagnostics",
         componentId: "DiagnosticsPanel",
         keywords: ["diagnostics", "report", "debug", "support", "진단", "보고서"],
+    },
+];
+
+/** The page heading, above the sections. */
+export const advancedSettingsHeader: SettingItem[] = itemsById(advancedSettingsItems, ["adv.header", "adv.warn"]);
+
+/** The Advanced page's sections (`docs/plan/settings-ui-reorg.md`, slice 2), over `advancedSettingsItems`. */
+export const advancedSettingsSections: SettingSection[] = [
+    {
+        id: "advanced.featureAccess",
+        labelKey: "settingsSectionFeatureAccess",
+        descriptionKey: "settingsSectionFeatureAccessDesc",
+        items: itemsById(advancedSettingsItems, ["adv.showUnrec", "adv.useExp"]),
+    },
+    {
+        id: "advanced.performance",
+        labelKey: "settingsSectionPerformanceMedia",
+        items: itemsById(advancedSettingsItems, [
+            "adv.chatLoadInitial",
+            "adv.chatLoadAdditional",
+            "adv.assetAlloc",
+            "adv.imgComp",
+            "adv.legacyMedia",
+            "adv.allowExt",
+            "adv.dynAssets",
+            "adv.dynAssetsEdit",
+            "adv.tokCache",
+        ]),
+    },
+    {
+        id: "advanced.requests",
+        labelKey: "settingsSectionRequestsTools",
+        items: itemsById(advancedSettingsItems, [
+            "adv.toolUsage",
+            "adv.simpleTool",
+            "adv.requestHistoryContent",
+            "adv.requestHistoryLimit",
+        ]),
+    },
+    // Temporary: the items the plan's move table sends to other pages, in their old order, and
+    // `adv.localNetworkMode`/`adv.localNetworkTimeout`, which leave the UI. Slice 4 removes this section.
+    {
+        id: "advanced.other",
+        labelKey: "settingsSectionOtherSettings",
+        items: itemsById(advancedSettingsItems, [
+            "adv.lbDepth",
+            "adv.lbToken",
+            "adv.autoContinueMin",
+            "adv.addPrompt",
+            "adv.descPrefix",
+            "adv.emoPrompt",
+            "adv.presetChain",
+            "adv.retries",
+            "adv.genTime",
+            "adv.visionQual",
+            "adv.keepSessionAlive",
+            "adv.heightMode",
+            "adv.sayNothing",
+            "adv.autoFill",
+            "adv.localNetworkMode",
+            "adv.localNetworkTimeout",
+            "adv.autoCont",
+            "adv.remIncomp",
+            "adv.newOai",
+            "adv.noWaitTrans",
+            "adv.newImgBeta",
+            "adv.dynamicModelRegistry",
+            "adv.cot",
+            "adv.remPunc",
+            "adv.scrollToActive",
+            "adv.antiOverload",
+            "adv.openAIFlex",
+            "adv.claudeCache",
+            "adv.claudeBatch",
+            "adv.personaNote",
+            "adv.bookmark",
+            "adv.exp.googleTrans",
+            "adv.banChar",
+            "adv.customModels",
+        ]),
+    },
+    {
+        id: "advanced.developer",
+        labelKey: "settingsSectionDeveloperDiagnostics",
+        descriptionKey: "settingsSectionDeveloperDiagnosticsDesc",
+        collapsible: true,
+        items: itemsById(advancedSettingsItems, [
+            "adv.devTools",
+            "adv.promptInfo",
+            "adv.promptTextInfo",
+            "adv.cssErr",
+            "adv.export",
+            "adv.diagnosticsPanel",
+        ]),
+    },
+    {
+        id: "advanced.experimental",
+        labelKey: "settingsSectionExperimental",
+        descriptionKey: "settingsSectionExperimentalDesc",
+        collapsible: true,
+        items: itemsById(advancedSettingsItems, [
+            "adv.streamingDisplayOpt",
+            "adv.exp.googleToken",
+            "adv.exp.cachePoint",
+            "adv.exp.claudeRet",
+        ]),
+    },
+    {
+        id: "advanced.legacy",
+        labelKey: "settingsSectionLegacy",
+        descriptionKey: "settingsSectionLegacyDesc",
+        collapsible: true,
+        items: itemsById(advancedSettingsItems, ["adv.plainFetch"]),
     },
 ];

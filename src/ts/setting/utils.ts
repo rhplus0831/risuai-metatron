@@ -1,5 +1,15 @@
-import type { SettingItem, SettingContext } from "./types";
-import { readSettingsRoot, writeSettingsRoot } from "../storage/settingsViews.svelte";
+import type { SettingItem, SettingContext, SettingSection } from "./types";
+import type { LLMModel } from "../model/types";
+import {
+    activeMainProfile,
+    activeModelPreset,
+    activePersona,
+    activePreset,
+    readSettingsRoot,
+    settings,
+    writeSettingsRoot,
+    type ModelProfileView,
+} from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import { accessibilitySettingsItems } from "./accessibilitySettingsData";
 import { advancedSettingsItems } from "./advancedSettingsData";
@@ -14,11 +24,34 @@ import {
 import { chatFormatSettingsItems } from "./chatFormatSettingsData";
 import { displaySettingsItems } from "./displaySettingsData.svelte";
 
+/** The current language's string for a flat key (`language.xxx`), or `""` when it has none. */
+export function languageText(key: string | undefined): string {
+    return (key && (language as any)[key]) || "";
+}
+
 export function getLabel(item: SettingItem): string {
-    if (item.labelKey && (language as any)[item.labelKey]) {
-        return (language as any)[item.labelKey];
-    }
-    return item.fallbackLabel ?? "";
+    return languageText(item.labelKey) || (item.fallbackLabel ?? "");
+}
+
+/**
+ * The context the conditions and wrappers read (`SettingRenderer`, `SettingsSections`): the settings
+ * views, the selected (or chat-bound) presets and persona, the given model profile or else the main
+ * slot's, and the model info the caller derived. Call it inside `$derived` so it follows the views.
+ */
+export function settingContext(parts: {
+    modelProfile?: ModelProfileView;
+    modelInfo: LLMModel;
+    subModelInfo: LLMModel;
+}): SettingContext {
+    return {
+        settings,
+        preset: activePreset,
+        modelPreset: activeModelPreset,
+        modelProfile: parts.modelProfile ?? activeMainProfile,
+        persona: activePersona,
+        modelInfo: parts.modelInfo,
+        subModelInfo: parts.subModelInfo,
+    };
 }
 
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
@@ -85,6 +118,11 @@ export function updateSettingValue(item: SettingItem, newValue: any, ctx: Settin
 export function checkCondition(item: SettingItem, ctx: SettingContext): boolean {
     if (!item.condition) return true;
     return item.condition(ctx);
+}
+
+/** Whether any item of the section passes its condition; a section with none renders nothing. */
+export function sectionHasVisibleItems(section: SettingSection, ctx: SettingContext): boolean {
+    return section.items.some((item) => checkCondition(item, ctx));
 }
 
 export function getFullSettingsData(searchTerm = "") {

@@ -45,9 +45,16 @@
         Grek: "ΑΒΓ",
         Hebr: "אבג",
     };
+
+    let {
+        noAccordion,
+    }: {
+        /** Render the label and buttons in place, for a collapsible settings section (no nested accordion). */
+        noAccordion?: boolean;
+    } = $props();
 </script>
 
-<Accordion styled name={language.banCharacterset}>
+{#snippet mainBody()}
     {#each characterSets as set}
         <Button
             styled={settings.providers.banCharacterset.includes(set) ? "primary" : "outlined"}
@@ -66,4 +73,15 @@
             ]})
         </Button>
     {/each}
-</Accordion>
+{/snippet}
+
+{#if noAccordion}
+    <span class="text-textcolor mt-4">{language.banCharacterset}</span>
+    <div class="flex flex-col mt-2">
+        {@render mainBody()}
+    </div>
+{:else}
+    <Accordion styled name={language.banCharacterset}>
+        {@render mainBody()}
+    </Accordion>
+{/if}

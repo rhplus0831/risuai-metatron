@@ -85,7 +85,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `resourceSync.svelte.ts`, and `bootstrap.ts` report job attachment/retry/loss,
   feed state, sync conflicts/reloads, and service-worker setup. They contain no content.
 - `src/ts/diagnostics/report.ts`, `shared/diagnosticsReport.ts`, and
-  `DiagnosticsPanel.svelte`: Settings → Advanced → Diagnostics. Read the server for
+  `DiagnosticsPanel.svelte`: Settings → Advanced → Developer & diagnostics. Read the server for
   at most 10 s; failure still gives the browser report. Merge checked events by time
   (newest 300 per source, oldest omitted beyond 1 MiB); include app version,
   browser/OS family rather than user agent, online/viewport/export time, checked
@@ -174,7 +174,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 
 - Investigate a failure through the server history's job filter and checked debug
   metadata. Configure capture and row count in Advanced settings.
-- Collect a report through Settings → Advanced → Diagnostics → Refresh, then Copy,
+- Collect a report through Settings → Advanced → Developer & diagnostics → Refresh, then Copy,
   Download, or Save to server. A timeout after dispatch may have saved it already.
 - Use Share for support, Update, and Withdraw in the viewer for request content.
   Sharing a job includes its other requests, including memory and auxiliary LLM calls.
