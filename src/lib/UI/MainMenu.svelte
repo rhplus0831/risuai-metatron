@@ -2,6 +2,12 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
     import { chatList } from "src/ts/storage/chatStore.svelte";
+    import {
+        chatStatusKey,
+        generatingChatKeys,
+        recoveryChatKeys,
+        unseenChatKeys,
+    } from "src/ts/process/chatStatus.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
     import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
@@ -12,6 +18,8 @@
     import Title from "./Title.svelte";
     import { collectHomeRecentCharacters } from "./mainMenuProjection";
     import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "../SideBars/pinnedChats";
+    import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
+    import { chatStatusLabel, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
 
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
@@ -20,6 +28,22 @@
     const pinnedChats = $derived(
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
+    const statusSets = $derived({
+        recovery: $recoveryChatKeys,
+        generating: generatingChatKeys(),
+        unseen: $unseenChatKeys,
+    });
+    const pinnedStatuses = $derived.by(() => {
+        const statuses = new Map<string, ChatStatus>();
+        for (const item of pinnedChats) {
+            const key = chatStatusKey(item);
+            const status = resolveChatStatus(statusSets, key);
+            if (status) {
+                statuses.set(key, status);
+            }
+        }
+        return statuses;
+    });
     const visiblePinnedChats = $derived(
         showAllPinnedChats ? pinnedChats : pinnedChats.slice(0, HOME_PINNED_CHAT_COLLAPSED_LIMIT),
     );
@@ -57,26 +81,38 @@
                 {#if pinnedChats.length > 0}
                     <div class="grid grid-cols-1 gap-3 md:grid-cols-2" data-risu-home-pinned-list>
                         {#each visiblePinnedChats as item (JSON.stringify([item.chaId, item.chatId]))}
+                            {@const status = pinnedStatuses.get(chatStatusKey(item))}
+                            {@const statusLabel = status ? chatStatusLabel(status, item.chatName) : ""}
+                            {@const label =
+                                language.openPinnedChat(item.chatName, item.characterName) +
+                                (status ? ` · ${statusLabel}` : "")}
                             <button
                                 type="button"
                                 class="flex min-w-0 items-center gap-2 rounded-xl border border-darkborderc bg-darkbg p-3 text-left shadow-sm transition-colors hover:border-green-500 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-green-500"
-                                aria-label={language.openPinnedChat(item.chatName, item.characterName)}
+                                aria-label={label}
+                                title={status ? label : undefined}
                                 data-risu-home-pinned-chat={item.chatId}
+                                data-risu-chat-status={status ?? undefined}
                                 onclick={() => openPinnedChat(item)}
                             >
-                                {#await getCharImage(item.characterImage, "plain")}
-                                    <span
-                                        class="h-11 w-11 shrink-0 animate-pulse rounded-lg bg-selected"
-                                        aria-hidden="true"
-                                    ></span>
-                                {:then imageSource}
-                                    <img
-                                        src={imageSource || "/none.webp"}
-                                        alt=""
-                                        class="h-11 w-11 shrink-0 rounded-lg object-cover object-top"
-                                        class:rounded-full={settings.ui.roundIcons}
-                                    />
-                                {/await}
+                                <span class="relative h-11 w-11 shrink-0">
+                                    {#await getCharImage(item.characterImage, "plain")}
+                                        <span
+                                            class="block h-full w-full animate-pulse rounded-lg bg-selected"
+                                            aria-hidden="true"
+                                        ></span>
+                                    {:then imageSource}
+                                        <img
+                                            src={imageSource || "/none.webp"}
+                                            alt=""
+                                            class="h-full w-full rounded-lg object-cover object-top"
+                                            class:rounded-full={settings.ui.roundIcons}
+                                        />
+                                    {/await}
+                                    {#if status}
+                                        <ChatStatusBadge {status} label={statusLabel} />
+                                    {/if}
+                                </span>
                                 <span class="min-w-0">
                                     <span class="block truncate text-sm font-semibold">{item.chatName}</span>
                                     <span class="mt-0.5 block truncate text-xs text-textcolor2"
