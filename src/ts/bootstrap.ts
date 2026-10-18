@@ -20,12 +20,14 @@ import { setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readKinds } from "./storage/resourceClient";
 import {
+    heldRecordRevision,
     onRemoteRecordApplied,
     seedResources,
     setRemoteResourceOwner,
     startResourceSync,
 } from "./storage/resourceSync.svelte";
 import { characterList, removeCharacters } from "./storage/characterStore.svelte";
+import { queueRemoteCharOrderRepair } from "./storage/characterOrder";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
@@ -236,9 +238,18 @@ function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
     });
 }
 
-/** Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the inlay caches. */
-function watchRemoteRecords() {
-    onRemoteRecordApplied(() => invalidateInlayCaches());
+/**
+ * Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the
+ * inlay caches. A remote `characterOrder` may lack a character this tab created: it is appended
+ * (`queueRemoteCharOrderRepair`). Exported for tests.
+ */
+export function watchRemoteRecords() {
+    onRemoteRecordApplied((kind) => {
+        invalidateInlayCaches();
+        if (kind === RESOURCE_KIND.characterOrder) {
+            queueRemoteCharOrderRepair((chaId) => heldRecordRevision(RESOURCE_KIND.characters, chaId));
+        }
+    });
     setRemoteChatListener(() => invalidateInlayCaches());
 }
 

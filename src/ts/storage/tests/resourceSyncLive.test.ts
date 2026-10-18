@@ -81,9 +81,10 @@ const STORED_KEY = "sk-first-credential-1234";
 /**
  * Boots the adapter and the chat module the way `loadData` does, against a store-backed server
  * with the change feed: presets `pa` and `pb`, character `c` (chats `k` with messages a, b, c and
- * `j`, empty) and character `d` (chat `m`), `c` selected. Then live delivery starts.
+ * `j`, empty) and character `d` (chat `m`), `c` selected. Then live delivery starts. `prepare`
+ * edits the server after the fixture records and before the boot read.
  */
-async function boot(options: { secret?: boolean } = {}) {
+async function boot(options: { secret?: boolean; prepare?: (fake: StoreBackedServer) => void } = {}) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ lock: true, feed: true });
     fake.set("presets", "main", [
@@ -111,6 +112,7 @@ async function boot(options: { secret?: boolean } = {}) {
             create("d", "m", [m("x", "X")]),
         ],
     });
+    options.prepare?.(fake);
     server.current = fake;
 
     const client: Client = await import("../resourceClient");
@@ -1271,6 +1273,227 @@ describe("field patches another writer committed", () => {
         expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+});
+
+// Data-loss plan slice 7b (audit D5, E5): after another writer's `characterOrder` reached the mirror
+// (a whole read or the feed's item patch), the add-only repair `loadData` registers through
+// `watchRemoteRecords` appends a live character this tab holds that the order lacks, confirmed by
+// a read of the server copy, and never removes an entry: an id this tab cannot resolve yet keeps
+// its folder. A read answered while a newer order arrived (remotely, even with the same text, or
+// locally) is dropped and the repair reads again from the newest order.
+describe("the character order another writer replaced (data-loss slice 7b)", () => {
+    const FOLDER_ORDER = [
+        { id: "f1", name: "F1", data: ["c"] },
+        { id: "f2", name: "F2", data: ["d"] },
+    ];
+
+    /** The fixture's boot with the order seeded on the server and the real listener registration of `loadData`. */
+    async function bootWithOrder(order: unknown) {
+        const booted = await boot({ prepare: (fake) => fake.set("characterOrder", "main", order) });
+        const bootstrap: Bootstrap = await import("../../bootstrap");
+        bootstrap.watchRemoteRecords();
+        expect(plainOrder(booted.settings)).toEqual(order);
+        return booted;
+    }
+    const plainOrder = (settings: { characterOrder: unknown }) => JSON.parse(JSON.stringify(settings.characterOrder));
+    const serverOrder = (fake: StoreBackedServer) => fake.record("characterOrder", "main")!.data;
+    /** The repair's reads: the requests naming character records only (a live update's read names its own kind). */
+    const repairReads = (fake: StoreBackedServer) =>
+        fake.requests
+            .filter((request) => request.path === "/api/resources/read")
+            .map((request) => (request.body as { refs?: { kind: string; id: string }[] })?.refs ?? [])
+            .filter((refs) => refs.length > 0 && refs.every((ref) => ref.kind === "characters"));
+    /** Whether the request just recorded is a repair read (for `intercept.hold`). */
+    const lastIsRepairRead = (fake: StoreBackedServer, path: string) => {
+        const refs = (fake.requests.at(-1)?.body as { refs?: { kind: string }[] })?.refs ?? [];
+        return path === "/api/resources/read" && refs.length > 0 && refs.every((ref) => ref.kind === "characters");
+    };
+    /** Every write of the order this tab sent, as its data (an order of plain ids is never item-patched). */
+    const orderWrites = (fake: StoreBackedServer) =>
+        fake.batchBodies().flatMap((batch: any) =>
+            (batch.ops as any[])
+                .filter((op) => op.kind === "characterOrder")
+                .map((op) => {
+                    expect(op).not.toHaveProperty("patch");
+                    return op.data;
+                }),
+        );
+    /** "Another tab" creates character `e` without this tab hearing of it yet (its feed event waits). */
+    const createUnannounced = (fake: StoreBackedServer, live: { paused: boolean }, id: string) => {
+        live.paused = true;
+        fake.store.applyChanges({
+            ops: [{ kind: characterKind(fake), id, baseRevision: null, data: { chaId: id, name: id.toUpperCase() } }],
+        });
+        live.paused = false;
+    };
+    /** Lets the repair's read and the save of its append run, then asserts quiescence. */
+    const settleRepair = async (fake: StoreBackedServer) => {
+        await vi.advanceTimersByTimeAsync(3000);
+        await settle(fake);
+    };
+
+    it("keeps an id it cannot resolve yet in its folder after a whole-record replacement, writes nothing, and the character then arrives in that folder (E5)", async () => {
+        const { fake, sync, live, flushFeed, settings, characters } = await bootWithOrder(["c", "d"]);
+        createUnannounced(fake, live, "e");
+        const replaced = ["c", { id: "f", name: "F", data: ["d", "e"] }];
+        fake.set("characterOrder", "main", replaced);
+        await settleRepair(fake);
+        expect(plainOrder(settings)).toEqual(replaced);
+        expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d"]);
+        // The order's own read; every character this tab holds is ordered, so the repair reads nothing.
+        expect(reads(fake)).toBe(1);
+        expect(repairReads(fake)).toEqual([]);
+        expect(fake.batchCount()).toBe(0);
+        flushFeed();
+        await settleRepair(fake);
+        expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d", "e"]);
+        expect(plainOrder(settings)).toEqual(replaced);
+        // What the sidebar then lists: the repair of the next add or remove keeps the folder too.
+        const { checkCharOrder } = await import("../characterOrder");
+        checkCharOrder();
+        expect(plainOrder(settings)).toEqual(replaced);
+        expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("applies the feed's item patch of a folder order without a read and keeps the unresolved id in its folder (E5)", async () => {
+        const { fake, sync, live, flushFeed, settings, characters } = await bootWithOrder(FOLDER_ORDER);
+        createUnannounced(fake, live, "e");
+        fake.store.applyChanges({
+            ops: [
+                {
+                    kind: fake.kind("characterOrder"),
+                    id: "main",
+                    baseRevision: fake.record("characterOrder", "main")!.revision,
+                    patch: { changes: [{ id: "f2", set: { data: ["d", "e"] } }] },
+                },
+            ],
+        });
+        const event = fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>;
+        expect(event.changes.resources[0]).toMatchObject({ kind: "characterOrder", patch: expect.anything() });
+        const patched = [FOLDER_ORDER[0], { id: "f2", name: "F2", data: ["d", "e"] }];
+        expect(plainOrder(settings)).toEqual(patched);
+        await settleRepair(fake);
+        expect(reads(fake)).toBe(0);
+        expect(fake.batchCount()).toBe(0);
+        expect(plainOrder(settings)).toEqual(patched);
+        flushFeed();
+        await settleRepair(fake);
+        expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d", "e"]);
+        expect(plainOrder(settings)).toEqual(patched);
+        expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("appends a live character this tab holds that another writer's order lacks: one read of the candidate, one order write, nothing echoed (D5)", async () => {
+        const { fake, sync, settings } = await bootWithOrder(["c", "d"]);
+        fake.set("characterOrder", "main", ["c"]);
+        await settleRepair(fake);
+        expect(repairReads(fake)).toEqual([[{ kind: "characters", id: "d" }]]);
+        expect(plainOrder(settings)).toEqual(["c", "d"]);
+        expect(serverOrder(fake)).toEqual(["c", "d"]);
+        expect(orderWrites(fake)).toEqual([["c", "d"]]);
+        expect(fake.batchCount()).toBe(1);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("does not append a saved character whose server record is gone: another tab deleted it with its order entry, and the deletion reaches this tab later", async () => {
+        const { fake, sync, live, flushFeed, settings, characters } = await bootWithOrder(["c", "d"]);
+        live.paused = true;
+        fake.store.delete(characterKind(fake), "d", fake.record("characters", "d")!.revision);
+        live.paused = false;
+        fake.set("characterOrder", "main", ["c"]);
+        await settleRepair(fake);
+        expect(repairReads(fake)).toEqual([[{ kind: "characters", id: "d" }]]);
+        expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d"]);
+        expect(plainOrder(settings)).toEqual(["c"]);
+        expect(fake.batchCount()).toBe(0);
+        flushFeed();
+        await settleRepair(fake);
+        expect(characters().map((entry) => entry.chaId)).toEqual(["c"]);
+        expect(plainOrder(settings)).toEqual(["c"]);
+        expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("does not append a character the server holds as trashed while this tab's copy is still live", async () => {
+        const { fake, sync, live, flushFeed, settings, character } = await bootWithOrder(["c", "d"]);
+        live.paused = true;
+        fake.set("characters", "d", { ...fake.record("characters", "d")!.data, trashTime: 1 });
+        live.paused = false;
+        fake.set("characterOrder", "main", ["c"]);
+        await settleRepair(fake);
+        expect(repairReads(fake)).toEqual([[{ kind: "characters", id: "d" }]]);
+        expect(character("d").trashTime).toBeUndefined();
+        expect(plainOrder(settings)).toEqual(["c"]);
+        expect(fake.batchCount()).toBe(0);
+        flushFeed();
+        await settleRepair(fake);
+        expect(character("d").trashTime).toBe(1);
+        expect(plainOrder(settings)).toEqual(["c"]);
+        expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("drops a read answered live while another writer's order (the same text) arrived, reads again, and appends nothing the newer read refuses", async () => {
+        const { fake, sync, live, flushFeed, settings, character, intercept } = await bootWithOrder(["c", "d"]);
+        intercept.hold = (path) => lastIsRepairRead(fake, path);
+        fake.set("characterOrder", "main", ["c"]);
+        await vi.advanceTimersByTimeAsync(1500);
+        // The repair's read of `d` was answered "live" and is held.
+        expect(intercept.release).not.toBeNull();
+        expect(repairReads(fake)).toHaveLength(1);
+        // Meanwhile another tab trashes `d` (this tab hears of it only later) and writes the same order again.
+        live.paused = true;
+        fake.set("characters", "d", { ...fake.record("characters", "d")!.data, trashTime: 1 });
+        live.paused = false;
+        fake.set("characterOrder", "main", ["c"]);
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(sync.heldRecordRevision("characterOrder", "main")).toBe(fake.record("characterOrder", "main")!.revision);
+        intercept.release!();
+        await settleRepair(fake);
+        // The held answer was dropped: a fresh read, which finds `d` trashed, and no order write at all.
+        expect(repairReads(fake)).toEqual([[{ kind: "characters", id: "d" }], [{ kind: "characters", id: "d" }]]);
+        expect(character("d").trashTime).toBeUndefined();
+        expect(plainOrder(settings)).toEqual(["c"]);
+        expect(fake.batchCount()).toBe(0);
+        flushFeed();
+        await settleRepair(fake);
+        expect(character("d").trashTime).toBe(1);
+        expect(fake.batchCount()).toBe(0);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        noNotice();
+    });
+
+    it("drops a read answered while this tab changed the order, keeps that edit, and appends to it from a fresh read", async () => {
+        const { fake, sync, settings, intercept } = await bootWithOrder(["c", "d"]);
+        intercept.hold = (path) => lastIsRepairRead(fake, path);
+        fake.set("characterOrder", "main", ["c"]);
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(intercept.release).not.toBeNull();
+        expect(repairReads(fake)).toHaveLength(1);
+        const folder = { id: "g", name: "G", color: "", data: ["c"] };
+        settings.characterOrder = [folder];
+        await tick();
+        intercept.release!();
+        await settleRepair(fake);
+        expect(repairReads(fake)).toEqual([[{ kind: "characters", id: "d" }], [{ kind: "characters", id: "d" }]]);
+        expect(plainOrder(settings)).toEqual([folder, "d"]);
+        expect(serverOrder(fake)).toEqual([folder, "d"]);
+        // No write of the dropped answer's result (`["c", "d"]`): every order this tab sent holds the edit.
+        const writes = orderWrites(fake);
+        expect(writes.length).toBeGreaterThan(0);
+        for (const write of writes) {
+            expect(write[0]).toEqual(folder);
+        }
         expect(await sync.flushResources()).toEqual({ discarded: [] });
         noNotice();
     });

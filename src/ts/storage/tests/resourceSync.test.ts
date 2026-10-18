@@ -393,6 +393,45 @@ describe("conflicts", () => {
         expect(seen).toEqual(["characters/b"]);
         off();
     });
+
+    it("appends a character created here to an order another tab rewrote meanwhile: the 409 reloads the order without it, the repair reads the character (absent, an unsaved create) and both reach the server (data-loss slice 7b, D5)", async () => {
+        const { fake, sync, settings, characterStore } = await boot({
+            prepare: (fake) => fake.set("characterOrder", "main", ["a", "b"]),
+        });
+        // The listener `loadData` registers (`watchRemoteRecords`), over the real bootstrap module.
+        const bootstrap: Bootstrap = await import("../../bootstrap");
+        bootstrap.watchRemoteRecords();
+        const plainOrder = () => JSON.parse(JSON.stringify(settings.characterOrder));
+        const repairReads = () =>
+            fake.requests
+                .filter((request) => request.path === "/api/resources/read")
+                .map((request) => (request.body as { refs: { kind: string; id: string }[] }).refs)
+                .filter((refs) => refs.every((ref) => ref.kind === "characters"));
+        fake.set("characterOrder", "main", ["b", "a"]);
+        const id = characterStore.addCharacter(character("", "New"));
+        expect(plainOrder()).toEqual(["a", "b", id]);
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["characterOrder/main"]);
+        expect(alerts.normal).toHaveBeenCalledTimes(1);
+        // The repair's read runs apart from the save cycle: wait for the append it makes.
+        await vi.waitFor(() => expect(plainOrder()).toEqual(["b", "a", id]));
+        expect(repairReads()).toEqual([[{ kind: "characters", id }]]);
+        await sync.flushResources();
+        expect(fake.data("characters", id)).toMatchObject({ name: "New" });
+        expect(fake.data("characterOrder", "main")).toEqual(["b", "a", id]);
+        // The refused write, then only the repaired order: nothing of the reloaded order was echoed.
+        const orderWrites = fake
+            .batchBodies()
+            .flatMap((batch) => batch.ops.filter((op) => op.kind === "characterOrder").map((op) => op.data));
+        expect(orderWrites).toEqual([
+            ["a", "b", id],
+            ["b", "a", id],
+        ]);
+        const batches = fake.batchCount();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+        expect(alerts.normal).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe("lost acknowledgement", () => {
