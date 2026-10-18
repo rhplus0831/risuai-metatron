@@ -60,6 +60,15 @@ export async function selectSingleFileHandle(ext: string[]): Promise<File | null
     return files?.[0] ?? null;
 }
 
+/**
+ * The picked files as the `File`s themselves, read by nobody here (`docs/plan/large-asset-import.md`
+ * slice 3c: the asset pickers read each file only when its save slot is free, `savePickedFiles`);
+ * `[]` when none is picked.
+ */
+export async function selectMultipleFileHandles(ext: string[]): Promise<File[]> {
+    return (await selectFileByDom(ext, "multiple")) ?? [];
+}
+
 export async function selectMultipleFile(ext: string[]) {
     const v = await selectFileByDom(ext, "multiple");
     let arr: { name: string; data: Uint8Array }[] = [];

@@ -9,7 +9,7 @@ import {
     findCharacterbyId,
     findCharacterIndexbyId,
     getUserName,
-    selectMultipleFile,
+    selectMultipleFileHandles,
     selectSingleFile,
 } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
@@ -34,6 +34,7 @@ import { importedChatTranslation } from "./translator/chatTranslation.svelte";
 import { importedChatTogglePreset } from "./toggles/chatToggles.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
 import { importCharacter } from "./characterCards";
+import { savePickedFiles } from "./storage/assetQueue";
 import { PngChunk } from "./pngChunk";
 
 export function createNewCharacter() {
@@ -196,22 +197,24 @@ export const addingEmotion = writable(false);
 
 export async function addCharEmotion(chaId: string) {
     addingEmotion.set(true);
-    const selected = await selectMultipleFile(["png", "webp", "gif"]);
-    if (!selected) {
-        addingEmotion.set(false);
-        return;
-    }
-    for (const f of selected) {
-        const img = f.data;
-        const imgp = await saveImage(img);
-        const name = f.name.replace(".png", "").replace(".webp", "");
-        // Found again after each save: the character can be deleted meanwhile.
+    try {
+        const selected = await selectMultipleFileHandles(["png", "webp", "gif"]);
+        if (selected.length === 0) {
+            return;
+        }
+        const keys = await savePickedFiles(selected);
+        // Found again after the saves: the character can be deleted meanwhile.
         const dbChar = characterRecord(chaId);
         if (dbChar && dbChar.type !== "group") {
-            dbChar.emotionImages.push([name, imgp]);
+            dbChar.emotionImages.push(
+                ...selected.map((f, i): [string, string] => [f.name.replace(".png", "").replace(".webp", ""), keys[i]]),
+            );
         }
+    } catch (error) {
+        alertError(error);
+    } finally {
+        addingEmotion.set(false);
     }
-    addingEmotion.set(false);
 }
 
 export function rmCharEmotion(chaId: string, emotionId: number) {

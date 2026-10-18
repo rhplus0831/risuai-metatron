@@ -14,6 +14,7 @@ export const languageEnglish = {
         postEverything: "End-Injected Prompts",
     },
     errors: {
+        onnxZipInvalid: "The file is not a zip archive that can be read.",
         toomuchtoken: "Error: The minimum required token is greater than the Max Context Size.",
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
@@ -739,6 +740,9 @@ export const languageEnglish = {
     successExport: "Successfuly exported and downloaded to your download directory",
     exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
     jsonExportTooLarge: "The assets total more than 64 MiB, too large for a JSON card. Export it as CharX instead.",
+    onnxSaving: "Saving the model files...",
+    onnxFilesSkipped:
+        "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
     alwaysActive: "Always Active",

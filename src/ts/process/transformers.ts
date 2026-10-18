@@ -6,10 +6,12 @@ import type {
     TextGenerationOutput,
     ImageToTextOutput,
 } from "@huggingface/transformers";
-import { unzip } from "fflate";
+import { language } from "src/lang";
+import { alertError, alertNormal, alertWait } from "src/ts/alert";
 import { loadAsset } from "src/ts/globalApi.svelte";
 import { saveAssets } from "src/ts/storage/assetQueue";
-import { selectSingleFile, asBuffer } from "src/ts/util";
+import { selectSingleFileHandle, asBuffer } from "src/ts/util";
+import { readZipEntry, readZipIndex, type ZipFileIndex } from "./zipFile";
 import { v4 } from "uuid";
 import type { OnnxModelFiles } from "../../../shared/settings.ts";
 let tfCache: Cache = null;
@@ -160,46 +162,77 @@ export const runVITS = async (text: string, modelData: string | OnnxModelFiles =
     });
 };
 
+/**
+ * The largest zip member a model import stores: one record of the batch write route must fit the
+ * server's 100 MiB body limit, with room for its framing.
+ */
+export const MAX_ONNX_MEMBER_BYTES = 100 * 1024 * 1024 - 64 * 1024;
+
+/**
+ * Imports a VITS/ONNX model zip (`docs/plan/large-asset-import.md` slice 3c): the picked `File` is
+ * read by its central directory (`zipFile.ts`), each kept member read and inflated only when its
+ * save slot is free, and the members written in batches. A member over
+ * {@link MAX_ONNX_MEMBER_BYTES} is skipped with a message. Undefined when nothing is picked or the
+ * import fails (alerted).
+ */
 export const registerOnnxModel = async (): Promise<OnnxModelFiles> => {
     const id = v4().replace(/-/g, "");
 
-    const modelFile = await selectSingleFile(["zip"]);
+    const modelFile = await selectSingleFileHandle(["zip"]);
 
     if (!modelFile) {
         return;
     }
 
-    const unziped = await new Promise<Record<string, Uint8Array>>((res, rej) => {
-        unzip(
-            modelFile.data,
-            {
-                filter: (file) => {
-                    return file.name.endsWith(".onnx") || file.size < 10_000_000 || file.name.includes(".git");
-                },
-            },
-            (err, unzipped) => {
-                if (err) {
-                    rej(err);
-                } else {
-                    res(unzipped);
-                }
-            },
-        );
-    });
+    let index: ZipFileIndex;
+    try {
+        index = await readZipIndex(modelFile);
+    } catch (error) {
+        console.error(error);
+        alertError(language.errors.onnxZipInvalid);
+        return;
+    }
 
-    console.log(unziped);
+    const members = index.entries.filter(
+        (entry) =>
+            !entry.directory &&
+            (entry.name.endsWith(".onnx") || entry.compressedSize < 10_000_000 || entry.name.includes(".git")),
+    );
+    const isTooLarge = (entry: (typeof members)[number]) =>
+        entry.uncompressedSize > MAX_ONNX_MEMBER_BYTES || entry.compressedSize > MAX_ONNX_MEMBER_BYTES;
+    const skipped = members.filter(isTooLarge);
+    const kept = members.filter((entry) => !isTooLarge(entry));
+
+    let fids: string[];
+    try {
+        alertWait(language.onnxSaving);
+        // Members can be large: two loaded at a time besides the batch being written.
+        fids = await saveAssets(
+            kept.map((entry) => ({ load: () => readZipEntry(modelFile, index, entry) })),
+            { concurrency: 2 },
+        );
+    } catch (error) {
+        console.error(error);
+        alertError(`${error}`);
+        return;
+    }
 
     let fileIdMapped: { [key: string]: string } = {};
-
-    const keys = Object.keys(unziped);
-    const fids = await saveAssets(keys.map((key) => ({ load: () => unziped[key] })));
-    for (let i = 0; i < keys.length; i++) {
-        let url = keys[i];
+    for (let i = 0; i < kept.length; i++) {
+        let url = kept[i].name;
         if (url.startsWith("/")) {
             url = url.substring(1);
         }
         fileIdMapped[url] = fids[i];
     }
+
+    alertNormal(
+        skipped.length > 0
+            ? language.onnxFilesSkipped
+                  .replace("{count}", String(skipped.length))
+                  .replace("{names}", skipped.map((entry) => entry.name).join(", "))
+            : language.successImport,
+    );
 
     return {
         files: fileIdMapped,

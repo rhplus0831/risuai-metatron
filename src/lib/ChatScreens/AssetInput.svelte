@@ -4,8 +4,9 @@
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { FileMusicIcon, PlusIcon } from "@lucide/svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
-    import { saveAsset } from "src/ts/globalApi.svelte";
-    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile } from "src/ts/util";
+    import { alertError } from "src/ts/alert";
+    import { savePickedFiles } from "src/ts/storage/assetQueue";
+    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFileHandles } from "src/ts/util";
     import Button from "../UI/GUI/Button.svelte";
     import LazyFileSrc from "../UI/GUI/LazyFileSrc.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
@@ -51,18 +52,23 @@
             class="hover:text-green-500 bg-textcolor2 flex justify-center items-center w-16 h-16 m-1 rounded-md"
             onclick={async () => {
                 if (currentCharacter.type === "character") {
-                    const da = await selectMultipleFile(["png", "webp", "mp4", "mp3", "gif"]);
+                    const da = await selectMultipleFileHandles(["png", "webp", "mp4", "mp3", "gif"]);
                     currentCharacter.additionalAssets = currentCharacter.additionalAssets ?? [];
-                    if (!da) {
+                    if (da.length === 0) {
                         return;
                     }
-                    for (const f of da) {
-                        console.log(f);
-                        const img = f.data;
-                        const name = f.name;
-                        const extension = name.split(".").pop().toLowerCase();
-                        const imgp = await saveAsset(img, "", extension);
-                        currentCharacter.additionalAssets.push([name, imgp, extension]);
+                    const extension = (f: File) => f.name.split(".").pop().toLowerCase();
+                    let keys: string[];
+                    try {
+                        keys = await savePickedFiles(da, extension);
+                    } catch (error) {
+                        alertError(error);
+                        return;
+                    }
+                    if (currentCharacter.type === "character") {
+                        currentCharacter.additionalAssets.push(
+                            ...da.map((f, i): [string, string, string] => [f.name, keys[i], extension(f)]),
+                        );
                     }
                 }
             }}

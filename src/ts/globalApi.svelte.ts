@@ -14,7 +14,14 @@ import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from
 import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
 import { setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
-import { readAsset, readAssets, writeAsset, type AssetRequestOptions } from "./storage/assetClient";
+import {
+    readAsset,
+    readAssets,
+    writeAsset,
+    writeAssets,
+    type AssetRequestOptions,
+    type AssetWriteItem,
+} from "./storage/assetClient";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
@@ -253,6 +260,16 @@ export async function saveAsset(
     fileName: string = "",
     options: AssetRequestOptions = {},
 ) {
+    const form = await assetKey(data, customId, fileName);
+    await writeAsset(form, data, options);
+    return form;
+}
+
+/**
+ * The key {@link saveAsset} stores `data` under: `assets/<customId or the bytes' SHA-256 hex (a uuid
+ * when hashing fails)>.<fileName's extension, default png>`.
+ */
+export async function assetKey(data: Uint8Array, customId: string = "", fileName: string = ""): Promise<string> {
     let id = "";
     if (customId !== "") {
         id = customId;
@@ -267,9 +284,15 @@ export async function saveAsset(
     if (fileName && fileName.split(".").length > 0) {
         fileExtension = fileName.split(".").pop();
     }
-    let form = `assets/${id}.${fileExtension}`;
-    await writeAsset(form, data, options);
-    return form;
+    return `assets/${id}.${fileExtension}`;
+}
+
+/** Writes each item under its key with the batch route (`writeAssets`: one request per batch, retried). */
+export async function saveAssetBatch(
+    items: readonly AssetWriteItem[],
+    options: AssetRequestOptions = {},
+): Promise<void> {
+    await writeAssets(items, options);
 }
 
 /**

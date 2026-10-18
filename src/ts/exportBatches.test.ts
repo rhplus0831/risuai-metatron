@@ -137,6 +137,12 @@ async function boot() {
         assets.saved.push(bytes);
         return `assets/saved-${assets.saved.length}.png`;
     });
+    // The bulk importers' batched writes (`saveAssets`): one key per item, every item recorded.
+    let batched = 0;
+    vi.spyOn(api, "assetKey").mockImplementation(async () => `assets/batched-${++batched}.png`);
+    vi.spyOn(api, "saveAssetBatch").mockImplementation(async (items) => {
+        for (const { bytes } of items) assets.saved.push(bytes);
+    });
     vi.spyOn(api, "readImage").mockResolvedValue(PORTRAIT);
     const download = vi.spyOn(api, "downloadFile").mockResolvedValue(undefined);
     const util = await import("./util");

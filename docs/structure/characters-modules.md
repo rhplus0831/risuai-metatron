@@ -63,6 +63,7 @@
     - `ModuleChatMenu.svelte`: per-chat and per-character toggles.
   - `GridCatalog.svelte`: the catalog plus trash.
   - `AssetInput.svelte`: chat stickers from `additionalAssets`.
+  - The asset pickers (`CharConfig`'s additional assets, `ModuleMenu`'s module assets, `AssetInput`, `characters.ts` `addCharEmotion`) take the picked `File`s (`selectMultipleFileHandles`), save them with `savePickedFiles` (each read when its slot is free, written in batches), and push every row in one write once all are saved; a failed save alerts and adds none.
 - `assetList.ts`: `characterAssetNames(chaId, assets)` and `moduleAssetNames(module)` supply cached lowercase names; `matchingAssetIndices(names, query)` returns source indices for a nonempty, trimmed, lowercase query. The character editor and sticker picker share a weak cache by list wrapper and `wrapperFieldStamp`; character names come from `characterFieldPlain(chaId, "additionalAssets")`. Module names are cached by the identity of the shared `moduleFieldPlain(module, "assets")` copy. Uncacheable characters and plain create-mode modules rebuild for each query.
 
 ## Flows
@@ -72,7 +73,7 @@ Import (`importCharacterProcess`):
 - `.json`: `importCharacterCardSpec`, falling back to `convertOffSpecCards`.
 - `.png`/`.jpg`:
   1. `PngChunk.readGenerator` reads the `chara` (V2) and `ccv3` (V3) keys. `ccv3` wins when both exist.
-  2. `chara-ext-asset_<id>` chunks carry the assets, fed to `saveAssets` as they are read. A stream (the Chub and Realm downloads' response bodies) is read once, its progress a running count (`Loading... (Loaded N Assets)`); a re-readable input (bytes, a `File` or `Blob`) is counted in a first pass for a percentage.
+  2. `chara-ext-asset_<id>` chunks carry the assets, fed to `saveAssets` as they are read and written in batches (`POST /api/assets/write`); the reader is held back once a batch's worth is waiting while another is written. A stream (the Chub and Realm downloads' response bodies) is read once, its progress a running count (`Loading... (Loaded N Assets)`); a re-readable input (bytes, a `File` or `Blob`) is counted in a first pass for a percentage.
   3. Legacy `rccv1` cards are decrypted.
 - `.charx` and `.jpg`/`.jpeg` (a `charxJpeg`: a JPEG, then the zip):
   1. A `File` or `Blob` (the dialog's and the drop's `File`, `importModule`'s `.charx` branch, `#share_character`'s `pending.blob()`, `#import=`'s `res.blob()`, the launch queue's `getFile()`, the Realm `.charx` download's `res.blob()`) is uploaded as it is, once (`importCharxOverServer`, large-asset-import slice 2d): the wait alert shows `charxImportUploading`, then each progress line as `Loading... (Saving Assets done/total)`. The server stores the assets and answers the card's text, the embedded `module.risum` (base64), each asset entry's stored key by entry name, and the excluded entries; the tab never holds the file. A failure is alerted (`serverImportErrorMessage` with the `charxImport*` texts: `Invalid character file`, a 400 or a failure line, is `noData`; too large, busy, maintenance, a timeout, an interrupted upload, or the server's text) and returns `null`.

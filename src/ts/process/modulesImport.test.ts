@@ -186,7 +186,7 @@ describe("importModule adds the module through addModule", () => {
             Buffer.from([0]),
         ]);
         const globalApi = await import("../globalApi.svelte");
-        // Keep saveAsset and writeAsset real; only the authenticated server response is replaced.
+        // Keep the batched asset write real; only the authenticated server response is replaced.
         vi.mocked(globalApi.saveAsset).mockRestore();
         const realFetch = server.current.fetch.bind(server.current) as (
             url: string,
@@ -194,7 +194,7 @@ describe("importModule adds the module through addModule", () => {
         ) => Promise<Response>;
         const fetch = vi.spyOn(server.current, "fetch");
         fetch.mockImplementation((url: string, init?: RequestInit) =>
-            url === "/api/write" ? Promise.resolve(new Response(null, { status: 503 })) : realFetch(url, init),
+            url === "/api/assets/write" ? Promise.resolve(new Response(null, { status: 503 })) : realFetch(url, init),
         );
         const before = list();
         const reading = modules.readModule(bytes).then(
@@ -210,9 +210,9 @@ describe("importModule adds the module through addModule", () => {
                 cause: "setItem Error",
             },
         });
-        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(8);
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/assets/write")).toHaveLength(8);
         // The dialog's `.risum` goes to the import route as the file itself (large-asset-import slice
-        // 2c): one request, never retried, no `/api/write`; a 503 is the maintenance alert.
+        // 2c): one request, never retried, no asset write; a 503 is the maintenance alert.
         server.current.failNext = { status: 503, times: 1, match: (p: string) => p === "/api/import/module" };
         picker.file = { name: "failed.risum", data: bytes };
         const importing = modules.importModule();
@@ -220,7 +220,7 @@ describe("importModule adds the module through addModule", () => {
             await vi.advanceTimersByTimeAsync(wait);
         expect(await importing).toBe(false);
         expect(fetch.mock.calls.filter(([url]) => url === "/api/import/module")).toHaveLength(1);
-        expect(fetch.mock.calls.filter(([url]) => url === "/api/write")).toHaveLength(8);
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/assets/write")).toHaveLength(8);
         expect(server.current.failNext).toBeNull();
         expect(list()).toEqual(before);
         expect(alerts.error).toHaveBeenLastCalledWith(language.moduleImportMaintenance);

@@ -74,11 +74,12 @@ async function boot() {
         server.current = fake;
     });
     // `globalApi`, `util`, and `database.svelte` stay real (a `vi.mock` wrapper would outlive
-    // `vi.resetModules` and keep the first graph's records); the file dialog, the image store, and
-    // the download are spied on this graph.
+    // `vi.resetModules` and keep the first graph's records); the file dialog, the image store, the
+    // picked-file save, and the download are spied on this graph.
     const util = await import("./util");
     const database = await import("./storage/database.svelte");
     const globalApi = await import("./globalApi.svelte");
+    const assetQueue = await import("./storage/assetQueue");
     const downloads: { name: string; data: string }[] = [];
     vi.spyOn(globalApi, "downloadFile").mockImplementation((async (name: string, data: Uint8Array | string) => {
         downloads.push({ name, data: typeof data === "string" ? data : Buffer.from(data).toString("utf-8") });
@@ -89,7 +90,7 @@ async function boot() {
     const cards = await import("./characterCards");
     const d = booted.characterStore.addCharacter({ chaId: "d", name: "D" });
     await booted.sync.flushResources();
-    return { ...booted, util, database, characters, group, modules, cards, downloads, d };
+    return { ...booted, util, database, assetQueue, characters, group, modules, cards, downloads, d };
 }
 
 beforeAll(async () => {
@@ -160,15 +161,15 @@ describe("selection by id", () => {
 
 describe("handlers that await keep their target", () => {
     it("addCharEmotion writes the character it was opened for, though another is selected after the dialog", async () => {
-        const { characters, characterStore, util, database, character, sync, record } = await boot();
+        const { characters, characterStore, util, assetQueue, character, sync, record } = await boot();
         characterStore.selectCharacter("c");
-        const dialog = gate<{ name: string; data: Uint8Array }[]>();
-        vi.spyOn(util, "selectMultipleFile").mockReturnValueOnce(dialog.promise);
-        vi.spyOn(database, "saveImage").mockResolvedValue("img-1");
+        const dialog = gate<File[]>();
+        vi.spyOn(util, "selectMultipleFileHandles").mockReturnValueOnce(dialog.promise);
+        vi.spyOn(assetQueue, "savePickedFiles").mockResolvedValue(["img-1"]);
         const running = characters.addCharEmotion("c");
         await settleMicrotasks();
         characterStore.selectCharacter("d");
-        dialog.resolve([{ name: "happy.png", data: new Uint8Array([1]) }]);
+        dialog.resolve([new File([new Uint8Array([1])], "happy.png")]);
         await running;
         expect(plain(character("c").emotionImages)).toEqual([["happy", "img-1"]]);
         expect(plain(character("d").emotionImages ?? [])).toEqual([]);
@@ -178,19 +179,15 @@ describe("handlers that await keep their target", () => {
     });
 
     it("addCharEmotion stops without an error when its character is deleted during a save", async () => {
-        const { characters, characterStore, util, database, character } = await boot();
+        const { characters, characterStore, util, assetQueue, character } = await boot();
         characterStore.selectCharacter("c");
-        vi.spyOn(util, "selectMultipleFile").mockResolvedValueOnce([
-            { name: "one.png", data: new Uint8Array([1]) },
-            { name: "two.png", data: new Uint8Array([2]) },
+        vi.spyOn(util, "selectMultipleFileHandles").mockResolvedValueOnce([
+            new File([new Uint8Array([1])], "one.png"),
+            new File([new Uint8Array([2])], "two.png"),
         ]);
-        let saves = 0;
-        vi.spyOn(database, "saveImage").mockImplementation(async () => {
-            saves += 1;
-            if (saves === 2) {
-                characterStore.removeCharacter("c");
-            }
-            return `img-${saves}`;
+        vi.spyOn(assetQueue, "savePickedFiles").mockImplementation(async () => {
+            characterStore.removeCharacter("c");
+            return ["img-1", "img-2"];
         });
         await expect(characters.addCharEmotion("c")).resolves.toBeUndefined();
         expect(character("c")).toBeUndefined();

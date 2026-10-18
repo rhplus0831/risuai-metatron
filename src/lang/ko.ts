@@ -14,6 +14,7 @@ export const languageKorean = {
         postEverything: "최종 삽입 프롬프트",
     },
     errors: {
+        onnxZipInvalid: "읽을 수 있는 zip 파일이 아닙니다.",
         toomuchtoken: "에러: 요청에 필요한 최소 토큰이 최대 토큰보다 큽니다.",
         unknownModel: "에러: 알수없는 모델 선택됨",
         httpError: "요청 에러:",
@@ -661,6 +662,9 @@ export const languageKorean = {
     successExport: "성공적으로 엑스포트하여 다운로드 경로에 다운로드했습니다.",
     exportMissingAssets: "내보내기가 완료되었지만, 에셋 {count}개가 없거나 비어 있어 빈 에셋으로 저장했습니다.",
     jsonExportTooLarge: "에셋 총 크기가 64 MiB를 넘어 JSON 카드로 내보낼 수 없습니다. CharX로 내보내 주세요.",
+    onnxSaving: "모델 파일을 저장하는 중...",
+    onnxFilesSkipped:
+        "모델을 가져왔지만, zip 안의 파일 {count}개가 업로드 한도(100 MiB 미만)를 넘어 건너뛰었습니다: {names}",
     successImport: "성공적으로 임포트했습니다.",
     importedCharacter: "성공적으로 임포트 됨.",
     alwaysActive: "언제나 활성화",

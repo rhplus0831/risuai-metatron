@@ -39,14 +39,14 @@
         changeCharImage,
     } from "../../ts/characters";
     import LoreBook from "./LoreBook/LoreBookSetting.svelte";
-    import { alertNormal, showHypaV2Alert } from "../../ts/alert";
+    import { alertError, alertNormal, showHypaV2Alert } from "../../ts/alert";
     import BarIcon from "./BarIcon.svelte";
     import {
         ASSET_LIST_PAGE,
         assetExtension,
         findCharacterbyId,
         getAuthorNoteDefaultText,
-        selectMultipleFile,
+        selectMultipleFileHandles,
         selectSingleFile,
     } from "../../ts/util";
     import Help from "../Others/Help.svelte";
@@ -71,6 +71,7 @@
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import { updateInlayScreen } from "src/ts/process/inlayScreen";
     import { registerOnnxModel } from "src/ts/process/transformers";
+    import { savePickedFiles } from "src/ts/storage/assetQueue";
     import MultiLangInput from "../UI/GUI/MultiLangInput.svelte";
     import { applyModule } from "src/ts/process/modules";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
@@ -756,7 +757,7 @@
                                             const found = characterList().find((entry) => entry?.chaId === chaId);
                                             return found?.type === "character" ? found : undefined;
                                         };
-                                        const da = await selectMultipleFile([
+                                        const da = await selectMultipleFileHandles([
                                             "png",
                                             "webp",
                                             "mp4",
@@ -777,21 +778,31 @@
                                             return;
                                         }
                                         target().additionalAssets = target().additionalAssets ?? [];
-                                        if (!da) {
+                                        if (da.length === 0) {
                                             return;
                                         }
-                                        for (const f of da) {
-                                            const img = f.data;
-                                            const name = f.name;
-                                            const extension = name.split(".").pop().toLowerCase();
-                                            const imgp = await saveAsset(img, "", extension);
-                                            const char = target();
-                                            if (!char) {
-                                                return;
-                                            }
-                                            char.additionalAssets.push([name, imgp, extension]);
-                                            char.additionalAssets = char.additionalAssets;
+                                        const extensions = da.map((f) => f.name.split(".").pop().toLowerCase());
+                                        let keys: string[];
+                                        try {
+                                            keys = await savePickedFiles(da, (f) =>
+                                                f.name.split(".").pop().toLowerCase(),
+                                            );
+                                        } catch (error) {
+                                            alertError(error);
+                                            return;
                                         }
+                                        const char = target();
+                                        if (!char) {
+                                            return;
+                                        }
+                                        char.additionalAssets.push(
+                                            ...da.map((f, i): [string, string, string] => [
+                                                f.name,
+                                                keys[i],
+                                                extensions[i],
+                                            ]),
+                                        );
+                                        char.additionalAssets = char.additionalAssets;
                                     }
                                 }}
                             >

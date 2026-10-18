@@ -118,6 +118,7 @@ Settings:
 ## Coupling
 
 - TTS depends on `database.svelte.ts`, `globalFetch`, `runTranslator` (Hugging Face non-English), `transformers.ts:runVITS`, and plugin v3 (hook registration).
+- The VITS model import (`transformers.ts` `registerOnnxModel`, the character's TTS settings) takes the picked zip as a `File` and reads it by its central directory (`process/zipFile.ts` over `shared/charxImport.ts`'s parsers), never scanning entry bytes for signatures. Each kept member (`.onnx`, under 10 MB compressed, or a `.git` path; no directories) is read and inflated only when its `saveAssets` slot is free (two at once) and the members are written in batches; a member over `MAX_ONNX_MEMBER_BYTES` (100 MiB less 64 KiB, so its record fits the server's body limit) is skipped and named in the closing message. An unreadable zip or a failed save alerts and returns nothing.
 - `stableDiff` depends on `requestChatData`, `CharEmotion`, `processZip`, and inlays.
 - The translator depends on the parser (`ParseMarkdown`, `applyMarkdownToNode`, `postTranslationParse`, `risuChatParser`), `requestChatData`, the script transform (`serverProcessScript`), platform flags, and localforage.
 - The media utilities are used by card import/export, modules, and inlays.

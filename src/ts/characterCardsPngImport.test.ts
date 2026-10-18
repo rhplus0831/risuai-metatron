@@ -45,6 +45,12 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
+// A write batch of four records, so the 32-asset stream fills batches and meets the queue's
+// backpressure (a full batch waiting while one is written) before the download ends.
+vi.mock("./storage/assetClient", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("./storage/assetClient")>()),
+    ASSET_BATCH_CLIENT_RECORDS: 4,
+}));
 
 async function boot() {
     vi.resetModules();
@@ -52,13 +58,17 @@ async function boot() {
         server.current = fake;
     });
     const api = await import("./globalApi.svelte");
-    const saveAsset = vi.spyOn(api, "saveAsset").mockImplementation(async () => `asset-${saveAsset.mock.calls.length}`);
+    // The portrait is one `saveAsset`; the asset chunks go through the batched save queue (keys by
+    // load order, writes recorded).
+    vi.spyOn(api, "saveAsset").mockResolvedValue("asset-portrait");
+    const assetKey = vi.spyOn(api, "assetKey").mockImplementation(async () => `asset-${assetKey.mock.calls.length}`);
+    const saveAssetBatch = vi.spyOn(api, "saveAssetBatch").mockResolvedValue(undefined);
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     const cards = await import("./characterCards");
     const { PngChunk } = await import("./pngChunk");
     const ids = () => booted.characterList().map((c) => c.chaId);
-    return { ...booted, api, saveAsset, cards, PngChunk, ids };
+    return { ...booted, api, assetKey, saveAssetBatch, cards, PngChunk, ids };
 }
 
 /** Internal importer calls are lexical; observe the handoff at its next module boundary. */
@@ -143,7 +153,7 @@ afterEach(() => {
 });
 
 describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
-    it("imports a stream once, pulls only as asset saves allow, and reports running asset counts", async () => {
+    it("imports a stream once, pulls only as asset batch writes allow, and reports running asset counts", async () => {
         const b = await boot();
         const { bytes, values } = fixture(32);
         const source = streamed(bytes);
@@ -151,11 +161,9 @@ describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
         const getReader = vi.spyOn(source.stream, "getReader");
         const blocked = deferred();
         const firstSave = deferred();
-        b.saveAsset.mockImplementation(async () => {
-            const key = `asset-${b.saveAsset.mock.calls.length}`;
+        b.saveAssetBatch.mockImplementation(async () => {
             firstSave.resolve();
             await blocked.promise;
-            return key;
         });
         const before = b.ids();
         const importing = b.cards.importCharacterProcess({ name: "stream.png", data: source.stream });
@@ -186,7 +194,7 @@ describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
         expect(plain(b.character(id!).additionalAssets)).toEqual(
             values.map((_, i) => [`Asset ${i}`, `asset-${i + 1}`, "png"]),
         );
-        expect(b.saveAsset.mock.calls.slice(0, values.length).map(([data]) => Buffer.from(data))).toEqual(
+        expect(b.saveAssetBatch.mock.calls.flatMap(([items]) => items.map(({ bytes }) => Buffer.from(bytes)))).toEqual(
             values.map((value) => Buffer.from(JSON.stringify(value))),
         );
         expect(alerts.error).not.toHaveBeenCalled();

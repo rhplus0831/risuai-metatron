@@ -14,10 +14,11 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import { saveAsset, downloadFile } from "src/ts/globalApi.svelte";
+    import { downloadFile } from "src/ts/globalApi.svelte";
     import { alertNormal, alertError } from "src/ts/alert";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
-    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile } from "src/ts/util";
+    import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile, selectMultipleFileHandles } from "src/ts/util";
+    import { savePickedFiles } from "src/ts/storage/assetQueue";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import LazyFileSrc from "src/lib/UI/GUI/LazyFileSrc.svelte";
 
@@ -310,7 +311,7 @@
                         <button
                             class="hover:text-green-500"
                             onclick={async () => {
-                                const da = await selectMultipleFile([
+                                const da = await selectMultipleFileHandles([
                                     "png",
                                     "webp",
                                     "mp4",
@@ -328,17 +329,21 @@
                                     "avif",
                                 ]);
                                 currentModule.assets = currentModule.assets ?? [];
-                                if (!da) {
+                                if (da.length === 0) {
                                     return;
                                 }
-                                for (const f of da) {
-                                    const img = f.data;
-                                    const name = f.name;
-                                    const extension = name.split(".").pop().toLowerCase();
-                                    const imgp = await saveAsset(img, "", extension);
-                                    currentModule.assets.push([name, imgp, extension]);
-                                    currentModule.assets = currentModule.assets;
+                                const extension = (f: File) => f.name.split(".").pop().toLowerCase();
+                                let keys: string[];
+                                try {
+                                    keys = await savePickedFiles(da, extension);
+                                } catch (error) {
+                                    alertError(`${error}`);
+                                    return;
                                 }
+                                currentModule.assets.push(
+                                    ...da.map((f, i): [string, string, string] => [f.name, keys[i], extension(f)]),
+                                );
+                                currentModule.assets = currentModule.assets;
                             }}
                         >
                             <PlusIcon />
