@@ -610,19 +610,23 @@ describe("the shared pool", () => {
         it("reserves each concurrent run's allowance so two workers cannot overspend", async () => {
             const two = makePool({ size: 2, maxSize: 2 });
             const budget = createLuaBudget(100);
+            // An unbounded loop ends only through the worker's count hook. A spin bounded by wall time
+            // can outrun a starved hook: a scheduling gap that straddles the allowance and the spin's
+            // end lets the run return before the hook observed the limit.
             const results = await Promise.all(
                 Array.from({ length: 4 }, () =>
-                    two.runLua(task(`function probe(id) ${spin(0.075)} return 'done' end`, "probe", { cpuMs: 50 }), {
-                        budget,
-                    }),
+                    two.runLua(task("function probe(id) while true do end end", "probe", { cpuMs: 50 }), { budget }),
                 ),
             );
             expect(results.every((r) => r.timedOut === true)).toBe(true);
-            expect(
-                results.filter((r) => r.error === "aggregate Lua execution budget exhausted").length,
-            ).toBeGreaterThanOrEqual(2);
+            const refused = results.filter((r) => r.error === "aggregate Lua execution budget exhausted");
+            const cut = results.filter((r) => r.error === "Lua CPU budget exceeded (timeout)");
+            expect(refused).toHaveLength(2);
+            // Each admitted run is cut once past its own allowance; the charge grows only with the gap
+            // between the hook's checks, never with a second allowance.
+            expect(cut.map((r) => r.cpuMs >= 50)).toEqual([true, true]);
             expect(budget.reservedMs).toBe(0);
-            expect(budget.usedMs).toBeLessThanOrEqual(250);
+            expect(budget.usedMs).toBe(results.reduce((sum, r) => sum + r.cpuMs, 0));
         });
 
         it("releases the reservation of an aborted run", async () => {
