@@ -20,8 +20,9 @@ export default defineConfig({
     test: {
         environment: "happy-dom",
         setupFiles: ["vitest.setup.ts"],
-        // Playwright specs (`pnpm test:e2e`) match Vitest's default `*.spec.ts` include.
-        exclude: [...configDefaults.exclude, "e2e/**"],
+        // Playwright specs (`pnpm test:e2e`) match Vitest's default `*.spec.ts` include. Claude Code
+        // worktrees under `.claude/worktrees/` are full checkouts of other branches.
+        exclude: [...configDefaults.exclude, "e2e/**", ".claude/**"],
         // `pnpm test` leaves out the `slow` tests (`--tags-filter=!slow`); `pnpm test:slow` runs only
         // them and `pnpm test:all` everything. See `docs/structure/build-test-platforms.md`.
         tags: [
