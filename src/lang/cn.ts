@@ -981,7 +981,6 @@ export const languageChinese = {
     createCopy: "新建副本",
     chatOptions: "聊天选项",
     parameters: "参数",
-    sizeAndSpeed: "大小与速度",
     useLegacyGUI: "使用旧版接口",
     claudeCachingExperimental: "Claude 缓存",
     openClose: "开启／关闭",

@@ -1050,7 +1050,6 @@ export const languageGerman = {
     createCopy: "Kopie erstellen",
     chatOptions: "Chat-Optionen",
     parameters: "Parameter",
-    sizeAndSpeed: "Größe und Geschwindigkeit",
     useLegacyGUI: "Alte GUI verwenden",
     claudeCachingExperimental: "Claude-Caching",
     openClose: "Öffnen/Schließen",

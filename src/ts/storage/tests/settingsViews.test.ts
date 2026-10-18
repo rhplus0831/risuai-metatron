@@ -79,7 +79,7 @@ import {
     type SettingsRootKey,
 } from "../settingsViews.svelte";
 import { getFullSettingsData, getSettingValue, setSettingValue } from "../../setting/utils";
-import { displayOtherSettingsItems } from "../../setting/displaySettingsData.svelte";
+import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
 import type { SettingContext, SettingItem } from "../../setting/types";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../../shared/personas.ts";
@@ -1028,7 +1028,7 @@ describe("the registry over the views", () => {
 
     it("the custom quote items read and write ctx.settings.ui.customQuotesData, creating it from null, and show by ctx.settings.ui.customQuotes", () => {
         const ctx = realCtx();
-        const quotes = displayOtherSettingsItems.filter((item) => item.id.endsWith("Quote"));
+        const quotes = displaySettingsItems.filter((item) => item.id.endsWith("Quote"));
         expect(quotes.map((item) => item.id)).toEqual([
             "display.leadingDoubleQuote",
             "display.trailingDoubleQuote",

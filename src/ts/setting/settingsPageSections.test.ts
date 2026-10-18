@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
+import { displaySettingsItems, displaySettingsSections, displaySettingsTabs } from "./displaySettingsData.svelte";
 import { itemsById } from "./sections";
 import {
     translationSettingsHeader,
@@ -38,6 +39,13 @@ const PAGES: SectionedPage[] = [
         header: translationSettingsHeader,
         sections: translationSettingsSections,
     },
+    {
+        // Sectioned per tab (slice 7); its heading is handwritten, so it has no header items.
+        name: "display",
+        leaves: [displaySettingsItems],
+        header: [],
+        sections: displaySettingsSections,
+    },
 ];
 
 /** Item pairs whose second item's condition reads the first: they must share a section. */
@@ -53,6 +61,18 @@ const DEPENDENT_PAIRS: [string, string][] = [
     ["lang.translatorType", "lang.llmTranslationTarget"],
     ["lang.translatorType", "lang.googleSourceLang"],
     ["lang.llmTranslationTarget", "lang.translatorHistoryMaxTokens"],
+    ["display.theme", "display.guiHTML"],
+    ["display.theme", "display.waifuWidth"],
+    ["display.theme", "display.waifuWidth2"],
+    // `display.colorScheme` (ColorSchemeSelect) sets the `colorSchemeName` the editor's condition reads.
+    ["display.colorScheme", "display.customColorScheme"],
+    ["display.textTheme", "display.customTextTheme"],
+    ["display.font", "display.customFont"],
+    ["display.showMemoryLimit", "display.memoryLimitThickness"],
+    ["display.customQuotes", "display.leadingDoubleQuote"],
+    ["display.customQuotes", "display.trailingDoubleQuote"],
+    ["display.customQuotes", "display.leadingSingleQuote"],
+    ["display.customQuotes", "display.trailingSingleQuote"],
 ];
 
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -106,6 +126,30 @@ describe("settings page sections", () => {
         expect(select!.condition).toBeUndefined();
         expect(translationSettingsSections[0].items[0]).toBe(select);
         expect(translationSettingsSections[0].collapsible).toBeFalsy();
+    });
+
+    it("splits the Display page into its four tabs, whose sections are the page's sections in tab order", () => {
+        expect(displaySettingsTabs.map((tab) => tab.labelKey)).toEqual([
+            "theme",
+            "displayTabLayout",
+            "displayTabChatAppearance",
+            "displayTabSoundNotifications",
+        ]);
+        expect(displaySettingsTabs.flatMap((tab) => tab.sections)).toEqual(displaySettingsSections);
+        const english = languageEnglish as Record<string, unknown>;
+        for (const tab of displaySettingsTabs) {
+            expect(typeof english[tab.labelKey], tab.labelKey).toBe("string");
+            expect(tab.sections.length, tab.id).toBeGreaterThan(0);
+        }
+        // Collapsible only for the rarely used: Custom CSS.
+        expect(displaySettingsSections.filter((section) => section.collapsible).map((section) => section.id)).toEqual([
+            "display.theme.customCSS",
+        ]);
+    });
+
+    it("keeps the memory limit thickness directly under the toggle its condition reads", () => {
+        const ids = displaySettingsSections.flatMap((section) => section.items.map((item) => item.id));
+        expect(ids[ids.indexOf("display.showMemoryLimit") + 1]).toBe("display.memoryLimitThickness");
     });
 
     it("gives every section an English heading, description, and badge for the keys it names", () => {

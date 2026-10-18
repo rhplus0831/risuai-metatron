@@ -1075,7 +1075,6 @@ export const languageChineseTraditional = {
     createCopy: "建立副本",
     chatOptions: "對話選項",
     parameters: "參數",
-    sizeAndSpeed: "大小與速度",
     useLegacyGUI: "使用舊版 GUI",
     claudeCachingExperimental: "Claude 快取",
     openClose: "開啟／關閉",

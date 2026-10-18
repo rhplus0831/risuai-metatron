@@ -99,39 +99,6 @@ export const advancedSettingsItems: SettingItem[] = [
         },
     },
 
-    // Keep Session alive
-    {
-        id: "adv.keepSessionAlive",
-        type: "select",
-        labelKey: "keepSessionAlive",
-        bindKey: "keepSessionAlive",
-        helpKey: "keepSessionAlive",
-        options: {
-            selectOptions: [
-                { value: "off", label: "Off" },
-                { value: "sound", label: "Via Sound" },
-            ],
-        },
-    },
-
-    // Height Mode
-    {
-        id: "adv.heightMode",
-        type: "select",
-        labelKey: "heightMode",
-        bindKey: "heightMode",
-        options: {
-            selectOptions: [
-                { value: "normal", label: "Normal" },
-                { value: "percent", label: "Percent" },
-                { value: "vh", label: "VH" },
-                { value: "dvh", label: "DVH" },
-                { value: "svh", label: "SVH" },
-                { value: "lvh", label: "LVH" },
-            ],
-        },
-    },
-
     // Chat Loading
     {
         id: "adv.chatLoadInitial",
@@ -183,6 +150,14 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "useExperimental",
         helpKey: "useExperimental",
         classes: "mt-4",
+    },
+    // From Display (settings UI plan slice 7)
+    {
+        id: "display.hideApiKey",
+        type: "check",
+        labelKey: "hideApiKeys",
+        bindKey: "hideApiKey",
+        keywords: ["api", "key", "hide"],
     },
     {
         id: "adv.legacyMedia",
@@ -465,10 +440,26 @@ export const advancedSettingsItems: SettingItem[] = [
         helpUnrecommended: true,
         classes: "mt-4",
     },
+    // From Display (settings UI plan slice 7)
+    {
+        id: "display.useLegacyGUI",
+        type: "check",
+        labelKey: "useLegacyGUI",
+        bindKey: "useLegacyGUI",
+        keywords: ["legacy", "gui"],
+    },
 
     // Custom Components
     { type: "custom", id: "adv.banChar", componentId: "BanCharacterSetSettings" },
     { type: "custom", id: "adv.customModels", componentId: "CustomModelsSettings" },
+    // From Display (settings UI plan slice 7); slice 4 moves it to the Prompt page
+    {
+        id: "display.showPromptComparison",
+        type: "check",
+        labelKey: "showPromptComparison",
+        bindKey: "showPromptComparison",
+        keywords: ["prompt", "comparison"],
+    },
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },
 
     // Diagnostics (docs/plan/request-history-diagnostics.md slice 9); the "Developer & diagnostics"
@@ -491,7 +482,7 @@ export const advancedSettingsSections: SettingSection[] = [
         id: "advanced.featureAccess",
         labelKey: "settingsSectionFeatureAccess",
         descriptionKey: "settingsSectionFeatureAccessDesc",
-        items: itemsById(advancedSettingsItems, ["adv.showUnrec", "adv.useExp"]),
+        items: itemsById(advancedSettingsItems, ["adv.showUnrec", "adv.useExp", "display.hideApiKey"]),
     },
     {
         id: "advanced.performance",
@@ -534,8 +525,6 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.retries",
             "adv.genTime",
             "adv.visionQual",
-            "adv.keepSessionAlive",
-            "adv.heightMode",
             "adv.sayNothing",
             "adv.autoFill",
             "adv.localNetworkMode",
@@ -556,6 +545,7 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.bookmark",
             "adv.banChar",
             "adv.customModels",
+            "display.showPromptComparison",
         ]),
     },
     {
@@ -589,6 +579,6 @@ export const advancedSettingsSections: SettingSection[] = [
         labelKey: "settingsSectionLegacy",
         descriptionKey: "settingsSectionLegacyDesc",
         collapsible: true,
-        items: itemsById(advancedSettingsItems, ["adv.plainFetch"]),
+        items: itemsById(advancedSettingsItems, ["adv.plainFetch", "display.useLegacyGUI"]),
     },
 ];

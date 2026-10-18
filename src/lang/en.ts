@@ -692,7 +692,8 @@ export const languageEnglish = {
     advancedSettingsWarn: "Warn: If you don't know what the option does, don't change it!",
     // Settings page sections (`SettingSection`, docs/plan/settings-ui-reorg.md)
     settingsSectionFeatureAccess: "Feature access",
-    settingsSectionFeatureAccessDesc: "These reveal hidden and experimental settings across the app.",
+    settingsSectionFeatureAccessDesc:
+        "These reveal hidden and experimental settings across the app, and choose whether API keys are masked.",
     settingsSectionPerformanceMedia: "Performance & media",
     settingsSectionRequestsTools: "Requests & tools",
     // Temporary: the Advanced items that move to other pages; slice 4 of the plan removes this section.
@@ -709,6 +710,20 @@ export const languageEnglish = {
     settingsSectionTranslationBehavior: "Behavior",
     settingsSectionTranslationCache: "Translation cache",
     settingsSectionTranslationCacheDesc: "Translations the Ax. Model translator cached in this browser.",
+    // The Display page's tabs (the Theme tab uses `theme`) and sections
+    displayTabLayout: "Layout & sizing",
+    displayTabChatAppearance: "Chat appearance",
+    displayTabSoundNotifications: "Sound & notifications",
+    settingsSectionInterfaceStyle: "Interface style",
+    settingsSectionColorsTypography: "Colors & typography",
+    settingsSectionCustomCSS: "Custom CSS",
+    settingsSectionCustomCSSDesc: "Your own styles, applied over the theme.",
+    settingsSectionElementSizes: "Element sizes",
+    settingsSectionWindowSidebar: "Window & sidebar",
+    settingsSectionMessages: "Messages",
+    settingsSectionMedia: "Media",
+    settingsSectionSound: "Sound",
+    settingsSectionNotifications: "Notifications",
     formatingOrder: "Formatting Order",
     authorNote: "Author's Note",
     firstMessage: "First Message",
@@ -1386,7 +1401,6 @@ export const languageEnglish = {
     createCopy: "Create a Copy",
     chatOptions: "Chat Options",
     parameters: "Parameters",
-    sizeAndSpeed: "Size and Speed",
     useLegacyGUI: "Use Legacy GUI",
     claudeCachingExperimental: "Claude Caching",
     openClose: "Open/Close",

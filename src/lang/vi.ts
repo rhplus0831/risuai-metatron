@@ -1030,7 +1030,6 @@ export const languageVietnamese = {
     createCopy: "Tạo bản sao",
     chatOptions: "Tùy chọn trò chuyện",
     parameters: "Tham số",
-    sizeAndSpeed: "Kích thước và Tốc độ",
     useLegacyGUI: "Sử dụng GUI cũ",
     claudeCachingExperimental: "Lưu trữ đệm Claude",
     openClose: "Mở/Đóng",

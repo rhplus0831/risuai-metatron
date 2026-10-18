@@ -1,58 +1,36 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
-    import SettingRenderer from "../SettingRenderer.svelte";
-    import {
-        displayOtherSettingsItems,
-        displaySizeSettingsItems,
-        displayThemeSettingsItems,
-    } from "src/ts/setting/displaySettingsData.svelte";
+    import { languageText } from "src/ts/setting/utils";
+    import SettingsSections from "../SettingsSections.svelte";
+    import { displaySettingsSections, displaySettingsTabs } from "src/ts/setting/displaySettingsData.svelte";
 
+    // The legacy GUI stacks every tab's sections, in tab order, with no tab bar (-1).
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.display}</h2>
 
 {#if submenu !== -1}
-    <div class="flex w-full rounded-md border border-darkborderc mb-4 overflow-x-auto h-16 min-h-16 overflow-y-clip">
-        <button
-            onclick={() => {
-                submenu = 0;
-            }}
-            class="p-2 flex-1 border-r border-darkborderc"
-            class:bg-darkbutton={submenu === 0}
-        >
-            <span>{language.theme}</span>
-        </button>
-        <button
-            onclick={() => {
-                submenu = 1;
-            }}
-            class="p2 flex-1 border-r border-darkborderc"
-            class:bg-darkbutton={submenu === 1}
-        >
-            <span>{language.sizeAndSpeed}</span>
-        </button>
-        <button
-            onclick={() => {
-                submenu = 2;
-            }}
-            class="p-2 flex-1 border-r border-darkborderc"
-            class:bg-darkbutton={submenu === 2}
-        >
-            <span>{language.others}</span>
-        </button>
+    <!-- Four columns, or two rows of two on a phone; the hairlines are the grid's gaps. -->
+    <div
+        class="mb-4 grid shrink-0 grid-cols-2 gap-px overflow-hidden rounded-md border border-darkborderc bg-darkborderc sm:grid-cols-4"
+    >
+        {#each displaySettingsTabs as tab, index (tab.id)}
+            <button
+                onclick={() => {
+                    submenu = index;
+                }}
+                class="min-h-12 p-2"
+                class:bg-bgcolor={submenu !== index}
+                class:bg-darkbutton={submenu === index}
+                aria-pressed={submenu === index}
+            >
+                <span>{languageText(tab.labelKey)}</span>
+            </button>
+        {/each}
     </div>
-{/if}
-
-{#if submenu === 0 || submenu === -1}
-    <SettingRenderer items={displayThemeSettingsItems} />
-{/if}
-
-{#if submenu === 1 || submenu === -1}
-    <SettingRenderer items={displaySizeSettingsItems} />
-{/if}
-
-{#if submenu === 2 || submenu === -1}
-    <SettingRenderer items={displayOtherSettingsItems} />
+    <SettingsSections sections={displaySettingsTabs[submenu].sections} />
+{:else}
+    <SettingsSections sections={displaySettingsSections} />
 {/if}

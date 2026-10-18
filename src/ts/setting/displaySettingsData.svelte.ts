@@ -1,15 +1,20 @@
 /**
  * Display Settings Data
  *
- * Data-driven definition for DisplaySettings page.
+ * Data-driven definition for the DisplaySettings page (settings UI plan slice 7): one leaf array,
+ * `displaySettingsItems`, and `displaySettingsTabs`, the page's four tabs, each a list of sections built
+ * over it by id.
  */
 
-import type { SettingItem } from "./types";
+import type { SettingItem, SettingSection } from "./types";
+import { itemsById } from "./sections";
 import { updateAnimationSpeed } from "../gui/animation";
 import { guiSizeText, updateGuisize } from "../gui/guisize";
 import { updateTextThemeAndCSS } from "../gui/colorscheme";
 
-export const displayThemeSettingsItems: SettingItem[] = [
+/** Every Display item, in tab and section order. */
+export const displaySettingsItems: SettingItem[] = [
+    // Theme tab: Interface style
     {
         id: "display.theme",
         type: "select",
@@ -65,6 +70,8 @@ export const displayThemeSettingsItems: SettingItem[] = [
         classes: "mt-4",
         keywords: ["waifu", "width"],
     },
+
+    // Theme tab: Colors & typography
     {
         id: "display.colorScheme",
         type: "custom",
@@ -126,9 +133,26 @@ export const displayThemeSettingsItems: SettingItem[] = [
         onChange: () => updateTextThemeAndCSS(),
         keywords: ["font", "custom"],
     },
-];
+    {
+        id: "display.customBackground",
+        type: "custom",
+        componentId: "CustomBackgroundToggle",
+        keywords: ["custom", "background"],
+    },
 
-export const displaySizeSettingsItems: SettingItem[] = [
+    // Theme tab: Custom CSS
+    {
+        id: "display.customCSS",
+        type: "textarea",
+        labelKey: "customCSS",
+        helpKey: "customCSS",
+        bindKey: "customCSS",
+        classes: "mt-4",
+        onChange: () => updateTextThemeAndCSS(),
+        keywords: ["custom", "css"],
+    },
+
+    // Layout & sizing tab: Element sizes
     {
         id: "display.zoomsize",
         type: "slider",
@@ -202,19 +226,6 @@ export const displaySizeSettingsItems: SettingItem[] = [
         keywords: ["sidebar", "size"],
     },
     {
-        id: "display.assetWidth",
-        type: "slider",
-        labelKey: "assetWidth",
-        bindKey: "assetWidth",
-        options: {
-            min: -1,
-            max: 40,
-            step: 1,
-            customText: (value) => (value === -1 ? "Unlimited" : value === 0 ? "Hidden" : `${value.toFixed(1)} rem`),
-        },
-        keywords: ["asset", "width"],
-    },
-    {
         id: "display.animationSpeed",
         type: "slider",
         labelKey: "animationSpeed",
@@ -222,6 +233,70 @@ export const displaySizeSettingsItems: SettingItem[] = [
         onChange: () => updateAnimationSpeed(),
         options: { min: 0, max: 1, step: 0.05, fixed: 2 },
         keywords: ["animation", "speed"],
+    },
+    {
+        id: "display.settingsCloseButtonSize",
+        type: "slider",
+        labelKey: "settingsCloseButtonSize",
+        helpKey: "settingsCloseButtonSize",
+        bindKey: "settingsCloseButtonSize",
+        options: { min: 16, max: 48, step: 1 },
+        keywords: ["settings", "close", "button", "size"],
+    },
+
+    // Layout & sizing tab: Window & sidebar (`adv.heightMode` from Advanced, settings UI plan slice 7)
+    {
+        id: "adv.heightMode",
+        type: "select",
+        labelKey: "heightMode",
+        bindKey: "heightMode",
+        options: {
+            selectOptions: [
+                { value: "normal", label: "Normal" },
+                { value: "percent", label: "Percent" },
+                { value: "vh", label: "VH" },
+                { value: "dvh", label: "DVH" },
+                { value: "svh", label: "SVH" },
+                { value: "lvh", label: "LVH" },
+            ],
+        },
+    },
+    {
+        id: "display.menuSideBar",
+        type: "check",
+        labelKey: "menuSideBar",
+        bindKey: "menuSideBar",
+        keywords: ["menu", "sidebar"],
+    },
+    {
+        id: "display.showFolderName",
+        type: "check",
+        labelKey: "showFolderNameInIcon",
+        bindKey: "showFolderName",
+        keywords: ["folder", "name", "icon"],
+    },
+    {
+        id: "display.hideRealm",
+        type: "check",
+        labelKey: "hideRealm",
+        bindKey: "hideRealm",
+        keywords: ["realm", "hide"],
+    },
+    {
+        id: "display.showSavingIcon",
+        type: "check",
+        labelKey: "showSavingIcon",
+        bindKey: "showSavingIcon",
+        keywords: ["saving", "icon"],
+    },
+
+    // Chat appearance tab: Messages
+    {
+        id: "display.showMemoryLimit",
+        type: "check",
+        labelKey: "showMemoryLimit",
+        bindKey: "showMemoryLimit",
+        keywords: ["memory", "limit"],
     },
     {
         id: "display.memoryLimitThickness",
@@ -233,73 +308,11 @@ export const displaySizeSettingsItems: SettingItem[] = [
         keywords: ["memory", "limit", "thickness"],
     },
     {
-        id: "display.settingsCloseButtonSize",
-        type: "slider",
-        labelKey: "settingsCloseButtonSize",
-        helpKey: "settingsCloseButtonSize",
-        bindKey: "settingsCloseButtonSize",
-        options: { min: 16, max: 48, step: 1 },
-        keywords: ["settings", "close", "button", "size"],
-    },
-];
-
-export const displayOtherSettingsItems: SettingItem[] = [
-    {
-        id: "display.showMemoryLimit",
-        type: "check",
-        labelKey: "showMemoryLimit",
-        bindKey: "showMemoryLimit",
-        keywords: ["memory", "limit"],
-    },
-    {
         id: "display.showFirstMessagePages",
         type: "check",
         labelKey: "showFirstMessagePages",
         bindKey: "showFirstMessagePages",
         keywords: ["first", "message", "pages"],
-    },
-    {
-        id: "display.hideRealm",
-        type: "check",
-        labelKey: "hideRealm",
-        bindKey: "hideRealm",
-        keywords: ["realm", "hide"],
-    },
-    {
-        id: "display.hideAllImages",
-        type: "check",
-        labelKey: "hideAllImages",
-        helpKey: "hideAllImagesDesc",
-        bindKey: "hideAllImages",
-        keywords: ["images", "hide"],
-    },
-    {
-        id: "display.showFolderName",
-        type: "check",
-        labelKey: "showFolderNameInIcon",
-        bindKey: "showFolderName",
-        keywords: ["folder", "name", "icon"],
-    },
-    {
-        id: "display.customBackground",
-        type: "custom",
-        componentId: "CustomBackgroundToggle",
-        keywords: ["custom", "background"],
-    },
-    {
-        id: "display.playMessage",
-        type: "check",
-        labelKey: "playMessage",
-        helpKey: "msgSound",
-        bindKey: "playMessage",
-        keywords: ["message", "sound"],
-    },
-    {
-        id: "display.playMessageOnTranslateEnd",
-        type: "check",
-        labelKey: "playMessageOnTranslateEnd",
-        bindKey: "playMessageOnTranslateEnd",
-        keywords: ["translate", "sound"],
     },
     {
         id: "display.roundIcons",
@@ -334,20 +347,6 @@ export const displayOtherSettingsItems: SettingItem[] = [
         keywords: ["text", "round"],
     },
     {
-        id: "display.showSavingIcon",
-        type: "check",
-        labelKey: "showSavingIcon",
-        bindKey: "showSavingIcon",
-        keywords: ["saving", "icon"],
-    },
-    {
-        id: "display.showPromptComparison",
-        type: "check",
-        labelKey: "showPromptComparison",
-        bindKey: "showPromptComparison",
-        keywords: ["prompt", "comparison"],
-    },
-    {
         id: "display.textScreenBorder",
         type: "custom",
         componentId: "NullableTextColorToggle",
@@ -364,27 +363,6 @@ export const displayOtherSettingsItems: SettingItem[] = [
         labelKey: "useChatCopy",
         bindKey: "useChatCopy",
         keywords: ["chat", "copy"],
-    },
-    {
-        id: "display.useAdditionalAssetsPreview",
-        type: "check",
-        labelKey: "useAdditionalAssetsPreview",
-        bindKey: "useAdditionalAssetsPreview",
-        keywords: ["additional", "assets", "preview"],
-    },
-    {
-        id: "display.useLegacyGUI",
-        type: "check",
-        labelKey: "useLegacyGUI",
-        bindKey: "useLegacyGUI",
-        keywords: ["legacy", "gui"],
-    },
-    {
-        id: "display.hideApiKey",
-        type: "check",
-        labelKey: "hideApiKeys",
-        bindKey: "hideApiKey",
-        keywords: ["api", "key", "hide"],
     },
     {
         id: "display.unformatQuotes",
@@ -456,14 +434,6 @@ export const displayOtherSettingsItems: SettingItem[] = [
         keywords: ["quote", "single", "trailing"],
     },
     {
-        id: "display.menuSideBar",
-        type: "check",
-        labelKey: "menuSideBar",
-        bindKey: "menuSideBar",
-        keywords: ["menu", "sidebar"],
-    },
-    { id: "display.notification", type: "custom", componentId: "NotificationToggle", keywords: ["notification"] },
-    {
         id: "display.useChatSticker",
         type: "check",
         labelKey: "useChatSticker",
@@ -473,20 +443,211 @@ export const displayOtherSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.showUnrecommended,
         keywords: ["chat", "sticker"],
     },
+
+    // Chat appearance tab: Media
     {
-        id: "display.customCSS",
-        type: "textarea",
-        labelKey: "customCSS",
-        helpKey: "customCSS",
-        bindKey: "customCSS",
+        id: "display.hideAllImages",
+        type: "check",
+        labelKey: "hideAllImages",
+        helpKey: "hideAllImagesDesc",
+        bindKey: "hideAllImages",
+        keywords: ["images", "hide"],
+    },
+    {
+        id: "display.assetWidth",
+        type: "slider",
+        labelKey: "assetWidth",
+        bindKey: "assetWidth",
         classes: "mt-4",
-        onChange: () => updateTextThemeAndCSS(),
-        keywords: ["custom", "css"],
+        options: {
+            min: -1,
+            max: 40,
+            step: 1,
+            customText: (value) => (value === -1 ? "Unlimited" : value === 0 ? "Hidden" : `${value.toFixed(1)} rem`),
+        },
+        keywords: ["asset", "width"],
+    },
+    {
+        id: "display.useAdditionalAssetsPreview",
+        type: "check",
+        labelKey: "useAdditionalAssetsPreview",
+        bindKey: "useAdditionalAssetsPreview",
+        keywords: ["additional", "assets", "preview"],
+    },
+
+    // Sound & notifications tab: Sound (`adv.keepSessionAlive` from Advanced, slice 7)
+    {
+        id: "display.playMessage",
+        type: "check",
+        labelKey: "playMessage",
+        helpKey: "msgSound",
+        bindKey: "playMessage",
+        keywords: ["message", "sound"],
+    },
+    {
+        id: "display.playMessageOnTranslateEnd",
+        type: "check",
+        labelKey: "playMessageOnTranslateEnd",
+        bindKey: "playMessageOnTranslateEnd",
+        keywords: ["translate", "sound"],
+    },
+    {
+        id: "adv.keepSessionAlive",
+        type: "select",
+        labelKey: "keepSessionAlive",
+        bindKey: "keepSessionAlive",
+        helpKey: "keepSessionAlive",
+        options: {
+            selectOptions: [
+                { value: "off", label: "Off" },
+                { value: "sound", label: "Via Sound" },
+            ],
+        },
+    },
+
+    // Sound & notifications tab: Notifications
+    { id: "display.notification", type: "custom", componentId: "NotificationToggle", keywords: ["notification"] },
+];
+
+/** A tab of the Display page: its label and its sections. */
+export interface DisplaySettingsTab {
+    id: string;
+    labelKey: string;
+    sections: SettingSection[];
+}
+
+/**
+ * The Display page's tabs (`docs/plan/settings-ui-reorg.md`, slice 7), over `displaySettingsItems`. The
+ * legacy GUI (`settings.ui.useLegacyGUI`) stacks them in this order with no tab bar.
+ */
+export const displaySettingsTabs: DisplaySettingsTab[] = [
+    {
+        id: "theme",
+        labelKey: "theme",
+        sections: [
+            {
+                id: "display.theme.style",
+                labelKey: "settingsSectionInterfaceStyle",
+                items: itemsById(displaySettingsItems, [
+                    "display.theme",
+                    "display.guiHTML",
+                    "display.waifuWidth",
+                    "display.waifuWidth2",
+                ]),
+            },
+            {
+                id: "display.theme.colors",
+                labelKey: "settingsSectionColorsTypography",
+                items: itemsById(displaySettingsItems, [
+                    "display.colorScheme",
+                    "display.customColorScheme",
+                    "display.textTheme",
+                    "display.customTextTheme",
+                    "display.font",
+                    "display.customFont",
+                    "display.customBackground",
+                ]),
+            },
+            {
+                id: "display.theme.customCSS",
+                labelKey: "settingsSectionCustomCSS",
+                descriptionKey: "settingsSectionCustomCSSDesc",
+                collapsible: true,
+                items: itemsById(displaySettingsItems, ["display.customCSS"]),
+            },
+        ],
+    },
+    {
+        id: "layout",
+        labelKey: "displayTabLayout",
+        sections: [
+            {
+                id: "display.layout.sizes",
+                labelKey: "settingsSectionElementSizes",
+                items: itemsById(displaySettingsItems, [
+                    "display.zoomsize",
+                    "display.lineHeight",
+                    "display.chatScreenWidth",
+                    "display.iconsize",
+                    "display.textAreaSize",
+                    "display.textAreaTextSize",
+                    "display.sideBarSize",
+                    "display.animationSpeed",
+                    "display.settingsCloseButtonSize",
+                ]),
+            },
+            {
+                id: "display.layout.window",
+                labelKey: "settingsSectionWindowSidebar",
+                items: itemsById(displaySettingsItems, [
+                    "adv.heightMode",
+                    "display.menuSideBar",
+                    "display.showFolderName",
+                    "display.hideRealm",
+                    "display.showSavingIcon",
+                ]),
+            },
+        ],
+    },
+    {
+        id: "chat",
+        labelKey: "displayTabChatAppearance",
+        sections: [
+            {
+                id: "display.chat.messages",
+                labelKey: "settingsSectionMessages",
+                items: itemsById(displaySettingsItems, [
+                    "display.showMemoryLimit",
+                    "display.memoryLimitThickness",
+                    "display.showFirstMessagePages",
+                    "display.roundIcons",
+                    "display.textScreenColor",
+                    "display.textBorder",
+                    "display.textScreenRounded",
+                    "display.textScreenBorder",
+                    "display.useChatCopy",
+                    "display.unformatQuotes",
+                    "display.blockquoteStyling",
+                    "display.customQuotes",
+                    "display.leadingDoubleQuote",
+                    "display.trailingDoubleQuote",
+                    "display.leadingSingleQuote",
+                    "display.trailingSingleQuote",
+                    "display.useChatSticker",
+                ]),
+            },
+            {
+                id: "display.chat.media",
+                labelKey: "settingsSectionMedia",
+                items: itemsById(displaySettingsItems, [
+                    "display.hideAllImages",
+                    "display.assetWidth",
+                    "display.useAdditionalAssetsPreview",
+                ]),
+            },
+        ],
+    },
+    {
+        id: "sound",
+        labelKey: "displayTabSoundNotifications",
+        sections: [
+            {
+                id: "display.sound.sound",
+                labelKey: "settingsSectionSound",
+                items: itemsById(displaySettingsItems, [
+                    "display.playMessage",
+                    "display.playMessageOnTranslateEnd",
+                    "adv.keepSessionAlive",
+                ]),
+            },
+            {
+                id: "display.sound.notifications",
+                labelKey: "settingsSectionNotifications",
+                items: itemsById(displaySettingsItems, ["display.notification"]),
+            },
+        ],
     },
 ];
 
-export const displaySettingsItems: SettingItem[] = [
-    ...displayThemeSettingsItems,
-    ...displaySizeSettingsItems,
-    ...displayOtherSettingsItems,
-];
+/** Every section of every tab, in tab order: the legacy GUI's stacked page. */
+export const displaySettingsSections: SettingSection[] = displaySettingsTabs.flatMap((tab) => tab.sections);
