@@ -33,6 +33,16 @@ past the last one. 4a's notice is a non-modal panel (`ReloadNotice.svelte`, `z-[
 mounted before the terminal notice) over `alertReloadNotice`/`dismissReloadNotice` in
 `alert.ts`; `reloadDeferredChats` decides "replaced" by `chatDiscardSequence()` moving; the
 backup export names a discard in its success alert (`backupDiscardedChanges`), not the keys.
+2a's `ChatConflict.messageIds` lists only the locked messages the refused group's ops
+target (not every lock of the chat); the split (`dropLockedEdits`) also filters the chat's
+newer unsent work, runs before the unrelated conflict reads, marks the chat stale instead of
+re-reading it at once, and the reroll rollback (`restoreUnsentRemoval`) runs whenever
+`sendChatMain` reports no send, not only on `GenerationBlockedError`; `hasChatWork` counts
+empty pending entries. 5a tells plugins through an event, not an acknowledged promise:
+`risuai.onStorageDiscarded(cb)` gets `{ type: "storageDiscarded", pluginStorage, localPluginStorage,
+customStorage: boolean }` (custom key names need the `db` permission, so only a flag); a
+concurrent creation of the record merges against an empty base; a list-shaped base is read
+as entries, a list on either side conflicts whole.
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -534,8 +544,8 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Landed slices are in the Status line. Continue sequence A with 2a → 2b and sequence B with
-5a; 4b waits for 2b and 4a (both landed or in flight). Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Continue sequence A with 2b and sequence B with 5b;
+4b waits for 2b, 6a for 4b, 6c for 5b. Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
