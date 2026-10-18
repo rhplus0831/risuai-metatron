@@ -38,6 +38,7 @@ import {
 } from "../storage/resourceSync.svelte";
 import { sleep } from "../util";
 import { recordClientEvent } from "../diagnostics/collector";
+import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/process/chatStatus.svelte";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
 const MAX_ATTACHES = 5;
@@ -58,8 +59,6 @@ const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
 
 /** The followed jobs whose chats are known, keyed by job id so overlapping follows stay visible. */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
-
-const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
 /** The jobs this tab follows for a chat. */
 export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef): string[] {
@@ -99,21 +98,26 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     releaseGenerationJob(jobId);
                     return "lost";
                 }
-                let target: ChatRef | "lost" = discovered;
+                const target: ChatRef | "lost" = discovered;
                 if (target !== "lost") {
                     const key = chatKeyOf(target);
                     followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
                     release ??= pinChat(target);
-                    if (!(await loadJobChat(target))) {
-                        target = "lost";
-                    }
                 }
-                const end = target === "lost" ? "lost" : await followOnce(jobId, target);
+                const end =
+                    target === "lost" || !(await loadJobChat(target)) ? "lost" : await followOnce(jobId, target);
                 if (end === "lost") {
                     recordClientEvent({ kind: "jobLink", phase: "lost", jobId });
                     releaseGenerationJob(jobId);
                 }
                 reportEnd(end, jobId);
+                if (target !== "lost") {
+                    if (end === "lost") {
+                        noteJobLost(target, jobId);
+                    } else {
+                        noteJobDone(target, end);
+                    }
+                }
                 if (
                     end !== "lost" &&
                     end.type === "done" &&

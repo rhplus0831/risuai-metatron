@@ -125,6 +125,10 @@ export async function loadData() {
             void import("./network/pushNotifications")
                 .then(({ startPushNotifications }) => startPushNotifications())
                 .catch((error) => console.error("[Push]", error));
+            // Clear this tab's unseen and recovery marks when its open chat changes.
+            void import("./process/chatStatus.svelte")
+                .then(({ watchChatVisibility }) => watchChatVisibility())
+                .catch((error) => console.error("[Generation]", error));
             // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
             // is attached again; nothing is sent when the tab has none.
             void import("./process/serverCommands")

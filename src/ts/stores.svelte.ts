@@ -63,7 +63,7 @@ export function reloadChatKey(messageId: string | undefined, idx: number): strin
 }
 export const ScrollToMessageStore = $state({ value: -1 });
 export const OpenRealmStore = writable(false);
-export const PlaygroundStore = writable(0);
+export { PlaygroundStore } from "./storage/selection.svelte";
 export const HideIconStore = writable(false);
 export const CustomCSSStore = writable("");
 export const SafeModeStore = writable(false);

@@ -62,6 +62,7 @@ import { readRefs } from "./resourceClient";
  *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`. A conflict on a chat a job
  *   streams into is deferred: it reloads once the job ends. The streamed message is `streamingState`
  *   (the chat screen's display optimization) from its first stream update until its lock is released.
+ *   `lockedChatKeys` reads the distinct chat keys holding these locks (reactive).
  */
 
 export type ChatRef = { chaId: string; chatId: string };
@@ -822,6 +823,12 @@ export function isChatGenerating(ref: ChatRef): boolean {
     void lockState.version;
     const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
     return [...serverGenerations.keys()].some((key) => key.startsWith(prefix));
+}
+
+/** The distinct chat keys with server generation locks (reactive). */
+export function lockedChatKeys(): ReadonlySet<string> {
+    void lockState.version;
+    return new Set([...serverGenerations.keys()].map((key) => key.slice(0, key.lastIndexOf("\u0000"))));
 }
 
 /** Whether any chat of a character has a running generation. */

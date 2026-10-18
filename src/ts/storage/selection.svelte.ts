@@ -1,4 +1,5 @@
 import { untrack } from "svelte";
+import { writable } from "svelte/store";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
 
 /**
@@ -44,6 +45,9 @@ export const selection: Selection = $state({
     characterId: null,
     chatOpen: false,
 });
+
+/** This tab's base screen: 0 for character chats, 2 for the playground chat. Never persisted. */
+export const PlaygroundStore = writable(0);
 
 function save() {
     const text = JSON.stringify({

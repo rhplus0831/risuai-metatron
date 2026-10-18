@@ -1,6 +1,6 @@
 # Sidebar Chat Status Plan
 
-Status: planned on 2026-10-18; no slice has landed. Written against `eb4ee3d99`.
+Status: slice 1 (status sources) implemented on 2026-10-18; slices 2 and 3 remain. Written against `eb4ee3d99`.
 Reference implementation: the `risuai-fastify` checkout's `PinnedChatsRail.svelte`,
 `Sidebar.svelte`, `GenerationIndicator.svelte`, `UnreadIndicator.svelte`,
 `sidebarMultitasking.ts` and `chatUnread.svelte.ts` (`/home/codex/risuai-fastify/src/lib/SideBars/`,

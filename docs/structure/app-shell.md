@@ -21,7 +21,7 @@
   - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen, and every other setting keeps the server's default until the settings pages change it.
   - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default.
   - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload, and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also records the sync event and flushes diagnostics.
-- `src/ts/stores.svelte.ts`: all global UI stores (see State).
+- `src/ts/stores.svelte.ts`: all global UI stores (see State). `PlaygroundStore` is re-exported from `src/ts/storage/selection.svelte.ts`, so chat status can read the same writable without starting the UI stores' module effects.
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
 - `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
