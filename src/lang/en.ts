@@ -1262,6 +1262,12 @@ export const languageEnglish = {
     newChatBinding: "New Chat Presets and Persona",
     newChatBindingInherit: "Current Chat",
     newChatBindingEmpty: "Nothing Set",
+    openChat: {
+        name: "Chat name",
+        rename: "Rename chat",
+        saveName: "Save name",
+        export: "Export chat",
+    },
     chatBinding: {
         refused: "This chat cannot be sent until its model preset, prompt preset, and persona are set.",
         fields: {

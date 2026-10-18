@@ -6,6 +6,7 @@
     import { setChatOpen } from "src/ts/storage/selection.svelte";
     import ChatBindingPanel from "./ChatBindingPanel.svelte";
     import ChatNoteEditor from "./ChatNoteEditor.svelte";
+    import OpenChatHeader from "./OpenChatHeader.svelte";
     import ChatTranslationPanel from "./ChatTranslationPanel.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import Toggles from "./Toggles.svelte";
@@ -16,9 +17,9 @@
 
     /*
      * The sidebar's chat tab while a chat is open (`selection.chatOpen`), in place of the chat list:
-     * a way back to the list (the closed-chat screen), the chat's binding and, while a target language
-     * is set, its translation settings (both read the list entry, so they show while the chat loads),
-     * the chat's author note, and the toggles.
+     * a way back to the list (the closed-chat screen), the chat's name with rename and export, its
+     * binding and, while a target language is set, its translation settings (these three read the list
+     * entry, so they show while the chat loads), the chat's author note, and the toggles.
      */
     let { chara }: Props = $props();
     const currentChat = $derived(selectedChat());
@@ -35,6 +36,9 @@
     </button>
 
     {#if currentRef}
+        {#key `${currentRef.chaId}\n${currentRef.chatId}`}
+            <OpenChatHeader chat={currentRef} />
+        {/key}
         <ChatBindingPanel chatRef={currentRef} />
         {#if settings.memoryTranslateMedia.translator !== ""}
             <ChatTranslationPanel chatRef={currentRef} />

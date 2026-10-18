@@ -877,6 +877,12 @@ export const languageKorean = {
     newChatBinding: "새 채팅의 프리셋과 페르소나",
     newChatBindingInherit: "현재 채팅",
     newChatBindingEmpty: "설정 없음",
+    openChat: {
+        name: "채팅 이름",
+        rename: "채팅 이름 변경",
+        saveName: "이름 저장",
+        export: "채팅 내보내기",
+    },
     chatBinding: {
         refused: "이 채팅의 모델 프리셋, 프롬프트 프리셋, 페르소나를 모두 설정해야 보낼 수 있습니다.",
         fields: {
