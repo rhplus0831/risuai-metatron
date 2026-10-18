@@ -52,7 +52,7 @@ export async function selectSingleFile(ext: string[]) {
 }
 
 /**
- * The picked file as the `File` itself, read by nobody here (`docs/plan/large-asset-import.md`
+ * The picked file as the `File` itself, read by nobody here (historical `docs/plan/large-asset-import.md`
  * slice 2c: a `.risum` is uploaded as it is, never held in the tab); `null` when none is picked.
  */
 export async function selectSingleFileHandle(ext: string[]): Promise<File | null> {
@@ -61,7 +61,7 @@ export async function selectSingleFileHandle(ext: string[]): Promise<File | null
 }
 
 /**
- * The picked files as the `File`s themselves, read by nobody here (`docs/plan/large-asset-import.md`
+ * The picked files as the `File`s themselves, read by nobody here (historical `docs/plan/large-asset-import.md`
  * slice 3c: the asset pickers read each file only when its save slot is free, `savePickedFiles`);
  * `[]` when none is picked.
  */

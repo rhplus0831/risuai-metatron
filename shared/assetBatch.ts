@@ -1,5 +1,5 @@
 /**
- * The batch asset codec (`docs/plan/large-asset-import.md` slice 1b): the local backup archive's
+ * The batch asset codec (historical `docs/plan/large-asset-import.md` slice 1b): the local backup archive's
  * record framing (`server/src/data/archive.ts`), each record `u32le nameLength`, the UTF-8 name,
  * `u32le dataLength`, then the bytes, with no header or footer of its own.
  *

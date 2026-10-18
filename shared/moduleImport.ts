@@ -3,7 +3,7 @@ import { decodeRPackInPlace } from "./rpack.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
- * The `.risum` module file (`docs/plan/large-asset-import.md` slice 2b), a cross-user format
+ * The `.risum` module file (historical `docs/plan/large-asset-import.md` slice 2b), a cross-user format
  * (STRUCTURE D5): the client's `exportModuleLegacy` writes it and `readModule` reads it
  * (`src/ts/process/modules.ts`), and the self-host server reads it too (`POST /api/import/module`,
  * `server/src/routes/importModule.ts`), so every reader stays byte-compatible with that writer.

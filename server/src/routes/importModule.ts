@@ -44,7 +44,7 @@ class AssetTooLargeError extends Error {}
 type ModuleFilePlan = { module: RisuModule; recordsStart: number; records: number };
 
 /**
- * `POST /api/import/module` (`docs/plan/large-asset-import.md` slice 2b): a `.risum` module file as
+ * `POST /api/import/module` (historical `docs/plan/large-asset-import.md` slice 2b): a `.risum` module file as
  * the raw body (`shared/moduleImport.ts`), so the tab neither parses the file nor sends one request
  * per asset. Authenticated before the body is read; no epoch (only content-addressed files are
  * written, and the client adds the module record itself). The request lifecycle is

@@ -169,7 +169,7 @@ export const runVITS = async (text: string, modelData: string | OnnxModelFiles =
 export const MAX_ONNX_MEMBER_BYTES = 100 * 1024 * 1024 - 64 * 1024;
 
 /**
- * Imports a VITS/ONNX model zip (`docs/plan/large-asset-import.md` slice 3c): the picked `File` is
+ * Imports a VITS/ONNX model zip (historical `docs/plan/large-asset-import.md` slice 3c): the picked `File` is
  * read by its central directory (`zipFile.ts`), each kept member read and inflated only when its
  * save slot is free, and the members written in batches. A member over
  * {@link MAX_ONNX_MEMBER_BYTES} is skipped with a message. Undefined when nothing is picked or the

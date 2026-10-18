@@ -290,7 +290,7 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
 }
 
 /**
- * Imports a `.risum` file through the server (`docs/plan/large-asset-import.md` slice 2c); every
+ * Imports a `.risum` file through the server (historical `docs/plan/large-asset-import.md` slice 2c); every
  * `.risum` file entry point (the module dialog, the drop, `#share_module`, `#import=`, the launch
  * queue) calls it, then adds the module itself. Only the file's header and main record are read
  * here (`file.slice`, decoded with the reader the server uses, `shared/moduleImport.ts`), and on that

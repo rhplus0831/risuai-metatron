@@ -18,6 +18,7 @@ git show df25006f:docs/plan/translation.md
 git show e148f7276:docs/plan/web-push.md
 git show ab11ea9d0:docs/plan/request-history-diagnostics.md
 git show 154711858:docs/plan/chat-toggles-and-presets.md
+git show 1bb0c8eee:docs/plan/large-asset-import.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -27,19 +28,22 @@ it is not a current architecture guide.
 
 ## Completed Plans
 
-| Design                              | Last tree / original paths                                                | Current owner                                                                                                                                   |
-| ----------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Server-owned data, Phases 0–6       | `9d09288b`: `docs/plan/PLAN.md`, `docs/plan/phases/`                      | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md)                                                          |
-| Split Preset and Chat Binding       | `809b35cc`: `docs/plan/split-preset.md`, `docs/plan/chat-binding.md`      | [persistence](../structure/persistence.md), [settings](../structure/settings-i18n.md)                                                           |
-| Shared API Keys and Model Profiles  | `317a97ce`: `docs/plan/shared-api-keys.md`, `docs/plan/model-profiles.md` | [LLM requests](../structure/llm-requests.md)                                                                                                    |
-| Translation and URL Routes          | `df25006f`: `docs/plan/translation.md`, `docs/plan/url-routes.md`         | [media/translation](../structure/media-aux.md), [app shell/routes](../structure/app-shell.md)                                                   |
-| Web Push                            | `e148f7276`: `docs/plan/web-push.md`                                      | [browser notifications](../structure/global-api.md), [worker](../structure/build-test-platforms.md), [server](../structure/self-host-server.md) |
-| Request History and Diagnostics     | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                         |
-| Per-Chat Toggles and Toggle Presets | `154711858`: `docs/plan/chat-toggles-and-presets.md`                      | [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [CBS/rendering](../structure/cbs-rendering.md)            |
+| Design                              | Last tree / original paths                                                | Current owner                                                                                                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server-owned data, Phases 0–6       | `9d09288b`: `docs/plan/PLAN.md`, `docs/plan/phases/`                      | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md)                                                                                                                                                 |
+| Split Preset and Chat Binding       | `809b35cc`: `docs/plan/split-preset.md`, `docs/plan/chat-binding.md`      | [persistence](../structure/persistence.md), [settings](../structure/settings-i18n.md)                                                                                                                                                  |
+| Shared API Keys and Model Profiles  | `317a97ce`: `docs/plan/shared-api-keys.md`, `docs/plan/model-profiles.md` | [LLM requests](../structure/llm-requests.md)                                                                                                                                                                                           |
+| Translation and URL Routes          | `df25006f`: `docs/plan/translation.md`, `docs/plan/url-routes.md`         | [media/translation](../structure/media-aux.md), [app shell/routes](../structure/app-shell.md)                                                                                                                                          |
+| Web Push                            | `e148f7276`: `docs/plan/web-push.md`                                      | [browser notifications](../structure/global-api.md), [worker](../structure/build-test-platforms.md), [server](../structure/self-host-server.md)                                                                                        |
+| Request History and Diagnostics     | `ab11ea9d0`: `docs/plan/request-history-diagnostics.md`                   | [diagnostics](../structure/diagnostics.md), [LLM capture](../structure/llm-requests.md)                                                                                                                                                |
+| Per-Chat Toggles and Toggle Presets | `154711858`: `docs/plan/chat-toggles-and-presets.md`                      | [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [CBS/rendering](../structure/cbs-rendering.md)                                                                                                   |
+| Large Asset Import and Export       | `1bb0c8eee`: `docs/plan/large-asset-import.md`                            | [characters/modules](../structure/characters-modules.md), [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [asset client](../structure/global-api.md), [UI/theming](../structure/ui-theming.md) |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
 Request History and Diagnostics records both implementation phases as done.
+Large Asset Import and Export landed every slice (1a–4b) on 2026-10-17 and 2026-10-18;
+its commits are listed in the archived Status line.
 
 ## Server-Owned Data Chronology
 
@@ -96,6 +100,31 @@ features above. Confirm current code and the owner's Known Hazards before acting
   `e2e/0-idleReload.spec.ts` result too; the slice 4 smoke already checked idle
   reload, preset workflows, reload persistence, preview controls, and mobile
   width. Archiving does not certify these remaining checks.
+- Large asset import/export, browser checks not run: a 4,000-asset PNG import's
+  request count and heap (slice 3c), the paged emotion table and the lazy icons in
+  the sidebar rail, folder drag, catalog, and persona list (4a, 4b), the asset
+  client's 429/503 retry (1a), and Chrome's answer to a pre-body refusal
+  (409/413/503) on `/api/import/module` and `/api/import/charx` (status or network
+  error, and whether a reset keep-alive socket resends the POST).
+- Large asset import/export, untested paths: zip64 and offsets past 4 GiB on real
+  CharX files (the client zip reader in `src/ts/process/zipFile.ts` refuses wrapped
+  offsets without zip64), the `App.svelte` drop handler, and the `charxJpeg` export.
+- Large asset import/export, known limits kept: no upload progress on the file
+  imports (`fetch`); the Vite dev proxy keeps Node's 300 s `requestTimeout`; a CharX
+  entry the card references but the server excluded still throws `asset … not
+found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
+  and per-item writes; `PngChunk.readGenerator` never cancels its reader when a pass
+  stops early; export memory is bounded by two read batches, not by bytes; PNG
+  import progress moves per 500-asset batch and picker saves show no progress;
+  ONNX members inflate synchronously on the main thread; hub-mode card assets are
+  fetched without retry. The backup export's abort hang and the emotion table's
+  `bind:value` throw after a delete are Known Hazards in their guides.
+- Large asset import/export, eager icon lists left: the `selectChar` alert in
+  `AlertComp.svelte` and `CharConfig.svelte`'s group member list.
+- Large asset import/export, deferred out of the plan: the Safari/WebKit streamSaver
+  fallback that keeps whole exports, "Export All Chats" building a whole history, the
+  one-time legacy browser-local inlay migration, and unbounded persona and preset
+  decoders.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 

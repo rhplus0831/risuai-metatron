@@ -4,7 +4,7 @@ import { importFileOverServer, ServerImportAnswerError, type ServerImportOptions
 
 /**
  * The client of the server's CharX import (`POST /api/import/charx`, `server/src/routes/importCharx.ts`;
- * `docs/plan/large-asset-import.md` slice 2d), the transport only: `importCharacterProcess`
+ * historical `docs/plan/large-asset-import.md` slice 2d), the transport only: `importCharacterProcess`
  * (`src/ts/characterCards.ts`) owns the import. The request, its answer, and its errors are the
  * shared file import client's (`serverImportClient.ts`): the `File`/`Blob` itself as the body, one
  * request never retried, the NDJSON answer (`CharxImportLine`) read as it streams.

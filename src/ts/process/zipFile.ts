@@ -21,7 +21,7 @@ import {
 } from "../../../shared/charxImport.ts";
 
 /**
- * A zip archive read from a `Blob` (`docs/plan/large-asset-import.md` slice 3c, the ONNX/VITS model
+ * A zip archive read from a `Blob` (historical `docs/plan/large-asset-import.md` slice 3c, the ONNX/VITS model
  * import): the entries come from the central directory with the CharX server reader's parsers
  * (`shared/charxImport.ts`), and an entry's bytes are read with `Blob.slice` only when asked for, so
  * the tab never holds the archive. Unlike fflate's streaming `Unzip`, this never scans an entry's

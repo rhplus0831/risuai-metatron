@@ -1,5 +1,5 @@
 /**
- * The CharX character file (`docs/plan/large-asset-import.md` slice 2d), a cross-user format
+ * The CharX character file (historical `docs/plan/large-asset-import.md` slice 2d), a cross-user format
  * (STRUCTURE D5): a zip archive, alone (`.charx`) or after a JPEG (`charxJpeg`, a `.jpg`/`.jpeg`: the
  * JPEG's bytes, then the zip, whose offsets count from the zip's own start). The client's
  * `CharXWriter` (`src/ts/process/processzip.ts`) writes it with fflate: every entry a `ZipDeflate`

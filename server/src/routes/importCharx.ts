@@ -76,7 +76,7 @@ type CharxPlanEntry = {
 type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
 
 /**
- * `POST /api/import/charx` (`docs/plan/large-asset-import.md` slice 2d): a CharX file (a zip, or a
+ * `POST /api/import/charx` (historical `docs/plan/large-asset-import.md` slice 2d): a CharX file (a zip, or a
  * `charxJpeg`: a JPEG, then the zip) as the raw body (`shared/charxImport.ts`), so the tab neither
  * unzips the file nor sends one request per asset. Authenticated before the body is read; no epoch
  * (only content-addressed files are written, and the client adds the character, or the module of
