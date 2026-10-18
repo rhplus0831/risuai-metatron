@@ -1,5 +1,5 @@
 import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
-import { doingChat, sendChat } from "../index.svelte";
+import { sendChat } from "../index.svelte";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
@@ -38,7 +38,6 @@ async function sendPofile(arg: sendFileArg) {
                 text = `Note: ${note}\n${text}`;
             }
             appendMessage(ref, { role: "user", data: text });
-            doingChat.set(false);
             await sendChat(-1, { target: ref });
             const res = findChat(ref)?.message.at(-1);
             if (!res) {

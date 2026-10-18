@@ -7,7 +7,7 @@
     } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
-    import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
+    import { doingChat, sendingChatRef, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
     import { translate } from "src/ts/translator/translator";
     import { chatAutoTranslate } from "src/ts/translator/chatTranslation.svelte";
@@ -15,8 +15,17 @@
     import { alertConfirm } from "src/ts/alert";
     import { language } from "src/lang";
     import { getUserName, replacePlaceholders } from "../../ts/util";
-    import { onDestroy } from "svelte";
-    import { findChat, selectedChat, selectedChatId, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { onDestroy, untrack } from "svelte";
+    import { SvelteSet } from "svelte/reactivity";
+    import {
+        type ChatRef,
+        chatEntry,
+        currentChatRef,
+        findChat,
+        selectedChat,
+        selectedChatId,
+        setChatMeta,
+    } from "src/ts/storage/chatStore.svelte";
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { defaultAutoSuggestPrompt } from "../../ts/storage/defaultPrompts.js";
 
@@ -36,21 +45,31 @@
     let toggleSource: string | null = null;
     let progress: boolean = $state();
     /** The chat a running request is for (by id), or null. */
-    let progressChatId: string | null = null;
+    let progressChatRef: ChatRef | null = null;
     let abortController: AbortController | undefined;
     let suggestionRequestId = 0;
     let chatId: string | null = $state(null);
+    let sendingChat: ChatRef | null = $state(null);
+    const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
+    const pendingChatKeys = new SvelteSet<string>();
+
+    const isSelectedChat = (ref: ChatRef) => {
+        const selected = currentChatRef();
+        return selected?.chaId === ref.chaId && selected?.chatId === ref.chatId;
+    };
+    const sendingSelectedChat = $derived(sendingChat !== null && isSelectedChat(sendingChat));
 
     const cancelSuggestionRequest = () => {
         suggestionRequestId += 1;
         progress = false;
+        progressChatRef = null;
         abortController?.abort();
         abortController = undefined;
     };
 
     const updateSuggestions = () => {
-        if (currentCharacter !== undefined && !$doingChat) {
-            if (progressChatId !== null && progressChatId !== chatId) {
+        if (currentCharacter !== undefined) {
+            if (progressChatRef !== null && !isSelectedChat(progressChatRef)) {
                 cancelSuggestionRequest();
             }
             suggestMessages = selectedChat()?.suggestMessages;
@@ -59,7 +78,7 @@
 
     const requestSuggestions = () => {
         if (
-            $doingChat ||
+            sendingSelectedChat ||
             currentCharacter === undefined ||
             (suggestMessages && suggestMessages.length > 0) ||
             progress
@@ -120,7 +139,7 @@
         suggestionRequestId = requestId;
         abortController = requestController;
         progress = true;
-        progressChatId = requestChatId;
+        progressChatRef = requestChatRef;
 
         requestChatData(
             {
@@ -161,18 +180,41 @@
             .finally(() => {
                 if (suggestionRequestId === requestId) {
                     progress = false;
+                    progressChatRef = null;
                     abortController = undefined;
                 }
             });
     };
 
-    const unsub = doingChat.subscribe(async (v) => {
-        if (v) {
-            cancelSuggestionRequest();
-            suggestMessages = [];
+    const unsubSendingChat = sendingChatRef.subscribe((ref) => {
+        if (!ref) {
+            // sendChat clears this store before doingChat; keep the target until its end below.
             return;
         }
-        requestSuggestions();
+        sendingChat = ref;
+        pendingChatKeys.delete(chatKeyOf(ref));
+        if (progressChatRef?.chaId === ref.chaId && progressChatRef?.chatId === ref.chatId) {
+            cancelSuggestionRequest();
+        }
+        if (findChat(ref)) {
+            setChatMeta(ref, { suggestMessages: [] });
+        }
+        if (isSelectedChat(ref)) {
+            suggestMessages = [];
+        }
+    });
+
+    const unsub = doingChat.subscribe((v) => {
+        if (v) {
+            return;
+        }
+        const finishedChat = sendingChat;
+        sendingChat = null;
+        if (finishedChat === null || isSelectedChat(finishedChat)) {
+            requestSuggestions();
+        } else if (chatEntry(finishedChat)) {
+            pendingChatKeys.add(chatKeyOf(finishedChat));
+        }
     });
 
     const translateSuggest = async (toggle, messages) => {
@@ -188,13 +230,35 @@
 
     onDestroy(() => {
         cancelSuggestionRequest();
+        unsubSendingChat();
         unsub();
     });
 
     $effect.pre(() => {
+        const ref = sendingChat;
+        // A background send can publish its target before the job has loaded that chat.
+        if (ref && findChat(ref)?.suggestMessages?.length) {
+            untrack(() => setChatMeta(ref, { suggestMessages: [] }));
+        }
+    });
+    $effect.pre(() => {
+        for (const key of pendingChatKeys) {
+            const [chaId, chatId] = key.split("\u0000");
+            if (!chatEntry({ chaId, chatId })) {
+                pendingChatKeys.delete(key);
+            }
+        }
+    });
+    $effect.pre(() => {
         currentCharacter?.chaId;
         chatId = currentCharacter ? selectedChatId(currentCharacter.chaId) : null;
         updateSuggestions();
+        const ref = currentChatRef();
+        // Wait for the selected chat to load before consuming its deferred request.
+        if (ref && selectedChat() && pendingChatKeys.has(chatKeyOf(ref))) {
+            pendingChatKeys.delete(chatKeyOf(ref));
+            untrack(requestSuggestions);
+        }
     });
     $effect.pre(() => {
         const chaId = currentCharacter?.chaId;
@@ -216,7 +280,7 @@
             <div class="loadmove mx-2"></div>
             <div>{language.creatingSuggestions}</div>
         </div>
-    {:else if !$doingChat}
+    {:else if !sendingSelectedChat}
         {#if settings.memoryTranslateMedia.translator !== ""}
             <div class="flex mr-2 mb-2">
                 <button

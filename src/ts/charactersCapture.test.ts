@@ -118,6 +118,22 @@ afterEach(() => {
 });
 
 describe("selection by id", () => {
+    it("changeChar selects another character while a send is running", async () => {
+        const { characters, characterStore, selection } = await boot();
+        const { doingChat } = await import("./process/index.svelte");
+        characterStore.selectCharacter("c");
+        doingChat.set(true);
+
+        try {
+            await characters.changeChar("d");
+
+            expect(selection.characterId).toBe("d");
+            expect(get(doingChat)).toBe(true);
+        } finally {
+            doingChat.set(false);
+        }
+    });
+
     it("changeChar selects the character by its id (also after an earlier one left the list); an unknown id is home", async () => {
         const { characters, characterStore, selection, selectionModule } = await boot();
         const e = characterStore.addCharacter({ chaId: "e", name: "E" });

@@ -2152,18 +2152,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 );
             }
 
-            try {
-                // The chat captured before the load (the hook's, else the one selected when the call came).
-                const sendTarget = { chaId: char.chaId, chatId: chat.id };
-                await processSendChat(
-                    -1,
-                    context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
-                );
-            } finally {
-                // Plugin API path does not pass through the UI unlock logic,
-                // so release doingChat here on both success and failure.
-                doingChat.set(false);
-            }
+            // The chat captured before the load (the hook's, else the one selected when the call came).
+            const sendTarget = { chaId: char.chaId, chatId: chat.id };
+            await processSendChat(
+                -1,
+                context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
+            );
 
             return true;
         },

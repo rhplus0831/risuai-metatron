@@ -1,10 +1,10 @@
-import { get, writable } from "svelte/store";
+import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Slash commands (`command.ts`) over the real chat module and the real server store: every chat
 // write goes through the module by id, addressed to the chat captured when the line started, and
-// the CBS parser gets that chat too. The send pipeline, the parser, alerts, TTS, lore, and the
+// the CBS parser gets that chat too. The server send, the parser, alerts, TTS, lore, and the
 // server's manual trigger are stand-ins here (their own tests cover them).
 
 const hooks = vi.hoisted(() => ({
@@ -28,16 +28,21 @@ vi.mock("../parser/parser.svelte", () => ({
         text.replace(/\{\{chat\}\}/g, arg?.chatRef?.chatId ?? "none"),
     ),
 }));
-vi.mock("./index.svelte", async () => {
-    const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
+// Keep sendChat's real busy guard and cleanup: a caller cannot make sequential sends work by
+// clearing the flag itself. Only the server work is stubbed.
+vi.mock("./index.svelte", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("./index.svelte")>();
     return {
-        doingChat: writable(false),
-        sendChat: vi.fn(async (index: number, arg: any) => {
+        ...actual,
+        sendChat: vi.fn((index: number, arg: any) => {
             hooks.sends.push({ index, arg });
-            return hooks.sendResult.shift() ?? true;
+            return actual.sendChat(index, arg);
         }),
     };
 });
+vi.mock("./serverGeneration", () => ({
+    sendChatOnServer: vi.fn(async () => ({ ok: hooks.sendResult.shift() ?? true, outcome: "started" })),
+}));
 vi.mock("./lorebook.svelte", () => ({ loadLoreBookV3Prompt: vi.fn(async () => ({ actives: [] })) }));
 vi.mock("./modules", () => ({
     moduleUpdate: vi.fn(),
@@ -316,8 +321,9 @@ describe("/multisend", () => {
         expect(get(doingChat)).toBe(true);
     });
 
-    it("sends every segment to the line's chat, clears the busy flag after each, and stops at a failed send", async () => {
+    it("sends every segment to the line's chat with sendChat owning the busy flag, and stops at a failed send", async () => {
         const ref = freshChat();
+        const flagWrites = vi.spyOn(doingChat, "set");
         // Quoted: `|` outside quotes separates commands (the quotes stay part of the segments).
         expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
         expect(hooks.sends).toEqual([
@@ -326,12 +332,15 @@ describe("/multisend", () => {
         ]);
         expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
         expect(get(doingChat)).toBe(false);
+        expect(flagWrites.mock.calls).toEqual([[true], [false], [true], [false]]);
 
         hooks.sends.length = 0;
+        flagWrites.mockClear();
         hooks.sendResult.push(true, false);
         expect(await processMultiCommand('/multisend "three|||four|||five"')).toBe("");
         expect(hooks.sends).toHaveLength(2);
         expect(texts(ref).slice(6)).toEqual(['"three', "four"]);
         expect(get(doingChat)).toBe(false);
+        expect(flagWrites.mock.calls).toEqual([[true], [false], [true], [false]]);
     });
 });

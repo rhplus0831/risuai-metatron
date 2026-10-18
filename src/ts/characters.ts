@@ -1,6 +1,6 @@
 import { selectCharacter } from "./storage/selection.svelte";
 import { settings } from "./storage/settingsViews.svelte";
-import { get, writable } from "svelte/store";
+import { writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
 import { alertAddCharacter, alertConfirm, alertError, alertNormal, alertSelect, alertStore, alertWait } from "./alert";
 import { language } from "../lang";
@@ -27,7 +27,6 @@ import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSr
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
-import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
@@ -857,9 +856,6 @@ export async function changeChar(
     } = {},
 ) {
     const reseter = arg.reseter ?? (() => {});
-    if (get(doingChat)) {
-        return;
-    }
     reseter();
     // A selection only makes sure the character has a chat and shows its chat (owner decision 2: it
     // no longer stamps `lastInteraction`; a send does). The defaults come from creation and the server.

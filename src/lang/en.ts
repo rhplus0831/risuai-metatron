@@ -1241,6 +1241,7 @@ export const languageEnglish = {
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
+    chatGeneratingElsewhere: "Another chat is still generating a reply. Wait until it finishes.",
     newChatBinding: "New Chat Presets and Persona",
     newChatBindingInherit: "Current Chat",
     newChatBindingEmpty: "Nothing Set",

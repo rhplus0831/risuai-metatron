@@ -52,7 +52,6 @@
                 "```json\n" +
                 JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll("```", "\\`\\`\\`") +
                 "\n```\n";
-            $doingChat = false;
             alertMd(md);
             return;
         }
@@ -83,7 +82,6 @@
 
             md += "### Instruction\n";
             md += "```\n" + instructed.replaceAll("```", "\\`\\`\\`") + "\n```\n";
-            $doingChat = false;
             alertMd(md);
             return;
         }
@@ -106,7 +104,6 @@
 
             md += "```\n" + formated[i].content.replaceAll("```", "\\`\\`\\`") + "\n```\n";
         }
-        $doingChat = false;
         alertMd(md);
     };
 
@@ -249,12 +246,7 @@
                     return;
                 }
                 appendMessage(ref, { role: "user", data: line });
-                let sent = false;
-                try {
-                    sent = await sendChat(-1, { target: ref });
-                } finally {
-                    doingChat.set(false);
-                }
+                const sent = await sendChat(-1, { target: ref });
                 if (!sent) {
                     return;
                 }

@@ -860,6 +860,7 @@ export const languageKorean = {
         responseStreaming: "응답 스트리밍",
         streamGeminiThoughts: "Gemini 생각 스트리밍",
     },
+    chatGeneratingElsewhere: "다른 채팅에서 아직 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     newChatBinding: "새 채팅의 프리셋과 페르소나",
     newChatBindingInherit: "현재 채팅",
     newChatBindingEmpty: "설정 없음",

@@ -40,13 +40,7 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
             );
         }
         appendMessage(ref, { role: "user", data: e });
-        let sent = false;
-        try {
-            sent = await sendChat(-1, { target: ref });
-        } finally {
-            // Each send is its own action; the next one needs the flag clear.
-            doingChat.set(false);
-        }
+        const sent = await sendChat(-1, { target: ref });
         if (!sent) {
             return false;
         }

@@ -229,6 +229,7 @@
 
     async function sendMain(continueResponse: boolean) {
         if ($doingChat) {
+            alertChatBusy();
             return;
         }
         if (ownedJobIds.length > 0) {
@@ -293,6 +294,7 @@
 
     async function reroll() {
         if ($doingChat) {
+            alertChatBusy();
             return;
         }
         const ref = currentChatRef();
@@ -351,6 +353,7 @@
 
     async function unReroll() {
         if ($doingChat) {
+            alertChatBusy();
             return;
         }
         const ref = currentChatRef();
@@ -376,6 +379,12 @@
     }
 
     let abortController: null | AbortController = null;
+    let abortTarget: ChatRef | null = $state(null);
+    const localSendRunning = $derived($doingChat && abortTarget !== null && chatKey === chatKeyOf(abortTarget));
+
+    function alertChatBusy() {
+        alertError(localSendRunning ? language.chatGenerating : language.chatGeneratingElsewhere);
+    }
 
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
@@ -385,32 +394,46 @@
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
-    ) {
+    ): Promise<boolean> {
         if (!target) {
-            return;
+            return false;
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
+        let ran = true;
         const controller = new AbortController();
-        abortController = controller;
         try {
+            if ($doingChat) {
+                alertChatBusy();
+                return false;
+            }
+            abortController = controller;
+            abortTarget = target;
             ok = await sendChat(-1, {
                 target,
                 signal: controller.signal,
                 continue: continued,
                 ...serverInput,
+                onServerRefused: () => {
+                    ran = false;
+                },
             });
+            if (!ran) {
+                return false;
+            }
             const messages = findChat(target)?.message ?? [];
             const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
             if ((anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
                 rerollHistory.record(target, anchor, messages.slice(anchorIndex + 1));
             }
         } catch (error) {
+            ran = false;
             console.error(error);
             alertError(error);
         } finally {
             if (abortController === controller) {
                 abortController = null;
+                abortTarget = null;
             }
             if (serverInput) {
                 const landed =
@@ -428,16 +451,17 @@
                     messageInput = serverInput.input;
                 }
             }
-            $doingChat = false;
         }
-        if (settings.ui.playMessage) {
+        if (ran && settings.ui.playMessage) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
+        return ran;
     }
 
     function abortChat() {
-        if (abortController) {
+        const selected = currentChatRef();
+        if (abortController && abortTarget && selected && chatKeyOf(abortTarget) === chatKeyOf(selected)) {
             abortController.abort();
         }
         for (const id of ownedJobIds) {
@@ -458,7 +482,10 @@
                 autoMode = false;
                 break;
             }
-            await sendChatMain();
+            if (!(await sendChatMain())) {
+                autoMode = false;
+                break;
+            }
             // A switched character or a closed chat (Go Back, the browser's back) ends the loop.
             if (selectedChar !== selectedCharacter()?.chaId || !selection.chatOpen) {
                 autoMode = false;
@@ -814,7 +841,7 @@
                     }}
                     style:height={inputHeight}></textarea>
 
-                {#if $doingChat || doingChatInputTranslate || ownedJobIds.length > 0}
+                {#if localSendRunning || doingChatInputTranslate || ownedJobIds.length > 0}
                     <button
                         aria-labelledby="cancel"
                         class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-blue-500 hover:text-white transition-colors"

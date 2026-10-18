@@ -161,7 +161,6 @@ export function initHotkey() {
                         "```json\n" +
                         JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll("```", "\\`\\`\\`") +
                         "\n```\n";
-                    doingChat.set(false);
                     alertMd(md);
                     return;
                 }
