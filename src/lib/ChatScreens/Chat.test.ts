@@ -98,6 +98,7 @@ vi.mock("src/ts/storage/resourceSync.svelte", () => {
 import { language } from "src/lang";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
+    ackChatWork,
     assembleChats,
     chatList,
     findChat,
@@ -108,6 +109,7 @@ import {
     setChatMeta,
     setMessageText,
     setMessageTranslation,
+    takeChatWork,
 } from "src/ts/storage/chatStore.svelte";
 import { setResourceEpoch } from "src/ts/storage/resourceClient";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
@@ -336,6 +338,49 @@ describe("branching a pinned chat", () => {
         expect(branch).not.toHaveProperty("pinned");
         expect(branchedChat).not.toHaveProperty("pinned");
         expect(findChat(ref)).toHaveProperty("pinned", true);
+    });
+});
+
+describe("the Disable toggles (data-loss slice 1b)", () => {
+    it("Disable Message and Cut Messages for AI queue a patch of the one `disabled` field, never the row", async () => {
+        const { ref, held } = boot("toggles");
+        const ui = render();
+        /** Opens the row's menu (the minor buttons with their names) and clicks the button `label`. */
+        const clickInMenu = async (label: string) => {
+            ui.click(ui.target.querySelector(".button-icon-menu"));
+            await vi.waitFor(() => expect(popupStore.children).not.toBeNull());
+            const popupTarget = document.createElement("div");
+            ui.target.appendChild(popupTarget);
+            const popup = mount(PopupList, { target: popupTarget });
+            flushSync();
+            ui.click(ui.button(label));
+            unmount(popup);
+            popupTarget.remove();
+            popupStore.children = null;
+            popupStore.openId = 0;
+        };
+        /** The ops queued for the chat since the last call, acknowledged. */
+        const queued = () => {
+            const work = takeChatWork(new Set());
+            revision += 1;
+            ackChatWork(work, [{ characterId: "c", id: ref.chatId, revision: rev(revision) }], []);
+            return work.groups[0]?.ops ?? [];
+        };
+
+        await clickInMenu(language.disableMessage);
+        await vi.waitFor(() => expect(held()!.disabled).toBe(true));
+        expect(queued()).toEqual([{ op: "patchMessage", id: "a", set: { disabled: true } }]);
+        await clickInMenu(language.disableMessage);
+        await vi.waitFor(() => expect(held()!.disabled).toBe(false));
+        expect(queued()).toEqual([{ op: "patchMessage", id: "a", set: { disabled: false } }]);
+
+        await clickInMenu(language.disableAbove);
+        await vi.waitFor(() => expect(held()!.disabled).toBe("allBefore"));
+        expect(queued()).toEqual([{ op: "patchMessage", id: "a", set: { disabled: "allBefore" } }]);
+        await clickInMenu(language.disableAbove);
+        await vi.waitFor(() => expect(held()!.disabled).toBe(false));
+        expect(queued()).toEqual([{ op: "patchMessage", id: "a", set: { disabled: false } }]);
+        expect(held()).toEqual({ role: "char", data: "A", chatId: "a", disabled: false });
     });
 });
 

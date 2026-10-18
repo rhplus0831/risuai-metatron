@@ -419,6 +419,49 @@ describe("one chat's trouble does not block the rest", () => {
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
+    it("keeps another tab's text when this tab toggles Disable on an older base, and keeps its variables when this tab merges one: the idle refresh then converges the mirror (data-loss slice 1b)", async () => {
+        const { fake, sync, chat } = await boot();
+        chat.setChatMeta(refK, { scriptstate: { $c: "3" } });
+        await sync.flushResources();
+        // The other tab: a text edit of `a` and a variable, landed; this tab has not read them (its
+        // feed is not delivered here), so its base is older when its own writes go out.
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [
+                    { op: "setText", id: "a", text: "A by the other tab" },
+                    { op: "meta", merge: { scriptstate: { $a: "1" } } },
+                ],
+            },
+        ]);
+        expect(chat.findChat(refK)!.message[0].data).toBe("A");
+        chat.patchMessage(refK, "a", { disabled: true });
+        chat.mergeChatMeta(refK, "scriptstate", { $b: "2" }, ["$c"]);
+        const stale = await sync.flushResources();
+        expect(stale.discarded).toEqual([]);
+        const group = fake.batchBodies().at(-1).chats[0];
+        expect(group.ops).toEqual([
+            { op: "patchMessage", id: "a", set: { disabled: true } },
+            { op: "meta", merge: { scriptstate: { $b: "2" } }, mergeUnset: { scriptstate: ["$c"] } },
+        ]);
+        // The server holds both tabs' changes.
+        expect(fake.chat("c", "k")!.data.message[0]).toEqual({
+            ...m("a", "A by the other tab", "char"),
+            disabled: true,
+        });
+        expect((fake.chat("c", "k")!.data as any).scriptstate).toEqual({ $a: "1", $b: "2" });
+        // Acknowledged as stale: the idle refresh reads the chat whole, and the mirror converges.
+        await vi.waitFor(() => expect(chat.findChat(refK)!.message[0].data).toBe("A by the other tab"), {
+            timeout: 5000,
+        });
+        expect(chat.findChat(refK)!.message[0]).toEqual({ ...m("a", "A by the other tab", "char"), disabled: true });
+        expect((chat.findChat(refK) as any).scriptstate).toEqual({ $a: "1", $b: "2" });
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+    });
+
     it("removes a character another tab deleted, with its chats, and moves the selection home", async () => {
         const { fake, sync, chat, characters, selection } = await boot();
         fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);

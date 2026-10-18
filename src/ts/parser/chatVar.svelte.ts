@@ -2,8 +2,7 @@ import { characterList, selectedCharacter } from "../storage/characterStore.svel
 import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../storage/settingsViews.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { parseKeyValue } from "../util";
-import { setCurrentChatMeta } from "../storage/chatEdits";
-import { type ChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
+import { type ChatRef, currentChatRef, findChat, mergeChatMeta, selectedChat } from "../storage/chatStore.svelte";
 import { getModuleToggles } from "../process/modules";
 import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/prompt/toggles.ts";
 
@@ -33,14 +32,18 @@ export function getChatVar(key: string, scope?: PresetScope): string {
     return state.toString();
 }
 
-/** Sets a chat variable of the selected chat (a `scriptstate` write through the chat module). */
+/**
+ * Sets a chat variable of the selected chat: one `scriptstate` entry merged through the chat module
+ * (`mergeChatMeta`), so variables another writer set meanwhile are kept.
+ */
 export function setChatVar(key: string, value: string): boolean {
     const chat = selectedChat();
+    const ref = currentChatRef();
     const stateKey = "$" + key;
-    if (!chat || chat.scriptstate?.[stateKey] === value) {
+    if (!chat || !ref || chat.scriptstate?.[stateKey] === value) {
         return false;
     }
-    setCurrentChatMeta({ scriptstate: { ...$state.snapshot(chat.scriptstate ?? {}), [stateKey]: value } });
+    mergeChatMeta(ref, "scriptstate", { [stateKey]: value });
     return true;
 }
 
@@ -66,14 +69,14 @@ export function getChatVarOf(ref: ChatRef | null, key: string, scope?: PresetSco
     return state.toString();
 }
 
-/** `setChatVar` for a given chat (nothing when it is gone). */
+/** `setChatVar` for a given chat (nothing when it is gone): one `scriptstate` entry merged. */
 export function setChatVarOf(ref: ChatRef | null, key: string, value: string): boolean {
     const chat = ref ? findChat(ref) : undefined;
     const stateKey = "$" + key;
     if (!ref || !chat || chat.scriptstate?.[stateKey] === value) {
         return false;
     }
-    setChatMeta(ref, { scriptstate: { ...$state.snapshot(chat.scriptstate ?? {}), [stateKey]: value } });
+    mergeChatMeta(ref, "scriptstate", { [stateKey]: value });
     return true;
 }
 

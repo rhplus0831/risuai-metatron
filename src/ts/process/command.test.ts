@@ -228,17 +228,27 @@ describe("messages and variables", () => {
         ]);
     });
 
-    it("/getvar of a missing variable answers null without writing; /setvar and /addvar write the chat's scriptstate", async () => {
+    it("/getvar of a missing variable answers null without writing; /setvar and /addvar merge the one variable into the chat's scriptstate", async () => {
         const ref = freshChat();
         expect(await processMultiCommand("/getvar key=missing")).toBe("null");
         expect(chat.hasChatWork()).toBe(false);
         expect((chat.findChat(ref) as any).scriptstate).toBeUndefined();
+        // Another tab sets `$other` meanwhile: a whole-map write from this tab's copy would drop it.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: ref.chatId,
+                baseRevision: server.chat("c", ref.chatId)!.revision,
+                ops: [{ op: "meta", merge: { scriptstate: { $other: "kept" } } }],
+            },
+        ]);
         expect(await processMultiCommand("/setvar key=hp 5 | /getvar key=hp")).toBe("5");
         expect(await processMultiCommand("/addvar key=hp 3 | /getvar key=hp")).toBe("8");
         expect((chat.findChat(ref) as any).scriptstate).toEqual({ $hp: "8" });
         const { work } = commit();
-        expect(work.groups[0].ops).toEqual([{ op: "meta", set: { scriptstate: { $hp: "8" } }, unset: [] }]);
-        expect((server.chat("c", ref.chatId)!.data as any).scriptstate).toEqual({ $hp: "8" });
+        // The two merges of `$hp` folded into one (set and unset appear once a merge coalesces).
+        expect(work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: [], merge: { scriptstate: { $hp: "8" } } }]);
+        expect((server.chat("c", ref.chatId)!.data as any).scriptstate).toEqual({ $other: "kept", $hp: "8" });
     });
 
     it("an unknown command is not a command (the line is sent as text)", async () => {

@@ -8,9 +8,9 @@ import {
     findChat,
     pinChat,
     removeMessages,
-    setChatMeta,
     setMessageText,
 } from "../storage/chatStore.svelte";
+import { setChatVarOf } from "../parser/chatVar.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
@@ -237,15 +237,13 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             return "";
         }
         case "setvar": {
-            const scriptstate = { ...(findChat(ref)?.scriptstate ?? {}) };
-            scriptstate["$" + namedArg["key"]] = arg;
-            setChatMeta(ref, { scriptstate });
+            // One variable merged (`setChatVarOf`): the chat's other variables stay as stored.
+            setChatVarOf(ref, namedArg["key"], arg);
             return "";
         }
         case "addvar": {
-            const scriptstate = { ...(findChat(ref)?.scriptstate ?? {}) };
-            scriptstate["$" + namedArg["key"]] = (Number(scriptstate["$" + namedArg["key"]]) + Number(arg)).toString();
-            setChatMeta(ref, { scriptstate });
+            const current = findChat(ref)?.scriptstate?.["$" + namedArg["key"]];
+            setChatVarOf(ref, namedArg["key"], (Number(current) + Number(arg)).toString());
             return "";
         }
         case "getvar": {

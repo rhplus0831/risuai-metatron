@@ -348,6 +348,11 @@ function snapshot<T>(value: T): T {
     return clone($state.snapshot(value) as T);
 }
 
+/** A JSON object that is not an array (a map field's value, a patch's fields). */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** JSON with object keys sorted, for comparing a chat with the server's copy whatever the key order. */
 function canonical(value: unknown): string {
     return JSON.stringify(value, (_key, entry: unknown) =>
@@ -775,8 +780,18 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
         last.message = message as unknown as Message;
         return true;
     }
-    // Entry removals (`mergeUnset`) are not folded: each such op is sent as it was queued.
-    if (last.op === "meta" && next.op === "meta" && !last.mergeUnset && !next.mergeUnset) {
+    // Entry removals (`mergeUnset`) are not folded: each such op is sent as it was queued. Nor are
+    // entries merged into a field an earlier op sets to something that is not a map: the server
+    // replaces that value with the entries, a fold would spread it into them.
+    if (
+        last.op === "meta" &&
+        next.op === "meta" &&
+        !last.mergeUnset &&
+        !next.mergeUnset &&
+        Object.keys(next.merge ?? {}).every(
+            (key) => !Object.hasOwn(last.set ?? {}, key) || isPlainRecord(last.set![key]),
+        )
+    ) {
         const set = { ...(last.set ?? {}) };
         const unset = new Set(last.unset ?? []);
         for (const key of next.unset ?? []) {
@@ -1642,6 +1657,7 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
                 op.op !== "append" &&
                 op.op !== "setText" &&
                 op.op !== "setMessage" &&
+                op.op !== "patchMessage" &&
                 op.op !== "setTranslation" &&
                 op.op !== "meta" &&
                 !(op.op === "remove" && op.ids.length === 1)
@@ -1989,7 +2005,11 @@ export function appendMessage(
     return messages.map((message) => message.chatId!);
 }
 
-/** Replaces one message by its id (`message.chatId`). */
+/**
+ * Replaces one message by its id (`message.chatId`) with a whole row (op `setMessage`): on an older
+ * revision it reverts the fields another writer changed meanwhile, so a change of some fields is a
+ * `patchMessage`.
+ */
 export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
     const message = clone<Message>(input);
@@ -2007,6 +2027,113 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     chat.message[index] = message;
     changed(keyOf(ref.chaId, ref.chatId));
     enqueue(ref, { op: "setMessage", message: clone(message) });
+}
+
+/** A message field patch as the server takes it (`patchMessage`): fields to set and fields to remove. */
+type MessagePatch = { set: Record<string, unknown>; unset: string[] };
+
+/**
+ * A `patchMessage`'s fields, checked as the server's `preparePatchMessage` checks them: `set` is
+ * taken as its JSON copy, `translation` is dropped from both sides (the stored one stays, as for
+ * `replaceMessage`), `chatId` and `__proto__` are refused, `role` and `data` keep their message
+ * shape and cannot be unset, and a field cannot be both set and unset. Null when no field is left.
+ */
+function prepareMessagePatch(set: unknown, unset: unknown): MessagePatch | null {
+    const fields = set === undefined ? {} : clone<unknown>(set);
+    if (!isPlainRecord(fields) || !Array.isArray(unset)) {
+        throw new Error("patchMessage needs { set?: object, unset?: string[] }");
+    }
+    const removals = new Set<string>();
+    for (let index = 0; index < unset.length; index++) {
+        const key: unknown = unset[index];
+        if (typeof key !== "string") {
+            throw new Error("patchMessage needs { set?: object, unset?: string[] }");
+        }
+        removals.add(key);
+    }
+    for (const key of [...Object.keys(fields), ...removals]) {
+        if (key === "chatId" || key === "__proto__") {
+            throw new Error(`patchMessage cannot change ${key}`);
+        }
+    }
+    delete fields.translation;
+    removals.delete("translation");
+    if (removals.has("role") || removals.has("data")) {
+        throw new Error("patchMessage cannot unset role or data");
+    }
+    if ([...removals].some((key) => Object.hasOwn(fields, key))) {
+        throw new Error("patchMessage sets and unsets the same field");
+    }
+    if (Object.hasOwn(fields, "role") && fields.role !== "user" && fields.role !== "char") {
+        throw new Error("message.role must be user or char");
+    }
+    if (Object.hasOwn(fields, "data") && typeof fields.data !== "string") {
+        throw new Error("message.data must be a string");
+    }
+    if (Object.keys(fields).length === 0 && removals.size === 0) {
+        return null;
+    }
+    return { set: fields, unset: [...removals] };
+}
+
+/**
+ * Applies a prepared patch to the message at `index` (already checked against the locks) and
+ * queues it. The mirror changes where it differs; the op is queued as given either way, since the
+ * server's copy may differ from this tab's (a patch equal to the mirror still lands, and still
+ * closes the message's generation fence).
+ */
+function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, patch: MessagePatch) {
+    const row = chat.message[index] as unknown as Record<string, unknown>;
+    let differs = false;
+    for (const key of patch.unset) {
+        if (Object.hasOwn(row, key)) {
+            delete row[key];
+            differs = true;
+        }
+    }
+    for (const [key, value] of Object.entries(patch.set)) {
+        // Serialized as it is (a `$state.snapshot` would drop a nested own `__proto__`).
+        if (JSON.stringify(row[key]) !== JSON.stringify(value)) {
+            row[key] = clone(value);
+            differs = true;
+        }
+    }
+    if (differs) {
+        changed(keyOf(ref.chaId, ref.chatId));
+    }
+    const op: Extract<ChatOp, { op: "patchMessage" }> = { op: "patchMessage", id };
+    if (Object.keys(patch.set).length > 0) {
+        op.set = clone(patch.set) as typeof op.set;
+    }
+    if (patch.unset.length > 0) {
+        op.unset = [...patch.unset] as typeof op.unset;
+    }
+    enqueue(ref, op);
+}
+
+/**
+ * Sets and removes fields of one message by its id (op `patchMessage`): the server applies them to
+ * the message as stored, so fields this call does not name keep another writer's values, also when
+ * this tab's copy is behind. Use it for a change of some fields; `replaceMessage` is for a whole row.
+ * The stored translation never changes here (`setMessageTranslation` does). Every given field is
+ * sent, also one the mirror already holds; nothing is queued when no field is left.
+ */
+export function patchMessage(
+    ref: ChatRef,
+    id: string,
+    set: Partial<DeepReadonly<Omit<Message, "chatId" | "translation">>> | Record<string, unknown> = {},
+    unset: readonly string[] = [],
+) {
+    const chat = requireChat(ref);
+    const index = indexOfMessage(chat, id);
+    if (index === -1) {
+        throw new Error(`No message ${id}`);
+    }
+    const patch = prepareMessagePatch(set, unset);
+    assertUnlocked(ref, [id]);
+    if (patch) {
+        applyMessagePatch(ref, chat, index, id, patch);
+    }
 }
 
 /** Sets a message's text. */
@@ -2182,21 +2309,59 @@ export function setChatMeta(
 }
 
 /**
- * Adds entries to a chat field that is a map (`toolCalls`). The server merges them into the map as
- * stored, so an entry another device added meanwhile is kept (a `meta` set would replace the map).
+ * Adds entries to, and removes entry ids from, a chat field that is a map (`CHAT_META_MERGE_KEYS`:
+ * `toolCalls`, `GLGlobalVariables`, `scriptstate`). The server applies them to the map as stored
+ * (`merge`, `mergeUnset`; removals first), so the entries this call does not name keep what another
+ * device wrote meanwhile (a `meta` set would replace the map; a named entry is still last writer
+ * wins). An id both added and removed is added. A removal is sent also
+ * when the mirror lacks the entry; removals alone leave a field that is not a map as it is, and
+ * entries replace such a field with a map of them, as on the server.
  */
-export function mergeChatMeta(ref: ChatRef, key: string, entries: Record<string, unknown>) {
+export function mergeChatMeta(
+    ref: ChatRef,
+    key: string,
+    entries: Record<string, unknown>,
+    removals: readonly string[] = [],
+) {
     if (!CHAT_META_MERGE_KEYS.includes(key)) {
         throw new Error(`mergeChatMeta cannot merge ${key}`);
     }
-    if (Object.keys(entries).length === 0) {
+    // Their JSON copy (what is sent): an entry whose value is undefined is no entry.
+    const added = clone<unknown>(entries);
+    if (!isPlainRecord(added) || !Array.isArray(removals)) {
+        throw new Error(`mergeChatMeta needs entries and entry ids for ${key}`);
+    }
+    const ids = new Set<string>();
+    for (let index = 0; index < removals.length; index++) {
+        const id: unknown = removals[index];
+        if (typeof id !== "string") {
+            throw new Error(`mergeChatMeta needs entries and entry ids for ${key}`);
+        }
+        ids.add(id);
+    }
+    const removed = [...ids].filter((id) => !Object.hasOwn(added, id));
+    const adding = Object.keys(added).length > 0;
+    if (!adding && removed.length === 0) {
         return;
     }
     const chat = requireChat(ref) as unknown as Record<string, unknown>;
-    const added = clone(entries);
-    chat[key] = { ...((chat[key] as Record<string, unknown> | undefined) ?? {}), ...added };
-    changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "meta", merge: { [key]: clone(entries) } });
+    const stored = chat[key];
+    if (isPlainRecord(stored) || adding) {
+        // Built from entries (never assigned by name, never through `$state.snapshot`, which drops
+        // an own `__proto__`), so any entry id stays an own entry; kept values are the mirror's own.
+        const dropped = new Set(removed);
+        const kept = isPlainRecord(stored) ? Object.entries(stored).filter(([id]) => !dropped.has(id)) : [];
+        chat[key] = Object.fromEntries([...kept, ...Object.entries(clone(added))]);
+        changed(keyOf(ref.chaId, ref.chatId));
+    }
+    const op: Extract<ChatOp, { op: "meta" }> = { op: "meta" };
+    if (adding) {
+        op.merge = { [key]: clone(added) };
+    }
+    if (removed.length > 0) {
+        op.mergeUnset = { [key]: removed };
+    }
+    enqueue(ref, op);
 }
 
 /**
@@ -2246,11 +2411,12 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
 /**
  * Applies what a hook changed in its copy of a chat (`result`) against the copy it started from
  * (`baseline`), onto the chat as it is now: messages the hook removed are removed, added ones are
- * inserted after their predecessor, changed message fields are merged into the current message,
- * changed chat fields are set or removed. Changes made meanwhile by others are kept. When the hook
- * reordered surviving messages, the whole chat is replaced, but only if the chat has not changed
- * since the baseline and no generation runs in it (otherwise the order change is dropped with a
- * warning). Everything is checked against the locks before the mirror changes.
+ * inserted after their predecessor, changed message fields are sent as a field patch of the current
+ * message (`patchMessage`), changed chat fields are set or removed, a changed map field
+ * (`CHAT_META_MERGE_KEYS`) entry by entry (`mergeChatMeta`). Changes made meanwhile by others are
+ * kept. When the hook reordered surviving messages, the whole chat is replaced, but only if the chat
+ * has not changed since the baseline and no generation runs in it (otherwise the order change is
+ * dropped with a warning). The locks and the message patches are checked before the mirror changes.
  */
 export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
     const { ref } = baseline;
@@ -2286,6 +2452,33 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const survivorsAfter = next.message.map((message) => message.chatId!).filter((id) => baseMessages.has(id));
     const reordered = survivorsBefore.some((id, index) => survivorsAfter[index] !== id);
     assertUnlocked(ref, [...removed, ...changedMessages.map((message) => message.chatId!)]);
+    // Each changed message the chat still has, as a patch of the fields the hook changed (prepared
+    // before anything changes: an invalid field change refuses the whole result).
+    const patches: { id: string; patch: MessagePatch }[] = [];
+    for (const message of changedMessages) {
+        const id = message.chatId!;
+        if (indexOfMessage(current, id) === -1) {
+            continue;
+        }
+        const beforeFields = baseMessages.get(id)! as unknown as Record<string, unknown>;
+        const afterFields = message as unknown as Record<string, unknown>;
+        const set: [string, unknown][] = [];
+        const unset: string[] = [];
+        for (const key of new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])) {
+            if (key === "chatId" || JSON.stringify(beforeFields[key]) === JSON.stringify(afterFields[key])) {
+                continue;
+            }
+            if (Object.hasOwn(afterFields, key)) {
+                set.push([key, afterFields[key]]);
+            } else {
+                unset.push(key);
+            }
+        }
+        const patch = prepareMessagePatch(Object.fromEntries(set), unset);
+        if (patch) {
+            patches.push({ id, patch });
+        }
+    }
 
     if (reordered) {
         const unchanged = baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0);
@@ -2303,25 +2496,11 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         // the current revision.
         applyRemoval(ref, current, removed);
     }
-    for (const message of changedMessages) {
-        const before = baseMessages.get(message.chatId!)!;
-        const index = indexOfMessage(current, message.chatId!);
-        if (index === -1) {
-            continue;
+    for (const { id, patch } of patches) {
+        const index = indexOfMessage(current, id);
+        if (index !== -1) {
+            applyMessagePatch(ref, current, index, id, patch);
         }
-        const merged = snapshot(current.message[index]) as unknown as Record<string, unknown>;
-        const beforeFields = before as unknown as Record<string, unknown>;
-        const afterFields = message as unknown as Record<string, unknown>;
-        for (const key of new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])) {
-            if (JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key])) {
-                if (Object.hasOwn(afterFields, key)) {
-                    merged[key] = afterFields[key];
-                } else {
-                    delete merged[key];
-                }
-            }
-        }
-        replaceMessage(ref, merged as unknown as Message);
     }
     let previous: string | null = null;
     for (const message of next.message) {
@@ -2342,20 +2521,46 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
 
     const set: Record<string, unknown> = {};
     const unset: string[] = [];
+    const merges: { key: string; entries: Record<string, unknown>; removals: string[] }[] = [];
     const baseFields = baseline.chat as unknown as Record<string, unknown>;
     const nextFields = next as unknown as Record<string, unknown>;
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
         if (nonMetaKeys.has(key) || JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])) {
             continue;
         }
-        if (Object.hasOwn(nextFields, key) && nextFields[key] !== undefined) {
-            set[key] = nextFields[key];
+        const before = baseFields[key];
+        const after = nextFields[key];
+        if (
+            CHAT_META_MERGE_KEYS.includes(key) &&
+            isPlainRecord(after) &&
+            (before === undefined || isPlainRecord(before))
+        ) {
+            // A map field (chat variables, toggles, tool calls) changed entry by entry: only the
+            // entries the hook changed or removed are sent, so entries another writer changed
+            // meanwhile are kept. A map the baseline lacked counts as an empty one.
+            const was: Record<string, unknown> = isPlainRecord(before) ? before : {};
+            merges.push({
+                key,
+                entries: Object.fromEntries(
+                    Object.entries(after).filter(
+                        ([id, value]) => !Object.hasOwn(was, id) || JSON.stringify(was[id]) !== JSON.stringify(value),
+                    ),
+                ),
+                removals: Object.keys(was).filter((id) => !Object.hasOwn(after, id)),
+            });
+            continue;
+        }
+        if (Object.hasOwn(nextFields, key) && after !== undefined) {
+            set[key] = after;
         } else {
             unset.push(key);
         }
     }
     if (Object.keys(set).length > 0 || unset.length > 0) {
         setChatMeta(ref, set, unset);
+    }
+    for (const { key, entries, removals } of merges) {
+        mergeChatMeta(ref, key, entries, removals);
     }
 }
 
@@ -2388,7 +2593,10 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
             try {
                 applyChatResult(captureChatBaseline(ref), chat);
             } catch (error) {
-                console.warn("[Chat] Skipped a plugin change to a chat being generated", error);
+                console.warn(
+                    "[Chat] Skipped a plugin change to a chat (a message being generated, or a refused field)",
+                    error,
+                );
             }
         } else {
             createChat(chaId, chat);
@@ -3130,7 +3338,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const rename = (id: string) => firstRename.get(id) ?? id;
     const entry = pending.get(group.key);
     for (const op of entry?.ops ?? []) {
-        if (op.op === "setText" || op.op === "setTranslation") {
+        if (op.op === "setText" || op.op === "setTranslation" || op.op === "patchMessage") {
             op.id = rename(op.id);
         } else if (op.op === "setMessage") {
             op.message = { ...op.message, chatId: rename(op.message.chatId!) };

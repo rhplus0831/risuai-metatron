@@ -9,8 +9,13 @@
     import { getCharToken, getChatToken } from "src/ts/tokenizer";
     import { tokenizePreset } from "src/ts/process/prompt";
 
-    import { appendMessage, currentChatRef, findChat, selectedChat } from "src/ts/storage/chatStore.svelte";
-    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
+    import {
+        appendMessage,
+        currentChatRef,
+        findChat,
+        mergeChatMeta,
+        selectedChat,
+    } from "src/ts/storage/chatStore.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { selectSingleFile } from "src/ts/util";
@@ -109,11 +114,12 @@
 
     let autopilot = $state([]);
 
-    /** Sets one chat variable of the selected chat (through the chat module). */
+    /** Sets one chat variable of the selected chat (one `scriptstate` entry merged through the chat module). */
     function setScriptVariable(key: string, value: string | number) {
         const chat = selectedChat();
-        if (chat) {
-            setCurrentChatMeta({ scriptstate: { ...$state.snapshot(chat.scriptstate ?? {}), [key]: value } });
+        const ref = currentChatRef();
+        if (chat && ref && chat.scriptstate?.[key] !== value) {
+            mergeChatMeta(ref, "scriptstate", { [key]: value });
         }
     }
 </script>

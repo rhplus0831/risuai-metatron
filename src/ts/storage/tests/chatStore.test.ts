@@ -563,7 +563,15 @@ describe("applyChatResult", () => {
             "D appended meanwhile",
         ]);
         const { work } = commit();
-        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["setText", "append", "remove", "setMessage", "append"]);
+        // The hook's change of `a` goes as a patch of the field it changed (slice 1b), not the row.
+        expect(work.groups[0].ops.map((op) => op.op)).toEqual([
+            "setText",
+            "append",
+            "remove",
+            "patchMessage",
+            "append",
+        ]);
+        expect(work.groups[0].ops[3]).toEqual({ op: "patchMessage", id: "a", set: { data: "A by the hook" } });
         expect(server.texts("c", "k")).toEqual(texts(chat.findChat(ref)));
     });
 
@@ -602,8 +610,15 @@ describe("applyChatResult", () => {
         expect(mirror).not.toHaveProperty("hypaV3Data");
         expect(mirror.fmIndex).toBe(-1);
         const { work } = commit();
+        // `scriptstate` is a map field: the baseline lacked it (an empty map), so its entry is merged
+        // (slice 1b), folded into the same `meta` op as the set and the unset.
         expect(work.groups[0].ops).toEqual([
-            { op: "meta", set: { note: "hook note", scriptstate: { $count: "1" } }, unset: ["hypaV3Data"] },
+            {
+                op: "meta",
+                set: { note: "hook note" },
+                unset: ["hypaV3Data"],
+                merge: { scriptstate: { $count: "1" } },
+            },
         ]);
         const saved = server.chat("c", "k")!.data as any;
         expect(saved.note).toBe("hook note");
@@ -634,7 +649,7 @@ describe("applyChatResult", () => {
         expect(chat.findChat(ref)!.message[2].data).toBe("A changed by the hook");
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/order change is dropped/));
         ({ work } = commit());
-        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["meta", "setMessage"]);
+        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["meta", "patchMessage"]);
         expect(server.texts("c", "k")).toEqual(["C", "B", "A changed by the hook"]);
     });
 
@@ -688,6 +703,147 @@ describe("applyChatResult", () => {
         expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
         expect((chat.findChat(ref) as any).note).toBe("");
         expect(take().groups).toEqual([]);
+    });
+
+    it("sends a changed message as a patch of only the fields the hook changed (a plugin setChat of one field), so another tab's text survives an older base, and a translation-only change sends nothing", async () => {
+        const { server, chat, ref, take, commit } = await boot();
+        chat.replaceMessage(ref, { ...m("b", "B"), saying: "old" });
+        commit();
+        const baseline = chat.captureChatBaseline(ref);
+        // Another tab edits `a` meanwhile; this tab's base is older.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "A by the other tab" }],
+            },
+        ]);
+        const result = clone(baseline.chat) as any;
+        result.message[0].disabled = true;
+        delete result.message[1].saying;
+        chat.applyChatResult(baseline, result);
+        expect(chat.findChat(ref)!.message[0]).toEqual({ ...m("a", "A", "char"), disabled: true });
+        expect(chat.findChat(ref)!.message[1]).toEqual(m("b", "B"));
+        const applied = commit();
+        expect(applied.work.groups[0].ops).toEqual([
+            { op: "patchMessage", id: "a", set: { disabled: true } },
+            { op: "patchMessage", id: "b", unset: ["saying"] },
+        ]);
+        expect(applied.result.chats[0].stale).toBe(true);
+        const stored = server.chat("c", "k")!.data.message as any[];
+        expect(stored[0]).toEqual({ ...m("a", "A by the other tab", "char"), disabled: true });
+        expect(stored[1]).toEqual(m("b", "B"));
+
+        // A result that only carries a translation (the runner's field) changes nothing and sends nothing.
+        const again = chat.captureChatBaseline(ref);
+        const translated = clone(again.chat) as any;
+        translated.message[2].translation = {
+            text: "ㄷ",
+            sourceHash: translationSourceHash("C"),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        };
+        chat.applyChatResult(again, translated);
+        expect(chat.findChat(ref)!.message[2]).toEqual(m("c", "C", "char"));
+        // Nothing queued (the chat is marked for an idle refresh since its stale acknowledgement).
+        expect(take().groups).toEqual([]);
+    });
+
+    it("refuses an invalid message change before anything lands, and ignores one of a message removed meanwhile", async () => {
+        const { chat, ref, take } = await boot();
+        const baseline = chat.captureChatBaseline(ref);
+        // A valid first change and an invalid second one: neither lands.
+        let result = clone(baseline.chat) as any;
+        result.message[0].disabled = true;
+        result.message[1].role = "system";
+        expect(() => chat.applyChatResult(baseline, result)).toThrow(/role must be user or char/);
+        result = clone(baseline.chat) as any;
+        result.message[0].disabled = true;
+        result.message[1].data = 7;
+        expect(() => chat.applyChatResult(baseline, result)).toThrow(/data must be a string/);
+        expect(chat.findChat(ref)!.message[0]).toEqual(m("a", "A", "char"));
+        expect(chat.hasChatWork()).toBe(false);
+        expect(take().groups).toEqual([]);
+
+        // The hook also mangled `c`, removed meanwhile: that change has nothing to land on, so it
+        // does not refuse the result.
+        chat.removeMessages(ref, ["c"]);
+        result = clone(baseline.chat) as any;
+        result.message[0].disabled = true;
+        result.message[2].role = "system";
+        chat.applyChatResult(baseline, result);
+        expect(chat.findChat(ref)!.message[0]).toEqual({ ...m("a", "A", "char"), disabled: true });
+        expect(take().groups[0].ops).toEqual([
+            { op: "remove", ids: ["c"] },
+            { op: "patchMessage", id: "a", set: { disabled: true } },
+        ]);
+    });
+
+    it("merges a changed map field entry by entry: a map the baseline lacked counts as empty, removed entries are unset, and a transition from or to a non-map is a whole-field write", async () => {
+        const { server, chat, ref, commit } = await boot();
+        const saved = () => server.chat("c", "k")!.data as any;
+        // No `scriptstate` in the baseline; another tab adds `$b` meanwhile: the hook's `$a` is merged.
+        let baseline = chat.captureChatBaseline(ref);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", merge: { scriptstate: { $b: "2" } } }],
+            },
+        ]);
+        let result = clone(baseline.chat) as any;
+        result.scriptstate = { $a: "1" };
+        result.GLGlobalVariables = { toggle_x: "1" };
+        chat.applyChatResult(baseline, result);
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $a: "1" });
+        // Two merges, one per field, folded into one op (set and unset appear once it coalesces).
+        expect(commit().work.groups[0].ops).toEqual([
+            {
+                op: "meta",
+                set: {},
+                unset: [],
+                merge: { scriptstate: { $a: "1" }, GLGlobalVariables: { toggle_x: "1" } },
+            },
+        ]);
+        expect(saved().scriptstate).toEqual({ $b: "2", $a: "1" });
+        expect(saved().GLGlobalVariables).toEqual({ toggle_x: "1" });
+
+        // A changed, a removed, and an added entry of a map the baseline had.
+        chat.setChatMeta(ref, { scriptstate: { $a: "1", $c: "3" } });
+        commit();
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        result.scriptstate = { $a: "1x", $d: "4" };
+        chat.applyChatResult(baseline, result);
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $a: "1x", $d: "4" });
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", merge: { scriptstate: { $a: "1x", $d: "4" } }, mergeUnset: { scriptstate: ["$c"] } },
+        ]);
+        expect(saved().scriptstate).toEqual({ $a: "1x", $d: "4" });
+
+        // A map replaced by a value that is not one, and a map replacing such a value, are whole-field
+        // sets; removing the field is an unset.
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        result.scriptstate = "text";
+        chat.applyChatResult(baseline, result);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: { scriptstate: "text" }, unset: [] }]);
+        expect(saved().scriptstate).toBe("text");
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        result.scriptstate = { $e: "5" };
+        chat.applyChatResult(baseline, result);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: { scriptstate: { $e: "5" } }, unset: [] }]);
+        expect(saved().scriptstate).toEqual({ $e: "5" });
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        delete result.scriptstate;
+        chat.applyChatResult(baseline, result);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: ["scriptstate"] }]);
+        expect(saved()).not.toHaveProperty("scriptstate");
+        expect(chat.findChat(ref)).not.toHaveProperty("scriptstate");
     });
 });
 
@@ -1037,6 +1193,264 @@ describe("map merges (slice 11b)", () => {
             },
         ]);
         expect(stored(server)).toEqual({ i: { ...record("i"), response: [{ type: "text", text: "newer" }] } });
+    });
+});
+
+describe("field patches and entry removals (data-loss slice 1b)", () => {
+    const LIMIT = 60 * 1024;
+    const stored = (server: Awaited<ReturnType<typeof boot>>["server"], chatId: string, id: string) =>
+        server.chat("c", chatId)!.data.message.find((message) => message.chatId === id) as unknown as Record<
+            string,
+            unknown
+        >;
+    const message = (chat: ChatModule, ref: { chaId: string; chatId: string }, id: string) =>
+        chat.findChat(ref)!.message.find((message) => message.chatId === id) as unknown as Record<string, unknown>;
+    const scriptstate = (server: Awaited<ReturnType<typeof boot>>["server"]) =>
+        (server.chat("c", "k")!.data as { scriptstate?: unknown }).scriptstate;
+
+    it("patchMessage sends only the named fields, so a tab on an older base cannot revert another tab's text by toggling Disable; a field the mirror already holds and a removal it lacks still go", async () => {
+        const { server, chat, ref, commit } = await boot();
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "A by the other tab" }],
+            },
+        ]);
+        const input = { disabled: true };
+        chat.patchMessage(ref, "a", input);
+        (input as { disabled: unknown }).disabled = "mutated after the call";
+        // The mirror changed in place (still its older text), the op carries the one field.
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "A", "char"), disabled: true });
+        const applied = commit();
+        expect(applied.work.groups[0].ops).toEqual([{ op: "patchMessage", id: "a", set: { disabled: true } }]);
+        expect(applied.result.chats[0].stale).toBe(true);
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A by the other tab", "char"), disabled: true });
+
+        // A value the mirror already holds is sent (the server's copy may differ, and the write closes
+        // the message's generation fence), without a mirror change; so is a removal of a field the
+        // mirror lacks. Nothing is queued when no field is left.
+        const version = chat.captureChatBaseline(ref).version;
+        chat.patchMessage(ref, "b", { data: "B" });
+        expect(chat.captureChatBaseline(ref).version).toBe(version);
+        chat.patchMessage(ref, "c", {}, ["disabled"]);
+        expect(chat.captureChatBaseline(ref).version).toBe(version);
+        chat.patchMessage(ref, "c", {});
+        chat.patchMessage(ref, "c", { translation: null }, ["translation"]);
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([
+            { op: "patchMessage", id: "b", set: { data: "B" } },
+            { op: "patchMessage", id: "c", unset: ["disabled"] },
+        ]);
+        expect(stored(server, "k", "b")).toEqual(m("b", "B"));
+        expect(stored(server, "k", "c")).toEqual(m("c", "C", "char"));
+
+        // The stored translation is the `setTranslation` op's: a patch naming it leaves it, and the
+        // message's other fields are kept as stored.
+        const T = {
+            text: "ㄷ",
+            sourceHash: translationSourceHash("C"),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        } as MessageTranslation;
+        expect(chat.setMessageTranslation(ref, "c", T)).toBe(true);
+        commit();
+        chat.patchMessage(ref, "c", { translation: { ...T, text: "older" }, name: "n" }, ["translation"]);
+        expect(message(chat, ref, "c")).toEqual({ ...m("c", "C", "char"), name: "n", translation: T });
+        expect(commit().work.groups[0].ops).toEqual([{ op: "patchMessage", id: "c", set: { name: "n" } }]);
+        expect(stored(server, "k", "c")).toEqual({ ...m("c", "C", "char"), name: "n", translation: T });
+    });
+
+    it("patchMessage refuses a malformed patch, a missing message, and a locked message before anything changes", async () => {
+        const { chat, ref, take } = await boot();
+        const before = clone(chat.findChat(ref)!.message);
+        const shape = /patchMessage needs/;
+        expect(() => chat.patchMessage(ref, "zz", { disabled: true })).toThrow(/No message zz/);
+        expect(() => chat.patchMessage(ref, "a", [] as any)).toThrow(shape);
+        expect(() => chat.patchMessage(ref, "a", "disabled" as any)).toThrow(shape);
+        expect(() => chat.patchMessage(ref, "a", {}, [1] as any)).toThrow(shape);
+        expect(() => chat.patchMessage(ref, "a", {}, new Array<string>(1))).toThrow(shape);
+        expect(() => chat.patchMessage(ref, "a", { chatId: "other" })).toThrow(/cannot change chatId/);
+        expect(() => chat.patchMessage(ref, "a", {}, ["chatId"])).toThrow(/cannot change chatId/);
+        expect(() => chat.patchMessage(ref, "a", JSON.parse('{"__proto__": {"x": 1}}'))).toThrow(
+            /cannot change __proto__/,
+        );
+        expect(() => chat.patchMessage(ref, "a", {}, ["__proto__"])).toThrow(/cannot change __proto__/);
+        expect(() => chat.patchMessage(ref, "a", {}, ["role"])).toThrow(/cannot unset role or data/);
+        expect(() => chat.patchMessage(ref, "a", {}, ["data"])).toThrow(/cannot unset role or data/);
+        expect(() => chat.patchMessage(ref, "a", { disabled: true }, ["disabled"])).toThrow(
+            /sets and unsets the same field/,
+        );
+        expect(() => chat.patchMessage(ref, "a", { role: "system" } as any)).toThrow(/role must be user or char/);
+        expect(() => chat.patchMessage(ref, "a", { data: 7 } as any)).toThrow(/data must be a string/);
+        // A nested own `__proto__` is a legal value; only the field name is refused.
+        chat.patchMessage(ref, "a", { custom: JSON.parse('{"__proto__": {"keep": true}, "x": 1}') });
+        expect(Object.hasOwn(message(chat, ref, "a").custom as object, "__proto__")).toBe(true);
+        chat.patchMessage(ref, "a", {}, ["custom"]);
+        expect(chat.findChat(ref)!.message).toEqual(before);
+
+        // The job's accepted snapshot holds the stored text so far: the message is locked.
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "b", generationId: "g", text: "B", seq: 0 });
+        expect(() => chat.patchMessage(ref, "b", { disabled: true })).toThrow(/being generated/);
+        expect(chat.findChat(ref)!.message).toEqual(before);
+        // Two patches of `a` that undo each other: an op the server applies as a no-op, nothing else.
+        expect(take().groups[0].ops).toEqual([{ op: "patchMessage", id: "a", set: {}, unset: ["custom"] }]);
+    });
+
+    it("coalesces a patch with the unsent writes of its message as the server would apply them in order, never across messages", async () => {
+        const { server, chat, ref, commit } = await boot();
+        // patch + patch: a later unset drops the earlier set, a later set drops the earlier unset.
+        chat.patchMessage(ref, "a", { disabled: true, name: "n1" });
+        chat.patchMessage(ref, "a", {}, ["disabled"]);
+        chat.patchMessage(ref, "a", { disabled: "allBefore" });
+        // patch + a manual text write: the text joins the patch.
+        chat.setMessageText(ref, "a", "A2");
+        // text + patch stays two ops (a text write may carry a generation).
+        chat.setMessageText(ref, "b", "B2");
+        chat.patchMessage(ref, "b", { disabled: true });
+        // patch + a whole row stays two ops; the row replaces the patched fields.
+        chat.replaceMessage(ref, m("b", "B3"));
+        // a whole row + patch: the patch goes into the row.
+        chat.replaceMessage(ref, { ...m("c", "C2", "char"), name: "old" });
+        chat.patchMessage(ref, "c", { disabled: true }, ["name"]);
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([
+            { op: "patchMessage", id: "a", set: { name: "n1", disabled: "allBefore", data: "A2" }, unset: [] },
+            { op: "setText", id: "b", text: "B2" },
+            { op: "patchMessage", id: "b", set: { disabled: true } },
+            { op: "setMessage", message: m("b", "B3") },
+            { op: "setMessage", message: { ...m("c", "C2", "char"), disabled: true } },
+        ]);
+        // The server holds what the mirror holds.
+        expect(server.chat("c", "k")!.data.message).toEqual(clone(chat.findChat(ref)!.message));
+        expect(server.chat("c", "k")!.data.message).toEqual([
+            { ...m("a", "A2", "char"), name: "n1", disabled: "allBefore" },
+            m("b", "B3"),
+            { ...m("c", "C2", "char"), disabled: true },
+        ]);
+    });
+
+    it("goes out in the unload request, and a patch queued behind a create follows the server's rename of its message id", async () => {
+        const { server, chat, ref, take, apply, ack, commit } = await boot();
+        chat.patchMessage(ref, "a", { disabled: true });
+        const [request] = chat.unloadPendingChatWork(LIMIT);
+        expect(request.work.groups[0].ops).toEqual([{ op: "patchMessage", id: "a", set: { disabled: true } }]);
+        chat.trackUnloadWork(request.work);
+        chat.settleUnloadWork(request.work, server.store.applyChanges(JSON.parse(request.body)).chats);
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A", "char"), disabled: true });
+        expect(chat.hasChatWork()).toBe(false);
+
+        // The create is in flight when the patch is queued; the server renames the message.
+        const refN = { chaId: "c", chatId: "n" };
+        chat.createChat("c", { id: "n", name: "N", note: "", localLore: [], message: [m("bad\tid", "old")] } as any);
+        const create = take();
+        chat.patchMessage(refN, "bad\tid", { disabled: true });
+        ack(create, apply(create));
+        const serverId = server.chat("c", "n")!.data.message[0].chatId as string;
+        expect(serverId).not.toBe("bad\tid");
+        expect(chat.findChat(refN)!.message[0]).toEqual({ ...m(serverId, "old"), disabled: true });
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([{ op: "patchMessage", id: serverId, set: { disabled: true } }]);
+        expect(stored(server, "n", serverId)).toEqual({ ...m(serverId, "old"), disabled: true });
+    });
+
+    it("mergeChatMeta removes entries (`mergeUnset`) and keeps what another writer added on an older base; a removal is sent also for an entry the mirror lacks, and is never folded", async () => {
+        const { server, chat, ref, take, commit } = await boot();
+        chat.setChatMeta(ref, { scriptstate: { $a: "1", $c: "3" } });
+        commit();
+        // Another tab adds `$x` meanwhile; this tab (older base) changes `$b` and removes `$c`.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", merge: { scriptstate: { $x: "x" } } }],
+            },
+        ]);
+        const removals = ["$c"];
+        chat.mergeChatMeta(ref, "scriptstate", { $b: "2" }, removals);
+        removals.push("$a");
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $a: "1", $b: "2" });
+        const applied = commit();
+        expect(applied.work.groups[0].ops).toEqual([
+            { op: "meta", merge: { scriptstate: { $b: "2" } }, mergeUnset: { scriptstate: ["$c"] } },
+        ]);
+        expect(applied.result.chats[0].stale).toBe(true);
+        expect(scriptstate(server)).toEqual({ $a: "1", $x: "x", $b: "2" });
+
+        // Removals alone (also of an entry the mirror lacks: the server's copy may hold it), an id
+        // both added and removed (added), an entry normalized away before the overlap check (its
+        // removal stays), and a set after them: none of these fold.
+        chat.mergeChatMeta(ref, "scriptstate", {}, ["$nothere", "$nothere"]);
+        chat.mergeChatMeta(ref, "scriptstate", { $d: "4" }, ["$d"]);
+        chat.mergeChatMeta(ref, "scriptstate", { $a: undefined }, ["$a"]);
+        chat.setChatMeta(ref, { note: "after" });
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $b: "2", $d: "4" });
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([
+            { op: "meta", mergeUnset: { scriptstate: ["$nothere"] } },
+            { op: "meta", merge: { scriptstate: { $d: "4" } } },
+            { op: "meta", mergeUnset: { scriptstate: ["$a"] } },
+            { op: "meta", set: { note: "after" }, unset: [] },
+        ]);
+        expect(scriptstate(server)).toEqual({ $x: "x", $b: "2", $d: "4" });
+
+        // Nothing to do, and malformed arguments, change nothing.
+        chat.mergeChatMeta(ref, "scriptstate", {}, []);
+        expect(() => chat.mergeChatMeta(ref, "scriptstate", [] as any)).toThrow(/needs entries and entry ids/);
+        expect(() => chat.mergeChatMeta(ref, "scriptstate", {}, [1] as any)).toThrow(/needs entries and entry ids/);
+        expect(() => chat.mergeChatMeta(ref, "scriptstate", {}, new Array<string>(1))).toThrow(
+            /needs entries and entry ids/,
+        );
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $b: "2", $d: "4" });
+        // Nothing queued (the chat is marked for an idle refresh since its stale acknowledgement).
+        expect(take().groups).toEqual([]);
+    });
+
+    it("mergeChatMeta onto a field that is not a map: removals leave it, entries replace it, and a merge after a set of such a value is not folded into it", async () => {
+        const { server, chat, ref, commit } = await boot();
+        chat.setChatMeta(ref, { scriptstate: "ab" });
+        chat.mergeChatMeta(ref, "scriptstate", {}, ["$z"]);
+        expect((chat.findChat(ref) as any).scriptstate).toBe("ab");
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", set: { scriptstate: "ab" }, unset: [] },
+            { op: "meta", mergeUnset: { scriptstate: ["$z"] } },
+        ]);
+        expect(scriptstate(server)).toBe("ab");
+        chat.mergeChatMeta(ref, "scriptstate", { $x: "1" });
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $x: "1" });
+        commit();
+        expect(scriptstate(server)).toEqual({ $x: "1" });
+        // Set to a non-map, then entries: two ops (a fold would spread "cd" into the entries).
+        chat.setChatMeta(ref, { scriptstate: "cd" });
+        chat.mergeChatMeta(ref, "scriptstate", { $y: "2" });
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({ $y: "2" });
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", set: { scriptstate: "cd" }, unset: [] },
+            { op: "meta", merge: { scriptstate: { $y: "2" } } },
+        ]);
+        expect(scriptstate(server)).toEqual({ $y: "2" });
+        // Set to a map, then entries: one op, the entries in the set value.
+        chat.setChatMeta(ref, { scriptstate: { $e: "5" } });
+        chat.mergeChatMeta(ref, "scriptstate", { $f: "6" });
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", set: { scriptstate: { $e: "5", $f: "6" } }, unset: [] },
+        ]);
+        expect(scriptstate(server)).toEqual({ $e: "5", $f: "6" });
+    });
+
+    it("mergeChatMeta keeps an entry named __proto__ as an own entry of the mirror, as the server stores it", async () => {
+        const { server, chat, ref, commit } = await boot();
+        chat.mergeChatMeta(ref, "scriptstate", JSON.parse('{"__proto__": "p", "$old": "old"}'));
+        commit();
+        expect(Object.hasOwn(scriptstate(server) as object, "__proto__")).toBe(true);
+        chat.mergeChatMeta(ref, "scriptstate", { $new: "new" }, ["$old"]);
+        const held = (chat.findChat(ref) as any).scriptstate as Record<string, unknown>;
+        expect(Object.hasOwn(held, "__proto__")).toBe(true);
+        expect(JSON.stringify(held)).toBe(JSON.stringify(JSON.parse('{"__proto__": "p", "$new": "new"}')));
+        commit();
+        expect(JSON.stringify(scriptstate(server))).toBe(JSON.stringify(held));
     });
 });
 

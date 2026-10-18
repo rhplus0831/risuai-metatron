@@ -1661,7 +1661,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             try {
                 applyChatResult(captureChatBaseline(ref), { ...chat, id: chatId });
             } catch (error) {
-                console.warn("[Plugin] Skipped a chat change to a message being generated", error);
+                console.warn("[Plugin] Skipped a chat change (a message being generated, or a refused field)", error);
             }
         },
         getCurrentCharacterIndex: () => {

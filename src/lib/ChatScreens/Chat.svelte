@@ -85,8 +85,8 @@
         ensureChatLoaded,
         findChat,
         isMessageLocked,
+        patchMessage,
         removeMessages,
-        replaceMessage,
         setChatMeta,
         setMessageText,
         selectedChat,
@@ -1581,7 +1581,7 @@
                 ? (await ensureChatLoaded(target.ref))?.message.find((entry) => entry.chatId === target.id)
                 : undefined;
             if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
-                replaceMessage(target.ref, { ...$state.snapshot(currentMessage), disabled: !currentMessage.disabled });
+                patchMessage(target.ref, target.id, { disabled: !currentMessage.disabled });
             }
         }}
     >
@@ -1602,8 +1602,7 @@
                 ? (await ensureChatLoaded(target.ref))?.message.find((entry) => entry.chatId === target.id)
                 : undefined;
             if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
-                replaceMessage(target.ref, {
-                    ...$state.snapshot(currentMessage),
+                patchMessage(target.ref, target.id, {
                     disabled: currentMessage.disabled === "allBefore" ? false : "allBefore",
                 });
             }
@@ -1902,8 +1901,7 @@
                                         ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
                                         : undefined;
                                     if (target && current && !refuseLocked(target.ref, [target.id])) {
-                                        replaceMessage(target.ref, {
-                                            ...$state.snapshot(current),
+                                        patchMessage(target.ref, target.id, {
                                             role: current.role === "char" ? "user" : "char",
                                         });
                                     }
