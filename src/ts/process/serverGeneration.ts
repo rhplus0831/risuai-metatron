@@ -113,7 +113,7 @@ async function sendPinned(
         const reply = findChat(ref)?.message.find((message) => message.chatId === terminal.messageId);
         const generationId = reply?.generationInfo?.generationId;
         if (generationId) {
-            addRerolls(generationId, terminal.alternatives);
+            addRerolls(generationId, terminal.alternatives, ref, terminal.messageId);
         }
     }
     return { ok: !terminal.stopped, outcome, result: terminal.result };

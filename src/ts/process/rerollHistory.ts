@@ -9,7 +9,11 @@ const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 const sameIds = (left: DeepReadonly<Message[]>, right: DeepReadonly<Message[]>) =>
     left.length === right.length && left.every((message, index) => message.chatId === right[index].chatId);
 
-/** A screen's swipe history, bounded by chat and valid only while its current bundle is still the tail. */
+/**
+ * A screen's swipe history, bounded by chat and valid only while its current bundle is still the tail.
+ * The bundle at the cursor is refreshed from the chat before the slot is kept or the tail swapped, so an
+ * edit of a reply (or a prereroll swap) made since it was recorded is what a later back or forward brings.
+ */
 export function createRerollHistory() {
     const slots = new Map<string, Slot>();
 
@@ -48,6 +52,7 @@ export function createRerollHistory() {
     function begin(ref: ChatRef, anchor: string | null, removed: DeepReadonly<Message[]>): void {
         const slot = get(ref);
         if (slot?.anchor === anchor && sameIds(slot.bundles[slot.cursor], removed)) {
+            slot.bundles[slot.cursor] = safeStructuredClone(removed) as Message[];
             return;
         }
         store(keyOf(ref), { anchor, bundles: [safeStructuredClone(removed) as Message[]], cursor: 0 });
@@ -82,6 +87,7 @@ export function createRerollHistory() {
                 clear(ref);
                 return;
             }
+            slot.bundles[slot.cursor] = safeStructuredClone(chat.message.slice(anchorIndex + 1));
             chat.message = [...chat.message.slice(0, anchorIndex + 1), ...safeStructuredClone(slot.bundles[cursor])];
             applied = true;
         });

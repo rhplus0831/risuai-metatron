@@ -186,7 +186,7 @@ describe("sendChatOnServer", () => {
         });
         started(done({ messageId: "r1", alternatives: ["a", "b"] }));
         expect((await send({ target: ref })).ok).toBe(true);
-        expect(stubs.addRerolls).toHaveBeenCalledWith("gen-1", ["a", "b"]);
+        expect(stubs.addRerolls).toHaveBeenCalledWith("gen-1", ["a", "b"], ref, "r1");
 
         started(done({ messageId: "r2", alternatives: ["a"] }));
         await send({ target: ref });
