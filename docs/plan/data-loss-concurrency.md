@@ -43,6 +43,24 @@ empty pending entries. 5a tells plugins through an event, not an acknowledged pr
 customStorage: boolean }` (custom key names need the `db` permission, so only a flag); a
 concurrent creation of the record merges against an empty base; a list-shaped base is read
 as entries, a list on either side conflicts whole.
+2b carries the locks as a frame-level `streaming?: ChatStreaming[]` on the `change` frame
+(not inside `ChangeSet.chats`), computed in a new `committed` hook of `applyChanges` (after the
+commit, before the publish; a hook failure publishes without the lists and raises
+`CommittedWriteError`), and `finalize` republishes every chat the job locked; the tab keeps the
+feed locks in a separate `feedLocks` map (edit/UI predicates only: `isMessageLocked`,
+`assertUnlocked`, `isChatGenerating`, `lockedChatKeys`), while the save loop's reads, patches
+and deferrals use `isChatStreamedHere` (this tab's job locks) and `isCharacterGenerating`
+counts only this tab's job locks; a whole read releases a feed lock only when newer than the
+frame that announced it, and a feed `hello` drops them all. 5b rebases only added items
+(`mergeItemAdds` over `ITEM_LIST_MERGE_KINDS`: modules, presets, personas, credentials,
+modelPresets, modelProfiles; appended after the server's list), a changed, removed or
+reordered saved item still conflicts; `addImportedModule` shows `successImport` after
+`flushResources({ scope })`, `moduleImportDiscarded`/`moduleImportUnconfirmed` otherwise.
+Known interaction found at this point: `resourceSyncHydration.test.ts` "handles an ordinary
+conflict and a generating refusal in one batch" fails on the base since 2a landed over 4a
+(`recoverFromConflict` shows the reload notice once for the dropped locked edits and once for
+the record reload; the test's alert mock does not latch as `alertReloadNotice` does). The fix
+is assigned to 4b, which owns that notice path.
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -544,8 +562,9 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Landed slices are in the Status line. Continue sequence A with 2b and sequence B with 5b;
-4b waits for 2b, 6a for 4b, 6c for 5b. Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Next: 4b (both sequences; it also fixes the failing
+hydration test above), then 6c (after 4b lands, same adapter file), 6a after 4b, 7b after 6c,
+6b after 6a, 6d last. Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
