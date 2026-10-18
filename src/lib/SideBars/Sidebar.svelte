@@ -1,6 +1,7 @@
 <script lang="ts">
     import { selectCharacter, selection } from "src/ts/storage/selection.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
+    import { chatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
@@ -37,9 +38,11 @@
     import BaseRoundedButton from "../UI/BaseRoundedButton.svelte";
     import { getCharacterIndexObject, selectSingleFile } from "src/ts/util";
     import { v4 } from "uuid";
-    import { checkCharOrder, saveAsset } from "src/ts/globalApi.svelte";
+    import { checkCharOrder, openPinnedChat, saveAsset } from "src/ts/globalApi.svelte";
     import { alertInput, alertSelect } from "src/ts/alert";
     import SideChatList from "./SideChatList.svelte";
+    import PinnedChatsRail from "./PinnedChatsRail.svelte";
+    import { collectPinnedChats } from "./pinnedChats";
     import OpenChatPanel from "./OpenChatPanel.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
     import DevTool from "./DevTool.svelte";
@@ -48,6 +51,9 @@
     import { RISU_SIDEBAR_DRAG_TYPE } from "src/ts/dragTypes";
 
     const currentCharacter = $derived(selectedCharacter());
+    const pinnedChats = $derived(
+        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+    );
     let sideBarMode = $state(0);
     let editMode = $state(false);
     let menuMode = $state(0);
@@ -444,6 +450,13 @@
             <ShellIcon />
             <span class="text-xs">{language.playground.playground}</span>
         </button>
+        <PinnedChatsRail
+            items={pinnedChats}
+            selectedChaId={selection.chatOpen ? selection.characterId : null}
+            selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
+            rounded={IconRounded}
+            onOpen={(item) => openPinnedChat(item, reseter)}
+        />
     </div>
 {:else}
     <div
@@ -521,6 +534,13 @@
                 {/if}
             </div>
         {/if}
+        <PinnedChatsRail
+            items={pinnedChats}
+            selectedChaId={selection.chatOpen ? selection.characterId : null}
+            selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
+            rounded={IconRounded}
+            onOpen={(item) => openPinnedChat(item, reseter)}
+        />
         <div class="flex grow w-full flex-col items-center overflow-x-hidden overflow-y-auto pr-0">
             <div
                 class="h-4 min-h-4 w-14"

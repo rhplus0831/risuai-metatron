@@ -14,6 +14,7 @@
         MenuIcon,
         MicOffIcon,
         PackageIcon,
+        PinIcon,
         Plus,
         RefreshCcwIcon,
         ReplyIcon,
@@ -1158,6 +1159,24 @@
                     >
                         <StepForwardIcon />
                         <span class="ml-2">{language.continueResponse}</span>
+                    </div>
+
+                    <div
+                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                        onclick={() => {
+                            const ref = currentChatRef();
+                            if (ref) {
+                                if (currentChat.pinned === true) {
+                                    setChatMeta(ref, {}, ["pinned"]);
+                                } else {
+                                    setChatMeta(ref, { pinned: true });
+                                }
+                            }
+                            openMenu = false;
+                        }}
+                    >
+                        <PinIcon />
+                        <span class="ml-2">{currentChat.pinned === true ? language.unpinChat : language.pinChat}</span>
                     </div>
 
                     {#if settings.ui.showMenuChatList}

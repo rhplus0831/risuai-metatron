@@ -1172,6 +1172,11 @@ export interface Chat {
     message: Message[];
     note: string;
     name: string;
+    /**
+     * A list (summary) field, stored as sent. Present only while pinned (unset to unpin, never false).
+     * First-party copy, branch, and import clear it; generic creation keeps what the caller sends.
+     */
+    pinned?: boolean;
     localLore: loreBook[];
     sdData?: string;
     supaMemoryData?: string;

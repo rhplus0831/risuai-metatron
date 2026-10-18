@@ -570,6 +570,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (typeof meta.bindingReview === "boolean") {
             summary.bindingReview = meta.bindingReview;
         }
+        if (meta.pinned === true) {
+            summary.pinned = true;
+        }
         // The translation settings (`docs/plan/translation.md` slice 2.1): a new chat inherits them.
         Object.assign(summary, chatTranslationSummary(meta));
         return summary;

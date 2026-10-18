@@ -38,7 +38,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
   - `openURL`.
 - Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`, `BlankWriter`, `AppendableBuffer`. `LocalWriter.abort(reason?)` drops a partial download through streamSaver's writer and never throws: safe before `init`, after `close`, or when called twice. `VirtualWriter.abort()` is a no-op.
 - Chat and UI:
-  - `changeChatTo` (selects a chat of the selected character by id, or by its index in `chatList`, through the chat module's `selectChat`, and opens it with `setChatOpen`; per tab), `createChatCopyName` (unique against `chatList`'s names).
+  - `changeChatTo` (selects a chat of the selected character by id, or by its index in `chatList`, through the chat module's `selectChat`, and opens it with `setChatOpen`; per tab), `openPinnedChat` (shared home/rail navigation by `{ chaId, chatId }`: optional sidebar reset, ensure membership, select chat before character, clear Realm/set playground mode, open and bump `ReloadGUIPointer`), `createChatCopyName` (unique against `chatList`'s names).
   - `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`.
   - `checkCharOrder`: re-exported from `storage/characterOrder.ts` (the character module calls it without importing this file); the plugin-visible export is unchanged.
   - `toggleFullscreen`.

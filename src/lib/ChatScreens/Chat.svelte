@@ -1554,6 +1554,7 @@
                 id: v4(),
                 message: [...source.message.slice(0, branchIndex + 1), branchComment],
             };
+            delete newChat.pinned;
 
             // Selected by id in its own character (the selection of another character is not changed),
             // unless that character's selection changed while the branch was made.

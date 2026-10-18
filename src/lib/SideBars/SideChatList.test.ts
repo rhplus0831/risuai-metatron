@@ -167,6 +167,44 @@ const strip = (entry: Record<string, unknown>) => {
     return rest;
 };
 
+describe("chat pins in the sidebar", () => {
+    it.each(["root", "folder"])("shows a pin before only the pinned %s row's name", (placement) => {
+        const pinned = { chaId: "c", chatId: "k" };
+        setChatMeta(pinned, { pinned: true });
+        setChatMeta({ chaId: "c", chatId: "j" }, { pinned: false });
+        if (placement === "folder") {
+            byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+            for (const chatId of ["k", "j", "n"]) {
+                setChatMeta({ chaId: "c", chatId }, { folderId: "f" });
+            }
+        }
+        const { target } = renderSide("c");
+        const rows = () => [...target.querySelectorAll("[data-risu-chat-idx]")];
+        expect(rows()).toHaveLength(3);
+        expect(rows().map((row) => row.querySelectorAll("svg.lucide-pin").length)).toEqual([1, 0, 0]);
+        expect(rows()[0].querySelector("svg.lucide-pin")!.nextElementSibling?.textContent).toBe("Chat K");
+
+        setChatMeta(pinned, {}, ["pinned"]);
+        flushSync();
+        expect(target.querySelectorAll("svg.lucide-pin")).toHaveLength(0);
+    });
+
+    it("copying a pinned row clears the copy's pin and keeps the source pinned", async () => {
+        alerts.chatOption = 0;
+        const source = { chaId: "c", chatId: "j" };
+        setChatMeta(source, { pinned: true });
+        const side = renderSide("c");
+        side.options("Chat J").click();
+        await vi.waitFor(() => expect(ids("c")).toHaveLength(4));
+        const copy = chatList("c").find((entry) => entry.name === "Chat J (Copy)")!;
+        expect(copy.id).not.toBe(source.chatId);
+        expect(copy).not.toHaveProperty("pinned");
+        expect(findChat({ chaId: "c", chatId: copy.id })).not.toHaveProperty("pinned");
+        expect(findChat(source)).toHaveProperty("pinned", true);
+        expect(chatEntry(source)).toHaveProperty("pinned", true);
+    });
+});
+
 describe("new chat toggle inheritance", () => {
     it.each(["sidebar", "modal"] as const)(
         "the %s button copies the selected chat's map and preset link, and the empty policy omits both",

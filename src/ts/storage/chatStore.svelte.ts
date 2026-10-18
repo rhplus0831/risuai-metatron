@@ -205,6 +205,7 @@ export const streamingState = $state({
 /** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
 type ChatEntryMeta = {
     name: string;
+    pinned?: boolean;
     folderId?: string;
     bindedPersona?: string;
     promptPresetId?: string;
@@ -414,9 +415,10 @@ export function chatsLoaded(chaId: string): boolean {
     return !holding || holding.ids.every((id) => holding.chats[slot(id)] !== undefined);
 }
 
-/** The list fields of a chat or of a summary (the server's summary rule: `name` "", `fmIndex` -1). */
+/** The list fields of a chat or summary (server rules: `name` "", `fmIndex` -1, `pinned` only when true). */
 function metaOf(source: {
     name?: unknown;
+    pinned?: unknown;
     folderId?: unknown;
     bindedPersona?: unknown;
     promptPresetId?: unknown;
@@ -442,6 +444,9 @@ function metaOf(source: {
     }
     if (typeof source.bindingReview === "boolean") {
         meta.bindingReview = source.bindingReview;
+    }
+    if (source.pinned === true) {
+        meta.pinned = true;
     }
     // The translation settings, as the server's summary carries them.
     Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>));
@@ -633,7 +638,7 @@ export type ChatListEntry = { id: string } & ChatEntryMeta;
 /**
  * A character's chats as list entries, in order (reactive over the listed fields and the
  * membership only, so a streamed message does not recompute it): from the loaded chat, or from the
- * summary of a chat that is not loaded. A summary is never a `Chat`.
+ * summary of a chat that is not loaded. Includes `pinned` without loading messages. A summary is never a `Chat`.
  */
 export function chatList(chaId: string): ChatListEntry[] {
     const holding = holdingAt(chaId);
@@ -2050,10 +2055,12 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
 
 /**
  * The chat fields a chat list writes (`ChatListEntry`'s): `setChatMeta` changes them also in a chat
- * that is not loaded (its summary), with the type the summary holds.
+ * that is not loaded (its summary), with the type the summary holds. Optional fields such as `pinned`
+ * are removed on unset, including from a whole-chat read arriving while the edit is pending.
  */
 const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolean">> = {
     name: "string",
+    pinned: "boolean",
     folderId: "string",
     bindedPersona: "string",
     promptPresetId: "string",

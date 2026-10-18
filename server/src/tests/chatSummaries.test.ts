@@ -25,6 +25,7 @@ const SUMMARY_KEYS = [
     "id",
     "modelPresetId",
     "name",
+    "pinned",
     "promptPresetId",
     "revision",
     // The translation settings (`docs/plan/translation.md` slice 2.1).
@@ -94,6 +95,31 @@ function seedStore() {
 }
 
 describe("the store's summary reads", () => {
+    it("projects pinned only for stored true, omitting false, absent, and non-boolean metadata", () => {
+        const { store } = seedStore();
+        const fixtures = [
+            { id: "pin-true", pinned: true },
+            { id: "pin-false", pinned: false },
+            { id: "pin-absent" },
+            { id: "pin-string", pinned: "true" },
+        ];
+        store.applyChanges({
+            chats: fixtures.map((fields) => group(fields.id, [create({ ...fields, name: fields.id, message: [] })])),
+        });
+
+        const read = store.readKinds([characters], { chatSummaries: true });
+        const collection = store.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0];
+        expect(read).not.toHaveProperty("chats");
+        for (const summaries of [read.chatSummaries!, collection.chats]) {
+            expect(summaries.find((entry) => entry.id === "pin-true")).toMatchObject({ pinned: true });
+            for (const id of ["pin-false", "pin-absent", "pin-string"]) {
+                const summary = summaries.find((entry) => entry.id === id);
+                expect(summary, id).toBeDefined();
+                expect(summary, id).not.toHaveProperty("pinned");
+            }
+        }
+    });
+
     it("readKinds with chatSummaries answers every chat's listed fields and every order, without messages or memory data", () => {
         const { store, result } = seedStore();
         const full = store.readKinds([characters], { chats: true });

@@ -99,6 +99,7 @@ import { language } from "src/lang";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     assembleChats,
+    chatList,
     findChat,
     hydrateChat,
     removeMessages,
@@ -112,7 +113,8 @@ import { setResourceEpoch } from "src/ts/storage/resourceClient";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { createSimpleCharacter } from "src/ts/stores.svelte";
+import { createSimpleCharacter, popupStore } from "src/ts/stores.svelte";
+import PopupList from "../UI/PopupList.svelte";
 import Chat from "./Chat.svelte";
 
 const EPOCH = "00000000-0000-0000-0000-000000000000";
@@ -299,6 +301,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    popupStore.children = null;
+    popupStore.openId = 0;
     for (const instance of mounted.splice(0)) {
         unmount(instance);
     }
@@ -313,6 +317,27 @@ function answerWith(answer: (body: Record<string, unknown>) => Promise<Response>
         return answer(body);
     };
 }
+
+describe("branching a pinned chat", () => {
+    it("creates an unpinned branch while preserving the source pin", async () => {
+        const { ref } = boot("pinned-source");
+        setChatMeta(ref, { pinned: true });
+        const ui = render();
+        ui.click(ui.target.querySelector(".button-icon-menu"));
+        await vi.waitFor(() => expect(popupStore.children).not.toBeNull());
+        const popupTarget = document.createElement("div");
+        ui.target.appendChild(popupTarget);
+        mounted.push(mount(PopupList, { target: popupTarget }));
+        flushSync();
+        ui.click(ui.button(language.branch));
+        await vi.waitFor(() => expect(chatList("c")).toHaveLength(2));
+        const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+        const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
+        expect(branch).not.toHaveProperty("pinned");
+        expect(branchedChat).not.toHaveProperty("pinned");
+        expect(findChat(ref)).toHaveProperty("pinned", true);
+    });
+});
 
 describe("the stored path: display", () => {
     it("with the chat's autoTranslate on, shows the stored translation the refresh brings without a remount, the original again when it is cleared, and a replacement in its turn", async () => {

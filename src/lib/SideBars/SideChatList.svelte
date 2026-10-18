@@ -6,6 +6,7 @@
     import {
         DownloadIcon,
         PencilIcon,
+        PinIcon,
         HardDriveUploadIcon,
         MenuIcon,
         TrashIcon,
@@ -91,6 +92,7 @@
                 if (!source) {
                     break;
                 }
+                delete source.pinned;
                 createChat(
                     ref.chaId,
                     { ...source, name: createChatCopyName(source.name, "Copy", ref.chaId), id: v4() },
@@ -398,6 +400,9 @@
                                                 padding={false}
                                             />
                                         {:else}
+                                            {#if chat.pinned === true}
+                                                <PinIcon size={14} class="mr-1 shrink-0" aria-hidden="true" />
+                                            {/if}
                                             <span>{chat.name}</span>
                                             {#if bindingIncomplete(chat)}
                                                 <span
@@ -524,6 +529,9 @@
                                     padding={false}
                                 />
                             {:else}
+                                {#if chat.pinned === true}
+                                    <PinIcon size={14} class="mr-1 shrink-0" aria-hidden="true" />
+                                {/if}
                                 <span>{chat.name}</span>
                                 {#if bindingIncomplete(chat)}
                                     <span

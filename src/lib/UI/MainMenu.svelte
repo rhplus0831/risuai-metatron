@@ -1,19 +1,28 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
+    import { chatList } from "src/ts/storage/chatStore.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
-    import { ArrowLeft, ChevronRightIcon, Globe2Icon, UsersIcon } from "@lucide/svelte";
-    import { getVersionString } from "src/ts/globalApi.svelte";
+    import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
+    import { getVersionString, openPinnedChat } from "src/ts/globalApi.svelte";
     import { language } from "src/lang";
     import { changeChar, getCharImage } from "src/ts/characters";
     import { onMount } from "svelte";
     import Title from "./Title.svelte";
     import { collectHomeRecentCharacters } from "./mainMenuProjection";
+    import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "../SideBars/pinnedChats";
 
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
     let relativeTimeNow = $state(Date.now());
+    let showAllPinnedChats = $state(false);
+    const pinnedChats = $derived(
+        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+    );
+    const visiblePinnedChats = $derived(
+        showAllPinnedChats ? pinnedChats : pinnedChats.slice(0, HOME_PINNED_CHAT_COLLAPSED_LIMIT),
+    );
     let recentCharacters = $derived(
         collectHomeRecentCharacters(characterList(), {
             agoFormatter,
@@ -39,7 +48,70 @@
         {#if !$OpenRealmStore}
             <div class="mt-4 mb-5 w-full border-t border-t-selected"></div>
 
-            <section aria-labelledby="home-recent-characters-title" data-risu-home-section="recent-characters">
+            <section aria-labelledby="home-pinned-chats-title" data-risu-home-section="pinned-chats">
+                <div class="mb-3 flex items-center gap-2">
+                    <PinIcon size={18} aria-hidden="true" />
+                    <h2 id="home-pinned-chats-title" class="text-lg font-bold">{language.pinnedChats}</h2>
+                </div>
+
+                {#if pinnedChats.length > 0}
+                    <div class="grid grid-cols-1 gap-3 md:grid-cols-2" data-risu-home-pinned-list>
+                        {#each visiblePinnedChats as item (JSON.stringify([item.chaId, item.chatId]))}
+                            <button
+                                type="button"
+                                class="flex min-w-0 items-center gap-2 rounded-xl border border-darkborderc bg-darkbg p-3 text-left shadow-sm transition-colors hover:border-green-500 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-green-500"
+                                aria-label={language.openPinnedChat(item.chatName, item.characterName)}
+                                data-risu-home-pinned-chat={item.chatId}
+                                onclick={() => openPinnedChat(item)}
+                            >
+                                {#await getCharImage(item.characterImage, "plain")}
+                                    <span
+                                        class="h-11 w-11 shrink-0 animate-pulse rounded-lg bg-selected"
+                                        aria-hidden="true"
+                                    ></span>
+                                {:then imageSource}
+                                    <img
+                                        src={imageSource || "/none.webp"}
+                                        alt=""
+                                        class="h-11 w-11 shrink-0 rounded-lg object-cover object-top"
+                                        class:rounded-full={settings.ui.roundIcons}
+                                    />
+                                {/await}
+                                <span class="min-w-0">
+                                    <span class="block truncate text-sm font-semibold">{item.chatName}</span>
+                                    <span class="mt-0.5 block truncate text-xs text-textcolor2"
+                                        >{item.characterName}</span
+                                    >
+                                </span>
+                            </button>
+                        {/each}
+                    </div>
+                    {#if pinnedChats.length > HOME_PINNED_CHAT_COLLAPSED_LIMIT}
+                        <button
+                            type="button"
+                            class="mt-3 rounded-md px-2 py-1 text-sm font-medium text-textcolor2 transition-colors hover:bg-selected hover:text-textcolor focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-green-500"
+                            aria-expanded={showAllPinnedChats}
+                            onclick={() => (showAllPinnedChats = !showAllPinnedChats)}
+                        >
+                            {showAllPinnedChats
+                                ? language.homeShowFewerPinnedChats
+                                : language.homeShowAllPinnedChats(pinnedChats.length)}
+                        </button>
+                    {/if}
+                {:else}
+                    <div
+                        class="rounded-xl border border-dashed border-darkborderc bg-darkbg/60 px-4 py-3 text-sm text-textcolor2"
+                    >
+                        {language.homePinnedChatsEmpty}
+                    </div>
+                {/if}
+            </section>
+
+            <section
+                class="mt-7"
+                aria-labelledby="home-recent-characters-title"
+                data-risu-home-section="recent-characters"
+            >
                 <div class="mb-3 flex items-center gap-2">
                     <UsersIcon size={18} aria-hidden="true" />
                     <h2 id="home-recent-characters-title" class="text-lg font-bold">

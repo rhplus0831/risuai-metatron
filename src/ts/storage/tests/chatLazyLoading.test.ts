@@ -51,6 +51,8 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
+vi.mock("../../characterCards", () => ({ characterURLImport: vi.fn() }));
 vi.mock("../../alert", () => ({
     alertError: vi.fn(),
     alertNormal: vi.fn(),
@@ -89,7 +91,7 @@ const settleMicrotasks = async () => {
  * `m` and `constructor` (an id named like an `Object.prototype` member), and `e` with its only chat
  * `only`. Nothing is selected.
  */
-async function boot() {
+async function boot(initialMeta: Record<string, unknown> = {}) {
     vi.resetModules();
     const server = await StoreBackedServer.create();
     serverHolder.current = server;
@@ -109,6 +111,7 @@ async function boot() {
                             ? [m("a", "A", "char"), m("b", "B"), m("c", "C", "char")]
                             : [m(`k${i}-0`, `K${i} text`)],
                     ...(i === 1 ? { fmIndex: 2 } : {}),
+                    ...(i === 2 ? initialMeta : {}),
                     ...(i === 3
                         ? {
                               folderId: "f",
@@ -262,6 +265,138 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     serverHolder.current?.close();
+});
+
+describe("user-pinned chats", () => {
+    it("exposes a persisted pin in list entries before and after loading the chat", async () => {
+        const { chat, reads } = await boot({ pinned: true });
+        expect(chat.chatEntry(kRef(2))).toEqual({ id: "k2", name: "K2", fmIndex: -1, pinned: true });
+        expect(chat.chatList("c").find((entry) => entry.id === "k2")).toEqual({
+            id: "k2",
+            name: "K2",
+            fmIndex: -1,
+            pinned: true,
+        });
+        expect(chat.findChat(kRef(2))).toBeUndefined();
+        expect(reads()).toEqual([]);
+
+        await chat.ensureChatLoaded(kRef(2));
+        expect(chat.findChat(kRef(2))).toHaveProperty("pinned", true);
+        expect(chat.chatEntry(kRef(2))).toHaveProperty("pinned", true);
+        expect(chat.chatList("c").find((entry) => entry.id === "k2")).toHaveProperty("pinned", true);
+    });
+
+    it("pins and unpins an unloaded chat with server-applied meta ops, removing the key without a default", async () => {
+        const { server, chat, commit, reads } = await boot();
+        expect(chat.chatEntry(kRef(2))).not.toHaveProperty("pinned");
+        chat.setChatMeta(kRef(2), { pinned: true });
+        expect(chat.chatEntry(kRef(2))).toHaveProperty("pinned", true);
+        expect(chat.chatList("c").find((entry) => entry.id === "k2")).toHaveProperty("pinned", true);
+        const pinned = commit();
+        expect(pinned.work.groups).toHaveLength(1);
+        expect(pinned.work.groups[0]).toMatchObject({
+            characterId: "c",
+            chatId: "k2",
+            ops: [{ op: "meta", set: { pinned: true }, unset: [] }],
+        });
+        expect(server.chat("c", "k2")!.data).toHaveProperty("pinned", true);
+        expect(chat.findChat(kRef(2))).toBeUndefined();
+        expect(reads()).toEqual([]);
+
+        chat.setChatMeta(kRef(2), {}, ["pinned"]);
+        expect(chat.chatEntry(kRef(2))).not.toHaveProperty("pinned");
+        expect(chat.chatList("c").find((entry) => entry.id === "k2")).not.toHaveProperty("pinned");
+        const unpinned = commit();
+        expect(unpinned.work.groups).toHaveLength(1);
+        expect(unpinned.work.groups[0]).toMatchObject({
+            characterId: "c",
+            chatId: "k2",
+            ops: [{ op: "meta", set: {}, unset: ["pinned"] }],
+        });
+        expect(server.chat("c", "k2")!.data).not.toHaveProperty("pinned");
+        expect(chat.findChat(kRef(2))).toBeUndefined();
+        expect(reads()).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+        await chat.ensureChatLoaded(kRef(2));
+        expect(chat.findChat(kRef(2))).not.toHaveProperty("pinned");
+    });
+
+    it("generic createChat preserves a supplied pin and leaves an omitted pin absent", async () => {
+        const { server, chat, commit } = await boot();
+        for (const fields of [{ id: "created-pin", pinned: true }, { id: "created-plain" }]) {
+            chat.createChat("c", { ...fields, name: fields.id, note: "", localLore: [], message: [] });
+        }
+        expect(chat.findChat(ref("c", "created-pin"))).toHaveProperty("pinned", true);
+        expect(chat.chatEntry(ref("c", "created-pin"))).toHaveProperty("pinned", true);
+        expect(chat.findChat(ref("c", "created-plain"))).not.toHaveProperty("pinned");
+        commit();
+        expect(server.chat("c", "created-pin")!.data).toHaveProperty("pinned", true);
+        expect(server.chat("c", "created-plain")!.data).not.toHaveProperty("pinned");
+    });
+
+    it("openPinnedChat opens the target across characters without loading the previous chat first", async () => {
+        const { chat, selection, reads, server } = await boot({ pinned: true });
+        const { openPinnedChat } =
+            await vi.importActual<typeof import("../../globalApi.svelte")>("../../globalApi.svelte");
+        const { PlaygroundStore, OpenRealmStore, ReloadGUIPointer } = await import("../../stores.svelte");
+        const { get } = await import("svelte/store");
+        selection.selectCharacter("d");
+        await settleMicrotasks();
+        selection.setChatOpen(false);
+        PlaygroundStore.set(1);
+        OpenRealmStore.set(true);
+        ReloadGUIPointer.set(-1);
+        server.requests.length = 0;
+        expect(chat.selectedChatId("c")).toBe("k0");
+        const reset = vi.fn(() => {
+            expect(selection.selection.characterId).toBe("d");
+            expect(chat.selectedChatId("c")).toBe("k0");
+        });
+
+        openPinnedChat(kRef(2), reset);
+        expect(reset).toHaveBeenCalledOnce();
+        expect(selection.selection.characterId).toBe("c");
+        expect(chat.selectedChatId("c")).toBe("k2");
+        expect(selection.selection.chatOpen).toBe(true);
+        expect(get(PlaygroundStore)).toBe(0);
+        expect(get(OpenRealmStore)).toBe(false);
+        expect(get(ReloadGUIPointer)).not.toBe(-1);
+        await settleMicrotasks();
+        expect(reads()).toEqual([{ chats: ["c/k2"], summaries: [] }]);
+        expect(chat.findChat(kRef(0))).toBeUndefined();
+        expect(chat.selectedChat()?.id).toBe("k2");
+    });
+
+    it("openPinnedChat ignores an unknown character or a chat outside the character's list", async () => {
+        const { chat, selection, reads, server } = await boot();
+        const { openPinnedChat } =
+            await vi.importActual<typeof import("../../globalApi.svelte")>("../../globalApi.svelte");
+        const { PlaygroundStore, OpenRealmStore, ReloadGUIPointer } = await import("../../stores.svelte");
+        const { get } = await import("svelte/store");
+        selection.selectCharacter("d");
+        await settleMicrotasks();
+        selection.setChatOpen(false);
+        PlaygroundStore.set(1);
+        OpenRealmStore.set(true);
+        ReloadGUIPointer.set(-1);
+        server.requests.length = 0;
+        const reset = vi.fn();
+
+        for (const target of [ref("missing", "k2"), ref("c", "m")]) {
+            openPinnedChat(target, reset);
+            expect(reset).not.toHaveBeenCalled();
+            expect(selection.selection.characterId).toBe("d");
+            expect(chat.selectedChatId("d")).toBe("m");
+            expect(chat.selectedChatId("c")).toBe("k0");
+            expect(selection.selection.chatOpen).toBe(false);
+            expect(get(PlaygroundStore)).toBe(1);
+            expect(get(OpenRealmStore)).toBe(true);
+            expect(get(ReloadGUIPointer)).toBe(-1);
+        }
+        await settleMicrotasks();
+        expect(reads()).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
 });
 
 describe("the boot from summaries", () => {

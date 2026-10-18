@@ -464,6 +464,7 @@ export async function importChat() {
          */
         const addChats = (chats: Chat[]) => {
             chats.forEach((chat, index) => {
+                delete chat.pinned;
                 importedChatBinding(chat);
                 importedChatTranslation(chat);
                 importedChatTogglePreset(chat);

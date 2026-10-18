@@ -111,13 +111,14 @@ export type ChatOrderRecord = { characterId: string; revision: string; ids: stri
  * A chat's summary (Phase 6 slice 9a): what a chat list shows, projected from the stored metadata
  * without reading message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`,
  * `supaMemoryData`), bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive
- * defaulted (the server's chat normalizer stores both).
+ * defaulted (the server's chat normalizer stores both); `pinned` is projected only when true.
  */
 export type ChatSummary = {
     characterId: string;
     id: string;
     revision: string;
     name: string;
+    pinned?: boolean;
     folderId?: string;
     bindedPersona?: string;
     promptPresetId?: string;

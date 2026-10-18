@@ -1,18 +1,34 @@
-import { selectedCharacter } from "./storage/characterStore.svelte";
+import { findCharacter, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { get } from "svelte/store";
 import streamSaver from "streamsaver";
 import { defaultSdDataFunc, appVer, appSubVer } from "./storage/database.svelte";
-import { botMakerMode, loadedStore, LoadingStatusState, ReloadGUIPointer, bodyIntercepterStore } from "./stores.svelte";
+import {
+    botMakerMode,
+    loadedStore,
+    LoadingStatusState,
+    ReloadGUIPointer,
+    bodyIntercepterStore,
+    PlaygroundStore,
+    OpenRealmStore,
+} from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
-import { setChatOpen } from "./storage/selection.svelte";
+import {
+    chatEntry,
+    chatList,
+    currentChatRef,
+    ensureChat,
+    selectChat,
+    selectedChat,
+    type ChatRef,
+} from "./storage/chatStore.svelte";
+import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import {
     readAsset,
@@ -1436,6 +1452,21 @@ export function changeChatTo(IdOrIndex: string | number) {
         return;
     }
     selectChat(character.chaId, IdOrIndex);
+    setChatOpen(true);
+    ReloadGUIPointer.set(Math.random());
+}
+
+/** Opens a pin by id, selecting its chat before its character so only the target chat is loaded. */
+export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
+    if (!findCharacter(ref.chaId) || !chatEntry(ref)) {
+        return;
+    }
+    reseter?.();
+    ensureChat(ref.chaId);
+    selectChat(ref.chaId, ref.chatId);
+    PlaygroundStore.set(ref.chaId === "§playground" ? 2 : 0);
+    OpenRealmStore.set(false);
+    selectCharacter(ref.chaId);
     setChatOpen(true);
     ReloadGUIPointer.set(Math.random());
 }
