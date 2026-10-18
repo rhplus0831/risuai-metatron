@@ -703,15 +703,20 @@ describe("patchMessage (data-loss slice 1a)", () => {
             conflictsOf(() =>
                 store.applyChanges({ chats: [group("k", base, [patch("b", { set: { disabled: true } })])] }),
             ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating" }]);
-        // Generating is answered before a stale-revision conflict and with nothing written.
+        ).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating", messageIds: ["b"] },
+        ]);
+        // Generating is answered before a stale-revision conflict and with nothing written. The entry
+        // names only the targeted messages a job owns (data-loss slice 2a), not the free ones.
         expect(
             conflictsOf(() =>
                 store.applyChanges({
                     chats: [group("k", base, [{ op: "remove", ids: ["a", "c"] }, patch("b", { unset: ["name"] })])],
                 }),
             ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating" }]);
+        ).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating", messageIds: ["b"] },
+        ]);
         expect(snapshotState(store)).toBe(state);
         expect(store.writeCount()).toBe(writes);
         // Another message of the chat is open to a patch.

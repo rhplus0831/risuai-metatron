@@ -31,6 +31,28 @@ const group = (chatId: string, baseRevision: string | null, ops: ChatOp[], chara
 });
 const bumped = (token: string, n: number) =>
     token.replace(/:\d+$/, `:${Number(token.slice(token.lastIndexOf(":") + 1)) + n}`);
+/**
+ * The chat `k` conflict entry a refused group gets: with `messageIds` naming `b` when one of its ops
+ * targets that message by id (data-loss slice 2a), without the field for a whole-chat refusal.
+ */
+const refusal = (revision: string, ops: ChatOp[]) => {
+    const targetsB = ops.some(
+        (op) =>
+            (op.op === "setText" || op.op === "patchMessage" || op.op === "begin" || op.op === "setTranslation"
+                ? op.id === "b"
+                : false) ||
+            (op.op === "setMessage" && op.message.chatId === "b") ||
+            (op.op === "remove" && op.ids.includes("b")),
+    );
+    return {
+        kind: "chat",
+        characterId: "c",
+        id: "k",
+        revision,
+        reason: "generating",
+        ...(targetsB ? { messageIds: ["b"] } : {}),
+    };
+};
 
 function setup() {
     const lock = createGenerationLock();
@@ -96,10 +118,74 @@ describe("the generation lock guard on chat groups", () => {
         ];
         for (const ops of refused) {
             const conflicts = conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, ops)] }));
-            expect(conflicts, JSON.stringify(ops)).toEqual([
+            expect(conflicts, JSON.stringify(ops)).toEqual([refusal(revisions.k, ops)]);
+        }
+        expect(state()).toBe(before);
+    });
+
+    it("names the targeted messages a job owns in op order, once each, leaving out free targets and the caller's own job's, and no list for a whole-chat refusal", () => {
+        const { store, revisions, lock, token, state, conflictsOf } = setup();
+        // Job 2 (another token) owns message a of the same chat.
+        lock.addToken("token-2");
+        lock.acquire(
+            { characterId: "c", chatId: "k", messageId: "a" },
+            { jobId: "J2", generationId: "g2", token: "token-2" },
+        );
+        const before = state();
+        const entry = (ops: ChatOp[], options?: { epoch: string; jobToken: string }) =>
+            conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, ops)] }, options));
+        // In op order, each id once: b (setText), then a (the bulk remove), b again not repeated.
+        expect(
+            entry([
+                { op: "setText", id: "b", text: "mine" },
+                { op: "remove", ids: ["a", "b"] },
+                { op: "patchMessage", id: "b", set: { name: "n" } },
+            ]),
+        ).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: revisions.k,
+                reason: "generating",
+                messageIds: ["b", "a"],
+            },
+        ]);
+        // Job 1's own write (its token) is refused only for job 2's message, which alone is named.
+        expect(
+            entry(
+                [
+                    { op: "setText", id: "b", text: "owner" },
+                    { op: "setText", id: "a", text: "not mine" },
+                ],
+                { epoch: store.epoch(), jobToken: token },
+            ),
+        ).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating", messageIds: ["a"] },
+        ]);
+        // A whole-chat replace or delete of a chat holding a lock: refused, nothing named (the
+        // client keeps and retries the whole group).
+        for (const ops of [
+            [{ op: "delete" }] as ChatOp[],
+            [{ op: "replace", chat: { name: "K2", message: [m("z", "Z")] } as never }] as ChatOp[],
+            [
+                { op: "meta", set: { note: "n" } },
+                { op: "replace", chat: { name: "K2", message: [] } as never },
+            ] as ChatOp[],
+        ]) {
+            expect(entry(ops), JSON.stringify(ops)).toEqual([
                 { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating" },
             ]);
         }
+        // A whole-chat replace alongside a locked message edit names that message.
+        expect(
+            entry([
+                { op: "replace", chat: { name: "K2", message: [m("z", "Z")] } as never },
+                { op: "setText", id: "b", text: "mine" },
+            ]),
+        ).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating", messageIds: ["b"] },
+        ]);
         expect(state()).toBe(before);
     });
 
@@ -119,7 +205,14 @@ describe("the generation lock guard on chat groups", () => {
                 }),
             );
             expect(conflicts, JSON.stringify(value)).toEqual([
-                { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating" },
+                {
+                    kind: "chat",
+                    characterId: "c",
+                    id: "k",
+                    revision: revisions.k,
+                    reason: "generating",
+                    messageIds: ["b"],
+                },
             ]);
         }
         expect(state()).toBe(before);
@@ -161,7 +254,7 @@ describe("the generation lock guard on chat groups", () => {
             [{ op: "begin", id: "b", generationId: "g-client" }] as ChatOp[],
         ]) {
             expect(conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, ops)] }))).toEqual([
-                { kind: "chat", characterId: "c", id: "k", revision: current, reason: "generating" },
+                refusal(current, ops),
             ]);
         }
         expect(state()).toBe(before);
@@ -222,7 +315,7 @@ describe("the generation lock guard on chat groups", () => {
         );
         lock.addToken("token-2");
         expect(conflictsOf(() => write({ epoch: store.epoch(), jobToken: "token-2" }))).toEqual([
-            { kind: "chat", characterId: "c", id: "k", revision, reason: "generating" },
+            { kind: "chat", characterId: "c", id: "k", revision, reason: "generating", messageIds: ["b"] },
         ]);
         expect(state()).toBe(before);
         // Once the job ends, the token is dead and the message is free: an ordinary write applies.
@@ -255,7 +348,7 @@ describe("the generation lock guard on chat groups", () => {
             }),
         );
         expect(conflicts).toEqual([
-            { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating" },
+            { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating", messageIds: ["b"] },
         ]);
         expect(state()).toBe(before);
         expect(store.get(characters, "e")).toBeNull();

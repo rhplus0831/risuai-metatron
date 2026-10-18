@@ -220,7 +220,10 @@ describe("a chat another tab announced", () => {
         const { fake, sync, chat, mirrorChat, notify } = await boot();
         fake.lock!.addToken("T");
         fake.lock!.acquire(B, { jobId: "J", generationId: "g1", token: "T" });
+        // The edit of the locked message is dropped (data-loss slice 2a); the edit of another
+        // message in the same group is the work the job blocks.
         chat.setMessageText(refK, "b", "edited");
+        chat.setMessageText(refK, "a", "mine");
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
         const reads = readsOf(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
@@ -252,8 +255,10 @@ describe("a chat another tab announced", () => {
         expect(short).toBeLessThanOrEqual(4);
         fake.lock!.endJob("T");
         await vi.advanceTimersByTimeAsync(3000);
-        expect(fake.texts("c", "k")).toEqual(["A", "edited", "R1"]);
-        expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "edited", "R1"]);
+        // The retry carries the other edit; the stale acknowledgement's read brings the chat whole
+        // (the job's reply stands, the dropped edit is gone from the mirror).
+        expect(fake.texts("c", "k")).toEqual(["mine", "B", "R1"]);
+        expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["mine", "B", "R1"]);
         const after = readsOf(fake);
         await vi.advanceTimersByTimeAsync(5000);
         expect(readsOf(fake)).toBe(after);
@@ -328,7 +333,10 @@ describe("a send while another tab's job holds the chat (C2)", () => {
         const commands = await import("../../process/serverCommands");
         fake.lock!.addToken("T");
         fake.lock!.acquire(B, { jobId: "J", generationId: "g1", token: "T" });
+        // The edit of the locked message is dropped with the reload notice (data-loss slice 2a);
+        // the edit of another message in the group is the pending work the job blocks.
         chat.setMessageText(refK, "b", "edited");
+        chat.setMessageText(refK, "a", "mine");
         const first = await commands.runServerJob(character(), refK, {
             kind: "send",
             label: "send",
@@ -336,7 +344,7 @@ describe("a send while another tab's job holds the chat (C2)", () => {
         } as any);
         // The flush's conflict recovery showed the notice: the send does not show a second one.
         expect(first.outcome).toBe("refused");
-        expect(alerts.normal.mock.calls).toEqual([["generating"]]);
+        expect(alerts.normal.mock.calls).toEqual([["generating"], ["reloaded"]]);
         expect(alerts.error).not.toHaveBeenCalled();
         // The work is blocked now and the flush refuses at once: the send shows the notice itself,
         // never the wrapped save error.

@@ -150,8 +150,8 @@ export type ChatSummary = {
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
- * touches a message a server generation job owns (Phase 5); retry after the job ends instead of
- * reloading.
+ * touches a message a server generation job owns (Phase 5); discard by-id edits of the named locked
+ * messages and reload the chat when idle, retrying retained work after the job ends.
  */
 export type ChatConflict = {
     kind: "chat";
@@ -159,6 +159,13 @@ export type ChatConflict = {
     id: string;
     revision: string | null;
     reason?: "generating";
+    /**
+     * With `reason: "generating"`: the messages the group's ops rewrite or remove that a generation
+     * job owns (the refusal's evidence, not every lock of the chat); absent when there is none (a
+     * whole-chat `replace` or `delete` of a chat holding a lock). The client drops its edits of these
+     * messages and retries the rest after the job.
+     */
+    messageIds?: string[];
 };
 
 /** A 409 entry for a reorder or a chat whose parent order is gone. */

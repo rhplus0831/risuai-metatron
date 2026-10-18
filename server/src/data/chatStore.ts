@@ -756,18 +756,21 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
     /**
      * Whether a group touches a message a generation job other than `jobToken` owns: an op that
-     * rewrites or removes it, or a whole-chat replace or delete of a chat holding one.
+     * rewrites or removes it, or a whole-chat replace or delete of a chat holding one. Null when it
+     * does not; otherwise the messages the group's ops target that such a job owns (from the lock
+     * table, in op order; empty for a whole-chat refusal that targets none of them).
      */
-    function refusedByLock(group: PreparedChatGroup, jobToken: string | undefined): boolean {
+    function refusedByLock(group: PreparedChatGroup, jobToken: string | undefined): string[] | null {
         if (!guard) {
-            return false;
+            return null;
         }
         const foreign = (token: string | null) => token !== null && token !== jobToken;
         const targets = lockedTargets(group);
-        if (targets.chat && [...guard.chatHolders(group.characterId, group.chatId)].some(foreign)) {
-            return true;
+        const locked = [...targets.messages].filter((id) => foreign(guard.holder(group.characterId, group.chatId, id)));
+        if (locked.length > 0) {
+            return locked;
         }
-        return [...targets.messages].some((id) => foreign(guard.holder(group.characterId, group.chatId, id)));
+        return targets.chat && [...guard.chatHolders(group.characterId, group.chatId)].some(foreign) ? [] : null;
     }
 
     /** Reads only touched rows and their final anchors, stopping once the feed's byte cap is exceeded. */
@@ -836,14 +839,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         };
         let row = selectChat.get(characterId, chatId) as ChatRow | undefined;
         // Before the revision checks: a refused edit of a generating message must read as
-        // "retry after the job", not as a stale view to reload.
-        if (refusedByLock(group, jobToken)) {
+        // "retry after the job", not as a stale view to reload. The locked messages it targets
+        // are named, so the client can drop its edits of them and retry the rest.
+        const lockedIds = refusedByLock(group, jobToken);
+        if (lockedIds) {
             throw new ChatChangeConflict({
                 kind: "chat",
                 characterId,
                 id: chatId,
                 revision: row ? tokens.token(row.seq, row.revision) : null,
                 reason: "generating",
+                ...(lockedIds.length > 0 ? { messageIds: lockedIds } : {}),
             });
         }
         /** Whether the group names an older revision of this chat (allowed for by-id ops). */

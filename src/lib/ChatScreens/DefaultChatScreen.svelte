@@ -42,10 +42,12 @@
         appendMessage,
         applyChatResult,
         captureChatBaseline,
+        chatOwnerToken,
         type ChatRef,
         currentChatRef,
         findChat,
         isChatGenerating,
+        restoreUnsentRemoval,
         retrySelectedChatLoad,
         setChatMeta,
         setMessageText,
@@ -343,13 +345,20 @@
             removed.push(msg);
         }
         removed.reverse();
-        rerollHistory.begin(ref, cha.at(-1)?.chatId ?? null, removed);
+        const anchor = cha.at(-1)?.chatId ?? null;
+        rerollHistory.begin(ref, anchor, removed);
         // The replies after the last user message go, then the send runs again.
+        const owner = chatOwnerToken(ref.chaId);
         const kept = new Set(cha.map((message) => message.chatId));
         editChatSync(ref, (chat) => {
             chat.message = chat.message.filter((message) => kept.has(message.chatId));
         });
-        await sendChatMain(false, ref);
+        if (!(await sendChatMain(false, ref))) {
+            // The send did not run (a flush refused for another tab's generation, which
+            // `runServerJob` already alerted as `chatGenerating`, or another refusal before the
+            // save): the replies come back while their removal is still unsent.
+            restoreUnsentRemoval(ref, owner, anchor, removed);
+        }
     }
 
     async function unReroll() {

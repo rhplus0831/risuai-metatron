@@ -59,7 +59,9 @@ import { readRefs } from "./resourceClient";
  *   remove it. `applyServerGeneration` writes the streamed text into the mirror without queuing
  *   anything, and the job's end releases its locks. A chat `resource` event replaces the chat through
  *   `hydrateChat` (never an outgoing write). Work the server refused for a generating message
- *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`. A conflict on a chat a job
+ *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, except its edits of the locked
+ *   messages the refusal names, which are dropped with the reload notice and read back with the chat
+ *   (also for a tab whose follow of its own job was lost). A conflict on a chat a job
  *   streams into is deferred: it reloads once the job ends. The streamed message is `streamingState`
  *   (the chat screen's display optimization) from its first stream update until its lock is released.
  *   `lockedChatKeys` reads the distinct chat keys holding these locks (reactive).
@@ -2209,6 +2211,58 @@ function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
 }
 
 /**
+ * Puts back the messages a reroll removed (`messages`, the tail it removed after `anchor`, null: the
+ * start) when its send did not run and a matching removal is pending: the last `remove` naming
+ * exactly those ids must also be the queue's last op. It is withdrawn whole and nothing is queued.
+ * The restoration is provisional: a removal requeued after a lost response may have committed,
+ * so the chat is marked stale and its idle read can remove the restored replies again. Nothing
+ * changes when the character's chats were replaced since `owner` (`chatOwnerToken`), the anchor
+ * is gone, something follows it now, a message is back already, or no matching pending removal
+ * ends the queue (a dropped single removal comes back with the chat's read instead). Returns
+ * whether the messages were put back.
+ */
+export function restoreUnsentRemoval(
+    ref: ChatRef,
+    owner: string,
+    anchor: string | null,
+    messages: DeepReadonly<Message[]>,
+): boolean {
+    const chat = heldChat(ref);
+    const key = keyOf(ref.chaId, ref.chatId);
+    const entry = pending.get(key);
+    if (!chat || !entry || messages.length === 0 || lifetimeOf(ref.chaId) !== owner) {
+        return false;
+    }
+    const ids = new Set(messages.map((message) => message.chatId!));
+    const index = entry.ops.findLastIndex(
+        (op) => op.op === "remove" && op.ids.length === ids.size && op.ids.every((id) => ids.has(id)),
+    );
+    const anchorIndex = anchor === null ? -1 : indexOfMessage(chat, anchor);
+    if (
+        index === -1 ||
+        index !== entry.ops.length - 1 ||
+        (anchor !== null && anchorIndex === -1) ||
+        anchorIndex !== chat.message.length - 1 ||
+        messages.some((message) => indexOfMessage(chat, message.chatId!) !== -1)
+    ) {
+        return false;
+    }
+    entry.ops.splice(index, 1);
+    const restored = clone<Message[]>(messages);
+    restored.forEach((message) => dropInvalidTranslation(message));
+    chat.message.push(...restored);
+    changed(key);
+    staleChats.add(key);
+    if (entry.ops.length === 0 && !entry.create && !entry.resend && !inflight.has(key)) {
+        pending.delete(key);
+        settleKey(key, entry.seq);
+        jobBlocked.delete(key);
+    }
+    notifyWork();
+    return true;
+}
+
+/**
  * The chat fields the server's chat normalizer (`normalizeChatMeta`) defaults: removing one, or setting
  * it to `null`, stores the default, so the client writes the default itself and holds what the server
  * holds (Phase 6 slice 5b).
@@ -2746,14 +2800,14 @@ export function initializeChats() {
 
 /** Whether any chat work waits to be sent or a deferred reload can run. */
 export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
+    // Empty entries still need takeChatWork to settle them once earlier in-flight work resolves.
     for (const [key, entry] of pending) {
         if (
             !quarantined.has(key) &&
             !deferred.has(key) &&
             !inflight.has(key) &&
             !isJobBlocked(key) &&
-            canSaveCharacter(entry.characterId) &&
-            (entry.create || entry.resend || entry.ops.length > 0)
+            canSaveCharacter(entry.characterId)
         ) {
             return true;
         }
@@ -3425,8 +3479,9 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
  * is replaced by the server copy and its local work discarded. Reorders that conflicted are dropped
  * (the caller refreshes those characters). A group refused for a generating message (`generating`:
- * `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, not reloaded. Returns whether a
- * chat was reloaded and whether one was refused for a generating message.
+ * `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, not reloaded, except its edits of
+ * the locked messages the conflict names (`lockedMessages`, see `dropLockedEdits`). Returns whether
+ * a chat was reloaded (or had edits dropped) and whether retained work was blocked by a generation.
  */
 export function recoverChatConflicts(
     work: ChatWork,
@@ -3434,6 +3489,7 @@ export function recoverChatConflicts(
     conflictedOrders: ReadonlySet<string>,
     remote: readonly RemoteChat[],
     generating: ReadonlySet<string> = new Set(),
+    lockedMessages: ReadonlyMap<string, readonly string[]> = new Map(),
 ): { reloaded: boolean; refresh: Set<string>; blocked: boolean } {
     const byKey = new Map(remote.map((chat) => [keyOf(chat.characterId, chat.id), chat]));
     const retry: SentChatGroup[] = [];
@@ -3443,9 +3499,17 @@ export function recoverChatConflicts(
     for (const group of work.groups) {
         inflight.delete(group.key);
         if (generating.has(group.key)) {
-            jobBlocked.set(group.key, Date.now() + JOB_RETRY_MS);
-            retry.push(group);
-            blocked = true;
+            const outcome = dropLockedEdits(group, new Set(lockedMessages.get(group.key) ?? []));
+            if (outcome.dropped) {
+                reloaded = true;
+            }
+            if (outcome.kept.length > 0) {
+                retry.push({ ...group, ops: outcome.kept });
+            }
+            if (outcome.waiting) {
+                jobBlocked.set(group.key, Date.now() + JOB_RETRY_MS);
+                blocked = true;
+            }
             continue;
         }
         const server = byKey.get(group.key);
@@ -3515,6 +3579,62 @@ export function recoverChatConflicts(
         }
     }
     return { reloaded, refresh, blocked };
+}
+
+/** Whether an op rewrites or removes one of `locked` by id (a multi-id `remove` does not count). */
+function targetsLocked(op: ChatOp, locked: ReadonlySet<string>): boolean {
+    switch (op.op) {
+        case "setText":
+        case "patchMessage":
+        case "setTranslation":
+        case "begin":
+            return locked.has(op.id);
+        case "setMessage":
+            return locked.has(op.message.chatId!);
+        case "remove":
+            return op.ids.length === 1 && locked.has(op.ids[0]);
+        default:
+            return false;
+    }
+}
+
+/**
+ * A group the server refused because a generation job owns messages it touches (`locked`, the
+ * conflict's `messageIds`): its by-id edits of those messages, and those of the chat's newer unsent
+ * work, are dropped, since a retry after the job would land over the finished reply. They count as
+ * discarded (the flush report and the reload notice), and the chat is marked stale, so it is read
+ * whole once its remaining work has landed (the mirror then shows the server's message again; the
+ * split itself leaves the held revision unchanged). Everything else (chat-level ops, a multi-id `remove`,
+ * which needs the current revision, ops on other messages) stays on the retry-after-job path:
+ * `kept` is requeued and `waiting` says whether the chat is to be blocked until the retry. With
+ * nothing named, or nothing dropped, the whole group waits, as before. The sent group's sequence is
+ * settled when none of it is kept; newer work keeps its own.
+ */
+function dropLockedEdits(
+    group: SentChatGroup,
+    locked: ReadonlySet<string>,
+): { kept: ChatOp[]; dropped: boolean; waiting: boolean } {
+    const newer = pending.get(group.key);
+    const kept = group.ops.filter((op) => !targetsLocked(op, locked));
+    const newerKept = newer?.ops.filter((op) => !targetsLocked(op, locked)) ?? [];
+    const dropped = kept.length < group.ops.length || (newer !== undefined && newerKept.length < newer.ops.length);
+    if (!dropped) {
+        return { kept: group.ops, dropped: false, waiting: true };
+    }
+    discardSequence += 1;
+    discarded.set(group.key, discardSequence);
+    staleChats.add(group.key);
+    if (kept.length === 0) {
+        settleKey(group.key, group.seq);
+    }
+    if (newer) {
+        newer.ops = newerKept;
+        if (newerKept.length === 0 && !newer.create && !newer.resend && kept.length === 0) {
+            pending.delete(group.key);
+            settleKey(group.key, newer.seq);
+        }
+    }
+    return { kept, dropped: true, waiting: kept.length > 0 || pending.has(group.key) };
 }
 
 /** Requeues recovered groups; a recognized create continues as ordinary work on its revision. */

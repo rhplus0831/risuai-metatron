@@ -160,7 +160,8 @@ import {
  *   records from the server, so a conflict reload of a character it runs on applies at once.
  * - A 409 entry with `reason: "generating"` (a server generation job owns a message the change
  *   touches) is not a reload: the work stays unsaved and is retried after `JOB_RETRY_MS`, and
- *   `chatGenerating` is shown once per refusal episode.
+ *   `chatGenerating` is shown once per refusal episode. A chat's edits of the locked messages the
+ *   entry names (`messageIds`) are dropped instead (`recoverChatConflicts`), with the reload notice.
  * - `applyHydration` applies a record a server job sent, without any outgoing write.
  * - Live updates (`noteRemoteChanges`, from the change feed, `network/eventFeed.ts`): records another
  *   writer committed are read and applied inside the cycle, before its batch, only while this client
@@ -1994,6 +1995,8 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
     const generatingChats = new Set<string>();
+    /** Per generating chat: the locked messages its group targets (their edits are dropped). */
+    const lockedMessages = new Map<string, string[]>();
     let generating = false;
     // The diagnostics' counts by category; `generating` is a subset of them.
     const counted = { records: 0, chats: 0, orders: 0, generating: 0 };
@@ -2006,11 +2009,15 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
             counted.records++;
         }
         if ("reason" in conflict && conflict.reason === "generating") {
-            // A server job owns a message this change touches: keep the work, retry after the job.
+            // A server job owns a message this change touches: drop its edits, retry the rest.
             generating = true;
             counted.generating++;
             if (isChatConflict(conflict)) {
-                generatingChats.add(`${conflict.characterId}\u0000${conflict.id}`);
+                const key = `${conflict.characterId}\u0000${conflict.id}`;
+                generatingChats.add(key);
+                if (Array.isArray(conflict.messageIds) && conflict.messageIds.length > 0) {
+                    lockedMessages.set(key, conflict.messageIds);
+                }
             } else if (!isChatOrderConflict(conflict)) {
                 jobBlockedRecords.set(recordKey(conflict.kind, conflict.id), Date.now() + JOB_RETRY_MS);
             }
@@ -2032,24 +2039,39 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     }
     // Counts only: the conflicting records' ids stay here.
     recordClientEvent({ kind: "sync", phase: "conflict", ...counted });
+    // These refusals need no read: an unrelated read failure must not requeue the locked edits.
+    const generatingRecovery = recoverChatConflicts(
+        { groups: work.groups.filter((group) => generatingChats.has(group.key)), orders: [] },
+        new Set(),
+        new Set(),
+        [],
+        generatingChats,
+        lockedMessages,
+    );
+    if (generating || generatingRecovery.blocked) {
+        showGeneratingNotice();
+    }
+    if (generatingRecovery.reloaded) {
+        showReloadedNotice();
+    }
+    const remainingWork = {
+        groups: work.groups.filter((group) => !generatingChats.has(group.key)),
+        orders: work.orders,
+    };
     let read: Awaited<ReturnType<typeof readRefs>>;
     try {
         read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
     } catch (readError) {
-        // Nothing was applied: the chat work goes out again in the next cycle.
-        requeueChatWork(work);
+        // Only work outside the generating recovery still needs to be requeued.
+        requeueChatWork(remainingWork);
         throw readError;
     }
     const recovered = recoverChatConflicts(
-        work,
+        remainingWork,
         conflictedChats,
         conflictedOrders,
         (read.chats ?? []) as RemoteChat[],
-        generatingChats,
     );
-    if (generating || recovered.blocked) {
-        showGeneratingNotice();
-    }
     let reloaded = recovered.reloaded;
     for (const characterId of recovered.refresh) {
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).

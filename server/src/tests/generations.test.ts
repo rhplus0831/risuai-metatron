@@ -598,7 +598,14 @@ describe("generation jobs over HTTP and WebSocket", () => {
         );
         expect(refused.status).toBe(409);
         expect(((await refused.json()) as { conflicts: unknown[] }).conflicts).toEqual([
-            { kind: "chat", characterId: "c", id: "k", revision: current.revision, reason: "generating" },
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: current.revision,
+                reason: "generating",
+                messageIds: ["r"],
+            },
         ]);
         expect((await request(`/api/generations/${jobId}?clientId=other`, { method: "DELETE" })).status).toBe(404);
         const aborted = await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
