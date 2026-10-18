@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029), 2 (0b254f208) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
@@ -15,6 +15,13 @@ pages only menu indexes 7–9 rendered. 2's API was confirmed by the user as bui
 a section whose items all hide renders nothing); collapsible sections carry no badge (the
 `badgeKey` field and the Accordion `badge` prop stay, unused); Advanced keeps a temporary
 `advanced.other` section that slice 4 empties; `adv.diagnostics` (an h2) was dropped.
+6 moves a moved item's definition into its new page's data file (the rule every later
+slice follows), put Translation in `translationSettingsData.ts` and its components in
+`Pages/Translation/`, gave Translation the translate icon and Language a globe, and exempts
+a page-wide gate (`translator`/`translatorType`) from the dependent-controls rule.
+7 builds Display from `displaySettingsTabs`, lays the tab row out as a grid (two by two on
+a phone), and parks `display.showPromptComparison` at the end of `advanced.other` for slice
+4; Advanced's Legacy section is now always visible (`display.useLegacyGUI` has no condition).
 
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
