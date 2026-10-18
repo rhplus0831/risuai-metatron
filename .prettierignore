@@ -11,3 +11,6 @@ dist/
 
 # Doc comment contains a literal "*/" that closes the comment early; Prettier cannot parse it
 src/ts/plugins/apiV3/risuai.d.ts
+
+# Claude Code worktrees are full checkouts; the root patterns above do not reach them
+.claude/worktrees/
