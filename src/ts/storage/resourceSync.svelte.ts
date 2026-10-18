@@ -1485,9 +1485,12 @@ async function cycle() {
                 if (quarantineRejectedChat(error, batch.work)) {
                     return;
                 }
-                requeueChatWork(batch.work);
-                if (!(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500) {
-                    // No answer: the server may have committed the batch (a lost response).
+                // No answer: the server may have committed the batch (a lost response). Its chat
+                // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
+                // in doubt.
+                const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
+                requeueChatWork(batch.work, { lost });
+                if (lost) {
                     noteInDoubt(batch.ops);
                 }
                 if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
@@ -2468,6 +2471,7 @@ async function recoverConflictedWork(
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
     const generatingChats = new Set<string>();
+    const expiredChats = new Set<string>();
     /** Per generating chat: the locked messages its group targets (their edits are dropped). */
     const lockedMessages = new Map<string, string[]>();
     let generating = false;
@@ -2498,7 +2502,11 @@ async function recoverConflictedWork(
         }
         if (isChatConflict(conflict)) {
             chatRefs.push({ characterId: conflict.characterId, id: conflict.id });
-            conflictedChats.add(`${conflict.characterId}\u0000${conflict.id}`);
+            const key = `${conflict.characterId}\u0000${conflict.id}`;
+            conflictedChats.add(key);
+            if (conflict.reason === "expired") {
+                expiredChats.add(key);
+            }
         } else if (isChatOrderConflict(conflict)) {
             conflictedOrders.add(conflict.characterId);
         } else {
@@ -2544,6 +2552,9 @@ async function recoverConflictedWork(
         conflictedChats,
         conflictedOrders,
         (read.chats ?? []) as RemoteChat[],
+        undefined,
+        undefined,
+        expiredChats,
     );
     if (recovered.reloaded) {
         notice.owed = true;

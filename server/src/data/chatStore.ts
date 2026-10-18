@@ -84,12 +84,54 @@ export const CHAT_TABLE_COLUMNS: Record<string, readonly string[]> = {
     chatOrders: ["seq", "characterId", "revision", "ids"],
 };
 
+/**
+ * The ids of the client groups a chat applied, with their results (data-loss plan slice 6b, audit
+ * D1), so a group resent after a lost answer is answered as before instead of applied again. Keyed
+ * by the chat's incarnation (`chats.seq`): deleting the chat (a `delete` op, its character's delete,
+ * a restore's `replaceAll`) drops them by cascade. Created when missing, so a database from before
+ * the table gains it on open; not part of the snapshot layout (`CHAT_TABLE_COLUMNS`), so snapshots
+ * with and without it restore alike and a restore starts with none (its new epoch fences every
+ * earlier client anyway). `revision` is the chat's revision counter after the group; `result` holds
+ * the rest of its answer (`RememberedResult`).
+ */
+export const CHAT_GROUP_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS chatGroups (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        groupId TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        UNIQUE (chatSeq, groupId)
+    ) STRICT;
+`;
+
+/**
+ * How many group ids a chat remembers (the newest ones; the oldest is dropped). A lost answer is
+ * resent on the client's next save cycle, so the ids need to outlive only the other writers' groups
+ * on that chat until then. Past it, a resend whose base is not newer than the oldest remembered
+ * group is refused as a conflict (`retry`), never applied twice.
+ */
+export const MAX_CHAT_GROUP_IDS = 100;
+/** The longest accepted `ChatGroup.groupId`. */
+export const MAX_CHAT_GROUP_ID_LENGTH = 128;
+
+/** A remembered group's answer besides its ids and revision (`chatGroups.result`). */
+type RememberedResult = {
+    stale?: true;
+    /** Only when the server gave a message a fresh id; otherwise rebuilt from the replayed group. */
+    messageIds?: string[];
+    /** How many `checkpoints` entries the answer had (a replay answers each `duplicate`). */
+    checkpoints?: number;
+    translations?: TranslationOutcome[];
+    targets?: TargetOutcome[];
+};
+
 type Generation = { id: string; seq: number; final: boolean };
 
 type PreparedOp =
-    | { op: "create"; meta: string; messages: PreparedMessage[]; index: number | null }
+    | { op: "create"; meta: string; messages: PreparedMessage[]; renamed: boolean; index: number | null }
     | { op: "delete" }
-    | { op: "replace"; meta: string; messages: PreparedMessage[] }
+    | { op: "replace"; meta: string; messages: PreparedMessage[]; renamed: boolean }
     | {
           op: "meta";
           set: Record<string, unknown>;
@@ -114,6 +156,10 @@ export type PreparedChatGroup = {
     ops: PreparedOp[];
     /** Whether the group needs the chat's current revision (delete, replace, a multi-id remove). */
     needsCurrent: boolean;
+    /** The client's id of the group (`ChatGroup.groupId`), or null (a server writer's group). */
+    groupId: string | null;
+    /** A resend of a group whose answer was lost (`ChatGroup.retry`). */
+    retry: boolean;
 };
 
 export type PreparedChatOrder = { characterId: string; baseRevision: string; ids: string[] };
@@ -176,7 +222,10 @@ function prepareMessage(input: unknown): PreparedMessage {
     return { id: message.chatId as string, text: serialize(message).text };
 }
 
-function prepareWholeChat(chat: unknown, chatId: string): { meta: string; messages: PreparedMessage[] } {
+function prepareWholeChat(
+    chat: unknown,
+    chatId: string,
+): { meta: string; messages: PreparedMessage[]; renamed: boolean } {
     if (!isPlainObject(chat)) {
         throw new ResourceValidationError("chat must be an object");
     }
@@ -187,7 +236,12 @@ function prepareWholeChat(chat: unknown, chatId: string): { meta: string; messag
         id: message.chatId as string,
         text: serialize(message).text,
     }));
-    return { meta, messages };
+    // Whether an id was missing, invalid, or duplicate and was given a fresh one (a replayed group's
+    // answer can rebuild `messageIds` from its own messages only when none was).
+    const renamed = messages.some(
+        (message, index) => (sent as { chatId?: unknown }[] | undefined)?.[index]?.chatId !== message.id,
+    );
+    return { meta, messages, renamed };
 }
 
 function prepareGeneration(value: unknown): Generation | null {
@@ -461,12 +515,27 @@ export function prepareChatGroups(raw: unknown): PreparedChatGroup[] {
         const needsCurrent =
             !creates &&
             ops.some((op) => op.op === "delete" || op.op === "replace" || (op.op === "remove" && op.ids.length > 1));
+        if (
+            entry.groupId !== undefined &&
+            (typeof entry.groupId !== "string" ||
+                entry.groupId.length === 0 ||
+                entry.groupId.length > MAX_CHAT_GROUP_ID_LENGTH)
+        ) {
+            throw new ResourceValidationError(
+                `${where}: groupId must be a string of 1 to ${MAX_CHAT_GROUP_ID_LENGTH} characters`,
+            );
+        }
+        if (entry.retry !== undefined && (entry.retry !== true || entry.groupId === undefined)) {
+            throw new ResourceValidationError(`${where}: retry must be true and needs a groupId`);
+        }
         return {
             characterId: entry.characterId,
             chatId: entry.chatId,
             baseRevision: entry.baseRevision as string | null,
             ops,
             needsCurrent,
+            groupId: (entry.groupId as string | undefined) ?? null,
+            retry: entry.retry === true,
         };
     });
 }
@@ -561,6 +630,17 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 }
 
 export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
+    db.exec(CHAT_GROUP_TABLE_SQL);
+    const selectGroup = db.prepare("SELECT revision, result FROM chatGroups WHERE chatSeq = ? AND groupId = ?");
+    const insertGroup = db.prepare("INSERT INTO chatGroups (chatSeq, groupId, revision, result) VALUES (?, ?, ?, ?)");
+    const trimGroups = db.prepare(
+        "DELETE FROM chatGroups WHERE chatSeq = ? AND seq <= " +
+            "(SELECT seq FROM chatGroups WHERE chatSeq = ? ORDER BY seq DESC LIMIT 1 OFFSET ?)",
+    );
+    const groupWindow = db.prepare(
+        "SELECT COUNT(*) AS count, (SELECT revision FROM chatGroups WHERE chatSeq = ?1 ORDER BY seq LIMIT 1) " +
+            "AS oldest FROM chatGroups WHERE chatSeq = ?1",
+    );
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
@@ -824,21 +904,118 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return patch;
     }
 
+    /**
+     * The answer to a group this chat incarnation already applied (`chatGroups`), or null: the
+     * revision as of that group and its outcomes, every checkpoint `duplicate` (the write was made).
+     * `messageIds` is rebuilt from the group's own last `create` or `replace` when the server kept
+     * every sent id (the same input gives the same ids again).
+     */
+    function rememberedResult(group: PreparedChatGroup, row: ChatRow): ChatGroupResult | null {
+        const stored = selectGroup.get(row.seq, group.groupId) as { revision: number; result: string } | undefined;
+        if (!stored) {
+            return null;
+        }
+        const remembered = JSON.parse(stored.result) as RememberedResult;
+        const result: ChatGroupResult = {
+            characterId: group.characterId,
+            id: group.chatId,
+            revision: tokens.token(row.seq, stored.revision),
+        };
+        if (remembered.stale) {
+            result.stale = true;
+        }
+        const whole = [...group.ops].reverse().find((op) => op.op === "create" || op.op === "replace");
+        if (remembered.messageIds) {
+            result.messageIds = remembered.messageIds;
+        } else if (whole) {
+            result.messageIds = whole.messages.map((message) => message.id);
+        }
+        if (remembered.checkpoints) {
+            result.checkpoints = Array.from({ length: remembered.checkpoints }, () => "duplicate" as const);
+        }
+        if (remembered.translations) {
+            result.translations = remembered.translations;
+        }
+        if (remembered.targets) {
+            result.targets = remembered.targets;
+        }
+        return result;
+    }
+
+    /**
+     * Whether a resent group whose id this chat does not remember may still have landed: the chat
+     * dropped ids (it holds `MAX_CHAT_GROUP_IDS`) and the group's base is not newer than the oldest one
+     * it kept. Groups are remembered in commit order, at non-decreasing revisions, and a group lands
+     * at a revision not older than its base; so a base newer than the oldest kept group's revision
+     * means the group, had it landed, would still be remembered.
+     */
+    function mayHaveForgotten(group: PreparedChatGroup, row: ChatRow): boolean {
+        const window = groupWindow.get(row.seq) as { count: number; oldest: number | null };
+        if (window.count < MAX_CHAT_GROUP_IDS || window.oldest === null) {
+            return false;
+        }
+        const base = group.baseRevision === null ? null : tokens.parse(group.baseRevision);
+        return !base || base.seq !== row.seq || base.revision <= window.oldest;
+    }
+
+    /** Remembers an applied group's id and answer, dropping the chat's oldest beyond `MAX_CHAT_GROUP_IDS`. */
+    function rememberGroup(
+        chatSeq: number,
+        groupId: string,
+        revision: number,
+        result: ChatGroupResult,
+        messageIdsRenamed: boolean,
+    ) {
+        const remembered: RememberedResult = {};
+        if (result.stale) {
+            remembered.stale = true;
+        }
+        if (result.messageIds && messageIdsRenamed) {
+            remembered.messageIds = result.messageIds;
+        }
+        if (result.checkpoints) {
+            remembered.checkpoints = result.checkpoints.length;
+        }
+        if (result.translations) {
+            remembered.translations = result.translations;
+        }
+        if (result.targets) {
+            remembered.targets = result.targets;
+        }
+        // New to this incarnation: a remembered id was answered before anything applied.
+        insertGroup.run(chatSeq, groupId, revision, JSON.stringify(remembered));
+        trimGroups.run(chatSeq, chatSeq, MAX_CHAT_GROUP_IDS);
+    }
+
     function applyGroup(
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
     ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody } {
         const { characterId, chatId } = group;
-        const conflictHere = (row: ChatRow | undefined): never => {
+        const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
             throw new ChatChangeConflict({
                 kind: "chat",
                 characterId,
                 id: chatId,
                 revision: row ? tokens.token(row.seq, row.revision) : null,
+                ...(reason ? { reason } : {}),
             });
         };
         let row = selectChat.get(characterId, chatId) as ChatRow | undefined;
+        if (row && group.groupId !== null) {
+            // Before every other check: a group this chat already applied (its answer was lost) is
+            // answered as it was then, even if a job locked a message or a removed anchor would
+            // refuse it now.
+            const remembered = rememberedResult(group, row);
+            if (remembered) {
+                return { result: remembered, applied: 0 };
+            }
+            if (group.retry && mayHaveForgotten(group, row)) {
+                // It may have landed before the oldest remembered group: refused, never applied twice.
+                conflictHere(row, "expired");
+            }
+        }
         // Before the revision checks: a refused edit of a generating message must read as
         // "retry after the job", not as a stale view to reload. The locked messages it targets
         // are named, so the client can drop its edits of them and retry the rest.
@@ -879,6 +1056,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let metaChanged = false;
         let applied = 0;
         let messageIds: string[] | undefined;
+        let messageIdsRenamed = false;
         const checkpoints: CheckpointOutcome[] = [];
         const translations: TranslationOutcome[] = [];
         // Per message-editing op: whether its message was there (reported only when one was not).
@@ -898,6 +1076,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     writeOrder(order, ids);
                     changedOrders.add(characterId);
                     messageIds = op.messages.map((message) => message.id);
+                    messageIdsRenamed = op.renamed;
                     messageIds.forEach((id) => insertedHere.add(id));
                     row = { seq, revision: 0, meta: op.meta };
                     applied += 1;
@@ -943,6 +1122,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     }
                     row = { ...row!, meta: op.meta };
                     messageIds = op.messages.map((message) => message.id);
+                    messageIdsRenamed = op.renamed;
                     applied += 1;
                     break;
                 }
@@ -1161,8 +1341,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
         }
         let revision: string | null = null;
+        let next = 0;
         if (!deleted && row) {
-            const next = nextRevision(row.revision, applied);
+            next = nextRevision(row.revision, applied);
             if (applied > 0) {
                 bumpChat.run(applied, row.seq);
             }
@@ -1184,6 +1365,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         }
         if (targets.includes("missing")) {
             result.targets = targets;
+        }
+        if (group.groupId !== null && !deleted && row) {
+            // Every answered group, also one that changed nothing: a resend of it must not apply
+            // after another writer recreated its target or changed its text. Rolled back with the
+            // batch when anything conflicts.
+            rememberGroup(row.seq, group.groupId, next, result, messageIdsRenamed);
         }
         const patch =
             patchBase && applied > 0 && !reappended
