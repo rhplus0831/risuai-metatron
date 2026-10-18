@@ -1,11 +1,18 @@
 # Data-Loss Under Concurrency Plan
 
-Status: planned (nothing landed). Source: the cross-verified static audit
+Status: 1a (2f79a2300) landed. Source: the cross-verified static audit
 `docs/audit/data-loss-concurrency-2026-10-18.md` at `5e7595689` (raw reports and
 challenges at `/home/codex/metatron-report-concurrency/`). One slice is one session,
 one commit, one file cluster. Every cited location was re-verified against the working
 tree at `5e7595689` on 2026-10-18; the report's line numbers are approximate, the
 identifiers below are the anchors.
+
+Decisions made by landed slices: 1a keeps `setMessage` as a by-id op that applies on a
+stale revision and documents it as "needs the current revision for the fields it does not
+own" (not enforced); `patchMessage` carries no generation (refused with 400) and always
+closes an open generation fence; `meta` ops with `mergeUnset` are not coalesced on the
+client. 1b must add `patchMessage` to the unload op list and the post-create id rewrite in
+`chatStore.svelte.ts`, teach `mergeChatMeta` entry removal, and test `coalesce`.
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -507,8 +514,8 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Nothing has landed. Start with sequence A's 1a and, in parallel sessions, 1c, 3, 4a,
-7a and 8. Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Continue sequence A with 1b and, in parallel
+sessions, the independent slices (1c, 3, 7a, 8) and sequence B from 4a. Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
