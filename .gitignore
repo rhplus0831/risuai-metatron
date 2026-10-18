@@ -52,3 +52,6 @@ CLAUDE.local*
 # Playwright
 test-results/
 playwright-report/
+
+# Handover
+handover/
