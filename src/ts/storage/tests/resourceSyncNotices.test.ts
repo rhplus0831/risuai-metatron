@@ -1,4 +1,5 @@
 import { tick } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
@@ -24,11 +25,21 @@ vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("../../alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertNormalWait: alerts.normalWait,
-}));
+vi.mock("../../alert", async (importOriginal) => {
+    // The real reload notice store (its latch until dismissed), each request also recorded on `alerts.normal`.
+    const actual = await importOriginal<typeof import("../../alert")>();
+    return {
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertReloadNotice: (msg: string) => {
+            alerts.normal(msg);
+            actual.alertReloadNotice(msg);
+        },
+        reloadNotice: actual.reloadNotice,
+        dismissReloadNotice: actual.dismissReloadNotice,
+        alertNormalWait: alerts.normalWait,
+    };
+});
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
     changeLanguage: vi.fn(),
@@ -151,7 +162,9 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-afterEach(() => {
+afterEach(async () => {
+    // The real reload notice store outlives a test's module graph.
+    (await import("../../alert")).dismissReloadNotice();
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -363,5 +376,88 @@ describe("a send on a clean tab (audit item A2)", () => {
         expect(fake.batchCount()).toBe(0);
         expect(fake.record("characters", "c")).toEqual(before);
         expect(fake.requests.filter((r) => r.path === "/api/resources/batch")).toEqual([]);
+    });
+});
+
+describe("the reload notice (audit item B2)", () => {
+    it("reaches the user for a discard episode after the notice was dismissed, and stays through one while it is shown", async () => {
+        const { fake, sync, character } = await boot();
+        const { reloadNotice, dismissReloadNotice } = await import("../../alert");
+        /** Another tab renames the character while this tab renames it too: this tab's edit is discarded. */
+        const episode = async (n: number) => {
+            fake.set("characters", "c", { chaId: "c", name: `remote ${n}` });
+            character().name = `local ${n}`;
+            const { discarded } = await sync.flushResources();
+            expect(discarded).toEqual(["characters/c"]);
+            expect(character().name).toBe(`remote ${n}`);
+        };
+        await episode(1);
+        expect(get(reloadNotice)).toBe("reloaded");
+        // A second episode while it is on screen keeps the one notice.
+        await vi.advanceTimersByTimeAsync(1000);
+        await episode(2);
+        expect(get(reloadNotice)).toBe("reloaded");
+        dismissReloadNotice();
+        expect(get(reloadNotice)).toBeNull();
+        // 3 s after the first: no timer latch keeps the next episode silent.
+        await vi.advanceTimersByTimeAsync(2000);
+        await episode(3);
+        expect(get(reloadNotice)).toBe("reloaded");
+    });
+
+    it("shows nothing for a deferred reload that replaced no chat (a new job locked it during the read), and shows the notice when the reload replaces it", async () => {
+        const { fake, chat, mirrorChat } = await boot();
+        const { reloadNotice } = await import("../../alert");
+        // A job of this tab streams into `k`; another tab removes `b`, which this tab edits: the
+        // edit conflicts and the chat's reload waits for the job.
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "c", generationId: "cg", text: "so far", seq: 0 });
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "remove", ids: ["b"] } as any],
+            },
+        ]);
+        chat.setMessageText(refK, "b", "local");
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(fake.batchCount()).toBe(1);
+        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "b", "c"]);
+        expect(get(reloadNotice)).toBeNull();
+        // The job ends; while the deferred chat's read is answered, a new job of this tab locks it.
+        let lockDuringRead = true;
+        const reads: unknown[] = [];
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fake.fetch(path, init);
+                const body = fake.requests.at(-1)?.body;
+                if (path === "/api/resources/read" && body?.chats) {
+                    reads.push(body.chats);
+                    if (lockDuringRead) {
+                        lockDuringRead = false;
+                        chat.applyServerGeneration(refK, {
+                            jobId: "J2",
+                            messageId: "c",
+                            generationId: "cg2",
+                            text: "again",
+                            seq: 0,
+                        });
+                    }
+                }
+                return response;
+            },
+            close: () => fake.close(),
+        };
+        chat.endServerJob("J");
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(reads).toEqual([[{ characterId: "c", id: "k" }]]);
+        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "b", "c"]);
+        expect(get(reloadNotice)).toBeNull();
+        // The second job ends: the reload replaces the chat, discarding the edit, with the notice.
+        chat.endServerJob("J2");
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(reads).toHaveLength(2);
+        expect(mirrorChat()!.message.map((m) => m.chatId)).toEqual(["a", "c"]);
+        expect(get(reloadNotice)).toBe("reloaded");
     });
 });

@@ -101,12 +101,18 @@ function tryReadManifest(head: Uint8Array): BackupArchiveManifest | null {
 }
 
 /**
- * Saves every change, asks the server for an archive, and streams it to a file. Returns the manifest.
+ * Saves every change, asks the server for an archive, and streams it to a file. Returns the manifest
+ * with the keys whose local edits the pre-backup flush replaced (`flushResources`' `discarded`): the
+ * archive holds the other writer's version of those, so the success report says so.
  */
-async function downloadArchive(label: string, partial?: true | string[]): Promise<BackupArchiveManifest | null> {
+async function downloadArchive(
+    label: string,
+    partial?: true | string[],
+): Promise<{ manifest: BackupArchiveManifest; discarded: string[] } | null> {
     alertWait(`${label}...`);
+    let discarded: string[];
     try {
-        await flushResources();
+        ({ discarded } = await flushResources());
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return null;
@@ -144,7 +150,7 @@ async function downloadArchive(label: string, partial?: true | string[]): Promis
         }
         await writer.close();
         finished = true;
-        return manifest;
+        return manifest ? { manifest, discarded } : null;
     } finally {
         if (!finished) {
             // A cancelled or failed download: stop the server's export stream and drop the partial file.
@@ -154,12 +160,14 @@ async function downloadArchive(label: string, partial?: true | string[]): Promis
     }
 }
 
-function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intro: string) {
+/** The backup's result: success, the assets it skipped, and whether its pre-backup flush discarded a change. */
+function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intro: string, discarded: string[]) {
+    const discardNote = discarded.length > 0 ? language.backupDiscardedChanges : "";
     if (missing.length === 0) {
-        alertNormal("Success");
+        alertNormal(discardNote ? `Success\n\n${discardNote}` : "Success");
         return;
     }
-    let message = intro;
+    let message = discardNote ? `${discardNote}\n\n${intro}` : intro;
     for (const key of missing) {
         const assetInfo = assetMap.get(key);
         if (assetInfo) {
@@ -175,13 +183,18 @@ function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intr
 export async function SaveLocalBackup() {
     try {
         const assetMap = referencedAssets(buildBackupInventory());
-        const manifest = await downloadArchive("Saving local Backup");
-        if (!manifest) {
+        const result = await downloadArchive("Saving local Backup");
+        if (!result) {
             return;
         }
-        const stored = new Set(manifest.assets);
+        const stored = new Set(result.manifest.assets);
         const missing = [...assetMap.keys()].filter((key) => key.startsWith("assets/") && !stored.has(key));
-        reportMissing(missing, assetMap, "Backup Successful, but the following assets were missing and skipped:\n\n");
+        reportMissing(
+            missing,
+            assetMap,
+            "Backup Successful, but the following assets were missing and skipped:\n\n",
+            result.discarded,
+        );
     } catch (error) {
         console.error(error);
         alertError(`Backup failed: ${error}`);
@@ -214,14 +227,15 @@ export async function SavePartialLocalBackup() {
 
     try {
         const assetMap = partialAssets(buildBackupInventory());
-        const manifest = await downloadArchive("Saving partial local backup", true);
-        if (!manifest) {
+        const result = await downloadArchive("Saving partial local backup", true);
+        if (!result) {
             return;
         }
         reportMissing(
-            manifest.missing,
+            result.manifest.missing,
             assetMap,
             "Partial backup successful, but the following profile images were missing and skipped:\n\n",
+            result.discarded,
         );
     } catch (error) {
         console.error(error);

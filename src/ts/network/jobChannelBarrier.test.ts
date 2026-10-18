@@ -21,6 +21,7 @@ vi.mock("../storage/serverAuth", () => ({
 vi.mock("../alert", () => ({
     alertError: vi.fn(),
     alertNormal: vi.fn(),
+    alertReloadNotice: vi.fn(),
     alertNormalWait: vi.fn(async () => undefined),
     alertClear: vi.fn(),
     alertConfirm: vi.fn(),

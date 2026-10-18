@@ -39,7 +39,7 @@ import {
     type SecretEntryMap,
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
-import { alertError, alertNormal, alertTerminal } from "../alert";
+import { alertError, alertNormal, alertReloadNotice, alertTerminal } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
@@ -154,7 +154,8 @@ import {
  * - One batch per cycle, one cycle in flight. A key stays dirty if it was marked again while its
  *   batch was in flight.
  * - A 409 reloads the conflicting records into the mirror (another tab or device wrote them) and
- *   shows `resourceReloaded` once per episode; a 412 (the server was restored) stops saving and
+ *   shows `resourceReloaded` as the reload notice (`alertReloadNotice`: its own store, kept until the
+ *   user dismisses it, so one notice per episode on screen); a 412 (the server was restored) stops saving and
  *   reloads the page. A server generation job reads its own configuration and refreshes character
  *   records from the server, so a conflict reload of a character it runs on applies at once.
  * - A 409 entry with `reason: "generating"` (a server generation job owns a message the change
@@ -278,7 +279,6 @@ let permanentError: unknown = null;
 /** Keys whose local edits a conflict discarded, with a sequence number of the discard. */
 const discarded = new Map<string, number>();
 let discardSequence = 0;
-let noticeShown = false;
 /**
  * Character deletes the server refused for a generating message → when they may be sent again
  * (the deletion stays an unsaved membership change meanwhile).
@@ -1758,15 +1758,9 @@ function acceptRemote(item: RemoteItem) {
     }
 }
 
+/** Shows the reload notice; one already on screen is kept (it latches until dismissed). */
 function showReloadedNotice() {
-    if (noticeShown) {
-        return;
-    }
-    noticeShown = true;
-    alertNormal(language.resourceReloaded);
-    setTimeout(() => {
-        noticeShown = false;
-    }, 10_000);
+    alertReloadNotice(language.resourceReloaded);
 }
 
 /** A record's own fields in a null-prototype dictionary (no client-only character keys), or null when it is not an object. */
@@ -2132,6 +2126,8 @@ function findMirrorCharacter(id: string): (character | groupChat) | undefined {
 /**
  * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
  * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
+ * The reload notice is shown only when a chat was replaced or removed (its work discarded), not
+ * when every chat was skipped (a new job locked it, or the read did not list it).
  */
 async function reloadDeferredChats() {
     const released = deferredReloads();
@@ -2144,13 +2140,16 @@ async function reloadDeferredChats() {
     if (halted) {
         return;
     }
+    const discardsBefore = chatDiscardSequence();
     for (const chat of read.chats ?? []) {
         const refresh = finishDeferredReload(chat as RemoteChat);
         if (refresh) {
             hydrate.add(refresh);
         }
     }
-    showReloadedNotice();
+    if (chatDiscardSequence() > discardsBefore) {
+        showReloadedNotice();
+    }
 }
 
 /**

@@ -162,6 +162,30 @@ export function acknowledgeTerminalNotice() {
     acknowledgeTerminal?.();
 }
 
+/**
+ * The save adapter's "another tab or device changed this data, your change was replaced" notice: a
+ * panel (`ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
+ * toast, an error, `alertClear`) replaces or hides it. It stays until the user dismisses it.
+ */
+const reloadNoticeStore = writable<string | null>(null);
+export const reloadNotice = readonly(reloadNoticeStore);
+
+/**
+ * Shows `msg` as the reload notice. Latched until dismissed: while a notice is shown, another call
+ * keeps it (one notice per episode on screen); after `dismissReloadNotice`, the next call shows it
+ * again.
+ */
+export function alertReloadNotice(msg: string) {
+    if (get(reloadNoticeStore) === null) {
+        reloadNoticeStore.set(msg);
+    }
+}
+
+/** Dismisses the reload notice (its OK button); nothing when none is shown. */
+export function dismissReloadNotice() {
+    reloadNoticeStore.set(null);
+}
+
 export function alertNormal(msg: string) {
     alertStoreImported.set({
         type: "normal",

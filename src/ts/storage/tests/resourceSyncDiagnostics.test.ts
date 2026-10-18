@@ -28,6 +28,7 @@ vi.mock("../serverAuth", () => ({
 vi.mock("../../alert", () => ({
     alertError: alerts.error,
     alertNormal: alerts.normal,
+    alertReloadNotice: alerts.normal,
     alertNormalWait: alerts.normalWait,
     alertTerminal: alerts.terminal,
 }));

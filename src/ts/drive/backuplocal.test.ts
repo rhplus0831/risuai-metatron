@@ -30,7 +30,11 @@ const { alerts, flush, writer, requests, exportResponse } = vi.hoisted(() => ({
 vi.mock("../alert", () => alerts);
 vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: flush }));
 vi.mock("src/lang", () => ({
-    language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },
+    language: {
+        partialBackupFirstConfirm: "first?",
+        partialBackupSecondConfirm: "second?",
+        backupDiscardedChanges: "changes replaced",
+    },
 }));
 vi.mock("../globalApi.svelte", () => ({
     LocalWriter: class {
@@ -223,6 +227,28 @@ describe("SaveLocalBackup", () => {
         expect(report).not.toContain("alice.png");
     });
 
+    it("says so in the success alert when the pre-backup flush discarded a change (its `discarded` list)", async () => {
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice", "chats/alice/k"] });
+        exportResponse.current = streamed(
+            archive({ assets: ["assets/alice.png", "assets/happy.png", "assets/group.png", "assets/icon.png"] }),
+            1024,
+        ).response;
+        await SaveLocalBackup();
+        expect(alerts.alertNormal).toHaveBeenCalledTimes(1);
+        expect(alerts.alertNormal).toHaveBeenCalledWith("Success\n\nchanges replaced");
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("puts the discard ahead of the missing-asset report", async () => {
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        exportResponse.current = streamed(archive({ assets: ["assets/alice.png", "assets/icon.png"] }), 1024).response;
+        await SaveLocalBackup();
+        expect(alerts.alertNormal).not.toHaveBeenCalled();
+        const report = alerts.alertMd.mock.calls[0][0] as string;
+        expect(report.startsWith("changes replaced\n\nBackup Successful")).toBe(true);
+        expect(report).toContain("**happy** (from *Alice*)");
+    });
+
     it("does not export when the flush fails", async () => {
         flush.mockRejectedValueOnce(new Error("A character is still being generated"));
         await SaveLocalBackup();
@@ -296,6 +322,14 @@ describe("SavePartialLocalBackup", () => {
         expect(report).toContain("**P Preset Image** (from *Preset*)");
         // A key the client never saw (another writer's image) is still reported, by its file.
         expect(report).toContain("**Unknown Asset**  \n  *File: assets/x.png*");
+    });
+
+    it("says so in the success alert when the pre-backup flush discarded a change", async () => {
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice"] });
+        exportResponse.current = streamed(archive({ partial: true, assets: ["assets/alice.png"] }), 32).response;
+        await SavePartialLocalBackup();
+        expect(alerts.alertNormal).toHaveBeenCalledWith("Success\n\nchanges replaced");
+        expect(alerts.alertMd).not.toHaveBeenCalled();
     });
 
     it("stops at the first declined confirmation", async () => {
