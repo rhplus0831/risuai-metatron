@@ -247,6 +247,21 @@ const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
 
 /** What the server holds for each record this client knows: `<kind>\0<id>` → revision and JSON text. */
 const persisted = new Map<string, Persisted>();
+/**
+ * The text this client sent for a record whose answer was lost (a network failure or a 5xx, not a
+ * refusal), on the saved base revision it was sent on: the server holds it or still the saved copy.
+ * Keyed like `persisted`. While a key has one, every cycle resends exactly that text on that base
+ * (`collectOperations`), and the key's newer text, a revert to the saved text included, waits for
+ * the next cycle: on a given base only one write can land, so one text per key is enough, and the
+ * retry's answer (or its 409's read, compared with the op as for any retry) settles it. A live
+ * update or a job's record does not go into the mirror meanwhile (`canApplyRemote`,
+ * `applyHydration`). A feed patch (`applyRemotePatch`) or a conflict read (`recoverConflictedWork`,
+ * say for a delete sent after it) equal to it is the lost write: it becomes the saved base at the
+ * server's revision with no discard, and the newer text is sent on it. Cleared then, on the
+ * acknowledgement of a write of the key, when the server refuses that text (400, 413), and when a
+ * conflict replaces the record.
+ */
+const inDoubt = new Map<string, { baseRevision: string | null; text: string; parts: RecordParts | null }>();
 /** Dirty record keys → the generation of their latest mark. */
 const dirty = new Map<string, number>();
 /** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
@@ -340,6 +355,7 @@ const MAX_REMOTE_READS = 1000;
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
+    inDoubt.clear();
     characterTexts.clear();
     moduleTexts = null;
     for (const [kind, records] of Object.entries(result.kinds)) {
@@ -1136,12 +1152,44 @@ function updateOperation(
 function collectOperations(): {
     ops: PendingOp[];
     captured: Map<string, number>;
+    /** In-doubt keys resent as sent this cycle while a newer local text waits: not settled. */
+    heldBack: Set<string>;
     membership: number;
     chatWork: ChatWork;
 } {
     const captured = new Map(dirty);
     const membership = membershipGeneration;
     const ops: PendingOp[] = [];
+    const heldBack = new Set<string>();
+    /**
+     * Resends an in-doubt key's text exactly as sent (`inDoubt`); its newer local text (`localText`)
+     * waits for the next cycle, the key unsettled. False when the key is not in doubt (any more): its
+     * saved base moved, or the text equals the saved one but for key order.
+     */
+    function resendInDoubt(key: string, kind: string, id: string, localText: string | undefined): boolean {
+        const doubt = inDoubt.get(key);
+        if (!doubt) {
+            return false;
+        }
+        const current = persisted.get(key);
+        if ((current?.revision ?? null) !== doubt.baseRevision) {
+            inDoubt.delete(key);
+            return false;
+        }
+        const sent = { text: doubt.text, parts: doubt.parts };
+        const op = current
+            ? updateOperation(key, kind, id, current, sent)
+            : pendingOp({ key, kind, id, baseRevision: null, ...sent });
+        if (!op) {
+            inDoubt.delete(key);
+            return false;
+        }
+        addOperation(op);
+        if (localText !== doubt.text) {
+            heldBack.add(key);
+        }
+        return true;
+    }
     function addOperation(op: PendingOp) {
         if (recordQuarantine(op.key)) {
             return;
@@ -1158,6 +1206,9 @@ function collectOperations(): {
             continue;
         }
         const projection = collectionProjection(collection);
+        if (resendInDoubt(key, collection, SINGLETON_RESOURCE_ID, projection?.text)) {
+            continue;
+        }
         const current = persisted.get(key);
         // An absent collection (e.g. no plugin storage yet) has no record to write.
         if (projection !== undefined && projection.text !== current?.text) {
@@ -1179,6 +1230,9 @@ function collectOperations(): {
         const key = characterKey(id);
         // A character whose refused delete was undone: nothing waits any more.
         jobBlockedRecords.delete(key);
+        if (inDoubt.has(key) && resendInDoubt(key, RESOURCE_KIND.characters, id, characterProjection(character).text)) {
+            continue;
+        }
         const current = persisted.get(key);
         if (current && !captured.has(key)) {
             continue;
@@ -1193,6 +1247,16 @@ function collectOperations(): {
                 : pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: null, ...projection });
             if (op) {
                 addOperation(op);
+            }
+        }
+    }
+    for (const key of inDoubt.keys()) {
+        // A create whose answer was lost, of a character removed since: resent, so that its delete
+        // follows on the revision it gets (or nothing, when it never landed).
+        if (key.startsWith(characterPrefix) && !persisted.has(key)) {
+            const id = key.slice(characterPrefix.length);
+            if (!present.has(id)) {
+                resendInDoubt(key, RESOURCE_KIND.characters, id, undefined);
             }
         }
     }
@@ -1218,6 +1282,7 @@ function collectOperations(): {
     return {
         ops,
         captured,
+        heldBack,
         membership,
         chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS, holdOrders: listRefresh }),
     };
@@ -1382,7 +1447,7 @@ async function cycle() {
             showReloadedNotice();
         }
     }
-    const { ops, captured, membership, chatWork } = collectOperations();
+    const { ops, captured, heldBack, membership, chatWork } = collectOperations();
     // The credential writes queued so far go after this batch; one queued while it is in flight
     // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
     const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
@@ -1421,16 +1486,23 @@ async function cycle() {
                     return;
                 }
                 requeueChatWork(batch.work);
+                if (!(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500) {
+                    // No answer: the server may have committed the batch (a lost response).
+                    noteInDoubt(batch.ops);
+                }
                 if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
                     const match = /^ops\[(\d+)\]/.exec(error.message);
                     const op = match ? batch.ops[Number(match[1])] : undefined;
                     if (op) {
+                        // The server refuses that text: it never held it.
+                        inDoubt.delete(op.key);
                         quarantineRecord(op, error);
                     } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
                         // The error names no record (including order/envelope errors). Probe each
                         // unit separately next cycle so unrelated records and chats can still save.
                         isolateBatches = true;
                     } else if (batch.ops[0]) {
+                        inDoubt.delete(batch.ops[0].key);
                         quarantineRecord(batch.ops[0], error, false);
                     } else if (batch.work.groups[0]) {
                         quarantineChat(batch.work.groups[0]);
@@ -1444,6 +1516,7 @@ async function cycle() {
                 throw error;
             }
             batch.ops.forEach((op, opIndex) => {
+                inDoubt.delete(op.key);
                 const revision = result.results[opIndex]?.revision;
                 if (op.text === null || revision === null || revision === undefined) {
                     persisted.delete(op.key);
@@ -1461,7 +1534,7 @@ async function cycle() {
     }
     await sendSecretOps(capturedSecretOps);
     for (const [key, marked] of captured) {
-        if (recordQuarantine(key)) {
+        if (recordQuarantine(key) || heldBack.has(key)) {
             continue;
         }
         if (isRecordJobBlocked(key)) {
@@ -1789,6 +1862,7 @@ function acceptRemote(item: RemoteItem) {
             ? pluginStorageLosses(key, item)
             : null;
     quarantinedRecords.delete(key);
+    inDoubt.delete(key);
     applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
         persisted.delete(key);
@@ -2310,6 +2384,34 @@ function sameJson(a: string, b: string): boolean {
     }
 }
 
+/**
+ * Keeps the texts of a batch whose answer was lost as in-doubt (`inDoubt`). A key already in doubt
+ * keeps its entry (the batch resent that text, or deleted the record); a deletion starts none.
+ */
+function noteInDoubt(ops: readonly PendingOp[]) {
+    for (const op of ops) {
+        if (op.text !== null && !inDoubt.has(op.key)) {
+            inDoubt.set(op.key, { baseRevision: op.baseRevision, text: op.text, parts: op.parts ?? null });
+        }
+    }
+}
+
+/**
+ * When the server's copy of `key` is its in-doubt text (a lost write landed): that text becomes the
+ * saved base at `revision`, the in-doubt entry is cleared, and the key is marked, so the next cycle
+ * sends this client's newer text on it (nothing when the mirror holds that text).
+ */
+function adoptInDoubt(key: string, revision: string, text: string): boolean {
+    const doubt = inDoubt.get(key);
+    if (!doubt || !sameJson(doubt.text, text)) {
+        return false;
+    }
+    inDoubt.delete(key);
+    persisted.set(key, { revision, text: doubt.text, parts: doubt.parts });
+    markKey(key);
+    return true;
+}
+
 /** A conflicting revision already received over the feed or the job's hydration connection. */
 function rebuildConflictRecord(conflict: { kind: string; id: string; revision: string | null }): RemoteItem | null {
     if (conflict.revision === null || parseRevisionToken(conflict.revision)?.epoch !== getResourceEpoch()) {
@@ -2457,9 +2559,16 @@ async function recoverConflictedWork(
         if (text !== null && op?.text != null && sameJson(op.text, text)) {
             // A retry after a lost response: the server holds what was sent (a patch's result keeps
             // the server's key order, so the text may differ in order only).
+            inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
             continue;
         }
+        if (text !== null && adoptInDoubt(key, item.revision!, text)) {
+            // An earlier lost write landed (this op, say a delete, is newer): its text is the base,
+            // and this client's newer change goes next cycle.
+            continue;
+        }
+        inDoubt.delete(key);
         if (mergeConcurrentChange(item, key)) {
             continue;
         }
@@ -2945,7 +3054,25 @@ function applyRemotePatch(ref: {
     }
     const key = recordKey(ref.kind, ref.id);
     const held = persisted.get(key);
-    if (held?.revision !== patch.baseRevision || !canApplyRemote(key, ref)) {
+    if (held?.revision !== patch.baseRevision) {
+        return false;
+    }
+    if (inDoubt.has(key)) {
+        // The echo of a lost write is taken as the saved base; the mirror keeps this client's text.
+        if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
+            return false;
+        }
+        const data = patchedRecord(held.text, patch);
+        if (data === null || !adoptInDoubt(key, ref.revision, recordText(ref.kind, data))) {
+            return false;
+        }
+        const waiting = remoteRecords.get(key);
+        if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
+            remoteRecords.delete(key);
+        }
+        return true;
+    }
+    if (!canApplyRemote(key, ref)) {
         return false;
     }
     const changed =
@@ -3066,7 +3193,7 @@ function applyCollectionPatch(kind: string, id: string, heldText: string, patch:
 
 /** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
 function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
-    if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
+    if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key) || inDoubt.has(key)) {
         return false;
     }
     const held = persisted.get(key);
@@ -3347,7 +3474,12 @@ export function applyHydration(record: HydrationRecord): boolean {
     if (order === null || order <= 0) {
         return false;
     }
-    if (sendingKeys.has(key) || isRecordJobBlocked(key) || projectRecord(record.kind, record.id) !== held.text) {
+    if (
+        sendingKeys.has(key) ||
+        isRecordJobBlocked(key) ||
+        inDoubt.has(key) ||
+        projectRecord(record.kind, record.id) !== held.text
+    ) {
         // A local change (or one being sent): keep the newest event and check it again after the
         // next cycle; by then the save has landed (and is older) or conflicted and reloaded. A dirty
         // mark alone, with the projection still equal to the saved text, is no change.

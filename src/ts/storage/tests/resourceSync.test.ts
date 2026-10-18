@@ -395,6 +395,84 @@ describe("conflicts", () => {
     });
 });
 
+describe("lost acknowledgement", () => {
+    // Data-loss plan slice 6c (audit D2): the text a batch sent when its answer was lost stays in
+    // doubt until the server's copy settles it; this fake server has no change feed (the echo is in
+    // `resourceSyncPatches.test.ts`).
+    it("saves more typing in the same field after a lost answer: the sent text is resent first, then the newer one on its revision, no notice", async () => {
+        const { fake, sync, settings } = await boot();
+        const base = fake.get("ui", "main")!.revision;
+        fake.dropNextBatchResponse = true;
+        settings.ui.theme = "sent";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const landed = fake.get("ui", "main")!.revision;
+        settings.ui.theme = "typed after the lost answer";
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.data("ui", "main").theme).toBe("typed after the lost answer");
+        expect(settings.ui.theme).toBe("typed after the lost answer");
+        expect(alerts.normal).not.toHaveBeenCalled();
+        const uiOps = fake.batchBodies().map((batch) => batch.ops.find((op) => op.kind === "ui"));
+        // The lost write, its exact resend on the same base (a 409: the server holds it), then the
+        // newer text on the revision the lost write got.
+        expect(uiOps).toEqual([
+            expect.objectContaining({ baseRevision: base, patch: { set: { theme: "sent" }, remove: [] } }),
+            expect.objectContaining({ baseRevision: base, patch: { set: { theme: "sent" }, remove: [] } }),
+            expect.objectContaining({
+                baseRevision: landed,
+                patch: { set: { theme: "typed after the lost answer" }, remove: [] },
+            }),
+        ]);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(3);
+    });
+
+    it("saves more typing after a failed request that never reached the server: the resend lands, then the newer text", async () => {
+        const { fake, sync, settings } = await boot();
+        fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+        settings.ui.theme = "never landed";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        settings.ui.theme = "typed after the failure";
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.data("ui", "main").theme).toBe("typed after the failure");
+        expect(alerts.normal).not.toHaveBeenCalled();
+        // The failed request, its resend (it lands), then the newer text.
+        expect(fake.batchBodies().map((batch) => batch.ops.find((op) => op.kind === "ui")?.patch?.set.theme)).toEqual([
+            "never landed",
+            "never landed",
+            "typed after the failure",
+        ]);
+    });
+
+    it("sends a revert to the saved value after a lost answer, so the lost write does not stay on the server", async () => {
+        const { fake, sync, settings } = await boot();
+        const saved = settings.ui.theme;
+        fake.dropNextBatchResponse = true;
+        settings.ui.theme = "lost";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.data("ui", "main").theme).toBe("lost");
+        settings.ui.theme = saved;
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.data("ui", "main").theme).toBe(saved);
+        expect(settings.ui.theme).toBe(saved);
+        expect(sync.heldRecordRevision("ui", "main")).toBe(fake.get("ui", "main")!.revision);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(3);
+    });
+
+    it("deletes a character removed after its create's answer was lost", async () => {
+        const { fake, sync, characterStore } = await boot();
+        fake.dropNextBatchResponse = true;
+        characterStore.addCharacter(character("c", "Carol"));
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.get("characters", "c")).not.toBeNull();
+        characterStore.removeCharacter("c");
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.get("characters", "c")).toBeNull();
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+});
+
 describe("a generating character (the generation deferral is gone)", () => {
     /**
      * Makes `chaId` generating as the app does: a server job of this tab streams into a chat of it
