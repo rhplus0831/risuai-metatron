@@ -11,7 +11,7 @@
   - language files and switching.
 - Paths:
   - `src/ts/setting/*`
-  - `src/lib/Setting/**`, except `Pages/Module/`, `PersonaSettings.svelte`, `listedPersona.svelte`, `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `ApiKeysSettings.svelte` (`llm-requests.md`), `PluginSettings.svelte`, `GlobalRegex.svelte`, `Pages/Language/TranslatorPresetSettings.svelte`, `Pages/Model/AuxModelSelectors.svelte` (the last two belong to [media-aux](media-aux.md))
+  - `src/lib/Setting/**`, except `Pages/Module/` (the module catalog, its share button's export and alert handling, and the editor: [characters-modules](characters-modules.md)), `PersonaSettings.svelte`, `listedPersona.svelte`, `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `ApiKeysSettings.svelte` (`llm-requests.md`), `PluginSettings.svelte`, `GlobalRegex.svelte`, `Pages/Language/TranslatorPresetSettings.svelte`, `Pages/Model/AuxModelSelectors.svelte` (the last two belong to [media-aux](media-aux.md))
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
   - `src/lib/Others/{PromptDiffModal,QuickSettingsGUI}.svelte`
@@ -123,7 +123,7 @@ Languages (`src/lang/`):
   4. Verify `pnpm check`, loading an old DB, language switching, and settings search.
 - Add a custom-UI setting: register an ID in `customComponents.ts`, then use `type:'custom'`, `componentId`, and `componentProps`.
 - Add a preset field: see Invariants. Verify switching, hotkeys, and export/import.
-- Add a string: add it to `en.ts`, use it as `language.<path>`, and optionally add partial locale entries.
+- Add a string: add it to `en.ts`, use it as `language.<path>`, and optionally add partial locale entries. A feature's strings are documented by its owning guide (for example the export alerts `exportMissingAssets` and `jsonExportTooLarge`, with Korean overrides, in [characters-modules](characters-modules.md)).
 - Expose a new language:
   1. Add the locale file.
   2. Add a `changeLanguage` branch.

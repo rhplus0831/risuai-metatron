@@ -738,6 +738,7 @@ export const languageEnglish = {
     userIcon: "Your Icon",
     successExport: "Successfuly exported and downloaded to your download directory",
     exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
+    jsonExportTooLarge: "The assets total more than 64 MiB, too large for a JSON card. Export it as CharX instead.",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
     alwaysActive: "Always Active",

@@ -17,7 +17,9 @@
     } from "@lucide/svelte";
     import { v4 } from "uuid";
     import { tooltip } from "src/ts/gui/tooltip";
-    import { alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
+    import { alertClear, alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
+    import { alertStore } from "src/ts/stores.svelte";
+    import { get } from "svelte/store";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
@@ -31,6 +33,15 @@
     let editModuleIndex = $state(-1);
     let moduleSearch = $state("");
     let charConversionMode = $state(false);
+
+    // The export is over: a wait or progress alert still showing is stale (a failure the exporter
+    // could not alert), so clear it and keep the row usable.
+    function clearStaleExportWait() {
+        const type = get(alertStore).type;
+        if (type === "wait" || type === "progress") {
+            alertClear();
+        }
+    }
 
     function sortModules(modules: RisuModule[], search: string) {
         return modules
@@ -114,10 +125,17 @@
                                         const sel = parseInt(
                                             await alertSelect([`CharX (${language.recommended})`, `RisuM (Legacy)`]),
                                         );
-                                        if (sel === 0) {
-                                            exportModule(rmodule);
-                                        } else {
-                                            exportModuleLegacy(rmodule);
+                                        try {
+                                            if (sel === 0) {
+                                                await exportModule(rmodule);
+                                            } else {
+                                                await exportModuleLegacy(rmodule);
+                                            }
+                                        } catch (error) {
+                                            // Both exporters alert their own failure; add no second alert.
+                                            console.error(error);
+                                        } finally {
+                                            clearStaleExportWait();
                                         }
                                     }}
                                 >

@@ -721,3 +721,79 @@ describe("export writer completion", () => {
         },
     );
 });
+
+// Slice 3b: a JSON card embeds every asset as a data URI, so past the cap it refuses before
+// `JSON.stringify`. Reads go through a `loadAssets` spy to avoid encoding 64 MiB batch bodies.
+describe("JSON export asset cap", () => {
+    async function capped(sizes: (Uint8Array | "pending")[], compressed?: Uint8Array) {
+        const h = await boot();
+        if (compressed) h.compress.mockResolvedValue(compressed);
+        const keys = sizes.map((_, i) => `assets/${i}.png`);
+        const reads: { keys: readonly string[]; signal: AbortSignal }[] = [];
+        const cancelled = vi.fn();
+        vi.spyOn(h.api, "loadAssets").mockImplementation(async (batch, { signal } = {}) => {
+            reads.push({ keys: batch, signal: signal! });
+            const start = keys.indexOf(batch[0]);
+            const values = sizes.slice(start, start + batch.length);
+            if (values.includes("pending")) {
+                return new Promise((_resolve, reject) =>
+                    signal!.addEventListener(
+                        "abort",
+                        () => {
+                            cancelled();
+                            reject(signal!.reason);
+                        },
+                        { once: true },
+                    ),
+                );
+            }
+            return values as Uint8Array[];
+        });
+        const input = character({ additionalAssets: moduleFixture(keys).assets });
+        const stringify = vi.spyOn(JSON, "stringify");
+        const result = await h.cards.exportCharacterCard(input, "json", { spec: "v3" });
+        return { h, reads, cancelled, stringify, result };
+    }
+    const half = () => new Uint8Array(32 * 1024 * 1024);
+
+    it("exports a card whose assets, portrait included, total exactly 64 MiB", async () => {
+        const { h, result } = await capped([half(), half().subarray(PORTRAIT.length)], PAYLOAD);
+        expect(h.cards.JSON_EXPORT_ASSET_LIMIT).toBe(64 * 1024 * 1024);
+        expect(result).toEqual({ missingAssets: 0 });
+        expect(h.download).toHaveBeenCalledOnce();
+        const card = JSON.parse(Buffer.from(h.downloaded()).toString());
+        expect(card.data.assets.map((asset: { uri: string }) => asset.uri)).toEqual(
+            Array(3).fill(`data:application/octet-stream;base64,${b64(PAYLOAD)}`),
+        );
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successExport);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("refuses at the embedded portrait one byte over, before stringifying", async () => {
+        const { h, stringify, result } = await capped([half(), half().subarray(PORTRAIT.length - 1)], PAYLOAD);
+        expect(result).toBeUndefined();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error(language.jsonExportTooLarge));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(h.download).not.toHaveBeenCalled();
+        // Only the two assets were compressed; the portrait that crossed the cap was not.
+        expect(h.compress).toHaveBeenCalledTimes(2);
+        expect(stringify.mock.calls.some(([value]) => value?.spec === "chara_card_v3")).toBe(false);
+    });
+
+    it("refuses as the over-cap batch arrives and cancels the pending read", async () => {
+        // The first batch crosses the cap at its third asset; the second batch is still pending.
+        const sizes: (Uint8Array | "pending")[] = [half(), half(), new Uint8Array(1)];
+        sizes.push(...Array.from({ length: 197 }, () => PAYLOAD), ...Array<"pending">(3).fill("pending"));
+        const { h, reads, cancelled, result } = await capped(sizes);
+        expect(result).toBeUndefined();
+        expect(reads.map((read) => read.keys.length)).toEqual([200, 3]);
+        expect(cancelled).toHaveBeenCalledOnce();
+        expect(reads[1].signal.aborted).toBe(true);
+        expect(h.compress).toHaveBeenCalledTimes(2);
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error(language.jsonExportTooLarge));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(h.download).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(reads).toHaveLength(2);
+    });
+});

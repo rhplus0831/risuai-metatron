@@ -1257,6 +1257,13 @@ function createBaseV2(char: ClientCharacter) {
     return card;
 }
 
+/**
+ * The most asset bytes a JSON card export embeds (large-asset-import slice 3b): past this, the
+ * base64 data URIs make a card `JSON.stringify` cannot produce, so the export refuses and points
+ * to CharX instead.
+ */
+export const JSON_EXPORT_ASSET_LIMIT = 64 * 1024 * 1024;
+
 export async function exportCharacterCard(
     char: ClientCharacter,
     type: "png" | "json" | "charx" | "charxJpeg" = "png",
@@ -1270,6 +1277,7 @@ export async function exportCharacterCard(
     const localWriter = arg.writer ?? (type === "json" ? undefined : new LocalWriter());
     const controller = new AbortController();
     let missingAssets = 0;
+    let jsonAssetBytes = 0;
     const assetBytes = (key: string, bytes: Uint8Array | null) => {
         if (bytes === null) {
             missingAssets++;
@@ -1412,6 +1420,13 @@ export async function exportCharacterCard(
                             const record = await reads.next();
                             if (record.done === true) throw new Error(language.errors.noData);
                             rData = assetBytes(key, record.value.bytes);
+                        }
+                        if (type === "json") {
+                            // Counted as each asset arrives, so the refusal cancels the pending read.
+                            jsonAssetBytes += rData.length;
+                            if (jsonAssetBytes > JSON_EXPORT_ASSET_LIMIT) {
+                                throw new Error(language.jsonExportTooLarge);
+                            }
                         }
                         assetIndex++;
                         if (type === "png") {
