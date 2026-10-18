@@ -47,8 +47,13 @@ export class CharXWriter {
     writeEnd: boolean = false;
     apb = new AppendableBuffer();
     #takenFilenames: Set<string> = new Set();
+    #error: Error | undefined;
     constructor(private writer: LocalWriter | WritableStreamDefaultWriter<Uint8Array> | VirtualWriter) {
         const handlerAsync = (err: Error, dat: Uint8Array, final: boolean) => {
+            if (err) {
+                this.#error = err;
+                return;
+            }
             if (dat) {
                 this.apb.append(dat);
             }
@@ -86,6 +91,7 @@ export class CharXWriter {
     }
 
     async write(key: string, data: Uint8Array | string, level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) {
+        if (this.#error) throw this.#error;
         key = this.#sanitizeZipFilename(key);
         let dat: Uint8Array;
         if (typeof data === "string") {
@@ -99,6 +105,7 @@ export class CharXWriter {
         });
         this.zip.add(file);
         file.push(dat, true);
+        if (this.#error) throw this.#error;
         await this.writer.write(this.apb.buffer);
         this.apb.clear();
         if (this.writeEnd) {
@@ -133,7 +140,9 @@ export class CharXWriter {
     }
 
     async end() {
+        if (this.#error) throw this.#error;
         this.zip.end();
+        if (this.#error) throw this.#error;
         await this.writer.write(this.apb.buffer);
         this.apb.clear();
         if (this.writeEnd) {

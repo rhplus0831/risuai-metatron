@@ -659,6 +659,7 @@ export const languageKorean = {
     username: "유저 이름",
     userIcon: "유저 아이콘",
     successExport: "성공적으로 엑스포트하여 다운로드 경로에 다운로드했습니다.",
+    exportMissingAssets: "내보내기가 완료되었지만, 에셋 {count}개가 없거나 비어 있어 빈 에셋으로 저장했습니다.",
     successImport: "성공적으로 임포트했습니다.",
     importedCharacter: "성공적으로 임포트 됨.",
     alwaysActive: "언제나 활성화",

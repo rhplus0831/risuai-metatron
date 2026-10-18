@@ -14,9 +14,9 @@ import {
 } from "../alert";
 import type { customscript, loreBook, triggerscript } from "../storage/database.svelte";
 import { findChat, selectedChat } from "../storage/chatStore.svelte";
-import { AppendableBuffer, downloadFile, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte";
+import { LocalWriter, saveAsset, VirtualWriter } from "../globalApi.svelte";
 import { checkPersonaBinded, selectSingleFileHandle } from "../util";
-import { saveAssets } from "../storage/assetQueue";
+import { loadAssetsInBatches, saveAssets } from "../storage/assetQueue";
 import { importModuleOverServer } from "../storage/moduleImportClient";
 import { ServerImportFailedError, ServerImportRequestError } from "../storage/serverImportClient";
 import { v4 } from "uuid";
@@ -50,22 +50,32 @@ export async function exportModule(
 ) {
     const alertEnd = arg.alertEnd ?? true;
 
-    const char = convertModuleToCharacter(module);
-    if (!char.image) {
-        const res = await fetch("/none.webp");
-        const data = new Uint8Array(await res.arrayBuffer());
-        char.image = await saveAsset(data);
-        char.extentions ??= {};
-        char.extentions["moduleNoneImage"] = true;
-    }
     const writer = new LocalWriter();
-    await writer.init(module.name + ".module", ["charx"]);
-    await exportCharacterCard(char, "charx", {
-        spec: "v3",
-        writer,
-    });
-    if (alertEnd) {
-        alertNormal(language.successExport);
+    try {
+        const char = convertModuleToCharacter(module);
+        if (!char.image) {
+            const res = await fetch("/none.webp");
+            const data = new Uint8Array(await res.arrayBuffer());
+            char.image = await saveAsset(data);
+            char.extentions ??= {};
+            char.extentions["moduleNoneImage"] = true;
+        }
+        await writer.init(module.name + ".module", ["charx"]);
+        const result = await exportCharacterCard(char, "charx", {
+            spec: "v3",
+            writer,
+        });
+        if (alertEnd) {
+            alertNormal(
+                result.missingAssets > 0
+                    ? language.exportMissingAssets.replace("{count}", String(result.missingAssets))
+                    : language.successExport,
+            );
+        }
+    } catch (error) {
+        // Also covers failures before handing the writer to exportCharacterCard.
+        await writer.abort(error);
+        alertError(error);
     }
 }
 
@@ -75,74 +85,84 @@ export async function exportModuleLegacy(
         alertEnd?: boolean;
         saveData?: boolean;
     } = {},
-) {
+): Promise<Uint8Array | undefined> {
     const alertEnd = arg.alertEnd ?? true;
     const saveData = arg.saveData ?? true;
-    const apb = new AppendableBuffer();
-    const writeLength = (len: number) => {
-        const lenbuf = Buffer.alloc(4);
-        lenbuf.writeUInt32LE(len, 0);
-        apb.append(lenbuf);
-    };
-    const writeByte = (byte: number) => {
-        //byte is 0-255
-        const buf = Buffer.alloc(1);
-        buf.writeUInt8(byte, 0);
-        apb.append(buf);
-    };
+    const writer = saveData ? new LocalWriter() : new VirtualWriter();
+    const controller = new AbortController();
+    let missingAssets = 0;
+    try {
+        // Capture tuples before any await: metadata and payloads must use the same order even
+        // if the live module is edited while a batch is being read or written.
+        const assets = (module.assets ?? []).map((asset) => [...asset] as [string, string, string]);
+        module = safeStructuredClone(module);
+        module.assets = assets.map((asset) => [asset[0], "", asset[2]]);
 
-    const assets = module.assets ?? [];
-    module = safeStructuredClone(module);
-    module.assets ??= [];
-    module.assets = module.assets.map((asset) => {
-        return [asset[0], "", asset[2]] as [string, string, string];
-    });
-
-    const mainbuf = await encodeRPack(
-        Buffer.from(
-            JSON.stringify(
-                {
-                    module: module,
-                    type: "risuModule",
-                },
-                null,
-                2,
+        const mainbuf = await encodeRPack(
+            Buffer.from(
+                JSON.stringify(
+                    {
+                        module: module,
+                        type: "risuModule",
+                    },
+                    null,
+                    2,
+                ),
+                "utf-8",
             ),
-            "utf-8",
-        ),
-    );
-
-    writeByte(111); //magic number
-    writeByte(0); //version
-    writeLength(mainbuf.length);
-    apb.append(mainbuf);
-
-    for (let i = 0; i < assets.length; i++) {
-        const asset = assets[i];
-        writeByte(1); //mark as asset
-        alertStore.set({
-            type: "wait",
-            msg: `Loading... (Adding Assets ${i} / ${assets.length})`,
-        });
-        let rData = await readImage(asset[1]);
-        if (!rData) {
-            rData = new Uint8Array(0); //blank buffer
+        );
+        if (writer instanceof LocalWriter) {
+            await writer.init(module.name, ["risum"]);
         }
-        let encoded = await encodeRPack(Buffer.from(await compressImage(rData)));
-        writeLength(encoded.length);
-        apb.append(encoded);
-    }
+        const writeLength = async (len: number) => {
+            const lenbuf = Buffer.alloc(4);
+            lenbuf.writeUInt32LE(len, 0);
+            await writer.write(lenbuf);
+        };
+        const writeByte = async (byte: number) => {
+            await writer.write(new Uint8Array([byte]));
+        };
 
-    writeByte(0); //end of file
+        await writeByte(111); //magic number
+        await writeByte(0); //version
+        await writeLength(mainbuf.length);
+        await writer.write(mainbuf);
 
-    if (saveData) {
-        await downloadFile(module.name + ".risum", apb.buffer);
-    }
-    if (alertEnd) {
-        alertNormal(language.successExport);
-    }
+        const keys = assets.map((asset) => asset[1]);
+        for await (const { index, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
+            alertStore.set({
+                type: "wait",
+                msg: `Loading... (Adding Assets ${index} / ${assets.length})`,
+            });
+            if (bytes === null) {
+                missingAssets++;
+                console.warn("Export asset missing or empty:", key);
+            }
+            const encoded = await encodeRPack(Buffer.from(await compressImage(bytes ?? new Uint8Array(0))));
+            await writeByte(1); //mark as asset
+            await writeLength(encoded.length);
+            await writer.write(encoded);
+        }
 
-    return apb.buffer;
+        await writeByte(0); //end of file
+        await writer.close();
+        const result = writer instanceof VirtualWriter ? writer.buf.buffer : undefined;
+        if (alertEnd) {
+            alertNormal(
+                missingAssets > 0
+                    ? language.exportMissingAssets.replace("{count}", String(missingAssets))
+                    : language.successExport,
+            );
+        }
+        return result;
+    } catch (error) {
+        controller.abort(error);
+        await writer.abort(error);
+        if (!saveData && !alertEnd) {
+            throw error;
+        }
+        alertError(error);
+    }
 }
 
 /**

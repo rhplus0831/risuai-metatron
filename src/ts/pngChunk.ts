@@ -76,7 +76,7 @@ class StreamChunkWriter {
         await this.pushData(
             new Uint8Array([(crc / 0x1000000) % 0x100, (crc / 0x10000) % 0x100, (crc / 0x100) % 0x100, crc % 0x100]),
         );
-        this.writer.close();
+        await this.writer.close();
     }
 }
 

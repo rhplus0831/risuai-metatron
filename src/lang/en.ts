@@ -737,6 +737,7 @@ export const languageEnglish = {
     username: "Your Name",
     userIcon: "Your Icon",
     successExport: "Successfuly exported and downloaded to your download directory",
+    exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
     alwaysActive: "Always Active",

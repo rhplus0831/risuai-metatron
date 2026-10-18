@@ -21,7 +21,6 @@ import {
     BlankWriter,
     checkCharOrder,
     downloadFile,
-    loadAsset,
     LocalWriter,
     readImage,
     saveAsset,
@@ -50,7 +49,7 @@ import {
     type RisuModule,
     serverImportErrorMessage,
 } from "./process/modules";
-import { saveAssets, type AssetSaveItem } from "./storage/assetQueue";
+import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/assetQueue";
 import { importCharxOverServer } from "./storage/charxImportClient";
 import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
 
@@ -1267,12 +1266,33 @@ export async function exportCharacterCard(
         spec?: "v2" | "v3";
     } = {},
 ) {
-    let img = await readImage(char.image);
     const spec: "v2" | "v3" = arg.spec ?? "v2"; //backward compatibility
+    const localWriter = arg.writer ?? (type === "json" ? undefined : new LocalWriter());
+    const controller = new AbortController();
+    let missingAssets = 0;
+    const assetBytes = (key: string, bytes: Uint8Array | null) => {
+        if (bytes === null) {
+            missingAssets++;
+            console.warn("Export asset missing or empty:", key);
+            return new Uint8Array(0);
+        }
+        return bytes;
+    };
+    const finish = () => {
+        if (!arg.writer) {
+            alertNormal(
+                missingAssets > 0
+                    ? language.exportMissingAssets.replace("{count}", String(missingAssets))
+                    : language.successExport,
+            );
+        }
+        return { missingAssets };
+    };
     try {
+        let img = await readImage(char.image);
+        if (img === null) throw new Error(language.errors.noData);
         char.image = "";
         img = type === "png" ? await reencodeImage(img) : img;
-        const localWriter = arg.writer ?? new LocalWriter();
         if (!arg.writer && type !== "json") {
             const nameExt = {
                 png: ["Image File", "png"],
@@ -1297,14 +1317,14 @@ export async function exportCharacterCard(
         if (spec === "v2") {
             const card = await createBaseV2(char);
             if (card.data.extensions.risuai.emotions && card.data.extensions.risuai.emotions.length > 0) {
-                for (let i = 0; i < card.data.extensions.risuai.emotions.length; i++) {
+                const keys = card.data.extensions.risuai.emotions.map((asset) => asset[1]);
+                for await (const { index: i, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
                     alertStore.set({
                         type: "progress",
                         msg: "Loading... (Adding Emotions)",
                         submsg: ((i / card.data.extensions.risuai.emotions.length) * 100).toFixed(2),
                     });
-                    const key = card.data.extensions.risuai.emotions[i][1];
-                    const rData = await readImage(key);
+                    const rData = assetBytes(key, bytes);
                     const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.emotions[i][1] = `__asset:${assetIndex}`;
@@ -1316,14 +1336,14 @@ export async function exportCharacterCard(
                 card.data.extensions.risuai.additionalAssets &&
                 card.data.extensions.risuai.additionalAssets.length > 0
             ) {
-                for (let i = 0; i < card.data.extensions.risuai.additionalAssets.length; i++) {
+                const keys = card.data.extensions.risuai.additionalAssets.map((asset) => asset[1]);
+                for await (const { index: i, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
                     alertStore.set({
                         type: "progress",
                         msg: "Loading... (Adding Additional Assets)",
                         submsg: ((i / card.data.extensions.risuai.additionalAssets.length) * 100).toFixed(2),
                     });
-                    const key = card.data.extensions.risuai.additionalAssets[i][1];
-                    const rData = await readImage(key);
+                    const rData = assetBytes(key, bytes);
                     const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.additionalAssets[i][1] = `__asset:${assetIndex}`;
@@ -1333,14 +1353,17 @@ export async function exportCharacterCard(
 
             if (char.vits && char.ttsMode === "vits") {
                 const keys = Object.keys(char.vits.files);
-                for (let i = 0; i < keys.length; i++) {
+                const assetKeys = keys.map((key) => char.vits.files[key]);
+                for await (const { index: i, key: assetKey, bytes } of loadAssetsInBatches(assetKeys, {
+                    signal: controller.signal,
+                })) {
                     alertStore.set({
                         type: "progress",
                         msg: "Loading... (Adding VITS)",
                         submsg: ((i / keys.length) * 100).toFixed(2),
                     });
                     const key = keys[i];
-                    const rData = await loadAsset(char.vits.files[key]);
+                    const rData = assetBytes(assetKey, bytes);
                     const b64encoded = Buffer.from(rData).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.vits[key] = `__asset:${assetIndex}`;
@@ -1352,8 +1375,7 @@ export async function exportCharacterCard(
                     `${char.name.replace(/[<>:"/\\|?*\.\,]/g, "")}_export.json`,
                     Buffer.from(JSON.stringify(card, null, 4), "utf-8"),
                 );
-                alertNormal(language.successExport);
-                return;
+                return finish();
             }
 
             await sleep(10);
@@ -1367,121 +1389,143 @@ export async function exportCharacterCard(
             const card = createBaseV3(char);
             const seenPaths = new Set<string>();
             if (card.data.assets && card.data.assets.length > 0) {
-                for (let i = 0; i < card.data.assets.length; i++) {
-                    alertStore.set({
-                        type: "progress",
-                        msg: "Loading... (Adding Assets)",
-                        submsg: ((i / card.data.assets.length) * 100).toFixed(2),
-                    });
-                    let key = card.data.assets[i].uri;
-                    let rData: Uint8Array;
-                    if (key === "ccdefault:" && type !== "png") {
-                        key = char.image;
-                        rData = img;
-                    } else if (isKnownUri(key)) {
-                        continue;
-                    } else {
-                        rData = await readImage(key);
-                    }
-                    assetIndex++;
-                    if (type === "png") {
-                        const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
-                        card.data.assets[i].uri = `__asset:${assetIndex}`;
-                        await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
-                    } else if (type === "json") {
-                        const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
-                        card.data.assets[i].uri = `data:application/octet-stream;base64,${b64encoded}`;
-                    } else if (writer instanceof CharXWriter) {
-                        let type = "other";
-                        let itype = "other";
-                        switch (card.data.assets[i].type) {
-                            case "emotion":
-                                type = "emotion";
-                                break;
-                            case "background":
-                                type = "background";
-                                break;
-                            case "user_icon":
-                                type = "user_icon";
-                                break;
-                            case "icon":
-                                type = "icon";
-                                break;
+                const keys = card.data.assets
+                    .filter((asset) => !(asset.uri === "ccdefault:" && type !== "png") && !isKnownUri(asset.uri))
+                    .map((asset) => asset.uri);
+                const reads = loadAssetsInBatches(keys, { signal: controller.signal });
+                try {
+                    // Walk the original list: URI skips and the portrait still control asset numbering.
+                    for (let i = 0; i < card.data.assets.length; i++) {
+                        alertStore.set({
+                            type: "progress",
+                            msg: "Loading... (Adding Assets)",
+                            submsg: ((i / card.data.assets.length) * 100).toFixed(2),
+                        });
+                        let key = card.data.assets[i].uri;
+                        let rData: Uint8Array;
+                        if (key === "ccdefault:" && type !== "png") {
+                            key = char.image;
+                            rData = img;
+                        } else if (isKnownUri(key)) {
+                            continue;
+                        } else {
+                            const record = await reads.next();
+                            if (record.done === true) throw new Error(language.errors.noData);
+                            rData = assetBytes(key, record.value.bytes);
                         }
-                        switch (card.data.assets[i].ext) {
-                            case "png":
-                            case "jpg":
-                            case "jpeg":
-                            case "gif":
-                            case "webp":
-                            case "avif":
-                                itype = "image";
-                                break;
-                            case "mp3":
-                            case "wav":
-                            case "ogg":
-                            case "flac":
-                                itype = "audio";
-                                break;
-                            case "mp4":
-                            case "webm":
-                            case "mov":
-                            case "avi":
-                            case "mkv":
-                                itype = "video";
-                                break;
-                            case "mmd":
-                            case "obj":
-                                itype = "model";
-                                break;
-                            case "safetensors":
-                            case "cpkt":
-                            case "onnx":
-                                itype = "ai";
-                                break;
-                            case "otf":
-                            case "ttf":
-                            case "woff":
-                            case "woff2":
-                                itype = "fonts";
-                                break;
-                            case "js":
-                            case "ts":
-                            case "lua":
-                                itype = "code";
-                        }
-
-                        let path = "";
-                        const name = Array.from(card.data.assets[i].name || `asset_${assetIndex}`)
-                            .slice(0, 100)
-                            .join("");
-                        const ext = card.data.assets[i].ext === "unknown" ? "png" : card.data.assets[i].ext;
-                        const baseDir =
-                            card.data.assets[i].ext === "unknown" ? `assets/${type}/image` : `assets/${type}/${itype}`;
-
-                        // Generate unique path to avoid duplicate filenames
-                        let uniqueName = name;
-                        let suffix = 0;
-                        while (seenPaths.has(`${baseDir}/${uniqueName}.${ext}`)) {
-                            suffix++;
-                            uniqueName = `${name}_${suffix}`;
-                        }
-                        path = `${baseDir}/${uniqueName}.${ext}`;
-                        seenPaths.add(path);
-
-                        const imageType = getImageType(rData);
-                        const metaPath = `x_meta/${uniqueName}.json`;
-                        if (imageType === "PNG" && writer instanceof CharXWriter) {
-                            const metadatas: Record<string, string> = {};
-                            const gen = PngChunk.readGenerator(rData);
-                            for await (const chunk of gen) {
-                                if (!chunk || chunk instanceof AppendableBuffer) {
-                                    continue;
-                                }
-                                metadatas[chunk.key] = chunk.value;
+                        assetIndex++;
+                        if (type === "png") {
+                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            card.data.assets[i].uri = `__asset:${assetIndex}`;
+                            await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
+                        } else if (type === "json") {
+                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            card.data.assets[i].uri = `data:application/octet-stream;base64,${b64encoded}`;
+                        } else if (writer instanceof CharXWriter) {
+                            let type = "other";
+                            let itype = "other";
+                            switch (card.data.assets[i].type) {
+                                case "emotion":
+                                    type = "emotion";
+                                    break;
+                                case "background":
+                                    type = "background";
+                                    break;
+                                case "user_icon":
+                                    type = "user_icon";
+                                    break;
+                                case "icon":
+                                    type = "icon";
+                                    break;
                             }
-                            if (Object.keys(metadatas).length > 0) {
-                                await writer.write(metaPath, Buffer.from(JSON.stringify(metadatas, null, 4)), 6);
+                            switch (card.data.assets[i].ext) {
+                                case "png":
+                                case "jpg":
+                                case "jpeg":
+                                case "gif":
+                                case "webp":
+                                case "avif":
+                                    itype = "image";
+                                    break;
+                                case "mp3":
+                                case "wav":
+                                case "ogg":
+                                case "flac":
+                                    itype = "audio";
+                                    break;
+                                case "mp4":
+                                case "webm":
+                                case "mov":
+                                case "avi":
+                                case "mkv":
+                                    itype = "video";
+                                    break;
+                                case "mmd":
+                                case "obj":
+                                    itype = "model";
+                                    break;
+                                case "safetensors":
+                                case "cpkt":
+                                case "onnx":
+                                    itype = "ai";
+                                    break;
+                                case "otf":
+                                case "ttf":
+                                case "woff":
+                                case "woff2":
+                                    itype = "fonts";
+                                    break;
+                                case "js":
+                                case "ts":
+                                case "lua":
+                                    itype = "code";
+                            }
+
+                            let path = "";
+                            const name = Array.from(card.data.assets[i].name || `asset_${assetIndex}`)
+                                .slice(0, 100)
+                                .join("");
+                            const ext = card.data.assets[i].ext === "unknown" ? "png" : card.data.assets[i].ext;
+                            const baseDir =
+                                card.data.assets[i].ext === "unknown"
+                                    ? `assets/${type}/image`
+                                    : `assets/${type}/${itype}`;
+
+                            // Generate unique path to avoid duplicate filenames
+                            let uniqueName = name;
+                            let suffix = 0;
+                            while (seenPaths.has(`${baseDir}/${uniqueName}.${ext}`)) {
+                                suffix++;
+                                uniqueName = `${name}_${suffix}`;
+                            }
+                            path = `${baseDir}/${uniqueName}.${ext}`;
+                            seenPaths.add(path);
+
+                            const imageType = getImageType(rData);
+                            const metaPath = `x_meta/${uniqueName}.json`;
+                            if (imageType === "PNG" && writer instanceof CharXWriter) {
+                                const metadatas: Record<string, string> = {};
+                                const gen = PngChunk.readGenerator(rData);
+                                for await (const chunk of gen) {
+                                    if (!chunk || chunk instanceof AppendableBuffer) {
+                                        continue;
+                                    }
+                                    metadatas[chunk.key] = chunk.value;
+                                }
+                                if (Object.keys(metadatas).length > 0) {
+                                    await writer.write(metaPath, Buffer.from(JSON.stringify(metadatas, null, 4)), 6);
+                                } else {
+                                    await writer.write(
+                                        metaPath,
+                                        Buffer.from(
+                                            JSON.stringify({
+                                                type: imageType,
+                                            }),
+                                            "utf-8",
+                                        ),
+                                        6,
+                                    );
+                                }
                             } else {
                                 await writer.write(
                                     metaPath,
@@ -1494,21 +1538,13 @@ export async function exportCharacterCard(
                                     6,
                                 );
                             }
-                        } else {
-                            await writer.write(
-                                metaPath,
-                                Buffer.from(
-                                    JSON.stringify({
-                                        type: imageType,
-                                    }),
-                                    "utf-8",
-                                ),
-                                6,
-                            );
+                            const writtenPath = await writer.write(path, Buffer.from(await compressImage(rData)));
+                            card.data.assets[i].uri = "embeded://" + writtenPath;
                         }
-                        const writtenPath = await writer.write(path, Buffer.from(await compressImage(rData)));
-                        card.data.assets[i].uri = "embeded://" + writtenPath;
                     }
+                } finally {
+                    // Manual iteration must close the generator even when compression or a write fails.
+                    await reads.return();
                 }
             }
             if (type === "json") {
@@ -1516,8 +1552,7 @@ export async function exportCharacterCard(
                     `${char.name.replace(/[<>:"/\\|?*\.\,]/g, "")}_export.json`,
                     Buffer.from(JSON.stringify(card, null, 4), "utf-8"),
                 );
-                alertNormal(language.successExport);
-                return;
+                return finish();
             }
 
             await sleep(10);
@@ -1537,13 +1572,12 @@ export async function exportCharacterCard(
                 };
                 delete card.data.extensions.risuai.triggerscript;
                 delete card.data.extensions.risuai.customScripts;
-                await writer.write(
-                    "module.risum",
-                    await exportModuleLegacy(md, {
-                        alertEnd: false,
-                        saveData: false,
-                    }),
-                );
+                const moduleBytes = await exportModuleLegacy(md, {
+                    alertEnd: false,
+                    saveData: false,
+                });
+                if (!moduleBytes) throw new Error(language.errors.noData);
+                await writer.write("module.risum", moduleBytes);
                 await writer.write("card.json", Buffer.from(JSON.stringify(card, null, 4)));
             } else {
                 await writer.write("ccv3", Buffer.from(JSON.stringify(card)).toString("base64"));
@@ -1553,10 +1587,11 @@ export async function exportCharacterCard(
 
         await sleep(10);
 
-        if (!arg.writer) {
-            alertNormal(language.successExport);
-        }
+        return finish();
     } catch (e) {
+        controller.abort(e);
+        await localWriter?.abort(e);
+        if (arg.writer) throw e;
         alertError(e);
     }
 }

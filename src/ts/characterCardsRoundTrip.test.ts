@@ -279,7 +279,10 @@ describe("CharXImporter asset admission", () => {
 describe("CharX export names its assets as the zip writer wrote them", () => {
     it("sanitized, colliding, and extensionless names import back through the app's own importer", async () => {
         const app = await boot();
+        // The portrait is read alone; the assets come through the batch read (large-asset-import
+        // slice 3a), one record per asked key.
         vi.spyOn(app.globalApi, "readImage").mockResolvedValue(GIF);
+        vi.spyOn(app.globalApi, "loadAssets").mockImplementation(async (keys) => keys.map(() => GIF));
         const char = fixtureCharacter({
             additionalAssets: [
                 ["smile?", "assets/smile.gif", "gif"],

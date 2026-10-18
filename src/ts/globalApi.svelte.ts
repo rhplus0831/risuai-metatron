@@ -14,7 +14,7 @@ import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from
 import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
 import { setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
-import { readAsset, writeAsset, type AssetRequestOptions } from "./storage/assetClient";
+import { readAsset, readAssets, writeAsset, type AssetRequestOptions } from "./storage/assetClient";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
@@ -280,6 +280,14 @@ export async function saveAsset(
  */
 export async function loadAsset(id: string) {
     return (await readAsset(id)) as unknown as Uint8Array;
+}
+
+/** Reads assets in key order, preserving duplicates and null records for missing or empty files. */
+export async function loadAssets(
+    keys: readonly string[],
+    options: { signal?: AbortSignal } = {},
+): Promise<(Uint8Array | null)[]> {
+    return readAssets(keys, options);
 }
 
 export { saving } from "./storage/resourceSync.svelte";
@@ -734,6 +742,15 @@ export class LocalWriter {
     async close(): Promise<void> {
         await this.writer.close();
     }
+
+    /** Drops a partial download. Cleanup is safe before init and after close or another abort. */
+    async abort(reason?: unknown): Promise<void> {
+        try {
+            await this.writer?.abort(reason);
+        } catch {
+            // An already closed or errored stream needs no further cleanup.
+        }
+    }
 }
 
 /**
@@ -756,6 +773,10 @@ export class VirtualWriter {
      */
     close(): void {
         // do nothing
+    }
+
+    abort(): void {
+        // No external output to cancel.
     }
 }
 

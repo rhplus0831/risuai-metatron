@@ -23,7 +23,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
 
 - Storage and assets:
   - `saveAsset`: hashes the bytes and stores them as `assets/<hash>.<ext>`; an optional `{ signal }` aborts the write. Bulk imports save through `saveAssets` (`storage/assetQueue.ts`, see `persistence.md`).
-  - `loadAsset`, `readImage`.
+  - `loadAsset`, `readImage`; `loadAssets(keys, { signal? })` reads a batch in key order over `readAssets`, preserving duplicates and returning `null` per missing or empty record. Exporters reach it through `loadAssetsInBatches` (`storage/assetQueue.ts`, [persistence](persistence.md)).
   - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when the service worker holds the file. With worker use enabled, known paths are remembered for the page; otherwise the page shares one `caches.open("risuCache")` promise and directly calls `cache.match("/sw/img/<hex>")`. A hit remembers the path without a worker round trip; a miss reads the bytes and posts to `/sw/register/<hex>` before remembering it. Missing Cache Storage or a failed lookup falls back to `/sw/check/<hex>` for that read, with a later read able to retry opening the cache. Each worker request is bounded at 10 s; a failed worker request falls back to an object URL (`blob:`, `image/png`) of its bytes pinned for the page by this plain read (including when boot continues without a ready worker; a data URL would inflate the text a display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and resolves `""`, as does a failed load, and either is dropped so the next read tries again. The message rich copy embeds `blob:` message images and icons like the other URLs it reads.
   - `holdFileSrc`: shares the same cached load as `getFileSrc`, but returns `{ src, release }` for previews. The last release revokes and drops an unpinned `blob:` URL after a 100 ms grace period, cancelled by a new hold or plain read so shifted list rows can reuse it. A release before loading finishes is applied after resolution unless the source was held or pinned again. Service-worker URLs are never revoked; plain reads stay pinned.
   - `downloadFile`, `getBasename`.
@@ -36,7 +36,7 @@ The request-log viewer, browser collector, reports, and support sharing are docu
   - `fetchNative(url, args)`: returns a `Response` or stream.
   - `addFetchLog`, `appendFetchLog`, `getFetchLogs`: all writers (including `addFetchLogInGlobalFetch`) use `writeFetchLog`, which trims the live array in place to `FETCH_LOG_MAX_ENTRIES` (20) and `FETCH_LOG_MAX_CHARS` (16 Mi UTF-16 code units of `body`, `header`, and `response`). The newest entry always survives whole, even alone over budget.
   - `openURL`.
-- Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`, `BlankWriter`, `AppendableBuffer`.
+- Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`, `BlankWriter`, `AppendableBuffer`. `LocalWriter.abort(reason?)` drops a partial download through streamSaver's writer and never throws: safe before `init`, after `close`, or when called twice. `VirtualWriter.abort()` is a no-op.
 - Chat and UI:
   - `changeChatTo` (selects a chat of the selected character by id, or by its index in `chatList`, through the chat module's `selectChat`, and opens it with `setChatOpen`; per tab), `createChatCopyName` (unique against `chatList`'s names).
   - `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`.

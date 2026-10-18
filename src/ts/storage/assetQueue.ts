@@ -1,4 +1,56 @@
-import { saveAsset } from "../globalApi.svelte";
+import { loadAssets, saveAsset } from "../globalApi.svelte";
+import { ASSET_BATCH_CLIENT_RECORDS } from "./assetClient";
+
+/**
+ * Yields one completed batch in key order while prefetching the next (200 keys by default).
+ * Only these two batches are retained. The asset client owns retries. Closing the iterator, a
+ * consumer failure, or an external abort cancels and settles the pending read before returning.
+ */
+export async function* loadAssetsInBatches(
+    keys: readonly string[],
+    options: { batchSize?: number; signal?: AbortSignal } = {},
+): AsyncGenerator<{ index: number; key: string; bytes: Uint8Array | null }, void> {
+    const requestedSize = Math.floor(options.batchSize ?? 200);
+    const batchSize =
+        Number.isFinite(requestedSize) && requestedSize >= 1
+            ? Math.min(requestedSize, ASSET_BATCH_CLIENT_RECORDS)
+            : 200;
+    const controller = new AbortController();
+    const { signal } = controller;
+    const onAbort = () => controller.abort(abortReason(options.signal!));
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+
+    let pending: Promise<(Uint8Array | null)[]> | undefined;
+    const start = (index: number) => {
+        signal.throwIfAborted();
+        const read = loadAssets(keys.slice(index, index + batchSize), { signal });
+        // A prefetched failure can arrive while the consumer is compressing or writing an asset.
+        // Handle it immediately; awaiting the original promise still propagates that failure.
+        void read.catch(() => {});
+        return read;
+    };
+    try {
+        signal.throwIfAborted();
+        if (keys.length === 0) return;
+        pending = start(0);
+        for (let startIndex = 0; startIndex < keys.length; startIndex += batchSize) {
+            const batch = await pending;
+            signal.throwIfAborted();
+            const nextIndex = startIndex + batchSize;
+            pending = nextIndex < keys.length ? start(nextIndex) : undefined;
+            for (let offset = 0; offset < batch.length; offset++) {
+                signal.throwIfAborted();
+                const index = startIndex + offset;
+                yield { index, key: keys[index], bytes: batch[offset] };
+            }
+        }
+    } finally {
+        controller.abort();
+        await pending?.catch(() => {});
+        options.signal?.removeEventListener("abort", onAbort);
+    }
+}
 
 /**
  * The bounded asset save queue (large-asset-import slice 1a) for the bulk import paths (`.risum`,
