@@ -36,6 +36,7 @@ import {
     ZIP_OFFSET_MODULUS,
     type ZipCentralEntry,
 } from "../../../shared/charxImport.ts";
+import type { RealmCommittedCharx } from "../../../shared/realmImport.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import {
@@ -139,17 +140,18 @@ export type CharxLinesDeps = {
 };
 
 /**
- * The CharX import's lines (see the route comment), shared with the Realm download
- * (`routes/importRealm.ts`): `phase` names the diagnostics lifecycle event (`charxImport` by
- * default) and `kind`, when given, is added to the result line. Never throws once the stream has
- * started (a failure is the last line), and sends its last line once `finalize` has run, as the
- * module import does.
+ * The CharX import's lines (see the route comment), shared with the Realm commit
+ * (`routes/importRealm.ts`): `realm` names the diagnostics lifecycle event `realmImport` (else
+ * `charxImport`), skips the card and module entries (the Realm prepare read them with
+ * `readCharxCardParts`), and makes the result line a `RealmCommittedCharx`. Never throws once the
+ * stream has started (a failure is the last line), and sends its last line once `finalize` has run,
+ * as the module import does.
  */
 export async function* charxLines(
     { savePath, snapshots, diagnostics }: CharxLinesDeps,
     { entries, total }: CharxFilePlan,
     { handle, signal, finalize }: FileImportStream,
-    options: { phase?: "charxImport" | "realmImport"; kind?: "charx" } = {},
+    options: { realm?: boolean } = {},
 ): AsyncGenerator<Uint8Array> {
     try {
         let card: string | null = null;
@@ -167,7 +169,7 @@ export async function* charxLines(
                 excluded.push(entry.name);
                 continue;
             }
-            if (entry.kind === "ignored") {
+            if (entry.kind === "ignored" || (options.realm && entry.kind !== "asset")) {
                 continue;
             }
             const bytes = await readEntry(handle, entry);
@@ -194,9 +196,12 @@ export async function* charxLines(
                 }
             }
         }
-        const fields = { card, moduleData, assets, excluded } satisfies CharxImportResult;
-        const result = ndjsonLine(options.kind ? { kind: options.kind, ...fields } : fields);
-        recordSafely(diagnostics, { kind: "lifecycle", phase: options.phase ?? "charxImport" });
+        const result = ndjsonLine(
+            options.realm
+                ? ({ kind: "charx", assets, excluded } satisfies RealmCommittedCharx)
+                : ({ card, moduleData, assets, excluded } satisfies CharxImportResult),
+        );
+        recordSafely(diagnostics, { kind: "lifecycle", phase: options.realm ? "realmImport" : "charxImport" });
         await finalize();
         yield result;
     } catch (error) {
@@ -215,6 +220,35 @@ export async function* charxLines(
     } finally {
         await finalize();
     }
+}
+
+/**
+ * The card and module entries of a validated file, read as `charxLines` reads them (file order, the
+ * last of a kind wins, one decoded past `MAX_CHARX_ENTRY_BYTES` is skipped): the card's text and the
+ * module's bytes as base64, each null without one. The Realm prepare (`routes/importRealm.ts`) reads
+ * them before anything is written. A corrupt deflate stream throws `CharxFileError`.
+ */
+export async function readCharxCardParts(
+    handle: FileHandle,
+    { entries }: CharxFilePlan,
+): Promise<{ card: string | null; moduleData: string | null }> {
+    let card: string | null = null;
+    let moduleData: string | null = null;
+    for (const entry of entries) {
+        if (entry.excluded || (entry.kind !== "card" && entry.kind !== "module")) {
+            continue;
+        }
+        const bytes = await readEntry(handle, entry);
+        if (bytes === null) {
+            continue;
+        }
+        if (entry.kind === "card") {
+            card = decodeCharxCard(bytes);
+        } else {
+            moduleData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+        }
+    }
+    return { card, moduleData };
 }
 
 /**

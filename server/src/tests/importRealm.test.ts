@@ -10,12 +10,17 @@ import { Buffer as TabBuffer } from "buffer/index.js";
 import crc32 from "crc/crc32";
 import { zipSync } from "fflate";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { REALM_IMPORT_PATH } from "../../../shared/realmImport.ts";
+import {
+    MAX_REALM_STAGED,
+    REALM_CANCEL_PATH,
+    REALM_COMMIT_PATH,
+    REALM_IMPORT_PATH,
+} from "../../../shared/realmImport.ts";
 import { MAX_PNG_CHUNKS, MAX_PNG_TEXT_CHUNK_BYTES, PngFileError, planPngFile } from "../routes/importPng.ts";
 import { createResourceTestClient, type ResourceTestClient, waitFor } from "./testSupport.ts";
 
 /**
- * `POST /api/import/realm` over a local stand-in for Realm (`startRealm`: one HTTP server answering
+ * The Realm import's prepare (`POST /api/import/realm`), commit, and cancel over a local stand-in for Realm (`startRealm`: one HTTP server answering
  * `/api/v1/download/dynamic/<id>` from a per-id table), so no test reaches realm.risuai.net. The PNG
  * expectations are built independently of the server reader: the fixture's chunks are concatenated
  * by the test itself, and asset bytes are decoded with the tab's `buffer` package.
@@ -165,7 +170,34 @@ async function post(s: ResourceTestClient, body: unknown, init: RequestInit = {}
     responses.push(res);
     return res;
 }
+/** The prepare request. */
 const download = (s: ResourceTestClient, id: string, init: RequestInit = {}) => post(s, { id }, init);
+const commitRequest = (s: ResourceTestClient, token: unknown, init: RequestInit = {}) =>
+    post(s, { token }, init, REALM_COMMIT_PATH);
+const cancelRequest = (s: ResourceTestClient, token: unknown) => post(s, { token }, {}, REALM_CANCEL_PATH);
+const TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A CharX upload (`POST /api/import/charx`), which shares the import slot. */
+async function charxUpload(s: ResourceTestClient, body: Uint8Array) {
+    const res = await s.request("/api/import/charx", { method: "POST", body }, null);
+    responses.push(res);
+    return res;
+}
+/** A prepare that stages: its one line (with a token), nothing written, the file staged. */
+async function prepare(s: ResourceTestClient, id: string, init: RequestInit = {}): Promise<any> {
+    const before = staged(s).length;
+    const assetsBefore = assetFiles(s);
+    const answer = await lines(await download(s, id, init));
+    expect(answer).toHaveLength(1);
+    expect(answer[0].token).toMatch(TOKEN);
+    expect(assetFiles(s)).toEqual(assetsBefore);
+    expect(staged(s)).toHaveLength(before + 1);
+    return answer[0];
+}
+/** A prepare and its commit's lines. */
+async function realmImport(s: ResourceTestClient, id: string) {
+    const prepared = await prepare(s, id);
+    return { prepared, committed: await lines(await commitRequest(s, prepared.token)) };
+}
 async function lines(res: Response): Promise<any[]> {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/x-ndjson");
@@ -182,16 +214,12 @@ async function refused(res: Response, status: number, error: string) {
     expect(await res.json()).toEqual({ error });
     if (status === 503) expect(res.headers.get("retry-after")).toBe("5");
 }
-/** The slot and the staging are free again: the next download works. */
+/** The slot and the staging are free again: the next download stages and commits. */
 async function recovered(s: ResourceTestClient) {
     expect(staged(s)).toEqual([]);
-    expect((await lines(await download(s, "ok"))).at(-1)).toEqual({
-        kind: "charx",
-        card,
-        moduleData: null,
-        assets: {},
-        excluded: [],
-    });
+    const { prepared, committed } = await realmImport(s, "ok");
+    expect(prepared).toEqual({ kind: "charx", token: prepared.token, card, moduleData: null });
+    expect(committed).toEqual([{ kind: "charx", assets: {}, excluded: [] }]);
     expect(staged(s)).toEqual([]);
 }
 function deferred() {
@@ -222,7 +250,7 @@ const lifecycle = (s: ResourceTestClient, phase: string) =>
 
 describe("POST /api/import/realm", () => {
     it.each(["application/charx", "application/zip"])(
-        "downloads a %s answer with only the API version header and reads it with the CharX reader",
+        "downloads a %s answer with only the API version header, stages it with its card parts, and stores its assets on commit",
         async (type) => {
             const realm = await startRealm();
             const s = await server(realm);
@@ -235,15 +263,18 @@ describe("POST /api/import/realm", () => {
                     archive({ "assets/bg.webp": payload, "module.risum": module, "x_meta/ignored.json": bytes("x") }),
                 ),
             );
-            expect(await lines(await download(s, "charx-id"))).toEqual([
+            const prepared = await prepare(s, "charx-id");
+            expect(prepared).toEqual({
+                kind: "charx",
+                token: prepared.token,
+                card,
+                moduleData: module.toString("base64"),
+            });
+            expect(assetFiles(s)).toEqual([]);
+            expect(lifecycle(s, "realmImport")).toEqual([]);
+            expect(await lines(await commitRequest(s, prepared.token))).toEqual([
                 { done: 1, total: 1 },
-                {
-                    kind: "charx",
-                    card,
-                    moduleData: module.toString("base64"),
-                    assets: { "assets/bg.webp": keyOf(payload) },
-                    excluded: [],
-                },
+                { kind: "charx", assets: { "assets/bg.webp": keyOf(payload) }, excluded: [] },
             ]);
             expect(stored(s, keyOf(payload))).toEqual(payload);
             expect(assetFiles(s)).toEqual([path.basename(keyOf(payload))]);
@@ -293,10 +324,10 @@ describe("POST /api/import/realm", () => {
         );
         const trimmed = png(ihdr, time, idat, iend);
         realm.answer("png-id", file("image/png", image));
-        const answer = await lines(await download(s, "png-id"));
+        const { prepared, committed: answer } = await realmImport(s, "png-id");
+        expect(prepared).toEqual({ kind: "png", token: prepared.token, card: last });
         expect(answer.at(-1)).toEqual({
             kind: "png",
-            card: last,
             image: keyOf(trimmed),
             assets: { "0": keyOf(assetB), "1": keyOf(oddBytes), "2": keyOf(Buffer.alloc(0)) },
         });
@@ -329,13 +360,9 @@ describe("POST /api/import/realm", () => {
                 png(ihdr, text("ccv3", v3("open")), text("chara-ext-asset_7", asset.toString("base64")), idat),
             ),
         );
-        const answer = await lines(await download(s, "open-ended"));
-        expect(answer.at(-1)).toEqual({
-            kind: "png",
-            card: v3("open"),
-            image: keyOf(png(ihdr, idat)),
-            assets: { "7": keyOf(asset) },
-        });
+        const { prepared, committed: answer } = await realmImport(s, "open-ended");
+        expect(prepared.card).toBe(v3("open"));
+        expect(answer.at(-1)).toEqual({ kind: "png", image: keyOf(png(ihdr, idat)), assets: { "7": keyOf(asset) } });
         expect(readFileSync(path.join(s.savePath, keyOf(asset)), "utf8")).toBe("existing key must survive");
         expect(stored(s, keyOf(png(ihdr, idat)))).toEqual(png(ihdr, idat));
         await recovered(s);
@@ -348,7 +375,6 @@ describe("POST /api/import/realm", () => {
             card: "second",
         },
         { name: "an empty ccv3 falls back to chara", chunks: [text("ccv3", ""), text("chara", "X")], card: "X" },
-        { name: "an empty card chunk only is a null card", chunks: [text("ccv3", "")], card: null },
         {
             name: "a 5 MiB text is kept over a later chunk of its key",
             chunks: [text("ccv3", "A".repeat(5 * 1024 * 1024)), text("ccv3", "later")],
@@ -363,9 +389,9 @@ describe("POST /api/import/realm", () => {
         const realm = await startRealm();
         const s = await server(realm);
         realm.answer("cards", file("image/png", png(ihdr, ...chunks, iend)));
-        expect(await lines(await download(s, "cards"))).toEqual([
-            { kind: "png", card: expected, image: keyOf(png(ihdr, iend)), assets: {} },
-        ]);
+        const { prepared, committed } = await realmImport(s, "cards");
+        expect(prepared.card).toBe(expected);
+        expect(committed).toEqual([{ kind: "png", image: keyOf(png(ihdr, iend)), assets: {} }]);
         expect(assetFiles(s)).toEqual([path.basename(keyOf(png(ihdr, iend)))]);
         expect(staged(s)).toEqual([]);
     });
@@ -386,13 +412,21 @@ describe("POST /api/import/realm", () => {
         ],
         ["no card chunk", "image/png", png(ihdr, text("chara-ext-asset_0", bytes("QUJD").toString("base64")), iend)],
         ["a text chunk without a key", "image/png", png(ihdr, chunk("tEXt", bytes("ccv3 without NUL")), iend)],
+        ["empty card chunks only", "image/png", png(ihdr, text("ccv3", ""), text("chara", ""), iend)],
         ["a CharX that is not a zip", "application/charx", bytes("not a zip")],
-    ])("refuses %s as an invalid character file before anything is written", async (_name, type, body) => {
+        [
+            "a CharX whose card.json is empty",
+            "application/charx",
+            Buffer.from(zipSync({ "card.json": new Uint8Array(0) }, { level: 0 })),
+        ],
+    ])("refuses %s as an invalid character file before anything is written or staged", async (_name, type, body) => {
         const realm = await startRealm();
         const s = await server(realm);
         realm.answer("bad", file(type, body));
         await refused(await download(s, "bad"), 400, "Invalid character file");
         expect(assetFiles(s)).toEqual([]);
+        expect(staged(s)).toEqual([]);
+        expect(s.context.realmStaging.size).toBe(0);
         expect(lifecycle(s, "realmImport")).toEqual([]);
         await recovered(s);
     });
@@ -473,7 +507,9 @@ describe("POST /api/import/realm", () => {
         const s = await server(realm);
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         realm.answer("hop", redirect(`${downloadPath("ok")}?cors=true&hop=1`));
-        expect((await lines(await download(s, "hop"))).at(-1)).toMatchObject({ kind: "charx", card });
+        const hop = await prepare(s, "hop");
+        expect(hop).toMatchObject({ kind: "charx", card });
+        expect((await cancelRequest(s, hop.token)).status).toBe(204);
         expect((await realm.received("ok")).headers["x-risu-api-version"]).toBe("4");
 
         realm.answer("away", redirect(`${elsewhere.url}${downloadPath("ok")}?cors=true`));
@@ -546,7 +582,9 @@ describe("POST /api/import/realm", () => {
         exact.pad = "p".repeat(4096 - JSON.stringify(exact).length);
         expect(JSON.stringify(exact)).toHaveLength(4096);
         realm.answer("a-Z_0-9", file("application/charx", archive()));
-        expect((await lines(await post(s, exact))).at(-1)).toMatchObject({ kind: "charx", card });
+        const prepared = (await lines(await post(s, exact)))[0];
+        expect(prepared).toMatchObject({ kind: "charx", card });
+        expect((await cancelRequest(s, prepared.token)).status).toBe(204);
         await recovered(s);
     });
 
@@ -615,7 +653,7 @@ describe("POST /api/import/realm", () => {
     });
 
     it.each(["finish", "response cancel", "request abort"])(
-        "holds admission through the PNG stream and shutdown waits for %s",
+        "holds admission through the PNG commit stream and shutdown waits for %s",
         async (ending) => {
             const realm = await startRealm();
             const s = await server(realm);
@@ -635,7 +673,9 @@ describe("POST /api/import/realm", () => {
                 ),
             );
             const abort = new AbortController();
-            const res = await download(s, "two", { signal: abort.signal });
+            const prepared = await prepare(s, "two");
+            expect(prepared.card).toBe(v3("two"));
+            const res = await commitRequest(s, prepared.token, { signal: abort.signal });
             await waitFor(() => assetFiles(s).length === 1);
             const input = unreadBody();
             await refused(await post(s, input.body, {}, "/api/import/charx"), 409, "Another import is running");
@@ -644,6 +684,7 @@ describe("POST /api/import/realm", () => {
                 disposed = true;
             });
             await refused(await download(s, "ok"), 503, "The server is shutting down");
+            await refused(await commitRequest(s, prepared.token), 503, "The server is shutting down");
             expect(input.reads()).toBe(0);
             expect(disposed).toBe(false);
             expect(staged(s)).toHaveLength(1);
@@ -652,7 +693,6 @@ describe("POST /api/import/realm", () => {
                 expect(answer.at(-2)).toEqual({ done: 2, total: 2 });
                 expect(answer.at(-1)).toEqual({
                     kind: "png",
-                    card: v3("two"),
                     image: keyOf(png(ihdr, iend)),
                     assets: { "0": keyOf(assets[0]), "1": keyOf(assets[1]) },
                 });
@@ -691,7 +731,7 @@ describe("POST /api/import/realm", () => {
             }
             return handle;
         });
-        const res = await download(s, "big");
+        const res = await commitRequest(s, (await prepare(s, "big")).token);
         await entered.promise;
         const cancelling = res.body!.cancel();
         resume.resolve();
@@ -723,7 +763,7 @@ describe("POST /api/import/realm", () => {
                     ),
                 ),
             );
-            const res = await download(s, "three");
+            const res = await commitRequest(s, (await prepare(s, "three")).token);
             const release = deferred();
             const entered = deferred();
             let maintenance: Promise<void> | undefined;
@@ -759,6 +799,228 @@ describe("POST /api/import/realm", () => {
     );
 });
 
+describe("the staged Realm import (commit and cancel)", () => {
+    /** A CharX with one asset: the commit's write is visible. */
+    const withAsset = (name: string) => archive({ [`assets/${name}.png`]: bytes(`asset of ${name}`) });
+
+    it("writes nothing for a cancelled import: the folder is removed, a commit then answers 404, a cancel again 204", async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        realm.answer("declined", file("application/charx", withAsset("declined")));
+        const prepared = await prepare(s, "declined");
+        expect(s.context.realmStaging.size).toBe(1);
+        const cancelled = await cancelRequest(s, prepared.token);
+        expect(cancelled.status).toBe(204);
+        expect(await cancelled.text()).toBe("");
+        expect(staged(s)).toEqual([]);
+        expect(assetFiles(s)).toEqual([]);
+        await refused(await commitRequest(s, prepared.token), 404, "Import expired");
+        expect((await cancelRequest(s, prepared.token)).status).toBe(204);
+        expect(assetFiles(s)).toEqual([]);
+        expect(lifecycle(s, "realmImport")).toEqual([]);
+        await recovered(s);
+    });
+
+    it("commits a token once: a second commit answers 404 and writes nothing more", async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        realm.answer("once", file("application/charx", withAsset("once")));
+        const { prepared, committed } = await realmImport(s, "once");
+        expect(committed.at(-1)).toMatchObject({ kind: "charx" });
+        expect(staged(s)).toEqual([]);
+        await refused(await commitRequest(s, prepared.token), 404, "Import expired");
+        expect(assetFiles(s)).toHaveLength(1);
+        expect(lifecycle(s, "realmImport")).toHaveLength(1);
+    });
+
+    it("removes a staged import that waits past its expiry; its commit answers 404 and writes nothing", async () => {
+        const realm = await startRealm();
+        const s = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 50 } });
+        realm.answer("slow-user", file("application/charx", withAsset("slow-user")));
+        const prepared = await prepare(s, "slow-user");
+        await waitFor(() => staged(s).length === 0);
+        expect(s.context.realmStaging.size).toBe(0);
+        await refused(await commitRequest(s, prepared.token), 404, "Import expired");
+        expect(assetFiles(s)).toEqual([]);
+        // A commit takes its import out of the store before the expiry can remove it.
+        const s2 = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 200 } });
+        const quick = await prepare(s2, "slow-user");
+        const answer = await lines(await commitRequest(s2, quick.token));
+        expect(answer.at(-1)).toMatchObject({ kind: "charx" });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(assetFiles(s2)).toHaveLength(1);
+        expect(staged(s2)).toEqual([]);
+    });
+
+    it("frees the shared slot while an import waits: other imports run, and its commit takes the slot like any import", async () => {
+        const realm = await startRealm();
+        const s = await server(realm, { maxImportBytes: 4096 });
+        realm.answer("waiting", file("application/charx", withAsset("waiting")));
+        const waiting = await prepare(s, "waiting");
+        // A CharX upload and another Realm download run while it waits.
+        const zip = archive();
+        expect((await lines(await charxUpload(s, zip))).at(-1)).toMatchObject({ card });
+        const other = await prepare(s, "ok");
+        expect(staged(s)).toHaveLength(2);
+
+        // A CharX upload in progress holds the slot: the commit is refused and its import kept.
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const body = new ReadableStream<Uint8Array>(
+            {
+                start(c) {
+                    controller = c;
+                },
+            },
+            { highWaterMark: 0 },
+        );
+        const pending = s.request("/api/import/charx", { method: "POST", body, duplex: "half" } as RequestInit, null);
+        controller.enqueue(zip.subarray(0, 20));
+        await waitFor(() => staged(s).length === 3);
+        await refused(await commitRequest(s, waiting.token), 409, "Another import is running");
+        controller.enqueue(zip.subarray(20));
+        controller.close();
+        await (await pending).text();
+        expect(staged(s)).toHaveLength(2);
+        expect(assetFiles(s)).toEqual([]);
+
+        // A running commit holds the slot too.
+        firstAssetClock(s);
+        realm.answer(
+            "two-assets",
+            file("application/charx", archive({ "assets/a.png": bytes("a"), "assets/b.png": bytes("b") })),
+        );
+        const two = await prepare(s, "two-assets");
+        const running = await commitRequest(s, two.token);
+        await waitFor(() => assetFiles(s).length === 1);
+        await refused(await commitRequest(s, waiting.token), 409, "Another import is running");
+        await refused(await download(s, "ok"), 409, "Another import is running");
+        expect((await lines(running)).at(-1)).toMatchObject({ kind: "charx" });
+        vi.restoreAllMocks();
+
+        expect((await lines(await commitRequest(s, waiting.token))).at(-1)).toEqual({
+            kind: "charx",
+            assets: { "assets/waiting.png": keyOf(bytes("asset of waiting")) },
+            excluded: [],
+        });
+        expect((await cancelRequest(s, other.token)).status).toBe(204);
+        expect(staged(s)).toEqual([]);
+        await recovered(s);
+    });
+
+    it("refuses a commit during maintenance and keeps its import for a later commit", async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        realm.answer("restore", file("application/charx", withAsset("restore")));
+        const prepared = await prepare(s, "restore");
+        const release = deferred();
+        const entered = deferred();
+        const maintenance = s.context.snapshots.withMaintenance(async () => {
+            entered.resolve();
+            await release.promise;
+        });
+        try {
+            await entered.promise;
+            await refused(await commitRequest(s, prepared.token), 503, "Maintenance in progress");
+            expect(staged(s)).toHaveLength(1);
+        } finally {
+            release.resolve();
+            await maintenance;
+        }
+        expect((await lines(await commitRequest(s, prepared.token))).at(-1)).toMatchObject({ kind: "charx" });
+        expect(assetFiles(s)).toHaveLength(1);
+        await recovered(s);
+    });
+
+    it(`refuses a prepare while ${MAX_REALM_STAGED} imports wait, before the request body is read or Realm contacted`, async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        const tokens: string[] = [];
+        for (let i = 0; i < MAX_REALM_STAGED; i++) tokens.push((await prepare(s, "ok")).token);
+        const requests = realm.requestsFor("ok").length;
+        const input = unreadBody();
+        await refused(await post(s, input.body), 409, "Too many imports are waiting");
+        expect(input.reads()).toBe(0);
+        expect(realm.requestsFor("ok")).toHaveLength(requests);
+        expect(staged(s)).toHaveLength(MAX_REALM_STAGED);
+        expect((await cancelRequest(s, tokens[0])).status).toBe(204);
+        const next = await prepare(s, "ok");
+        for (const token of [...tokens.slice(1), next.token]) await cancelRequest(s, token);
+        await recovered(s);
+    });
+
+    it("removes the waiting imports at shutdown and refuses commits and cancels then", async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        realm.answer("left", file("application/charx", withAsset("left")));
+        const prepared = await prepare(s, "left");
+        await prepare(s, "ok");
+        expect(staged(s)).toHaveLength(2);
+        const disposing = s.context.dispose();
+        await refused(await commitRequest(s, prepared.token), 503, "The server is shutting down");
+        await refused(await cancelRequest(s, prepared.token), 503, "The server is shutting down");
+        await disposing;
+        expect(staged(s)).toEqual([]);
+        expect(assetFiles(s)).toEqual([]);
+        expect(s.context.realmStaging.size).toBe(0);
+        expect(s.context.realmStaging.full).toBe(true);
+    });
+
+    it("authenticates a commit and a cancel before reading the body: at most 4 KiB of JSON naming a token", async () => {
+        const realm = await startRealm();
+        const s = await server(realm);
+        const prepared = await prepare(s, "ok");
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        for (const url of [REALM_COMMIT_PATH, REALM_CANCEL_PATH]) {
+            for (const headers of [{}, { "risu-auth": await s.signer.jwt({ breakSignature: true }) }]) {
+                const input = unreadBody();
+                const res = await s.app.request(url, {
+                    method: "POST",
+                    body: input.body,
+                    duplex: "half",
+                    headers: { ...headers, "content-type": "application/json" },
+                } as RequestInit);
+                responses.push(res);
+                expect(res.status).toBe(400);
+                expect(input.reads()).toBe(0);
+            }
+            await refused(
+                await post(s, { token: prepared.token, pad: "p".repeat(4097) }, {}, url),
+                413,
+                "Request body too large",
+            );
+            for (const body of [
+                { token: "not-a-token" },
+                { token: prepared.token.toUpperCase() },
+                { token: 5 },
+                { id: prepared.token },
+                "not json",
+            ]) {
+                await refused(await post(s, body, {}, url), 400, "Invalid import token");
+            }
+            await refused(
+                await post(s, { token: prepared.token }, { headers: { "content-type": "text/plain" } }, url),
+                400,
+                "Invalid import token",
+            );
+        }
+        expect(staged(s)).toHaveLength(1);
+        await refused(await commitRequest(s, "00000000-0000-4000-8000-000000000000"), 404, "Import expired");
+        expect((await lines(await commitRequest(s, prepared.token))).at(-1)).toMatchObject({ kind: "charx" });
+        await recovered(s);
+    });
+
+    it("a client that leaves before reading the prepare's line leaves nothing staged past the expiry, the slot free", async () => {
+        const realm = await startRealm();
+        const s = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 100 } });
+        const res = await download(s, "ok");
+        expect(res.status).toBe(200);
+        await res.body!.cancel();
+        expect((await lines(await charxUpload(s, archive()))).at(-1)).toMatchObject({ card });
+        await waitFor(() => staged(s).length === 0);
+        await recovered(s);
+    });
+});
+
 describe("planPngFile caps", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-png-plan-"));
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -778,13 +1040,14 @@ describe("planPngFile caps", () => {
 
     it("refuses a card or asset chunk over MAX_PNG_TEXT_CHUNK_BYTES and reads no other text chunk", async () => {
         const cap = MAX_PNG_TEXT_CHUNK_BYTES;
-        await expect(plan(png(ihdr, sized("ccv3", cap), iend))).resolves.toEqual({ total: 0 });
+        await expect(plan(png(ihdr, sized("ccv3", cap), iend))).resolves.toMatchObject({ total: 0 });
         await expect(plan(png(ihdr, sized("ccv3", cap + 1), iend))).rejects.toThrow(PngFileError);
         await expect(plan(png(ihdr, text("ccv3", "x"), sized("chara-ext-asset_0", cap + 1), iend))).rejects.toThrow(
             "too large",
         );
         await expect(plan(png(ihdr, text("chara", "x"), sized("Comment", cap + 1), iend))).resolves.toEqual({
             total: 0,
+            card: "x",
         });
     }, 60_000);
 
@@ -792,7 +1055,10 @@ describe("planPngFile caps", () => {
         const empty = chunk("tIME", Buffer.alloc(0));
         const fill = (count: number) => Buffer.concat(Array<Buffer>(count).fill(empty));
         // The IHDR, the card chunk, and the IEND count too.
-        await expect(plan(png(ihdr, text("ccv3", "x"), fill(MAX_PNG_CHUNKS - 3), iend))).resolves.toEqual({ total: 0 });
+        await expect(plan(png(ihdr, text("ccv3", "x"), fill(MAX_PNG_CHUNKS - 3), iend))).resolves.toEqual({
+            total: 0,
+            card: "x",
+        });
         await expect(plan(png(ihdr, text("ccv3", "x"), fill(MAX_PNG_CHUNKS - 2), iend))).rejects.toThrow(
             "too many chunks",
         );

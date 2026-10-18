@@ -43,7 +43,13 @@ import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } fr
 import { registerGenerationRoutes } from "./routes/generations.ts";
 import { CHARX_IMPORT_PATH, registerCharxImportRoutes } from "./routes/importCharx.ts";
 import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
-import { REALM_IMPORT_PATH, registerRealmImportRoutes } from "./routes/importRealm.ts";
+import {
+    createRealmStaging,
+    REALM_CANCEL_PATH,
+    REALM_COMMIT_PATH,
+    REALM_IMPORT_PATH,
+    registerRealmImportRoutes,
+} from "./routes/importRealm.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
 import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/translate.ts";
 import { createTranslationRunner } from "./translation/runner.ts";
@@ -95,8 +101,11 @@ export function createServerContext(options: {
     generationRandom?: () => number;
     /** Web Push delivery (tests inject one; the default is `web-push`). */
     pushTransport?: PushTransport;
-    /** The Realm download's origin and the `/hub-proxy` target (tests replace them). */
-    realm?: { downloadOrigin?: string; hubURL?: string };
+    /**
+     * The Realm download's origin, the `/hub-proxy` target, and how long a staged Realm import waits
+     * for its commit (tests replace them).
+     */
+    realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -156,6 +165,8 @@ export function createServerContext(options: {
         dir: path.join(savePath, "backups"),
         intervalMs: options.snapshotIntervalMs,
     });
+    // The Realm imports staged by a prepare and waiting for their commit (`routes/importRealm.ts`).
+    const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs });
     // Before every other maintenance listener, so its start is the first thing recorded; it never
     // throws. Its end says whether the data was replaced (a new epoch).
     snapshots.onMaintenance(async () => {
@@ -327,6 +338,8 @@ export function createServerContext(options: {
         translationRunner.beginShutdown();
         llmRequests.beginShutdown();
         push.close();
+        // The staged Realm imports waiting for their commit are removed (a running commit is tracked).
+        void realmStaging.close();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
         }
@@ -392,7 +405,9 @@ export function createServerContext(options: {
         const fileImport =
             fileImportRoute === MODULE_IMPORT_PATH ||
             fileImportRoute === CHARX_IMPORT_PATH ||
-            fileImportRoute === REALM_IMPORT_PATH;
+            fileImportRoute === REALM_IMPORT_PATH ||
+            fileImportRoute === REALM_COMMIT_PATH ||
+            fileImportRoute === REALM_CANCEL_PATH;
         // The request history and the diagnostics: refused during shutdown (the history's store closes at
         // dispose), and every answer is `no-store`, the limiter's 429 and the body limit's 413 included.
         const history =
@@ -431,8 +446,8 @@ export function createServerContext(options: {
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
-    // request history share's, and the Realm import's routes cap their bodies themselves (8 MiB,
-    // 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB).
+    // request history share's, and the Realm import's routes (prepare, commit, cancel) cap their
+    // bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -441,6 +456,8 @@ export function createServerContext(options: {
                     route === MODULE_IMPORT_PATH ||
                     route === CHARX_IMPORT_PATH ||
                     route === REALM_IMPORT_PATH ||
+                    route === REALM_COMMIT_PATH ||
+                    route === REALM_CANCEL_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
@@ -581,7 +598,8 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
     });
-    // One module, CharX, or Realm import at a time: each holds a spooled file and a write loop.
+    // One module, CharX, or Realm import at a time: each holds a spooled file and a write loop. A
+    // staged Realm import waiting for its commit is in `realmStaging`, not in the slot.
     const importSlot = createImportSlot();
     registerModuleImportRoutes(app, {
         savePath,
@@ -609,6 +627,7 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
         slot: importSlot,
+        staging: realmStaging,
         realmOrigin: options.realm?.downloadOrigin,
     });
 
@@ -627,6 +646,7 @@ export function createServerContext(options: {
         push,
         eventSockets,
         diagnostics,
+        realmStaging,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -671,6 +691,7 @@ export function createServerContext(options: {
                 // Admitted resource handlers and backup operations end here (a restore or an import
                 // too), while every store is open: the diagnostics' final state follows them.
                 .then(() => snapshots.stop())
+                .then(() => realmStaging.close())
                 .then(() => {
                     diagnostics.close();
                     diagnostics.writeState();

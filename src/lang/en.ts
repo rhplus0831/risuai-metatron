@@ -1230,6 +1230,9 @@ export const languageEnglish = {
     realmImportRequestFailed: "The Realm download failed (HTTP {{status}}).",
     realmImportStopped: "The server stopped the Realm import ({{error}}). Nothing was added.",
     realmImportInterrupted: "The connection to the server was lost during the Realm download. Try again.",
+    realmImportExpired: "The Realm import waited too long and was discarded. Nothing was added; import it again.",
+    realmImportTooManyWaiting:
+        "Other Realm imports are still waiting for an answer. Finish them, or try again in a few minutes.",
     download: "Download",
     edit: "Edit",
     enableGlobal: "Enable Globally",

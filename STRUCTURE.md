@@ -78,7 +78,7 @@ Data and persistence:
   second reader of `.charx`/`charxJpeg`: it delimits entries by the central directory
   where the in-tab `CharXImporter` scans for signatures (the intended difference); both
   apply the same entry rules. The server's PNG card reader
-  (`server/src/routes/importPng.ts`, the Realm download) is a second reader of `.png`
+  (`server/src/routes/importPng.ts`, the Realm import) is a second reader of `.png`
   cards: keep its chunk rules, asset bytes and keys (base64 decoded by the tab's `buffer`
   package), and trimmed image byte-identical to `PngChunk.readGenerator` and
   `importCharacterProcess`; it refuses more than the tab does (no PNG signature, a

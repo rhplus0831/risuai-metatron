@@ -263,6 +263,59 @@ describe("CharX files through the server and real records", () => {
         },
     );
 
+    it.each([true, false])(
+        "asks a card's lowLevelAccess before its data URI assets are saved (accepted: %s)",
+        async (accepted) => {
+            const b = await boot();
+            const inline = Buffer.from("inline asset bytes");
+            const card = cardV3(
+                "Powerful",
+                {
+                    assets: [
+                        {
+                            type: "x-risu-asset",
+                            name: "Inline",
+                            uri: `data:image/png;base64,${inline.toString("base64")}`,
+                            ext: "png",
+                        },
+                    ],
+                },
+                { lowLevelAccess: true },
+            );
+            alerts.confirm.mockImplementation(async () => accepted);
+            // The fake server has no batch asset write: the queue answers content keys here.
+            const assetQueue = await import("./storage/assetQueue");
+            const saveAssets = vi.spyOn(assetQueue, "saveAssets").mockImplementation(async (items) => {
+                const keys: string[] = [];
+                for await (const item of items as Iterable<{ load: () => Uint8Array | Promise<Uint8Array> }>) {
+                    keys.push(keyOf(await item.load()));
+                }
+                return keys;
+            });
+            const saved = () => saveAssets.mock.calls.filter(([items]) => (items as unknown[]).length > 0);
+            const before = b.ids();
+            const id = await b.cards.importCharacterProcess({ name: "local.charx", data: charx(card, {}) });
+            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.error).not.toHaveBeenCalled();
+            if (accepted) {
+                expect(saved()).toHaveLength(1);
+                const call = saveAssets.mock.calls.indexOf(saved()[0]);
+                expect(saveAssets.mock.invocationCallOrder[call]).toBeGreaterThan(
+                    alerts.confirm.mock.invocationCallOrder[0],
+                );
+                expect(b.character(id)).toMatchObject({
+                    lowLevelAccess: true,
+                    additionalAssets: [["Inline", keyOf(inline), "png"]],
+                });
+            } else {
+                expect(id).toBeFalsy();
+                expect(saved()).toEqual([]);
+                expect(b.saveAsset).not.toHaveBeenCalled();
+                expect(b.ids()).toEqual(before);
+            }
+        },
+    );
+
     it("shows progress before the result arrives and adds no record until the card is available", async () => {
         const b = await boot();
         let controller!: ReadableStreamDefaultController<Uint8Array>;

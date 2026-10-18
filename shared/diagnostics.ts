@@ -279,6 +279,8 @@ export const ROUTE_TEMPLATES = [
     "/api/import/module",
     "/api/import/charx",
     "/api/import/realm",
+    "/api/import/realm/commit",
+    "/api/import/realm/cancel",
     "/proxy",
     "/proxy2",
     "/hub-proxy/*",

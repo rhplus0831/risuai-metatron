@@ -28,8 +28,8 @@ export type TestServerOptions = {
     pushTransport?: PushTransport;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;
-    /** The Realm download's origin and the `/hub-proxy` target (local upstreams in tests). */
-    realm?: { downloadOrigin?: string; hubURL?: string };
+    /** The Realm download's origin, the `/hub-proxy` target (local upstreams in tests), and the staged import's expiry. */
+    realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {

@@ -1168,6 +1168,10 @@ export const languageKorean = {
     realmImportRequestFailed: "Realm 다운로드에 실패했습니다 (HTTP {{status}}).",
     realmImportStopped: "서버가 Realm 임포트를 중단했습니다 ({{error}}). 아무것도 추가되지 않았습니다.",
     realmImportInterrupted: "Realm 다운로드 중 서버와의 연결이 끊어졌습니다. 다시 시도하세요.",
+    realmImportExpired:
+        "Realm 임포트가 너무 오래 대기해서 폐기되었습니다. 아무것도 추가되지 않았습니다. 다시 임포트하세요.",
+    realmImportTooManyWaiting:
+        "다른 Realm 임포트가 아직 응답을 기다리고 있습니다. 그 임포트를 마치거나 몇 분 후 다시 시도하세요.",
     download: "다운로드",
     edit: "수정",
     enableGlobal: "글로벌 활성화",

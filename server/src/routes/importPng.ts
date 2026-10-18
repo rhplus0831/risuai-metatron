@@ -11,7 +11,7 @@ import {
     MAX_CHARX_ENTRIES,
     MAX_CHARX_ENTRY_BYTES,
 } from "../../../shared/charxImport.ts";
-import type { RealmPngResult } from "../../../shared/realmImport.ts";
+import type { RealmCommittedPng } from "../../../shared/realmImport.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { publishStagedContentAsset, writeContentAsset } from "../http/contentAsset.ts";
@@ -19,7 +19,7 @@ import { type FileImportStream, readFileAt } from "../http/fileImport.ts";
 import { ndjsonLine } from "../http/spool.ts";
 
 /**
- * The server's reader of PNG character cards (the Realm download, `routes/importRealm.ts`), the
+ * The server's reader of PNG character cards (the Realm import, `routes/importRealm.ts`), the
  * second reader of the format beside the tab's `PngChunk.readGenerator` (`src/ts/pngChunk.ts`) and
  * `importCharacterProcess` (`src/ts/characterCards.ts`), whose rules it keeps:
  *
@@ -36,13 +36,15 @@ import { ndjsonLine } from "../http/spool.ts";
  * - The image is the PNG without its `tEXt` chunks: the signature and every other chunk (through
  *   `IEND`) byte for byte, stored under its content key as the tab's `saveAsset` stores it.
  *
+ * Two passes, as the Realm import's two steps: `planPngFile` (the prepare) checks the structure and
+ * reads the card text, writing nothing; `pngLines` (the commit) stores the assets and the image.
  * Stricter than the tab, before anything is written (`planPngFile`): a file that does not start with
- * the PNG signature, a chunk that runs past the file's end (or a partial chunk header), a file
- * without a `chara` or `ccv3` chunk, a card or asset chunk over `MAX_PNG_TEXT_CHUNK_BYTES`, more than
- * `MAX_CHARX_ENTRIES` asset chunks, or more than `MAX_PNG_CHUNKS` chunks is refused as an invalid
- * character file. Memory holds one chunk's text at a time (and the asset map, bounded by the asset
- * chunk count and the 70-byte key); the image is copied to a staged file while it is hashed, and moved
- * into place.
+ * the PNG signature, a chunk that runs past the file's end (or a partial chunk header), a file whose
+ * card text is empty (no `chara` or `ccv3` chunk, or only empty ones), a card or asset chunk over
+ * `MAX_PNG_TEXT_CHUNK_BYTES`, more than `MAX_CHARX_ENTRIES` asset chunks, or more than
+ * `MAX_PNG_CHUNKS` chunks is refused as an invalid character file. Memory holds one chunk's text at a
+ * time beside the card texts kept (and the asset map, bounded by the asset chunk count and the 70-byte
+ * key); the image is copied to a staged file while it is hashed, and moved into place.
  */
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -74,15 +76,15 @@ export class PngFileError extends Error {
     }
 }
 
-/** A validated PNG: how many asset chunks the lines will store. */
-export type PngFilePlan = { total: number };
+/** A validated PNG: how many asset chunks the lines will store, and the card text (`ccv3`, else `chara`). */
+export type PngFilePlan = { total: number; card: string };
 
 type PngChunkHeader = { position: number; length: number; type: string };
 
 /**
  * Checks the PNG's structure before anything is written (see the file comment): reads the signature
- * and each chunk's header, and each `tEXt` chunk's key. Stops early (an incomplete plan the caller
- * drops) once `signal` aborts.
+ * and each chunk's header, each `tEXt` chunk's key, and the card chunks' texts by the tab's keep rule.
+ * Stops early (an incomplete plan the caller drops) once `signal` aborts.
  */
 export async function planPngFile(handle: FileHandle, signal: AbortSignal): Promise<PngFilePlan> {
     const size = (await handle.stat()).size;
@@ -94,7 +96,8 @@ export async function planPngFile(handle: FileHandle, signal: AbortSignal): Prom
         throw new PngFileError("The file is not a PNG");
     }
     let total = 0;
-    let card = false;
+    let chara = "";
+    let ccv3 = "";
     let chunks = 0;
     for await (const chunk of walkChunks(handle, size)) {
         if (signal.aborted) {
@@ -118,7 +121,17 @@ export async function planPngFile(handle: FileHandle, signal: AbortSignal): Prom
             throw new PngFileError("A PNG text chunk is too large");
         }
         if (key.name === "chara" || key.name === "ccv3") {
-            card = true;
+            // The tab's keep rule: a later chunk replaces the text only while the one held is shorter.
+            const held = key.name === "chara" ? chara : ccv3;
+            if (held.length < CARD_KEEP_LENGTH) {
+                const data = await readAt(handle, new Uint8Array(chunk.length), dataStart(chunk));
+                const value = decoder.decode(data.subarray(key.end + 1));
+                if (key.name === "chara") {
+                    chara = value;
+                } else {
+                    ccv3 = value;
+                }
+            }
         } else if (key.name.startsWith(ASSET_KEY_PREFIX)) {
             total += 1;
             if (total > MAX_CHARX_ENTRIES) {
@@ -126,10 +139,11 @@ export async function planPngFile(handle: FileHandle, signal: AbortSignal): Prom
             }
         }
     }
-    if (!card && !signal.aborted) {
+    const card = ccv3 || chara;
+    if (card === "" && !signal.aborted) {
         throw new PngFileError("The PNG holds no card");
     }
-    return { total };
+    return { total, card };
 }
 
 /** What the PNG lines need beyond their file: the storage, its maintenance gate, and the journal. */
@@ -140,14 +154,14 @@ export type PngLinesDeps = {
 };
 
 /**
- * The Realm download's lines for a PNG: `{ done, total }` lines as the asset chunks are stored (at
- * most every 200 ms, and for the last), then the `RealmPngResult` line, or one `{ error }` line at the
- * first failure. Never throws once the stream has started, and sends its last line once `finalize`
- * has run, as the CharX lines do.
+ * The Realm commit's lines for a PNG: `{ done, total }` lines as the asset chunks are stored (at most
+ * every 200 ms, and for the last), then the `RealmCommittedPng` line, or one `{ error }` line at the
+ * first failure. The card chunks are skipped (the prepare read them). Never throws once the stream
+ * has started, and sends its last line once `finalize` has run, as the CharX lines do.
  */
 export async function* pngLines(
     { savePath, snapshots, diagnostics }: PngLinesDeps,
-    { total }: PngFilePlan,
+    { total }: Pick<PngFilePlan, "total">,
     { handle, staging, signal, finalize }: FileImportStream,
 ): AsyncGenerator<Uint8Array> {
     let out: FileHandle | null = null;
@@ -167,8 +181,6 @@ export async function* pngLines(
             await writeAll(image, bytes);
         };
         await writeImage(PNG_SIGNATURE);
-        let chara = "";
-        let ccv3 = "";
         // No prototype: an index may be `__proto__`.
         const assets: Record<string, string> = Object.create(null);
         let done = 0;
@@ -190,24 +202,11 @@ export async function* pngLines(
             if (key === null) {
                 continue;
             }
-            const isAsset = key.name.startsWith(ASSET_KEY_PREFIX);
-            if (key.name !== "chara" && key.name !== "ccv3" && !isAsset) {
+            if (!key.name.startsWith(ASSET_KEY_PREFIX)) {
                 continue;
             }
             const data = await readAt(handle, new Uint8Array(chunk.length), dataStart(chunk));
             const value = decoder.decode(data.subarray(key.end + 1));
-            if (key.name === "chara") {
-                if (chara.length < CARD_KEEP_LENGTH) {
-                    chara = value;
-                }
-                continue;
-            }
-            if (key.name === "ccv3") {
-                if (ccv3.length < CARD_KEEP_LENGTH) {
-                    ccv3 = value;
-                }
-                continue;
-            }
             const index = key.name.replace("chara-ext-asset_:", "").replace("chara-ext-asset_", "");
             const bytes = TabBuffer.from(value, "base64");
             const stored = await writeContentAsset(
@@ -232,13 +231,7 @@ export async function* pngLines(
         if (imageKey === null) {
             return;
         }
-        const card = ccv3 || chara;
-        const result = ndjsonLine({
-            kind: "png",
-            card: card === "" ? null : card,
-            image: imageKey,
-            assets,
-        } satisfies RealmPngResult);
+        const result = ndjsonLine({ kind: "png", image: imageKey, assets } satisfies RealmCommittedPng);
         recordSafely(diagnostics, { kind: "lifecycle", phase: "realmImport" });
         await finalize();
         yield result;
