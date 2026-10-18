@@ -639,6 +639,11 @@ export const languageKorean = {
     pinnedChats: "고정된 채팅",
     unnamedPinnedChat: "채팅",
     openPinnedChat: (chatName: string, characterName: string) => `${characterName}의 ${chatName} 열기`,
+    chatStatus: {
+        generating: (name: string) => `답변 생성 중: ${name}`,
+        recovery: (name: string) => `응답 연결이 끊어졌습니다. 열어서 다시 불러오세요: ${name}`,
+        unseen: (name: string) => `새 답변: ${name}`,
+    },
     homePinnedChatsEmpty: "채팅을 고정하면 여기에서 빠르게 열 수 있습니다.",
     homeShowAllPinnedChats: (count: number) => `고정된 채팅 ${count}개 모두 보기`,
     homeShowFewerPinnedChats: "고정된 채팅 접기",

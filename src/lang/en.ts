@@ -717,6 +717,11 @@ export const languageEnglish = {
     pinnedChats: "Pinned chats",
     unnamedPinnedChat: "Chat",
     openPinnedChat: (chatName: string, characterName: string) => `Open ${chatName} with ${characterName}`,
+    chatStatus: {
+        generating: (name: string) => `Generating a reply: ${name}`,
+        recovery: (name: string) => `Connection to the reply was lost, open to reload: ${name}`,
+        unseen: (name: string) => `New reply: ${name}`,
+    },
     homePinnedChatsEmpty: "Pin a chat to keep it within easy reach here.",
     homeShowAllPinnedChats: (count: number) => `Show all ${count} pinned chats`,
     homeShowFewerPinnedChats: "Show fewer pinned chats",

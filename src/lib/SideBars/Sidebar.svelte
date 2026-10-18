@@ -2,6 +2,12 @@
     import { selectCharacter, selection } from "src/ts/storage/selection.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { chatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
+    import {
+        chatStatusKey,
+        generatingChatKeys,
+        recoveryChatKeys,
+        unseenChatKeys,
+    } from "src/ts/process/chatStatus.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
@@ -43,6 +49,14 @@
     import SideChatList from "./SideChatList.svelte";
     import PinnedChatsRail from "./PinnedChatsRail.svelte";
     import { collectPinnedChats } from "./pinnedChats";
+    import ChatStatusBadge from "./ChatStatusBadge.svelte";
+    import {
+        chatStatusLabel,
+        collectCharacterStatuses,
+        folderStatus,
+        resolveChatStatus,
+        type ChatStatus,
+    } from "./chatStatus";
     import OpenChatPanel from "./OpenChatPanel.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
     import DevTool from "./DevTool.svelte";
@@ -54,6 +68,23 @@
     const pinnedChats = $derived(
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
+    const statusSets = $derived({
+        recovery: $recoveryChatKeys,
+        generating: generatingChatKeys(),
+        unseen: $unseenChatKeys,
+    });
+    const characterStatuses = $derived(collectCharacterStatuses(statusSets));
+    const pinnedStatuses = $derived.by(() => {
+        const statuses = new Map<string, ChatStatus>();
+        for (const item of pinnedChats) {
+            const key = chatStatusKey(item);
+            const status = resolveChatStatus(statusSets, key);
+            if (status) {
+                statuses.set(key, status);
+            }
+        }
+        return statuses;
+    });
     let sideBarMode = $state(0);
     let editMode = $state(false);
     let menuMode = $state(0);
@@ -452,6 +483,7 @@
         </button>
         <PinnedChatsRail
             items={pinnedChats}
+            statuses={pinnedStatuses}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -536,6 +568,7 @@
         {/if}
         <PinnedChatsRail
             items={pinnedChats}
+            statuses={pinnedStatuses}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -574,6 +607,17 @@
                 ondragenter={preventAll}
             ></div>
             {#each charImages as char, ind}
+                {@const status =
+                    char.type === "normal"
+                        ? (characterStatuses.get(char.chaId) ?? null)
+                        : !openFolders.includes(char.id)
+                          ? folderStatus(
+                                characterStatuses,
+                                char.folder.map((member) => member.chaId),
+                            )
+                          : null}
+                {@const statusLabel = status ? chatStatusLabel(status, char.name) : ""}
+                {@const name = status ? `${char.name} · ${statusLabel}` : char.name}
                 <div
                     class="group relative flex items-center px-2"
                     role="listitem"
@@ -593,8 +637,11 @@
                     />
                     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
                     <div
+                        class="relative"
                         role="button"
                         tabindex="0"
+                        aria-label={status ? name : undefined}
+                        data-risu-chat-status={status ?? undefined}
                         onclick={() => {
                             if (char.type === "normal") {
                                 changeChar(char.chaId, { reseter });
@@ -615,7 +662,7 @@
                                         src={char.img ? image : "/none.webp"}
                                         size="56"
                                         rounded={IconRounded}
-                                        name={char.name}
+                                        {name}
                                         chaId={char.chaId}
                                     />
                                 {/snippet}
@@ -630,7 +677,7 @@
                                                 size="56"
                                                 rounded={IconRounded}
                                                 bordered
-                                                name={char.name}
+                                                {name}
                                                 color={char.color}
                                                 backgroundimg={char.img ? image : ""}
                                                 oncontextmenu={async (e) => {
@@ -747,6 +794,9 @@
                                 {/snippet}
                             </LazyCharImage>
                         {/if}
+                        {#if status}
+                            <ChatStatusBadge {status} label={statusLabel} />
+                        {/if}
                     </div>
                 </div>
                 {#if char.type === "folder" && openFolders.includes(char.id)}
@@ -804,6 +854,11 @@
                                 ondragenter={preventAll}
                             ></div>
                             {#each char.folder as char2, ind}
+                                {@const memberStatus = characterStatuses.get(char2.chaId)}
+                                {@const memberStatusLabel = memberStatus
+                                    ? chatStatusLabel(memberStatus, char2.name)
+                                    : ""}
+                                {@const memberName = memberStatus ? `${char2.name} · ${memberStatusLabel}` : char2.name}
                                 <div
                                     class="group relative flex items-center px-2 z-10"
                                     role="listitem"
@@ -827,8 +882,11 @@
                                     />
                                     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
                                     <div
+                                        class="relative"
                                         role="button"
                                         tabindex="0"
+                                        aria-label={memberStatus ? memberName : undefined}
+                                        data-risu-chat-status={memberStatus}
                                         onclick={() => {
                                             if (char2.type === "normal") {
                                                 changeChar(char2.chaId, { reseter });
@@ -848,11 +906,14 @@
                                                     src={char2.img ? image : "/none.webp"}
                                                     size="56"
                                                     rounded={IconRounded}
-                                                    name={char2.name}
+                                                    name={memberName}
                                                     chaId={char2.chaId}
                                                 />
                                             {/snippet}
                                         </LazyCharImage>
+                                        {#if memberStatus}
+                                            <ChatStatusBadge status={memberStatus} label={memberStatusLabel} />
+                                        {/if}
                                     </div>
                                 </div>
                                 <div

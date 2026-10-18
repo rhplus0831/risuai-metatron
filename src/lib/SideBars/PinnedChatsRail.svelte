@@ -1,6 +1,8 @@
 <script lang="ts">
     import { language } from "src/lang";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
+    import ChatStatusBadge from "./ChatStatusBadge.svelte";
+    import { chatStatusLabel, type ChatStatus } from "./chatStatus";
     import type { PinnedChatItem } from "./pinnedChats";
 
     interface Props {
@@ -9,9 +11,10 @@
         selectedChatId: string | null;
         rounded: boolean;
         onOpen: (item: PinnedChatItem) => void;
+        statuses?: ReadonlyMap<string, ChatStatus>;
     }
 
-    let { items, selectedChaId, selectedChatId, rounded, onOpen }: Props = $props();
+    let { items, selectedChaId, selectedChatId, rounded, onOpen, statuses = new Map() }: Props = $props();
 </script>
 
 {#if items.length > 0}
@@ -22,14 +25,20 @@
     >
         {#each items as item (JSON.stringify([item.chaId, item.chatId]))}
             {@const isCurrent = selectedChaId === item.chaId && selectedChatId === item.chatId}
+            {@const status = statuses.get(`${item.chaId}\u0000${item.chatId}`)}
+            {@const statusLabel = status ? chatStatusLabel(status, item.chatName) : ""}
+            {@const label =
+                language.openPinnedChat(item.chatName, item.characterName) + (status ? ` · ${statusLabel}` : "")}
             <div
-                class="flex w-full shrink-0 cursor-pointer flex-col items-center rounded-md py-1 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary-500"
+                class="relative flex w-full shrink-0 cursor-pointer flex-col items-center rounded-md py-1 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary-500"
                 class:bg-selected={isCurrent}
                 role="button"
                 tabindex="0"
-                aria-label={language.openPinnedChat(item.chatName, item.characterName)}
+                aria-label={label}
                 aria-current={isCurrent ? "page" : undefined}
+                title={status ? label : undefined}
                 data-risu-pinned-chat={item.chatId}
+                data-risu-chat-status={status}
                 onclick={() => onOpen(item)}
                 onkeydown={(event) => {
                     if (event.key === "Enter") {
@@ -38,7 +47,7 @@
                     }
                 }}
             >
-                <LazyCharImage path={item.characterImage} type="plain" class="h-[42px] w-[42px] shrink-0">
+                <LazyCharImage path={item.characterImage} type="plain" class="relative h-[42px] w-[42px] shrink-0">
                     {#snippet children(image)}
                         {#await image}
                             <span
@@ -54,9 +63,15 @@
                                 class:rounded-full={rounded}
                             />
                         {/await}
+                        {#if status}
+                            <ChatStatusBadge {status} label={statusLabel} />
+                        {/if}
                     {/snippet}
                 </LazyCharImage>
-                <span class="mt-0.5 w-16 truncate text-center text-[10px] text-textcolor2" title={item.chatName}>
+                <span
+                    class="mt-0.5 w-16 truncate text-center text-[10px] text-textcolor2"
+                    title={status ? label : item.chatName}
+                >
                     {item.chatName}
                 </span>
             </div>

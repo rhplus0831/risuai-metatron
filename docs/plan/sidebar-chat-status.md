@@ -1,6 +1,6 @@
 # Sidebar Chat Status Plan
 
-Status: slice 1 (status sources) implemented on 2026-10-18; slices 2 and 3 remain. Written against `eb4ee3d99`.
+Status: slice 1 (status sources, `1b409eceb`) and slice 2 (sidebar and rail badges) implemented on 2026-10-18; slice 3 remains. Written against `eb4ee3d99`.
 Reference implementation: the `risuai-fastify` checkout's `PinnedChatsRail.svelte`,
 `Sidebar.svelte`, `GenerationIndicator.svelte`, `UnreadIndicator.svelte`,
 `sidebarMultitasking.ts` and `chatUnread.svelte.ts` (`/home/codex/risuai-fastify/src/lib/SideBars/`,
