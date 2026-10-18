@@ -100,10 +100,21 @@ function render(props: {
         query(".partial-match-selection-modal");
     /** Waits for the editor or a modal, then (unless `settle` is false) for the editor's focus and scroll timers. */
     const opened = async ({ settle = true } = {}) => {
+        // Drain async matching and Svelte bindings before waitFor's first fake-time advancement.
+        await vi.advanceTimersByTimeAsync(0);
         await vi.waitFor(() => expect(anyModal()).not.toBeNull());
         // `proceedWithEdit` focuses the textarea 10 ms after opening and scrolls its buttons 200 ms later.
+        // waitFor may already have advanced through focus; advancing both delays still reaches scroll.
         if (settle) {
-            await new Promise((resolve) => setTimeout(resolve, 230));
+            await vi.advanceTimersByTimeAsync(10);
+            await vi.advanceTimersByTimeAsync(200);
+            const area = query<HTMLTextAreaElement>(".partial-edit-textarea");
+            if (area) {
+                expect(document.activeElement).toBe(area);
+                const buttons = area.closest(".partial-edit-modal")!.querySelector(".partial-edit-buttons");
+                expect(buttons).not.toBeNull();
+                expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toContain(buttons);
+            }
         }
     };
     /** Hovers the block and clicks its edit (or delete) button, then `opened`. */
@@ -180,17 +191,23 @@ function render(props: {
 }
 
 beforeEach(() => {
+    // Keep hover's requestAnimationFrame real; waitFor advances the drag debounce and editor timers.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(Element.prototype, "scrollIntoView");
     alerts.error.mockReset();
     vi.stubGlobal("IntersectionObserver", InViewObserver);
     installFlatDatabase({ zoomsize: 100, lineHeight: 1.25 });
 });
 
-afterEach(() => {
+afterEach(async () => {
     for (const instance of mounted.splice(0)) {
-        unmount(instance);
+        await unmount(instance);
     }
     document.body.innerHTML = "";
     vi.unstubAllGlobals();
+    vi.clearAllTimers();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("PartialEditController translation writes", () => {
@@ -221,7 +238,7 @@ describe("PartialEditController translation writes", () => {
         ui.type("A newer draft");
         first.resolve(true);
         await tick();
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await vi.advanceTimersByTimeAsync(0);
         // The first save's completion does not close the editor opened after it.
         expect(ui.query(".partial-edit-modal")).not.toBeNull();
         expect(ui.textarea()!.value).toBe("A newer draft");
@@ -310,13 +327,20 @@ describe("PartialEditController translation writes", () => {
     });
 
     it("an editor closed before its scroll timer runs leaves the timer nothing to do (no error)", async () => {
+        const timers = vi.spyOn(globalThis, "setTimeout");
         const ui = render({ translatedView: false });
         await ui.start("edit", { settle: false });
+        await vi.advanceTimersByTimeAsync(10);
+        expect(document.activeElement).toBe(ui.textarea());
+        expect(timers).toHaveBeenCalledWith(expect.any(Function), 200);
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
         ui.cancel();
+        await tick();
         expect(ui.query(".partial-edit-modal")).toBeNull();
         // The 10 ms focus timer saw the editor; its 200 ms scroll timer runs after the editor closed.
         // An error thrown there fails the run as an unhandled error.
-        await new Promise((resolve) => setTimeout(resolve, 260));
+        await vi.advanceTimersByTimeAsync(200);
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
         expect(ui.saved).toEqual([]);
     });
 

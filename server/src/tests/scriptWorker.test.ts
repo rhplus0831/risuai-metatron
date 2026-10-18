@@ -52,6 +52,16 @@ const timed = async <T>(fn: () => Promise<T>): Promise<[T, number]> => {
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 const pools: ScriptWorkerPool[] = [];
 function makePool(options: Omit<Parameters<typeof createScriptWorkerPool>[0], "rootDir"> & { rootDir?: string } = {}) {
     const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, ...options });
@@ -422,6 +432,7 @@ describe("the shared pool", () => {
 
         it("aborts the outstanding host call's signal and the run", async () => {
             const controller = new AbortController();
+            const entered = deferred<void>();
             let hostAborted = false;
             const host: LuaHost = {
                 async: {
@@ -431,16 +442,19 @@ describe("the shared pool", () => {
                                 hostAborted = true;
                                 resolve(null);
                             });
+                            entered.resolve();
                         }),
                 },
             };
-            setTimeout(() => controller.abort(), 200);
-            const r = await pool.runLua(task("probe = async(function(id) return wait():await() end)"), {
+            const run = pool.runLua(task("probe = async(function(id) return wait():await() end)"), {
                 host,
                 signal: controller.signal,
             });
-            expect(r.aborted).toBe(true);
+            await entered.promise;
+            controller.abort();
+            // Abort must propagate synchronously, before finish/kill cleanup can abort the host.
             expect(hostAborted).toBe(true);
+            expect((await run).aborted).toBe(true);
         });
 
         it("never dispatches the next host call after an abort during a synchronous one", async () => {
@@ -542,17 +556,30 @@ describe("the shared pool", () => {
         });
 
         it("runs a second task on another worker while one is suspended", async () => {
-            const order: string[] = [];
+            const entered = deferred<void>();
+            const release = deferred<string>();
+            const host: LuaHost = {
+                async: {
+                    hold: () => {
+                        entered.resolve();
+                        return release.promise;
+                    },
+                },
+            };
+            let firstSettled = false;
             const first = pool
-                .runLua(task(`${ASYNC} probe = async(function(id) return slowDone(800) end)`), { host: slowHost })
-                .then((r) => (order.push("first"), r));
-            await sleep(100);
-            const second = await pool.runLua(task("function probe(id) return 'quick' end"));
-            order.push("second");
+                .runLua(task("probe = async(function(id) return hold():await() end)"), { host })
+                .then((r) => ((firstSettled = true), r));
+            try {
+                await entered.promise;
+                const second = await pool.runLua(task("function probe(id) return 'quick' end"));
+                expect(second.res).toBe("quick");
+                expect(firstSettled).toBe(false);
+            } finally {
+                release.resolve("done");
+            }
             const r = await first;
-            expect(order).toEqual(["second", "first"]);
             expect(r.res).toBe("done");
-            expect(second.res).toBe("quick");
         });
     });
 
@@ -873,20 +900,26 @@ describe("the shared pool", () => {
 
         it("caps sleep per call and per run at the pool's sleepCaps", async () => {
             const capped = makePool({ size: 1, maxSize: 1, sleepCaps: { perCallMs: 200, perRunMs: 600 } });
-            const [r, ms] = await timed(() =>
-                capped.runLua(
-                    task(`probe = async(function(id)
+            await capped.warm();
+            const timers = vi.spyOn(globalThis, "setTimeout");
+            try {
+                const [r, ms] = await timed(() =>
+                    capped.runLua(
+                        task(`probe = async(function(id)
                         local a = sleep(id, 500):await()
                         local b = sleep(id, 500):await()
                         local c = sleep(id, 500):await()
                         local d = sleep(id, 500)
                         return tostring(a) .. tostring(b) .. tostring(c) .. tostring(d)
                     end)`),
-                ),
-            );
-            expect(r.res).toBe("truetruetruefalse");
-            expect(ms).toBeGreaterThanOrEqual(600);
-            expect(ms).toBeLessThan(1500);
+                    ),
+                );
+                expect(r.res).toBe("truetruetruefalse");
+                expect(ms).toBeGreaterThanOrEqual(600);
+                expect(timers.mock.calls.map(([, ms]) => ms)).toEqual([200, 200, 200]);
+            } finally {
+                timers.mockRestore();
+            }
         });
     });
 });
@@ -1093,22 +1126,41 @@ describe("worker readiness", () => {
 describe("pool lifecycle", () => {
     it("grows to maxSize under load, admits in FIFO order at saturation, and retires idle workers", async () => {
         const pool = makePool({ size: 1, maxSize: 2, idleMs: 200 });
-        const done: number[] = [];
+        const entered: number[] = [];
+        const releases = Array.from({ length: 4 }, () => deferred<string>());
+        const host: LuaHost = {
+            async: {
+                hold: ([index]) => {
+                    const i = Number(index);
+                    entered.push(i);
+                    return releases[i].promise;
+                },
+            },
+        };
+        // Submit every task before observing entry; cold workers may enter 0 and 1 in either order.
         const runs = Array.from({ length: 4 }, (_, i) =>
-            pool
-                .runLua(task(`${ASYNC} probe = async(function(id) return slowDone(300) end)`), { host: slowHost })
-                .then((r) => (done.push(i), r)),
+            pool.runLua(task(`probe = async(function(id) return hold(${i}):await() end)`), { host }),
         );
-        await sleep(150);
-        expect(pool.stats()).toMatchObject({ workers: 2, busy: 2, queued: 2 });
+        try {
+            await vi.waitFor(() => expect(entered).toHaveLength(2), { timeout: 5000 });
+            expect([...entered].sort()).toEqual([0, 1]);
+            expect(pool.stats()).toMatchObject({ workers: 2, busy: 2, queued: 2 });
+            releases[entered[0]].resolve("done");
+            await vi.waitFor(() => expect(entered).toHaveLength(3), { timeout: 5000 });
+            expect(entered[2]).toBe(2);
+            releases[entered[1]].resolve("done");
+            await vi.waitFor(() => expect(entered).toHaveLength(4), { timeout: 5000 });
+            expect(entered[3]).toBe(3);
+        } finally {
+            releases.forEach((release) => release.resolve("done"));
+        }
         const results = await Promise.all(runs);
         expect(results.every((r) => r.res === "done")).toBe(true);
-        expect(done.slice(0, 2).sort()).toEqual([0, 1]);
-        expect(done.slice(2).sort()).toEqual([2, 3]);
-        await sleep(700);
-        expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, terminated: 1 });
+        await vi.waitFor(() => expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, terminated: 1 }), {
+            timeout: 5000,
+        });
         expect((await pool.runLua(task("function probe(id) return 'still' end"))).res).toBe("still");
-    });
+    }, 20_000);
 
     it("leaves no worker behind when disposed after warm()", async () => {
         const pool = makePool({ size: 2, maxSize: 2 });

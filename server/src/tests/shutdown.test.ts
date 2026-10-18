@@ -19,6 +19,16 @@ import {
 
 const MAIN = path.resolve(import.meta.dirname, "../main.ts");
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 let child: ChildProcess | undefined;
 let rootDir: string | undefined;
 afterEach(async () => {
@@ -135,6 +145,8 @@ describe("main.ts graceful shutdown", () => {
     it("lets a resource write admitted before SIGTERM land with 200, then exits 0", async () => {
         const server = await startMain();
         const result: { status?: number; ended?: boolean; error?: string } = {};
+        const continued = deferred<void>();
+        const responseEnded = deferred<void>();
         const request = http.request(
             {
                 host: "127.0.0.1",
@@ -145,23 +157,34 @@ describe("main.ts graceful shutdown", () => {
                     ...(await server.headers()),
                     "content-type": "application/json",
                     "x-resource-epoch": server.epoch,
+                    Expect: "100-continue",
                 },
             },
             (res) => {
                 result.status = res.statusCode;
                 res.on("data", () => {});
-                res.on("end", () => (result.ended = true));
+                res.on("end", () => {
+                    result.ended = true;
+                    responseEnded.resolve();
+                });
+                res.on("close", () => responseEnded.resolve());
             },
         );
-        request.on("error", (error) => (result.error = error.message));
-        // The handler is admitted and waits for the rest of the body when the signal arrives.
+        request.on("error", (error) => {
+            result.error = error.message;
+            responseEnded.resolve();
+        });
+        request.once("continue", () => continued.resolve());
+        request.flushHeaders();
+        // In this Node/Hono stack, automatic 100 Continue and synchronous request dispatch reach
+        // admission before a SIGTERM handler can run. This is not a general HTTP guarantee.
+        await continued.promise;
         request.write('{"baseRevision":null,"data":');
-        await sleep(100);
 
         child!.kill("SIGTERM");
-        await sleep(150);
+        await waitFor(() => server.output().includes("SIGTERM received"), 5000);
         request.end('{"chaId":"late"}}');
-        const code = await server.exited;
+        const [, code] = await Promise.all([responseEnded.promise, server.exited]);
         request.destroy();
 
         expect(result).toEqual({ status: 200, ended: true });

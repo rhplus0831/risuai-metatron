@@ -28,6 +28,16 @@ import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupp
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 // The provider: `mode` picks the next answer; `onRequest` runs when a request arrives.
 let mode: {
     chunks: string[];
@@ -35,6 +45,8 @@ let mode: {
     status?: number;
     /** The stream's socket is destroyed after this many chunks (a dropped connection). */
     breakAfterChunks?: number;
+    /** Holds this chunk and the stream end until the test releases them. */
+    holdBeforeChunk?: { index: number; until: Promise<void> };
 } = { chunks: ["Hel", "lo"], delayMs: 0 };
 let onRequest: (() => Promise<void>) | null = null;
 /** The text a non-streaming request (a translation's) gets instead of `mode.chunks` while set. */
@@ -55,27 +67,32 @@ const provider = http.createServer(async (req, res) => {
     if (onRequest) {
         await onRequest();
     }
-    if (mode.status) {
-        res.writeHead(mode.status, { "content-type": "application/json" });
+    // onRequest may choose this response; keep that choice fixed across subsequent chunk waits.
+    const requestMode = mode;
+    if (requestMode.status) {
+        res.writeHead(requestMode.status, { "content-type": "application/json" });
         // An OpenAI error envelope: the message (never stored on the event) and the code (slice 6).
         res.end(JSON.stringify({ error: { message: "upstream broke", code: "upstream_broke" } }));
         return;
     }
     if (!body.stream) {
         res.writeHead(200, { "content-type": "application/json" });
-        const content = plainAnswer ? plainAnswer(body) : mode.chunks.join("");
+        const content = plainAnswer ? plainAnswer(body) : requestMode.chunks.join("");
         res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
     let sent = 0;
-    for (const chunk of mode.chunks) {
+    for (const [index, chunk] of requestMode.chunks.entries()) {
+        if (requestMode.holdBeforeChunk?.index === index) {
+            await requestMode.holdBeforeChunk.until;
+        }
         if (res.destroyed) {
             return;
         }
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
-        await sleep(mode.delayMs);
-        if (++sent === mode.breakAfterChunks) {
+        await sleep(requestMode.delayMs);
+        if (++sent === requestMode.breakAfterChunks) {
             res.destroy();
             return;
         }
@@ -715,20 +732,38 @@ describe("a send", () => {
         { tags: ["slow"], timeout: SLOW },
         async () => {
             const chaId = await seedCharacter({ name: "Ann" });
-            mode = { chunks: ["First.", " Second."], delayMs: 4500 };
+            const release = deferred<void>();
+            mode = {
+                chunks: ["First.", " Second."],
+                delayMs: 0,
+                holdBeforeChunk: { index: 1, until: release.promise },
+            };
+            const started = Date.now();
             const pending = job("send", chaId);
-            // The reply exists once the first chunk is out; its stored text is still empty.
-            let reply: any;
-            await waitFor(() => {
-                void readChat(chaId).then((chat) => (reply = chat.data.message.at(-1)));
-                return reply?.role === "char";
-            }, 10_000);
-            expect(reply.data).toBe("");
-            await sleep(3600);
-            expect(texts(await readChat(chaId)).at(-1)).toBe("char:First.");
-            const { terminal } = await pending;
-            expect(terminal?.type).toBe("done");
-            expect(texts(await readChat(chaId)).at(-1)).toBe("char:First. Second.");
+            try {
+                // Read sequentially: the stored checkpoint persists while the provider is held.
+                const deadline = started + 15_000;
+                for (;;) {
+                    const stored = texts(await readChat(chaId)).at(-1);
+                    if (stored === "char:First.") {
+                        // readReply starts its checkpoint clock after job creation. Pin the documented
+                        // 3 s interval independently of production so an eager checkpoint fails.
+                        expect(Date.now() - started).toBeGreaterThanOrEqual(3000);
+                        break;
+                    }
+                    if (Date.now() > deadline) {
+                        throw new Error(`Checkpoint not stored while provider held: ${JSON.stringify(stored)}`);
+                    }
+                    await sleep(25);
+                }
+                release.resolve();
+                const { terminal } = await pending;
+                expect(terminal?.type).toBe("done");
+                expect(texts(await readChat(chaId)).at(-1)).toBe("char:First. Second.");
+            } finally {
+                release.resolve();
+                await pending;
+            }
         },
     );
 
