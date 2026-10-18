@@ -239,6 +239,25 @@ describe("summary chunk separator", () => {
             expect(p.embeddingsTouched()).toBe(false);
         });
 
+        it("rejects a successful final split that returns after the chunking budget", async () => {
+            const now = vi.spyOn(performance, "now").mockReturnValue(0);
+            const p = probe(async () => {
+                // Boot plus execution can exceed the cumulative budget despite a successful regex.
+                now.mockReturnValue(5001);
+                return { value: ["part"] };
+            });
+            // One summary: there is no later split whose pre-dispatch check could catch the overrun.
+            const result = await run(p, experimental, "\\n\\n", [SUMMARY]);
+            expect(p.ops).toHaveLength(1);
+            expect(p.ops[0].opts).toEqual({ deadlineMs: 1000 });
+            expect(result.error).toBe(
+                "[HypaV3] Summary chunk separator failed: Error: Summary chunk separator timed out: 5000 ms chunking budget exhausted",
+            );
+            expect(result.memory?.summaries.map((summary) => summary.text)).toEqual([SUMMARY]);
+            expect(p.embeddingsTouched()).toBe(false);
+            expect(p.progressOpened()).toBe(false);
+        });
+
         it("ends a catastrophic pattern on a real worker while the event loop stays free", async () => {
             const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1, maxSize: 1 });
             try {

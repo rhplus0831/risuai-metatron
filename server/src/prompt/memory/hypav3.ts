@@ -74,6 +74,9 @@ async function splitBySeparator(
         { deadlineMs: Math.min(DEFAULT_REGEX_DEADLINE_MS, remaining) },
     );
     host.fence();
+    if (performance.now() - chunkingStartedAt >= SEPARATOR_BUDGET_MS) {
+        throw new Error(`Summary chunk separator timed out: ${SEPARATOR_BUDGET_MS} ms chunking budget exhausted`);
+    }
     if ("error" in result) {
         throw new Error(result.error);
     }

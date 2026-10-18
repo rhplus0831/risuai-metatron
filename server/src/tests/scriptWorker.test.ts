@@ -5,7 +5,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createLuaBudget,
     createScriptWorkerPool,
@@ -923,6 +924,170 @@ describe("the watchdog after a synchronous call timed out in the worker", () => 
         expect(ms).toBeGreaterThanOrEqual(1000);
         expect(ms).toBeLessThan(7000);
     }, 20_000);
+});
+
+describe("worker readiness", () => {
+    const simpleRegex = { op: "test" as const, pattern: "a", flags: "", input: "a" };
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it("gives a held regex its full deadline after readiness and still bounds a runaway", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const pool = makePool({ size: 1, maxSize: 1 });
+        try {
+            const held = pool.regex(simpleRegex, { deadlineMs: 100 });
+            // Synchronous clock advancement cannot deliver the worker's ready message.
+            vi.advanceTimersByTime(500);
+            expect(pool.stats()).toMatchObject({ workers: 1, busy: 1, terminated: 0 });
+            expect(await held).toEqual({ value: true });
+
+            const runaway = pool.regex(REDOS, { deadlineMs: 100 });
+            vi.advanceTimersByTime(99);
+            expect(pool.stats()).toMatchObject({ busy: 1, terminated: 0 });
+            vi.advanceTimersByTime(1);
+            expect(await runaway).toEqual({ error: "Regex timed out", timedOut: true });
+            expect(pool.stats()).toMatchObject({ workers: 0, terminated: 1 });
+        } finally {
+            await pool.dispose();
+        }
+    });
+
+    it("reserves a held Lua budget at assignment but starts its watchdog after readiness", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const now = vi.spyOn(performance, "now").mockReturnValue(0);
+        const pool = makePool({ size: 1, maxSize: 1, wallMs: 100 });
+        const budget = createLuaBudget(1000);
+        try {
+            const held = pool.runLua(task("function probe(id) return 'ready' end", "probe", { cpuMs: 100 }), {
+                budget,
+            });
+            expect(budget).toMatchObject({ usedMs: 0, reservedMs: 100 });
+            now.mockReturnValue(500);
+            vi.advanceTimersByTime(500);
+            expect(pool.stats()).toMatchObject({ workers: 1, busy: 1, terminated: 0 });
+            const result = await held;
+            expect(result.res).toBe("ready");
+            expect(result.error).toBeUndefined();
+            expect(budget.reservedMs).toBe(0);
+        } finally {
+            await pool.dispose();
+        }
+    });
+
+    it.each(["regex", "Lua"] as const)(
+        "fails a held %s at the boot cap and spawns again only on demand",
+        async (kind) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const pool = makePool({ size: 1, maxSize: 1, bootMs: 1 });
+            const budget = createLuaBudget(1000);
+            const bootError = "Script worker did not start within 1 ms";
+            try {
+                const warming = pool.warm().catch((error: unknown) => error);
+                const held =
+                    kind === "regex"
+                        ? pool.regex(simpleRegex)
+                        : pool.runLua(task("function probe(id) return 1 end", "probe", { cpuMs: 100 }), { budget });
+                vi.advanceTimersByTime(1);
+                expect(pool.stats()).toMatchObject({ workers: 0, busy: 0, queued: 0, spawned: 1, terminated: 1 });
+                const result = await held;
+                if (kind === "regex") {
+                    expect(result).toEqual({ error: bootError });
+                } else {
+                    expect(result).toMatchObject({ error: bootError, res: undefined, cpuMs: 0 });
+                    expect(result).not.toHaveProperty("timedOut");
+                    expect(budget).toMatchObject({ usedMs: 0, reservedMs: 0 });
+                }
+                expect(await warming).toMatchObject({ message: bootError });
+
+                // Keep the parent clock still while the replacement boots on this new demand.
+                expect(await pool.regex(simpleRegex)).toEqual({ value: true });
+                vi.advanceTimersByTime(1);
+                expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, spawned: 2, terminated: 1 });
+            } finally {
+                await pool.dispose();
+            }
+        },
+    );
+
+    it("waits for all warm workers, including a repeated warm during boot, and clears their boot caps", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const pool = makePool({ size: 2, maxSize: 2, bootMs: 100 });
+        try {
+            let resolved = 0;
+            const first = pool.warm().then(() => resolved++);
+            const repeated = pool.warm().then(() => resolved++);
+            // Flush promises without yielding to the workers' ready messages.
+            await Promise.resolve();
+            expect(resolved).toBe(0);
+            expect(pool.stats()).toMatchObject({ workers: 2, spawned: 2, terminated: 0 });
+            await Promise.all([first, repeated]);
+            vi.advanceTimersByTime(100);
+            expect(resolved).toBe(2);
+            expect(pool.stats()).toMatchObject({ workers: 2, busy: 0, spawned: 2, terminated: 0 });
+        } finally {
+            await pool.dispose();
+        }
+    });
+
+    it("rejects an awaited warm on broken setup and handles a fire-and-forget warm rejection", async () => {
+        const root = mkdtempSync(path.join(os.tmpdir(), "risu-warm-no-json-lua-"));
+        const pool = makePool({ rootDir: root, size: 1, maxSize: 1 });
+        try {
+            await expect(pool.warm()).rejects.toThrow(/json\.lua not found/);
+            void pool.warm();
+            // Let Node report any unhandled rejection to the suite's process listener.
+            await nextTurn();
+            expect(unhandled).toEqual([]);
+            expect(pool.stats()).toMatchObject({ workers: 0, spawned: 0 });
+        } finally {
+            await pool.dispose();
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it("resolves warm and fails a held regex on disposal during boot, then warms without spawning", async () => {
+        const pool = makePool({ size: 1, maxSize: 1 });
+        let ready = false;
+        const warming = pool.warm().then(() => (ready = true));
+        const held = pool.regex(simpleRegex);
+        // Dispose before yielding to any worker message.
+        await pool.dispose();
+        expect(ready).toBe(true);
+        await warming;
+        expect(await held).toEqual({ error: "The script workers are disposed" });
+        await expect(pool.warm()).resolves.toBeUndefined();
+        expect(pool.stats()).toMatchObject({ workers: 0, busy: 0, spawned: 1, terminated: 1 });
+    });
+
+    it("immediately aborts a held Lua run, releases its reservation, and reuses the booting worker", async () => {
+        const pool = makePool({ size: 1, maxSize: 1 });
+        const budget = createLuaBudget(1000);
+        const controller = new AbortController();
+        const logs: string[] = [];
+        let result: Awaited<ReturnType<ScriptWorkerPool["runLua"]>> | undefined;
+        const held = pool
+            .runLua(task("print('must not run') function probe(id) return 1 end", "probe", { cpuMs: 100 }), {
+                budget,
+                signal: controller.signal,
+                host: { log: (value) => logs.push(value) },
+            })
+            .then((value) => (result = value));
+        expect(budget.reservedMs).toBe(100);
+        controller.abort();
+        // A promise microtask can settle the abort while ready is still undelivered.
+        await Promise.resolve();
+        expect(result).toMatchObject({ error: "request aborted", aborted: true, cpuMs: 0 });
+        expect(budget).toMatchObject({ usedMs: 0, reservedMs: 0 });
+        expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, spawned: 1, terminated: 0 });
+        await held;
+
+        expect((await pool.runLua(task("function probe(id) return 'later' end"), { budget })).res).toBe("later");
+        expect(logs).toEqual([]);
+        expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, spawned: 1, terminated: 0 });
+    });
 });
 
 describe("pool lifecycle", () => {

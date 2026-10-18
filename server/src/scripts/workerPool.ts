@@ -121,6 +121,8 @@ type LuaTop = {
     taskId: number;
     task: LuaTask;
     perRunMs: number;
+    /** The allowance chosen at assignment and used at dispatch. */
+    cpuMs: number;
     host: LuaHost;
     budget?: LuaBudget;
     reservedMs: number;
@@ -150,7 +152,10 @@ type Slot = {
     syncPort: MessagePort;
     syncFlag: Int32Array;
     ready: boolean;
+    bootTimer: NodeJS.Timeout | null;
+    readyWaiters: Set<(error?: Error) => void>;
     top: TopTask | null;
+    dispatched: boolean;
     subs: Map<number, { settle: (result: RegexOpResult) => void; timer: NodeJS.Timeout }>;
     hostCalls: Map<number, AbortController>;
     /** Busy time of the main thread's synchronous answers and of spawned regexes, not the run's. */
@@ -223,6 +228,7 @@ export function createScriptWorkerPool(options: {
     size?: number;
     maxSize?: number;
     idleMs?: number;
+    bootMs?: number;
     resourceLimits?: ResourceLimits;
     egress?: EgressDeps;
     wallMs?: number;
@@ -233,6 +239,7 @@ export function createScriptWorkerPool(options: {
     const size = options.size ?? 2;
     const maxSize = Math.max(size, options.maxSize ?? 6);
     const idleMs = options.idleMs ?? 30_000;
+    const bootMs = options.bootMs ?? 30_000;
     const wallMs = options.wallMs ?? DEFAULT_LUA_WALL_MS;
     const syncHostTimeoutMs = options.syncHostTimeoutMs ?? SYNC_HOST_TIMEOUT_MS;
     const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
@@ -294,7 +301,10 @@ export function createScriptWorkerPool(options: {
             syncPort: port1,
             syncFlag,
             ready: false,
+            bootTimer: null,
+            readyWaiters: new Set(),
             top: null,
+            dispatched: false,
             subs: new Map(),
             hostCalls: new Map(),
             excludedMs: 0,
@@ -313,7 +323,24 @@ export function createScriptWorkerPool(options: {
         worker.unref();
         port1.unref();
         slots.add(slot);
+        slot.bootTimer = setTimeout(
+            () => kill(slot, `Script worker did not start within ${bootMs} ms`, "boot"),
+            bootMs,
+        );
+        slot.bootTimer.unref();
         return slot;
+    }
+
+    /** Settles readiness and drops its timer, so idle workers do not keep the process alive. */
+    function settleReady(slot: Slot, error?: Error): void {
+        if (slot.bootTimer) {
+            clearTimeout(slot.bootTimer);
+            slot.bootTimer = null;
+        }
+        for (const waiter of slot.readyWaiters) {
+            waiter(error);
+        }
+        slot.readyWaiters.clear();
     }
 
     function post(slot: Slot, message: ToWorker): void {
@@ -341,12 +368,17 @@ export function createScriptWorkerPool(options: {
     }
 
     /** Fails everything the worker holds and removes it. Safe to call more than once. */
-    function kill(slot: Slot, error: string, reason: "timeout" | "abort" | "crash" | "dispose" | "idle"): void {
+    function kill(
+        slot: Slot,
+        error: string,
+        reason: "timeout" | "abort" | "crash" | "boot" | "dispose" | "idle",
+    ): void {
         if (slot.dead) {
             return;
         }
         slot.dead = true;
         slots.delete(slot);
+        settleReady(slot, reason === "dispose" ? undefined : new Error(error));
         stats.terminated++;
         // Read before the worker goes: a terminated worker has no utilization to read.
         const top = slot.top;
@@ -373,11 +405,14 @@ export function createScriptWorkerPool(options: {
                 top,
                 reason === "abort" || top.signal?.aborted
                     ? luaFailure("request aborted", { aborted: true, cpuMs })
-                    : luaFailure(error, { timedOut: reason === "timeout", cpuMs }),
+                    : luaFailure(error, { ...(reason === "timeout" ? { timedOut: true } : {}), cpuMs }),
             );
         } else if (top?.kind === "regex") {
             clearTimeout(top.timer);
-            top.settle({ error: reason === "timeout" ? "Regex timed out" : error, timedOut: reason === "timeout" });
+            top.settle({
+                error: reason === "timeout" ? "Regex timed out" : error,
+                ...(reason === "timeout" ? { timedOut: true } : {}),
+            });
         }
         if (!disposed && reason !== "idle") {
             // A warm pool replaces a worker that had booted, so the next task finds warm engines.
@@ -401,6 +436,7 @@ export function createScriptWorkerPool(options: {
     /** Frees the slot for the next task once the task and the regexes it spawned are done. */
     function release(slot: Slot): void {
         slot.top = null;
+        slot.dispatched = false;
         if (!idle(slot)) {
             return;
         }
@@ -448,33 +484,53 @@ export function createScriptWorkerPool(options: {
             slot.idleTimer = null;
         }
         slot.top = task;
+        slot.dispatched = false;
         slot.worker.ref();
         slot.syncPort.ref();
+        if (task.kind === "lua") {
+            // The allowance is reserved now, against what the budget's other runs have reserved.
+            const budget = task.budget;
+            const available = budget ? budget.totalMs - budget.usedMs - budget.reservedMs : task.perRunMs;
+            if (available <= 0) {
+                finishLua(task, luaFailure("aggregate Lua execution budget exhausted", { timedOut: true }));
+                release(slot);
+                return;
+            }
+            task.cpuMs = Math.max(1, Math.min(task.perRunMs, available));
+            if (budget) {
+                task.reservedMs = task.cpuMs;
+                budget.reservedMs += task.cpuMs;
+            }
+        }
+        // A cold slot holds its task; boot time belongs to neither task budget.
+        if (slot.ready) {
+            dispatch(slot, task);
+        }
+    }
+
+    function dispatch(slot: Slot, task: TopTask): void {
+        if (disposed || slot.dead || !slot.ready || slot.top !== task || slot.dispatched) {
+            return;
+        }
+        if (task.kind === "lua" && (!task.live || task.signal?.aborted || task.controller.signal.aborted)) {
+            finishLua(task, luaFailure("request aborted", { aborted: true }));
+            release(slot);
+            return;
+        }
+        slot.dispatched = true;
         if (task.kind === "regex") {
+            // Arm the parent deadline before posting: a regex can block the worker immediately.
             task.timer = setTimeout(() => kill(slot, "Regex timed out", "timeout"), task.deadlineMs);
             post(slot, { type: "regex", taskId: task.taskId, op: task.op });
             return;
         }
-        // The allowance is reserved now, against what the budget's other runs have reserved.
-        const budget = task.budget;
-        const available = budget ? budget.totalMs - budget.usedMs - budget.reservedMs : task.perRunMs;
-        if (available <= 0) {
-            finishLua(task, luaFailure("aggregate Lua execution budget exhausted", { timedOut: true }));
-            release(slot);
-            return;
-        }
-        const cpuMs = Math.max(1, Math.min(task.perRunMs, available));
-        if (budget) {
-            task.reservedMs = cpuMs;
-            budget.reservedMs += cpuMs;
-        }
         const input: LuaRunInput = {
             ...task.task,
-            cpuMs,
+            cpuMs: task.cpuMs,
             asyncHost: Object.keys(task.host.async ?? {}),
             syncHost: Object.keys(task.host.sync ?? {}),
         };
-        watch(slot, task, cpuMs + WATCHDOG_GRACE_MS);
+        watch(slot, task, task.cpuMs + WATCHDOG_GRACE_MS);
         try {
             post(slot, { type: "lua", taskId: task.taskId, input });
         } catch (error) {
@@ -652,6 +708,10 @@ export function createScriptWorkerPool(options: {
         switch (message.type) {
             case "ready":
                 slot.ready = true;
+                settleReady(slot);
+                if (slot.top) {
+                    dispatch(slot, slot.top);
+                }
                 break;
             case "host":
                 void answerHost(slot, message);
@@ -711,6 +771,11 @@ export function createScriptWorkerPool(options: {
         if (!slot || !top.live) {
             return;
         }
+        if (!slot.dispatched) {
+            finishLua(top, luaFailure("request aborted", { aborted: true }));
+            release(slot);
+            return;
+        }
         top.controller.abort();
         // The hook and a blocked synchronous call read the flag without the message.
         Atomics.store(slot.syncFlag, ABORTED_TASK, top.taskId);
@@ -755,6 +820,7 @@ export function createScriptWorkerPool(options: {
                     taskId: nextTaskId++,
                     task,
                     perRunMs: task.cpuMs ?? DEFAULT_LUA_CPU_MS,
+                    cpuMs: 0,
                     host: run.host ?? {},
                     budget,
                     reservedMs: 0,
@@ -831,15 +897,59 @@ export function createScriptWorkerPool(options: {
             });
         },
 
-        /** Starts the `size` warm workers ahead of the first task. */
-        warm(): void {
-            if (disposed) {
-                return;
-            }
-            warmed = true;
-            while (slots.size < size) {
-                spawn();
-            }
+        /** Waits for `size` ready workers, including those already booting; disposal resolves it. */
+        warm(): Promise<void> {
+            const promise = new Promise<void>((resolve, reject) => {
+                if (disposed) {
+                    resolve();
+                    return;
+                }
+                warmed = true;
+                while (slots.size < size) {
+                    spawn();
+                }
+                const waiting = new Map<Slot, (error?: Error) => void>();
+                const finish = (error?: Error) => {
+                    for (const [slot, waiter] of waiting) {
+                        slot.readyWaiters.delete(waiter);
+                        if (slot.readyWaiters.size === 0) {
+                            slot.bootTimer?.unref();
+                        }
+                    }
+                    waiting.clear();
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve();
+                    }
+                };
+                const warmSlots = [...slots].sort((a, b) => Number(b.ready) - Number(a.ready)).slice(0, size);
+                for (const slot of warmSlots) {
+                    if (slot.ready) {
+                        continue;
+                    }
+                    const waiter = (error?: Error) => {
+                        if (error) {
+                            finish(error);
+                            return;
+                        }
+                        waiting.delete(slot);
+                        if (waiting.size === 0) {
+                            finish();
+                        }
+                    };
+                    waiting.set(slot, waiter);
+                    slot.readyWaiters.add(waiter);
+                    // Awaiting readiness keeps Node alive only until ready, failure, or disposal.
+                    slot.bootTimer?.ref();
+                }
+                if (waiting.size === 0) {
+                    finish();
+                }
+            });
+            // Fire-and-forget callers are safe, while awaiting the original promise still throws.
+            void promise.catch(() => {});
+            return promise;
         },
 
         stats: () => ({
