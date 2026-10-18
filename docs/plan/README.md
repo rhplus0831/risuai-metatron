@@ -8,6 +8,9 @@ Active planning and implementation:
 
 - [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
   are listed in its Status; deferred work and Phase 5 verification remain separate.
+- [Sidebar Chat Status](sidebar-chat-status.md): generating, needs-recovery and
+  unseen-reply badges on pinned chats, characters and collapsed folders; three slices,
+  none landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
