@@ -2880,10 +2880,11 @@ export type HydrationRecord = {
  * an outgoing write (PLAN invariant 2): no discard, no `discardSequence` bump, no settled key, no
  * notice. Applied only when the token is of the loaded epoch and newer by `(seq, revision)` than
  * the one this client holds, and the client has no local change of it: not in the batch in flight,
- * its projection still equal to the saved text (a dirty mark alone is no change), not refused for a
- * generating message, and (a character) not deferred behind a generation. A record refused for a
- * local change is kept (the newest) and checked again after the next save cycle. A record this client does not hold, a
- * deletion, `llmSecrets`, and `authRefreshes` are not hydrated. A chat goes to `hydrateChat`.
+ * its projection still equal to the saved text (a dirty mark alone is no change), and not a character
+ * delete the server refused for a generating message (`isRecordJobBlocked`). A generating character's
+ * record is applied at once. A record refused for a local change is kept (the newest) and checked
+ * again after the next save cycle. A record this client does not hold, a deletion, `llmSecrets`,
+ * and `authRefreshes` are not hydrated. A chat goes to `hydrateChat`.
  * Returns whether it applied.
  */
 export function applyHydration(record: HydrationRecord): boolean {
