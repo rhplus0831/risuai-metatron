@@ -148,28 +148,6 @@ describe("the Model page", () => {
         expect(get(SettingsMenuIndex)).toBe(API_KEYS_SETTINGS_MENU);
         expect(tab(page, "API Keys").getAttribute("aria-pressed")).toBe("true");
     });
-
-    it("opens the settings screen at a tab from the quick settings panel, which shows only the Preset tab", () => {
-        SettingsMenuIndex.set(-1);
-        settingsOpen.set(false);
-        const target = document.createElement("div");
-        document.body.appendChild(target);
-        mounted.push(mount(ModelSettings, { target, props: { quick: true } }));
-        flushSync();
-        expect(tab(target, "Preset").getAttribute("aria-pressed")).toBe("true");
-
-        tab(target, "Preset").click();
-        flushSync();
-        expect(get(settingsOpen)).toBe(false);
-        expect(get(SettingsMenuIndex)).toBe(-1);
-
-        tab(target, "API Keys").click();
-        flushSync();
-        expect(get(settingsOpen)).toBe(true);
-        expect(get(SettingsMenuIndex)).toBe(API_KEYS_SETTINGS_MENU);
-        // The panel keeps showing the preset.
-        expect(tab(target, "Preset").getAttribute("aria-pressed")).toBe("true");
-    });
 });
 
 describe("the Connections tab", () => {

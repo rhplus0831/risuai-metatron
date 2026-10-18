@@ -2,7 +2,16 @@ import { selectCharacter } from "./storage/selection.svelte";
 import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { get } from "svelte/store";
-import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
+import {
+    alertMd,
+    alertNormal,
+    alertSelect,
+    alertToast,
+    alertWait,
+    doingAlert,
+    alertRequestLogs,
+    terminalNotice,
+} from "./alert";
 import { pickBinding } from "./storage/chatBindingPick";
 import {
     alertStore,
@@ -14,7 +23,6 @@ import {
     OpenRealmStore,
     PlaygroundStore,
     popUpEditorStore,
-    QuickSettings,
     SafeModeStore,
     settingsOpen,
 } from "./stores.svelte";
@@ -48,7 +56,7 @@ export function initHotkey() {
             return;
         }
 
-        const hotKeys = activeHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
+        const hotKeys = enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {
@@ -169,8 +177,8 @@ export function initHotkey() {
                     break;
                 }
                 case "quickSettings": {
-                    QuickSettings.open = !QuickSettings.open;
-                    QuickSettings.index = 0;
+                    // The quick settings panel is gone; the key stays caught and says where its parts went.
+                    alertNormal(language.quickSettingsRemoved);
                     break;
                 }
                 case "scrollToActiveChar": {
@@ -350,16 +358,28 @@ function sortedByName(): { name: string; chaId: string }[] {
 }
 
 /**
- * The hotkeys in effect: `scrollToActiveChar` only while its feature is on. The stored list always
- * holds it (the server merges the built-in hotkeys back in), so the filter lives with the readers.
+ * The hotkeys the key handler matches: `scrollToActiveChar` only while its feature is on. The stored
+ * list always holds it (the server merges the built-in hotkeys back in), so the filter lives with the
+ * readers.
  */
-export function activeHotkeys<T extends { action: string }>(
+function enabledHotkeys<T extends { action: string }>(
     hotkeys: T[],
     db: { enableScrollToActiveChar?: boolean } | undefined,
 ): T[] {
     return db?.enableScrollToActiveChar === false
         ? hotkeys.filter((hotkey) => hotkey.action !== "scrollToActiveChar")
         : hotkeys;
+}
+
+/**
+ * The hotkeys the hotkey table lists: the enabled ones without `quickSettings`, which the handler
+ * still matches (to show the removal notice) but which has nothing left to configure.
+ */
+export function activeHotkeys<T extends { action: string }>(
+    hotkeys: T[],
+    db: { enableScrollToActiveChar?: boolean } | undefined,
+): T[] {
+    return enabledHotkeys(hotkeys, db).filter((hotkey) => hotkey.action !== "quickSettings");
 }
 
 export function hotkeyMatches(hotkey: (typeof settings.hotkeys)[number], ev: KeyboardEvent): boolean {

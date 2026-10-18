@@ -117,7 +117,6 @@ export const languageSpanish = {
         imageCompression:
             "Si está habilitado, comprimirá las imágenes al exportar el personaje. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
         useExperimental: "Si está habilitado, mostrará algunas características experimentales.",
-        forceProxyAsOpenAI: "Si está habilitado, forzará el uso del formato OpenAI al usar un proxy inverso.",
         forcePlainFetch:
             "Si está habilitado, usará la API de fetch del navegador en lugar de la solicitud HTTP nativa. Esto puede causar errores de CORS.",
         autoFillRequestURL:
@@ -742,7 +741,6 @@ export const languageSpanish = {
     user: "Usuario",
     additionalAssets: "Activos Adicionales",
     editDisplay: "Modificar Visualización",
-    community: "Comunidad",
     textBackgrounds: "Color Personalizado de la Pantalla de Texto",
     textBorder: "Contornos de Texto",
     textScreenRound: "Pantalla de Texto Redondeada",
@@ -752,8 +750,6 @@ export const languageSpanish = {
     askRemoval: "Pedir Confirmación de Eliminación",
     replaceGlobalNote: "Reemplazo de Nota Global",
     charLoreBook: "Libro de Lore del Personaje",
-    globalLoreBook: "Libro de Lore Global",
-    globalRegexScript: "Regex Global",
     accessibility: "Accesibilidad",
     sendWithEnter:
         "Enviar con la Tecla Enter(Al desactivar la verificación, Shift + Enter cambia a Transmisión de Mensajes.)",
@@ -834,7 +830,6 @@ export const languageSpanish = {
     usePromptTemplate: "Usar Plantilla de Prompt",
     specialType: "Tipo Especial",
     noSpecialType: "Sin Tipo Especial",
-    forceProxyAsOpenAI: "Forzar Formato de Proxy como OpenAI",
     promptTemplate: "Plantilla de Prompt",
     customInnerFormat: "Formato Interno Personalizado",
     innerFormat: "Formato Interno",
@@ -1074,7 +1069,6 @@ export const languageSpanish = {
     formatGroupInSingle: "Formatear Grupo en Único",
     groupInnerFormat: "Formato Interno de No Hablante",
     groupOtherBotRole: "Rol de No Hablante en Grupo",
-    defineCustomGUI: "Definir GUI Personalizada",
     chatHTML: "HTML del Chat",
     logShare: "Mostrar Botón de Compartir Registro",
     preview: "Vista Previa",
@@ -1346,7 +1340,6 @@ export const languageSpanish = {
     alwaysScrollToNewMessage: "Desplazarse siempre al nuevo mensaje (ignorar la posición de desplazamiento)",
     newMessageButtonTopBar: "Barra superior",
     enableScrollToActiveChar: "Activar desplazamiento al personaje activo",
-    pluginDevelopMode: "Modo de desarrollo de plugins",
     newMessageButtonRightCenter: "Centro derecha",
     trimStartNewChat: "Recortar mensajes de «Iniciar nuevo chat»",
     getFullDatabaseConsent:

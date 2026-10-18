@@ -214,13 +214,6 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ["hamburger", "button", "bottom", "menu", "sidebar", "accessibility"],
     },
     {
-        id: "acc.moveInsteadOfCopyOnCMPConvert",
-        type: "check",
-        labelKey: "moveInsteadOfCopyOnCMPConvert",
-        bindKey: "moveInsteadOfCopyOnCMPConvert",
-        keywords: ["move", "instead", "of", "copy", "on", "CMP", "convert"],
-    },
-    {
         id: "acc.applyAdditionalParamsToAll",
         type: "check",
         labelKey: "applyAdditionalParamsToAll",

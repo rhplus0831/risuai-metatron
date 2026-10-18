@@ -18,7 +18,6 @@
         sideBarStore,
         OpenRealmStore,
         PlaygroundStore,
-        QuickSettings,
         additionalHamburgerMenu,
     } from "../../ts/stores.svelte";
     import type { folder } from "../../ts/storage/database.svelte";
@@ -60,7 +59,6 @@
     import OpenChatPanel from "./OpenChatPanel.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
     import DevTool from "./DevTool.svelte";
-    import QuickSettingsGui from "../Others/QuickSettingsGUI.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { RISU_SIDEBAR_DRAG_TYPE } from "src/ts/dragTypes";
 
@@ -1147,9 +1145,7 @@
                     </button>
                 {/if}
             </div>
-            {#if QuickSettings.open}
-                <QuickSettingsGui />
-            {:else if devTool}
+            {#if devTool}
                 <DevTool />
             {:else if $botMakerMode}
                 <CharConfig />

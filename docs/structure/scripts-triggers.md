@@ -12,7 +12,6 @@
   - `src/ts/process/serverCommands.ts`
   - `public/lua/json.lua` (read by the server's script workers)
   - `src/lib/SideBars/Scripts/*`
-  - `src/lib/Setting/Pages/GlobalRegex.svelte`
   - `src/lib/Playground/{PlaygroundSyntax,PlaygroundParser}.svelte`
 - Not here:
   - The runtime itself: `server/src/prompt/{scripts,triggers,commands}.ts`, `server/src/lua/*`, `server/src/scripts/*` → `self-host-server.md`.
@@ -35,7 +34,6 @@
   - `effectCategories`, `checkSupported`, `makeDefaultEditType`.
   - Block edit helpers: `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
   - Save-time `v2EndIndent` generation.
-- `GlobalRegex.svelte`: edits `db.globalscript`, which the runtime never reads.
 
 ## Flows
 
@@ -61,7 +59,7 @@ v2 layout:
 
 - `customscript` = `{comment, in, out, type, flag?, ableFlag?}` (declared in `shared/database.ts`). `type` is a free string. The UI also offers `edittrans` and `disabled`.
 - Sources:
-  - DB: `presetRegex` (active) and `globalscript` (unused).
+  - DB: `presetRegex` (active) and `globalscript` (unused; no UI edits it).
   - Character: `customscript`, `triggerscript`, `lowLevelAccess`.
   - Module: `regex`, `trigger`, `lowLevelAccess`.
 - Runtime variables are strings. They persist as `chat.scriptstate['$'+key]`. Display-mode triggers use temp variables only.
@@ -132,9 +130,7 @@ v2 layout:
 
 - `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
 
-- `GlobalRegex.svelte` ignores the return value of `importRegex()`.
 - `triggercode` effects have no runtime case. Only `triggerlua` executes.
-- `GlobalRegex.svelte` edits `db.globalscript`, which no runtime reads.
 - The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key (pre-existing; a separate task).
 - Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write.
 - Trigger character effects write one patch per effect; a long run that writes a whole `globalLore` array from its starting copy overwrites lore edits made after that copy was taken.

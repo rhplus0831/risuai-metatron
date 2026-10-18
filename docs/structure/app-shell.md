@@ -29,7 +29,8 @@
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
-  - `activeHotkeys`: the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off (the dispatch and `HotkeySettings.svelte` read through it).
+  - `enabledHotkeys` (the dispatch) and `activeHotkeys` (`HotkeySettings.svelte`): the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off; `activeHotkeys` also hides `quickSettings`.
+  - `quickSettings` (Ctrl+Q, still a default): the quick settings panel is removed, so it only shows `language.quickSettingsRemoved` (`alertNormal`) and keeps the key from the browser.
   - Ctrl+1..9 pick the prompt preset through `pickBinding` ([chat bindings](persistence.md)): the open chat's binding, else the tab's selection at home; nothing while a picker list or the binding dialog is open.
 - `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
@@ -60,10 +61,9 @@ Screen selection. `App.svelte` checks these in order:
 
 1. April Fools branch.
 2. Loading.
-3. `CustomGUISettingMenuStore`.
-4. `$settingsOpen` → `Settings`.
-5. `$gridOpenStore` → `GridChars`.
-6. Otherwise `Sidebar` + `ChatScreen`.
+3. `$settingsOpen` → `Settings`.
+4. `$gridOpenStore` → `GridChars`.
+5. Otherwise `Sidebar` + `ChatScreen`.
 
 Inside `DefaultChatScreen.svelte`:
 
@@ -104,7 +104,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
   - `ReloadChatPointer`.
-- Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `QuickSettings`, the picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
+- Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
 - Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
 - Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
@@ -146,13 +146,13 @@ All of these live in `src/ts/stores.svelte.ts`.
   1. Add or adjust the flag in `platform.ts`.
   2. Update every consumer.
   3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
-- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`; the server `hotkeys` normalizer (`server/src/data/normalize/collections.ts`) merges a new built-in hotkey into stored lists by `action`. A hotkey gated by a setting is filtered by the readers (`activeHotkeys`), not removed from the list.
+- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`; the server `hotkeys` normalizer (`server/src/data/normalize/collections.ts`) merges a new built-in hotkey into stored lists by `action`. A hotkey gated by a setting is filtered by the readers (`enabledHotkeys`, `activeHotkeys`), not removed from the list.
 
 ## Tests
 
 - `src/boot.test.ts`: the entry's order over stubbed modules (request history slice 8): importing `boot.ts` evaluates the collector only, and `boot()` starts it before `startApp.ts` is loaded and started.
 - `src/ts/bootstrap.serviceWorker.test.ts` (slice 4f, audit WEB-02): `loadData` over a store-backed server with a fake `navigator.serviceWorker`, `fetch`, `location.reload`, and `sessionStorage`: a rejected registration or `/sw/init` fetch records its diagnostic and the boot completes (`loadedStore` true, `characterURLImport` and `startRouter` run once) with `getFileSrc` answering an object URL and never fetching `/sw/check`; a non-2xx `/sw/init` reloads once with the marker set and the diagnostics flushed, and nothing after the worker step runs; the marker present, or a throwing `sessionStorage`, boots without the worker and without a reload; a 2xx clears the marker and `getFileSrc` answers `/sw/img/<hex>`; a missing `navigator.serviceWorker` keeps the `unsupported` path.
-- `src/ts/hotkey.test.ts`: Ctrl+1–9 preset routing, suppression by picker/dialog layers, and Escape layer order. Screen precedence, platform detection, the other hotkey actions, and `Mutex` lack focused unit coverage.
+- `src/ts/hotkey.test.ts`: Ctrl+1–9 preset routing, suppression by picker/dialog layers, Escape layer order, and Ctrl+Q (`quickSettings`: the removal notice, the default prevented; `activeHotkeys` hides it from the table). Screen precedence, platform detection, the other hotkey actions, and `Mutex` lack focused unit coverage.
 - `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
 - Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked by hand).
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked. `src/ts/observer.markers.test.ts`: the BGM sync's document-wide `[risu-ctrl]` scan does not run for text or plain HTML mutations and runs once for an added or removed marker element (nested or not) and for a `risu-ctrl` attribute change, with the playback that follows.

@@ -34,8 +34,10 @@ vi.mock("./process/index.svelte", () => ({
     doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 
-import { alertToast, doingAlert, terminalNotice } from "./alert";
-import { hotkeyMatches, initHotkey } from "./hotkey";
+import { alertNormal, alertToast, doingAlert, terminalNotice } from "./alert";
+import { activeHotkeys, hotkeyMatches, initHotkey } from "./hotkey";
+import { defaultHotkeys } from "./defaulthotkeys";
+import { language } from "src/lang";
 import { characterList } from "./storage/characterStore.svelte";
 import type { Database } from "./storage/database.svelte";
 import { setRecordWriteListener } from "./storage/records.svelte";
@@ -233,6 +235,43 @@ describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
             window.removeEventListener("scrollToActiveCharacter", scrolls);
             settingsOpen.set(false);
         }
+    });
+});
+
+describe("the removed quick settings panel (settings UI plan slice 1)", () => {
+    // The panel is gone, but Ctrl+Q stays a built-in hotkey: the dispatch still matches the stored
+    // `quickSettings` entry, keeps the key from the browser, and only says where the panel's parts went.
+    it("Ctrl+Q shows the removal notice and prevents the browser's default", () => {
+        installFlatDatabase({
+            characters: [],
+            botPresets: [{ id: "a", name: "A" }],
+            hotkeys: [{ key: "q", ctrl: true, action: "quickSettings" }],
+        } as unknown as Database);
+        vi.mocked(alertNormal).mockClear();
+        settingsOpen.set(false);
+        const ev = new KeyboardEvent("keydown", { key: "q", ctrlKey: true, bubbles: true, cancelable: true });
+        document.dispatchEvent(ev);
+
+        expect(alertNormal).toHaveBeenCalledTimes(1);
+        expect(alertNormal).toHaveBeenCalledWith(language.quickSettingsRemoved);
+        expect(ev.defaultPrevented).toBe(true);
+        expect(get(settingsOpen)).toBe(false);
+        expect(settings.hotkeys.map((hotkey) => hotkey.action)).toEqual(["quickSettings"]);
+    });
+
+    it("activeHotkeys hides quickSettings from the hotkey table, with or without scrollToActiveChar", () => {
+        expect(defaultHotkeys.some((hotkey) => hotkey.action === "quickSettings")).toBe(true);
+        const actions = defaultHotkeys.map((hotkey) => hotkey.action);
+
+        const listed = activeHotkeys(defaultHotkeys, { enableScrollToActiveChar: true });
+        expect(listed.map((hotkey) => hotkey.action)).toEqual(actions.filter((action) => action !== "quickSettings"));
+
+        const withoutScroll = activeHotkeys(defaultHotkeys, { enableScrollToActiveChar: false });
+        expect(withoutScroll.map((hotkey) => hotkey.action)).toEqual(
+            actions.filter((action) => action !== "quickSettings" && action !== "scrollToActiveChar"),
+        );
+        // The rows are the list's own elements, so the table edits the stored hotkeys.
+        expect(listed[0]).toBe(defaultHotkeys[0]);
     });
 });
 

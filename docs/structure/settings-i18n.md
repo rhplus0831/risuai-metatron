@@ -7,14 +7,13 @@
   - settings navigation and pages,
   - the Model and Prompt pages and their preset lists (model and prompt presets), switching, import, and export,
   - the prompt template editor and prompt diff,
-  - quick settings,
   - language files and switching.
 - Paths:
   - `src/ts/setting/*`
-  - `src/lib/Setting/**`, except `Pages/Module/` (the module catalog, its share button's export and alert handling, and the editor: [characters-modules](characters-modules.md)), `PersonaSettings.svelte`, `listedPersona.svelte`, `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `ApiKeysSettings.svelte` (`llm-requests.md`), `PluginSettings.svelte`, `GlobalRegex.svelte`, `Pages/Language/TranslatorPresetSettings.svelte`, `Pages/Model/AuxModelSelectors.svelte` (the last two belong to [media-aux](media-aux.md))
+  - `src/lib/Setting/**`, except `Pages/Module/` (the module catalog, its share button's export and alert handling, and the editor: [characters-modules](characters-modules.md)), `PersonaSettings.svelte`, `listedPersona.svelte`, `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `ApiKeysSettings.svelte` (`llm-requests.md`), `PluginSettings.svelte`, `Pages/Language/TranslatorPresetSettings.svelte`, `Pages/Model/AuxModelSelectors.svelte` (the last two belong to [media-aux](media-aux.md))
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
-  - `src/lib/Others/{PromptDiffModal,QuickSettingsGUI}.svelte`
+  - `src/lib/Others/PromptDiffModal.svelte`
 - Not here:
   - DB defaults and migration rules → `persistence.md`.
   - The prompt item runtime → `chat-pipeline.md`.
@@ -44,18 +43,17 @@ Components (`src/lib/Setting/`):
 
 - `SettingRenderer.svelte`: derives the context (the views and the selected preset's `aiModel`/`subModel` model info), filters by `checkCondition`, and renders `settingRegistry[item.type]` keyed by `item.id`.
 - `Wrappers/Setting*.svelte`: a function binding (`bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`), so an edit is written synchronously, into the preset selected at that moment. No local copy and no write-back effect. `SettingSegmented` binds the same way.
-- `Settings.svelte`: navigation. `SettingsMenuIndex` selects the page: `MODEL_SETTINGS_MENU` (1, the Model menu's Preset tab), `MODEL_PROFILES_SETTINGS_MENU` (18, its Connections tab), `API_KEYS_SETTINGS_MENU` (17, its API Keys tab; both in `llm-requests.md`): one sidebar entry, Model, covers the three, and `Pages/Model/ModelMenuTabs.svelte` (the heading and the tab bar each of the three pages renders) switches between them by setting the index (in the quick settings panel, `QuickSettingsGUI` renders `ModelSettings quick`, and the other two tabs open the settings screen at that tab), `PROMPT_SETTINGS_MENU` (16, the Prompt page), 13 (its prompt template editor), and the others by number (the named values live in `src/ts/settingsMenu.ts`, re-exported by `src/ts/stores.svelte.ts`; the URL slugs in `src/ts/router/routes.ts`).
+- `Settings.svelte`: navigation. `SettingsMenuIndex` selects the page: `MODEL_SETTINGS_MENU` (1, the Model menu's Preset tab), `MODEL_PROFILES_SETTINGS_MENU` (18, its Connections tab), `API_KEYS_SETTINGS_MENU` (17, its API Keys tab; both in `llm-requests.md`): one sidebar entry, Model, covers the three, and `Pages/Model/ModelMenuTabs.svelte` (the heading and the tab bar each of the three pages renders) switches between them by setting the index, `PROMPT_SETTINGS_MENU` (16, the Prompt page), 13 (its prompt template editor), and the others by number (the named values live in `src/ts/settingsMenu.ts`, re-exported by `src/ts/stores.svelte.ts`; the URL slugs in `src/ts/router/routes.ts`).
 
 Pages, by kind:
 
 - **Declarative**: `AccessibilitySettings`, `AdvancedSettings`, `ChatFormatSettings`, `LanguageSettings`.
 - **Hybrid**: `DisplaySettings`; `ModelSettings` (the model preset: the main and sub slot pickers (`Model/ProfileSlotSelect`), the aux models (`Model/AuxModelSelectors`), the Vertex region, the global request toggles such as response streaming, and additional parameters); `ModelProfilesSettings` (the model profiles, shown as Connections, `MODEL_PROFILES_SETTINGS_MENU`; `Model/ModelProfileEditor` edits the selected profile by id: model, `CredentialSelect`, and the model's blocks: reverse proxy, OpenRouter (`OpenrouterSettings`), local URLs, Ollama and NanoGPT, chat format, system replacement, custom flags, tools, `maxContext`, image output; [model profiles and slots](llm-requests.md)); `PromptPresetSettings` (the prompt preset: parameters tab renders `allBasicParameterItems`, prompt and others tabs handwritten).
-- **Handwritten**: `OtherBotSettings` (image generation, TTS, memory/Hypa, backends), `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `HotkeySettings`, `UserSettings`, `CustomGUISettingMenu`, `ThanksPage`, `Communities`, `GlobalLoreBookSettings`, `Display/*`, `Language/TranslatorPresetSettings`, `Model/AuxModelSelectors`.
+- **Handwritten**: `OtherBotSettings` (image generation, TTS, memory/Hypa, backends), `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `HotkeySettings`, `UserSettings`, `ThanksPage`, `Display/*`, `Language/TranslatorPresetSettings`, `Model/AuxModelSelectors`.
 
 - `botpreset.svelte`: the preset list, by `kind`. A pick acts on what the screen shows ([chat bindings](persistence.md)): through `pickBinding`, with a chat open it binds that chat (a list opened from a binding row, `{ chatRef }`, binds that row's chat and closes when the chat is gone), at home it selects for the tab; in chat mode the list marks the chat's bound record (`pickedId`) and names the chat, and a deletion's confirmation counts the chats bound to the preset (`chatsBoundTo`) and moves only the tab's selection. `prompt` (`openPresetList`): pick, reorder, copy, add from the OAI2 template, rename, delete, import (`importPreset`), export (`downloadPreset`), diff (`PromptDiffModal`), and the Ctrl+1..9 numbers. `model` (`openModelPresetList`): pick, reorder, copy (`copyModelPreset`, the slots naming the same profiles), add (`addModelPreset`), rename, and delete (`removeModelPreset`, never the last one). `App.svelte` mounts one per store. Each page's header names its selected preset and opens its list; `BindingScopeNote.svelte` marks it "This chat" or "Not set for this chat" while a chat is open, and shows nothing at home.
-- `lorepreset.svelte`: global lore-book list.
 - `src/ts/storage/presets.svelte.ts` `importPreset`: returns the new preset ID after a successful import, or no value when the picker is cancelled. The share receiver uses this result to consume a cached preset only after success.
-- `Pages/HotkeySettings.svelte`: Settings menu index 15 renders this page at every width; below 768 px it shows `language.screenTooSmall` instead of the table.
+- `Pages/HotkeySettings.svelte`: Settings menu index 15 renders this page at every width; below 768 px it shows `language.screenTooSmall` instead of the table. The table lists `activeHotkeys` (`hotkey.ts`), which hides `quickSettings`: Ctrl+Q only shows `language.quickSettingsRemoved` (with a Korean override) since the quick settings panel was removed ([app-shell](app-shell.md)).
 
 Prompt and parameter editors:
 
@@ -91,7 +89,7 @@ Languages (`src/lang/`):
 - The prompt preset (`botPreset`) captures prompts, `promptTemplate`, `promptSettings`, sampling and reasoning parameters; the model preset (`ModelPreset`) and its profiles capture model/provider, endpoints, compatibility flags, chat format, tools, `maxContext`, and auxiliary models. The prompt preset's `maxContextOverride`/`maxContextOverrideSize` (0 is unset; ticking the box seeds it from the main profile) replace the main slot's `maxContext` on the server (`forwardPresetRoots`, the main-slot request in `requestChatDataMain`) and in the tab's CBS database; the settings root `maxContext` and the plugin roots stay the profile's.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
 - The views follow the open chat: while a chat is open, `activePreset`, `activeModelPreset`, and `activePersona` (and every root name they serve) resolve that chat's bound record when it exists, else the tab's selection (`persistence.md`), so the settings pages show and edit what the open chat uses.
-- UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings` (index 0 the Model page, 3 the Prompt page, 1 other bots, 2 modules), `CustomGUISettingMenuStore`, `openPresetList`, `openModelPresetList` (`true`, or `{ chatRef }` for a list opened for one chat).
+- UI stores: `settingsOpen`, `SettingsMenuIndex`, `openPresetList`, `openModelPresetList` (`true`, or `{ chatRef }` for a list opened for one chat).
 
 ## Coupling
 
@@ -146,4 +144,4 @@ Languages (`src/lang/`):
 - Some settings pages fill missing values with control defaults when they first mount (`bindPath` creating missing containers), so the first visit can save; a second visit writes nothing (`e2e/settingsPages.spec.ts`). Which pages write on a first visit is not pinned (the former Bot Settings page, Display, Accessibility, and Advanced were seen).
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, so a 50-preset reorder re-renders through the wrappers: 17.9 ms against a 15.9–16.0 ms baseline (`measureRecords.mjs`, commit `5b47b2b3` against `35678fd4`), about 2% outside the 10% target; at commit `2f658598` it measures 17.9–18.2 ms (17.5–17.8 ms at `6fa405d1`). Keyed rows were slower (18.4–20.1 ms at `5b47b2b3`, not re-measured); a plain-row projection (each row's id, name, and image read once) was not tried.
 - `SettingSegmented` reads its value tracked (unlike `SettingSelect`), so switching to a preset whose segmented value is a hidden option writes the fallback into the newly selected preset.
-- `pluginDevelopMode` and `forceProxyAsOpenAI` are persisted `ui` toggles with a settings item (`advancedSettingsData.ts`) and no reader.
+- `pluginDevelopMode`, `forceProxyAsOpenAI`, and `moveInsteadOfCopyOnCMPConvert` are persisted `ui` toggles with no reader and no settings item (removed from the UI by settings UI plan slice 1); their fields, defaults, and `shared/sections.ts` places stay for saved data. `globalscript` (`settings.globalscript`) and the global lore-book pages (`settings.loreBook`, `selectedLoreBookPage()`) have no settings page either: menu indexes 7–9 (Communities, global lore book, global regex) were unreachable and are gone.

@@ -68,7 +68,6 @@ export const HideIconStore = writable(false);
 export const CustomCSSStore = writable("");
 export const SafeModeStore = writable(false);
 export const CharConfigSubMenu = writable(0);
-export const CustomGUISettingMenuStore = writable(false);
 export const alertStore = writable({
     type: "none",
     msg: "n",
@@ -115,11 +114,6 @@ updateSize();
 window.addEventListener("resize", updateSize);
 export const LoadingStatusState = $state({
     text: "",
-});
-
-export const QuickSettings = $state({
-    open: false,
-    index: 0,
 });
 
 export const disableHighlight = writable(true);

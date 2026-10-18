@@ -8,7 +8,6 @@
         openModelPresetList,
         openPersonaList,
         chatBindingDialog,
-        CustomGUISettingMenuStore,
         loadedStore,
         alertStore,
         LoadingStatusState,
@@ -38,7 +37,6 @@
     import Botpreset from "./lib/Setting/botpreset.svelte";
     import ListedPersona from "./lib/Setting/listedPersona.svelte";
     import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
-    import CustomGUISettingMenu from "./lib/Setting/Pages/CustomGUISettingMenu.svelte";
     import { checkCharOrder } from "./ts/globalApi.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
     import { hypaV3ModalOpen, hypaV3ProgressStore } from "./ts/stores.svelte";
@@ -230,8 +228,6 @@
 
             <span class="text-sm mt-2 text-textcolor2">{LoadingStatusState.text}</span>
         </div>
-    {:else if $CustomGUISettingMenuStore}
-        <CustomGUISettingMenu />
     {:else if $settingsOpen}
         <Settings />
     {:else}

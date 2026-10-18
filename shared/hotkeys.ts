@@ -94,6 +94,8 @@ export const defaultHotkeys: Hotkey[] = [
         ctrl: true,
         action: "quickMenu",
     },
+    // The quick settings panel was removed: this action only shows the removal notice, and stays a
+    // default so Ctrl+Q stays caught instead of reaching the browser.
     {
         key: "q",
         ctrl: true,

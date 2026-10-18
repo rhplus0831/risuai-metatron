@@ -12,15 +12,7 @@
         MODEL_PROFILES_SETTINGS_MENU,
         MODEL_SETTINGS_MENU,
         SettingsMenuIndex,
-        settingsOpen,
     } from "src/ts/stores.svelte";
-
-    interface Props {
-        /** In the quick settings panel, which shows only the Preset tab: the other tabs open the settings screen. */
-        quick?: boolean;
-    }
-
-    let { quick = false }: Props = $props();
 
     /**
      * The Model menu's heading and tabs: the model preset (`ModelSettings`), the connections
@@ -32,17 +24,13 @@
         { menu: MODEL_PROFILES_SETTINGS_MENU, label: language.modelProfiles.title },
         { menu: API_KEYS_SETTINGS_MENU, label: language.apiKeys },
     ]);
-    const selected = $derived(quick ? MODEL_SETTINGS_MENU : $SettingsMenuIndex);
+    const selected = $derived($SettingsMenuIndex);
     let bar: HTMLDivElement;
 
     function select(menu: number) {
         if (menu === selected) return;
         $SettingsMenuIndex = menu;
-        if (quick) {
-            settingsOpen.set(true);
-        } else {
-            refocus = true;
-        }
+        refocus = true;
     }
 
     onMount(() => {

@@ -184,14 +184,6 @@ export const advancedSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
     {
-        id: "adv.forceProxy",
-        type: "check",
-        labelKey: "forceProxyAsOpenAI",
-        bindKey: "forceProxyAsOpenAI",
-        helpKey: "forceProxyAsOpenAI",
-        classes: "mt-4",
-    },
-    {
         id: "adv.legacyMedia",
         type: "check",
         labelKey: "legacyMediaFindings",
@@ -444,7 +436,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "useTokenizerCaching",
         classes: "mt-4",
     },
-    { id: "adv.devMode", type: "check", labelKey: "pluginDevelopMode", bindKey: "pluginDevelopMode", classes: "mt-4" },
 
     // More Experimental (Condition: useExperimental)
     {

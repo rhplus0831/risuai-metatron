@@ -35,10 +35,6 @@
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
-    import Communities from "./Pages/Communities.svelte";
-    import GlobalLoreBookSettings from "./Pages/GlobalLoreBookSettings.svelte";
-    import Lorepreset from "./lorepreset.svelte";
-    import GlobalRegex from "./Pages/GlobalRegex.svelte";
     import LanguageSettings from "./Pages/LanguageSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
@@ -48,7 +44,6 @@
     import HotkeySettings from "./Pages/HotkeySettings.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
-    let openLoreList = $state(false);
     // The Model entry covers its three tabs (`Model/ModelMenuTabs.svelte`).
     const modelMenuSelected = $derived(
         $SettingsMenuIndex === MODEL_SETTINGS_MENU ||
@@ -261,12 +256,6 @@
                         <PluginSettings />
                     {:else if $SettingsMenuIndex === 6}
                         <AdvancedSettings />
-                    {:else if $SettingsMenuIndex === 7}
-                        <Communities />
-                    {:else if $SettingsMenuIndex === 8}
-                        <GlobalLoreBookSettings bind:openLoreList />
-                    {:else if $SettingsMenuIndex === 9}
-                        <GlobalRegex />
                     {:else if $SettingsMenuIndex === 10}
                         <LanguageSettings />
                     {:else if $SettingsMenuIndex === 11}
@@ -303,13 +292,6 @@
         {/if}
     </div>
 </div>
-{#if openLoreList}
-    <Lorepreset
-        close={() => {
-            openLoreList = false;
-        }}
-    />
-{/if}
 
 <style>
     .setting-bg {

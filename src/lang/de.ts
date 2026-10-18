@@ -123,7 +123,6 @@ export const languageGerman = {
         imageCompression:
             "Wenn aktiviert, werden Bilder beim Exportieren des Charakters komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
         useExperimental: "Wenn aktiviert, werden einige experimentelle Funktionen angezeigt.",
-        forceProxyAsOpenAI: "Wenn aktiviert, wird bei Verwendung eines Reverse-Proxys das OpenAI-Format erzwungen.",
         forcePlainFetch:
             "Wenn aktiviert, wird die Browser-Fetch-API anstelle der nativen HTTP-Anfrage verwendet. Dies kann zu CORS-Fehlern führen.",
         autoFillRequestURL:
@@ -752,7 +751,6 @@ export const languageGerman = {
     user: "Benutzer",
     additionalAssets: "Zusätzliche Medien",
     editDisplay: "Anzeige bearbeiten",
-    community: "Gemeinschaft",
     textBackgrounds: "Benutzerdefinierte Farbe für den Textbereich",
     textBorder: "Textkonturen",
     textScreenRound: "Abgerundeter Textbereich",
@@ -762,8 +760,6 @@ export const languageGerman = {
     askRemoval: "Vor dem Löschen nochmal fragen",
     replaceGlobalNote: "Globalnote ersetzen",
     charLoreBook: "Charakter spezifisches Lore-Buch",
-    globalLoreBook: "Lore Buch",
-    globalRegexScript: "Regex",
     accessibility: "Barrierefreiheit",
     sendWithEnter: "Mit Enter senden(Umschalt + Enter beim Entpacken zu senden)",
     fixedChatTextarea: "Unten im Chatfenster fixieren",
@@ -843,7 +839,6 @@ export const languageGerman = {
     usePromptTemplate: "Verwenden einer Anweisungs-Vorlage",
     specialType: "Spezialtyp",
     noSpecialType: "Kein Spezialtyp",
-    forceProxyAsOpenAI: "Proxy-Format als OpenAI erzwingen",
     promptTemplate: "Anweisungs-Vorlage",
     customInnerFormat: "Benutzerdefiniertes Inner-Format",
     innerFormat: "Inner-Format",
@@ -1086,7 +1081,6 @@ export const languageGerman = {
     formatGroupInSingle: "Gruppenformat im Einzelmodus formatieren",
     groupInnerFormat: "Inneres Format für Nicht-Sprecher",
     groupOtherBotRole: "Nicht-Sprecher-Rolle in Gruppe",
-    defineCustomGUI: "Benutzerdefinierte GUI definieren",
     chatHTML: "Chat-HTML",
     logShare: "Teilen-Log-Button anzeigen",
     preview: "Vorschau",
@@ -1360,7 +1354,6 @@ export const languageGerman = {
     disableAbove: "Nachrichten für KI kürzen",
     autoScrollToNewMessage: "Automatisch zu neuen Nachrichten scrollen",
     newMessageButtonStyle: "Stil der Schaltfläche „Neue Nachricht“",
-    pluginDevelopMode: "Plugin-Entwicklungsmodus",
     newMessageButtonTopBar: "Obere Leiste",
     fetchLogConsent:
         "Plugin {} möchte Protokolle abrufen, was sensible Informationen offenlegen könnte. Möchten Sie dies zulassen?",

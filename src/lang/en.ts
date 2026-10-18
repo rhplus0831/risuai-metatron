@@ -150,7 +150,6 @@ export const languageEnglish = {
         imageCompression:
             "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
         useExperimental: "If enabled, it will show some experimental features.",
-        forceProxyAsOpenAI: "If enabled, it will force to use OpenAI format when using reverse proxy.",
         forcePlainFetch:
             "If enabled, it will use browser fetch api instead of native http request. this can cause CORS errors.",
         autoFillRequestURL: "If enabled, it will autofill request url to match the current model.",
@@ -871,7 +870,6 @@ export const languageEnglish = {
     user: "User",
     additionalAssets: "Additional Assets",
     editDisplay: "Modify Display",
-    community: "Community",
     textBackgrounds: "Custom Text Screen Color",
     textBorder: "Text Outlines",
     textScreenRound: "Round Text Screen",
@@ -881,8 +879,6 @@ export const languageEnglish = {
     askRemoval: "Ask Removal",
     replaceGlobalNote: "Global Note Replacement",
     charLoreBook: "Character Lorebook",
-    globalLoreBook: "Global Lorebook",
-    globalRegexScript: "Global Regex",
     accessibility: "Accessibility",
     sendWithEnter: "Send with Enter Key",
     fixedChatTextarea:
@@ -1089,7 +1085,6 @@ export const languageEnglish = {
     usePromptTemplate: "Use Prompt Template",
     specialType: "Special Type",
     noSpecialType: "No Special Type",
-    forceProxyAsOpenAI: "Force Proxy Format as OpenAI",
     promptTemplate: "Prompt Template",
     customInnerFormat: "Custom Inner Format",
     innerFormat: "Inner Format",
@@ -1401,7 +1396,6 @@ export const languageEnglish = {
     formatGroupInSingle: "Format Group in Single",
     groupInnerFormat: "Non-Speaker Inner Format",
     groupOtherBotRole: "Non-Speaker Role in Group",
-    defineCustomGUI: "Define Custom GUI",
     chatHTML: "Chat HTML",
     logShare: "Show Share Log Button",
     preview: "Preview",
@@ -1675,6 +1669,8 @@ export const languageEnglish = {
         scrollToActiveChar: "Scroll to Active Character",
         popupEditor: "Popup Editor",
     },
+    quickSettingsRemoved:
+        "The Quick Settings panel was removed. Change the open chat's model and prompt presets in the chat binding panel at the top of the sidebar, and its modules from Modules in the chat's menu (the menu button next to the message input).",
     screenTooSmall: "Screen is too small to show the interface.",
     advancedModelSettings: "Advanced Model Settings",
     customModels: "Custom Models",
@@ -1852,7 +1848,6 @@ export const languageEnglish = {
     newMessageButtonRightCenter: "Right Center",
     newMessageButtonTopBar: "Top Bar",
     trimStartNewChat: "Trim 'Start New Chat' Messages",
-    pluginDevelopMode: "Plugin Develop Mode",
     fetchLogConsent:
         "Plugin {} is requesting to fetch logs, which may expose sensitive information. Do you want to allow this?",
     getFullDatabaseConsent:
@@ -1964,7 +1959,6 @@ export const languageEnglish = {
     nanoGPTSelectFromList: "Select from List",
     nanoGPTManualInput: "Manual Input",
     nanoGPTManualModelSelect: "Manual Model Select",
-    moveInsteadOfCopyOnCMPConvert: "Move Instead of Copy on CMP Convert",
     successfullyConverted: "Successfully converted.",
     convertToModule: "Convert to Module",
     applyAdditionalParamsToAll: "Apply Additional Parameters to All Models",

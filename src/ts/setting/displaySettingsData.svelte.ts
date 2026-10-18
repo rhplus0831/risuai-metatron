@@ -8,7 +8,6 @@ import type { SettingItem } from "./types";
 import { updateAnimationSpeed } from "../gui/animation";
 import { guiSizeText, updateGuisize } from "../gui/guisize";
 import { updateTextThemeAndCSS } from "../gui/colorscheme";
-import { CustomGUISettingMenuStore } from "../stores.svelte";
 
 export const displayThemeSettingsItems: SettingItem[] = [
     {
@@ -28,16 +27,6 @@ export const displayThemeSettingsItems: SettingItem[] = [
             ],
         },
         keywords: ["theme", "gui", "layout"],
-    },
-    {
-        id: "display.customGui",
-        type: "button",
-        labelKey: "defineCustomGUI",
-        condition: (ctx) => ctx.settings.ui.theme === "custom",
-        options: {
-            onClick: () => CustomGUISettingMenuStore.set(true),
-        },
-        keywords: ["custom", "gui"],
     },
     {
         id: "display.guiHTML",

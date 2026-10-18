@@ -115,7 +115,6 @@ export const languageVietnamese = {
         imageCompression:
             "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
         useExperimental: "Nếu được bật, nó sẽ hiển thị một số tính năng thử nghiệm.",
-        forceProxyAsOpenAI: "Nếu được bật, nó sẽ buộc sử dụng định dạng OpenAI khi sử dụng proxy ngược.",
         forcePlainFetch:
             "Nếu được bật, nó sẽ sử dụng api fetch của trình duyệt thay vì yêu cầu http gốc. Điều này có thể gây ra lỗi CORS.",
         autoFillRequestURL: "Nếu được bật, nó sẽ tự động điền url yêu cầu để khớp với mô hình hiện tại.",
@@ -736,7 +735,6 @@ export const languageVietnamese = {
     user: "Người dùng",
     additionalAssets: "Tài sản bổ sung",
     editDisplay: "Sửa đổi hiển thị",
-    community: "Cộng đồng",
     textBackgrounds: "Màu màn hình văn bản tùy chỉnh",
     textBorder: "Đề cương văn bản",
     textScreenRound: "Màn hình văn bản tròn",
@@ -746,8 +744,6 @@ export const languageVietnamese = {
     askRemoval: "Yêu cầu xóa",
     replaceGlobalNote: "Thay thế ghi chú toàn cầu",
     charLoreBook: "Truyện nhân vật",
-    globalLoreBook: "Sách truyền thuyết toàn cầu",
-    globalRegexScript: "Regex toàn cầu",
     accessibility: "Khả năng tiếp cận",
     sendWithEnter: "Gửi bằng phím Enter(Shift + Enter chuyển sang gửi tin nhắn khi không kiểm tra.)",
     fixedChatTextarea: "Cố định ở dưới khung chat",
@@ -827,7 +823,6 @@ export const languageVietnamese = {
     usePromptTemplate: "Sử dụng mẫu nhắc nhở",
     specialType: "Loại đặc biệt",
     noSpecialType: "Không có loại đặc biệt",
-    forceProxyAsOpenAI: "Buộc định dạng proxy là OpenAI",
     promptTemplate: "Mẫu nhắc nhở",
     customInnerFormat: "Định dạng bên trong tùy chỉnh",
     innerFormat: "Định dạng bên trong",
@@ -1065,7 +1060,6 @@ export const languageVietnamese = {
     formatGroupInSingle: "Định dạng nhóm trong đơn",
     groupInnerFormat: "Định dạng nội bộ không phải người nói",
     groupOtherBotRole: "Vai trò không phải người nói trong nhóm",
-    defineCustomGUI: "Xác định GUI tùy chỉnh",
     chatHTML: "HTML trò chuyện",
     logShare: "Hiển thị nút chia sẻ nhật ký",
     preview: "Xem trước",
@@ -1336,7 +1330,6 @@ export const languageVietnamese = {
     fetchLogConsent:
         "Plugin {} đang yêu cầu truy xuất nhật ký, hành động này có thể làm lộ thông tin nhạy cảm. Bạn có muốn cho phép điều này không?",
     newMessageButtonTopBar: "Thanh trên cùng",
-    pluginDevelopMode: "Chế độ phát triển Plugin",
     mainDomAccessConsent:
         "Plugin {} đang yêu cầu truy cập vào Tài liệu chính, điều này có thể làm lộ thông tin nhạy cảm. Bạn có muốn cho phép không?",
     getFullDatabaseConsent:

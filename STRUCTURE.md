@@ -174,7 +174,6 @@ refer to **Choose By Task**; each guide's `Files` section has identifiers.
   `public/plugin_start.7z`.
 - **scripts-triggers**: `shared/scripts/`, `shared/triggers.ts`,
   `src/ts/process/{regexFiles,serverCommands}.ts`, `src/lib/SideBars/Scripts/`,
-  `src/lib/Setting/Pages/GlobalRegex.svelte`,
   `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`.
 - **persistence**: `src/ts/storage/`, `src/ts/chatLoadPages.ts`, `shared/` persisted
   shapes. Runtime semantics in `shared/` stay with their domain guide.
@@ -202,7 +201,7 @@ refer to **Choose By Task**; each guide's `Files` section has identifiers.
   `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`,
   `src/lib/Others/{AlertComp,IrisModal}.svelte`.
 - **settings-i18n**: `src/ts/setting/`, remaining `src/lib/Setting/`, `src/lang/`,
-  `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,QuickSettingsGUI}.svelte`.
+  `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
 - **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,
   `src/lib/Others/NodeServerRequired.svelte`,
   `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,

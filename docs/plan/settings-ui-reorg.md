@@ -181,19 +181,22 @@ The tab-shaped `Accordion disabled` wrappers go away (one page per former tab). 
 
 ## Slices
 
-Workflow per slice: `opus-lite` for _small_, `opus-workflow` or
-`delegate-implementation` for _medium_. Each slice ends with `pnpm check`,
+Workflow per slice: a _small_ slice is edited directly, with no adversarial review (its
+mistakes are a dropped or doubled item, which the section test catches, or a broken
+layout, which the browser pass catches); slice 2 shows its API to the user before slices
+3–7 build on it. A _medium_ slice uses `opus-lite`. Each slice ends with `pnpm check`,
 `pnpm --silent test:agent`, the section test from slice 2 (from slice 2 on), a Playwright
 pass over the pages it touched at desktop and 390 px (the `run` skill; one dev stack at a
 time), and the guide updates it implies (`settings-i18n.md` Files/Pages, `app-shell.md`
 for a route).
 
 - **1. Cleanup** (_small_). Remove `QuickSettingsGUI.svelte`, the `QuickSettings` store and
-  its `Sidebar.svelte` branch, `quick` in `ModelSettings`/`ModelMenuTabs`, and the
-  `quickSettings` hotkey from `shared/hotkeys.ts`'s defaults; `hotkey.ts`'s
-  `quickSettings` case keeps `preventDefault` and calls `alertNormal` with a new
-  `quickSettingsRemoved` string (names the chat binding panel and the module menu);
-  `activeHotkeys` hides the action from the hotkey table while stored lists keep it.
+  its `Sidebar.svelte` branch, and `quick` in `ModelSettings`/`ModelMenuTabs`. The
+  `quickSettings` hotkey stays in `shared/hotkeys.ts`'s defaults (the normalizer appends
+  it, so new and existing users keep Ctrl+Q caught); `hotkey.ts`'s `quickSettings` case
+  keeps `preventDefault` and calls `alertNormal` with a new `quickSettingsRemoved` string
+  (names the chat binding panel and the module menu); `activeHotkeys` hides the action
+  from the hotkey table while the dispatch (`enabledHotkeys`) and stored lists keep it.
   Remove from the UI: `adv.forceProxy`, `adv.devMode`, `acc.moveInsteadOfCopyOnCMPConvert`,
   `display.customGui` (and `CustomGUISettingMenu` if nothing else opens it), the dead
   menu indexes 7, 8, 9 in `Settings.svelte` with `openLoreList`/`Lorepreset` if unused
