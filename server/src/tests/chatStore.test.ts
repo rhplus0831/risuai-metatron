@@ -10,6 +10,7 @@ import type { MessageTranslation } from "../../../shared/database.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -19,6 +20,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -569,6 +571,200 @@ describe("revision rules", () => {
         expect(reordered.chats).toEqual([]);
         expect(conflictsOf(() => store.applyChanges({ chatOrders: [order(committed, ["k2", "k"])] }))).toEqual([
             { kind: "chatOrder", characterId: "c", revision: bumped(committed, 1) },
+        ]);
+    });
+});
+
+describe("patchMessage (data-loss slice 1a)", () => {
+    const patch = (id: string, fields: { set?: Record<string, unknown>; unset?: string[] }): ChatOp =>
+        ({ op: "patchMessage", id, ...fields }) as ChatOp;
+    const row = (store: ResourceStore, id: string) => chat(store, "k")!.data.message.find((x) => x.chatId === id)!;
+    const tr = (source: string, text = "translated"): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+    });
+
+    it("two writers on one message: a patch on an older revision keeps the other tab's text and fields, while setMessage still replaces the whole row", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        // Tab 1 edits the text; tab 2, still on the base, toggles Disable.
+        const texted = store.applyChanges({ chats: [group("k", base, [{ op: "setText", id: "b", text: "B2" }])] })
+            .chats[0].revision!;
+        const disabled = store.applyChanges({ chats: [group("k", base, [patch("b", { set: { disabled: true } })])] })
+            .chats[0];
+        expect(disabled).toEqual({ characterId: "c", id: "k", revision: bumped(texted, 1), stale: true });
+        expect(row(store, "b")).toEqual({ ...m("b", "B2"), disabled: true });
+        // Tab 1, also behind now, patches another field: both tabs' fields stay.
+        store.applyChanges({ chats: [group("k", base, [patch("b", { set: { saying: "s", name: "n" } })])] });
+        expect(row(store, "b")).toEqual({ ...m("b", "B2"), disabled: true, saying: "s", name: "n" });
+        // An unset removes only the named field; a set of role or data takes the message shape.
+        store.applyChanges({
+            chats: [group("k", base, [patch("b", { unset: ["disabled", "missing"], set: { role: "char" } })])],
+        });
+        expect(row(store, "b")).toEqual({ ...m("b", "B2", "char"), saying: "s", name: "n" });
+        expect(messageIds(store, "k")).toEqual(["a", "b", "c"]);
+        // The whole-row op on the same older base reverts what it has not seen (the documented trade-off).
+        store.applyChanges({ chats: [group("k", base, [{ op: "setMessage", message: m("b", "B3") }])] });
+        expect(row(store, "b")).toEqual(m("b", "B3"));
+
+        // A patch whose target is gone conflicts even on an older revision, and the group's earlier
+        // op is rolled back with it.
+        const current = chat(store, "k")!.revision!;
+        store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["c"] }])] });
+        const after = chat(store, "k")!.revision!;
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        expect(
+            conflictsOf(() =>
+                store.applyChanges({
+                    chats: [
+                        group("k", base, [
+                            { op: "meta", merge: { scriptstate: { $x: "1" } } },
+                            patch("c", { set: { disabled: true } }),
+                        ]),
+                    ],
+                }),
+            ),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: after }]);
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+    });
+
+    it("never changes a stored translation, closes an open generation fence, and applies whatever the stored row's key order", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        const translation = tr("B");
+        let revision = store.applyChanges({
+            chats: [group("k", base, [{ op: "setTranslation", id: "b", translation }])],
+        }).chats[0].revision!;
+        // A translation in `set` or `unset` is ignored: the stored one stays, whatever the patch carries.
+        store.applyChanges({
+            chats: [group("k", revision, [patch("b", { set: { translation: tr("B", "other"), disabled: true } })])],
+        });
+        expect(row(store, "b")).toEqual({ ...m("b", "B"), translation, disabled: true });
+        store.applyChanges({
+            chats: [group("k", revision, [patch("b", { unset: ["translation", "disabled"], set: { name: "n" } })])],
+        });
+        expect(row(store, "b")).toEqual({ ...m("b", "B"), translation, name: "n" });
+        // A patch of the text leaves the translation to go stale by hash, as setText does.
+        store.applyChanges({ chats: [group("k", revision, [patch("b", { set: { data: "B!" } })])] });
+        expect(row(store, "b")).toEqual({ ...m("b", "B!"), translation, name: "n" });
+        expect(storedTranslation(row(store, "b"))).toBeNull();
+
+        // An open generation on `a`: the patch is a manual write, so the fence closes and the
+        // generation's later checkpoint is ignored, while the patched field and the streamed text stay.
+        revision = chat(store, "k")!.revision!;
+        revision = store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    { op: "begin", id: "a", generationId: "g1" },
+                    { op: "setText", id: "a", text: "partial", generation: { id: "g1", seq: 1 } },
+                ]),
+            ],
+        }).chats[0].revision!;
+        const patched = store.applyChanges({ chats: [group("k", revision, [patch("a", { set: { disabled: true } })])] })
+            .chats[0];
+        expect(patched).toEqual({ characterId: "c", id: "k", revision: bumped(revision, 1) });
+        const late = store.applyChanges({
+            chats: [
+                group("k", patched.revision!, [
+                    { op: "setText", id: "a", text: "late chunk", generation: { id: "g1", seq: 2, final: true } },
+                ]),
+            ],
+        }).chats[0];
+        expect(late.checkpoints).toEqual(["ignored"]);
+        expect(row(store, "a")).toEqual({ ...m("a", "partial"), disabled: true });
+        // A new generation on the current revision takes the message over again after the patch.
+        const next = store.applyChanges({
+            chats: [
+                group("k", late.revision!, [
+                    { op: "begin", id: "a", generationId: "g2" },
+                    { op: "setText", id: "a", text: "two", generation: { id: "g2", seq: 1 } },
+                ]),
+            ],
+        }).chats[0];
+        expect(next.checkpoints).toEqual(["applied"]);
+        expect(row(store, "a")).toEqual({ ...m("a", "two"), disabled: true });
+    });
+
+    it("is refused as generating on a message a job owns, unless it carries the owner's token, and applies to the chat's other messages", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        const base = seed(store).chat;
+        const token = "token-1";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "b" }, { jobId: "J1", generationId: "g1", token });
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        expect(
+            conflictsOf(() =>
+                store.applyChanges({ chats: [group("k", base, [patch("b", { set: { disabled: true } })])] }),
+            ),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating" }]);
+        // Generating is answered before a stale-revision conflict and with nothing written.
+        expect(
+            conflictsOf(() =>
+                store.applyChanges({
+                    chats: [group("k", base, [{ op: "remove", ids: ["a", "c"] }, patch("b", { unset: ["name"] })])],
+                }),
+            ),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating" }]);
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // Another message of the chat is open to a patch.
+        const other = store.applyChanges({ chats: [group("k", base, [patch("a", { set: { disabled: true } })])] })
+            .chats[0];
+        expect(other.revision).toBe(bumped(base, 1));
+        expect(row(store, "a")).toEqual({ ...m("a", "A"), disabled: true });
+        // The owner's in-process write passes with its token.
+        const own = store.applyChanges(
+            { chats: [group("k", other.revision!, [patch("b", { set: { saying: "owner" } })])] },
+            { epoch: store.epoch(), jobToken: token },
+        ).chats[0];
+        expect(own.revision).toBe(bumped(base, 2));
+        expect(row(store, "b")).toEqual({ ...m("b", "B"), saying: "owner" });
+    });
+
+    it("publishes a field-only patch as the stored row from the actual base, and a patch that changes nothing as a count-only patch", () => {
+        const feed = createChangeFeed();
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const base = seed(store).chat;
+        const storedBase = store.applyChanges({ chats: [group("k", base, [{ op: "setText", id: "b", text: "B2" }])] })
+            .chats[0].revision!;
+        const patched = store.applyChanges({
+            chats: [group("k", base, [patch("b", { set: { disabled: true }, unset: ["name"] })])],
+        }).chats[0];
+        expect(events.at(-1)!.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: patched.revision,
+                patch: {
+                    baseRevision: storedBase,
+                    count: 3,
+                    messages: [{ after: "a", message: { ...m("b", "B2"), disabled: true } }],
+                },
+            },
+        ]);
+        // The same value again: the revision moves (an applied op), the row is not republished.
+        const same = store.applyChanges({ chats: [group("k", base, [patch("b", { set: { disabled: true } })])] })
+            .chats[0];
+        expect(same.revision).toBe(bumped(patched.revision!, 1));
+        expect(events.at(-1)!.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: same.revision,
+                patch: { baseRevision: patched.revision, count: 3 },
+            },
         ]);
     });
 });
@@ -1686,6 +1882,147 @@ describe("meta merge (slice 11b)", () => {
         expect(snapshotState(store)).toBe(before);
         expect(store.writeCount()).toBe(writes);
         expect(text(store, "k", "a")).toBe("A");
+    });
+});
+
+describe("meta mergeUnset and scriptstate merge (data-loss slice 1a)", () => {
+    const record = (id: string, text = id) => ({
+        call: { id, name: "t", arg: {} },
+        response: [{ type: "text", text }],
+    });
+    const meta = (store: ResourceStore) => chat(store, "k")!.data as unknown as Record<string, unknown>;
+    const current = (store: ResourceStore) => chat(store, "k")!.revision!;
+
+    it("keeps both writers' scriptstate keys, removes one key and keeps the rest on an older revision, adds an id named in both halves, and leaves a non-map field alone for removals", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        // Two writers on the same base, each with its own variable: both keys are stored.
+        store.applyChanges({ chats: [group("k", base, [{ op: "meta", merge: { scriptstate: { $a: "1" } } }])] });
+        const second = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { scriptstate: { $b: "2" } } }])],
+        }).chats[0];
+        expect(second).toMatchObject({ revision: bumped(base, 2), stale: true });
+        expect(meta(store).scriptstate).toEqual({ $a: "1", $b: "2" });
+        // A removal from the older base: only the named key goes.
+        const removed = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { scriptstate: ["$a"] } }])],
+        }).chats[0];
+        expect(removed).toMatchObject({ revision: bumped(base, 3), stale: true });
+        expect(meta(store).scriptstate).toEqual({ $b: "2" });
+        // Removals go first: an id in both halves ends up added; a missing id is nothing to remove.
+        store.applyChanges({
+            chats: [
+                group("k", base, [
+                    {
+                        op: "meta",
+                        mergeUnset: { scriptstate: ["$b", "$never"] },
+                        merge: { scriptstate: { $b: "3", $c: "4" } },
+                    },
+                ]),
+            ],
+        });
+        expect(meta(store).scriptstate).toEqual({ $b: "3", $c: "4" });
+        // Removing the last key leaves an empty map, not an absent field.
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { scriptstate: ["$b", "$c"] } }])],
+        });
+        expect(meta(store).scriptstate).toEqual({});
+        // Removals alone from an absent field leave it absent; from a field that is not a map leave
+        // it as it is; entries onto such a field replace it with the map of the entries.
+        expect(meta(store)).not.toHaveProperty("GLGlobalVariables");
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { GLGlobalVariables: ["x"] } }])],
+        });
+        expect(meta(store)).not.toHaveProperty("GLGlobalVariables");
+        store.applyChanges({
+            chats: [group("k", current(store), [{ op: "meta", set: { GLGlobalVariables: "text" } }])],
+        });
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { GLGlobalVariables: ["x"] } }])],
+        });
+        expect(meta(store).GLGlobalVariables).toBe("text");
+        store.applyChanges({
+            chats: [
+                group("k", base, [
+                    { op: "meta", mergeUnset: { GLGlobalVariables: ["x"] }, merge: { GLGlobalVariables: { y: "1" } } },
+                ]),
+            ],
+        });
+        expect(meta(store).GLGlobalVariables).toEqual({ y: "1" });
+        // The other fields of the chat are untouched throughout.
+        expect(meta(store)).toMatchObject({ id: "k", name: "K", note: "", localLore: [], fmIndex: -1 });
+        expect(messageIds(store, "k")).toEqual(["a", "b", "c"]);
+    });
+
+    it("removes a toolCalls entry, a prototype-named id included, and revalidates what stays; a refused batch leaves the map", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        const protoNamed = JSON.parse(
+            `{"__proto__": ${JSON.stringify(record("__proto__"))}, "constructor": ${JSON.stringify(record("constructor"))}}`,
+        ) as Record<string, unknown>;
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { toolCalls: { a: record("a"), ...protoNamed } } }])],
+        });
+        expect(Object.keys(meta(store).toolCalls as object).sort()).toEqual(["__proto__", "a", "constructor"]);
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { toolCalls: ["__proto__", "a"] } }])],
+        });
+        const stored = meta(store).toolCalls as Record<string, unknown>;
+        expect(Object.keys(stored)).toEqual(["constructor"]);
+        expect(stored.constructor).toEqual(record("constructor"));
+        expect(Object.getPrototypeOf(stored)).toBe(Object.prototype);
+        // The remaining map is validated as a whole: a malformed entry added beside a removal is refused
+        // and the batch rolled back, the removal included.
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [
+                        group("k", base, [
+                            {
+                                op: "meta",
+                                mergeUnset: { toolCalls: ["constructor"] },
+                                merge: {
+                                    toolCalls: { x: { call: { id: "x", name: "t" }, response: [{ type: "text" }] } },
+                                },
+                            },
+                        ]),
+                    ],
+                }),
+            "chats[0].ops[0]: chat.toolCalls entries must be { call: { id, name, arg }, response: [tool content] }",
+        );
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+    });
+
+    it("publishes a removal-only meta op with the whole metadata in the feed patch", () => {
+        const feed = createChangeFeed();
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const base = seed(store).chat;
+        const storedBase = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { scriptstate: { $a: "1", $b: "2" } } }])],
+        }).chats[0].revision!;
+        const removed = store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", mergeUnset: { scriptstate: ["$a"] } }])],
+        }).chats[0];
+        expect(events.at(-1)!.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: removed.revision,
+                patch: {
+                    baseRevision: storedBase,
+                    count: 3,
+                    meta: { id: "k", name: "K", note: "", localLore: [], fmIndex: -1, scriptstate: { $b: "2" } },
+                },
+            },
+        ]);
     });
 });
 

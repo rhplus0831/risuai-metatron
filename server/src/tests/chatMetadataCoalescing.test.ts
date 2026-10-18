@@ -285,6 +285,46 @@ describe("chat metadata coalescing", () => {
         expect(h.stored().data.note).toBe("pending note");
     });
 
+    it("writes pending variables as a scriptstate merge and the note as a set, never the whole map (data-loss slice 1a)", () => {
+        const h = setup();
+        holdMicrotasks();
+        const writes = vi.spyOn(h.job, "write");
+        h.set("a", "1");
+        h.set("b", "2");
+        h.set("a", "3");
+        h.services.writeChat(() => [{ op: "meta", set: { note: "pending note" } }]);
+        // Another tab's variable lands before the flush: the merge never carries the refreshed map.
+        h.write([{ op: "meta", merge: { scriptstate: { $tab: "tab" } } }]);
+        flushChatMetadata(h.job);
+        expect(writes).toHaveBeenCalledTimes(1);
+        // The builder reads the scope's revision when it runs; rebuilt here, only its ops are pinned.
+        expect(writes.mock.calls[0][0]()).toMatchObject({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    ops: [{ op: "meta", set: { note: "pending note" }, merge: { scriptstate: { $a: "3", $b: "2" } } }],
+                },
+            ],
+        });
+        expect(h.stored().data).toMatchObject({
+            note: "pending note",
+            scriptstate: { $old: "kept", $tab: "tab", $a: "3", $b: "2" },
+        });
+        expect(h.services.liveChat().scriptstate).toEqual({ $old: "kept", $tab: "tab", $a: "3", $b: "2" });
+        // Variables alone: no `set` at all; a note alone: no `merge`.
+        h.set("c", "4");
+        flushChatMetadata(h.job);
+        expect(writes.mock.calls[1][0]().chats![0].ops).toEqual([{ op: "meta", merge: { scriptstate: { $c: "4" } } }]);
+        h.services.writeChat(() => [{ op: "meta", set: { note: "only" } }]);
+        flushChatMetadata(h.job);
+        expect(writes.mock.calls[2][0]().chats![0].ops).toEqual([{ op: "meta", set: { note: "only" } }]);
+        expect(h.stored().data).toMatchObject({
+            note: "only",
+            scriptstate: { $old: "kept", $tab: "tab", $a: "3", $b: "2", $c: "4" },
+        });
+    });
+
     it.each([false, true])("flushes separately before another chat write (generating=%s)", (generating) => {
         const h = setup();
         holdMicrotasks();

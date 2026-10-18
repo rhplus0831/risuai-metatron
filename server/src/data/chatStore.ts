@@ -89,10 +89,17 @@ type PreparedOp =
     | { op: "create"; meta: string; messages: PreparedMessage[]; index: number | null }
     | { op: "delete" }
     | { op: "replace"; meta: string; messages: PreparedMessage[] }
-    | { op: "meta"; set: Record<string, unknown>; unset: string[]; merge: Record<string, Record<string, unknown>> }
+    | {
+          op: "meta";
+          set: Record<string, unknown>;
+          unset: string[];
+          merge: Record<string, Record<string, unknown>>;
+          mergeUnset: Record<string, string[]>;
+      }
     | { op: "append"; messages: PreparedMessage[]; anchor: { start: true } | { end: true } | { after: string } }
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
     | { op: "setText"; id: string; text: string; generation: Generation | null }
+    | { op: "patchMessage"; id: string; set: Record<string, unknown>; unset: string[] }
     | { op: "remove"; ids: string[] }
     | { op: "begin"; id: string; generationId: string }
     | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
@@ -197,6 +204,62 @@ function prepareGeneration(value: unknown): Generation | null {
     return { id: value.id, seq: value.seq, final: value.final === true };
 }
 
+/** Whether `value` is an array whose every index holds a string (holes of an in-process array included). */
+function isStringArray(value: unknown): value is string[] {
+    if (!Array.isArray(value)) {
+        return false;
+    }
+    for (let index = 0; index < value.length; index++) {
+        if (typeof value[index] !== "string") {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * A `patchMessage`'s fields, checked as the JSON copy of `set` (what is stored): `chatId` and
+ * `__proto__` are refused, `translation` is dropped (the stored one stays, as for `setMessage`),
+ * `role` and `data` keep their message shape and cannot be unset, and a field left to change is
+ * required.
+ */
+function preparePatchMessage(raw: Record<string, unknown>): PreparedOp {
+    if (!isValidResourceId(raw.id)) {
+        throw new ResourceValidationError("patchMessage must be { id, set?, unset? }");
+    }
+    if (raw.generation !== undefined) {
+        throw new ResourceValidationError("patchMessage carries no generation");
+    }
+    const set = raw.set === undefined ? {} : serialize(raw.set).stored;
+    const unset = raw.unset === undefined ? [] : raw.unset;
+    if (!isPlainObject(set) || !isStringArray(unset)) {
+        throw new ResourceValidationError("patchMessage must be { id, set?: object, unset?: string[] }");
+    }
+    for (const key of [...Object.keys(set), ...unset]) {
+        if (key === "chatId" || key === "__proto__") {
+            throw new ResourceValidationError(`patchMessage cannot change ${key}`);
+        }
+    }
+    delete set.translation;
+    const unsetKeys = [...new Set(unset.filter((key) => key !== "translation"))];
+    if (unsetKeys.some((key) => key === "role" || key === "data")) {
+        throw new ResourceValidationError("patchMessage cannot unset role or data");
+    }
+    if (unsetKeys.some((key) => Object.hasOwn(set, key))) {
+        throw new ResourceValidationError("patchMessage sets and unsets the same field");
+    }
+    if (Object.keys(set).length === 0 && unsetKeys.length === 0) {
+        throw new ResourceValidationError("patchMessage must set or unset a field");
+    }
+    if (Object.hasOwn(set, "role") && set.role !== "user" && set.role !== "char") {
+        throw new ResourceValidationError("message.role must be user or char");
+    }
+    if (Object.hasOwn(set, "data") && typeof set.data !== "string") {
+        throw new ResourceValidationError("message.data must be a string");
+    }
+    return { op: "patchMessage", id: raw.id, set, unset: unsetKeys };
+}
+
 function prepareIdList(value: unknown, what: string): string[] {
     if (!Array.isArray(value) || value.length === 0 || !value.every(isValidResourceId)) {
         throw new ResourceValidationError(`${what} must be a non-empty array of ids`);
@@ -240,10 +303,32 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             ) {
                 throw new ResourceValidationError(`meta.merge takes entries for ${CHAT_META_MERGE_KEYS.join(", ")}`);
             }
-            if (Object.keys(merge).some((key) => Object.hasOwn(set, key) || unset.includes(key))) {
+            // `mergeUnset`: entry ids removed from a map field as stored, before `merge` adds its entries.
+            const mergeUnset = raw.mergeUnset === undefined ? {} : raw.mergeUnset;
+            if (
+                !isPlainObject(mergeUnset) ||
+                !Object.keys(mergeUnset).every(
+                    (key) => CHAT_META_MERGE_KEYS.includes(key) && isStringArray(mergeUnset[key]),
+                )
+            ) {
+                throw new ResourceValidationError(
+                    `meta.mergeUnset takes entry ids for ${CHAT_META_MERGE_KEYS.join(", ")}`,
+                );
+            }
+            if (
+                [...Object.keys(merge), ...Object.keys(mergeUnset)].some(
+                    (key) => Object.hasOwn(set, key) || unset.includes(key),
+                )
+            ) {
                 throw new ResourceValidationError("meta merges a field it also sets or unsets");
             }
-            return { op: "meta", set, unset, merge: merge as Record<string, Record<string, unknown>> };
+            return {
+                op: "meta",
+                set,
+                unset,
+                merge: merge as Record<string, Record<string, unknown>>,
+                mergeUnset: mergeUnset as Record<string, string[]>,
+            };
         }
         case "append": {
             if (!Array.isArray(raw.messages) || raw.messages.length === 0) {
@@ -283,6 +368,8 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
                 message: prepareMessage(raw.message),
                 generation: prepareGeneration(raw.generation),
             };
+        case "patchMessage":
+            return preparePatchMessage(raw);
         case "setText":
             if (!isValidResourceId(raw.id) || typeof raw.text !== "string") {
                 throw new ResourceValidationError("setText must be { id, text }");
@@ -459,6 +546,7 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
                 messages.add(op.message.id);
                 break;
             case "setText":
+            case "patchMessage":
             case "begin":
             case "setTranslation":
                 messages.add(op.id);
@@ -855,17 +943,26 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         delete current[key];
                     }
                     Object.assign(current, op.set);
-                    for (const [key, entries] of Object.entries(op.merge)) {
+                    for (const key of new Set([...Object.keys(op.mergeUnset), ...Object.keys(op.merge)])) {
                         // Onto the entries as stored now: another writer's entries stay.
                         const stored = current[key];
+                        const isMap = isPlainObject(stored);
+                        const entries = Object.hasOwn(op.merge, key) ? op.merge[key] : undefined;
+                        if (!isMap && !entries) {
+                            // Removals alone from a field that is not a map: nothing to remove.
+                            continue;
+                        }
                         const map: Record<string, unknown> = Object.create(null);
-                        if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+                        if (isMap) {
                             for (const id of Object.keys(stored)) {
-                                map[id] = (stored as Record<string, unknown>)[id];
+                                map[id] = stored[id];
                             }
                         }
-                        for (const id of Object.keys(entries)) {
-                            map[id] = entries[id];
+                        for (const id of Object.hasOwn(op.mergeUnset, key) ? op.mergeUnset[key] : []) {
+                            delete map[id];
+                        }
+                        for (const id of Object.keys(entries ?? {})) {
+                            map[id] = entries![id];
                         }
                         current[key] = { ...map };
                     }
@@ -912,13 +1009,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
                 case "setMessage":
-                case "setText": {
+                case "setText":
+                case "patchMessage": {
                     const id = op.op === "setMessage" ? op.message.id : op.id;
                     const existing = selectMessage.get(chatSeq, id) as MessageRow | undefined;
                     if (!existing) {
                         conflictHere(row);
                     }
-                    if (op.generation) {
+                    if (op.op !== "patchMessage" && op.generation) {
                         const outcome = admitGeneration(chatSeq, id, existing!, op.generation);
                         checkpoints.push(outcome);
                         if (outcome !== "applied") {
@@ -929,6 +1027,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     }
                     let text: string;
                     if (op.op === "setMessage") {
+                        // The whole row, also on a stale revision: fields the sender has not seen are
+                        // replaced (`patchMessage` changes only the fields it names).
                         // A stored translation is the `setTranslation` op's: the sent message's own (an
                         // older copy, or none) never replaces or removes it.
                         const stored = JSON.parse(existing!.data) as Record<string, unknown>;
@@ -942,6 +1042,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         } else {
                             text = op.message.text;
                         }
+                    } else if (op.op === "patchMessage") {
+                        // Onto the row as stored: the fields it does not name (`data` another tab
+                        // wrote, the stored translation) stay. Checked again as a whole message.
+                        const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                        for (const key of op.unset) {
+                            delete message[key];
+                        }
+                        for (const key of Object.keys(op.set)) {
+                            message[key] = op.set[key];
+                        }
+                        text = serialize(normalizeMessage(message)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
                         message.data = op.text;

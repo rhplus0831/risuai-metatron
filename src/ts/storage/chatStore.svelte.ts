@@ -743,7 +743,40 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
         last.message = next.message;
         return true;
     }
-    if (last.op === "meta" && next.op === "meta") {
+    // A field patch (never a generation write) folds only with writes that carry no generation; a
+    // `setText` before a patch, or a `setMessage` after one, stays a separate op.
+    if (last.op === "patchMessage" && next.op === "patchMessage" && last.id === next.id) {
+        const set: Record<string, unknown> = { ...(last.set ?? {}) };
+        const unset = new Set<string>(last.unset ?? []);
+        for (const key of next.unset ?? []) {
+            delete set[key];
+            unset.add(key);
+        }
+        for (const key of Object.keys(next.set ?? {})) {
+            unset.delete(key);
+            set[key] = (next.set as Record<string, unknown>)[key];
+        }
+        last.set = set as typeof last.set;
+        last.unset = [...unset] as typeof last.unset;
+        return true;
+    }
+    if (last.op === "patchMessage" && next.op === "setText" && !next.generation && last.id === next.id) {
+        last.set = { ...(last.set ?? {}), data: next.text };
+        return true;
+    }
+    if (last.op === "setMessage" && next.op === "patchMessage" && !last.generation && last.message.chatId === next.id) {
+        const message: Record<string, unknown> = { ...last.message };
+        for (const key of next.unset ?? []) {
+            delete message[key];
+        }
+        for (const key of Object.keys(next.set ?? {})) {
+            message[key] = (next.set as Record<string, unknown>)[key];
+        }
+        last.message = message as unknown as Message;
+        return true;
+    }
+    // Entry removals (`mergeUnset`) are not folded: each such op is sent as it was queued.
+    if (last.op === "meta" && next.op === "meta" && !last.mergeUnset && !next.mergeUnset) {
         const set = { ...(last.set ?? {}) };
         const unset = new Set(last.unset ?? []);
         for (const key of next.unset ?? []) {

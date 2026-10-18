@@ -418,7 +418,8 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
             return;
         }
         try {
-            // Refresh before merging keys, so another tab's unrelated variables survive.
+            // The chat must still exist; the variables need no fresh copy (a `merge` of the keys
+            // onto the stored map keeps another writer's variables).
             const exists = refreshChat(store, scope);
             const current = scopeChat(scope);
             // This is its own write, never part of a caller's group or recursively flushed.
@@ -426,11 +427,14 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
             if (!exists || !current) {
                 return;
             }
-            const set: Record<string, unknown> = { ...pending };
-            if (pending.scriptstate) {
-                set.scriptstate = { ...current.scriptstate, ...pending.scriptstate };
+            const op: ChatOp & { op: "meta" } = { op: "meta" };
+            if (pending.note !== undefined) {
+                op.set = { note: pending.note };
             }
-            const ops: ChatOp[] = [{ op: "meta", set }];
+            if (pending.scriptstate) {
+                op.merge = { scriptstate: pending.scriptstate };
+            }
+            const ops: ChatOp[] = [op];
             const applied = job.write(() => ({
                 chats: [
                     { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },

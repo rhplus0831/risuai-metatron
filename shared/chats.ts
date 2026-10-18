@@ -10,8 +10,8 @@ import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 /** Chat fields a `meta` op may not set or unset: identity, the messages, and client-only state. */
 export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "activeStreamingDisplayOptimizationMode"];
 
-/** The chat fields a `meta` op may `merge` entries into. */
-export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables"];
+/** The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`). */
+export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate"];
 
 /** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
 export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;
@@ -34,24 +34,45 @@ export type MessageGeneration = { id: string; seq: number; final?: boolean };
  * except a `begin` that starts a generation the message does not know yet: it needs the current
  * revision unless the message was inserted by the same group. A `begin` of the message's current or
  * an earlier generation is a replay and changes nothing.
+ *
+ * `setMessage` replaces the whole row, also on a stale revision: a sender whose copy is behind
+ * reverts every field another writer changed meanwhile, so it needs the current revision for the
+ * fields it does not own (not enforced). A change of some fields of a message is a `patchMessage`.
  */
 export type ChatOp =
     | { op: "create"; chat: Chat; index?: number }
     | { op: "delete" }
     | { op: "replace"; chat: Chat }
     /**
-     * `merge` adds entries to a field that is a map (`toolCalls`): each named field keeps its other
-     * entries as stored, so two writers adding different entries do not replace each other's.
+     * `merge` adds entries to a field that is a map (`CHAT_META_MERGE_KEYS`): each named field keeps
+     * its other entries as stored, so two writers adding different entries do not replace each
+     * other's. `mergeUnset` removes entries from such a field as stored, before `merge` adds its
+     * entries (an id in both ends up added); removals alone leave a field that is not a map as it is.
+     * A field named by `merge` or `mergeUnset` may not also be in `set` or `unset`.
      */
     | {
           op: "meta";
           set?: Record<string, unknown>;
           unset?: string[];
           merge?: Record<string, Record<string, unknown>>;
+          mergeUnset?: Record<string, string[]>;
       }
     | { op: "append"; messages: Message[]; anchor: MessageAnchor }
     | { op: "setMessage"; message: Message; generation?: MessageGeneration }
     | { op: "setText"; id: string; text: string; generation?: MessageGeneration }
+    /**
+     * Sets and unsets fields of one message on the row as stored: fields it does not name keep
+     * another writer's values, also on a stale revision. A manual write, like a `setMessage` or
+     * `setText` without a generation: it closes an open generation fence and carries no generation.
+     * It never changes a stored translation (`translation` named in `set` or `unset` is ignored);
+     * `chatId` cannot be named, `role` and `data` cannot be unset, and it must name another field.
+     */
+    | {
+          op: "patchMessage";
+          id: string;
+          set?: Partial<Omit<Message, "chatId" | "translation">>;
+          unset?: Exclude<keyof Message, "chatId" | "translation" | "role" | "data">[];
+      }
     | { op: "remove"; ids: string[] }
     | { op: "begin"; id: string; generationId: string }
     /**

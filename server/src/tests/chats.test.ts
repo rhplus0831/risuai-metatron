@@ -212,7 +212,7 @@ describe("prepareChatGroups", () => {
         expect(JSON.parse(create.meta)).toEqual({ name: "n", id: "k", note: "", localLore: [], fmIndex: -1 });
         expect(create.messages[0]).toEqual({ id: "a", text: JSON.stringify(message("a", "x")) });
         expect(create.messages[1].id).toMatch(uuid);
-        expect(created.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {} });
+        expect(created.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {}, mergeUnset: {} });
         expect(created.ops[2]).toEqual({ op: "begin", id: "a", generationId: "g" });
 
         expect(edited.needsCurrent).toBe(false);
@@ -226,7 +226,7 @@ describe("prepareChatGroups", () => {
             "setText",
             "remove",
         ]);
-        expect(edited.ops[0]).toEqual({ op: "meta", set: {}, unset: ["note"], merge: {} });
+        expect(edited.ops[0]).toEqual({ op: "meta", set: {}, unset: ["note"], merge: {}, mergeUnset: {} });
         expect(edited.ops[1]).toMatchObject({ anchor: { end: true } });
         expect(edited.ops[2]).toMatchObject({ anchor: { start: true } });
         expect(edited.ops[3]).toMatchObject({ anchor: { after: "a" } });
@@ -477,29 +477,41 @@ describe("chat.toolCalls (slice 11b)", () => {
                 { op: "meta", set: { note: "n" } },
             ]),
         ]);
-        expect(prepared.ops[0]).toEqual({ op: "meta", set: {}, unset: [], merge: { toolCalls: { a: record("a") } } });
-        expect(prepared.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {} });
+        expect(prepared.ops[0]).toEqual({
+            op: "meta",
+            set: {},
+            unset: [],
+            merge: { toolCalls: { a: record("a") } },
+            mergeUnset: {},
+        });
+        expect(prepared.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {}, mergeUnset: {} });
         expect(prepared.needsCurrent).toBe(false);
         const groupRejects = (op: unknown, error: string) =>
             rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
         groupRejects(
             { op: "meta", merge: { note: { a: 1 } } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: "x" } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: [] } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: null } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
         );
-        groupRejects({ op: "meta", merge: 5 }, "meta.merge takes entries for toolCalls, GLGlobalVariables");
-        groupRejects({ op: "meta", merge: [] }, "meta.merge takes entries for toolCalls, GLGlobalVariables");
+        groupRejects(
+            { op: "meta", merge: 5 },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+        );
+        groupRejects(
+            { op: "meta", merge: [] },
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+        );
         groupRejects(
             { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
             "meta merges a field it also sets or unsets",
@@ -508,5 +520,165 @@ describe("chat.toolCalls (slice 11b)", () => {
             { op: "meta", merge: { toolCalls: {} }, unset: ["toolCalls"] },
             "meta merges a field it also sets or unsets",
         );
+    });
+});
+
+describe("patchMessage and meta.mergeUnset (data-loss slice 1a)", () => {
+    const group = (ops: unknown[]) => ({ characterId: "c", chatId: "k", baseRevision: "e:1:1", ops });
+    const prepare = (op: unknown) => prepareChatGroups([group([op])])[0];
+    const opRejects = (op: unknown, error: string) =>
+        rejects(() => prepareChatGroups([group([{ op: "meta", set: {} }, op])]), `chats[0].ops[1]: ${error}`);
+    const translation = { text: "t", sourceHash: "h", targetLanguage: "ko", translatedAt: 1 };
+
+    it("prepares a patchMessage as the JSON copy of its fields, without translation, with unset deduplicated, as a by-id op", () => {
+        const prepared = prepare({
+            op: "patchMessage",
+            id: "a",
+            set: { disabled: true, translation, dropped: undefined, time: new Date(0) },
+            unset: ["saying", "translation", "saying", "name"],
+        });
+        expect(prepared.needsCurrent).toBe(false);
+        expect(prepared.ops[0]).toEqual({
+            op: "patchMessage",
+            id: "a",
+            set: { disabled: true, time: "1970-01-01T00:00:00.000Z" },
+            unset: ["saying", "name"],
+        });
+        // Either half alone is enough; role and data may be set, with their message shape.
+        expect(prepare({ op: "patchMessage", id: "a", unset: ["disabled"] }).ops[0]).toEqual({
+            op: "patchMessage",
+            id: "a",
+            set: {},
+            unset: ["disabled"],
+        });
+        expect(prepare({ op: "patchMessage", id: "a", set: { role: "char", data: "d" } }).ops[0]).toEqual({
+            op: "patchMessage",
+            id: "a",
+            set: { role: "char", data: "d" },
+            unset: [],
+        });
+        // Nested prototype names are plain entry names, only the message's own `__proto__` is refused.
+        const nested = JSON.parse('{"generationInfo": {"__proto__": {"x": 1}}, "constructor": "own"}') as unknown;
+        expect(prepare({ op: "patchMessage", id: "a", set: nested }).ops[0]).toMatchObject({
+            set: { generationInfo: { ["__proto__"]: { x: 1 } }, constructor: "own" },
+        });
+        expect(
+            countChatOperations(prepareChatGroups([group([{ op: "patchMessage", id: "a", unset: ["name"] }])]), []),
+        ).toBe(1);
+    });
+
+    it("refuses a malformed patchMessage, in the documented order, with the group and op index", () => {
+        opRejects({ op: "patchMessage", set: { disabled: true } }, "patchMessage must be { id, set?, unset? }");
+        opRejects({ op: "patchMessage", id: "", set: { disabled: true } }, "patchMessage must be { id, set?, unset? }");
+        opRejects({ op: "patchMessage", id: 1, set: { disabled: true } }, "patchMessage must be { id, set?, unset? }");
+        // A generation is refused before the fields are looked at (a manual write only).
+        opRejects(
+            { op: "patchMessage", id: "a", set: { role: 1 }, generation: { id: "g", seq: 1 } },
+            "patchMessage carries no generation",
+        );
+        opRejects({ op: "patchMessage", id: "a", generation: null }, "patchMessage carries no generation");
+        const shape = "patchMessage must be { id, set?: object, unset?: string[] }";
+        for (const set of [null, [], "x", 1, true]) {
+            opRejects({ op: "patchMessage", id: "a", set }, shape);
+        }
+        for (const unset of [null, "name", {}, [1], ["name", null], [["name"]]]) {
+            opRejects({ op: "patchMessage", id: "a", unset }, shape);
+        }
+        // A hole in an in-process array is not a string.
+        const holed: unknown[] = [];
+        holed[1] = "name";
+        opRejects({ op: "patchMessage", id: "a", unset: holed }, shape);
+        // The set is checked as its JSON copy.
+        opRejects({ op: "patchMessage", id: "a", set: { n: 1e400 } }, "Resource data contains a non-finite number");
+        opRejects({ op: "patchMessage", id: "a", set: { n: 1n } }, "Resource data is not serializable as JSON");
+        // Identity and the prototype, in set or in unset.
+        opRejects({ op: "patchMessage", id: "a", set: { chatId: "b" } }, "patchMessage cannot change chatId");
+        opRejects({ op: "patchMessage", id: "a", unset: ["chatId"] }, "patchMessage cannot change chatId");
+        opRejects(
+            { op: "patchMessage", id: "a", set: JSON.parse('{"__proto__": {"polluted": true}}') },
+            "patchMessage cannot change __proto__",
+        );
+        opRejects({ op: "patchMessage", id: "a", unset: ["__proto__"] }, "patchMessage cannot change __proto__");
+        // Translation is dropped from either half, so it cannot carry a patch on its own.
+        for (const op of [
+            { op: "patchMessage", id: "a" },
+            { op: "patchMessage", id: "a", set: {}, unset: [] },
+            { op: "patchMessage", id: "a", set: { translation } },
+            { op: "patchMessage", id: "a", unset: ["translation"] },
+            { op: "patchMessage", id: "a", set: { translation }, unset: ["translation"] },
+            { op: "patchMessage", id: "a", set: { disabled: undefined } },
+            { op: "patchMessage", id: "a", set: { disabled: () => true } },
+        ]) {
+            rejects(
+                () => prepareChatGroups([group([op])]),
+                "chats[0].ops[0]: patchMessage must set or unset a field",
+                JSON.stringify(op),
+            );
+        }
+        // Role and data stay on the row and keep their shapes when set.
+        opRejects({ op: "patchMessage", id: "a", unset: ["role"] }, "patchMessage cannot unset role or data");
+        opRejects({ op: "patchMessage", id: "a", unset: ["name", "data"] }, "patchMessage cannot unset role or data");
+        opRejects(
+            { op: "patchMessage", id: "a", set: { name: "n" }, unset: ["name"] },
+            "patchMessage sets and unsets the same field",
+        );
+        opRejects({ op: "patchMessage", id: "a", set: { role: "system" } }, "message.role must be user or char");
+        opRejects({ op: "patchMessage", id: "a", set: { role: null } }, "message.role must be user or char");
+        opRejects({ op: "patchMessage", id: "a", set: { data: 1 } }, "message.data must be a string");
+        opRejects({ op: "patchMessage", id: "a", set: { data: null } }, "message.data must be a string");
+    });
+
+    it("prepares meta.mergeUnset for the map fields only, apart from the fields the op sets or unsets, next to merge", () => {
+        expect(
+            prepare({
+                op: "meta",
+                mergeUnset: { scriptstate: ["$a", "$a"], toolCalls: [] },
+                merge: { scriptstate: { $b: "1" } },
+                set: { note: "n" },
+                unset: ["name"],
+            }).ops[0],
+        ).toEqual({
+            op: "meta",
+            set: { note: "n" },
+            unset: ["name"],
+            merge: { scriptstate: { $b: "1" } },
+            mergeUnset: { scriptstate: ["$a", "$a"], toolCalls: [] },
+        });
+        expect(prepare({ op: "meta", merge: { scriptstate: { $x: "1" } } }).ops[0]).toEqual({
+            op: "meta",
+            set: {},
+            unset: [],
+            merge: { scriptstate: { $x: "1" } },
+            mergeUnset: {},
+        });
+        const shape = "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate";
+        for (const mergeUnset of [
+            null,
+            [],
+            "x",
+            { note: ["a"] },
+            { scriptstate: "a" },
+            { scriptstate: [1] },
+            { scriptstate: null },
+        ]) {
+            opRejects({ op: "meta", mergeUnset }, shape);
+        }
+        const holed: unknown[] = [];
+        holed[1] = "$a";
+        opRejects({ op: "meta", mergeUnset: { scriptstate: holed } }, shape);
+        opRejects(
+            { op: "meta", mergeUnset: { scriptstate: ["$a"] }, set: { scriptstate: {} } },
+            "meta merges a field it also sets or unsets",
+        );
+        opRejects(
+            { op: "meta", mergeUnset: { scriptstate: ["$a"] }, unset: ["scriptstate"] },
+            "meta merges a field it also sets or unsets",
+        );
+        opRejects(
+            { op: "meta", merge: { scriptstate: {} }, unset: ["scriptstate"] },
+            "meta merges a field it also sets or unsets",
+        );
+        // The forbidden meta keys are refused before the merge halves are looked at.
+        opRejects({ op: "meta", set: { message: [] }, mergeUnset: 5 }, "chat meta cannot change message");
     });
 });
