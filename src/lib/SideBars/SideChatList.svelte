@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
+    import { type AnyClientCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
@@ -45,6 +45,7 @@
         selectedChatId,
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
+    import { chatFolderOf } from "./chatFolders";
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
@@ -110,6 +111,15 @@
         }
     }
 
+    /**
+     * A drop's order (the rows as the DOM has them) with every listed chat it misses appended in
+     * list order, so `reorderChats` always gets a permutation even when a chat has no row.
+     */
+    function completeOrder(ordered: string[], listed: readonly ChatListEntry[]): string[] {
+        const seen = new Set(ordered);
+        return [...ordered, ...listed.filter((chat) => !seen.has(chat.id)).map((chat) => chat.id)];
+    }
+
     let chatsStb: Sortable[] = [];
     let folderStb: Sortable = null;
 
@@ -127,6 +137,7 @@
                         // The list as rendered (the indexes in the DOM are into it), read once:
                         // a folder change below makes the derived list a new one.
                         const listed = chats;
+                        const folders = chara.chatFolders;
                         const newChats: string[] = [];
 
                         listEle.querySelectorAll("[data-risu-chat-folder-idx]").forEach((folder) => {
@@ -134,8 +145,8 @@
                             folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatInFolder) => {
                                 const chatIdx = parseInt(chatInFolder.getAttribute("data-risu-chat-idx"));
                                 const newChat = listed[chatIdx];
-                                if (newChat.folderId !== chara.chatFolders[folderIdx].id) {
-                                    setChatFolder(newChat, chara.chatFolders[folderIdx].id);
+                                if (newChat.folderId !== folders[folderIdx].id) {
+                                    setChatFolder(newChat, folders[folderIdx].id);
                                 }
                                 newChats.push(newChat.id);
                             });
@@ -145,13 +156,16 @@
                             const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
                             const newChat = listed[idx];
                             if (newChats.includes(newChat.id) == false) {
-                                setChatFolder(newChat, null);
+                                // A root row leaves its folder; a dangling id (already unfiled) is not written.
+                                if (chatFolderOf(newChat, folders) != null) {
+                                    setChatFolder(newChat, null);
+                                }
                                 newChats.push(newChat.id);
                             }
                         });
 
                         // The selected chat stays selected (the selection is by id).
-                        reorderChats(chara.chaId, newChats);
+                        reorderChats(chara.chaId, completeOrder(newChats, listed));
 
                         try {
                             this.destroy();
@@ -190,7 +204,7 @@
                 });
 
                 chara.chatFolders = newFolders;
-                reorderChats(chara.chaId, newChats);
+                reorderChats(chara.chaId, completeOrder(newChats, listed));
                 try {
                     folderStb.destroy();
                 } catch (e) {}
@@ -257,6 +271,7 @@
             <div class="flex flex-col" bind:this={folderEles}>
                 <!-- chat folder -->
                 {#each chara.chatFolders as folder, i}
+                    {@const inFolder = chats.filter((chat) => chatFolderOf(chat, chara.chatFolders)?.id === folder.id)}
                     <div
                         data-risu-chat-folder-idx={i}
                         class="flex flex-col mb-2 border-solid border-1 border-darkborderc cursor-pointer rounded-md"
@@ -348,17 +363,26 @@
                                     class="text-textcolor2 hover:text-green-500 cursor-pointer"
                                     onclick={async (e) => {
                                         e.stopPropagation();
+                                        // By id: the row's index and item follow the folder list, and
+                                        // `chara` the selected character, either of which can change
+                                        // while the confirm is open.
+                                        const chaId = chara.chaId;
+                                        const folderId = folder.id;
                                         const d = await alertConfirm(`${language.removeConfirm}${folder.name}`);
-                                        if (d) {
+                                        const owner = characterList().find((entry) => entry?.chaId === chaId);
+                                        if (d && owner) {
                                             $ReloadGUIPointer += 1;
-                                            const folders = chara.chatFolders;
-                                            folders.splice(i, 1);
-                                            chats.forEach((chat) => {
-                                                if (chat.folderId == folder.id) {
-                                                    setChatFolder(chat, null);
+                                            const folders = owner.chatFolders ?? [];
+                                            const index = folders.findIndex((entry) => entry.id === folderId);
+                                            if (index !== -1) {
+                                                folders.splice(index, 1);
+                                            }
+                                            for (const chat of chatList(chaId)) {
+                                                if (chat.folderId == folderId) {
+                                                    setChatMeta({ chaId, chatId: chat.id }, {}, ["folderId"]);
                                                 }
-                                            });
-                                            chara.chatFolders = folders;
+                                            }
+                                            owner.chatFolders = folders;
                                         }
                                     }}
                                 >
@@ -372,11 +396,11 @@
                                 ? 'hidden'
                                 : ''}"
                         >
-                            {#if chats.filter((chat) => chat.folderId == chara.chatFolders[i].id).length == 0}
+                            {#if inFolder.length == 0}
                                 <span class="no-sort flex justify-center text-textcolor2">Empty</span>
                                 <div></div>
                             {:else}
-                                {#each chats.filter((chat) => chat.folderId == chara.chatFolders[i].id) as chat}
+                                {#each inFolder as chat}
                                     <button
                                         data-risu-chat-idx={chats.indexOf(chat)}
                                         onclick={() => {
@@ -505,7 +529,8 @@
             <!-- chat without folder div -->
             <div class="risu-chat flex flex-col">
                 {#each chats as chat, i}
-                    {#if chat.folderId == null}
+                    <!-- Unfiled: no folder id, or one whose folder does not exist (`chatFolderOf`). -->
+                    {#if chatFolderOf(chat, chara.chatFolders) == null}
                         <button
                             data-risu-chat-idx={i}
                             onclick={() => {

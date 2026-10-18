@@ -11,6 +11,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // its loaded source and keeps all four fields, a gone id and a pending review included.
 
 const alerts = vi.hoisted(() => ({ chatOption: 0 }));
+/** The SortableJS instances the list created, so a test can run a drop's `onEnd` (happy-dom cannot drag). */
+const sortables = vi.hoisted(() => [] as { options: { group: string; onEnd: (event: unknown) => Promise<void> } }[]);
+
+vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
+    class Sortable {
+        options: any;
+        constructor(_el: HTMLElement, options: any) {
+            this.options = options;
+            sortables.push(this);
+        }
+        destroy() {}
+        static create(el: HTMLElement, options: any) {
+            return new Sortable(el, options);
+        }
+    }
+    return { default: Sortable };
+});
 
 vi.mock("src/ts/alert", () => ({
     alertChatOptions: vi.fn(async () => alerts.chatOption),
@@ -42,6 +59,7 @@ vi.mock("src/ts/globalApi.svelte", () => ({
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
+import { alertConfirm } from "src/ts/alert";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
@@ -76,6 +94,7 @@ const TAB = { modelPresetId: "m2", promptPresetId: "p2", bindedPersona: "u2" };
  * new chat starts from.
  */
 beforeEach(() => {
+    sortables.length = 0;
     sessionStorage.clear();
     localStorage.clear();
     installFlatDatabaseWithChats({
@@ -202,6 +221,125 @@ describe("chat pins in the sidebar", () => {
         expect(findChat({ chaId: "c", chatId: copy.id })).not.toHaveProperty("pinned");
         expect(findChat(source)).toHaveProperty("pinned", true);
         expect(chatEntry(source)).toHaveProperty("pinned", true);
+    });
+});
+
+// `docs/plan/data-loss-concurrency.md`, slice 7a: a chat whose `folderId` names no folder of its
+// character (a two-tab move/delete race, a refused folder write) lists at the root (`chatFolderOf`)
+// and keeps its id; a drop always passes `reorderChats` a permutation; a folder delete resolves its
+// folder and character by id after the confirm.
+describe("a chat whose folder does not exist", () => {
+    const rowOf = (target: HTMLElement, name: string) =>
+        [...target.querySelectorAll<HTMLElement>("[data-risu-chat-idx]")].find((row) =>
+            row.textContent?.includes(name),
+        )!;
+    const inFolder = (row: HTMLElement) => row.closest("[data-risu-chat-folder-idx]") !== null;
+    /** Runs the drop handler of the chat lists, as SortableJS does after a drag. */
+    const drop = async () => {
+        const chatsSortable = sortables.find((entry) => entry.options.group === "chats")!;
+        await chatsSortable.options.onEnd.call(chatsSortable, {});
+        flushSync();
+    };
+
+    it("lists at the root with its id kept, and in its folder once that folder exists", () => {
+        byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+        setChatMeta({ chaId: "c", chatId: "k" }, { folderId: "gone" });
+        setChatMeta({ chaId: "c", chatId: "j" }, { folderId: "f" });
+        const { target } = renderSide("c");
+        expect(target.querySelectorAll("[data-risu-chat-idx]")).toHaveLength(3);
+        expect(inFolder(rowOf(target, "Chat K"))).toBe(false);
+        expect(inFolder(rowOf(target, "Chat J"))).toBe(true);
+        expect(inFolder(rowOf(target, "Chat N"))).toBe(false);
+        expect(chatEntry({ chaId: "c", chatId: "k" })?.folderId).toBe("gone");
+
+        byChaId("c").chatFolders = [...byChaId("c").chatFolders, { id: "gone", name: "Back", folded: false }];
+        flushSync();
+        expect(inFolder(rowOf(target, "Chat K"))).toBe(true);
+        expect(target.querySelectorAll("[data-risu-chat-idx]")).toHaveLength(3);
+    });
+
+    it("a drop reorders with a dangling member, keeps its id, and moves a real member out of its folder", async () => {
+        byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+        setChatMeta({ chaId: "c", chatId: "k" }, { folderId: "gone" });
+        setChatMeta({ chaId: "c", chatId: "j" }, { folderId: "f" });
+        const { target } = renderSide("c");
+        // Drag N above K at the root, and J out of its folder to the end of the root.
+        const root = rowOf(target, "Chat K").parentElement!;
+        root.insertBefore(rowOf(target, "Chat N"), rowOf(target, "Chat K"));
+        root.appendChild(rowOf(target, "Chat J"));
+        await drop();
+        expect(ids("c")).toEqual(["n", "k", "j"]);
+        expect(chatEntry({ chaId: "c", chatId: "k" })?.folderId).toBe("gone");
+        expect(chatEntry({ chaId: "c", chatId: "j" })).not.toHaveProperty("folderId");
+        expect(inFolder(rowOf(target, "Chat K"))).toBe(false);
+    });
+
+    it("a drop missing a chat's row still passes a permutation, appending that chat", async () => {
+        const { target } = renderSide("c");
+        const root = rowOf(target, "Chat K").parentElement!;
+        root.appendChild(rowOf(target, "Chat K"));
+        rowOf(target, "Chat J").remove();
+        await drop();
+        expect(ids("c")).toEqual(["n", "k", "j"]);
+    });
+
+    it("a folder delete confirmed after another folder was put first deletes the confirmed folder", async () => {
+        byChaId("c").chatFolders = [
+            { id: "a", name: "Folder A", folded: false },
+            { id: "b", name: "Folder B", folded: false },
+        ];
+        setChatMeta({ chaId: "c", chatId: "k" }, { folderId: "b" });
+        setChatMeta({ chaId: "c", chatId: "j" }, { folderId: "a" });
+        let confirm!: (value: boolean) => void;
+        vi.mocked(alertConfirm).mockImplementationOnce(() => new Promise<boolean>((resolve) => (confirm = resolve)));
+        const { target } = renderSide("c");
+        const folderB = target.querySelector<HTMLElement>('[data-risu-chat-folder-idx="1"]')!;
+        expect(folderB.textContent).toContain("Folder B");
+        const trash = [...folderB.querySelector("button")!.querySelectorAll<HTMLElement>('[role="button"]')][2];
+        trash.click();
+        await vi.waitFor(() => expect(alertConfirm).toHaveBeenCalledWith(`${language.removeConfirm}Folder B`));
+
+        // Another tab's folder arrives at the front while the confirm is open.
+        byChaId("c").chatFolders = [{ id: "x", name: "Folder X", folded: false }, ...byChaId("c").chatFolders];
+        flushSync();
+        confirm(true);
+        await vi.waitFor(() => expect(byChaId("c").chatFolders.map((folder) => folder.id)).toEqual(["x", "a"]));
+        expect(chatEntry({ chaId: "c", chatId: "k" })).not.toHaveProperty("folderId");
+        expect(chatEntry({ chaId: "c", chatId: "j" })?.folderId).toBe("a");
+    });
+
+    it("a folder delete confirmed after the selection moved to another character changes only the first", async () => {
+        byChaId("c").chatFolders = [{ id: "same", name: "Shared", folded: false }];
+        byChaId("g").chatFolders = [{ id: "same", name: "Shared", folded: false }];
+        setChatMeta({ chaId: "c", chatId: "k" }, { folderId: "same" });
+        setChatMeta({ chaId: "g", chatId: "gk" }, { folderId: "same" });
+        let confirm!: (value: boolean) => void;
+        vi.mocked(alertConfirm).mockImplementationOnce(() => new Promise<boolean>((resolve) => (confirm = resolve)));
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        // The selected character as `Sidebar.svelte` passes it, read through the prop at each access.
+        let selected = byChaId("c");
+        mounted.push(
+            mount(SideChatList, {
+                target,
+                props: {
+                    get chara() {
+                        return selected;
+                    },
+                },
+            }),
+        );
+        flushSync();
+        const folder = target.querySelector<HTMLElement>('[data-risu-chat-folder-idx="0"]')!;
+        [...folder.querySelector("button")!.querySelectorAll<HTMLElement>('[role="button"]')][2].click();
+        await vi.waitFor(() => expect(alertConfirm).toHaveBeenCalled());
+
+        selected = byChaId("g");
+        confirm(true);
+        await vi.waitFor(() => expect(byChaId("c").chatFolders).toEqual([]));
+        expect(chatEntry({ chaId: "c", chatId: "k" })).not.toHaveProperty("folderId");
+        expect(byChaId("g").chatFolders.map((entry) => entry.id)).toEqual(["same"]);
+        expect(chatEntry({ chaId: "g", chatId: "gk" })?.folderId).toBe("same");
     });
 });
 
