@@ -1,6 +1,6 @@
 # Data-Loss Under Concurrency Plan
 
-Status: 1a (2f79a2300), 7a (b0fe3d017), 1b (498d87228), 1c (a1be19605), 8 (394b8daa9) landed. Source: the cross-verified static audit
+Status: 1a (2f79a2300), 7a (b0fe3d017), 1b (498d87228), 1c (a1be19605), 8 (394b8daa9), 3 (49359f49a) landed. Source: the cross-verified static audit
 `docs/audit/data-loss-concurrency-2026-10-18.md` at `5e7595689` (raw reports and
 challenges at `/home/codex/metatron-report-concurrency/`). One slice is one session,
 one commit, one file cluster. Every cited location was re-verified against the working
