@@ -26,6 +26,13 @@ identity is duplicated, or a new summary covers a covered message. The tab-side 
 uses `sendingChatRef` and `generatingChatKeys()` (not `isChatGenerating`, which misses the
 pre-lock memory step and previews); a refused change is undone in the copy, not replayed
 after the job; the modal no longer writes the empty default of a chat without memory data.
+3 keeps the prereroll candidates in a `Map` with the chat and message they were generated
+in (`addRerolls(genId, values, ref, messageId)`, one-line change in `serverGeneration.ts`):
+a copied chat does not use them, empty candidates are skipped, and the cursor never rests
+past the last one. 4a's notice is a non-modal panel (`ReloadNotice.svelte`, `z-[60]`,
+mounted before the terminal notice) over `alertReloadNotice`/`dismissReloadNotice` in
+`alert.ts`; `reloadDeferredChats` decides "replaced" by `chatDiscardSequence()` moving; the
+backup export names a discard in its success alert (`backupDiscardedChanges`), not the keys.
 
 The audit's question: where can a change the UI already treats as saved end up absent
 from the server database, be overwritten by an older copy without notice, or be
@@ -527,8 +534,8 @@ content is a new message.
 
 ## Continue Remaining Work
 
-Landed slices are in the Status line. Continue sequence A with 2a and, in parallel
-sessions, slice 3 and sequence B from 4a. Record each landed slice in the Status line with its commit, and the
+Landed slices are in the Status line. Continue sequence A with 2a → 2b and sequence B with
+5a; 4b waits for 2b and 4a (both landed or in flight). Record each landed slice in the Status line with its commit, and the
 decisions a slice made where the plan leaves a choice (1a's `setMessage` rule, 1c's
 merge rule for summaries, 5a's plugin event shape, 6b's id list bound). When every
 slice has landed, move this file to the archive as `docs/archived-plan/README.md`
