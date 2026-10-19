@@ -1,6 +1,6 @@
 # Boot Resource Cache Plan
 
-Status: planned 2026-10-19 at `91ba3c594`; nothing landed. Source: a user report that a
+Status: planned 2026-10-19 at `91ba3c594`; slice 1 landed (1d382e8d0). Source: a user report that a
 remote server holding asset-heavy modules boots slowly, with the boot response saved
 from that server (`save/New_Request-1792397488943.json` in the main checkout; ignored
 by git, holds user data: read sizes from it, never commit or quote it). Line numbers
