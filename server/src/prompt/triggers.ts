@@ -1,4 +1,5 @@
 import type { Chat, character } from "../../../shared/database.ts";
+import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
 import {
@@ -1382,10 +1383,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2GetFirstMessage": {
-                        setVar(
-                            parse(effect.outputVar),
-                            chat.fmIndex === -1 ? char.firstMessage : char.alternateGreetings[chat.fmIndex as number],
-                        );
+                        setVar(parse(effect.outputVar), greetingText(char, chat.fmIndex));
                         break;
                     }
                     case "v2GetAlertInput": {

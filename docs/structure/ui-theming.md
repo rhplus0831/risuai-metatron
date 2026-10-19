@@ -109,7 +109,7 @@ Theme and GUI helpers:
 ## Flows
 
 - Desktop: `App` → `Sidebar` + `ChatScreen` → `DefaultChatScreen` → `Chats` → `Chat` → `ChatBody`.
-- First greeting: rendered as a separate `Chat` with `idx: -1`. `fmIndex: -1` means `firstMessage`. `fmIndex >= 0` selects `alternateGreetings[fmIndex]`.
+- First greeting: rendered as a separate `Chat` with `idx: -1`. `fmIndex: -1` means `firstMessage`. `fmIndex >= 0` selects `alternateGreetings[fmIndex]`. The chat screen, the CBS registry, triggers (`v2GetFirstMessage`) and regex `repeatBack` read it through `shared/greetings.ts` (`greetingIndex`, `greetingText`, `nextGreetingIndex`, `previousGreetingIndex`): a missing, non-integer or out-of-range index reads as -1. Not converted yet: `server/src/prompt/assemble.ts` (prompt assembly) and `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` index `alternateGreetings` directly.
 - Popups: `PopupButton` → `popupStore` → `App` renders `PopupList`, which closes on the next document click.
 - Theme: at boot `bootstrap.ts` calls `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and `updateGuisize`. The display settings call the same functions. Plugins can call them via `apiV3`.
 

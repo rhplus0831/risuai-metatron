@@ -37,6 +37,12 @@
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
     import { tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
+    import {
+        greetingIndex,
+        greetingText,
+        nextGreetingIndex,
+        previousGreetingIndex,
+    } from "../../../shared/greetings.ts";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
@@ -1064,9 +1070,7 @@
                         pendingReveal={revealing}
                         character={createSimpleCharacter(currentCharacter)}
                         name={currentCharacter.name}
-                        message={(currentChat?.fmIndex ?? -1) === -1
-                            ? currentCharacter.firstMessage
-                            : currentCharacter.alternateGreetings[currentChat.fmIndex]}
+                        message={greetingText(currentCharacter, currentChat?.fmIndex)}
                         role="char"
                         img={getCharImage(currentCharacter.image, "css")}
                         idx={-1}
@@ -1079,7 +1083,7 @@
                             const chat = ref ? findChat(ref) : undefined;
                             if (cha.type !== "group" && ref && chat) {
                                 setChatMeta(ref, {
-                                    fmIndex: chat.fmIndex >= cha.alternateGreetings.length - 1 ? -1 : chat.fmIndex + 1,
+                                    fmIndex: nextGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
                                 });
                             }
                         }}
@@ -1089,12 +1093,13 @@
                             const chat = ref ? findChat(ref) : undefined;
                             if (cha.type !== "group" && ref && chat) {
                                 setChatMeta(ref, {
-                                    fmIndex: chat.fmIndex === -1 ? cha.alternateGreetings.length - 1 : chat.fmIndex - 1,
+                                    fmIndex: previousGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
                                 });
                             }
                         }}
                         isLastMemory={false}
-                        currentPage={(currentChat?.fmIndex ?? -1) + 2}
+                        currentPage={greetingIndex(currentChat?.fmIndex, currentCharacter.alternateGreetings.length) +
+                            2}
                         totalPages={currentCharacter.alternateGreetings.length + 1}
                     />
                     {#if aiLawApplies() && currentChat.message.length === 0}
