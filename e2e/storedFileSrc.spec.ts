@@ -10,9 +10,11 @@ import { openApp } from "../util/playwright/stack.mjs";
 // continues without the worker). What only the browser shows:
 // - on a page without a worker: an object URL (`blob:`) that displays, one storage read and one URL
 //   for concurrent and later reads, a missing file answers "" and is read again once it exists;
-// - on a page the worker controls: `/sw/img/<hex>`, registered once for concurrent reads; a missing
-//   file is never registered; a refused registration, a worker request that never answers (bounded
-//   at 10 s), and no worker at all fall back to an object URL that displays.
+// - on a page the worker controls: `/sw/img/<hex>`, looked up in the worker's Cache Storage from the
+//   page (no `/sw/check` request since 2fe139df4; that request is only the fallback when the lookup
+//   fails) and registered once for concurrent reads; a missing file is never registered; a refused
+//   registration, a registration that never answers (bounded at 10 s), and no worker at all fall
+//   back to an object URL that displays.
 // The worker's own requests are faulted through the page's `fetch`, which `getFileSrc` and the
 // storage reads call.
 
@@ -20,8 +22,8 @@ const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8B
 
 /**
  * Wraps the page's `fetch`: records the worker requests and the storage reads (by path), and
- * applies `window.__fileSrcFault` to a worker request: `{ path, register: status }` answers its
- * registration with that status, `{ path, check: "stall" }` never answers its check (until aborted).
+ * applies `window.__fileSrcFault` to a registration: `{ path, register: status }` answers it with
+ * that status, `{ path, register: "stall" }` never answers it (until aborted).
  */
 async function instrument(page: Page) {
     await page.evaluate(() => {
@@ -41,14 +43,14 @@ async function instrument(page: Page) {
                 const path = decode(hex);
                 w.__fileSrcLog.push(`${step} ${path}`);
                 const fault = w.__fileSrcFault;
-                if (fault?.path === path) {
-                    if (step === "register" && fault.register) {
-                        return Promise.resolve(new Response("refused", { status: fault.register }));
-                    }
-                    if (step === "check" && fault.check === "stall") {
+                if (fault?.path === path && step === "register") {
+                    if (fault.register === "stall") {
                         return new Promise<Response>((_, reject) => {
                             init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
                         });
+                    }
+                    if (fault.register) {
+                        return Promise.resolve(new Response("refused", { status: fault.register }));
                     }
                 }
             }
@@ -157,7 +159,8 @@ test("on a page the worker controls: its URL, registered once; a missing file ne
     await expect.poll(() => controlled(page), { timeout: 20_000 }).toBe(true);
     await instrument(page);
 
-    // Concurrent reads: one check, one registration, one storage read, one URL that displays.
+    // Concurrent reads: a page-side cache miss (no worker check), one registration, one storage read,
+    // one URL that displays.
     const path = await store(page, id("controlled"));
     const concurrent = await fileSrc(page, [path, path, path]);
     expect(concurrent).toEqual(Array(3).fill(`/sw/img/${hex(path)}`));
@@ -168,7 +171,7 @@ test("on a page the worker controls: its URL, registered once; a missing file ne
         count(entries, `check ${path}`),
         count(entries, `register ${path}`),
         count(entries, `read ${path}`),
-    ]).toEqual([1, 1, 1]);
+    ]).toEqual([0, 1, 1]);
 
     // A missing file: "" and nothing registered in the worker's cache; once it exists, its URL.
     const missingId = id("missing");
@@ -191,9 +194,9 @@ test("on a page the worker controls: its URL, registered once; a missing file ne
     expect(refusedSrc).toMatch(/^blob:/);
     expect(await displayedWidth(page, refusedSrc)).toBe(1);
 
-    // The worker's check never answers: after its 10 s bound, an object URL.
+    // The worker's registration never answers: after its 10 s bound, an object URL.
     const stalled = await store(page, id("stalled"));
-    await page.evaluate((path) => ((window as any).__fileSrcFault = { path, check: "stall" }), stalled);
+    await page.evaluate((path) => ((window as any).__fileSrcFault = { path, register: "stall" }), stalled);
     const started = Date.now();
     const [stalledSrc] = await fileSrc(page, [stalled]);
     const waited = Date.now() - started;
