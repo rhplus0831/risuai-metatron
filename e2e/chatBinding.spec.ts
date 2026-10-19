@@ -386,7 +386,12 @@ const picker = (page: Page, heading: string) =>
 async function pick(page: Page, heading: string, name: string) {
     const list = picker(page, heading);
     await expect(list).toBeVisible();
-    await list.getByRole("button", { name: new RegExp(`${name}$`) }).click();
+    // A prompt preset row also holds an archive control labelled "Archive prompt preset: <name>",
+    // whose name ends the same way, so the row is the match that is not that control.
+    await list
+        .getByRole("button", { name: new RegExp(`${name}$`) })
+        .and(list.locator(":not([data-preset-archive-action])"))
+        .click();
     await expect(list).toHaveCount(0);
 }
 
