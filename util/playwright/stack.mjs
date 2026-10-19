@@ -139,11 +139,22 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
     }
     const serverURL = `http://localhost:${serverPort}`;
     const baseURL = `http://localhost:${vitePort}`;
+    // The listener and the storage are the harness's own, whatever the shell exports for
+    // `pnpm dev:agent` (`server/src/listenConfig.ts`): the store stays in `workDir`, auth is real.
+    const { RISU_HOST, RISU_SAVE_DIR, RISU_AGENT_DEV_AUTH_BYPASS, ...inheritedEnv } = process.env;
     const startServer = () =>
         run(
             process.execPath,
             [path.join(repoRoot, "server/src/main.ts")],
-            { cwd: workDir, env: { ...process.env, ...serverEnv, PORT: String(serverPort) } },
+            {
+                cwd: workDir,
+                env: {
+                    ...inheritedEnv,
+                    ...serverEnv,
+                    PORT: String(serverPort),
+                    RISU_SAVE_DIR: path.join(workDir, "save"),
+                },
+            },
             log,
         );
     let server = startServer();

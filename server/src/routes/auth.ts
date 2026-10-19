@@ -25,9 +25,12 @@ export type AuthStore = ReturnType<typeof createAuthStore>;
 /**
  * Password (`save/server/password`, the client-side SHA-256 digest) and registered ES256 public key
  * hashes (`save/server/known_public_key_hashes.json`), plus JWT verification. `save/server/` is not a
- * storage namespace, so the `/api/*` storage routes cannot reach these files.
+ * storage namespace, so the `/api/*` storage routes cannot reach these files. `bypass` (the
+ * loopback-only `pnpm dev:agent` server, `listenConfig.ts`) accepts every token and answers
+ * `/api/test_auth` with success, so the tab never asks for a password.
  */
-export function createAuthStore(savePath: string) {
+export function createAuthStore(savePath: string, options: { bypass?: boolean } = {}) {
+    const bypass = options.bypass === true;
     const serverDir = path.join(savePath, "server");
     mkdirSync(serverDir, { recursive: true });
     const passwordPath = path.join(serverDir, "password");
@@ -39,6 +42,9 @@ export function createAuthStore(savePath: string) {
         : [];
 
     async function verifyJwt(token: string | undefined): Promise<JwtFailure | null> {
+        if (bypass) {
+            return null;
+        }
         if (!token) {
             return "no_header";
         }
@@ -119,6 +125,9 @@ export function createAuthStore(savePath: string) {
         limiters: { auth: MiddlewareHandler<AppEnv>; login: MiddlewareHandler<AppEnv> },
     ) {
         app.get("/api/test_auth", limiters.auth, async (c) => {
+            if (bypass) {
+                return c.json({ status: "success" });
+            }
             if (!password) {
                 return c.json({ status: "unset" });
             }

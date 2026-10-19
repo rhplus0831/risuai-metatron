@@ -5,6 +5,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { createServerContext } from "./app.ts";
 import { errorFields } from "./diagnostics/log.ts";
+import { readListenConfig } from "./listenConfig.ts";
 
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
@@ -31,7 +32,13 @@ async function getHttpsOptions(): Promise<{ key: Buffer; cert: Buffer } | null> 
 }
 
 async function startServer() {
-    const context = createServerContext({ rootDir, trustProxy: process.env.TRUST_PROXY });
+    const listen = readListenConfig(process.env, rootDir);
+    const context = createServerContext({
+        rootDir,
+        savePath: listen.savePath,
+        authBypass: listen.authBypass,
+        trustProxy: process.env.TRUST_PROXY,
+    });
     // A fault that ends the process lands in the diagnostics folder first (its event and the state,
     // written synchronously). A monitor leaves Node's behavior as it is: with no `unhandledRejection`
     // listener in this process, an unhandled rejection reaches it too (origin `unhandledRejection`)
@@ -43,7 +50,7 @@ async function startServer() {
             context.diagnostics.writeState();
         } catch {}
     });
-    const port = Number(process.env.PORT || 6001);
+    const port = listen.port;
     const httpsOptions = await getHttpsOptions();
     const protocol = httpsOptions ? "https" : "http";
 
@@ -52,13 +59,21 @@ async function startServer() {
         {
             fetch: context.app.fetch,
             port,
+            hostname: listen.hostname,
             ...(httpsOptions
                 ? { createServer: https.createServer, serverOptions: { ...httpsOptions, ...serverOptions } }
                 : { serverOptions }),
         },
         (info) => {
             console.log(`[Server] ${protocol.toUpperCase()} server is running.`);
-            console.log(`[Server] ${protocol}://localhost:${info.port}/`);
+            const host = listen.hostname ?? "localhost";
+            console.log(`[Server] ${protocol}://${host.includes(":") ? `[${host}]` : host}:${info.port}/`);
+            if (listen.savePath !== path.join(rootDir, "save")) {
+                console.log(`[Server] Storage: ${listen.savePath}`);
+            }
+            if (listen.authBypass) {
+                console.log("[Server] RISU_AGENT_DEV_AUTH_BYPASS: protected routes need no login.");
+            }
         },
     ) as http.Server;
     server.on("error", (error) => {
