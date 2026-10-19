@@ -8,6 +8,9 @@ Active planning and implementation:
 
 - [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
   are listed in its Status; deferred work and Phase 5 verification remain separate.
+- [RisuNest Small Wins](risunest-small-wins.md): alert queue, safe boot, plugin quick
+  wins, test network guard, CI and image hygiene, engineering rules; planned, Phase 2
+  waits for the `heap-memory-reduction` merge.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
