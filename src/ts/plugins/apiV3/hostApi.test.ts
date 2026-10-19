@@ -45,12 +45,28 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(async () => true),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
+vi.mock("src/ts/alert", async (importOriginal) => {
+    // The terminal notice is the real one: the plugin key listeners read its flag.
+    const { alertTerminal, acknowledgeTerminalNotice, terminalNoticeShown } =
+        await importOriginal<typeof import("src/ts/alert")>();
+    return {
+        alertConfirm: vi.fn(async () => true),
+        alertError: vi.fn(),
+        alertNormal: vi.fn(),
+        alertMd: vi.fn(),
+        alertStore: { set: vi.fn(), subscribe: vi.fn() },
+        alertTerminal,
+        acknowledgeTerminalNotice,
+        terminalNoticeShown,
+    };
+});
+
+// Permissions are granted (`getRootDocument` asks for `mainDom`): no prompt and no grant record.
+vi.mock("./permissionStore", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("./permissionStore")>()),
+    hasPermissionGrant: () => true,
+    getLastGrantTime: () => Date.now(),
+    recordPermissionGrants: vi.fn(async () => undefined),
 }));
 
 // The real parser module installs a module-level `$effect.root` over the selection, which is
@@ -60,7 +76,8 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 
-import { normalizeCharacter } from "../../../../shared/characters.ts";
+import { normalizeCharacter, supaMemoryOnCount } from "../../../../shared/characters.ts";
+import { acknowledgeTerminalNotice, alertTerminal, terminalNoticeShown } from "src/ts/alert";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePreset, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
@@ -597,5 +614,124 @@ describe("v3 index APIs address the character list's position", () => {
         removeCharacter("c");
         expect(api.getCurrentCharacterIndex()).toBe(0);
         expect((await api.getCharacterFromIndex(0)).chaId).toBe("d");
+    });
+});
+
+// Slice G2 of the Open Bug Fixes plan: a plugin character applied over the same `chaId` that turns
+// memory on counts the turn-on (`supaMemoryOnCount`), so a chat's "don't ask again" answer to the
+// no-memory trim question (`memoryTrimAck`, the count when answered) stops matching and the question
+// asks again; the plugin's own copy of the count never replaces the stored one.
+describe("v3 character setters and the memory turn-on count", () => {
+    function installMemoryCharacter(fields: Record<string, unknown>) {
+        installDatabase({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chatPage: 0,
+                    ...fields,
+                    chats: [{ id: "k", name: "K", note: "", localLore: [], message: [], memoryTrimAck: 2 }],
+                },
+            ],
+            pluginCustomStorage: undefined,
+        });
+    }
+    const stored = () => characterList()[0] as any;
+    const trimAck = () => (chatStore.findChat({ chaId: "c", chatId: "k" }) as any).memoryTrimAck;
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("setCharacterToIndex turning memory on bumps the stored count, whatever the plugin's copy says", async () => {
+        installMemoryCharacter({ supaMemory: false, supaMemoryOnCount: 2 });
+        const api = await makeApi();
+        const copy = await api.getCharacterFromIndex(0);
+        expect(supaMemoryOnCount(copy)).toBe(trimAck());
+        await api.setCharacterToIndex(0, { ...copy, supaMemory: true, supaMemoryOnCount: 0 });
+        expect(stored().supaMemory).toBe(true);
+        expect(stored().supaMemoryOnCount).toBe(3);
+        // The chat's answer no longer matches the owner's count: the trim question asks again.
+        expect(trimAck()).toBe(2);
+        expect(supaMemoryOnCount(stored())).not.toBe(trimAck());
+    });
+
+    it("keeps the stored count when memory stays on or turns off", async () => {
+        installMemoryCharacter({ supaMemory: true, supaMemoryOnCount: 2 });
+        const api = await makeApi();
+        const copy = await api.getCharacterFromIndex(0);
+        await api.setCharacterToIndex(0, { ...copy, desc: "edited", supaMemoryOnCount: 99 });
+        expect(stored().desc).toBe("edited");
+        expect(stored().supaMemoryOnCount).toBe(2);
+        await api.setCharacterToIndex(0, { ...copy, supaMemory: false, supaMemoryOnCount: 7 });
+        expect(stored().supaMemory).toBe(false);
+        expect(stored().supaMemoryOnCount).toBe(2);
+        // Turned on again: counted once more.
+        await api.setCharacterToIndex(0, { ...copy, supaMemory: true });
+        expect(stored().supaMemoryOnCount).toBe(3);
+    });
+
+    it("leaves an absent count absent unless memory turns on", async () => {
+        installMemoryCharacter({ supaMemory: false });
+        const api = await makeApi();
+        const copy = await api.getCharacterFromIndex(0);
+        await api.setCharacterToIndex(0, { ...copy, desc: "edited", supaMemoryOnCount: 5 });
+        expect(stored().desc).toBe("edited");
+        expect("supaMemoryOnCount" in stored()).toBe(false);
+        await api.setCharacterToIndex(0, { ...copy, supaMemory: true, supaMemoryOnCount: 5 });
+        expect(stored().supaMemoryOnCount).toBe(1);
+    });
+
+    it("counts a turn-on from a characters list (setDatabaseLite)", async () => {
+        installMemoryCharacter({ supaMemory: false, supaMemoryOnCount: 2 });
+        const api = await makeApi();
+        const copy = await api.getCharacterFromIndex(0);
+        await api.setDatabaseLite({ characters: [{ ...copy, supaMemory: true, supaMemoryOnCount: 2 }] });
+        expect(stored().supaMemory).toBe(true);
+        expect(stored().supaMemoryOnCount).toBe(3);
+    });
+});
+
+// Slice G2 of the Open Bug Fixes plan: `TerminalNotice.svelte` stops only bubbling, so a plugin's
+// capture-phase key listener on `document` ran before it; no plugin key listener gets a key while the
+// terminal notice (the restore notice) is shown.
+describe("v3 document key listeners and the terminal notice", () => {
+    beforeEach(() => {
+        installDatabase({ characters: [], pluginCustomStorage: undefined });
+    });
+
+    const press = (key: string) =>
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    // The key listeners are delivered after a random delay below 100 ms.
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+    it("delivers no key to a capture or bubbling listener while the notice is shown", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const captured: string[] = [];
+        const bubbled: string[] = [];
+        const captureId = await root.addEventListener("keydown", (event: any) => captured.push(event.key), true);
+        const bubbleId = await root.addEventListener("keydown", (event: any) => bubbled.push(event.key));
+        try {
+            const notice = alertTerminal("restored");
+            expect(terminalNoticeShown()).toBe(true);
+            press("s");
+            press("Enter");
+            await settle();
+            expect(captured).toEqual([]);
+            expect(bubbled).toEqual([]);
+
+            acknowledgeTerminalNotice();
+            await notice;
+            expect(terminalNoticeShown()).toBe(false);
+            press("a");
+            await settle();
+            expect(captured).toEqual(["a"]);
+            expect(bubbled).toEqual(["a"]);
+        } finally {
+            root.removeEventListener("keydown", captureId, true);
+            root.removeEventListener("keydown", bubbleId);
+        }
     });
 });

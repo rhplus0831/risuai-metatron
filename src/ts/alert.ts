@@ -157,6 +157,15 @@ export function alertTerminal(msg: string): Promise<void> {
     return terminalPending;
 }
 
+/**
+ * Whether a terminal notice is shown (set and cleared with it, synchronously). A plugin's
+ * document key listeners read it at event time: a capture-phase listener runs before the notice's
+ * own `stopPropagation`, so it would otherwise see the keys typed into the notice.
+ */
+export function terminalNoticeShown(): boolean {
+    return terminalPending !== null;
+}
+
 /** Acknowledges the terminal notice (its OK button); nothing when none is shown. */
 export function acknowledgeTerminalNotice() {
     acknowledgeTerminal?.();

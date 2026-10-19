@@ -85,7 +85,7 @@ import {
 } from "src/ts/stores.svelte";
 import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
-import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
+import { alertConfirm, alertError, alertNormal, terminalNoticeShown } from "src/ts/alert";
 import { language } from "src/lang";
 import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
@@ -101,6 +101,7 @@ import { captureTransform, serverProcessScript } from "src/ts/parser/transformCl
 import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
+import { supaMemoryOnCount } from "../../../../shared/characters.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -404,6 +405,11 @@ class SafeElement {
             return id;
         } else if (allowedDelayedEventListeners.includes(type)) {
             const modifiedListener = (event: any) => {
+                // No key typed while the terminal notice is up reaches a plugin: the notice stops
+                // only bubbling, and a capture-phase listener on `document` runs before it.
+                if (terminalNoticeShown()) {
+                    return;
+                }
                 let delay = 0;
                 try {
                     delay = (crypto.getRandomValues(new Uint32Array(1))[0] / 100) % 100; //0-99 ms
@@ -903,7 +909,16 @@ function applyPluginCharacter(index: number, char: any) {
             replaceCharacterAt(index, char);
             return;
         }
-        replaceCharacterFields(char);
+        // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
+        // chat's "don't ask again" answer to the no-memory trim question. The stored count is kept
+        // otherwise: the plugin's copy (stale, missing, or changed) never replaces it.
+        const { supaMemoryOnCount: _theirs, ...fields } = char;
+        if (fields.supaMemory && !current.supaMemory) {
+            fields.supaMemoryOnCount = supaMemoryOnCount(current) + 1;
+        } else if (current.supaMemoryOnCount !== undefined) {
+            fields.supaMemoryOnCount = current.supaMemoryOnCount;
+        }
+        replaceCharacterFields(fields);
         const { chats, chatPage } = char;
         if (Array.isArray(chats)) {
             reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);

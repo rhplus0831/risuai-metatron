@@ -108,7 +108,7 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 - Embedding cache keys must include the model identity. Voyage contextual keys also include the group hash. `testText` caches by raw text only.
 - Adding a local embedding model means updating `HypaModel`, `localModels.models`, `localModels.gpuModels`, the narrower `EmbeddingModel` union in `transformers.ts`, and the options in both settings and the playground.
 - `TaskRateLimiter` rejects `maxConcurrentTasks > tasksPerMinute`.
-- Every core-app path that turns `supaMemory` on bumps `supaMemoryOnCount` (the sidebar toggle in `Toggles.svelte`, HypaV3's `alwaysToggleOn` in `characterStore.svelte.ts`, the trim question's `memory` answer in the runner); otherwise a chat's "don't ask again" outlives the turn-on. Plugin and raw record writes are not counted.
+- Every core-app path that turns `supaMemory` on bumps `supaMemoryOnCount` (the sidebar toggle in `Toggles.svelte`, HypaV3's `alwaysToggleOn` in `characterStore.svelte.ts`, the trim question's `memory` answer in the runner, a plugin character applied over the same `chaId` in `applyPluginCharacter`); otherwise a chat's "don't ask again" outlives the turn-on. The count stays in the tab (the server only reads it, except the runner's own answer): a server-side count would double-count the tab's bumps unless every one of them moved. A plugin's copy never replaces the stored count (`applyPluginCharacter` writes the stored value, plus one on a turn-on). Other raw record writes (a plugin character with another `chaId`, a new character) are not counted.
 
 ## Recipes
 
