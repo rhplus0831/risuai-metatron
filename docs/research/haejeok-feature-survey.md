@@ -643,10 +643,10 @@ along). Effort: S / M / L.
 ## 3. Top recommendations
 
 1. **Small fixes Haejeok already found that metatron still has** (S, port as-is):
-   - **DeepLX throttle never waits** (*verified*): `src/ts/translator/translator.ts:288-294` only sets `waitTrans` when it is already in the future. H `6bac0a3a3` (PR #343) schedules `max(now, waitTrans) + 3000`.
-   - **Translated lines lose their breaks** (*verified*): `runTranslator` at `translator.ts:195-201` joins adjacent non-empty lines without `\n`, so `"a\nb"` becomes `"ab"`. This hits client Google/DeepL/DeepLX, TTS and the playground; the server's `translateProtectingLines` is correct. H `8bcb19014`, issue #322.
-   - **Unchecked greeting index**: `alternateGreetings[fmIndex]` in `DefaultChatScreen.svelte:1067-1092`, `shared/cbs/registry.ts` and `server/src/prompt/triggers.ts`. H `src/ts/firstMessageSelection.ts` (PR #58) normalizes out-of-range indexes to -1; put it in `shared/`. This also covers the "old fmIndex" leftover in memory.
-   - **Wrong blob MIME**: `getFileSrc` blob URLs default to `image/png`. H `src/ts/media/mimeType.ts` (`284764fd2`) closes the "blob URL MIME" leftover.
+   - **DeepLX throttle never waits** (*verified*; **fixed** in M `6d1b498bd`): `src/ts/translator/translator.ts:288-294` only sets `waitTrans` when it is already in the future. H `6bac0a3a3` (PR #343) schedules `max(now, waitTrans) + 3000`.
+   - **Translated lines lose their breaks** (*verified*; **fixed** in M `7d8454782`, `runTranslator` now cuts with `translateProtectingLines` and the DeepLX HTML batches drop the separator's padding newlines): `runTranslator` at `translator.ts:195-201` joins adjacent non-empty lines without `\n`, so `"a\nb"` becomes `"ab"`. This hits client Google/DeepL/DeepLX, TTS and the playground; the server's `translateProtectingLines` is correct. H `8bcb19014`, issue #322.
+   - **Unchecked greeting index** (**fixed** in M `a852016d4`: `shared/greetings.ts`, used by the chat screen, the CBS registry, `triggers.ts` and the regex `repeatBack` in `scripts.ts`; `server/src/prompt/assemble.ts`, `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` still index directly, the first two waiting for the heap-memory branch): `alternateGreetings[fmIndex]` in `DefaultChatScreen.svelte:1067-1092`, `shared/cbs/registry.ts` and `server/src/prompt/triggers.ts`. H `src/ts/firstMessageSelection.ts` (PR #58) normalizes out-of-range indexes to -1; put it in `shared/`. This also covers the "old fmIndex" leftover in memory.
+   - **Wrong blob MIME** (open): `getFileSrc` blob URLs default to `image/png`. H `src/ts/media/mimeType.ts` (`284764fd2`) closes the "blob URL MIME" leftover. Waits for the unmerged `heap-memory-reduction` branch, which also changes the `getFileSrc` blobs.
 
    These are cheap, contained and confirmed in code.
 2. **Stop a generation from another tab or device (A13).** It is a small change at
