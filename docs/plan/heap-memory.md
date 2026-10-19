@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling) landed; nothing else landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling) and A1 (one string per equal record text) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -156,6 +156,27 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   `resourceSyncFieldCache.test.ts`: after a no-op cycle, `moduleTexts.source` is the
   persisted string (identity, through a test hook); after an edit both caches still
   reuse unchanged field spans.
+
+  **Landed.** `shareSavedText` in `resourceSync.svelte.ts` rebinds the cache's `source` to
+  the held string where a projection equals it: a collection or character equal to its
+  saved text (after `canonicalCharacter` too), an in-doubt resend equal to the live text
+  (the acknowledgement saves `doubt.text`), and a quarantined text checked unchanged. The
+  live-update, hydration and merge paths already save the projection's own string. M0
+  driver after A1 (before → after):
+
+  | Step               | JS self MB    | Likely duplicate large strings (n / extra MB) |
+  | ------------------ | ------------- | --------------------------------------------- |
+  | `boot`             | 191.3 → 175.7 | 3 / 15.6 → 0                                  |
+  | `character-assets` | 242.9 → 229.8 | 2 / 13.1 → 0                                  |
+  | `chats`            | 249.1 → 236.0 | 2 / 13.1 → 0                                  |
+  | `module-assets`    | 240.4 → 237.9 | 1 / 2.4 → 0                                   |
+  | `module-edit`      | 236.1 → 233.7 | 1 / 2.4 → 0                                   |
+  | `home`             | 236.8 → 234.5 | 1 / 2.4 → 0                                   |
+
+  Proxies, FontFace and sheet counts are unchanged. The planned identity test was not
+  written: string identity is not observable from JavaScript without V8 natives syntax,
+  so the driver's duplicate count is the check; the existing cache tests cover that the
+  field-text cache still hits.
 
 ## Sequence B: records layer
 
