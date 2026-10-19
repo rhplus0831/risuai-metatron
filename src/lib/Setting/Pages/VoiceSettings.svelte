@@ -6,6 +6,8 @@
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
+    import SettingRenderer from "../SettingRenderer.svelte";
+    import { voiceSettingsItems } from "src/ts/setting/voiceSettingsData";
 
     const uid = $props.id();
 </script>
@@ -43,4 +45,5 @@
         <OptionInput value="submodel">Ax. Model</OptionInput>
         <OptionInput value="embedding">MiniLM-L6-v2</OptionInput>
     </SelectInput>
+    <SettingRenderer items={voiceSettingsItems} />
 </section>

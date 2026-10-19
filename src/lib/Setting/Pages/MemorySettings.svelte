@@ -22,6 +22,9 @@
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
     import { maxContextOverrideOf } from "../../../../shared/sections.ts";
+    import SettingRenderer from "../SettingRenderer.svelte";
+    import SettingsSections from "../SettingsSections.svelte";
+    import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
 
     const currentCharacter = $derived(selectedCharacter());
 
@@ -492,6 +495,7 @@
             name={language.enable + " " + language.HypaMemory}
         />
     </div>
+    <SettingRenderer items={memorySupaMemoryItems} />
 {/if}
 
 <span class="text-textcolor">{language.embedding} <Help key="embedding" /></span>
@@ -535,3 +539,5 @@
     <span class="text-textcolor">Voyage API Key</span>
     <TextInput size="sm" marginBottom hideText={settings.ui.hideApiKey} bind:value={settings.secrets.voyageApiKey} />
 {/if}
+
+<SettingsSections sections={memorySettingsSections} />

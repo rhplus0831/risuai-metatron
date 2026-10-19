@@ -14,6 +14,8 @@
     import AuxModelSelectors from "./Model/AuxModelSelectors.svelte";
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
     import BindingScopeNote from "../BindingScopeNote.svelte";
+    import SettingsSections from "../SettingsSections.svelte";
+    import { modelSettingsSections } from "src/ts/setting/modelSettingsData";
 
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
@@ -103,3 +105,5 @@
         </tbody>
     </table>
 </Accordion>
+
+<SettingsSections sections={modelSettingsSections} />

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
 import { displaySettingsItems, displaySettingsSections, displaySettingsTabs } from "./displaySettingsData.svelte";
+import { memorySettingsItems, memorySettingsSections, memorySupaMemoryItems } from "./memorySettingsData";
+import { modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
+import { personaSettingsItems } from "./personaSettingsData";
+import { promptSettingsItems, promptSettingsSections } from "./promptSettingsData";
 import { itemsById } from "./sections";
 import {
     translationSettingsHeader,
@@ -10,6 +14,7 @@ import {
 } from "./translationSettingsData";
 import type { SettingItem, SettingSection } from "./types";
 import { getFullSettingsData } from "./utils";
+import { voiceSettingsItems } from "./voiceSettingsData";
 
 // Settings UI plan (`docs/plan/settings-ui-reorg.md`) slice 2: a sectioned page builds its sections by
 // id from its leaf arrays, so every leaf item is placed exactly once and the catalog
@@ -21,7 +26,10 @@ interface SectionedPage {
     name: string;
     /** The leaf arrays the page renders (they stay the catalog). */
     leaves: SettingItem[][];
-    /** Items rendered above the sections (the page heading), not in any section. */
+    /**
+     * Items rendered outside any section: the page heading, or the items a handwritten page places
+     * among its own controls (slice 4).
+     */
     header: SettingItem[];
     sections: SettingSection[];
 }
@@ -46,12 +54,45 @@ const PAGES: SectionedPage[] = [
         header: [],
         sections: displaySettingsSections,
     },
+    // Slice 4: the pages that received items from Advanced. Their headings are handwritten.
+    {
+        name: "model",
+        leaves: [modelSettingsItems],
+        header: [],
+        sections: modelSettingsSections,
+    },
+    {
+        name: "prompt",
+        leaves: [promptSettingsItems],
+        header: [],
+        sections: promptSettingsSections,
+    },
+    {
+        name: "memory",
+        leaves: [memorySettingsItems],
+        header: memorySupaMemoryItems,
+        sections: memorySettingsSections,
+    },
+    {
+        name: "voice",
+        leaves: [voiceSettingsItems],
+        header: voiceSettingsItems,
+        sections: [],
+    },
+    {
+        name: "persona",
+        leaves: [personaSettingsItems],
+        header: personaSettingsItems,
+        sections: [],
+    },
 ];
 
 /** Item pairs whose second item's condition reads the first: they must share a section. */
 const DEPENDENT_PAIRS: [string, string][] = [
     ["adv.dynAssets", "adv.dynAssetsEdit"],
     ["adv.promptInfo", "adv.promptTextInfo"],
+    // Not a condition, but the minimum only means something with auto-continue on (slice 4).
+    ["adv.autoCont", "adv.autoContinueMin"],
     ["lang.translatorLang", "lang.translatorType"],
     ["lang.translatorType", "lang.deeplKey"],
     ["lang.translatorType", "lang.deeplFree"],
@@ -145,6 +186,38 @@ describe("settings page sections", () => {
         expect(displaySettingsSections.filter((section) => section.collapsible).map((section) => section.id)).toEqual([
             "display.theme.customCSS",
         ]);
+    });
+
+    it("takes Advanced apart (slice 4): only its own sections' items and the two Interaction items stay, and the local network controls left the catalog", () => {
+        const advancedIds = advancedSettingsSections.flatMap((section) => section.items.map((item) => item.id));
+        for (const moved of [
+            "adv.retries",
+            "adv.customModels",
+            "adv.addPrompt",
+            "adv.banChar",
+            "adv.lbDepth",
+            "adv.remPunc",
+            "adv.emoPrompt",
+            "adv.personaNote",
+            "display.showPromptComparison",
+        ]) {
+            expect(advancedIds, moved).not.toContain(moved);
+        }
+        expect(
+            advancedSettingsSections.find((section) => section.id === "advanced.other")!.items.map((item) => item.id),
+        ).toEqual(["adv.scrollToActive", "adv.bookmark"]);
+        const catalog = getFullSettingsData();
+        expect(
+            catalog.filter((item) => item.bindKey === "localNetworkMode" || item.bindKey === "localNetworkTimeoutSec"),
+        ).toEqual([]);
+        // The preset pages say their moved globals apply to every preset; their custom editors have no accordion of their own.
+        for (const section of [...modelSettingsSections, ...promptSettingsSections]) {
+            expect(section.collapsible, section.id).toBe(true);
+            expect(section.descriptionKey, section.id).toBeDefined();
+        }
+        for (const id of ["adv.customModels", "adv.banChar"]) {
+            expect(catalog.find((item) => item.id === id)!.componentProps, id).toEqual({ noAccordion: true });
+        }
     });
 
     it("keeps the memory limit thickness directly under the toggle its condition reads", () => {

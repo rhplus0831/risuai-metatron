@@ -23,6 +23,8 @@
     import SettingRenderer from "../SettingRenderer.svelte";
     import { allBasicParameterItems } from "src/ts/setting/botSettingsParamsData";
     import BindingScopeNote from "../BindingScopeNote.svelte";
+    import SettingsSections from "../SettingsSections.svelte";
+    import { promptSettingsSections } from "src/ts/setting/promptSettingsData";
 
     /**
      * The prompt preset's page (`docs/plan/split-preset.md`, slice 4): the selected prompt preset's
@@ -481,6 +483,8 @@
             <UploadIcon />
         </button>
     </Accordion>
+
+    <SettingsSections sections={promptSettingsSections} />
 {/if}
 
 {#if submenu === 2 || submenu === -1}

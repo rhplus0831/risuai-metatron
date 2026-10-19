@@ -18,6 +18,8 @@
     import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
     import { selectPersona, selection } from "src/ts/storage/selection.svelte";
     import BindingScopeNote from "../BindingScopeNote.svelte";
+    import SettingRenderer from "../SettingRenderer.svelte";
+    import { personaSettingsItems } from "src/ts/setting/personaSettingsData";
     import { CircleCheckIcon } from "@lucide/svelte";
     import { normalizePersonaModules } from "../../../../shared/personas.ts";
 
@@ -201,6 +203,7 @@
     <div class="flex grow flex-col p-2 max-w-full">
         <span class="text-sm text-textcolor2">{language.name}</span>
         <TextInput marginBottom size="lg" placeholder="User" bind:value={activePersona.name} />
+        <SettingRenderer items={personaSettingsItems} />
         <span class="text-sm text-textcolor2">{language.note}</span>
         {#if settings.ui.personaNote}
             <TextInput

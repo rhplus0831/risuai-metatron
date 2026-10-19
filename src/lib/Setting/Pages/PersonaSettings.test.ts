@@ -58,7 +58,11 @@ function render() {
     document.body.appendChild(target);
     mounted.push(mount(PersonaSettings, { target }));
     flushSync();
-    const largePortrait = () => target.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    // The checkbox in the large-portrait label (the persona note toggle above it is one too, slice 4).
+    const largePortrait = () =>
+        [...target.querySelectorAll("label")]
+            .find((label) => label.textContent?.includes(language.largePortrait))!
+            .querySelector<HTMLInputElement>("input[type=checkbox]")!;
     const nameInput = () => target.querySelector<HTMLInputElement>('input[placeholder="User"]')!;
     return { target, largePortrait, nameInput };
 }

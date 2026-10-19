@@ -1051,7 +1051,15 @@ describe("the registry over the views", () => {
 
     it("a model-dependent condition reads the selected model preset's main profile through ctx.modelProfile and follows a model switch, not a prompt switch", () => {
         const ctx = realCtx();
-        const timeout = getFullSettingsData().find((item) => item.bindKey === "localNetworkTimeoutSec")!;
+        // The shape of the former Advanced `adv.localNetworkTimeout` item, which left the catalog in settings
+        // UI plan slice 4 (the Connections editor edits the same profile field); no catalog item has a
+        // condition on `ctx.modelProfile` now.
+        const timeout: SettingItem = {
+            id: "test.localNetworkTimeout",
+            type: "number",
+            bindKey: "localNetworkTimeoutSec",
+            condition: (ctx) => ctx.modelProfile.localNetworkMode,
+        };
         expect(timeout.condition!(ctx)).toBe(false);
         changeToPreset("b");
         expect(timeout.condition!(ctx)).toBe(false);

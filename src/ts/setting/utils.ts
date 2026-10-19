@@ -25,6 +25,11 @@ import { chatFormatSettingsItems } from "./chatFormatSettingsData";
 import { displaySettingsItems } from "./displaySettingsData.svelte";
 import { languageSettingsItems } from "./languageSettingsData.svelte";
 import { translationSettingsItems } from "./translationSettingsData";
+import { memorySettingsItems } from "./memorySettingsData";
+import { modelSettingsItems } from "./modelSettingsData";
+import { personaSettingsItems } from "./personaSettingsData";
+import { promptSettingsItems } from "./promptSettingsData";
+import { voiceSettingsItems } from "./voiceSettingsData";
 
 /** The current language's string for a flat key (`language.xxx`), or `""` when it has none. */
 export function languageText(key: string | undefined): string {
@@ -140,6 +145,11 @@ export function getFullSettingsData(searchTerm = "") {
         displaySettingsItems,
         languageSettingsItems,
         translationSettingsItems,
+        modelSettingsItems,
+        promptSettingsItems,
+        memorySettingsItems,
+        voiceSettingsItems,
+        personaSettingsItems,
     );
 
     if (!searchTerm) return full;

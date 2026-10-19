@@ -642,6 +642,12 @@ export const languageKorean = {
     settingsSectionMedia: "미디어",
     settingsSectionSound: "소리",
     settingsSectionNotifications: "알림",
+    settingsSectionModelAdvanced: "고급 모델 동작",
+    settingsSectionModelAdvancedDesc: "위에서 고른 프리셋만이 아니라 모든 모델 프리셋에 함께 적용되는 요청 옵션입니다.",
+    settingsSectionCustomModelsDesc: "모든 모델 프리셋이 함께 씁니다.",
+    settingsSectionPromptAdvanced: "고급 프롬프트 동작",
+    settingsSectionPromptAdvancedDesc:
+        "위에서 고른 프리셋만이 아니라 모든 프롬프트 프리셋에 함께 적용되는 프롬프트 옵션입니다.",
     formatingOrder: "포맷 순서",
     authorNote: "작가의 노트",
     firstMessage: "첫 메시지",

@@ -5,98 +5,12 @@ export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
     { type: "header", id: "adv.warn", labelKey: "advancedSettingsWarn", options: { level: "warning" } },
 
-    // LoreBook Settings
-    {
-        id: "adv.lbDepth",
-        type: "number",
-        labelKey: "loreBookDepth",
-        bindKey: "loreBookDepth",
-        options: { min: 0, max: 20 },
-        classes: "mt-4 mb-2",
-    },
-    {
-        id: "adv.lbToken",
-        type: "number",
-        labelKey: "loreBookToken",
-        bindKey: "loreBookToken",
-        options: { min: 0, max: 4096 },
-    },
-    {
-        id: "adv.autoContinueMin",
-        type: "number",
-        labelKey: "autoContinueMinTokens",
-        bindKey: "autoContinueMinTokens",
-        options: { min: 0 },
-    },
-
-    // Prompts
-    {
-        id: "adv.addPrompt",
-        type: "text",
-        labelKey: "additionalPrompt",
-        bindKey: "additionalPrompt",
-        helpKey: "additionalPrompt",
-    },
-    {
-        id: "adv.descPrefix",
-        type: "text",
-        labelKey: "descriptionPrefix",
-        bindKey: "descriptionPrefix",
-    },
-    {
-        id: "adv.emoPrompt",
-        type: "text",
-        labelKey: "emotionPrompt",
-        bindKey: "emotionPrompt2",
-        helpKey: "emotionPrompt",
-        options: { placeholder: "Leave it blank to use default" },
-    },
-    {
-        id: "adv.presetChain",
-        type: "text",
-        labelKey: "presetChain",
-        bindKey: "presetChain",
-        helpKey: "presetChain",
-        options: { placeholder: "Leave it blank to not use" },
-    },
-
-    // Request Settings
-    {
-        id: "adv.retries",
-        type: "number",
-        labelKey: "requestretrys",
-        bindKey: "requestRetrys",
-        helpKey: "requestretrys",
-        options: { min: 0, max: 20 },
-    },
-    {
-        id: "adv.genTime",
-        type: "number",
-        labelKey: "genTimes",
-        bindKey: "genTime",
-        helpKey: "genTimes",
-        options: { min: 0, max: 4096 },
-    },
+    // Media
     {
         id: "adv.assetAlloc",
         type: "number",
         labelKey: "assetMaxDifference",
         bindKey: "assetMaxDifference",
-    },
-
-    // Vision Quality
-    {
-        id: "adv.visionQual",
-        type: "select",
-        fallbackLabel: "Vision Quality",
-        bindKey: "gptVisionQuality",
-        helpKey: "gptVisionQuality",
-        options: {
-            selectOptions: [
-                { value: "low", label: "Low" },
-                { value: "high", label: "High" },
-            ],
-        },
     },
 
     // Chat Loading
@@ -119,14 +33,6 @@ export const advancedSettingsItems: SettingItem[] = [
     },
 
     // Toggles
-    {
-        id: "adv.sayNothing",
-        type: "check",
-        labelKey: "sayNothing",
-        bindKey: "useSayNothing",
-        helpKey: "sayNothing",
-        classes: "mt-4",
-    },
     {
         id: "adv.showUnrec",
         type: "check",
@@ -168,47 +74,6 @@ export const advancedSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
     {
-        id: "adv.autoFill",
-        type: "check",
-        labelKey: "autoFillRequestURL",
-        bindKey: "autofillRequestUrl",
-        helpKey: "autoFillRequestURL",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.localNetworkMode",
-        type: "check",
-        fallbackLabel: "Local Network Mode (Experimental)",
-        bindKey: "localNetworkMode",
-        helpKey: "localNetworkModeDesc",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.localNetworkTimeout",
-        type: "number",
-        fallbackLabel: "Local Network Timeout (sec)",
-        bindKey: "localNetworkTimeoutSec",
-        condition: (ctx) => ctx.modelProfile.localNetworkMode,
-        classes: "block mb-1",
-        containerClasses: "pl-7",
-        options: { min: 30, max: 3600, inputClassName: "w-full", marginBottom: false },
-    },
-    {
-        id: "adv.autoCont",
-        type: "check",
-        labelKey: "autoContinueChat",
-        bindKey: "autoContinueChat",
-        helpKey: "autoContinueChat",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.remIncomp",
-        type: "check",
-        labelKey: "removeIncompleteResponse",
-        bindKey: "removeIncompleteResponse",
-        classes: "mt-4",
-    },
-    {
         id: "adv.streamingDisplayOpt",
         type: "segmented",
         labelKey: "streamingDisplayOptimizationMode",
@@ -225,7 +90,6 @@ export const advancedSettingsItems: SettingItem[] = [
             ],
         },
     },
-    { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle", classes: "mt-4" },
     {
         id: "adv.newImgBeta",
         type: "check",
@@ -238,13 +102,6 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "check",
         fallbackLabel: "Allow all in file select",
         bindKey: "allowAllExtentionFiles",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.dynamicModelRegistry",
-        type: "check",
-        labelKey: "dynamicModelRegistry",
-        bindKey: "dynamicModelRegistry",
         classes: "mt-4",
     },
     {
@@ -285,27 +142,7 @@ export const advancedSettingsItems: SettingItem[] = [
         showExperimental: true,
         classes: "mt-4",
     },
-    // Unrecommended Section
-    {
-        id: "adv.cot",
-        type: "check",
-        labelKey: "cot",
-        bindKey: "chainOfThought",
-        condition: (ctx) => ctx.settings.ui.showUnrecommended,
-        helpKey: "customChainOfThought",
-        helpUnrecommended: true,
-        classes: "mt-4",
-    },
-
     // More Toggles
-    {
-        id: "adv.remPunc",
-        type: "check",
-        labelKey: "removePunctuationHypa",
-        bindKey: "removePunctuationHypa",
-        helpKey: "removePunctuationHypa",
-        classes: "mt-4",
-    },
     { id: "adv.devTools", type: "check", labelKey: "enableDevTools", bindKey: "enableDevTools", classes: "mt-4" },
     {
         id: "adv.scrollToActive",
@@ -344,45 +181,6 @@ export const advancedSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
     { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError", classes: "mt-4" },
-    {
-        id: "adv.antiOverload",
-        type: "check",
-        labelKey: "antiServerOverload",
-        bindKey: "antiServerOverloads",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.openAIFlex",
-        type: "check",
-        labelKey: "openAIFlexProcessing",
-        bindKey: "openAIFlexProcessing",
-        helpKey: "openAIFlexProcessing",
-        showExperimental: true,
-        classes: "mt-4",
-    },
-    {
-        id: "adv.claudeCache",
-        type: "check",
-        labelKey: "claude1HourCaching",
-        bindKey: "claude1HourCaching",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.claudeBatch",
-        type: "check",
-        labelKey: "claudeBatching",
-        bindKey: "claudeBatching",
-        showExperimental: true,
-        classes: "mt-4",
-    },
-    {
-        id: "adv.personaNote",
-        type: "check",
-        labelKey: "personaNote",
-        bindKey: "personaNote",
-        showExperimental: true,
-        classes: "mt-4",
-    },
     {
         id: "adv.toolUsage",
         type: "check",
@@ -449,17 +247,6 @@ export const advancedSettingsItems: SettingItem[] = [
         keywords: ["legacy", "gui"],
     },
 
-    // Custom Components
-    { type: "custom", id: "adv.banChar", componentId: "BanCharacterSetSettings" },
-    { type: "custom", id: "adv.customModels", componentId: "CustomModelsSettings" },
-    // From Display (settings UI plan slice 7); slice 4 moves it to the Prompt page
-    {
-        id: "display.showPromptComparison",
-        type: "check",
-        labelKey: "showPromptComparison",
-        bindKey: "showPromptComparison",
-        keywords: ["prompt", "comparison"],
-    },
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },
 
     // Diagnostics (docs/plan/request-history-diagnostics.md slice 9); the "Developer & diagnostics"
@@ -496,6 +283,7 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.allowExt",
             "adv.dynAssets",
             "adv.dynAssetsEdit",
+            "adv.newImgBeta",
             "adv.tokCache",
         ]),
     },
@@ -509,44 +297,12 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.requestHistoryLimit",
         ]),
     },
-    // Temporary: the items the plan's move table sends to other pages, in their old order, and
-    // `adv.localNetworkMode`/`adv.localNetworkTimeout`, which leave the UI. Slice 4 removes this section.
+    // Temporary: the two items the plan's move table sends to the Interaction page, which slice 5
+    // creates (and then removes this section); slice 4 moved the rest to their pages.
     {
         id: "advanced.other",
         labelKey: "settingsSectionOtherSettings",
-        items: itemsById(advancedSettingsItems, [
-            "adv.lbDepth",
-            "adv.lbToken",
-            "adv.autoContinueMin",
-            "adv.addPrompt",
-            "adv.descPrefix",
-            "adv.emoPrompt",
-            "adv.presetChain",
-            "adv.retries",
-            "adv.genTime",
-            "adv.visionQual",
-            "adv.sayNothing",
-            "adv.autoFill",
-            "adv.localNetworkMode",
-            "adv.localNetworkTimeout",
-            "adv.autoCont",
-            "adv.remIncomp",
-            "adv.newOai",
-            "adv.newImgBeta",
-            "adv.dynamicModelRegistry",
-            "adv.cot",
-            "adv.remPunc",
-            "adv.scrollToActive",
-            "adv.antiOverload",
-            "adv.openAIFlex",
-            "adv.claudeCache",
-            "adv.claudeBatch",
-            "adv.personaNote",
-            "adv.bookmark",
-            "adv.banChar",
-            "adv.customModels",
-            "display.showPromptComparison",
-        ]),
+        items: itemsById(advancedSettingsItems, ["adv.scrollToActive", "adv.bookmark"]),
     },
     {
         id: "advanced.developer",
