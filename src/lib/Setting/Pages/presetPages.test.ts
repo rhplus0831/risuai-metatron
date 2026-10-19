@@ -34,7 +34,7 @@ vi.mock("src/ts/process/prompt", () => ({ tokenizePreset: vi.fn(async () => 0) }
 import { get } from "svelte/store";
 import { language } from "src/lang";
 import { alertConfirm } from "src/ts/alert";
-import { translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
+import { deleteModelProfile, translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
@@ -167,6 +167,32 @@ describe("the Connections tab", () => {
         // The main slot's profile keeps its own value.
         expect(activeMainProfile.maxContext).toBe(9000);
         expect(settings.modelPresets[0]).not.toHaveProperty("maxContext");
+    });
+
+    // Open bug fixes plan slice C8: a tab switch remounts the page (`Settings.svelte` keys it by the menu
+    // index); the selected connection survives the remount.
+    it("keeps the selected connection when the tab is left and opened again", () => {
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+        unmount(mounted.pop()!);
+        page.remove();
+        flushSync();
+
+        const again = render(ModelProfilesSettings);
+        expect(again.querySelector("[data-profile-id=spare]")?.getAttribute("aria-pressed")).toBe("true");
+        expect(again.querySelector("[data-profile-id=echo]")?.getAttribute("aria-pressed")).toBe("false");
+        expect(again.querySelector<HTMLInputElement>("#model-profile-name")?.value).toBe("Spare");
+        // The selection is editor state only: no slot changed.
+        expect(settings.modelPresets[0].mainSlot).toEqual({ profileId: "echo" });
+
+        // A removed connection falls back to the first one.
+        unmount(mounted.pop()!);
+        again.remove();
+        expect(deleteModelProfile("spare")).toBe(true);
+        flushSync();
+        const after = render(ModelProfilesSettings);
+        expect(after.querySelector("[data-profile-id=echo]")?.getAttribute("aria-pressed")).toBe("true");
     });
 
     // Translation slice 3.1: a translator step may name a profile; deleting the profile lists them.

@@ -72,8 +72,14 @@ export function takeCredentialRequest(credential: SharedCredential): boolean {
     return true;
 }
 
-/** Scroll the owner's field (its `data-credential` wrapper) into view once it rendered. */
+/**
+ * Scroll the owner's field (its `data-credential` wrapper) into view once it rendered, and move the focus
+ * into its input, so the link leaves the keyboard on the field it opened (not on the link, now unmounted).
+ */
 export async function scrollToCredential(credential: SharedCredential): Promise<void> {
     await tick();
-    document.querySelector(`[data-credential="${credential}"]`)?.scrollIntoView({ block: "center" });
+    const field = document.querySelector<HTMLElement>(`[data-credential="${credential}"]`);
+    if (!field) return;
+    field.scrollIntoView({ block: "center" });
+    field.querySelector<HTMLElement>("input, textarea, select")?.focus({ preventScroll: true });
 }

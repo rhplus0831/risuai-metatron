@@ -4,6 +4,7 @@
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import { language } from "src/lang";
+    import { untrack } from "svelte";
 
     interface Props {
         item: SettingItem;
@@ -22,25 +23,36 @@
             })),
     );
 
-    // Reset value if current selection becomes hidden due to condition changes
+    // The visible option values as one string: a rebuilt context (a fresh model info after a switch)
+    // that shows the same options leaves it equal, so the reset below does not run again.
+    let visibleValues = $derived(JSON.stringify(processedOptions.map((o) => o.value)));
+
+    // Reset value if current selection becomes hidden. Only the visible values are tracked; the value is
+    // read untracked, as in `SettingSelect`, so this runs when the visible options change, never on a
+    // switch of the selected preset alone (a preset holding a hidden option keeps its value).
     $effect(() => {
-        const currentVal = getSettingValue(item, ctx);
-        if (
-            processedOptions.length > 0 &&
-            currentVal !== undefined &&
-            !processedOptions.some((o) => o.value === currentVal)
-        ) {
-            const numericOptions = processedOptions.filter(
-                (o): o is { value: number; label: string } => typeof o.value === "number",
-            );
-            const fallback =
-                typeof currentVal === "number" && numericOptions.length > 0
-                    ? numericOptions.reduce((closest, option) =>
-                          Math.abs(option.value - currentVal) < Math.abs(closest.value - currentVal) ? option : closest,
-                      ).value
-                    : processedOptions[processedOptions.length - 1].value;
-            setSettingValue(item, fallback, ctx);
-        }
+        void visibleValues;
+        untrack(() => {
+            const currentVal = getSettingValue(item, ctx);
+            if (
+                processedOptions.length > 0 &&
+                currentVal !== undefined &&
+                !processedOptions.some((o) => o.value === currentVal)
+            ) {
+                const numericOptions = processedOptions.filter(
+                    (o): o is { value: number; label: string } => typeof o.value === "number",
+                );
+                const fallback =
+                    typeof currentVal === "number" && numericOptions.length > 0
+                        ? numericOptions.reduce((closest, option) =>
+                              Math.abs(option.value - currentVal) < Math.abs(closest.value - currentVal)
+                                  ? option
+                                  : closest,
+                          ).value
+                        : processedOptions[processedOptions.length - 1].value;
+                setSettingValue(item, fallback, ctx);
+            }
+        });
     });
 </script>
 

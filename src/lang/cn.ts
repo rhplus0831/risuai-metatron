@@ -95,7 +95,7 @@ export const languageChinese = {
         sayNothing: "激活后，如果用户没有输入聊天内容，系统会自动填入 ’say nothing‘。",
         showUnrecommended: "激活后，将显示不建议使用的过时设置。不建议使用这些设置。",
         streamingDisplayOptimizationMode:
-            "在使用正则脚本等大量后处理时，减少长回复流式生成造成的界面卡顿。对移动设备或低端设备可能有帮助。\n\n关闭会保留普通行为，但每个 Token 都会触发后处理，可能带来明显开销。\n\n均衡会只按较短间隔（约 0.125 秒）尝试后处理来降低负载。\n\n强与均衡类似，但流式生成期间会跳过后处理，只在流式完成后尝试一次后处理，从而大幅降低负载。\n\n这是一项实验性功能，可能会导致部分功能出现非预期行为。",
+            "更改流式生成期间回复的显示方式。无论哪种模式，流式中的消息每帧最多重绘一次，而不是每个 Token 一次；显示脚本（正则、Lua）只在流式完成后对其执行一次。\n\n关闭会在每次重绘时像其他消息一样渲染流式文本（Markdown 等）。\n\n均衡的渲染方式与关闭相同，并在流式完成前隐藏该消息的编辑和翻译按钮。\n\n强会直接显示未经渲染的原始流式文本，流式完成后再正常渲染该消息。它最能降低负载，对移动设备或低端设备可能有帮助。\n\n这是一项实验性功能，可能会导致部分功能出现非预期行为。",
         imageCompression: "激活后，在导出角色时会压缩略图片。如果动画图片无法显示，请尝试关闭此选项。",
         useExperimental: "激活后，将显示部分实验性功能。",
         forcePlainFetch: "激活后，将使用浏览器的 Fetch API 来替代原生 HTTP 请求。这可能会导致 CORS 错误。",
@@ -802,6 +802,7 @@ export const languageChinese = {
     import: "导入",
     supporterThanks: "支持者感谢",
     supporterThanksDesc: "感谢您的支持！",
+    supporterListLoadFailed: "无法加载支持者列表。请检查网络连接后重新打开此页面。",
     donatorPatreonDesc: "为保护隐私，默认不会显示在名单中。若想显示您的昵称，请前往叡苏的 Patreon 页面并点击链接按钮。",
     useNamePrefix: "使用名称前缀",
     textAdventureNAI: "以文字冒险形式运行",

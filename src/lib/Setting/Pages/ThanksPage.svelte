@@ -17,6 +17,7 @@
 
     async function loadSupporters() {
         const supp = await fetch("https://sv.risuai.xyz/patreon/list");
+        if (!supp.ok) throw new Error(`supporter list: HTTP ${supp.status}`);
 
         const list = (await supp.json()) as supporterL[];
         const thanks: supporters = {
@@ -116,6 +117,8 @@
             </div>
         {/each}
     </div>
+{:catch}
+    <span class="text-textcolor2">{language.supporterListLoadFailed}</span>
 {/await}
 
 <style>

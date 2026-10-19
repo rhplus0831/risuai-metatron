@@ -124,10 +124,10 @@ export const languageChineseTraditional = {
         sayNothing: "啟用後，若沒有輸入任何文字，會自動輸入「say nothing」",
         showUnrecommended: "啟用後會顯示不建議使用或已棄用的設定。**不建議使用這些設定**",
         streamingDisplayOptimizationMode:
-            "在長篇串流回應搭配大量後處理（例如 Regex 腳本）時，降低畫面顯示延遲。對行動裝置或低階裝置尤其有幫助。\n\n" +
-            "關閉時維持一般行為，但每收到一個 Token 都會執行後處理，可能造成明顯負擔。\n\n" +
-            "平衡模式會降低負載，只在短時間間隔（約每 0.125 秒）嘗試執行後處理。\n\n" +
-            "強力模式與平衡模式類似，但串流期間完全略過後處理，等串流結束後再執行一次。\n\n" +
+            "變更串流回應期間的顯示方式。無論哪種模式，串流中的訊息每一幀最多重繪一次，而不是每個 Token 一次；顯示腳本（Regex、Lua）只在串流結束後對其執行一次。\n\n" +
+            "關閉時會在每次重繪時像其他訊息一樣渲染串流文字（Markdown 等）。\n\n" +
+            "平衡模式的渲染方式與關閉相同，並在串流結束前隱藏該訊息的編輯與翻譯按鈕。\n\n" +
+            "強力模式直接顯示未經渲染的原始串流文字，等串流結束後再正常渲染該訊息。它最能降低負載，對行動裝置或低階裝置尤其有幫助。\n\n" +
             "此為實驗性功能，部分功能可能因此出現非預期行為",
         imageCompression: "啟用後，匯出角色時會壓縮圖片。若動態圖片無法正常運作，請嘗試停用",
         useExperimental: "啟用後會顯示部分實驗性功能",
@@ -895,6 +895,7 @@ export const languageChineseTraditional = {
     import: "匯入",
     supporterThanks: "感謝贊助者",
     supporterThanksDesc: "感謝您的支持！",
+    supporterListLoadFailed: "無法載入贊助者列表。請檢查網路連線後重新開啟此頁面。",
     donatorPatreonDesc:
         "基於隱私考量，預設不會顯示於清單中。若希望顯示您的暱稱，請前往 Risuai 的 Patreon 頁面並按下連結按鈕",
     useNamePrefix: "使用名稱前綴",

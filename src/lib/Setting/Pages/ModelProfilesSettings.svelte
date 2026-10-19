@@ -1,3 +1,9 @@
+<script module lang="ts">
+    // The editor selection outlives the page: switching the Model menu's tabs remounts it
+    // (`Settings.svelte` keys the page by the menu index), and a return keeps the connection.
+    let selectedId = $state("");
+</script>
+
 <script lang="ts">
     import { language } from "src/lang";
     import { alertConfirm } from "src/ts/alert";
@@ -16,8 +22,8 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
 
-    // Page-local editor selection does not change any preset's slot choices.
-    let selectedId = $state("");
+    // The editor selection does not change any preset's slot choices; a removed profile falls back
+    // to the first.
     const profiles = $derived(settings.modelProfiles ?? []);
     const selected = $derived(profiles.find((profile) => profile.id === selectedId) ?? profiles[0]);
 

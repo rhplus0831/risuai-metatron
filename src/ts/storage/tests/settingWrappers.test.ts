@@ -56,6 +56,8 @@ import { activeMainProfile, activeModelPreset, activePersona, activePreset, sett
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
 import { interactionSettingsItems } from "../../setting/interactionSettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
+import { modelSpecificParameterItems } from "../../setting/botSettingsParamsData";
+import { LLMFlags } from "../../model/types";
 
 type Mounted = ReturnType<typeof mount>;
 
@@ -468,6 +470,40 @@ describe("SettingSegmented", () => {
         expect(profile("pa").instructChatTemplate).toBe("vicuna");
         expect(profile("pb").instructChatTemplate).toBe("alpaca");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
+    });
+
+    // Open bug fixes plan slice C8: a switch to a preset holding a hidden option leaves its value. The
+    // model info is rebuilt on every switch, as `SettingRenderer`'s context is when a chat's prompt
+    // binding changes: equal visible options do not run the reset again.
+    it("leaves a hidden value in a newly selected preset, also when the switch rebuilds equal options", () => {
+        const thinking = modelSpecificParameterItems.find((entry) => entry.id === "params.thinkingType")!;
+        preset("a").thinkingType = "adaptive";
+        preset("b").thinkingType = "budget";
+        const context = ctx();
+        let rebuilt = 0;
+        Object.defineProperty(context, "modelInfo", {
+            get: () => {
+                void activePreset.name;
+                rebuilt += 1;
+                return { flags: [LLMFlags.claudeAdaptiveThinking], parameters: [] };
+            },
+        });
+        const { target } = render(SettingSegmented, { item: thinking, ctx: context });
+        expect(active(target)).toBe("Adaptive");
+        expect(segment(target, "Budget (Manual Tokens)")).toBeUndefined();
+        const before = rebuilt;
+
+        changeToPreset("b");
+        flushSync();
+        expect(rebuilt).toBeGreaterThan(before);
+        expect(preset("b").thinkingType).toBe("budget");
+        expect(preset("a").thinkingType).toBe("adaptive");
+        expect(active(target)).toBeUndefined();
+
+        changeToPreset("a");
+        flushSync();
+        expect(active(target)).toBe("Adaptive");
+        expect(preset("b").thinkingType).toBe("budget");
     });
 
     // `docs/plan/chat-binding.md`, slice 6: the new-chat binding choice shows anything but `empty` as

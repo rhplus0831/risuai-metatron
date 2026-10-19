@@ -142,10 +142,10 @@ export const languageEnglish = {
         showUnrecommended:
             "If enabled, it will show unrecommended, deprecated settings. It is NOT RECOMMENDED to use these settings.",
         streamingDisplayOptimizationMode:
-            "Reduces display lag when long responses are streamed with heavy post-processing, such as regex-based scripts. This can help on mobile or low-end devices.\n\n" +
-            "Off keeps the normal behavior, but post-processing runs on every token and can add significant overhead.\n\n" +
-            "Balanced lowers the load by trying post-processing only at short intervals, about every 0.125 seconds.\n\n" +
-            "Strong is similar to Balanced, but skips post-processing while streaming and runs it only once after the stream finishes.\n\n" +
+            "Changes how a response is shown while it streams. In every mode the streaming message is redrawn at most once per frame, not once per token, and display scripts (regex and Lua) run on it once, after the stream finishes.\n\n" +
+            "Off renders the streaming text on each redraw like any other message (markdown and so on).\n\n" +
+            "Balanced renders it the same way as Off, and hides its edit and translation buttons until the stream finishes.\n\n" +
+            "Strong shows the streaming text raw, without rendering it, then renders the message normally once the stream finishes. It lowers the load the most and can help on mobile or low-end devices.\n\n" +
             "This is an experimental feature, and some features may behave unexpectedly because of it.",
         imageCompression:
             "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
@@ -1178,6 +1178,7 @@ export const languageEnglish = {
     import: "Import",
     supporterThanks: "Supporter Thanks",
     supporterThanksDesc: "Thank you for your support!",
+    supporterListLoadFailed: "The supporter list could not be loaded. Check your connection and open this page again.",
     donatorPatreonDesc:
         "For default, it will not be shown in the list for privacy. If you want to show your nickname, go to Risuai's patreon page and press the link button.",
     useNamePrefix: "Use Name Prefix",
