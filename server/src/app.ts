@@ -69,7 +69,7 @@ import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool } from "./scripts/workerPool.ts";
-import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import type { AppEnv } from "./types.ts";
 
@@ -450,8 +450,8 @@ export function createServerContext(options: {
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
-    // request history share's, and the Realm import's routes (prepare, commit, cancel) cap their
-    // bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB).
+    // request history share's, the Realm import's routes (prepare, commit, cancel), and the boot read's
+    // cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -465,6 +465,7 @@ export function createServerContext(options: {
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
+            (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
             (c.req.method === "PUT" && route === REQUEST_HISTORY_SHARE_PATH);
         return ownLimit ? next() : limitBody(c, next);

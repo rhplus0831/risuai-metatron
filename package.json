@@ -101,6 +101,7 @@
     "@types/wicg-file-system-access": "^2020.9.8",
     "@types/ws": "^8.18.1",
     "autoprefixer": "^10.6.1",
+    "fake-indexeddb": "^6.2.6",
     "fast-check": "^4.10.2",
     "happy-dom": "^20.14.5",
     "internal-ip": "^7.0.0",

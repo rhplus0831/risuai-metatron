@@ -1,5 +1,6 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { bodyLimit } from "hono/body-limit";
+import { MAX_BOOT_BODY_BYTES, RESOURCE_BOOT_PATH, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
     isValidResourceId,
@@ -13,8 +14,10 @@ import {
 } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
+import { compressedJson } from "../http/compressedJson.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { parseBootRequest, readBoot } from "./resourceBoot.ts";
 
 /** Most operations one batch or one read may name. */
 export const MAX_BATCH_OPERATIONS = 5000;
@@ -106,7 +109,7 @@ export function registerResourceRoutes(
                 }));
             }
         }
-        return c.json(read);
+        return compressedJson(c, read);
     });
 
     app.post("/api/resources/read", limiter, async (c) => {
@@ -157,10 +160,49 @@ export function registerResourceRoutes(
         }
         try {
             const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
-            return c.json({
+            return compressedJson(c, {
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),
             });
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    // The boot read that skips what the client holds (`resourceBoot.ts`). Its body has its own cap,
+    // so the app's 100 MiB limit is not applied to it (`app.ts`).
+    const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        await next();
+    };
+    const limitBootBody = bodyLimit({
+        maxSize: MAX_BOOT_BODY_BYTES,
+        onError: (c) => c.json({ error: "Request body too large" }, 413),
+    });
+    app.post(RESOURCE_BOOT_PATH, limiter, authenticated, limitBootBody, async (c) => {
+        let text: string;
+        try {
+            text = await c.req.text();
+        } catch {
+            return c.json({ error: "Invalid JSON body" }, 400);
+        }
+        // The limiter trusts a declared length; measure the cached text before parsing it.
+        if (Buffer.byteLength(text, "utf8") > MAX_BOOT_BODY_BYTES) {
+            return c.json({ error: "Request body too large" }, 413);
+        }
+        const parsed = await readJsonBody(c);
+        if (!parsed.ok) {
+            return parsed.response;
+        }
+        const request = parseBootRequest(parsed.body, kinds);
+        if (typeof request === "string") {
+            return c.json({ error: request }, 400);
+        }
+        try {
+            return compressedJson(c, readBoot(store, request, project));
         } catch (error) {
             return storeErrorResponse(c, error);
         }
@@ -239,7 +281,7 @@ export function registerResourceRoutes(
         if (!kind) {
             return c.json({ error: "Unknown resource kind" }, 404);
         }
-        return c.json({
+        return compressedJson(c, {
             epoch: store.epoch(),
             items: store.list(kind).map((record) => ({ ...record, data: project(kind, record.data) })),
         });
@@ -267,7 +309,11 @@ export function registerResourceRoutes(
         if (!resource) {
             return c.json({ error: "Resource not found", epoch: store.epoch() }, 404);
         }
-        return c.json({ epoch: store.epoch(), revision: resource.revision, data: project(kind, resource.data) });
+        return compressedJson(c, {
+            epoch: store.epoch(),
+            revision: resource.revision,
+            data: project(kind, resource.data),
+        });
     });
 
     app.put("/api/resources/:kind/:id", limiter, async (c) => {

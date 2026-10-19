@@ -67,10 +67,10 @@ export type ResourceKindRegistry = ReadonlyMap<string, ResourceKind>;
 
 const kindNameRegex = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 /**
- * Path segments the resource routes use themselves (`/api/resources/batch`, `/api/resources/read`),
- * and the `kind` values of chat and chat-order entries in a batch conflict.
+ * Path segments the resource routes use themselves (`/api/resources/batch`, `/api/resources/read`,
+ * `/api/resources/boot`), and the `kind` values of chat and chat-order entries in a batch conflict.
  */
-const reservedKindNames = new Set(["batch", "read", "chat", "chatOrder"]);
+const reservedKindNames = new Set(["batch", "read", "boot", "chat", "chatOrder"]);
 
 /** Builds the kind lookup for the resource routes. Rejects invalid, reserved, and duplicate names. */
 export function createKindRegistry(kinds: readonly ResourceKind[]): ResourceKindRegistry {
