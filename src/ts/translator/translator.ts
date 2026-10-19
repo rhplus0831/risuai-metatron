@@ -287,10 +287,12 @@ async function translateMain(
     }
     if (settings.memoryTranslateMedia.translatorType === "deeplX") {
         if (!settings.memoryTranslateMedia.noWaitForTranslate) {
-            if (waitTrans - Date.now() > 0) {
-                const waitTime = waitTrans - Date.now();
-                waitTrans = Date.now() + 3000;
-                await sleep(waitTime);
+            // Each request takes the next free slot, 3 s after the one before it.
+            const now = Date.now();
+            const slot = Math.max(now, waitTrans);
+            waitTrans = slot + 3000;
+            if (slot > now) {
+                await sleep(slot - now);
             }
         }
 

@@ -38,7 +38,8 @@ vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModuleRegex
 vi.mock("src/ts/model/modellist", () => ({ getModelInfoForMode: () => ({ id: "gpt-test" }) }));
 vi.mock("src/ts/util", () => ({
     getNodetextToSentence: (node: Node) => node.textContent,
-    sleep: async () => undefined,
+    // On the timers, so the DeepLX spacing runs on the fake clock.
+    sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 }));
 
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -399,5 +400,48 @@ describe("translate memory cache ownership", () => {
         expect(calls()).toBe(2);
         await expect(translate("retry-source", false)).resolves.toBe("KO:retry-source");
         expect(calls()).toBe(2);
+    });
+});
+
+describe("DeepLX request spacing", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("gives each request the next free slot, 3 s after the one before it, and none to a request after a quiet spell", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+        vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+        media.noWaitForTranslate = false;
+        const start = Date.now();
+        const sentAt: number[] = [];
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => {
+            sentAt.push(Date.now() - start);
+            return reply(url, init);
+        });
+
+        const work = Promise.all(["one", "two", "three"].map((text) => runTranslator(text, false, "ko", "en")));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentAt).toEqual([0]);
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(sentAt).toEqual([0]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(sentAt).toEqual([0, 3000]);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sentAt).toEqual([0, 3000, 6000]);
+        await expect(work).resolves.toEqual(["KO:one", "KO:two", "KO:three"]);
+
+        // The last slot ended at 9000; a request after it goes out at once.
+        await vi.advanceTimersByTimeAsync(10_000);
+        const late = runTranslator("four", false, "ko", "en");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentAt).toEqual([0, 3000, 6000, 16_000]);
+        await expect(late).resolves.toBe("KO:four");
+    });
+
+    it("sends at once when Don't Wait for Translation is on", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => reply(url, init));
+        const work = Promise.all(["one", "two"].map((text) => runTranslator(text, false, "ko", "en")));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+        await expect(work).resolves.toEqual(["KO:one", "KO:two"]);
     });
 });
