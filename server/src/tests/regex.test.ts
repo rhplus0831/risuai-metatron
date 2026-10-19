@@ -118,6 +118,22 @@ describe("the script loop", () => {
         ).toBe("\nbody\n$<n> <note>keep</note>");
         expect(run("body", [script({ in: "<x>", out: "@@move_top", ableFlag: true, flag: "g" })]).data).toBe("body");
     });
+
+    it("parses a moved result through the run's parse, like the other replacements (crosscheck row 11)", () => {
+        const parse = (text: string) => text.replaceAll("{{user}}", "Uma");
+        expect(
+            run("<note>hi</note> body", [script({ in: "<note>(.*?)</note>", out: "@@move_top {{user}}: $1" })], {
+                parse,
+            }).data,
+        ).toBe("Uma: hi\n body");
+        expect(
+            run(
+                "<note>hi</note> body",
+                [script({ in: "<note>(.*?)</note>", out: "{{user}}: $1", ableFlag: true, flag: "g<move_bottom>" })],
+                { parse },
+            ).data,
+        ).toBe(" body\nUma: hi");
+    });
 });
 
 describe("the effects", () => {
