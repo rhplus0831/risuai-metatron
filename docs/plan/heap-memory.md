@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists) and C1 (fonts after a chat: no holder, per-row copies found) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found) and D1 (record wrapper nodes and root lists after deletes) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -378,6 +378,68 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   `DetachedWrapperError` as today.
   _Test_: `records.test.ts` (a deleted character's node is gone from `idChildren`; a
   retained old wrapper throws).
+
+  **Landed.** Measured first (the driver's new steps: three times a ~2 MB character created
+  and deleted through the routes with its settings opened, then a character and a module
+  loaded at boot deleted the same way). Three records-owned holders were found:
+  - a deleted character's node in the character list's `idChildren`;
+  - Svelte's original array of a root list: a proxy never writes it, so a removed element
+    loaded at boot stays in it;
+  - the cached nodes under a record replaced from the server, which kept their old targets
+    until their next read (+13.9 MB after the server deleted one module: all the old
+    modules).
+
+  `records.svelte.ts` now does the following (contract in `persistence.md`):
+  - It drops a character's node when the character leaves the list (`forgetCharacterNodes`
+    at the four membership paths; the per-character meta stays).
+  - It prunes index children at or past a shrunk list's length (`pruneIndexTail`).
+  - It points the cached root at new data at once (`refreshRoot`).
+  - After a removal it rewrites the root list's original array with the live elements once
+    the pending flush ran (`trimRootList`). The `$state` list stays the same object: a first
+    version that stored a new list left an un-rerun `$derived` holding the old list's
+    sources, and so the deleted character.
+  - After a raw change it releases the cached nodes' targets (`unpinBelow`), but not during
+    a mutator or for an object displaced in the task.
+
+  The driver, pre-fix build → D1 build (JS self size in MiB, as the driver prints it; bounds
+  declared before the fix was measured):
+
+  | Step                                  | Pre-fix                       | D1                             |
+  | ------------------------------------- | ----------------------------- | ------------------------------ |
+  | `character-recreate` − `home`         | +8.7 MB (fails ≤ 2 MiB)       | +0.6 MB                        |
+  | booted character deleted              | grew (with the module delete) | −6.1 MB (passes ≥ 2 MiB freed) |
+  | proxies `home` → `character-recreate` | 1,157 → 2,155                 | 1,157 → 1,174                  |
+
+  After the fix, no string of a deleted character is reachable (retainer analysis, WeakMap
+  table halves excluded). Tests: `src/ts/storage/tests/recordNodePruning.svelte.test.ts`
+  (24: the four membership paths' detach and re-add, stamps through retained nested
+  wrappers, survivor identity, direct `length` shrinks, the review's mutator, displacement
+  and teardown reproductions, raw regrowth both orders), not `records.test.ts`.
+
+  **D3 candidate (not sliced).** The deleted module's assets are still reachable after the
+  server's copy of the modules, through Svelte only:
+  - A `Batch` (`batch.js` `previous`) holds the previous value of `parserAssetInputs`
+    (`parser.svelte.ts` ~540, every enabled module's asset tuples).
+  - An `{#await}` block keeps that batch alive: it captures `current_batch` in its closures
+    (`await.js` ~55).
+  - Result: `boot-module-delete` is +17.2 MB over the step before it (the server's new
+    copy plus the old assets). The driver measures this step but does not check it.
+  - A fix would keep big values out of that `$derived` (e.g. stamps instead of the lists),
+    or wait for Svelte to release a committed batch's `previous`.
+
+  Leftovers:
+  - A throwing mutator's shrink stays until the next shrink or replacement.
+  - A local field replacement keeps its old value in its cached node until that node's next
+    read.
+  - The other by-id lists keep removed elements' nodes.
+  - Nested containers keep their original Svelte targets, and so does a root list after an
+    element is replaced in place (a same-id character copy). Both are bounded by the data
+    installed.
+  - A `length` set through `defineProperty` is not pruned.
+  - The module step waits a fixed 2 s.
+  - The M0-3 tokenizer alert is now avoided by the driver (back to the "Chat" tab before a
+    delete).
+  - Per-character metas of deleted ids stay (small, unbounded).
 
 - **D2. Pinned file sources** (_hard_, `global-api.md`). `getFileSrc` (~134) pins every
   source. Without the service worker that is a never-revoked image Blob URL. The

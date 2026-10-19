@@ -19,14 +19,21 @@
 // 6. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
 //    its second, and the save;
 // 7. `module-edit`: after typing into that module's description and its save;
-// 8. `home`: back on the home screen (the sidebar's Home button).
+// 8. `home`: back on the home screen (the sidebar's Home button);
+// 9. `character-recreate`: after three times a new ~2 MB character from the server, its settings'
+//    asset lists opened, and its deletion by the server (compare with `home`);
+// 10. `boot-character-delete`: after the server deleted the second big character, loaded at boot (its
+//    settings opened first; compare with `character-recreate`);
+// 11. `boot-module-delete`: after the server deleted the last module, loaded at boot.
 // Each snapshot is analysed by `util/heap/analyze.mjs report` in its own process and printed as one
 // table row: JS self size, `JSProxy` count, proxies of asset tuples, proxies retaining 256 KB or
 // more (count, and the outermost ones' retained size), likely duplicated large strings (same size and first 1,024 characters:
 // a snapshot keeps no more of a string), `FontFace`/`CSSStyleSheet`. The numbers are measurements: compare
 // them with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks are that the seed
 // was stored, the asset and description edits reached the server, the chat styles' faces are counted
-// on the chat screen and back to the boot count after it, and no page error or unexpected egress.
+// on the chat screen and back to the boot count after it, the deleted characters leave nothing
+// (`character-recreate` within 2 MiB of `home`), the booted big character deleted frees at least 2 MiB, and no
+// page error or unexpected egress.
 //
 // Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default they
 // go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default 16000),
@@ -51,6 +58,7 @@ const CC_ASSETS = 24;
 const FONT_FACES = 120;
 // A chat's three styled replies, each with its inline and its imported faces.
 const CHAT_FONT_FACES = 3 * 2 * FONT_FACES;
+const RECREATED_CHARACTERS = 3;
 const port = 6264;
 const base = `http://localhost:${port}`;
 
@@ -259,33 +267,33 @@ try {
     });
     const bigIds = Array.from({ length: BIG_CHARACTERS }, () => randomUUID());
     const smallIds = Array.from({ length: SMALL_CHARACTERS }, () => randomUUID());
+    const bigCharacter = (id, name, i) =>
+        character(id, name, {
+            // ~2 MB of UTF-16 text, as the user's large characters. In lorebook entries: the
+            // character settings tokenize the description and first message on the main thread
+            // (~20 s for 1.7 MB), which would measure the tokenizer instead of the heap.
+            globalLore: Array.from({ length: 300 }, (_, k) => ({
+                key: `key${k}`,
+                secondkey: "",
+                insertorder: 100,
+                comment: `Entry ${k}`,
+                content: `큰 캐릭터 ${i}의 설정 ${k}. `.repeat(240),
+                mode: "normal",
+                alwaysActive: false,
+                selective: false,
+                bookVersion: 2,
+            })),
+            additionalAssets: assetList(300, `Big${i}`, 100 + i),
+            emotionImages: assetList(60, `Emotion${i}`, 200 + i).map(([name, file]) => [name, file]),
+            ccAssets: assetList(CC_ASSETS, `Icon${i}`, 300 + i).map(([name, uri, ext]) => ({
+                type: "icon",
+                uri,
+                name,
+                ext,
+            })),
+        });
     const characters = [
-        ...bigIds.map((id, i) =>
-            character(id, `Big ${i}`, {
-                // ~2 MB of UTF-16 text, as the user's large characters. In lorebook entries: the
-                // character settings tokenize the description and first message on the main thread
-                // (~20 s for 1.7 MB), which would measure the tokenizer instead of the heap.
-                globalLore: Array.from({ length: 300 }, (_, k) => ({
-                    key: `key${k}`,
-                    secondkey: "",
-                    insertorder: 100,
-                    comment: `Entry ${k}`,
-                    content: `큰 캐릭터 ${i}의 설정 ${k}. `.repeat(240),
-                    mode: "normal",
-                    alwaysActive: false,
-                    selective: false,
-                    bookVersion: 2,
-                })),
-                additionalAssets: assetList(300, `Big${i}`, 100 + i),
-                emotionImages: assetList(60, `Emotion${i}`, 200 + i).map(([name, file]) => [name, file]),
-                ccAssets: assetList(CC_ASSETS, `Icon${i}`, 300 + i).map(([name, uri, ext]) => ({
-                    type: "icon",
-                    uri,
-                    name,
-                    ext,
-                })),
-            }),
-        ),
+        ...bigIds.map((id, i) => bigCharacter(id, `Big ${i}`, i)),
         ...smallIds.map((id, i) => character(id, `Small ${i}`)),
     ];
     const chatOf = (id, i) => ({
@@ -603,6 +611,142 @@ try {
     }
     await homeButton.click({ timeout: 10_000 });
     await snapshot("home");
+
+    // 9. Three times: a new ~2 MB character arrives from the server, its settings and asset lists
+    // are opened, and the server deletes it (the raw path; the selected character's removal selects
+    // home). Compared with `home`, whatever the page still holds of the deleted characters.
+    // One batch built from fresh revisions, again after a revision conflict (the app saves the
+    // character order too); any other answer stops the run.
+    const batchRetrying = async (what, build) => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const response = await api("/api/resources/batch", {
+                method: "POST",
+                body: JSON.stringify(await build()),
+            });
+            if (response.status === 200) {
+                check(what, true);
+                return;
+            }
+            if (response.status !== 409)
+                throw new Error(`${what}: ${response.status} ${JSON.stringify(response.body)}`);
+            await page.waitForTimeout(500);
+        }
+        throw new Error(`${what}: the revisions kept conflicting`);
+    };
+    // A character's deletion through the routes, with its place in the order; then its sidebar entry
+    // and its closed-chat screen leave the page (the selected character's removal selects home, so
+    // the screen's "Character" tab goes: the client applied the deletion, not only the order).
+    const deleteCharacter = async (what, id) => {
+        // Back on the "Chat" tab first, as in step 4: the next character selected would otherwise open
+        // on the character settings, which alert the tokenizer `TypeError` for a character with a chat.
+        await page.getByRole("button", { name: "Chat", exact: true }).first().click({ timeout: 60_000 });
+        await page.waitForTimeout(500);
+        await batchRetrying(what, async () => {
+            const revision = (await api(`/api/resources/characters/${id}`)).body?.revision;
+            const order = await single("characterOrder");
+            return {
+                ops: [
+                    { kind: "characters", id, baseRevision: revision, delete: true },
+                    {
+                        kind: "characterOrder",
+                        id: "main",
+                        baseRevision: order.revision,
+                        data: order.data.filter((entry) => entry !== id),
+                    },
+                ],
+            };
+        });
+        await page.locator(`[data-char-id="${id}"]`).waitFor({ state: "detached", timeout: 60_000 });
+        await page
+            .getByRole("button", { name: "Character", exact: true })
+            .first()
+            .waitFor({ state: "detached", timeout: 60_000 });
+        await page.waitForTimeout(500);
+    };
+    for (let k = 0; k < RECREATED_CHARACTERS; k++) {
+        const id = randomUUID();
+        // The sidebar lists the characters of the character order.
+        await batchRetrying(`recreate ${k}: created`, async () => {
+            const order = await single("characterOrder");
+            return {
+                ops: [
+                    {
+                        kind: "characters",
+                        id,
+                        baseRevision: null,
+                        data: bigCharacter(id, `Recreated ${k}`, BIG_CHARACTERS + k),
+                    },
+                    { kind: "characterOrder", id: "main", baseRevision: order.revision, data: [...order.data, id] },
+                ],
+            };
+        });
+        const entry = page.locator(`[data-char-id="${id}"]`).first();
+        await entry.waitFor({ timeout: 60_000 });
+        await entry.click();
+        await page.getByRole("button", { name: "Character", exact: true }).first().click({ timeout: 120_000 });
+        await page.waitForTimeout(500);
+        await page.locator("button:has(svg.lucide-smile)").first().click({ timeout: 120_000 });
+        await page.waitForTimeout(1500);
+        await deleteCharacter(`recreate ${k}: deleted`, id);
+    }
+    if (await homeButton.isVisible().catch(() => false)) await homeButton.click({ timeout: 10_000 });
+    await snapshot("character-recreate");
+
+    // 10. Data the page booted with, deleted through the routes: the second big character (its
+    // settings opened first) and the last module (with its enabled entry).
+    await page.locator(`[data-char-id="${bigIds[1]}"]`).first().click();
+    await page.waitForTimeout(1000);
+    await page.getByRole("button", { name: "Character", exact: true }).first().click({ timeout: 120_000 });
+    await page.waitForTimeout(500);
+    await page.locator("button:has(svg.lucide-smile)").first().click({ timeout: 120_000 });
+    await page.waitForTimeout(1500);
+    await deleteCharacter("boot delete: big character", bigIds[1]);
+    if (await homeButton.isVisible().catch(() => false)) await homeButton.click({ timeout: 10_000 });
+    await snapshot("boot-character-delete");
+    const lastModule = moduleList[MODULES - 1].id;
+    await batchRetrying("boot delete: last module", async () => {
+        const stored = await single("modules");
+        const enabledNow = await single("enabledModules");
+        return {
+            ops: [
+                {
+                    kind: "modules",
+                    id: "main",
+                    baseRevision: stored.revision,
+                    data: stored.data.filter((module) => module.id !== lastModule),
+                },
+                {
+                    kind: "enabledModules",
+                    id: "main",
+                    baseRevision: enabledNow.revision,
+                    data: enabledNow.data.filter((id) => id !== lastModule),
+                },
+            ],
+        };
+    });
+    await page.waitForTimeout(2000);
+    if (await homeButton.isVisible().catch(() => false)) await homeButton.click({ timeout: 10_000 });
+    await snapshot("boot-module-delete");
+
+    // Slice D1, bounds declared before the fix was measured: nothing of the deleted characters stays
+    // (within 2 MiB of `home`), and deleting the booted big character frees at least 2 MiB (it is more
+    // than that). The module deletion is a measurement only: the server's copy of the modules is new
+    // data, and Svelte keeps the old module assets through the parser's asset inputs (see the plan's D1
+    // entry).
+    const bytes = Object.fromEntries(rows.map((row) => [row.step, row.totalBytes]));
+    const MiB = 1048576;
+    check("deletes: the recreated characters leave nothing", bytes["character-recreate"] <= bytes.home + 2 * MiB, {
+        home: bytes.home,
+        "character-recreate": bytes["character-recreate"],
+    });
+    check(
+        "deletes: the booted character is freed",
+        bytes["boot-character-delete"] <= bytes["character-recreate"] - 2 * MiB,
+        {
+            "character-recreate": bytes["character-recreate"],
+            "boot-character-delete": bytes["boot-character-delete"],
+        },
+    );
 
     // Slice C1: the chat styles' faces (inline and imported) are on the chat screen, and leave with it.
     const faces = Object.fromEntries(rows.map((row) => [row.step, row.fontFaces]));

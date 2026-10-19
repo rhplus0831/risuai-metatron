@@ -1,4 +1,4 @@
-import { untrack } from "svelte";
+import { tick, untrack } from "svelte";
 import {
     FLAT_SECRET_FIELDS,
     NESTED_SECRET_FIELDS,
@@ -669,6 +669,11 @@ export function applyRaw(kind: RecordKind, data: unknown) {
         } else {
             records[kind] = data;
         }
+        const root = rootNodes.get(kind);
+        if (root) {
+            unpinBelow(root);
+        }
+        refreshRoot(kind);
     });
 }
 
@@ -709,6 +714,14 @@ export function initializeRecords(fields: RecordFields) {
     bumpEpoch(metaOf(CHARACTERS));
     untrack(() => {
         records[CHARACTERS] = list;
+        // A reinstallation without a reset: the characters it lacks lose their nodes, and the nodes
+        // of the others (they follow their paths) let go of the old data.
+        const root = rootNodes.get(CHARACTERS);
+        if (root) {
+            forgetCharacterNodes([...root.idChildren.keys()].filter((chaId) => !seen.has(chaId)));
+            unpinBelow(root);
+        }
+        refreshRoot(CHARACTERS);
     });
     runMembershipHook();
 }
@@ -734,6 +747,8 @@ export function resetRecords() {
     batchDepth = 0;
     batched.clear();
     mutatorDepth = 0;
+    runningMutators.clear();
+    pendingTrims.clear();
     mutatorWriteback = null;
     runMembershipHook();
 }
@@ -753,6 +768,7 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
                 ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
                 : unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
+        refreshRoot(kind);
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -1206,6 +1222,8 @@ const isIndex = (key: string) => /^(0|[1-9]\d*)$/.test(key);
  */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"]);
 let mutatorDepth = 0;
+/** The nodes whose own mutator is running (it cleans up their shrink when it returns), by depth. */
+const runningMutators = new Map<TrackedNode, number>();
 /** Only this call's prepared values may skip adoption when written back into its array. */
 let mutatorWriteback: { node: TrackedNode; values: Set<unknown> } | null = null;
 
@@ -1231,6 +1249,10 @@ function displace(meta: RecordMeta, old: unknown) {
 }
 
 function adopt(node: TrackedNode, target: object, epoch: number) {
+    if (!Object.is(node.target, target) && Array.isArray(target) && node.indexChildren.size > 0) {
+        // Another list now stands here (a raw replacement, a reassigned field): its tail is empty.
+        pruneIndexTail(node, target.length);
+    }
     node.target = target;
     node.epoch = epoch;
     node.meta.owned.add(target);
@@ -1281,7 +1303,8 @@ function resolve(node: TrackedNode): any {
         throw new Error("unreachable");
     }
     const current = parent[step.key];
-    if (Object.is(current, node.target)) {
+    // A node a raw change unpinned holds no target (`unpinBelow`): it follows its path below.
+    if (node.target !== undefined && Object.is(current, node.target)) {
         return current;
     }
     if (node.epoch !== epoch || !Array.isArray(parent) || !isIndex(step.key)) {
@@ -2027,6 +2050,131 @@ function inertCopy(
     return out;
 }
 
+/**
+ * Drops `node`'s index child entries at `length` or past it (heap plan D1): its list shrank or now is
+ * another, shorter list, so no element stands there and the entry would only keep its old object.
+ * A surviving element that moved down keeps its node through `meta.children` and is rebound at its
+ * next read; entries below `length` are kept (after a raw replacement they stand for the element
+ * now there).
+ */
+function pruneIndexTail(node: TrackedNode, length: number) {
+    for (const key of node.indexChildren.keys()) {
+        if (isIndex(key) && Number(key) >= length) {
+            node.indexChildren.delete(key);
+        }
+    }
+}
+
+/**
+ * Points the cached root node of `kind` at the record's current data at once (an installation, a
+ * server copy, a whole replacement, a rebuilt list), so it keeps no old copy until its next read.
+ * A record that is gone or changed shape leaves the node holding nothing of the old data at its own
+ * level (the node itself is kept: a retained root wrapper resolves by kind, and `trackedRoot` decides
+ * as before whether a returning record reuses it).
+ */
+function refreshRoot(kind: string) {
+    const node = rootNodes.get(kind);
+    if (!node) {
+        return;
+    }
+    const data = untrack(() => records[kind]);
+    if (!isObject(data) || node.isArray !== Array.isArray(data)) {
+        node.target = undefined;
+        pruneIndexTail(node, 0);
+        return;
+    }
+    adopt(node, data, nodeEpoch(node.meta, null));
+}
+
+/** Root lists whose original array waits for `trimRootList` (after the pending Svelte flush). */
+const pendingTrims = new Set<string>();
+
+/**
+ * After a removal from a root list (heap plan D1): Svelte never writes a proxy's original array, which
+ * keeps every element it was installed with, so a removed one would stay reachable through it until
+ * the record is replaced. Every index is read once (so each has its Svelte source and `get` never
+ * falls back to the original), then the original array is overwritten with the live elements and cut
+ * to the live length. The `$state` list stays the same object: nothing re-runs, and no reaction is
+ * left holding the sources of an abandoned list. Done after the pending flush (`tick`): an effect's
+ * teardown in it reads the list as it was, and Svelte's `has` still consults the original array.
+ */
+function trimRootList(kind: string) {
+    if (pendingTrims.size === 0) {
+        // Also when that flush threw: the pending set must empty, or no later trim is scheduled.
+        void tick().then(trimPendingLists, trimPendingLists);
+    }
+    pendingTrims.add(kind);
+}
+
+function trimPendingLists() {
+    const kinds = [...pendingTrims];
+    pendingTrims.clear();
+    for (const kind of kinds) {
+        trimOriginal(kind);
+    }
+}
+
+function trimOriginal(kind: string) {
+    untrack(() => {
+        const list = records[kind];
+        if (!Array.isArray(list)) {
+            return;
+        }
+        const original = (list as unknown as Record<symbol, unknown>)[STATE];
+        if (!Array.isArray(original)) {
+            return;
+        }
+        const length = list.length;
+        for (let index = 0; index < length; index += 1) {
+            original[index] = list[index];
+        }
+        original.length = length;
+    });
+}
+
+/**
+ * After a raw change of the data under `node` (a server copy or an installation: its epoch moved, so
+ * every node below follows its path at its next read), drops the old objects the nodes below hold
+ * (heap plan D1). The nodes stay, so a retained wrapper and a fresh one remain one object; until
+ * then they would keep the replaced data alive. Never after a local change, where a moved element
+ * is followed by identity.
+ */
+function unpinBelow(node: TrackedNode, self = false) {
+    if (mutatorDepth > 0) {
+        // A mutator writes back the objects it read through its nodes' targets (`assignedTarget`):
+        // during one (a raw change from a comparator), the targets stay until their next read.
+        return;
+    }
+    const release = (current: TrackedNode) => {
+        // An object displaced in this task keeps its node's target: a same-task re-insertion of its
+        // wrapper finds it through it (`assignedTarget`).
+        if (current.target !== undefined && !current.meta.displaced.has(current.target)) {
+            current.target = undefined;
+        }
+    };
+    if (self) {
+        release(node);
+    }
+    const pending: TrackedNode[] = [node];
+    while (pending.length > 0) {
+        const current = pending.pop()!;
+        for (const children of [current.keyChildren, current.idChildren, current.indexChildren]) {
+            for (const child of children.values()) {
+                release(child);
+                pending.push(child);
+            }
+        }
+    }
+}
+
+/** After `node`'s list shrank locally to `length`: a root list's original array is trimmed, any list pruned. */
+function afterShrink(node: TrackedNode, length: number) {
+    if (node.parent === null) {
+        trimRootList(node.kind);
+    }
+    pruneIndexTail(node, length);
+}
+
 function moveIndexChild(node: TrackedNode, index: string) {
     const step = node.step as { key: string };
     const parent = node.parent!;
@@ -2274,6 +2422,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
     assertUniqueIds(node);
     const target = resolve(node);
     refuseFrozen(node, target);
+    const lengthBefore = Array.isArray(target) ? target.length : 0;
     if (isCharacterList(node)) {
         // Only the no-ops a Svelte 3 self-assignment makes; membership changes go through characterStore.
         if (
@@ -2350,6 +2499,10 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
     }
     route();
     queueNodeWrite(node, prop);
+    if (prop === "length" && !runningMutators.has(node) && Array.isArray(target) && target.length < lengthBefore) {
+        // A direct truncation (this list's own mutator handles its `length` writes when it returns).
+        afterShrink(node, target.length);
+    }
     return true;
 }
 
@@ -2485,13 +2638,14 @@ function createNode(
                         // unwrapped before the method runs, so a retained wrapper resolves its current
                         // identity (or throws) and nothing changes on a refusal. Its writes are queued
                         // once, when it ends (also when it throws).
-                        const plan = untrack(() => {
+                        const { plan, list, before } = untrack(() => {
                             const list = resolve(node);
                             refuseFrozen(node, list);
-                            return planMutator(node, list, prop, args);
+                            return { plan: planMutator(node, list, prop, args), list, before: list.length };
                         });
                         return batchRecordWrites(() => {
                             mutatorDepth += 1;
+                            runningMutators.set(node, (runningMutators.get(node) ?? 0) + 1);
                             const previous = mutatorWriteback;
                             mutatorWriteback = { node, values: plan.values };
                             let result: unknown;
@@ -2500,8 +2654,21 @@ function createNode(
                             } finally {
                                 mutatorWriteback = previous;
                                 mutatorDepth -= 1;
+                                const running = runningMutators.get(node)! - 1;
+                                if (running === 0) {
+                                    runningMutators.delete(node);
+                                } else {
+                                    runningMutators.set(node, running);
+                                }
                             }
                             plan.route();
+                            // Only after a call that returned (a throwing one is cleaned up by the
+                            // next shrink or replacement), and only while the list is still this one.
+                            untrack(() => {
+                                if (Object.is(node.target, list) && list.length < before) {
+                                    afterShrink(node, list.length);
+                                }
+                            });
                             return result;
                         });
                     };
@@ -2770,8 +2937,12 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
                 displace(node.meta, old);
             }
         }
+        const before = target.length;
         target.splice(0, target.length, ...plain);
         prepared.route();
+        if (target.length < before) {
+            afterShrink(node, target.length);
+        }
     });
     queueNodeWrite(node);
 }
@@ -2878,6 +3049,23 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
     return out;
 }
 
+/**
+ * Drops the canonical nodes of characters that left the list (heap plan D1), so the list's node no
+ * longer keeps a removed character's data. Their per-character metas stay: a retained wrapper keeps
+ * its node's meta, and a same-id re-add must stamp that same one (`characterOwner`). A retained
+ * wrapper of a removed character is an orphan: it throws while the id is absent and follows a
+ * same-id re-add by id, as a different object from the re-added character's fresh wrapper.
+ */
+function forgetCharacterNodes(ids: Iterable<string>) {
+    const root = rootNodes.get(CHARACTERS);
+    if (!root) {
+        return;
+    }
+    for (const chaId of ids) {
+        root.idChildren.delete(chaId);
+    }
+}
+
 /** Runs a membership change of the list and what follows it: the queue and the selection's hook. */
 function changeMembership(change: () => readonly string[]) {
     const stored = untrack(change);
@@ -2928,6 +3116,7 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
             renewStamps(characterOwner(chaId));
         }
         const stored = storedCharacter(value, chaId, current?.chaId === chaId ? current : undefined);
+        const leaving = current !== undefined && current.chaId !== chaId ? (current.chaId as string) : null;
         if (!Object.is(stored, current)) {
             if (current !== undefined && current.chaId === chaId) {
                 // A whole replacement of the character: what was under it follows the new object by path.
@@ -2942,6 +3131,11 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
                 }
             }
             list[index] = stored;
+        }
+        if (leaving !== null) {
+            // The character that was here left the list.
+            forgetCharacterNodes([leaving]);
+            trimRootList(CHARACTERS);
         }
         return [chaId];
     });
@@ -2961,6 +3155,10 @@ export function removeCharacterRecords(ids: readonly string[]): string[] {
                 // A character created again with this id is a new record: retained wrappers follow by path.
                 bumpEpoch(characterOwner(chaId));
             }
+        }
+        if (removed.length > 0) {
+            forgetCharacterNodes(removed);
+            trimRootList(CHARACTERS);
         }
         return [];
     });
@@ -2985,6 +3183,8 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
         if (data === null) {
             if (index !== -1) {
                 list.splice(index, 1);
+                forgetCharacterNodes([chaId]);
+                trimRootList(CHARACTERS);
             }
         } else if (index === -1) {
             const added: CharacterObject = { ...data, chaId };
@@ -2995,6 +3195,11 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
             const replaced: CharacterObject = { ...data, chaId, reloadKeys: local.reloadKeys };
             stripChatFields(replaced);
             list[index] = replaced;
+            // Its wrappers follow by path; until their next read they would keep the old copy.
+            const node = rootNodes.get(CHARACTERS)?.idChildren.get(chaId);
+            if (node) {
+                unpinBelow(node, true);
+            }
         }
     });
     runMembershipHook();
@@ -3016,11 +3221,17 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
         // Only the changed fields' subtrees follow their paths; every other wrapper of the character
         // keeps its identity (a retained lore entry moved locally stays that entry).
         const owner = characterOwner(chaId);
+        const node = rootNodes.get(CHARACTERS)?.idChildren.get(chaId);
         for (const [field] of changes) {
             epochCounter += 1;
             owner.fieldEpochs.set(field, epochCounter);
             // Stamped even when the value is the one held: it may have changed in place.
             stampField(owner, field);
+            // The field's wrappers follow by path; until their next read they would keep the old value.
+            const fieldNode = node?.keyChildren.get(field);
+            if (fieldNode) {
+                unpinBelow(fieldNode, true);
+            }
         }
         for (const [field, value] of changes) {
             if (value === REMOVE_FIELD) {
