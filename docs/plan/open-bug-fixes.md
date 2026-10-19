@@ -1,6 +1,6 @@
 # Open Bug Fixes Plan
 
-Status: A1 (8956cac09), G1 (0c2caeb59), C6 (1f10ae380), G3 (c3d6b0010), G2 (38d7aa069), C1 (5521d7fbe), A2 (0a63f19dc), C2 (dd50dfaf0), C3 (c22d7c1e4) landed. Source: the project memory's recorded bugs, rechecked
+Status: A1 (8956cac09), G1 (0c2caeb59), C6 (1f10ae380), G3 (c3d6b0010), G2 (38d7aa069), C1 (5521d7fbe), A2 (0a63f19dc), C2 (dd50dfaf0), C3 (c22d7c1e4), C4 (0da67ccb2) landed. Source: the project memory's recorded bugs, rechecked
 against the working tree at `5c3665fdb` on 2026-10-19 (half by direct reading, half by
 three read-only sub-agents whose evidence was spot-checked). Only defects that are
 reachable today are here: latent ones with no producer (`coalesce` generation guards,
