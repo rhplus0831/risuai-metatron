@@ -3,6 +3,9 @@ import type { MCPTool, MCPToolHandler, RPCToolCallContent } from "../mcplib";
 import { CharacterHandler } from "./characters";
 import { ChatHandler } from "./chats";
 import { ModuleHandler } from "./modules";
+import { createRisuAccess } from "../../../../../shared/mcp/risuaccess/index.ts";
+import { tabRisuAccessHostFor } from "./host";
+import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 
 export class RisuAccessClient extends MCPClientLike {
     private handlers: MCPToolHandler[];
@@ -81,6 +84,15 @@ backgroundEmbedding is an HTML string mainly for custom styling. It can, and mos
         return tools;
     }
 
+    /**
+     * A request's call (`callMCPTool`): the tools over a host for `chatRef` (`tabRisuAccessHostFor`),
+     * built for this call, so concurrent requests for other chats never share a target.
+     */
+    async callToolForChat(chatRef: ChatRef | null, toolName: string, args: any): Promise<RPCToolCallContent[]> {
+        return await createRisuAccess(tabRisuAccessHostFor(chatRef)).call(toolName, args);
+    }
+
+    /** A call without a request (the Playground): the selected character and chat. */
     async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
         try {
             for (const handler of this.handlers) {

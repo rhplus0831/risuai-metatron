@@ -1,4 +1,4 @@
-import { settings } from "../../storage/settingsViews.svelte";
+import { settings, type PresetScope } from "../../storage/settingsViews.svelte";
 import { addAuthRefresh, addModule } from "src/ts/storage/collectionStore.svelte";
 import { MCPClient, type JsonRPC, type MCPTool, type RPCToolCallContent } from "./mcplib";
 import { getModuleMcps, type ModuleChatRef } from "../modules";
@@ -285,7 +285,33 @@ export async function getMCPMeta(additionalMCPs?: string[]) {
     return meta;
 }
 
-/** Calls a tool on `chatRef`'s MCP servers (its own clients, leased for the call). */
+/**
+ * An internal client whose tools act on a chat (`internal:graphmem`, `internal:risuai`): a call that
+ * names its chat runs on that chat (null: none), never on the selection. `scope` is the request's
+ * captured prompt and model preset, for a variable's preset default.
+ */
+type ChatToolClient = {
+    callToolForChat(
+        chatRef: ChatRef | null,
+        toolName: string,
+        args: any,
+        scope?: PresetScope,
+    ): Promise<RPCToolCallContent[]>;
+};
+
+function sameChat(a: ChatRef, b: ChatRef) {
+    return a.chaId === b.chaId && a.chatId === b.chatId;
+}
+
+function isChatToolClient(client: AnyMCPClient): client is AnyMCPClient & ChatToolClient {
+    return typeof (client as Partial<ChatToolClient>).callToolForChat === "function";
+}
+
+/**
+ * Calls a tool on `chatRef`'s MCP servers (its own clients, leased for the call). A client whose
+ * tools act on a chat runs them on `chatRef` too; without one (`undefined`, the Playground) it keeps
+ * using the selection.
+ */
 export async function callMCPTool(
     methodName: string,
     args: any,
@@ -302,9 +328,18 @@ export async function callMCPTool(
             const tools = await (isPlugin ? client.getToolList(context) : client.getToolList());
             const tool = tools.find((t) => t.name === methodName);
             if (tool) {
-                return await (isPlugin
-                    ? client.callTool(methodName, args, context)
-                    : client.callTool(methodName, args));
+                if (isPlugin) {
+                    return await client.callTool(methodName, args, context);
+                }
+                if (chatRef !== undefined && isChatToolClient(client)) {
+                    // The context's preset is the request's when it was captured for the same chat.
+                    const scope =
+                        context && chatRef && sameChat(context.chatRef, chatRef)
+                            ? { presetId: context.presetId, modelPresetId: context.modelPresetId }
+                            : undefined;
+                    return await client.callToolForChat(chatRef, methodName, args, scope);
+                }
+                return await client.callTool(methodName, args);
             }
         }
     } finally {
