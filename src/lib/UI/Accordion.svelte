@@ -2,7 +2,6 @@
     import type { language } from "src/lang";
     import Help from "../Others/Help.svelte";
 
-    let open = $state(false);
     interface Props {
         name?: string;
         styled?: boolean;
@@ -12,6 +11,8 @@
         className?: string;
         /** A small pill beside the name (styled only), such as "Experimental" */
         badge?: string;
+        /** Starts open (read once, at mount). */
+        startOpen?: boolean;
     }
 
     let {
@@ -22,7 +23,10 @@
         children,
         className = "",
         badge = "",
+        startOpen = false,
     }: Props = $props();
+    // svelte-ignore state_referenced_locally
+    let open = $state(startOpen);
 </script>
 
 {#if disabled}

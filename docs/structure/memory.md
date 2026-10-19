@@ -83,7 +83,7 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 
 - DB settings:
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`, `memoryAlgorithmType` (unused).
-  - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`.
+  - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status and links there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state, so the round trip through the settings keeps it.
   - Sizing: `hypaChunkSize`, `hypaAllocatedTokens`, `hypaCustomSettings`.
   - Presets: `hypaV3Presets`, `hypaV3PresetId` (the selected preset's id; `selectedHypaV3Preset` in `shared/hypaV3Presets.ts` resolves it, falling back to the first). Both travel in the `hypaV3Presets` record as `{ items, selectedId }`.
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).

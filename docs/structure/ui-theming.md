@@ -80,7 +80,7 @@ GUI primitives (`src/lib/UI/GUI/*`):
 Other UI:
 
 - `UI/PopupButton.svelte` writes `popupStore`. `UI/PopupList.svelte` is the fixed-position host mounted by `App`.
-- `UI/Accordion.svelte` (its button carries `aria-expanded`; the `styled` one takes an optional `badge` pill beside the name), `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
+- `UI/Accordion.svelte` (its button carries `aria-expanded`; the `styled` one takes an optional `badge` pill beside the name; `startOpen`, read at mount, opens it), `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
 
 Mobile:
 

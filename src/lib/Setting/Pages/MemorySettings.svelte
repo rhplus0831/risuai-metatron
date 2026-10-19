@@ -14,7 +14,8 @@
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import { untrack } from "svelte";
+    import { onMount, untrack } from "svelte";
+    import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
     import { tokenizePreset } from "src/ts/process/prompt";
     import { getCharToken } from "src/ts/tokenizer";
     import { PlusIcon, PencilIcon, TrashIcon, DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
@@ -27,6 +28,23 @@
     import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
 
     const currentCharacter = $derived(selectedCharacter());
+
+    // Settings UI plan slice 8 (decision 9): summarization (HypaV2's and SupaMemory's OpenAI 3.5
+    // Instruct, `supaMemory.ts`/`hypav2.ts`) and the OpenAI embedding models share `supaMemoryKey`, so
+    // it has one input, below the embedding model, while either uses it. The Playground's embedding
+    // tool links here and shows it regardless.
+    const summaryUsesOpenAI = $derived(
+        !settings.memoryTranslateMedia.hanuraiEnable &&
+            (settings.memoryTranslateMedia.hypav2 || !settings.memoryTranslateMedia.hypaV3) &&
+            settings.memoryTranslateMedia.supaModelType === "instruct35",
+    );
+    const embeddingUsesOpenAI = $derived(
+        ["openai3small", "openai3large", "ada"].includes(settings.memoryTranslateMedia.hypaModel),
+    );
+    const revealMemoryKey = takeCredentialRequest("supaMemoryKey");
+    onMount(() => {
+        if (revealMemoryKey) void scrollToCredential("supaMemoryKey");
+    });
 
     // HypaV3: the selected preset, by id (`hypaV3PresetId`); the first one when that id is gone.
     const currentHypaV3 = $derived(
@@ -166,9 +184,8 @@
         <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
         <OptionInput value="subModel">{language.submodel}</OptionInput>
     </SelectInput>
-    {#if settings.memoryTranslateMedia.supaModelType === "davinci" || settings.memoryTranslateMedia.supaModelType === "curie" || settings.memoryTranslateMedia.supaModelType === "instruct35"}
-        <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
-        <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
+    {#if settings.memoryTranslateMedia.supaModelType === "instruct35"}
+        <span class="mb-2 text-xs text-textcolor2">{language.supaMemoryKeyBelow}</span>
     {/if}
     <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
     <TextAreaInput
@@ -474,12 +491,11 @@
         <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
         <OptionInput value="subModel">{language.submodel}</OptionInput>
     </SelectInput>
+    {#if settings.memoryTranslateMedia.supaModelType === "instruct35"}
+        <span class="mb-2 text-xs text-textcolor2">{language.supaMemoryKeyBelow}</span>
+    {/if}
     <span class="text-textcolor">{language.maxSupaChunkSize}</span>
     <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.maxSupaChunkSize} min={100} />
-    {#if settings.memoryTranslateMedia.supaModelType === "davinci" || settings.memoryTranslateMedia.supaModelType === "curie" || settings.memoryTranslateMedia.supaModelType === "instruct35"}
-        <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
-        <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
-    {/if}
     {#if settings.memoryTranslateMedia.supaModelType !== "none"}
         <span class="text-textcolor">{language.SuperMemory} Prompt</span>
         <TextInput
@@ -521,9 +537,11 @@
     <OptionInput value="custom">Custom (OpenAI-compatible)</OptionInput>
 </SelectInput>
 
-{#if settings.memoryTranslateMedia.hypaModel === "openai3small" || settings.memoryTranslateMedia.hypaModel === "openai3large" || settings.memoryTranslateMedia.hypaModel === "ada"}
-    <span class="text-textcolor">OpenAI API Key</span>
-    <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
+{#if summaryUsesOpenAI || embeddingUsesOpenAI || revealMemoryKey}
+    <div class="flex flex-col" data-credential="supaMemoryKey">
+        <span class="text-textcolor">{language.supaMemoryKeyShared}</span>
+        <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
+    </div>
 {/if}
 
 {#if settings.memoryTranslateMedia.hypaModel === "custom"}

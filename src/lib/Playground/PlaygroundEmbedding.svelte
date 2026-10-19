@@ -1,35 +1,44 @@
+<script module lang="ts">
+    // The tool's draft lives outside the component: the memory key's link opens the settings, which
+    // replace the playground (`App.svelte`), and coming back remounts it (settings UI plan slice 8).
+    const draft = $state({
+        query: "",
+        model: "MiniLM",
+        customEmbeddingUrl: "",
+        data: [] as string[],
+        dataresult: [] as [string, number][],
+        running: false,
+    });
+</script>
+
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import SecretInput from "../UI/GUI/SecretInput.svelte";
+    import CredentialStatusLink from "../Setting/CredentialStatusLink.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import { HypaProcesser } from "src/ts/process/memory/hypamemory";
 
-    let query = $state("");
-    let model = $state("MiniLM");
-    let customEmbeddingUrl = $state("");
-    let data: string[] = $state([]);
-    let dataresult: [string, number][] = $state([]);
-    let running = $state(false);
-
     const run = async () => {
-        if (running) return;
-        running = true;
-        const processer = new HypaProcesser(model as any, customEmbeddingUrl);
-        await processer.addText(data);
-        console.log(processer.vectors);
-        dataresult = await processer.similaritySearchScored(query);
-        running = false;
+        if (draft.running) return;
+        draft.running = true;
+        try {
+            const processer = new HypaProcesser(draft.model as any, draft.customEmbeddingUrl);
+            await processer.addText(draft.data);
+            console.log(processer.vectors);
+            draft.dataresult = await processer.similaritySearchScored(draft.query);
+        } finally {
+            draft.running = false;
+        }
     };
 </script>
 
 <h2 class="text-4xl text-textcolor my-6 font-black relative">{language.embedding}</h2>
 
 <span class="text-textcolor text-lg">Model</span>
-<SelectInput bind:value={model} className="mb-4">
+<SelectInput bind:value={draft.model} className="mb-4">
     {#if "gpu" in navigator}
         <OptionInput value="MiniLMGPU">MiniLM L6 v2 (GPU)</OptionInput>
         <OptionInput value="nomicGPU">Nomic Embed Text v1.5 (GPU)</OptionInput>
@@ -50,12 +59,11 @@
     <OptionInput value="custom">Custom (OpenAI-compatible)</OptionInput>
 </SelectInput>
 
-{#if model === "openai3small" || model === "openai3large" || model === "ada"}
-    <span class="text-textcolor text-lg">OpenAI API Key</span>
-    <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
+{#if draft.model === "openai3small" || draft.model === "openai3large" || draft.model === "ada"}
+    <CredentialStatusLink credential="supaMemoryKey" label="OpenAI API Key" />
 {/if}
 
-{#if model === "custom"}
+{#if draft.model === "custom"}
     <span class="text-textcolor text-lg">URL</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.url} />
     <span class="text-textcolor text-lg">Key/Password</span>
@@ -67,25 +75,24 @@
 <div class="mb-4"></div>
 
 <span class="text-textcolor text-lg">Query</span>
-<TextInput bind:value={query} size="lg" fullwidth />
+<TextInput bind:value={draft.query} size="lg" fullwidth />
 
 <span class="text-textcolor text-lg mt-6">Data</span>
-{#each data as item, i}
-    <TextInput bind:value={data[i]} size="lg" fullwidth marginBottom />
+{#each draft.data as item, i}
+    <TextInput bind:value={draft.data[i]} size="lg" fullwidth marginBottom />
 {/each}
 <Button
     styled="outlined"
     onclick={() => {
-        data.push("");
-        data = data;
+        draft.data.push("");
     }}>+</Button
 >
 
 <span class="text-textcolor text-lg mt-6">Result</span>
-{#if dataresult.length === 0}
+{#if draft.dataresult.length === 0}
     <span class="text-textcolor2 text-lg">No result</span>
 {/if}
-{#each dataresult as [item, score]}
+{#each draft.dataresult as [item, score]}
     <div class="flex justify-between">
         <span>{item}</span>
         <span>{score.toFixed(2)}</span>
@@ -99,7 +106,7 @@
         run();
     }}
 >
-    {#if running}
+    {#if draft.running}
         <div class="loadmove"></div>
     {:else}
         {language.run?.toLocaleUpperCase()}

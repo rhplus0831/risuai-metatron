@@ -7,11 +7,24 @@
     import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
+    import { onMount } from "svelte";
+    import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
 
     /**
      * Each provider's flat default key, for the models the selected model preset's slots use, and
-     * the Vertex default key's client email and project id (the API Keys tab).
+     * the Vertex default key's client email and project id (the API Keys tab). The OpenAI and Google
+     * keys are also the image providers' (DALL-E, Imagen) and OpenAI TTS's keys, edited only here
+     * (settings UI plan slice 8): they are listed while the image provider uses them, and when a
+     * status link on another page asked for them (then the accordion opens on them).
      */
+    /** The `data-credential` name of a row a status link can scroll to. */
+    function credentialOf(path: SecretPath): string | undefined {
+        if (path.kind === "flat" && path.field === "openAIKey") return "openAIKey";
+        if (path.kind === "nested" && path.field === "google") return "google";
+        return undefined;
+    }
+    const requestedOpenAI = takeCredentialRequest("openAIKey");
+    const requestedGoogle = takeCredentialRequest("google");
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
             getModelInfoForMode(mode),
@@ -34,6 +47,9 @@
             nanogpt: { kind: "flat", field: "nanogptKey" },
             ollama: { kind: "flat", field: "ollamaApiKey" },
         };
+        const sdProvider = settings.memoryTranslateMedia.sdProvider;
+        if (requestedOpenAI || sdProvider === "dalle") add(paths.openai, language.sharedApiKeys.types.openai);
+        if (requestedGoogle || sdProvider === "Imagen") add(paths.google, language.sharedApiKeys.types.google);
         for (const model of models) {
             if (!model.id) continue;
             const slot = credentialSlotOf(model.id, model);
@@ -50,14 +66,21 @@
         }
         return [...keys.values()];
     });
+
+    onMount(() => {
+        if (requestedOpenAI) void scrollToCredential("openAIKey");
+        if (requestedGoogle) void scrollToCredential("google");
+    });
 </script>
 
 {#if defaultKeys.length > 0 || usesVertex}
-    <Accordion styled name={language.modelProfiles.defaultKeys}>
+    <Accordion styled name={language.modelProfiles.defaultKeys} startOpen={requestedOpenAI || requestedGoogle}>
         <p class="text-textcolor2 text-sm mb-2">{language.modelProfiles.defaultKeysHint}</p>
         {#each defaultKeys as key (secretPathKey(key.path))}
-            <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(key.label)}</span>
-            <SecretInput path={key.path} marginBottom />
+            <div class="flex flex-col" data-credential={credentialOf(key.path)}>
+                <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(key.label)}</span>
+                <SecretInput path={key.path} marginBottom />
+            </div>
         {/each}
         {#if usesVertex}
             <span class="text-textcolor">{language.sharedApiKeys.projectId}</span>

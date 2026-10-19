@@ -7,12 +7,21 @@
     import { saveAsset, globalFetch } from "src/ts/globalApi.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import { alertError, alertNormal } from "src/ts/alert";
+    import { onMount } from "svelte";
+    import CredentialStatusLink from "../CredentialStatusLink.svelte";
+    import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
+
+    // The NovelAI key is edited only here (settings UI plan slice 8); NovelAI TTS links to it. A link
+    // shows it even while another image provider is selected.
+    const revealNovelAIKey = takeCredentialRequest("NAIApiKey");
+    onMount(() => {
+        if (revealNovelAIKey) void scrollToCredential("NAIApiKey");
+    });
 
     // wavespeed
     interface WavespeedModel {
@@ -184,6 +193,13 @@
     {/if}
 </SelectInput>
 
+{#if revealNovelAIKey && settings.memoryTranslateMedia.sdProvider !== "novelai"}
+    <div class="flex flex-col" data-credential="NAIApiKey">
+        <span class="text-textcolor">Novel AI API Key</span>
+        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+    </div>
+{/if}
+
 {#if settings.memoryTranslateMedia.sdProvider === "webui"}
     <span class="text-draculared text-xs mb-2">You must use WebUI with --api flag</span>
     <span class="text-draculared text-xs mb-2"
@@ -238,8 +254,10 @@
         placeholder="https://image.novelai.net"
         bind:value={settings.memoryTranslateMedia.NAIImgUrl}
     />
-    <span class="text-textcolor">API Key</span>
-    <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+    <div class="flex flex-col" data-credential="NAIApiKey">
+        <span class="text-textcolor">API Key</span>
+        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+    </div>
 
     <span class="text-textcolor">Model</span>
     <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgModel}>
@@ -646,8 +664,7 @@
 {/if}
 
 {#if settings.memoryTranslateMedia.sdProvider === "dalle"}
-    <span class="text-textcolor">OpenAI API Key</span>
-    <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom placeholder="sk-..." />
+    <CredentialStatusLink credential="openAIKey" label="OpenAI API Key" />
 
     <span class="text-textcolor mt-4">Dall-E Quality</span>
     <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.dallEQuality}>
@@ -798,8 +815,9 @@
 {/if}
 
 {#if settings.memoryTranslateMedia.sdProvider === "Imagen"}
-    <span class="text-textcolor mt-2">GoogleAI API Key</span>
-    <SecretInput path={{ kind: "nested", field: "google" }} marginBottom />
+    <div class="mt-2 flex flex-col">
+        <CredentialStatusLink credential="google" label="GoogleAI API Key" />
+    </div>
 
     <span class="text-textcolor">Model</span>
     <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.ImagenModel}>

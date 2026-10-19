@@ -2,11 +2,11 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
+    import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { voiceSettingsItems } from "src/ts/setting/voiceSettingsData";
 
     const uid = $props.id();
@@ -24,11 +24,9 @@
     <span class="text-textcolor mt-2">VOICEVOX URL</span>
     <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.voicevoxUrl} />
 
-    <span class="text-textcolor">OpenAI Key</span>
-    <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom />
+    <CredentialStatusLink credential="openAIKey" label="OpenAI Key" />
 
-    <span class="text-textcolor mt-2">NovelAI API key</span>
-    <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+    <CredentialStatusLink credential="NAIApiKey" label="NovelAI API key" />
 
     <span class="text-textcolor">Huggingface Key</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.huggingfaceKey} placeholder="hf_..." />
