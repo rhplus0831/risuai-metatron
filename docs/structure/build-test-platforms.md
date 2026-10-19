@@ -133,6 +133,37 @@ processes. Select them when touching the last column below. Discover current tag
 with `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather than relying
 on a count or timing estimate.
 
+### Test rules
+
+Two gates decide whether a test belongs in the default suite. Both are checked from the
+test's code, not from a guess about how likely the code is to regress.
+
+- Determinism (mechanical). A gated test must not depend on real wall-clock time, CPU
+  time, or the scheduler. That rules out elapsed-time and throughput assertions
+  (`toBeLessThan` on a duration, "N items in under M ms"), a sleep used to let other
+  work finish before an assertion, a poll with a real-time cap over real socket or
+  file I/O, a real production deadline that test work must beat (a staging TTL, an
+  echo delay, a regex or Lua budget), and a cold worker, child process, tokenizer, or
+  module graph booted inside the default timeout. Fix by controlling the clock:
+  `vi.useFakeTimers` (add `"Date"` to `toFake` when the code reads `Date.now`), an
+  injected `now`, a deferred or latch that holds the provider or the slot, a call-through
+  `setTimeout` spy, or a test-only limit option. Boot the module graph once in a
+  `beforeAll` with its own long timeout (as `characterCardsPngImport.test.ts` does) and
+  warm worker pools before the timed region. A test whose subject is the real limit
+  itself goes to the `slow` tier instead (see Recipes).
+- Contract over implementation (judgment). A test earns its place when a plausible
+  wrong implementation would fail it. A test that only pins call order, private state,
+  a mock's return value, or fixed data the task did not touch protects nothing and
+  breaks on refactors; do not add it, and prune it when it starts costing time. Add
+  tests only for code the task changes.
+
+The static inventory of gated tests that still break the determinism gate, with a
+disposition per spot (keep, rewrite, move to `slow`, delete), is
+`docs/audit/timing-dependent-tests-2026-10-19.md`. Verify a timing fix under load with
+the taskset recipe (one CPU, eight `node -e "while(true){}"` burners,
+`--maxWorkers=3 --testTimeout=60000`), three runs. `server/src/tests/testSupport.ts`
+`waitFor` carries a 2 s real-time cap and is a known offender; prefer awaiting the event.
+
 | Test (file in `server/src/tests/`)                                                                                                                     | Covers                                                                                                                                                                                | Run after changing                                                                     |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `tokenPlainNode.test.ts` (the whole file)                                                                                                              | Every tokenizer family loaded cold and concurrently in a plain `node` process from a dist-only root, with the browser's ids; the `loadAll` entry's report and exit codes              | `server/src/prompt/tokenizers/`, `public/token/`, the Dockerfile's `dist/token` layout |

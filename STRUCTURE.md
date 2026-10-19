@@ -45,6 +45,15 @@ Verification:
   Vitest defaults to happy-dom; server tests select Node. The setup mocks KaTeX,
   replaces `safeStructuredClone` with a JSON clone, and patches happy-dom for DOMPurify.
   Domain guides own focused test paths and coverage gaps.
+- V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real
+  wall-clock time, CPU time, or the scheduler: no elapsed-time or throughput
+  assertion, no sleep as synchronization, no real production deadline raced by test
+  work, no cold worker, process, or module-graph boot inside the default timeout.
+  Control the clock (fake timers, an injected `now`, a deferred or latch, a
+  test-only limit option) or tag the test `slow`. Add tests only for code the task
+  changes, and keep a test only when a plausible wrong implementation would fail
+  it. Details and the inventory of current offenders:
+  [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
 
 Data and persistence:
 
