@@ -1138,7 +1138,7 @@
                     {/if}
 
                     <!-- svelte-ignore block_empty -->
-                    {#if currentCharacter.ttsMode && currentCharacter.ttsMode !== "vits"}
+                    {#if currentCharacter.ttsMode}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={() => {

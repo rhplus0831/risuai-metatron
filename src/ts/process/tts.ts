@@ -22,7 +22,14 @@ import {
 type SpeechPlayback = { source: AudioBufferSourceNode; context: AudioContext };
 type TTSPlaybackContext = { ttsMode: string; characterId: string; generation: number };
 const activeSpeech = new Set<SpeechPlayback>();
+/** Contexts still decoding: Stop closes them too, so none stays open after it. */
+const pendingContexts = new Set<AudioContext>();
 let stopGeneration = 0;
+
+function closePending(context: AudioContext) {
+    if (!pendingContexts.delete(context)) return;
+    void context.close().catch(() => {});
+}
 
 function retireSpeech(playback: SpeechPlayback) {
     if (!activeSpeech.delete(playback)) return;
@@ -34,6 +41,7 @@ function retireSpeech(playback: SpeechPlayback) {
 async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, volume = 1) {
     if (ctx.generation !== stopGeneration) return;
     const context = new AudioContext();
+    pendingContexts.add(context);
     try {
         const decoded = await context.decodeAudioData(audio);
         const source = context.createBufferSource();
@@ -48,15 +56,18 @@ async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, v
         }
         // Stop may have run during a fetch, hook, or decode belonging to this speech.
         if (ctx.generation !== stopGeneration) {
-            void context.close().catch(() => {});
+            closePending(context);
             return;
         }
         const playback = { source, context };
         source.onended = () => retireSpeech(playback);
         source.start();
+        pendingContexts.delete(context);
         activeSpeech.add(playback);
     } catch (error) {
-        void context.close().catch(() => {});
+        closePending(context);
+        // Stop closes a decoding context, which may reject the decode.
+        if (ctx.generation !== stopGeneration) return;
         throw error;
     }
 }
@@ -348,7 +359,9 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 }
             }
             case "vits": {
-                await runVITS(text, character.vits);
+                const audio = await runVITS(text, character.vits);
+                // VITS bypasses the postprocessor hooks but shares the Stop registry.
+                if (audio) await playProcessedAudio(audio, hookCtx);
                 break;
             }
             case "gptsovits": {
@@ -490,6 +503,7 @@ export function stopTTS() {
         }
         retireSpeech(playback);
     }
+    for (const context of pendingContexts) closePending(context);
     if (speechSynthesis && SpeechSynthesisUtterance) {
         speechSynthesis.cancel();
     }

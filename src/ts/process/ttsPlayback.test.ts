@@ -23,6 +23,7 @@ vi.mock("./transformers", () => ({ runVITS: vi.fn() }));
 vi.mock("src/lang", () => ({ language: { errors: { httpError: "HTTP error: " } } }));
 
 import { sayTTS, stopTTS } from "./tts";
+import { runVITS } from "./transformers";
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -94,6 +95,7 @@ beforeEach(() => {
         return audioResponse();
     });
     deps.globalFetch.mockImplementation(async () => globalResponse());
+    vi.mocked(runVITS).mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
     deps.translateVox.mockResolvedValue("こんにちは &speaker=99 # + 100% 日本語");
     vi.stubGlobal("fetch", deps.fetch);
     vi.stubGlobal("AudioContext", AudioContextMock);
@@ -233,5 +235,52 @@ describe("sayTTS and stopTTS", () => {
         expect(contexts).toHaveLength(2);
         for (const context of contexts) expect(context.close).toHaveBeenCalledOnce();
         expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("plays VITS through the shared registry so Stop ends it and leaves no context open", async () => {
+        await sayTTS(character("vits"), "vits speech");
+        expect(runVITS).toHaveBeenCalledWith("vits speech", undefined);
+        expect(contexts).toHaveLength(1);
+        expect(sources[0].start).toHaveBeenCalledOnce();
+        stopTTS();
+        expect(sources[0].stop).toHaveBeenCalledOnce();
+        expect(contexts[0].close).toHaveBeenCalledOnce();
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("plays nothing for a VITS synthesis still running when Stop bumps the generation", async () => {
+        const synthesis = deferred<ArrayBuffer>();
+        vi.mocked(runVITS).mockReturnValueOnce(synthesis.promise);
+        const work = sayTTS(character("vits"), "slow model");
+        await vi.waitFor(() => expect(runVITS).toHaveBeenCalledOnce());
+        stopTTS();
+        synthesis.resolve(new Uint8Array([1, 2, 3]).buffer);
+        await work;
+        expect(contexts).toHaveLength(0);
+        expect(sources).toHaveLength(0);
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("closes a VITS context still decoding at Stop at once, and alerts nothing when that decode rejects", async () => {
+        const pending = deferred<unknown>();
+        decode.mockReturnValueOnce(pending.promise.then(() => Promise.reject(new Error("context closed"))));
+        const work = sayTTS(character("vits"), "decoding");
+        await vi.waitFor(() => expect(decode).toHaveBeenCalledOnce());
+        stopTTS();
+        expect(contexts).toHaveLength(1);
+        expect(contexts[0].close).toHaveBeenCalledOnce();
+        pending.resolve(undefined);
+        await work;
+        expect(sources.filter((source) => source.start.mock.calls.length)).toHaveLength(0);
+        expect(contexts[0].close).toHaveBeenCalledOnce();
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("still alerts a VITS decode failure without Stop and closes its context", async () => {
+        decode.mockRejectedValueOnce(new Error("bad wav"));
+        await sayTTS(character("vits"), "broken");
+        expect(contexts[0].close).toHaveBeenCalledOnce();
+        expect(sources).toHaveLength(0);
+        expect(deps.alert).toHaveBeenCalledOnce();
     });
 });

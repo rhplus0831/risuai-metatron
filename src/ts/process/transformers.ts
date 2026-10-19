@@ -125,7 +125,14 @@ let lastSynth: string = null;
 
 export type { OnnxModelFiles } from "../../../shared/settings.ts";
 
-export const runVITS = async (text: string, modelData: string | OnnxModelFiles = "Xenova/mms-tts-eng") => {
+/**
+ * Synthesizes `text` and returns the WAV bytes, or undefined without a model. Playback belongs to
+ * `tts.ts`, whose registry `stopTTS` stops.
+ */
+export const runVITS = async (
+    text: string,
+    modelData: string | OnnxModelFiles = "Xenova/mms-tts-eng",
+): Promise<ArrayBuffer | undefined> => {
     await initTransformers();
     const { WaveFile } = await import("wavefile");
     const { pipeline, env } = await import("@huggingface/transformers");
@@ -153,13 +160,7 @@ export const runVITS = async (text: string, modelData: string | OnnxModelFiles =
     let out = await synthesizer(text, {});
     const wav = new WaveFile();
     wav.fromScratch(1, out.sampling_rate, "32f", out.audio);
-    const audioContext = new AudioContext();
-    audioContext.decodeAudioData(asBuffer(wav.toBuffer().buffer), (decodedData) => {
-        const sourceNode = audioContext.createBufferSource();
-        sourceNode.buffer = decodedData;
-        sourceNode.connect(audioContext.destination);
-        sourceNode.start();
-    });
+    return asBuffer(wav.toBuffer().buffer);
 };
 
 /**
