@@ -2326,3 +2326,109 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
         expect(chat.hasUnsavedChatWork()).toBe(false);
     });
 });
+
+describe("a recovery's list read that finds its character gone (open bug fixes B1)", () => {
+    /**
+     * Puts an `authFetch` over the fake that holds the next `/api/resources/read` answer (computed
+     * when the request arrives) until `release`; later reads pass.
+     */
+    function holdNextRead(fake: StoreBackedServer) {
+        let release: (() => void) | null = null;
+        let armed = true;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fake.fetch(path, init);
+                if (armed && path === "/api/resources/read") {
+                    armed = false;
+                    await new Promise<void>((resolve) => {
+                        release = resolve;
+                    });
+                }
+                return response;
+            },
+            close: () => fake.close(),
+        };
+        return {
+            /** Spins microtasks (the fake answers on microtasks alone) until the read is held. */
+            untilHeld: async () => {
+                for (let i = 0; i < 1000 && !release; i += 1) {
+                    await Promise.resolve();
+                }
+                expect(release).not.toBeNull();
+            },
+            release: () => release!(),
+        };
+    }
+
+    /**
+     * Another tab deletes `c`; this tab's queued reorder then conflicts and the recovery reads the
+     * character's list (`hydrateCharacters`), which the server answers null. That read is held.
+     */
+    async function startRecovery() {
+        const booted = await boot();
+        const { fake, sync, chat } = booted;
+        const read = holdNextRead(fake);
+        fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
+        chat.reorderChats("c", ["j", "k"]);
+        const flushing = sync.flushResources();
+        await read.untilHeld();
+        const sent = fake.requests.map((request) => request.path);
+        expect(sent).toEqual(["/api/resources/batch", "/api/resources/read"]);
+        return { ...booted, read, flushing };
+    }
+    const readCount = (fake: StoreBackedServer) =>
+        fake.requests.filter((request) => request.path === "/api/resources/read").length;
+
+    it("keeps a character a job hydration installed while the read was pending (another tab created it again under its id), and takes its list at the next read", async () => {
+        const { fake, sync, character, read, flushing } = await startRecovery();
+        fake.store.applyChanges({
+            ops: [{ kind: fake.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "Again" } }],
+        });
+        const record = fake.record("characters", "c")!;
+        expect(sync.applyHydration({ kind: "characters", id: "c", revision: record.revision, data: record.data })).toBe(
+            true,
+        );
+        read.release();
+        // The null answer is older than the held revision: nothing is removed, and `c` stays listed.
+        expect(await flushing).toEqual({ discarded: [] });
+        expect(character()?.name).toBe("Again");
+        expect(character()!.chats.map((entry: Chat) => entry.id)).toEqual(["j", "k"]);
+        expect(readCount(fake)).toBe(1);
+
+        // The next cycle reads the list again and takes the server's (the old chats are gone there).
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(readCount(fake)).toBe(2);
+        expect(character()?.name).toBe("Again");
+        const ids = character()!.chats.map((entry: Chat) => entry.id);
+        expect(ids).not.toContain("j");
+        expect(ids).not.toContain("k");
+        expect(fake.order("c")!.ids).toEqual(ids);
+        expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
+        await sync.flushResources();
+        expect(readCount(fake)).toBe(2);
+    });
+
+    it("keeps a same-id recreation made here while the read was pending; the next read, on the new lifetime, decides", async () => {
+        const { fake, sync, character, characters, read, flushing } = await startRecovery();
+        const characterStore: CharacterStore = await import("../characterStore.svelte");
+        expect(characterStore.removeCharacter("c")).toBe(true);
+        characterStore.addCharacter({
+            chaId: "c",
+            name: "Replacement",
+            chats: [{ id: "n", name: "N", note: "", localLore: [], message: [m("n1", "New")] }],
+        });
+        read.release();
+        // The held revision did not move, the chats' lifetime did: the answer is not applied.
+        expect(await flushing).toEqual({ discarded: [] });
+        expect(character()?.name).toBe("Replacement");
+        expect(character()!.chats.map((entry: Chat) => entry.id)).toEqual(["n"]);
+        expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
+
+        // Read again with nothing moved, the server's deletion removes the replacement with the notice.
+        await sync.flushResources();
+        expect(readCount(fake)).toBe(2);
+        expect(characters().map((entry: any) => entry.chaId)).toEqual([]);
+        expect(fake.record("characters", "c")).toBeNull();
+        expect(alerts.normal.mock.calls).toEqual([["reloaded"], ["reloaded"]]);
+    });
+});

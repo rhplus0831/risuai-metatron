@@ -76,6 +76,7 @@ import {
     adoptCharacter,
     captureChatObligations,
     chatDiscardSequence,
+    chatOwnerToken,
     chatJobRetryAt,
     chatDiscardsSince,
     type ChatWork,
@@ -2609,7 +2610,9 @@ async function recoverConflictedWork(
  * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
  * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
  * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
- * generation runs on it; an acknowledgement's (`listRefresh`) is applied as a live update that keeps
+ * generation runs on it, and one the read finds gone is removed with its chats unless its held
+ * revision or its chats' lifetime moved during the read (then it stays listed for the next read);
+ * an acknowledgement's (`listRefresh`) is applied as a live update that keeps
  * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
  * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
  * and stays listed while the list cannot be applied yet. Returns whether anything was discarded
@@ -2625,6 +2628,13 @@ async function hydrateCharacters(): Promise<boolean> {
         return false;
     }
     const issued = heldChatRevisionsByCharacter(ids);
+    // Taken before the read: a recovery's character found gone is removed only if neither its held
+    // revision (a job hydration, a live update) nor its chats' lifetime (a same-id recreation) moved
+    // while the read was pending.
+    const issuedHeld = new Map(
+        ids.map((id) => [id, persisted.get(recordKey(RESOURCE_KIND.characters, id))?.revision ?? null]),
+    );
+    const issuedOwners = new Map(ids.map((id) => [id, chatOwnerToken(id)]));
     const read = await readRefs(
         ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
         { chatSummaryCollections: ids },
@@ -2653,6 +2663,13 @@ async function hydrateCharacters(): Promise<boolean> {
             continue;
         }
         if (!collection.order && record && record.revision === null) {
+            if (
+                (persisted.get(recordKey(RESOURCE_KIND.characters, id))?.revision ?? null) !== issuedHeld.get(id) ||
+                chatOwnerToken(id) !== issuedOwners.get(id)
+            ) {
+                // The answer is older than what the mirror now holds: kept listed for the next read.
+                continue;
+            }
             // The character itself is gone on the server: remove it with its chats.
             acceptRemote(record);
             discardedWork = true;
