@@ -271,7 +271,7 @@ export const advancedSettingsItems: SettingItem[] = [
 /** The page heading, above the sections. */
 export const advancedSettingsHeader: SettingItem[] = itemsById(advancedSettingsItems, ["adv.header", "adv.warn"]);
 
-/** The Advanced page's sections (`docs/plan/settings-ui-reorg.md`, slice 2), over `advancedSettingsItems`. */
+/** The Advanced page's sections (archived, `docs/archived-plan/README.md`, slice 2), over `advancedSettingsItems`. */
 export const advancedSettingsSections: SettingSection[] = [
     {
         id: "advanced.featureAccess",

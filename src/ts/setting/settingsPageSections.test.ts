@@ -26,7 +26,7 @@ import type { SettingItem, SettingSection } from "./types";
 import { getFullSettingsData } from "./utils";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
-// Settings UI plan (`docs/plan/settings-ui-reorg.md`) slice 2: a sectioned page builds its sections by
+// Settings UI plan (archived, `docs/archived-plan/README.md`) slice 2: a sectioned page builds its sections by
 // id from its leaf arrays, so every leaf item is placed exactly once and the catalog
 // (`getFullSettingsData`) still lists it once. Later slices add their pages to `PAGES`. An item moved
 // to another page moves its definition into that page's leaf array (slice 6), so the placement check

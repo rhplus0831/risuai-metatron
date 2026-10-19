@@ -517,7 +517,7 @@ export interface DisplaySettingsTab {
 }
 
 /**
- * The Display page's tabs (`docs/plan/settings-ui-reorg.md`, slice 7), over `displaySettingsItems`. The
+ * The Display page's tabs (archived, `docs/archived-plan/README.md`, slice 7), over `displaySettingsItems`. The
  * legacy GUI (`settings.ui.useLegacyGUI`) stacks them in this order with no tab bar.
  */
 export const displaySettingsTabs: DisplaySettingsTab[] = [

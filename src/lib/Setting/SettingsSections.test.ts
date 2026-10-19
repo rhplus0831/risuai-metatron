@@ -3,7 +3,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Settings UI plan (`docs/plan/settings-ui-reorg.md`) slice 2: `SettingsSections` renders an ordinary
+// Settings UI plan (archived, `docs/archived-plan/README.md`) slice 2: `SettingsSections` renders an ordinary
 // section as a named region (`section` labelled by its `h3`), a collapsible one as a closed
 // accordion with its badge, and nothing for a section whose items all hide by their conditions.
 

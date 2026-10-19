@@ -20,6 +20,7 @@ git show ab11ea9d0:docs/plan/request-history-diagnostics.md
 git show 154711858:docs/plan/chat-toggles-and-presets.md
 git show 1bb0c8eee:docs/plan/large-asset-import.md
 git show f5895b925:docs/plan/sidebar-chat-status.md
+git show 46eeee597:docs/plan/settings-ui-reorg.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -40,6 +41,7 @@ it is not a current architecture guide.
 | Per-Chat Toggles and Toggle Presets | `154711858`: `docs/plan/chat-toggles-and-presets.md`                      | [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [CBS/rendering](../structure/cbs-rendering.md)                                                                                                   |
 | Large Asset Import and Export       | `1bb0c8eee`: `docs/plan/large-asset-import.md`                            | [characters/modules](../structure/characters-modules.md), [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [asset client](../structure/global-api.md), [UI/theming](../structure/ui-theming.md) |
 | Sidebar Chat Status                 | `f5895b925`: `docs/plan/sidebar-chat-status.md`                           | [UI/theming](../structure/ui-theming.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                           |
+| Settings UI Reorganization          | `46eeee597`: `docs/plan/settings-ui-reorg.md`                             | [settings](../structure/settings-i18n.md), [app shell/routes](../structure/app-shell.md), [media/translation](../structure/media-aux.md), [LLM requests](../structure/llm-requests.md)                                                 |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -47,6 +49,11 @@ Request History and Diagnostics records both implementation phases as done.
 Large Asset Import and Export landed every slice (1a–4b) on 2026-10-17 and 2026-10-18;
 its commits are listed in the archived Status line.
 Sidebar Chat Status landed all three slices on 2026-10-18 (`1b409eceb`, `94b981be3`, `f5895b925`).
+Settings UI Reorganization landed all nine slices on 2026-10-19, on the `settings-ui-plan` branch.
+The archived Status and Decisions paragraphs list its commits and the choices each slice made.
+Still open: `e2e/settingsPages.spec.ts` was updated in each slice but never run; the fetched
+WaveSpeed model list still resets when Image Generation is left; the subtitle tool's Whisper mode
+uses the OpenAI key with no status or link there.
 
 ## Server-Owned Data Chronology
 

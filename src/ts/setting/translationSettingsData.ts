@@ -381,7 +381,7 @@ export const translationSettingsItems: SettingItem[] = [
 export const translationSettingsHeader: SettingItem[] = itemsById(translationSettingsItems, ["translation.header"]);
 
 /**
- * The Translation page's sections (`docs/plan/settings-ui-reorg.md`, slice 6), over
+ * The Translation page's sections (archived, `docs/archived-plan/README.md`, slice 6), over
  * `translationSettingsItems`. `lang.translatorLang` has no condition: it turns translation on, so the
  * Translator section always shows; most other items read `translator`/`translatorType` and hide with it.
  */

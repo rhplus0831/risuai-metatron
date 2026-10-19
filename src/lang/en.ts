@@ -690,7 +690,7 @@ export const languageEnglish = {
     presensePenalty: "Presense Penalty",
     advancedSettings: "Advanced Settings",
     advancedSettingsWarn: "Warn: If you don't know what the option does, don't change it!",
-    // Settings page sections (`SettingSection`, docs/plan/settings-ui-reorg.md)
+    // Settings page sections (`SettingSection`, the archived settings UI plan)
     settingsSectionFeatureAccess: "Feature access",
     settingsSectionFeatureAccessDesc:
         "These reveal hidden and experimental settings across the app, and choose whether API keys are masked.",

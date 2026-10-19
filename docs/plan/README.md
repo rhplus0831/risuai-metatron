@@ -13,10 +13,6 @@ Active planning and implementation:
   writes, generation-refused retries, reroll history, notice reliability, conflict
   rebase, replay bookkeeping, folder and order repair, four doc corrections); landed
   slices are listed in its Status.
-- [Settings UI Reorganization](settings-ui-reorg.md): moves every setting to the page of
-  the feature it configures (Advanced, Accessibility, Display's Others tab and Other Bots
-  taken apart; Interaction and Translation pages added; quick settings panel removed;
-  sidebar grouped), with the per-item move table; landed slices are listed in its Status.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
