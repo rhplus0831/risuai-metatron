@@ -84,7 +84,7 @@ export type AssemblyHost = {
     /** `readImage` of a stored asset path. */
     readAsset(path: string): Promise<Uint8Array | null>;
     /** `getModuleAssets(chatRef)`. */
-    moduleAssets(): [string, string, string][];
+    moduleAssets(): readonly (readonly [string, string, string])[];
     /** `getModuleToggles(chatRef)`. */
     moduleToggles(): string;
     /** `runCurrentChatFunction`: every message through CBS with variables, the changed ones written. */
@@ -968,7 +968,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         const assetPromises: Promise<void>[] = [];
         formatedChat = formatedChat.replace(/\{\{asset_?prompt::(.+?)\}\}/gimsu, (match, p1) => {
             const moduleAssets = host.moduleAssets();
-            const assets = (currentChar.additionalAssets ?? []).concat(moduleAssets);
+            const assets = [...(currentChar.additionalAssets ?? []), ...moduleAssets];
             const asset = assets.find((v) => v[0] === p1);
             const readInto = (path: string) =>
                 assetPromises.push(

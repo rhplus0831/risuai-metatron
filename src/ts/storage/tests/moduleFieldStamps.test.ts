@@ -3,6 +3,8 @@ import {
     applyRaw,
     batchRecordWrites,
     initializeRecords,
+    isRecordWrapper,
+    moduleFieldPlain,
     moduleItemFieldStamp,
     moveRecordListItem,
     recordData,
@@ -12,6 +14,7 @@ import {
     setRecordWriteListener,
     trackedRecord,
 } from "../records.svelte";
+import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 
 // The save loop's module field-text stamps (`moduleItemFieldStamp`, `docs/structure/persistence.md`
 // save step 2), checked on the records module alone: a write through a wrapper under an element's
@@ -92,7 +95,8 @@ describe("a write under an element field stamps that field of that element only"
             "lorebook",
         ]);
         expect(changed(a, () => wa.lorebook.pop())).toEqual(["lorebook"]);
-        expect(changed(a, () => wa.assets.push(["y", "assets/y.png", "png"]))).toEqual(["assets"]);
+        // The asset list is immutable (heap plan B1): an addition replaces it whole.
+        expect(changed(a, () => (wa.assets = [...wa.assets, ["y", "assets/y.png", "png"]]))).toEqual(["assets"]);
         expect(changed(a, () => replaceRecordList(wa.lorebook, [wa.lorebook[0], { key: "n", content: "n" }]))).toEqual([
             "lorebook",
         ]);
@@ -206,5 +210,104 @@ describe("shared state or data that is not plain JSON makes every module stamp n
         list()[0].lorebook[0].content = "edited";
         expect(Object.getOwnPropertyDescriptor(raw()[0], "__proto__")!.value).toEqual({ tag: 1 });
         expect(raw()[0].lorebook[0].content).toBe("edited");
+    });
+});
+
+describe("frozen module asset lists (heap plan B1)", () => {
+    /** A list frozen with every tuple frozen (a Svelte proxy of one forwards `Object.isFrozen`). */
+    const frozenList = (value: unknown) =>
+        Array.isArray(value) &&
+        Object.isFrozen(value) &&
+        value.every((tuple) => Array.isArray(tuple) && Object.isFrozen(tuple));
+    const tuple = (name: string): [string, string, string] => [name, `assets/${name}.png`, "png"];
+
+    it("every install and adoption path freezes the list and its tuples: legacy pairs and extended tuples included", () => {
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        // A server copy (boot, a conflict reload, a live update, a remote patch): frozen in place.
+        applyRaw("modules", [
+            {
+                id: "a",
+                name: "A",
+                assets: [["pair", "assets/pair.png"], tuple("triple"), ["quad", "assets/q.png", "png", "x"]],
+            },
+        ]);
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        expect(raw()[0].assets.map((entry: string[]) => entry.length)).toEqual([2, 3, 4]);
+        // The element's whole field, a descriptor write, the element, a push onto the root list, a
+        // whole replacement, the root list's bulk replacement, and a foreign component's state.
+        list()[0].assets = [tuple("field")];
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        define(list()[0], "assets", [tuple("defined")]);
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        list()[0] = { id: "a", name: "A", assets: [tuple("item")] };
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        list().push({ id: "c", name: "C", assets: [tuple("pushed")] });
+        expect(frozenList(raw().at(-1)!.assets)).toBe(true);
+        replaceRecord("modules", [{ id: "r", name: "R", assets: [tuple("replaced")] }]);
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        replaceRecordList(list(), [{ id: "l", name: "L", assets: [tuple("bulk")] }]);
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        const foreign = reactiveProps({ assets: [tuple("component")] });
+        list()[0].assets = foreign.assets;
+        expect(frozenList(raw()[0].assets)).toBe(true);
+        expect(Object.isFrozen(foreign.assets)).toBe(false);
+        expect(cacheable()).toBe(true);
+        // A list of another shape stays mutable and wrapped, edited in place as before.
+        list()[0].assets = [tuple("odd"), { not: "a tuple" }] as any;
+        expect(Object.isFrozen(raw()[0].assets)).toBe(false);
+        expect(isRecordWrapper(list()[0].assets)).toBe(true);
+        expect(changed(raw()[0], () => (list()[0].assets[0][0] = "edited in place"))).toEqual(["assets"]);
+        expect(raw()[0].assets[0][0]).toBe("edited in place");
+        expect(cacheable()).toBe(true);
+    });
+
+    it("a replacement stamps assets only, reuses the unchanged tuples, and the shared copy is the list itself", () => {
+        const [a, b] = raw();
+        const wa = list()[0];
+        const bBefore = stampsOf(b);
+        const before = wa.assets;
+        const kept = before[0];
+        expect(isRecordWrapper(before)).toBe(false);
+        expect(isRecordWrapper(kept)).toBe(false);
+        // The shared copy is the frozen list itself (in DEV, a wrapper read of an untouched field is
+        // Svelte's inspection alias of that list): the same across reads, its tuples the same objects.
+        const shared = moduleFieldPlain(wa, "assets");
+        expect(moduleFieldPlain(wa, "assets")).toBe(shared);
+        expect(Object.isFrozen(shared)).toBe(true);
+        expect(shared[0]).toBe(kept);
+        expect(isRecordWrapper(shared)).toBe(false);
+        // An addition (`ModuleMenu`'s add button).
+        expect(changed(a, () => (wa.assets = [...before, tuple("y")]))).toEqual(["assets"]);
+        const added = wa.assets;
+        expect(added).not.toBe(before);
+        expect(added[0]).toBe(kept);
+        expect(frozenList(added)).toBe(true);
+        expect(before).toHaveLength(1);
+        expect(moduleFieldPlain(wa, "assets")).not.toBe(shared);
+        expect(moduleFieldPlain(wa, "assets")).toBe(added);
+        // A rename (`ModuleMenu`'s per-keystroke replacement): the tuple copied, one index written.
+        expect(
+            changed(a, () => {
+                wa.assets = added.map((entry: string[], i: number) =>
+                    i === 1 ? Object.assign([...entry], { 0: "renamed" }) : entry,
+                );
+            }),
+        ).toEqual(["assets"]);
+        expect(wa.assets[0]).toBe(kept);
+        expect(wa.assets[1]).toEqual(["renamed", "assets/y.png", "png"]);
+        expect(added[1][0]).toBe("y");
+        // The self-assignment and a share with another module: no copy, no taint (the list is immutable).
+        const held = wa.assets;
+        expect(changed(a, () => (wa.assets = wa.assets))).toEqual(["assets"]);
+        expect(wa.assets[0]).toBe(kept);
+        expect(wa.assets).toEqual(held);
+        list()[1].assets = wa.assets;
+        expect(list()[1].assets[0]).toBe(kept);
+        expect(cacheable()).toBe(true);
+        // An unrelated edit keeps the shared copy.
+        wa.name = "N";
+        expect(moduleFieldPlain(wa, "assets")).toBe(wa.assets);
+        expect(stampsOf(b).lorebook).toBe(bBefore.lorebook);
+        expect(cacheable()).toBe(true);
     });
 });

@@ -99,10 +99,11 @@ describe("asset list name caches", () => {
         const draft: Pick<RisuModule, "assets"> = { assets: [["Draft pose", "assets/hidden.png", "png"]] };
         const names = moduleAssetNames(draft);
         expect(names).toEqual(["draft pose"]);
-        draft.assets[0][0] = "Renamed";
+        // A module's asset list is immutable (heap plan B1): an edit replaces it whole.
+        draft.assets = [["Renamed", "assets/hidden.png", "png"]];
         expect(moduleAssetNames(draft)).toEqual(["renamed"]);
         expect(names).toEqual(["draft pose"]);
-        draft.assets.push(["Added", "assets/added.png", "png"]);
+        draft.assets = [...draft.assets, ["Added", "assets/added.png", "png"]];
         expect(moduleAssetNames(draft)).toEqual(["renamed", "added"]);
         draft.assets = [["Replacement", "p", "png"]];
         expect(moduleAssetNames(draft)).toEqual(["replacement"]);
@@ -124,16 +125,20 @@ describe("asset list name caches", () => {
         expect(moduleFieldPlain(live, "assets")).toBe(copy);
         expect(moduleAssetNames(live)).toBe(names);
 
-        live.assets[0][0] = "Changed";
+        // The record's list is frozen and shared as itself; an edit replaces it whole (heap plan B1).
+        expect(Object.isFrozen(copy)).toBe(true);
+        expect(() => ((live.assets as any)[0][0] = "Changed")).toThrow(TypeError);
+        expect(moduleAssetNames(live)).toBe(names);
+        live.assets = [["Changed", "assets/path-only.png", "png"]];
         const changedNames = moduleAssetNames(live);
         expect(changedNames).not.toBe(names);
         expect(changedNames).toEqual(["changed"]);
         expect(moduleAssetNames(live)).toBe(changedNames);
         expect(moduleFieldPlain(live, "assets")).toEqual([["Changed", "assets/path-only.png", "png"]]);
         expect(copy).toEqual([["Mixed CASE", "assets/path-only.png", "png"]]);
-        live.assets.push(["Added", "a", "webp"]);
+        live.assets = [...live.assets, ["Added", "a", "webp"]];
         expect(moduleAssetNames(live)).toEqual(["changed", "added"]);
-        live.assets.splice(0, 1);
+        live.assets = live.assets.filter((_, index) => index !== 0);
         expect(moduleAssetNames(live)).toEqual(["added"]);
         live.assets = [["Local", "l", "png"]];
         expect(moduleAssetNames(live)).toEqual(["local"]);

@@ -420,7 +420,7 @@ async function renderHighlightableMarkdown(data: string) {
 
 export const assetRegex = /{{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)}}/gms;
 
-function getAssetSrc(assetArr: string[][], assetPaths: AssetPaths) {
+function getAssetSrc(assetArr: readonly (readonly string[])[], assetPaths: AssetPaths) {
     for (const asset of assetArr) {
         const key = asset[0].toLocaleLowerCase();
         assetPaths[key] ??= {
@@ -433,7 +433,7 @@ function getAssetSrc(assetArr: string[][], assetPaths: AssetPaths) {
     }
 }
 
-function getEmoSrc(emoArr: string[][], emoPaths: AssetPaths) {
+function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths) {
     for (const emo of emoArr) {
         emoPaths[emo[0].toLocaleLowerCase()] = {
             srcPaths: [emo[1]],
@@ -536,7 +536,11 @@ const parserCharacterAssets = $derived.by(() => {
 const parserAssetInputs = $derived.by(() => ({ character: parserCharacterAssets, modules: parserModuleAssets }));
 let lastAssetInputs: typeof parserAssetInputs | undefined;
 
-export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+export function resetAssetsCache(
+    charAssets: readonly (readonly string[])[],
+    emoAssets: readonly (readonly string[])[],
+    moduleAssets: readonly (readonly string[])[],
+) {
     // An explicit reset (including moduleAssets = []) wins until the live inputs actually change.
     lastAssetInputs = untrack(() => parserAssetInputs);
     const assetPaths: AssetPaths = {};

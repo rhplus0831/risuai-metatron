@@ -8,6 +8,7 @@ import {
     hasRecord,
     initializeRecords,
     isRecordWrapper,
+    moduleItemFieldStamp,
     moveRecordListItem,
     recordData,
     replaceRecord,
@@ -549,5 +550,86 @@ describe("notifications", () => {
         initializeRecords({ ui: { zoomsize: 1 } });
         trackedRecord<any>("ui")!.zoomsize = 2;
         expect(previous).not.toHaveBeenCalled();
+    });
+});
+
+describe("frozen module asset lists (heap plan B1)", () => {
+    const tuple = (name: string): [string, string, string] => [name, `assets/${name}.png`, "png"];
+    const stamps = () => {
+        const element = recordData<any[]>("modules")![0];
+        return [moduleItemFieldStamp(element, "assets"), moduleItemFieldStamp(element, "name")];
+    };
+
+    it("a verified list and its tuples are leaves; a retained wrapper of the list replaced by a frozen one reads, and every write into it is refused unchanged", () => {
+        // A list of another shape is wrapped: its wrapper is retained, then the field replaced whole.
+        initializeRecords({ modules: [{ id: "a", name: "A", assets: [tuple("x"), { not: "a tuple" }] }] });
+        const modules = trackedRecord<any[]>("modules")!;
+        const retained = modules[0].assets;
+        expect(isRecordWrapper(retained)).toBe(true);
+        const push = retained.push;
+        modules[0].assets = [tuple("x"), tuple("y")];
+        expect(notified).toEqual(["modules"]);
+        notified = [];
+        const leaf = modules[0].assets;
+        expect(isRecordWrapper(leaf)).toBe(false);
+        expect(Object.isFrozen(leaf)).toBe(true);
+        expect(isRecordWrapper(leaf[0])).toBe(false);
+        expect(Object.isFrozen(leaf[0])).toBe(true);
+        expect(Object.getOwnPropertyDescriptor(modules[0], "assets")!.value).toBe(leaf);
+        expect({ ...modules[0] }.assets).toBe(leaf);
+        // The retained wrapper now stands for the frozen list: its reads keep the Proxy invariants.
+        expect(isRecordWrapper(retained[0])).toBe(false);
+        expect(retained[0]).toBe(leaf[0]);
+        expect(retained.length).toBe(2);
+        expect("0" in retained).toBe(true);
+        expect(Object.keys(retained)).toEqual(["0", "1"]);
+        expect([...retained]).toEqual([tuple("x"), tuple("y")]);
+        expect(JSON.stringify(retained)).toBe(JSON.stringify([tuple("x"), tuple("y")]));
+        expect(Object.getOwnPropertyDescriptor(retained, "length")!.value).toBe(2);
+        expect(Object.getOwnPropertyDescriptor(retained, "0")).toMatchObject({ enumerable: true, configurable: true });
+        expect(notified).toEqual([]);
+
+        // The refusal matrix: a TypeError before anything changes (text, notifications, stamps).
+        const before = stamps();
+        const refusedFrozen = (write: () => unknown) => {
+            refused("modules", write, TypeError);
+            expect(stamps()).toEqual(before);
+        };
+        refusedFrozen(() => (retained[0] = tuple("z")));
+        refusedFrozen(() => (retained[2] = tuple("z")));
+        refusedFrozen(() => (retained.length = 0));
+        refusedFrozen(() => delete retained[0]);
+        refusedFrozen(() =>
+            Object.defineProperty(retained, "0", {
+                value: tuple("z"),
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            }),
+        );
+        refusedFrozen(() => ((retained as any)[Symbol("tag")] = 1));
+        for (const mutator of ["push", "pop", "shift", "unshift", "splice", "reverse", "sort", "fill", "copyWithin"]) {
+            refusedFrozen(() => retained[mutator](0, 1));
+        }
+        refusedFrozen(() => push(tuple("z")));
+        refusedFrozen(() => moveRecordListItem(retained, 0, 1));
+        refusedFrozen(() => replaceRecordList(retained, []));
+        refusedFrozen(() => (retained[0][0] = "z"));
+        // The leaves themselves: strict-mode TypeErrors of a frozen object.
+        refusedFrozen(() => (leaf[0] = tuple("z")));
+        refusedFrozen(() => leaf.push(tuple("z")));
+        refusedFrozen(() => (leaf[1][1] = "assets/z.png"));
+        expect(JSON.parse(text("modules"))[0].assets).toEqual([tuple("x"), tuple("y")]);
+        expect(modules[0].assets).toBe(leaf);
+        expect(moduleItemFieldStamp(recordData<any[]>("modules")![0], "id")).not.toBeNull();
+
+        // The edit: a whole replacement, stamping `assets` only; the retained wrapper follows the field.
+        modules[0].assets = [...leaf, tuple("z")];
+        expect(notified).toEqual(["modules"]);
+        expect(stamps()[0]).not.toBe(before[0]);
+        expect(stamps()[1]).toBe(before[1]);
+        expect(retained.length).toBe(3);
+        expect(retained[2]).toEqual(tuple("z"));
+        expect(Object.isFrozen(modules[0].assets)).toBe(true);
     });
 });

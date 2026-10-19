@@ -34,6 +34,7 @@
     const assetsOwnerId = $derived(currentModule?.id);
     let assetQuery = $derived.by(() => {
         assetsOwnerId;
+        clearRenameHold();
         return "";
     });
     let shownAssets = $derived.by(() => {
@@ -41,15 +42,49 @@
         assetQuery;
         return ASSET_LIST_PAGE;
     });
+    // The asset list is immutable: every edit replaces it. The list this component's own rename made
+    // keeps the matches, so a row stays visible while its name is being edited; any other new list
+    // (an addition, a deletion, another tab's copy) matches again.
+    let renamedList: unknown = null;
+    let previousMatches: { owner: unknown; query: string; indices: number[] } | null = null;
+
+    function clearRenameHold() {
+        previousMatches = null;
+        renamedList = null;
+    }
+
+    function setAssetQuery(query: string) {
+        if (query !== assetQuery) clearRenameHold();
+        assetQuery = query;
+    }
+
     const matchedAssets = $derived.by(() => {
         assetsOwnerId;
         const query = assetQuery.trim().toLowerCase();
         const list = currentModule.assets;
         const length = list?.length ?? 0;
         if (!query) return null;
-        // Name reads are untracked so a row stays visible while its name is being edited.
-        return length ? untrack(() => matchingAssetIndices(moduleAssetNames(currentModule), query)) : [];
+        const previous = previousMatches;
+        if (previous && list === renamedList && previous.owner === assetsOwnerId && previous.query === query) {
+            return previous.indices;
+        }
+        const indices = length ? untrack(() => matchingAssetIndices(moduleAssetNames(currentModule), query)) : [];
+        previousMatches = { owner: assetsOwnerId, query, indices };
+        return indices;
     });
+
+    function renameAsset(index: number, name: string) {
+        const list = currentModule.assets;
+        if (!list?.[index]) return;
+        currentModule.assets = list.map((asset, i) => {
+            if (i !== index) return asset;
+            const renamed: [string, string, string] = [...asset];
+            renamed[0] = name;
+            return renamed;
+        });
+        // The stored list (adoption may store another array than the one assigned).
+        renamedList = untrack(() => currentModule.assets);
+    }
     const assetCount = $derived(matchedAssets?.length ?? currentModule.assets?.length ?? 0);
     const assetIndices = $derived(
         matchedAssets?.slice(0, shownAssets) ??
@@ -328,7 +363,7 @@
                                     "svg",
                                     "avif",
                                 ]);
-                                currentModule.assets = currentModule.assets ?? [];
+                                currentModule.assets ??= [];
                                 if (da.length === 0) {
                                     return;
                                 }
@@ -340,10 +375,10 @@
                                     alertError(`${error}`);
                                     return;
                                 }
-                                currentModule.assets.push(
+                                currentModule.assets = [
+                                    ...(currentModule.assets ?? []),
                                     ...da.map((f, i): [string, string, string] => [f.name, keys[i], extension(f)]),
-                                );
-                                currentModule.assets = currentModule.assets;
+                                ];
                             }}
                         >
                             <PlusIcon />
@@ -352,7 +387,11 @@
                 </tr>
                 <tr>
                     <td colspan="2">
-                        <TextInput fullwidth placeholder={language.search} bind:value={assetQuery} />
+                        <TextInput
+                            fullwidth
+                            placeholder={language.search}
+                            bind:value={() => assetQuery, setAssetQuery}
+                        />
                     </td>
                 </tr>
                 {#if matchedAssets?.length === 0}
@@ -391,7 +430,8 @@
                                     fullwidth
                                     size="sm"
                                     marginBottom
-                                    bind:value={currentModule.assets[index][0]}
+                                    value={assets[0]}
+                                    oninput={(event) => renameAsset(index, event.currentTarget.value)}
                                     placeholder="..."
                                 />
                             </td>
@@ -400,9 +440,7 @@
                                 <button
                                     class="hover:text-green-500"
                                     onclick={() => {
-                                        let additionalAssets = currentModule.assets;
-                                        additionalAssets.splice(index, 1);
-                                        currentModule.assets = additionalAssets;
+                                        currentModule.assets = currentModule.assets.filter((_, i) => i !== index);
                                     }}
                                 >
                                     <TrashIcon />

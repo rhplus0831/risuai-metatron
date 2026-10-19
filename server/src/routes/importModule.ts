@@ -103,6 +103,11 @@ export function registerModuleImportRoutes(
             const header = new Uint8Array(RECORD_HEADER_BYTES);
             const view = new DataView(header.buffer);
             let position = recordsStart;
+            // A writable copy filled as the records stream, assigned once (the module type is readonly);
+            // an absent or null list stays as it was.
+            const filled = Array.isArray(module.assets)
+                ? module.assets.map((asset) => [...asset] as [string, string, string])
+                : null;
             for (let index = 0; index < total; index++) {
                 if (signal.aborted) {
                     return;
@@ -125,12 +130,15 @@ export function registerModuleImportRoutes(
                     }
                     assetsWritten += 1;
                 }
-                module.assets![index][1] = key;
+                filled![index][1] = key;
                 const now = performance.now();
                 if (index + 1 === total || now - lastLine >= PROGRESS_INTERVAL_MS) {
                     lastLine = now;
                     yield ndjsonLine({ done: index + 1, total } satisfies ModuleImportProgress);
                 }
+            }
+            if (filled) {
+                module.assets = filled;
             }
             const result = ndjsonLine({ module, assetsWritten, assetsSkipped } satisfies ModuleImportResult);
             recordSafely(diagnostics, { kind: "lifecycle", phase: "moduleImport" });

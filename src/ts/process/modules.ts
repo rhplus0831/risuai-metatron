@@ -254,9 +254,15 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
                 },
             },
         );
-        keys.forEach((key, index) => {
-            module.assets[index][1] = key;
-        });
+        // One replacement of the list; metadata past the stored records keeps its key.
+        if (keys.length > 0) {
+            module.assets = module.assets.map((asset, index) => {
+                if (index >= keys.length) return asset;
+                const filled: [string, string, string] = [...asset];
+                filled[1] = keys[index];
+                return filled;
+            });
+        }
     } finally {
         alertClear();
     }
@@ -373,9 +379,14 @@ function copyStoredKeys(module: RisuModule, stored: RisuModule): boolean {
     if (!Array.isArray(answer) || answer.length !== local.length || !answer.every((entry) => Array.isArray(entry))) {
         return false;
     }
-    (answer as unknown[][]).forEach((entry, index) => {
-        local[index][1] = entry[1] as string;
-    });
+    // An absent list stays absent (the server's is empty then).
+    if (module.assets) {
+        module.assets = local.map((asset, index) => {
+            const filled: [string, string, string] = [...asset];
+            filled[1] = (answer as unknown[][])[index][1] as string;
+            return filled;
+        });
+    }
     return true;
 }
 

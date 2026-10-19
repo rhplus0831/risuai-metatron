@@ -13,14 +13,17 @@
 //    tab);
 // 3. `chats`: after opening the five small characters' chats, one after another;
 // 4. `module-assets`: the module editor's asset list of the first module (one page of rows);
-// 5. `module-edit`: after typing into that module's description and its save;
-// 6. `home`: back on the home screen (the sidebar's Home button).
+// 5. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
+//    its second, and the save;
+// 6. `module-edit`: after typing into that module's description and its save;
+// 7. `home`: back on the home screen (the sidebar's Home button).
 // Each snapshot is analysed by `util/heap/analyze.mjs report` in its own process and printed as one
 // table row: JS self size, `JSProxy` count, proxies of asset tuples, proxies retaining 256 KB or
 // more (count, and the outermost ones' retained size), likely duplicated large strings (same size and first 1,024 characters:
 // a snapshot keeps no more of a string), `FontFace`/`CSSStyleSheet`. The numbers are measurements: compare
 // them with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks are that the seed
-// was stored, the description edit reached the server, and no page error or unexpected egress.
+// was stored, the asset and description edits reached the server, and no page error or unexpected
+// egress.
 //
 // Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default they
 // go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default 16000),
@@ -443,6 +446,42 @@ try {
     await menu("Additional Assets").click({ timeout: 10_000 });
     await page.locator('input[placeholder="..."]').first().waitFor({ timeout: 30_000 });
     await snapshot("module-assets");
+
+    // 5a. Rename the first asset by typing (each keystroke replaces the whole list: timed per key),
+    // delete the second, and wait for the save.
+    const originalAssets = moduleList[0].assets;
+    const nameInput = page.locator('input[placeholder="..."]').first();
+    await nameInput.click();
+    await page.keyboard.press("End");
+    const keyTimes = [];
+    for (const key of "renm") {
+        const at = Date.now();
+        await page.keyboard.type(key);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+        keyTimes.push(Date.now() - at);
+    }
+    console.log(`asset rename: ${keyTimes.join(", ")} ms per keystroke`);
+    const beforeDelete = batches();
+    await page
+        .locator('input[placeholder="..."]')
+        .nth(1)
+        .locator("xpath=ancestor::tr[1]")
+        .locator("button")
+        .first()
+        .click();
+    await busy("asset delete");
+    for (let i = 0; i < 100 && batches() === beforeDelete; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(2500);
+    const edited = (await single("modules"))?.data?.find((module) => module.id === moduleList[0].id);
+    check(
+        "module asset rename and delete: saved",
+        edited?.assets?.length === originalAssets.length - 1 &&
+            edited.assets[0][0] === `${originalAssets[0][0]}renm` &&
+            edited.assets[0][1] === originalAssets[0][1] &&
+            edited.assets[1][1] === originalAssets[2][1],
+        { length: edited?.assets?.length, first: edited?.assets?.[0]?.[0] },
+    );
+    await snapshot("module-asset-edit");
 
     // 5. Type into the module's description and wait for its save.
     await menu("Basic Info").click();

@@ -410,4 +410,68 @@ describe("soundness", () => {
         agree();
         noNotice();
     }, 20_000);
+
+    it("an asset rename, addition and deletion replace the frozen list whole, each an item patch of assets; another tab's assets patch arrives frozen", async () => {
+        const { fake, settings, records, byId, ops, reads, agree, settle, patchModules, noNotice } = await boot();
+        const m1 = byId("m1");
+        const original = settings.modules[0].assets!;
+        expect(Object.isFrozen(original)).toBe(true);
+        expect(records.isRecordWrapper(original)).toBe(false);
+        const assetsPatch = () => {
+            expect(ops()).toHaveLength(1);
+            expect(ops()[0].patch.items).toEqual([]);
+            expect(ops()[0].patch.changes.map((change: any) => [change.id, Object.keys(change.set)])).toEqual([
+                ["m1", ["assets"]],
+            ]);
+            return ops()[0].patch.changes[0].set.assets as string[][];
+        };
+        // A rename (`ModuleMenu`'s per-keystroke replacement): the tuple copied, index 0 written.
+        settings.modules[0].assets = original.map((asset, i) => {
+            if (i !== 1) return asset;
+            const renamed: [string, string, string] = [...asset];
+            renamed[0] = "renamed";
+            return renamed;
+        });
+        await settle();
+        expect(assetsPatch()[1]).toEqual(["renamed", original[1][1], "png"]);
+        expect(byId("m1")).toBe(m1);
+        expect(settings.modules[0].assets![0]).toBe(original[0]);
+        agree();
+        fake.requests.length = 0;
+
+        settings.modules[0].assets = [...settings.modules[0].assets!, ["added", "assets/added.png", "png"]];
+        await settle();
+        expect(assetsPatch()).toHaveLength(3001);
+        agree();
+        fake.requests.length = 0;
+
+        settings.modules[0].assets = settings.modules[0].assets!.filter((_, i) => i !== 0);
+        await settle();
+        expect(assetsPatch()).toHaveLength(3000);
+        expect(fake.record("modules", "main")!.data[0].assets[0]).toEqual(["renamed", original[1][1], "png"]);
+        expect(Object.isFrozen(settings.modules[0].assets)).toBe(true);
+        agree();
+        fake.requests.length = 0;
+
+        // Another tab's item patch of `assets`: applied from the feed as a frozen list, no read, no
+        // save; the next local rename is again a patch of `assets` alone.
+        patchModules({ changes: [{ id: "m1", set: { assets: [["remote", "assets/remote.png", "png"]] } }] });
+        await settle();
+        expect(reads()).toBe(0);
+        expect(fake.batchCount()).toBe(0);
+        const remote = settings.modules[0].assets!;
+        expect(plain(remote)).toEqual([["remote", "assets/remote.png", "png"]]);
+        expect(Object.isFrozen(remote)).toBe(true);
+        expect(Object.isFrozen(remote[0])).toBe(true);
+        expect(records.isRecordWrapper(remote)).toBe(false);
+        agree();
+        settings.modules[0].assets = [["remote renamed", "assets/remote.png", "png"]];
+        await settle();
+        expect(ops()[0].patch).toEqual({
+            items: [],
+            changes: [{ id: "m1", set: { assets: [["remote renamed", "assets/remote.png", "png"]] }, remove: [] }],
+        });
+        agree();
+        noNotice();
+    }, 20_000);
 });

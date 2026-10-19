@@ -19,7 +19,8 @@ export function convertModuleToCharacter(m: RisuModule): character {
     char.lowLevelAccess = m.lowLevelAccess || false;
     char.hideChatIcon = m.hideIcon || false;
     char.backgroundHTML = m.backgroundEmbedding || "";
-    char.additionalAssets = m.assets || [];
+    // Writable copies: a character's asset list is still edited in place.
+    char.additionalAssets = (m.assets ?? []).map((asset) => [...asset] as [string, string, string]);
     char.moduleNamespace = m.namespace;
     char.customModuleToggle = m.customModuleToggle || "";
     char.image = m.icon || "";

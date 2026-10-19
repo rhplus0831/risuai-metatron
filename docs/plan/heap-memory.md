@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling) and A1 (one string per equal record text) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text) and B1 (frozen module asset lists) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -215,6 +215,32 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
     `records.test.ts` (no wrapper for a frozen leaf, no invariant error from
     `Object.getOwnPropertyDescriptor` or spread on a wrapper); a component test of the
     `ModuleMenu` rename row.
+
+  **Landed.** `records.svelte.ts` freezes a module's `assets` (a list of plain JSON tuples,
+  validated through descriptors) at `applyRaw` and in `adoptModuleValue`, remembers verified
+  lists and tuples in two WeakSets (`frozenLists`/`frozenTuples`), returns them from the
+  wrappers as leaves, and refuses an in-place write through every trap, mutator and bulk helper
+  (`refuseFrozen`). Edits replace the list and reuse the unchanged tuples; `moduleFieldPlain`
+  returns the frozen list itself. `RisuModule.assets` is readonly; `ModuleMenu` add, rename
+  (per keystroke) and delete replace the list and keep a tuple's length and other elements; the
+  import key fills copy tuples. The driver gained `module-asset-edit` (rename by typing, timed;
+  delete; server copy checked). M0 driver after B1 (A1 → B1):
+
+  | Step                | JS self MB    | Proxies         | Asset tuple proxies | Large proxies (n / outermost MB) |
+  | ------------------- | ------------- | --------------- | ------------------- | -------------------------------- |
+  | `boot`              | 175.7 → 62.1  | 133,765 → 1,765 | 132,600 → 600       | 26 / 99.4 → 2 / 0.6              |
+  | `character-assets`  | 229.8 → 116.3 | 134,151 → 2,151 | 132,600 → 600       | 26 / 99.4 → 2 / 0.6              |
+  | `chats`             | 236.0 → 122.4 | 134,297 → 2,297 | 132,600 → 600       | 26 / 99.4 → 2 / 0.6              |
+  | `module-assets`     | 237.9 → 124.4 | 134,622 → 2,521 | 132,600 → 600       | 26 / 99.8 → 3 / 1.1              |
+  | `module-asset-edit` | (new) 125.7   | 2,521           | 600                 | 3 / 1.1                          |
+  | `module-edit`       | 233.7 → 121.3 | 134,326 → 2,225 | 132,600 → 600       | 26 / 99.8 → 3 / 1.1              |
+  | `home`              | 234.5 → 121.5 | 134,388 → 2,287 | 132,600 → 600       | 25 / 99.3 → 2 / 0.6              |
+
+  The 600 tuple proxies left are the two big characters' `additionalAssets` (B2). A rename
+  keystroke over 11,000 assets took 33–43 ms (keystroke, frame and task, production build).
+  Leftovers: in DEV a repeated `module.assets = module.assets` nests Svelte's
+  `inspectable_array` proxies (production stores the raw list); a DEV wrapper read and
+  `moduleFieldPlain` of an untouched field return different aliases of one frozen list.
 
 - **B2. Character asset lists as immutable values** (_hard_, `persistence.md`, coupled
   `characters-modules.md`). The same rule for `additionalAssets`, `emotionImages` and

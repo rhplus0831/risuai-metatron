@@ -238,7 +238,7 @@ describe("module membership cache", () => {
         try {
             expect(probe.derived()).toBe(initial);
             settings.modules[0].lorebook![0].content = "edited lore";
-            settings.modules[0].assets![0][1] = "assets/edited.png";
+            settings.modules[0].assets = [["a", "assets/edited.png", "png"]];
             settings.modules[0].trigger = [{ comment: "new", type: "start", conditions: [], effect: [] }];
             expect(modules.getModules()).toBe(initial);
             expect(probe.derived()).toBe(initial);
@@ -265,12 +265,13 @@ describe("module asset cache", () => {
             expect(records.isRecordWrapper(first[0])).toBe(false);
             expect(modules.getModuleAssets()).toBe(first);
             modules.getModuleAssets(refJ);
-            settings.modules[2].assets![0][1] = "assets/off-edited.png";
+            // An asset list is immutable: every edit replaces it whole (heap plan B1).
+            settings.modules[2].assets = [["off", "assets/off-edited.png", "png"]];
             settings.modules[0].lorebook![0].content = "lore only";
             expect(modules.getModuleAssets()).toBe(first);
             expect(probe.derived()).toBe(first);
             flushSync();
-            settings.modules[0].assets![0][1] = "assets/a-edited.png";
+            settings.modules[0].assets = [["a", "assets/a-edited.png", "png"]];
             const edited = probe.derived();
             expect(edited).not.toBe(first);
             expect(edited).toEqual([
@@ -279,11 +280,15 @@ describe("module asset cache", () => {
             ]);
             expect(edited[1]).toBe(first[1]);
             expect(first[0][1]).toBe("assets/a.png");
+            // The shared copy is the record's frozen list itself, never a wrapper or a JSON copy.
+            expect(Object.isFrozen(edited[0])).toBe(true);
+            expect(records.moduleFieldPlain(settings.modules[0], "assets")).toBe(settings.modules[0].assets);
+            expect(records.isRecordWrapper(settings.modules[0].assets)).toBe(false);
             expect(modules.getModuleAssets()).toBe(edited);
             flushSync();
             expect(probe.seen.at(-1)).toBe(edited);
             records.batchRecordWrites(() => {
-                settings.modules[0].assets![0][0] = "renamed";
+                settings.modules[0].assets = [["renamed", "assets/a-edited.png", "png"]];
                 expect(probe.derived()[0]).toEqual(["renamed", "assets/a-edited.png", "png"]);
             });
             c.setModules([module("a", { assets: [["replacement", "assets/new.png", "png"]] })]);

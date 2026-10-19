@@ -55,7 +55,8 @@ describe("parser asset inputs", () => {
         const probe = createProbe(() => parse("module", "img"));
         try {
             expect(await probe.derived()).toContain('src="assets/module.png"');
-            settings.modules[0].assets![0][1] = "assets/module-edited.png";
+            // A module's asset list is immutable: the edit replaces it whole (heap plan B1).
+            settings.modules[0].assets = [asset("module", "assets/module-edited.png")];
             // Calling the derived, then ParseMarkdown, happens in the same stack as the write.
             const tracked = probe.derived();
             const direct = parse("module");
@@ -77,7 +78,7 @@ describe("parser asset inputs", () => {
         expect(text(await parse("module"))).toBe("");
         flushSync();
         expect(text(await parse("override"))).toBe("assets/explicit.png");
-        settings.modules[0].assets![0][1] = "assets/live.png";
+        settings.modules[0].assets = [asset("module", "assets/live.png")];
         const live = parse("module");
         expect(text(await live)).toBe("assets/live.png");
         expect(text(await parse("override"))).toBe("");
