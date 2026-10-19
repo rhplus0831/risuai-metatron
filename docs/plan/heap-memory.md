@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found) and D1 (record wrapper nodes and root lists after deletes) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found) and D1 (record wrapper nodes and root lists after deletes) landed; C2 (one stylesheet per chat style) measured, not sliced. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -345,7 +345,7 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   and faces there stay until another screen or character replaces it; that is the
   feature, not a leak, and the fixture seeds neither source.
 
-- **C2. One stylesheet per distinct chat style** (_candidate_, not sliced; `cbs-rendering.md`).
+- **C2. One stylesheet per distinct chat style** (_candidate_, measured, not sliced; `cbs-rendering.md`).
   `trimMarkdown` (`parser.svelte.ts` ~1024) turns each row's `<risu-style>` into a `<style>`
   inside that row's HTML. N mounted rows that repeat a style therefore cost N sheets, N
   imports and N × faces (the user's chat: 14 × 105). A chat-screen registry could keep one
@@ -360,10 +360,26 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   - The driver's route answered 12 stylesheet requests for the 15 styled rows it opened.
     Playwright routing turns off the HTTP cache, so this count says nothing about a real
     font service's caching.
-  - Measure first, with a controlled comparison (the same build and fixture, one styled
-    reply against three). The only number so far is an aggregate across runs: at `chats`,
-    B2's driver (240 faces, `data:` imports) had 121.8 MB of JS self size and this one
-    (720 faces) 125.4 MB; the other steps also moved by up to ~0.9 MB.
+  - **Measured** (driver step `chat-shared-style`: the `chats` screen again, after emptying
+    the second and third styled replies' `<style>` in place, as one shared sheet would
+    leave it; the rows, their text and the records unchanged, the same proxy count). The
+    two copies cost 2.53 MiB of snapshot self size, 1.27 MiB a copy of 240 faces, 5.4 KiB
+    a face. All of the difference is Blink objects (2.54 MiB; code −4 KiB, no JS object or
+    string changed). The largest parts are one `FontResource` object per face per copy
+    (480 of them, 1.37 MiB) and font cache table entries (0.39 MiB). The rest is the faces'
+    CSS and font objects (`FontFace`, `CSSFontFace`, `SimpleFontData`, value lists,
+    property sets: ~1.6 KiB a face). Playwright's routing disables the HTTP cache, so
+    whether a cached font service would share these resources is not shown here.
+  - The user's after-chats snapshot has the same shape: 1,394 `FontResource` objects for
+    1,496 faces, roughly one per face. Font-related Blink objects there total 8.55 MiB of
+    self size (5.85 KiB a face; a constructor-name aggregate that also holds the document's
+    own font caches, not a before/after difference). If they scale with the rows as in the
+    driver, one sheet in place of the 14 would save about 13/14 of it, ~8 MiB of what a
+    snapshot shows while that chat is on screen. That estimate is conditional; a
+    representative check would repeat this step with the user's style and real font files.
+  - Not measured: memory outside the snapshot. The driver answers no font file (404); the
+    user's chat downloads real ones (1,349 `SimpleFontData` in the snapshot). Whether
+    decoded font data is per copy or shared is open.
 
 ## Phase D: leaks from code reading (measure, then fix)
 

@@ -15,16 +15,18 @@
 // 3. `character-asset-edit`: after renaming that character's first additional asset by typing
 //    (timed per keystroke), deleting its second, and the save;
 // 4. `chats`: after opening the five small characters' chats, one after another;
-// 5. `module-assets`: the module editor's asset list of the first module (one page of rows);
-// 6. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
+// 5. `chat-shared-style`: the same chat screen after emptying two of its three `<style>` copies
+//    (one stylesheet for the three rows, as slice C2 would leave; compare with `chats`);
+// 6. `module-assets`: the module editor's asset list of the first module (one page of rows);
+// 7. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
 //    its second, and the save;
-// 7. `module-edit`: after typing into that module's description and its save;
-// 8. `home`: back on the home screen (the sidebar's Home button);
-// 9. `character-recreate`: after three times a new ~2 MB character from the server, its settings'
+// 8. `module-edit`: after typing into that module's description and its save;
+// 9. `home`: back on the home screen (the sidebar's Home button);
+// 10. `character-recreate`: after three times a new ~2 MB character from the server, its settings'
 //    asset lists opened, and its deletion by the server (compare with `home`);
-// 10. `boot-character-delete`: after the server deleted the second big character, loaded at boot (its
+// 11. `boot-character-delete`: after the server deleted the second big character, loaded at boot (its
 //    settings opened first; compare with `character-recreate`);
-// 11. `boot-module-delete`: after the server deleted the last module, loaded at boot.
+// 12. `boot-module-delete`: after the server deleted the last module, loaded at boot.
 // Each snapshot is analysed by `util/heap/analyze.mjs report` in its own process and printed as one
 // table row: JS self size, `JSProxy` count, proxies of asset tuples, proxies retaining 256 KB or
 // more (count, and the outermost ones' retained size), likely duplicated large strings (same size and first 1,024 characters:
@@ -56,8 +58,11 @@ const BIG_CHARACTERS = 2;
 const SMALL_CHARACTERS = 5;
 const CC_ASSETS = 24;
 const FONT_FACES = 120;
-// A chat's three styled replies, each with its inline and its imported faces.
-const CHAT_FONT_FACES = 3 * 2 * FONT_FACES;
+const STYLED_REPLIES = 3;
+// A row's faces: its style's inline and imported ones.
+const ROW_FONT_FACES = 2 * FONT_FACES;
+// A chat's three styled replies.
+const CHAT_FONT_FACES = STYLED_REPLIES * ROW_FONT_FACES;
 const RECREATED_CHARACTERS = 3;
 const port = 6264;
 const base = `http://localhost:${port}`;
@@ -474,7 +479,8 @@ try {
     // character settings of a character switched to on its closed-chat screen alert a tokenizer
     // `TypeError` (`CharConfig.svelte` `loadTokenize` gets an undefined note without a chat).
     await page.getByRole("button", { name: "Chat", exact: true }).first().click({ timeout: 60_000 });
-    for (const [i, id] of smallIds.entries()) {
+    // Opens a character's chat and waits for its styled replies and their faces.
+    const openChat = async (id, family) => {
         await page.locator(`[data-char-id="${id}"]`).first().click();
         await page
             .getByRole("button", { name: /Open most recent chat/ })
@@ -496,23 +502,21 @@ try {
                 throw error;
             });
         await page.locator(".default-chat-screen .chattext").first().waitFor({ timeout: 30_000 });
-        // The rows render after their wrapper: wait for this chat's three styled replies (the
-        // parser prefixes their class names, so find them by their style's family) and the faces.
+        // The rows render after their wrapper: wait for the styled replies (the parser prefixes
+        // their class names, so find them by their style's family) and the faces.
         const chatFonts = (family) => ({
             styles: [...document.querySelectorAll(".default-chat-screen style")].filter((style) =>
                 style.textContent.includes(`"${family}"`),
             ).length,
             fonts: document.fonts.size,
         });
-        // `chatOf` numbers the families over all characters, the big ones first.
-        const family = `HeapFont${BIG_CHARACTERS + i}`;
         await page
             .waitForFunction(
-                ([family, faces]) =>
+                ([family, styled, faces]) =>
                     [...document.querySelectorAll(".default-chat-screen style")].filter((style) =>
                         style.textContent.includes(`"${family}"`),
-                    ).length === 3 && document.fonts.size >= faces,
-                [family, CHAT_FONT_FACES],
+                    ).length === styled && document.fonts.size >= faces,
+                [family, STYLED_REPLIES, CHAT_FONT_FACES],
                 { timeout: 30_000 },
             )
             .catch(async (error) => {
@@ -520,10 +524,34 @@ try {
                 throw error;
             });
         await page.waitForTimeout(1000);
+    };
+    // `chatOf` numbers the families over all characters, the big ones first.
+    for (const [i, id] of smallIds.entries()) {
+        await openChat(id, `HeapFont${BIG_CHARACTERS + i}`);
     }
     await snapshot("chats");
 
-    // 5. The first module's asset list.
+    // 5. The same screen with one copy of the style: the second and third styled replies' `<style>`
+    // emptied in place (the rows' `{@html}` blocks own the elements, so they stay). The rows, their
+    // text and the records stay as they are, so the difference is what those copies cost.
+    const lastFamily = `HeapFont${BIG_CHARACTERS + SMALL_CHARACTERS - 1}`;
+    const emptied = await page.evaluate((family) => {
+        const copies = [...document.querySelectorAll(".default-chat-screen style")].filter((style) =>
+            style.textContent.includes(`"${family}"`),
+        );
+        for (const style of copies.slice(1)) style.textContent = "";
+        return copies.length - 1;
+    }, lastFamily);
+    check("fonts: two style copies emptied", emptied === STYLED_REPLIES - 1, { emptied });
+    await page
+        .waitForFunction((faces) => document.fonts.size <= faces, ROW_FONT_FACES, { timeout: 30_000 })
+        .catch(async (error) => {
+            console.error("faces after emptying:", await page.evaluate(() => document.fonts.size));
+            throw error;
+        });
+    await snapshot("chat-shared-style");
+
+    // 6. The first module's asset list.
     if (!(await settingsButton.isVisible().catch(() => false))) {
         await page.locator("button:has(svg.lucide-list)").first().click();
     }
@@ -549,7 +577,7 @@ try {
     await page.locator('input[placeholder="..."]').first().waitFor({ timeout: 30_000 });
     await snapshot("module-assets");
 
-    // 6. Rename the first asset by typing (each keystroke replaces the whole list: timed per key),
+    // 7. Rename the first asset by typing (each keystroke replaces the whole list: timed per key),
     // delete the second, and wait for the save.
     const originalAssets = moduleList[0].assets;
     const nameInput = page.locator('input[placeholder="..."]').first();
@@ -585,7 +613,7 @@ try {
     );
     await snapshot("module-asset-edit");
 
-    // 7. Type into the module's description and wait for its save.
+    // 8. Type into the module's description and wait for its save.
     await menu("Basic Info").click();
     const description = page
         .locator('xpath=//span[normalize-space(.)="Description"]/following-sibling::*[1]/descendant-or-self::input')
@@ -604,7 +632,7 @@ try {
     await page.locator("button.absolute.top-2.right-2:has(svg.lucide-circle-x)").last().click({ timeout: 10_000 });
     await busy("settings close");
 
-    // 8. Home, through the sidebar's Home button (inside its menu by default), without a reload.
+    // 9. Home, through the sidebar's Home button (inside its menu by default), without a reload.
     const homeButton = page.locator(".rs-sidebar button:has(svg.lucide-house)").first();
     if ((await homeButton.count()) === 0) {
         await page.locator(".rs-sidebar button:has(svg.lucide-list)").first().click();
@@ -612,7 +640,7 @@ try {
     await homeButton.click({ timeout: 10_000 });
     await snapshot("home");
 
-    // 9. Three times: a new ~2 MB character arrives from the server, its settings and asset lists
+    // 10. Three times: a new ~2 MB character arrives from the server, its settings and asset lists
     // are opened, and the server deletes it (the raw path; the selected character's removal selects
     // home). Compared with `home`, whatever the page still holds of the deleted characters.
     // One batch built from fresh revisions, again after a revision conflict (the app saves the
@@ -692,7 +720,7 @@ try {
     if (await homeButton.isVisible().catch(() => false)) await homeButton.click({ timeout: 10_000 });
     await snapshot("character-recreate");
 
-    // 10. Data the page booted with, deleted through the routes: the second big character (its
+    // 11. Data the page booted with, deleted through the routes: the second big character (its
     // settings opened first) and the last module (with its enabled entry).
     await page.locator(`[data-char-id="${bigIds[1]}"]`).first().click();
     await page.waitForTimeout(1000);
@@ -757,6 +785,18 @@ try {
         expected: faces.boot + CHAT_FONT_FACES,
     });
     check("fonts: gone after the chat", faces["module-assets"] === faces.boot && faces.home === faces.boot, faces);
+    // Slice C2's measurement: the two snapshots of the same screen differ in two rows' copies of the
+    // style, so the difference is what one shared stylesheet would save there.
+    check("fonts: one copy after emptying", faces["chat-shared-style"] === faces.boot + ROW_FONT_FACES, {
+        boot: faces.boot,
+        "chat-shared-style": faces["chat-shared-style"],
+        expected: faces.boot + ROW_FONT_FACES,
+    });
+    const rowCopies = bytes.chats - bytes["chat-shared-style"];
+    console.log(
+        `style copies: chats - chat-shared-style = ${(rowCopies / 1048576).toFixed(2)} MiB for ${STYLED_REPLIES - 1} ` +
+            `copies (${(rowCopies / (STYLED_REPLIES - 1) / ROW_FONT_FACES).toFixed(0)} bytes per face)`,
+    );
 
     check("no page errors", pageErrors.length === 0, pageErrors.length ? pageErrors : undefined);
     const egress = unexpectedEgress(blocked);
