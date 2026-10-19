@@ -8,6 +8,8 @@ Active planning and implementation:
 
 - [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
   are listed in its Status; deferred work and Phase 5 verification remain separate.
+- [Open Bug Fixes](open-bug-fixes.md): reachable bugs from the project memory,
+  rechecked at `5c3665fdb`; nothing landed yet.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
