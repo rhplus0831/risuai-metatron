@@ -14,6 +14,22 @@ export const PERSONA_DEFAULTS = {
     note: "",
 } as const satisfies Partial<Record<keyof RisuPersona, string>>;
 
+/**
+ * A persona note's first non-blank line, trimmed, or `""`: what a one-line persona list shows. The
+ * note is a multi-line memo that is never sent to the model.
+ */
+export function personaNoteFirstLine(note: unknown): string {
+    if (typeof note !== "string") {
+        return "";
+    }
+    return (
+        note
+            .split(/\r\n|\r|\n/)
+            .find((line) => line.trim() !== "")
+            ?.trim() ?? ""
+    );
+}
+
 /** The persona a fresh boot, or an empty collection, gets. */
 export function defaultPersona(): RisuPersona {
     return { name: "User", personaPrompt: "", icon: "", note: "", largePortrait: false, id: newPersonaId() };

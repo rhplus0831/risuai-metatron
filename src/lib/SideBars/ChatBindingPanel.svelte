@@ -15,11 +15,13 @@
     /*
      * A chat's binding (`docs/plan/chat-binding.md`, slice 5): the model preset, prompt preset, and
      * persona it is sent with, each by name or as not set or deleted, and the confirmation an imported
-     * chat waits for. A row opens its picker for this chat. It reads the chat's list entry only, so it
-     * works for a chat that is not loaded; a chat that is not a member shows nothing.
+     * chat waits for. A row opens its picker for this chat. The bound persona's note (never sent) shows
+     * under the rows. It reads the chat's list entry only, so it works for a chat that is not loaded; a
+     * chat that is not a member shows nothing.
      */
     let { chatRef }: Props = $props();
     const ids = $derived(chatBindingIds(chatRef));
+    const note = $derived(personaNote(ids?.personaId ?? null));
 
     const fields: ChatBindingField[] = ["modelPresetId", "promptPresetId", "personaId"];
 
@@ -32,6 +34,15 @@
                   ? settings.presets
                   : settings.personas;
         return list?.find((record) => record.id === id)?.name;
+    }
+
+    /** The bound persona's note, multi-line as written; `""` when unset, deleted, or blank. */
+    function personaNote(id: string | null): string {
+        if (id === null) {
+            return "";
+        }
+        const note = settings.personas?.find((record) => record.id === id)?.note;
+        return typeof note === "string" && note.trim() !== "" ? note : "";
     }
 
     function openPicker(field: ChatBindingField) {
@@ -75,6 +86,15 @@
                 <ChevronRightIcon size={16} class="shrink-0 text-textcolor2" />
             </button>
         {/each}
+        {#if note}
+            <div
+                class="p-2 border-t border-darkborderc text-sm text-textcolor2 whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
+                aria-label={language.personaNote}
+                data-chat-binding-persona-note
+            >
+                {note}
+            </div>
+        {/if}
         {#if ids.review}
             <div class="flex flex-col gap-2 p-2 border-t border-darkborderc">
                 <span class="text-sm text-textcolor2">{language.chatBinding.review}</span>

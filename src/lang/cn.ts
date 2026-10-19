@@ -1216,6 +1216,8 @@ export const languageChinese = {
     folderNameInput: "请输入新文件夹名称",
     folderRemoveLengthError: "要删除文件夹，它必须不包含任何条目。",
     personaNote: "用户备注",
+    personaNotePlaceholder:
+        "用于区分此用户人设的备注，不会发送给 AI。\n显示在人设列表（仅第一行）和侧边栏的聊天标签页中。\n示例：[Alternate Hunters 人设]",
     mcpAccessPrompt: '{{tool}} 正在尝试 "{{action}}"。您要允许吗？',
     rememberToolUsage: "记住工具使用情况",
     simplifiedToolUse: "简化工具使用",

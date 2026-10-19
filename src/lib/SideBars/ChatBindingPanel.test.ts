@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `docs/plan/chat-binding.md`, slice 5: the binding panel (`ChatBindingPanel.svelte`) shows a chat's
 // model preset, prompt preset, and persona by name, or as not set or deleted, from the chat's list
 // entry; it follows a binding patch, a record's deletion and return, and a rename; a pending review
-// shows its note and a confirm button that clears it; a row opens its picker for this chat (the
+// shows its note and a confirm button that clears it; the bound persona's non-blank note shows as written; a row opens its picker for this chat (the
 // picker store holds `{ chatRef }`); a chat that is not a member shows nothing, and a confirm after
 // the chat went does not throw. The dialog (`ChatBindingDialog.svelte`) wraps the panel, names the
 // chat, focuses its close button, and closes itself when the chat is gone.
@@ -148,6 +148,32 @@ describe("ChatBindingPanel", () => {
         chatBindingPatch(refJ, { review: true });
         flushSync();
         expect(panel.confirmButton()).toBeDefined();
+    });
+
+    it("shows the bound persona's note as written under the rows, and nothing when it is blank or the persona is unset or gone", () => {
+        const panel = renderPanel(refK);
+        const noteBlock = () => panel.target.querySelector("[data-chat-binding-persona-note]");
+        expect(noteBlock()).toBeNull();
+
+        settings.personas[0].note = "Fantasy runs\nsecond line";
+        flushSync();
+        expect(noteBlock()?.textContent?.trim()).toBe("Fantasy runs\nsecond line");
+
+        settings.personas[0].note = "  \n ";
+        flushSync();
+        expect(noteBlock()).toBeNull();
+
+        settings.personas[1].note = "Bob's memo";
+        chatBindingPatch(refK, { personaId: "u2" });
+        flushSync();
+        expect(noteBlock()?.textContent?.trim()).toBe("Bob's memo");
+
+        settings.personas.splice(1, 1);
+        flushSync();
+        expect(noteBlock()).toBeNull();
+        chatBindingPatch(refK, { personaId: null });
+        flushSync();
+        expect(noteBlock()).toBeNull();
     });
 
     it("a row opens its picker for this chat", () => {

@@ -1316,6 +1316,8 @@ export const languageChineseTraditional = {
     folderNameInput: "請輸入新的資料夾名稱",
     folderRemoveLengthError: "要移除資料夾，資料夾內不能包含任何項目",
     personaNote: "使用者人設備註",
+    personaNotePlaceholder:
+        "用於區分此使用者人設的備註，不會傳送給 AI。\n顯示於人設列表（僅第一行）和側邊欄的聊天分頁中。\n範例：[Alternate Hunters 人設]",
     mcpAccessPrompt: "{{tool}} 正嘗試執行「{{action}}」。要允許嗎？",
     rememberToolUsage: "記住工具使用權限",
     simplifiedToolUse: "簡化工具使用",

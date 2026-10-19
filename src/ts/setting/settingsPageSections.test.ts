@@ -14,7 +14,6 @@ import {
 } from "./interactionSettingsData";
 import { memorySettingsItems, memorySettingsSections, memorySupaMemoryItems } from "./memorySettingsData";
 import { modelAdditionalParamsItems, modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
-import { personaSettingsItems } from "./personaSettingsData";
 import { promptSettingsItems, promptSettingsSections } from "./promptSettingsData";
 import { itemsById } from "./sections";
 import {
@@ -87,12 +86,6 @@ const PAGES: SectionedPage[] = [
         name: "voice",
         leaves: [voiceSettingsItems],
         header: voiceSettingsItems,
-        sections: [],
-    },
-    {
-        name: "persona",
-        leaves: [personaSettingsItems],
-        header: personaSettingsItems,
         sections: [],
     },
     // Slice 5: Accessibility split into the Interaction page and what stays.

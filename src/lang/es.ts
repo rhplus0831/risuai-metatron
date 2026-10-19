@@ -1281,6 +1281,8 @@ export const languageSpanish = {
     folderNameInput: "Por favor ingrese el nuevo nombre de la carpeta",
     folderRemoveLengthError: "Para eliminar una carpeta, no debe contener ninguna entrada.",
     personaNote: "Nota de Persona",
+    personaNotePlaceholder:
+        "Una nota para distinguir esta persona. No se envía a la IA.\nSe muestra en la lista de personas (solo la primera línea) y en la pestaña de chat de la barra lateral.\nEjemplo: [Persona de Alternate Hunters]",
     mcpAccessPrompt: '{{tool}} está intentando "{{action}}". ¿deseas permitir esto?',
     rememberToolUsage: "Recordar uso de herramienta",
     simplifiedToolUse: "Uso simplificado de herramientas",

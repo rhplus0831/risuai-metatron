@@ -1792,6 +1792,8 @@ export const languageEnglish = {
     folderNameInput: "Please input the new folder name",
     folderRemoveLengthError: "To remove a folder, it must not contain any entries.",
     personaNote: "Persona Note",
+    personaNotePlaceholder:
+        "A memo to tell this persona apart. It is not sent to the AI.\nShown in the persona list (first line only) and in the chat tab of the sidebar.\nExample: [Alternate Hunters persona]",
     mcpAccessPrompt: '{{tool}} is trying to "{{action}}". Do you want to allow this?',
     rememberToolUsage: "Remember tool usage",
     simplifiedToolUse: "Simplified tool usage",

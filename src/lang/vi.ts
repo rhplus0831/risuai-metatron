@@ -1269,6 +1269,8 @@ export const languageVietnamese = {
     folderNameInput: "Vui lòng nhập tên thư mục mới",
     folderRemoveLengthError: "Để xóa thư mục, nó phải không chứa bất kỳ mục nào.",
     personaNote: "Ghi chú Persona",
+    personaNotePlaceholder:
+        "Ghi chú để phân biệt persona này. Không được gửi cho AI.\nHiển thị trong danh sách persona (chỉ dòng đầu) và trong tab trò chuyện của thanh bên.\nVí dụ: [Persona Alternate Hunters]",
     mcpAccessPrompt: '{{tool}} đang cố gắng "{{action}}". Bạn có muốn cho phép điều này không?',
     rememberToolUsage: "Ghi nhớ việc sử dụng công cụ",
     simplifiedToolUse: "Sử dụng công cụ đơn giản hóa",

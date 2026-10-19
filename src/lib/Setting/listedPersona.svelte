@@ -5,6 +5,7 @@
     import { changeUserPersona } from "src/ts/persona";
     import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { pickedId } from "src/ts/storage/chatBinding.svelte";
+    import { personaNoteFirstLine } from "../../../shared/personas.ts";
 
     interface Props {
         close?: any;
@@ -41,6 +42,7 @@
             <span class="text-textcolor2 text-sm mb-2">{language.chatBinding.forChat(shownChatName ?? "")}</span>
         {/if}
         {#each settings.personas as persona, i}
+            {@const noteLine = personaNoteFirstLine(persona.note)}
             <button
                 onclick={() => {
                     if (changeUserPersona(persona.id, chatRef)) {
@@ -52,8 +54,8 @@
             >
                 <span class="overflow-x-auto whitespace-nowrap w-full text-left">
                     <span class="font-medium">{persona.name}</span>
-                    {#if persona.note}
-                        <span class="opacity-75"> / {persona.note}</span>
+                    {#if noteLine}
+                        <span class="opacity-75"> / {noteLine}</span>
                     {/if}
                 </span>
             </button>

@@ -28,7 +28,6 @@ import { languageSettingsItems } from "./languageSettingsData.svelte";
 import { translationSettingsItems } from "./translationSettingsData";
 import { memorySettingsItems } from "./memorySettingsData";
 import { modelSettingsItems } from "./modelSettingsData";
-import { personaSettingsItems } from "./personaSettingsData";
 import { promptSettingsItems } from "./promptSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
@@ -150,7 +149,6 @@ export function getFullSettingsData(searchTerm = "") {
         promptSettingsItems,
         memorySettingsItems,
         voiceSettingsItems,
-        personaSettingsItems,
         interactionSettingsItems,
     );
 
