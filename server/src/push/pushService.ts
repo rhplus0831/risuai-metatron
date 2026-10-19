@@ -377,6 +377,11 @@ export function createPushService(options: {
         }
         const payload = JSON.stringify(notification);
         const vapidDetails = { subject: contact, publicKey: keys.publicKey, privateKey: keys.privateKey };
+        // A file that could not be read is tried again, so it delivers once it can be read without
+        // waiting for a registration or removal to retry it.
+        if (unreadable) {
+            known();
+        }
         const targets = list().map((entry) => ({ ...entry, keys: { ...entry.keys } }));
         let changed = false;
         await Promise.all(

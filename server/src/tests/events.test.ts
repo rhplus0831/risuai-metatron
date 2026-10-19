@@ -276,6 +276,37 @@ describe("createEventSockets", () => {
         expect(socket.destroy).not.toHaveBeenCalled();
     });
 
+    it("terminates a socket whose `send` throws and still delivers the frame to the sockets after it", async () => {
+        const { feed, sockets, url } = await host(async () => true);
+        const clients = [connect(url), connect(url), connect(url)];
+        for (const client of clients) {
+            expect(await client.opened).toBe("open");
+        }
+        await waitFor(() => clients.every((client) => client.frames.length > 0));
+        // Server sockets share the client class: the fan-out's first `send` (the first socket to
+        // connect) throws, the others go through.
+        const send = vi.spyOn(WsClient.prototype, "send").mockImplementationOnce(() => {
+            throw new Error("send failed");
+        });
+        try {
+            expect(() => feed.publish({ type: "epoch", epoch: "F" })).not.toThrow();
+        } finally {
+            send.mockRestore();
+        }
+        const [failed, ...others] = clients;
+        await waitFor(() => others.every((client) => client.frames.length > 1));
+        for (const client of others) {
+            expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
+        }
+        expect(await failed.closed).toBe(1006);
+        expect(failed.frames).toEqual([{ type: "hello", epoch: "E" }]);
+        await waitFor(() => sockets.size() === 2);
+        for (const client of others) {
+            client.ws.terminate();
+        }
+        sockets.close();
+    });
+
     it("pings every 15 s, publishes `epoch` frames, and forgets a closed socket and its timer", async () => {
         vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
         const { feed, sockets, url } = await host(async () => true);

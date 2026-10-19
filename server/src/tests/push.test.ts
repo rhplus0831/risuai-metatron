@@ -629,6 +629,23 @@ describe("the subscriptions", () => {
         );
     });
 
+    it("a file that becomes readable after startup gets deliveries without a registration", async () => {
+        const save = savePath();
+        const file = serverFile(save, "push_subscriptions.json");
+        const { calls, transport } = fakeTransport();
+        mkdirSync(file, { recursive: true });
+        const push = createPushService({ savePath: save, env: {}, transport });
+        await push.send(NOTIFICATION);
+        expect(calls).toHaveLength(0);
+        // Readable now; no PUT or DELETE runs before the next delivery.
+        rmSync(file, { recursive: true });
+        const existing = subscription();
+        writeFileSync(file, JSON.stringify({ version: 1, subscriptions: [{ ...existing, updatedAt: 5 }] }));
+        await push.send(NOTIFICATION);
+        expect(calls.map((call) => call.subscription.endpoint)).toEqual([existing.endpoint]);
+        expect(readJson(file).subscriptions).toEqual([expect.objectContaining({ endpoint: existing.endpoint })]);
+    });
+
     it("a file that is not JSON starts empty and is replaced by the first write, also a removal", () => {
         const save = savePath();
         const file = serverFile(save, "push_subscriptions.json");

@@ -36,7 +36,13 @@ export function createEventSockets(options: {
             ws.terminate();
             return;
         }
-        ws.send(text);
+        // A throw must not skip the sockets after this one in the fan-out: this socket is closed
+        // instead, and its client reconnects and reconciles.
+        try {
+            ws.send(text);
+        } catch {
+            ws.terminate();
+        }
     }
 
     const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {
