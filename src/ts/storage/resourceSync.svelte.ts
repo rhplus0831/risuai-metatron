@@ -81,6 +81,8 @@ import {
     type ChatWork,
     chatWorkBody,
     forgetCharacter,
+    settleCharacterDelete,
+    ackCharacterDelete,
     hasChatWork,
     hydrateChat,
     hydrateChatPatch,
@@ -1271,7 +1273,9 @@ function collectOperations(): {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
             if (!present.has(id) && !isRecordJobBlocked(key)) {
-                forgetCharacter(id);
+                // Its chats' work is settled now; the revisions held of them stay until the deletion
+                // is acknowledged, for a re-add of the id before that (`settleCharacterDelete`).
+                settleCharacterDelete(id);
                 characterTexts.delete(id);
                 addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
@@ -1523,6 +1527,11 @@ async function cycle() {
                 const revision = result.results[opIndex]?.revision;
                 if (op.text === null || revision === null || revision === undefined) {
                     persisted.delete(op.key);
+                    if (op.text === null && op.kind === RESOURCE_KIND.characters) {
+                        // The character's chats went with it: their state is forgotten now (a
+                        // character added again under the id meanwhile creates its chats anew).
+                        ackCharacterDelete(op.id);
+                    }
                 } else {
                     persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                 }
@@ -2820,6 +2829,9 @@ function applyToMirror(kind: string, id: string, data: unknown): boolean {
             const existed = findMirrorCharacter(id) !== undefined;
             noteMirrorReplaced();
             if (data === null && !existed) {
+                // Removed here too (its deletion collected, its chats' work settled): what this
+                // client held of its chats is forgotten.
+                forgetCharacter(id);
                 return false;
             }
             // The raw path: the server record has only the character's own fields, so its render key

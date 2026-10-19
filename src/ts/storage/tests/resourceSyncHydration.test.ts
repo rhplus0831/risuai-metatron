@@ -989,7 +989,7 @@ describe("a refusal for a generating message", () => {
         expect(fake.batchCount()).toBe(2);
     });
 
-    it("keeps a refused character delete as an unsaved membership change without polling, refuses a flush, and deletes at the retry; an undo clears it", async () => {
+    it("keeps a refused character delete as an unsaved membership change without polling, refuses a flush, and deletes at the retry; an undo sends its chats back as replaces, refused while the job runs and sent at the retry", async () => {
         const { fake, sync, chat, characters, unloadWarning } = await boot();
         const characterStore = await import("../characterStore.svelte");
         lockB(fake);
@@ -1013,45 +1013,72 @@ describe("a refusal for a generating message", () => {
         await vi.advanceTimersByTimeAsync(4000);
         expect(fake.batchCount()).toBe(1);
         expect(timeouts.mock.calls.filter(([, delay]) => typeof delay === "number" && delay <= 500)).toEqual([]);
-        // Undo: the character is back, nothing is owed for it any more. Added back through the
-        // character module, it also enters the character order (the fixture's order is `[]`), and it is
-        // prepared as a creation (Phase 6 slice 5b), which stamps the `creation_date` the fixture's
-        // record lacks: those two are the writes the undo sends, the character's a field patch (audit
-        // item A1) of that one stamp on the server's record at its held revision, no delete.
+        // Undo: the character is back. Added back through the character module, it also enters the
+        // character order (the fixture's order is `[]`), and it is prepared as a creation (Phase 6
+        // slice 5b), which stamps the `creation_date` the fixture's record lacks: the character's
+        // write is a field patch (audit item A1) of that one stamp on the server's record at its held
+        // revision, no delete. Data-loss slice 6d: the revisions held of its chats stayed through the
+        // refused deletion, so the re-added chats are reconciled by id, each sent back as a whole
+        // `replace` with a reorder. The job still locks `k`: its replace is refused for the
+        // generation (the batch rolls back), kept and blocked until the retry, while the rest of the
+        // batch goes out again at once.
         const stored = fake.record("characters", "c")!;
         characterStore.addCharacter(removed);
         await tick();
         await vi.advanceTimersByTimeAsync(2000);
-        expect(fake.batchCount()).toBe(2);
-        expect(fake.batchBodies()[1]).toEqual({
-            ops: [
-                expect.objectContaining({ kind: "characterOrder", id: "main", data: ["c"] }),
-                {
-                    kind: "characters",
-                    id: "c",
-                    baseRevision: stored.revision,
-                    patch: { set: { creation_date: expect.any(Number) }, remove: [] },
-                },
-            ],
-            chats: [],
-            chatOrders: [],
-        });
+        expect(fake.batchCount()).toBe(3);
+        const recordOps = [
+            expect.objectContaining({ kind: "characterOrder", id: "main", data: ["c"] }),
+            {
+                kind: "characters",
+                id: "c",
+                baseRevision: stored.revision,
+                patch: { set: { creation_date: expect.any(Number) }, remove: [] },
+            },
+        ];
+        const replaceOf = (chatId: string) =>
+            expect.objectContaining({ chatId, ops: [expect.objectContaining({ op: "replace" })] });
+        const reorder = [expect.objectContaining({ characterId: "c", ids: ["k", "j"] })];
+        expect(fake.batchBodies().slice(1)).toEqual([
+            { ops: recordOps, chats: [replaceOf("k"), replaceOf("j")], chatOrders: reorder },
+            { ops: recordOps, chats: [replaceOf("j")], chatOrders: reorder },
+        ]);
         expect(fake.record("characters", "c")!.data).toEqual({ ...stored.data, creation_date: expect.any(Number) });
+        expect(fake.order("c")!.ids).toEqual(["k", "j"]);
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
+        expect(fake.batchCount()).toBe(3);
+        expect(chat.hasUnsavedChatWork()).toBe(true);
+        expect(unloadWarning()).toBe(true);
+        expect(alerts.error).not.toHaveBeenCalled();
+        // The job ends: the retry sends `k`'s replace alone.
+        fake.lock!.endJob("T");
+        await vi.advanceTimersByTimeAsync(5500);
+        expect(fake.batchCount()).toBe(4);
+        expect(fake.batchBodies()[3]).toEqual({ ops: [], chats: [replaceOf("k")], chatOrders: [] });
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         await sync.flushResources();
+        expect(fake.batchCount()).toBe(4);
         expect({
             chatWork: chat.hasUnsavedChatWork(),
             runnable: chat.hasChatWork(),
             idle: chat.idleChatRefreshes(),
             deferred: chat.deferredReloads(),
             mirror: characters().map((entry: any) => [entry.chaId, entry.chats.map((c: any) => c.id)]),
-        }).toEqual({ chatWork: false, runnable: false, idle: [], deferred: [], mirror: [["c", ["k", "j"]]] });
+            held: chat.heldChatRevision(refK),
+        }).toEqual({
+            chatWork: false,
+            runnable: false,
+            idle: [],
+            deferred: [],
+            mirror: [["c", ["k", "j"]]],
+            held: fake.chat("c", "k")!.revision,
+        });
         expect(unloadWarning()).toBe(false);
-        // Deleted again while still locked, then the job ends: the retry deletes it with its chats.
+        // Deleted again, with no job in the way: the deletion lands with its chats.
         expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        fake.lock!.endJob("T");
-        await vi.advanceTimersByTimeAsync(5500);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.chat("c", "k")).toBeNull();
         expect(unloadWarning()).toBe(false);
@@ -2054,5 +2081,248 @@ describe("recovery after a refused chat patch", () => {
         ).toBe("mismatch");
         expect(ids()).toEqual(["s", "a", "b", "c", "d", "e"]);
         expect(chat.heldChatRevision(refK)).toBe(held);
+    });
+});
+
+// Data-loss plan slice 6d (audit D4): a stale acknowledgement keeps the older held revision, so a
+// server copy read or sent before the acknowledgement passes the "not older than held" checks
+// although it lacks the edit the server holds from the acknowledged revision on. The acknowledged
+// revision is a floor: no copy below it is installed (an idle or `refreshStaleChat` read, a job's
+// whole copy or patch), the edit stays in the mirror and the stale mark stays for a newer read.
+// Before the fix the older copy replaced the mirror without the edit and cleared the mark.
+describe("an acknowledged-revision floor after a stale acknowledgement", () => {
+    /**
+     * Puts an `authFetch` over the fake that, once started, holds every `/api/resources/read`
+     * answer (computed when the request arrives) until `release` lets the oldest one through.
+     */
+    function holdReads(fake: StoreBackedServer) {
+        const held: (() => void)[] = [];
+        let holding = false;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fake.fetch(path, init);
+                if (holding && path === "/api/resources/read") {
+                    await new Promise<void>((resolve) => held.push(resolve));
+                }
+                return response;
+            },
+            close: () => fake.close(),
+        };
+        /** Spins microtasks (no timers: the fake answers on microtasks alone) until `n` reads are held. */
+        const untilHeld = async (n: number) => {
+            for (let i = 0; i < 1000 && held.length < n; i += 1) {
+                await Promise.resolve();
+            }
+            expect(held).toHaveLength(n);
+        };
+        return {
+            start: () => {
+                holding = true;
+            },
+            untilHeld,
+            release: () => held.shift()!(),
+        };
+    }
+    const copyOf = (fake: StoreBackedServer) => {
+        const record = JSON.parse(JSON.stringify(fake.chat("c", "k")!)) as { revision: string; data: Chat };
+        return { characterId: "c", id: "k", revision: record.revision, data: record.data };
+    };
+    const readCount = (fake: StoreBackedServer) =>
+        fake.requests.filter((request) => request.path === "/api/resources/read").length;
+
+    it("`refreshStaleChat`: a read issued before the edit's stale acknowledgement and answered after it is dropped, the edit and the stale mark stay, and the next read brings the server's copy with the edit", async () => {
+        const { fake, sync, chat, text, serverWrite } = await boot();
+        const reads = holdReads(fake);
+        const r0 = fake.chat("c", "k")!.revision;
+        // Another writer's change, noticed: the send path reads the chat whole before its job.
+        const r1 = serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
+        expect(chat.noteRemoteChat(refK, r1)).toBe("noticed");
+        reads.start();
+        const reading = sync.refreshStaleChat(refK);
+        await reads.untilHeld(1);
+        // Meanwhile an edit is saved: on the held base `r0`, so its acknowledgement is stale (the
+        // base stays, the chat is marked), and the cycle's own idle read goes out (held too).
+        chat.setChatMeta(refK, { note: "mine" });
+        const flushing = sync.flushResources();
+        await reads.untilHeld(2);
+        const r2 = fake.chat("c", "k")!.revision;
+        expect(fake.chat("c", "k")!.data.note).toBe("mine");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        // The first read's answer, the copy at `r1`, arrives now: newer than the held base, but
+        // older than the acknowledgement; it lacks the note and is not installed.
+        reads.release();
+        expect(await reading).toBe(false);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(chat.isChatBehind(refK)).toBe(true);
+        expect(chat.findChat(refK)!.note).toBe("mine");
+        expect(text("a")).toBe("A");
+        // The cycle's read, issued after the acknowledgement: the copy at `r2` with both changes.
+        reads.release();
+        await flushing;
+        expect(chat.heldChatRevision(refK)).toBe(r2);
+        expect(chat.isChatStale(refK)).toBe(false);
+        expect(chat.isChatBehind(refK)).toBe(false);
+        expect(chat.findChat(refK)!.note).toBe("mine");
+        expect(text("a")).toBe("theirs");
+        // Current: the send path reads nothing more.
+        const before = readCount(fake);
+        expect(await sync.refreshStaleChat(refK)).toBe(true);
+        expect(readCount(fake)).toBe(before);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+    });
+
+    it("a job's remembered whole copy (the callback barrier's retry) and a job patch below the floor are refused under the active lock: busy, marked stale, the edit kept; the job's later copy at the floor applies and ends the mark", async () => {
+        const { fake, sync, chat, text, locked, apply, accepted, chatEvent, row, serverWrite } = await boot();
+        apply("J", accepted("J", "g1"));
+        const r0 = fake.chat("c", "k")!.revision;
+        // The job's checkpoint write, and the whole copy it sent for it (remembered for the barrier).
+        const r1 = serverWrite([{ op: "setText", id: "b", text: "ONE" }]);
+        const remembered = chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 0 }]);
+        expect(remembered.revision).toBe(r1);
+        const copy1 = JSON.parse(JSON.stringify(remembered.data)) as Chat;
+        // A local edit lands on the older base: stale, the floor is its revision `r2`.
+        chat.setChatMeta(refK, { note: "mine" });
+        await sync.flushResources();
+        const r2 = fake.chat("c", "k")!.revision;
+        expect(r2).not.toBe(r1);
+        expect(fake.chat("c", "k")!.data.note).toBe("mine");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(readCount(fake)).toBe(0);
+        // The barrier retries the remembered copy: below the floor, it is not applied (the tab then
+        // holds less than the receipt, and the barrier fails; the edit is not lost).
+        expect(
+            sync.applyHydration({
+                kind: "chats",
+                characterId: "c",
+                id: "k",
+                revision: r1,
+                data: copy1,
+                job: { jobId: "J", streaming: [{ messageId: "b", generationId: "g1", seq: 0 }] },
+            }),
+        ).toBe(false);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(chat.findChat(refK)!.note).toBe("mine");
+        expect(text("b")).toBe("");
+        expect(locked("b")).toBe(true);
+        // A job patch from the held base to `r1`: it fits the base, but is below the floor too.
+        expect(
+            sync.applyPatchHydration(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision: r0,
+                    revision: r1,
+                    messages: [{ after: "a", message: { ...row("b"), data: "ONE" } }],
+                    count: 3,
+                },
+                { jobId: "J", streaming: [{ messageId: "b", generationId: "g1", seq: 0 }] },
+            ),
+        ).toBe("busy");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(text("b")).toBe("");
+        expect(chat.findChat(refK)!.note).toBe("mine");
+        // The job's terminal copy at `r2` (the floor): applied, the mark ends, the edit is in it.
+        apply("J", chatEvent("J", []));
+        expect(chat.heldChatRevision(refK)).toBe(r2);
+        expect(chat.isChatStale(refK)).toBe(false);
+        expect(chat.findChat(refK)!.note).toBe("mine");
+        expect(text("b")).toBe("ONE");
+        expect(locked("b")).toBe(false);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+    });
+
+    it("a second stale acknowledgement moves the floor up: a read at the first acknowledged revision is dropped as well, and a read at the newest applies with both edits", async () => {
+        const { fake, sync, chat, text, apply, accepted, serverWrite } = await boot();
+        // This tab's job holds the chat, so no idle read runs while the edits save.
+        apply("J", accepted("J", "g1"));
+        const r0 = fake.chat("c", "k")!.revision;
+        serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
+        const copy1 = copyOf(fake);
+        chat.setChatMeta(refK, { note: "first" });
+        await sync.flushResources();
+        const copy2 = copyOf(fake);
+        expect(copy2.data.note).toBe("first");
+        serverWrite([{ op: "setText", id: "c", text: "theirs too" }]);
+        chat.setChatMeta(refK, { note: "second" });
+        await sync.flushResources();
+        const copy4 = copyOf(fake);
+        expect(copy4.data.note).toBe("second");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(readCount(fake)).toBe(0);
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: copy4.revision, messageId: "b" });
+        // Reads answered in the order they could have been issued, each as the idle refresh takes
+        // them: below the first floor, at the first floor (below the second), at the second.
+        const refresh = (copy: ReturnType<typeof copyOf>) =>
+            chat.finishIdleChatRefresh(copy, chat.chatNoticeSeq(refK), chat.heldChatRevision(refK));
+        expect(refresh(copy1)).toBe(false);
+        expect(refresh(copy2)).toBe(false);
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(chat.findChat(refK)!.note).toBe("second");
+        expect(text("a")).toBe("A");
+        expect(refresh(copy4)).toBe(true);
+        expect(chat.heldChatRevision(refK)).toBe(copy4.revision);
+        expect(chat.isChatStale(refK)).toBe(false);
+        expect(chat.findChat(refK)!.note).toBe("second");
+        expect(text("a")).toBe("theirs");
+        expect(text("c")).toBe("theirs too");
+    });
+
+    it("the floor goes with the character's acknowledged deletion: a chat created again under the id (another incarnation, incomparable with the old floor) takes a job copy", async () => {
+        const { fake, sync, chat, serverWrite } = await boot();
+        const characterStore = await import("../characterStore.svelte");
+        const r0 = fake.chat("c", "k")!.revision;
+        const r1 = serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
+        const copy1 = copyOf(fake);
+        chat.setChatMeta(refK, { note: "mine" });
+        // The cycle's idle read after the stale acknowledgement fails: the floor and the mark stay.
+        fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
+        await expect(sync.flushResources()).rejects.toThrow(/failed 500/);
+        expect(fake.chat("c", "k")!.data.note).toBe("mine");
+        expect(chat.heldChatRevision(refK)).toBe(r0);
+        expect(chat.isChatStale(refK)).toBe(true);
+        expect(sync.applyHydration({ kind: "chats", characterId: "c", id: "k", revision: r1, data: copy1.data })).toBe(
+            false,
+        );
+        // The chat's next group is refused outright (a 400 naming it): quarantined, read no more.
+        chat.setMessageText(refK, "a", "mine too");
+        fake.failNext = {
+            status: 400,
+            body: { error: "chats[0] is refused" },
+            times: 1,
+            match: (path) => path === "/api/resources/batch",
+        };
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(chat.isChatStale(refK)).toBe(false);
+        // The character is deleted (acknowledged), then added again under its id with a chat `k`.
+        expect(characterStore.removeCharacter("c")).toBe(true);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.record("characters", "c")).toBeNull();
+        expect(fake.chat("c", "k")).toBeNull();
+        characterStore.addCharacter({
+            chaId: "c",
+            name: "C again",
+            chats: [{ id: "k", name: "K again", note: "", localLore: [], message: [m("x", "X")] }],
+        });
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.texts("c", "k")).toEqual(["X"]);
+        const created = fake.chat("c", "k")!.revision;
+        expect(chat.heldChatRevision(refK)).toBe(created);
+        expect(chat.findChat(refK)!.message[0]!.data).toBe("X");
+        // A job copy of the new chat applies: nothing of the old incarnation refuses it.
+        const next = serverWrite([{ op: "setText", id: "x", text: "X1" }]);
+        expect(
+            sync.applyHydration({ kind: "chats", characterId: "c", id: "k", revision: next, data: copyOf(fake).data }),
+        ).toBe(true);
+        expect(chat.heldChatRevision(refK)).toBe(next);
+        expect(chat.findChat(refK)!.message[0]!.data).toBe("X1");
+        expect(chat.isChatStale(refK)).toBe(false);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
     });
 });
