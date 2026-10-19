@@ -73,6 +73,8 @@ pnpm dev
 
 Open `http://localhost:5174/`. The dev server injects the server flag and forwards `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` to `http://localhost:6001`. Set `RISU_DEV_SERVER` (for example `RISU_DEV_SERVER=https://localhost:6001 pnpm dev`) when the server uses HTTPS or another port. The dev origin keeps its own login key, so you sign in once there as well.
 
+`pnpm dev:human` starts both at once on `127.0.0.1` (server 6001, Vite 5174) and restarts the server when its source changes. `pnpm dev:agent` is the same for coding agents: ports 6419/6418 on loopback, no login, and a throwaway copy of `save/` in `save-agent/`.
+
 ### Docker Installation
 
 You can also run Risuai using Docker. This method is particularly useful for web hosting.

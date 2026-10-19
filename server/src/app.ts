@@ -81,7 +81,9 @@ const headOpenTag = /<head(\s[^>]*)?>/i;
 export type ServerContext = ReturnType<typeof createServerContext>;
 
 /**
- * Builds the self-host server: `rootDir/dist` is the built client, `rootDir/save` the storage.
+ * Builds the self-host server: `rootDir/dist` is the built client, `rootDir/save` the storage
+ * (`savePath` replaces it: `RISU_SAVE_DIR`, the `pnpm dev:agent` sandbox). `authBypass` lets every
+ * protected route through without a login (`createAuthStore`); `main.ts` allows it on loopback only.
  * All state (password, known keys, stream jobs, rate-limit counters, the resource database and its
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
@@ -92,6 +94,8 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  */
 export function createServerContext(options: {
     rootDir: string;
+    savePath?: string;
+    authBypass?: boolean;
     trustProxy?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
@@ -107,14 +111,14 @@ export function createServerContext(options: {
      */
     realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
 }) {
-    const savePath = path.join(options.rootDir, "save");
+    const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
     mkdirSync(savePath, { recursive: true });
 
     const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
     const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
 
-    const auth = createAuthStore(savePath);
+    const auth = createAuthStore(savePath, { bypass: options.authBypass });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
     // The diagnostics folder (`docs/plan/request-history-diagnostics.md` slice 7): content-free events

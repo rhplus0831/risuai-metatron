@@ -10,6 +10,10 @@ package-lock.json
 node_modules
 dist/
 save/
+/save-agent/
+/save-agent.lock
+/.save-agent.staging-*/
+/save-agent.previous-*/
 dist-web/
 dist-ssr
 *.local
