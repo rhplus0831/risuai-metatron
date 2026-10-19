@@ -3,7 +3,7 @@ import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
-import { isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
+import { isFrozenAssetList, isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
 import {
     isForwardedPresetRoot,
     scopedPresetRoot,
@@ -477,12 +477,14 @@ type FuzzyIndex = {
     results: Map<string, { match: FuzzyMatch; cutoff: number }>;
 };
 
+type AssetTuples = readonly (readonly [string, string, string])[];
+
 /** `getClosestMatch`'s index of one asset list, built again when the list or an asset in it changes. */
 class FuzzyIndexSource {
-    #assets: [string, string, string][];
+    #assets: AssetTuples;
     readonly index: FuzzyIndex = $derived.by(() => buildFuzzyIndex(this.#assets));
 
-    constructor(assets: [string, string, string][]) {
+    constructor(assets: AssetTuples) {
         this.#assets = assets;
     }
 }
@@ -493,6 +495,8 @@ class FuzzyIndexSource {
  * and it keeps the component context it was created in, so a rendering message must not own it.
  */
 const fuzzyIndexes = new WeakMap<object, FuzzyIndexSource>();
+/** The index of a record's frozen asset list (`isFrozenAssetList`): immutable, so built once per list. */
+const frozenFuzzyIndexes = new WeakMap<object, FuzzyIndex>();
 /**
  * Lists a lookup found without a source, with the index it built meanwhile (untracked) and the list's
  * `wrapperFieldStamp` then: the index is reused only while the stamp is unchanged and not null.
@@ -513,7 +517,7 @@ $effect.root(() => {
             }
             for (const assets of pendingFuzzyLists.keys()) {
                 if (!fuzzyIndexes.has(assets)) {
-                    fuzzyIndexes.set(assets, new FuzzyIndexSource(assets as [string, string, string][]));
+                    fuzzyIndexes.set(assets, new FuzzyIndexSource(assets as AssetTuples));
                 }
             }
             pendingFuzzyLists = new Map();
@@ -739,12 +743,22 @@ function getClosestMatch(
 }
 
 /**
- * A record list's index: its source's, else (until the module root creates the source) one built
- * untracked, with a dependency that reruns the render once the source exists; that one is reused
- * only while the list's write stamp is unchanged, so a lookup after an edit in that window builds it
- * again. Any other list is built per lookup, tracked (a `$state` array's edit reruns the render).
+ * A record's frozen list's index is built once per list (an edit replaces the list). A record list's
+ * wrapper (a list of another shape) gets its source's, else (until the module root creates the
+ * source) one built untracked, with a dependency that reruns the render once the source exists; that
+ * one is reused only while the list's write stamp is unchanged, so a lookup after an edit in that
+ * window builds it again. Any other list is built per lookup, tracked (a `$state` array's edit reruns
+ * the render).
  */
-function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
+function fuzzyIndexOf(assets: AssetTuples): FuzzyIndex {
+    if (isFrozenAssetList(assets)) {
+        let index = frozenFuzzyIndexes.get(assets);
+        if (!index) {
+            index = buildFuzzyIndex(assets);
+            frozenFuzzyIndexes.set(assets, index);
+        }
+        return index;
+    }
     if (!isRecordWrapper(assets)) {
         return buildFuzzyIndex(assets);
     }
@@ -767,7 +781,7 @@ function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
     return index;
 }
 
-function buildFuzzyIndex(assets: [string, string, string][]): FuzzyIndex {
+function buildFuzzyIndex(assets: AssetTuples): FuzzyIndex {
     const index: FuzzyIndex = { assets: [], exact: new Map(), results: new Map(), hasLegacyOverflow: false };
     for (const asset of assets) {
         const entry: FuzzyAsset = { trimmed: trimmer(asset[0].toLocaleLowerCase()), path: asset[1], ext: asset[2] };
@@ -882,10 +896,10 @@ async function parseInlayAssets(data: string) {
 
 export interface simpleCharacterArgument {
     type: "simple";
-    additionalAssets?: [string, string, string][];
+    additionalAssets?: readonly (readonly [string, string, string])[];
     customscript: customscript[];
     chaId: string;
-    emotionImages?: [string, string][];
+    emotionImages?: readonly (readonly [string, string])[];
     triggerscript?: triggerscript[];
 }
 

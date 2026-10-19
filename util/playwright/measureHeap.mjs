@@ -4,19 +4,21 @@
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI. Seeds 12 enabled modules of 11,000 `[name, path, "avif"]` assets each, two
-// ~2 MB characters (a 300-entry lorebook) with 300 additional assets and 60 emotion images each, and
-// five small characters whose chats carry a `<style>` of 120 `@font-face` rules and an `@import`ed
-// stylesheet (a `data:` URL) of 120 more. Then takes a CDP
+// ~2 MB characters (a 300-entry lorebook) with 300 additional assets, 60 emotion images and 24
+// `ccAssets` icons each, and five small characters whose chats carry a `<style>` of 120 `@font-face`
+// rules and an `@import`ed stylesheet (a `data:` URL) of 120 more. Then takes a CDP
 // heap snapshot (after a forced GC) at each step, without reloading the page after boot:
 // 1. `boot`: the app loaded;
 // 2. `character-assets`: a big character's emotion and additional asset lists (its settings' second
 //    tab);
-// 3. `chats`: after opening the five small characters' chats, one after another;
-// 4. `module-assets`: the module editor's asset list of the first module (one page of rows);
-// 5. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
+// 3. `character-asset-edit`: after renaming that character's first additional asset by typing
+//    (timed per keystroke), deleting its second, and the save;
+// 4. `chats`: after opening the five small characters' chats, one after another;
+// 5. `module-assets`: the module editor's asset list of the first module (one page of rows);
+// 6. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
 //    its second, and the save;
-// 6. `module-edit`: after typing into that module's description and its save;
-// 7. `home`: back on the home screen (the sidebar's Home button).
+// 7. `module-edit`: after typing into that module's description and its save;
+// 8. `home`: back on the home screen (the sidebar's Home button).
 // Each snapshot is analysed by `util/heap/analyze.mjs report` in its own process and printed as one
 // table row: JS self size, `JSProxy` count, proxies of asset tuples, proxies retaining 256 KB or
 // more (count, and the outermost ones' retained size), likely duplicated large strings (same size and first 1,024 characters:
@@ -44,6 +46,7 @@ const MODULES = 12;
 const ASSETS_PER_MODULE = 11_000;
 const BIG_CHARACTERS = 2;
 const SMALL_CHARACTERS = 5;
+const CC_ASSETS = 24;
 const FONT_FACES = 120;
 const port = 6264;
 const base = `http://localhost:${port}`;
@@ -258,6 +261,12 @@ try {
                 })),
                 additionalAssets: assetList(300, `Big${i}`, 100 + i),
                 emotionImages: assetList(60, `Emotion${i}`, 200 + i).map(([name, file]) => [name, file]),
+                ccAssets: assetList(CC_ASSETS, `Icon${i}`, 300 + i).map(([name, uri, ext]) => ({
+                    type: "icon",
+                    uri,
+                    name,
+                    ext,
+                })),
             }),
         ),
         ...smallIds.map((id, i) => character(id, `Small ${i}`)),
@@ -390,7 +399,53 @@ try {
     await page.waitForTimeout(1500);
     await snapshot("character-assets");
 
-    // 3. Open the small characters' chats, one after another. Back on the "Chat" tab first: the
+    // 3. The big character's additional assets: rename the first by typing (each keystroke replaces
+    // the whole list: timed per key), delete the second, and wait for the save.
+    const menu = (label) => page.locator(`button:has(> span:text-is("${label}"))`).first();
+    await menu("Additional Assets")
+        .click({ timeout: 10_000 })
+        .catch(async (error) => {
+            await dump("character asset tab");
+            throw error;
+        });
+    await page.locator('input[placeholder="..."]').first().waitFor({ timeout: 30_000 });
+    const originalCharacterAssets = characters[0].additionalAssets;
+    await page.locator('input[placeholder="..."]').first().click();
+    await page.keyboard.press("End");
+    const characterKeyTimes = [];
+    for (const key of "renm") {
+        const at = Date.now();
+        await page.keyboard.type(key);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+        characterKeyTimes.push(Date.now() - at);
+    }
+    console.log(`character asset rename: ${characterKeyTimes.join(", ")} ms per keystroke`);
+    const beforeCharacterDelete = batches();
+    await page
+        .locator('input[placeholder="..."]')
+        .nth(1)
+        .locator("xpath=ancestor::tr[1]")
+        .locator("button")
+        .first()
+        .click();
+    await busy("character asset delete");
+    for (let i = 0; i < 100 && batches() === beforeCharacterDelete; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(2500);
+    const editedCharacter = (await api(`/api/resources/characters/${bigIds[0]}`)).body?.data;
+    check(
+        "character asset rename and delete: saved",
+        editedCharacter?.additionalAssets?.length === originalCharacterAssets.length - 1 &&
+            editedCharacter.additionalAssets[0][0] === `${originalCharacterAssets[0][0]}renm` &&
+            editedCharacter.additionalAssets[0][1] === originalCharacterAssets[0][1] &&
+            editedCharacter.additionalAssets[1][1] === originalCharacterAssets[2][1],
+        {
+            length: editedCharacter?.additionalAssets?.length,
+            first: editedCharacter?.additionalAssets?.[0]?.[0],
+        },
+    );
+    await snapshot("character-asset-edit");
+
+    // 4. Open the small characters' chats, one after another. Back on the "Chat" tab first: the
     // character settings of a character switched to on its closed-chat screen alert a tokenizer
     // `TypeError` (`CharConfig.svelte` `loadTokenize` gets an undefined note without a chat).
     await page.getByRole("button", { name: "Chat", exact: true }).first().click({ timeout: 60_000 });
@@ -420,8 +475,7 @@ try {
     }
     await snapshot("chats");
 
-    // 4. The first module's asset list.
-    const menu = (label) => page.locator(`button:has(> span:text-is("${label}"))`).first();
+    // 5. The first module's asset list.
     if (!(await settingsButton.isVisible().catch(() => false))) {
         await page.locator("button:has(svg.lucide-list)").first().click();
     }
@@ -447,7 +501,7 @@ try {
     await page.locator('input[placeholder="..."]').first().waitFor({ timeout: 30_000 });
     await snapshot("module-assets");
 
-    // 5a. Rename the first asset by typing (each keystroke replaces the whole list: timed per key),
+    // 6. Rename the first asset by typing (each keystroke replaces the whole list: timed per key),
     // delete the second, and wait for the save.
     const originalAssets = moduleList[0].assets;
     const nameInput = page.locator('input[placeholder="..."]').first();
@@ -483,7 +537,7 @@ try {
     );
     await snapshot("module-asset-edit");
 
-    // 5. Type into the module's description and wait for its save.
+    // 7. Type into the module's description and wait for its save.
     await menu("Basic Info").click();
     const description = page
         .locator('xpath=//span[normalize-space(.)="Description"]/following-sibling::*[1]/descendant-or-self::input')
@@ -502,7 +556,7 @@ try {
     await page.locator("button.absolute.top-2.right-2:has(svg.lucide-circle-x)").last().click({ timeout: 10_000 });
     await busy("settings close");
 
-    // 6. Home, through the sidebar's Home button (inside its menu by default), without a reload.
+    // 8. Home, through the sidebar's Home button (inside its menu by default), without a reload.
     const homeButton = page.locator(".rs-sidebar button:has(svg.lucide-house)").first();
     if ((await homeButton.count()) === 0) {
         await page.locator(".rs-sidebar button:has(svg.lucide-list)").first().click();

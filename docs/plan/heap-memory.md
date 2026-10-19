@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text) and B1 (frozen module asset lists) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists) and B2 (frozen character asset lists) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -260,6 +260,39 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   proxy per character asset. Edits through every writer above save and re-render.
   _Test_: `characterFieldStamps.test.ts` (frozen after install/adopt; replacement
   stamps), `ChatBody.assets.svelte.test.ts`, a `CharConfig` rename-row component test.
+
+  **Landed.** `records.svelte.ts` freezes `additionalAssets`, `emotionImages` (tuples) and
+  `ccAssets` (flat records) at `initializeRecords`, `applyRawCharacter` and `patchRawCharacter`
+  (handed-over data), and stores a whole field written or stored as a verified frozen list or a
+  wholly owned frozen copy (`freshAssetList`: wrappers and `$state` detached first, so no live
+  record object is frozen). Verified provenance is kept per shape (tuples, records).
+  `characterFieldPlain` returns the frozen list; `characterAssetNames` and the parser's fuzzy index
+  key their caches by a frozen list's identity (`isFrozenAssetList`). The character asset types
+  are readonly. `CharConfig` add/rename (per keystroke, with ModuleMenu's search hold)/delete, the
+  emotion rename, the `ccAssets` removal, `AssetInput`'s add and `characters.ts` replace lists;
+  the adds re-resolve the character after their awaits. `ChatBody` needed no change. The driver
+  seeds 24 `ccAssets` per big character and gained `character-asset-edit` (rename by typing,
+  timed; delete; server copy checked). Same driver, B1 build → B2 build:
+
+  | Step                   | JS self MB    | Proxies       | Asset tuple proxies |
+  | ---------------------- | ------------- | ------------- | ------------------- |
+  | `boot`                 | 62.2 → 61.6   | 1,815 → 1,047 | 600 → 0             |
+  | `character-assets`     | 116.6 → 115.6 | 2,226 → 1,071 | 600 → 0             |
+  | `character-asset-edit` | 121.4 → 120.3 | 2,521 → 1,368 | 599 → 0             |
+  | `chats`                | 122.7 → 121.8 | 2,370 → 1,212 | 599 → 0             |
+  | `module-assets`        | 124.7 → 123.8 | 2,594 → 1,436 | 599 → 0             |
+  | `module-asset-edit`    | 126.0 → 125.1 | 2,594 → 1,436 | 599 → 0             |
+  | `module-edit`          | 121.6 → 120.7 | 2,298 → 1,140 | 599 → 0             |
+  | `home`                 | 121.7 → 120.8 | 2,360 → 1,202 | 599 → 0             |
+
+  The boot drop (768 proxies) is the 600 tuples, 120 emotion pairs and 48 `ccAssets` entries.
+  A character rename keystroke over 300 assets took 16–29 ms (B1, in place: 25–39 ms).
+  Leftovers: B1's module path still freezes a same-record unproxied list or tuple (one a
+  `defineProperty` installed) when it is assigned to `assets`, so later edits through its source
+  wrapper throw (no production writer does this; B2's descriptor-validated owned copy is the fix
+  to reuse); a same-id `replaceCharacterRecordAt` passing the character's own frozen list back
+  re-stamps that field (its `$state` proxy never `Object.is` the raw list), costing one extra
+  serialization.
 
 ## Phase C: chat styles
 

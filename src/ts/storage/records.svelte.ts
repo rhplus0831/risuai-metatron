@@ -61,6 +61,10 @@ import { writeEntries } from "./mutationValidation";
  *   never a wrapper. An edit replaces the whole list (`module.assets = next`; unchanged frozen
  *   tuples are reused). A write into a frozen value through any path is refused with a TypeError
  *   before anything changes. A list of another shape stays mutable and wrapped.
+ * - A character's `additionalAssets`, `emotionImages` (tuples) and `ccAssets` (flat records) follow
+ *   the same rule (heap plan B2): frozen at `initializeRecords`, `applyRawCharacter` and
+ *   `patchRawCharacter` (handed-over data) and, for a whole field written or stored, in a wholly owned
+ *   copy (`freshAssetList`: live descriptors validated before copying, only verified entries shared).
  * - An own `__proto__` (or other inherited-name) key is rebuilt through `writeEntries`.
  * - Writes and replacements run untracked; comparisons use `Object.is` (in dev, Svelte compiles `===`
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
@@ -438,7 +442,8 @@ export function characterFieldStamp(chaId: string, field: string): number | null
 /**
  * A detached, read-only-by-contract character field copy, shared by live element and field stamp.
  * Like moduleFieldPlain, reads the raw target only while the field is untouched; changed fields
- * copy the live $state value, without walking the record wrappers. Never mutate the returned copy.
+ * copy the live $state value, without walking the record wrappers. A verified frozen asset list is
+ * returned as itself (immutable). Never mutate the returned copy.
  */
 export function characterFieldPlain<T = unknown>(chaId: string, field: string): T | undefined {
     return untrack(() => {
@@ -453,14 +458,18 @@ export function characterFieldPlain<T = unknown>(chaId: string, field: string): 
         const raw = stamp === meta.lifetime ? Reflect.get(element, STATE)?.[field] : undefined;
         const untouched = stamp === meta.lifetime && !(isObject(raw) && STATE in raw);
         const value = untouched ? raw : element[field];
+        // A verified frozen asset list is shared as itself (as in `moduleFieldPlain`).
+        const frozen = isObject(value) ? frozenAssetOf(value) : null;
         const copy =
-            stamp !== null
-                ? value === undefined
-                    ? undefined
-                    : JSON.parse(JSON.stringify(value))
-                : isObject(value)
-                  ? detachedCopy(value)
-                  : value;
+            frozen !== null
+                ? frozen
+                : stamp !== null
+                  ? value === undefined
+                      ? undefined
+                      : JSON.parse(JSON.stringify(value))
+                  : isObject(value)
+                    ? detachedCopy(value)
+                    : value;
         if (stamp !== null) {
             const memo = fields ?? new Map();
             memo.set(field, { stamp, value: copy });
@@ -671,7 +680,9 @@ export type RecordFields = Partial<Record<RecordKind, unknown>> & { characters?:
  * lacks is removed; the character list is `[]` then) and never queues a write. The characters get
  * valid, unique ids before any wrapper exists: an entry that is not an object is dropped, and one
  * without a string `chaId`, or with one an earlier entry has, gets a new id (the server's ids are
- * the record ids, so a boot never needs this; a fixture or an old export may).
+ * the record ids, so a boot never needs this; a fixture or an old export may). `fields` is handed
+ * over: detached JSON nobody edits afterwards (a module's and a character's asset lists are frozen in
+ * place, `freezeAssetList`); a caller that keeps editing its input passes a copy.
  */
 export function initializeRecords(fields: RecordFields) {
     const list = (Array.isArray(fields.characters) ? fields.characters : []).filter(
@@ -692,6 +703,7 @@ export function initializeRecords(fields: RecordFields) {
         seen.add(character.chaId as string);
         stripChatFields(character);
         // An installation holds detached JSON data (a server read, a fixture).
+        freezeCharacterAssets(character);
         renewStamps(characterOwner(character.chaId as string));
     }
     bumpEpoch(metaOf(CHARACTERS));
@@ -1426,35 +1438,48 @@ function unwrapInto(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Frozen module asset lists (heap plan B1).
+// Frozen asset lists (heap plan B1: module `assets`; B2: a character's asset fields).
 
 /**
- * The module asset lists (`[name, path, ext]` tuples) and tuples this layer verified and froze: a
- * list is replaced whole, never edited in place, so Svelte proxies only the list, not each tuple
- * (its `get` trap creates no source for a non-writable property). Verified values are leaves for
- * the wrappers. In DEV a Svelte array proxy's target is its `inspectable_array` wrapper; one over a
- * verified list joins `frozenLists` when first checked (`frozenAssetOf`).
+ * The asset lists and their entries this layer verified and froze: a list is replaced whole, never
+ * edited in place, so Svelte proxies only the list, not each entry (its `get` trap creates no source
+ * for a non-writable property). Verified values are leaves for the wrappers. Provenance is kept per
+ * shape: tuples (module `assets`, `additionalAssets`, `emotionImages`) and flat records
+ * (`ccAssets`); an empty list is verified for both. In DEV a Svelte array proxy's target is its
+ * `inspectable_array` wrapper; one over a verified list joins its set when first checked
+ * (`frozenAssetOf`).
  */
 const frozenLists = new WeakSet<object>();
 const frozenTuples = new WeakSet<object>();
+const frozenRecordLists = new WeakSet<object>();
+const frozenRecords = new WeakSet<object>();
+
+/** An asset entry's shape: a tuple of JSON primitives, or a flat record of them (`ccAssets`). */
+type AssetShape = "tuple" | "record";
+
+const verifiedLists = (shape: AssetShape) => (shape === "tuple" ? frozenLists : frozenRecordLists);
+const verifiedEntries = (shape: AssetShape) => (shape === "tuple" ? frozenTuples : frozenRecords);
+const isVerifiedList = (value: object) => frozenLists.has(value) || frozenRecordLists.has(value);
+
+/** A character's asset fields and their entry shapes (`shared/database.ts`). */
+const CHARACTER_ASSET_FIELDS: ReadonlyMap<string, AssetShape> = new Map([
+    ["additionalAssets", "tuple"],
+    ["emotionImages", "tuple"],
+    ["ccAssets", "record"],
+]);
 
 /** Whether `value`'s own keys are its indices and `length` only (no hole), each a data property. */
 function denseDataElements(value: unknown[]): unknown[] | null {
+    const length = Reflect.getOwnPropertyDescriptor(value, "length")?.value;
     const keys = Reflect.ownKeys(value);
-    if (keys.length !== value.length + 1) {
+    if (!Number.isInteger(length) || length < 0 || keys.length !== length + 1) {
         return null;
     }
     const elements: unknown[] = [];
-    for (const key of keys) {
-        if (key === "length") {
-            continue;
-        }
-        if (typeof key !== "string" || !isIndex(key)) {
-            return null;
-        }
+    for (let index = 0; index < length; index++) {
         // Read through the descriptor: a getter is never called, and makes the value not JSON data.
-        const descriptor = Reflect.getOwnPropertyDescriptor(value, key)!;
-        if (!("value" in descriptor) || !descriptor.enumerable) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
             return null;
         }
         elements.push(descriptor.value);
@@ -1462,46 +1487,84 @@ function denseDataElements(value: unknown[]): unknown[] | null {
     return elements;
 }
 
+/** A flat record's values: string keys (no `__proto__` or `toJSON`), each an enumerable data property. */
+function recordDataValues(value: object): unknown[] | null {
+    const values: unknown[] = [];
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== "string" || key === "__proto__" || key === "toJSON") {
+            return null;
+        }
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, key)!;
+        if (!("value" in descriptor) || !descriptor.enumerable) {
+            return null;
+        }
+        values.push(descriptor.value);
+    }
+    return values;
+}
+
 const isPlainArray = (value: unknown): value is unknown[] =>
     Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && !nodeOf.has(value) && !(STATE in value);
 
-/** An asset tuple: a plain dense array of JSON primitives. */
-function isAssetTuple(value: unknown): boolean {
-    if (isObject(value) && frozenTuples.has(value)) {
+const isPlainRecord = (value: unknown): value is object =>
+    isObject(value) &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    !nodeOf.has(value) &&
+    !(STATE in value);
+
+const isJsonPrimitive = (value: unknown) =>
+    value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+
+/** An asset entry of `shape`: a plain dense array, or a plain flat record, of JSON primitives. */
+function isAssetEntry(value: unknown, shape: AssetShape): boolean {
+    if (isObject(value) && verifiedEntries(shape).has(value)) {
         return true;
     }
-    if (!isPlainArray(value)) {
-        return false;
+    const values =
+        shape === "tuple"
+            ? isPlainArray(value)
+                ? denseDataElements(value)
+                : null
+            : isPlainRecord(value)
+              ? recordDataValues(value)
+              : null;
+    return values !== null && values.every(isJsonPrimitive);
+}
+
+/** Remembers a frozen list as verified for `shape`, or for both shapes when it is empty. */
+function verifyList(list: object, shape: AssetShape, empty: boolean) {
+    if (empty || shape === "tuple") {
+        frozenLists.add(list);
     }
-    const elements = denseDataElements(value);
-    return (
-        elements !== null &&
-        elements.every((entry) => entry === null || ["string", "number", "boolean"].includes(typeof entry))
-    );
+    if (empty || shape === "record") {
+        frozenRecordLists.add(list);
+    }
 }
 
 /**
- * Freezes a plain asset list in place (its tuples, then the list) when all of it is plain JSON
- * tuples, checked before anything is frozen; any other shape stays mutable and keeps working
- * through the wrappers. The caller owns `list` (detached JSON or this layer's own copy).
+ * Freezes a plain asset list in place (its entries, then the list) when all of it is plain JSON
+ * entries of `shape`, checked before anything is frozen; any other shape stays mutable and keeps
+ * working through the wrappers. The caller owns `list` and its entries (detached JSON or this
+ * layer's own copy).
  */
-function freezeAssetList(list: unknown): boolean {
-    if (isObject(list) && frozenLists.has(list)) {
+function freezeAssetList(list: unknown, shape: AssetShape = "tuple"): boolean {
+    if (isObject(list) && verifiedLists(shape).has(list)) {
         return true;
     }
     if (!isPlainArray(list)) {
         return false;
     }
-    const tuples = denseDataElements(list);
-    if (tuples === null || !tuples.every(isAssetTuple)) {
+    const entries = denseDataElements(list);
+    if (entries === null || !entries.every((entry) => isAssetEntry(entry, shape))) {
         return false;
     }
-    for (const tuple of tuples as object[]) {
-        Object.freeze(tuple);
-        frozenTuples.add(tuple);
+    for (const entry of entries as object[]) {
+        Object.freeze(entry);
+        verifiedEntries(shape).add(entry);
     }
     Object.freeze(list);
-    frozenLists.add(list);
+    verifyList(list, shape, entries.length === 0);
     return true;
 }
 
@@ -1516,30 +1579,132 @@ function freezeModuleAssets(element: unknown) {
     }
 }
 
+/** Freezes the asset fields of a plain character object this layer owns (`freezeAssetList`). */
+function freezeCharacterAssets(character: unknown) {
+    if (!isObject(character) || Array.isArray(character) || nodeOf.has(character) || STATE in character) {
+        return;
+    }
+    for (const [field, shape] of CHARACTER_ASSET_FIELDS) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(character, field);
+        if (descriptor && "value" in descriptor) {
+            freezeAssetList(descriptor.value, shape);
+        }
+    }
+}
+
 /**
- * The verified frozen asset list or tuple `value` is (or its Svelte proxy stands for), or null.
+ * The verified frozen asset list or entry `value` is (or its Svelte proxy stands for), or null.
  * O(1) in production; a DEV `inspectable_array` target is checked once (O(n)), then remembered.
  */
 function frozenAssetOf(value: object): object | null {
-    if (frozenLists.has(value) || frozenTuples.has(value)) {
+    if (isVerifiedList(value) || frozenTuples.has(value) || frozenRecords.has(value)) {
         return value;
     }
     if (!(STATE in value)) {
         return null;
     }
     const target = (value as Record<symbol, object>)[STATE];
-    if (frozenLists.has(target)) {
+    if (isVerifiedList(target)) {
         return target;
     }
     if (!Array.isArray(target) || Object.isExtensible(target) || !Object.isFrozen(target)) {
         return null;
     }
     const elements = denseDataElements(target);
-    if (elements === null || !elements.every((entry) => isObject(entry) && frozenTuples.has(entry))) {
+    if (elements === null) {
         return null;
     }
-    frozenLists.add(target);
+    const shape: AssetShape | null = elements.every((entry) => isObject(entry) && frozenTuples.has(entry))
+        ? "tuple"
+        : elements.every((entry) => isObject(entry) && frozenRecords.has(entry))
+          ? "record"
+          : null;
+    if (shape === null) {
+        return null;
+    }
+    verifyList(target, shape, elements.length === 0);
     return target;
+}
+
+/** A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget. */
+export function isFrozenAssetList(value: unknown): boolean {
+    if (!isObject(value) || nodeOf.has(value)) {
+        return false;
+    }
+    const frozen = untrack(() => frozenAssetOf(value));
+    return frozen !== null && isVerifiedList(frozen);
+}
+
+/**
+ * A wholly owned, frozen copy of `value` as an asset list of `shape`, or null when it is not one (a
+ * hole, an accessor, a nested object, another shape). Validate the live descriptors before copying:
+ * wrappers resolve as assignment sources, and `$state` descriptors include edits absent from its
+ * raw target. Only verified entries of `shape` are shared; no live object of any record is frozen.
+ */
+function freshAssetList(value: object, shape: AssetShape): unknown[] | null {
+    const node = nodeOf.get(value);
+    const source = node ? assignedTarget(node) : value;
+    if (!Array.isArray(source) || Object.getPrototypeOf(source) !== Array.prototype) {
+        return null;
+    }
+    const entries = denseDataElements(source);
+    if (entries === null) {
+        return null;
+    }
+    const prepared: { entry: object; keys: string[] | null; values: unknown[] | null }[] = [];
+    for (const value of entries) {
+        if (!isObject(value)) {
+            return null;
+        }
+        const node = nodeOf.get(value);
+        const entry = node ? assignedTarget(node) : value;
+        if (verifiedEntries(shape).has(entry)) {
+            prepared.push({ entry, keys: null, values: null });
+            continue;
+        }
+        const values =
+            shape === "tuple"
+                ? Array.isArray(entry) && Object.getPrototypeOf(entry) === Array.prototype
+                    ? denseDataElements(entry)
+                    : null
+                : !Array.isArray(entry) && Object.getPrototypeOf(entry) === Object.prototype
+                  ? recordDataValues(entry)
+                  : null;
+        if (values === null || !values.every(isJsonPrimitive)) {
+            return null;
+        }
+        prepared.push({ entry, keys: shape === "record" ? Object.keys(entry) : null, values });
+    }
+    const out = prepared.map(({ entry, keys, values }) =>
+        values === null ? entry : keys === null ? values : Object.fromEntries(keys.map((key, i) => [key, values[i]])),
+    );
+    return freezeAssetList(out, shape) ? out : null;
+}
+
+/**
+ * A whole character asset field written (a wrapper write of the field, a stored character's key): a
+ * verified frozen list of the field's shape is stored as itself, a list of that shape as a fresh
+ * frozen copy (`freshAssetList`; nothing to taint); anything else goes through `adoptCharacterValue`
+ * and stays mutable.
+ */
+function adoptCharacterAssetField(
+    value: unknown,
+    meta: RecordMeta,
+    field: string,
+    shape: AssetShape,
+    taint: Pick<RecordMeta, "uncacheable">,
+): unknown {
+    if (isObject(value)) {
+        const frozen = frozenAssetOf(value);
+        if (frozen !== null && verifiedLists(shape).has(frozen)) {
+            return frozen;
+        }
+        const fresh = freshAssetList(value, shape);
+        if (fresh !== null) {
+            return fresh;
+        }
+    }
+    return adoptCharacterValue(value, meta, field, taint);
 }
 
 /** Refuses a write into a frozen value (Svelte's traps would change their sources, then throw). */
@@ -1622,6 +1787,10 @@ function unwrapNodeValue(
             taint.uncacheable = true;
         }
         return adoptModuleValue(value, node.meta, modulePlace(node, prop), taint);
+    }
+    const shape = isCharacterElement(node) && typeof prop === "string" ? CHARACTER_ASSET_FIELDS.get(prop) : undefined;
+    if (shape !== undefined) {
+        return adoptCharacterAssetField(value, node.meta, prop as string, shape, taint);
     }
     return unwrapInto(value, node.meta, node.field ?? (typeof prop === "string" ? prop : null), taint);
 }
@@ -2698,7 +2867,11 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
                       ? detachedCopy(entry)
                       : entry;
         } else {
-            stored = unwrapInto(entry, meta, key);
+            const shape = CHARACTER_ASSET_FIELDS.get(key);
+            stored =
+                shape === undefined
+                    ? unwrapInto(entry, meta, key)
+                    : adoptCharacterAssetField(entry, meta, key, shape, meta);
         }
         Object.defineProperty(out, key, { value: stored, enumerable: true, writable: true, configurable: true });
     }
@@ -2798,6 +2971,8 @@ export function removeCharacterRecords(ids: readonly string[]): string[] {
  * The raw path of a server copy of one character (a conflict reload, a live update, a job
  * hydration): its own fields replaced (its render key kept), a new one appended (its chats come from
  * the chat module's collection read), or removed (`null`). Queues nothing; retained wrappers of that character follow it by path.
+ * `data` is handed over: detached JSON nobody edits afterwards (its asset lists are frozen in place,
+ * `freezeAssetList`).
  */
 export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
     untrack(() => {
@@ -2806,6 +2981,7 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
         bumpEpoch(characterOwner(chaId));
         // The server's copy: detached JSON data.
         renewStamps(characterOwner(chaId));
+        freezeCharacterAssets(data);
         if (data === null) {
             if (index !== -1) {
                 list.splice(index, 1);
@@ -2828,7 +3004,8 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
  * The raw path of a merged server change (`mergeConcurrentChange`): sets (or, with `REMOVE_FIELD`,
  * deletes) own fields of a character in place. Queues nothing; retained wrappers under the changed
  * fields follow them by path, all others keep their identity. Returns `false` when no character has
- * `chaId`.
+ * `chaId`. The values are handed over: detached JSON nobody edits afterwards (an asset field's list is
+ * frozen in place, `freezeAssetList`).
  */
 export function patchRawCharacter(chaId: string, changes: readonly (readonly [string, unknown])[]): boolean {
     return untrack(() => {
@@ -2849,6 +3026,10 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
             if (value === REMOVE_FIELD) {
                 delete target[field];
             } else {
+                const shape = CHARACTER_ASSET_FIELDS.get(field);
+                if (shape !== undefined) {
+                    freezeAssetList(value, shape);
+                }
                 target[field] = value;
             }
         }

@@ -107,8 +107,12 @@ export function createSimpleCharacter(char: AnyClientCharacter | null | undefine
         type: "simple",
         customscript: char.customscript,
         chaId: char.chaId,
-        additionalAssets: char.additionalAssets,
-        emotionImages: char.emotionImages,
+        get additionalAssets() {
+            return char.additionalAssets;
+        },
+        get emotionImages() {
+            return char.emotionImages;
+        },
         triggerscript: char.triggerscript,
     };
 

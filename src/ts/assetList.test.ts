@@ -7,6 +7,7 @@ import {
     characterFieldPlain,
     characterFieldStamp,
     initializeRecords,
+    isFrozenAssetList,
     isRecordWrapper,
     moduleFieldPlain,
     patchRawCharacter,
@@ -18,7 +19,14 @@ import {
 } from "./storage/records.svelte";
 
 type Asset = [string, string, string];
-type Character = { chaId: string; name: string; additionalAssets: Asset[]; note?: unknown };
+type Character = {
+    chaId: string;
+    name: string;
+    additionalAssets: readonly (readonly [string, string, string])[];
+    note?: unknown;
+};
+/** The live tuple of a mutable fallback list (a list of another shape), written in place. */
+const writable = (asset: readonly string[]) => asset as string[];
 const character = () => trackedCharacters<Character[]>()![0];
 const module = () => trackedRecord<RisuModule[]>("modules")![0];
 
@@ -30,7 +38,7 @@ beforeEach(() => {
 afterEach(() => resetRecords());
 
 describe("asset list name caches", () => {
-    it("shares detached character field copies and names until an asset write or replacement", () => {
+    it("keeps a character's names by its frozen list's identity until a replacement (heap plan B2)", () => {
         const original: Asset[] = [["SunSET pose", "assets/dawn.png", "png"]];
         initializeRecords({ characters: [{ chaId: "c", name: "C", additionalAssets: original }] });
         const live = character();
@@ -38,9 +46,12 @@ describe("asset list name caches", () => {
         const copy = characterFieldPlain<Asset[]>("c", "additionalAssets")!;
         const names = characterAssetNames("c", assets);
         const stamp = characterFieldStamp("c", "additionalAssets");
+        // The installed list is the handed-over input, frozen in place; a read is the frozen list itself.
         expect(copy).toEqual(original);
-        expect(copy).not.toBe(original);
-        expect(copy[0]).not.toBe(original[0]);
+        expect(Object.isFrozen(original)).toBe(true);
+        expect(Object.isFrozen(assets)).toBe(true);
+        expect(isRecordWrapper(assets)).toBe(false);
+        expect(isFrozenAssetList(assets)).toBe(true);
         expect(isRecordWrapper(copy)).toBe(false);
         expect(isRecordWrapper(copy[0])).toBe(false);
         expect(names).toEqual(["sunset pose"]);
@@ -51,29 +62,35 @@ describe("asset list name caches", () => {
         live.name = "Unrelated edit";
         expect(characterFieldStamp("c", "additionalAssets")).toBe(stamp);
         expect(characterFieldPlain("c", "additionalAssets")).toBe(copy);
+        expect(live.additionalAssets).toBe(assets);
         expect(characterAssetNames("c", live.additionalAssets)).toBe(names);
 
-        assets[0][0] = "MoonRISE";
+        // An in-place write is refused; a rename replaces the list (copying only its tuple).
+        expect(() => (writable(assets[0])[0] = "MoonRISE")).toThrow(TypeError);
+        expect(characterAssetNames("c", assets)).toBe(names);
+        live.additionalAssets = assets.map((asset, i) => (i === 0 ? ["MoonRISE", asset[1], asset[2]] : asset));
         expect(characterFieldStamp("c", "additionalAssets")).not.toBe(stamp);
+        const renamedList = live.additionalAssets;
         const renamed = characterFieldPlain<Asset[]>("c", "additionalAssets")!;
-        const renamedNames = characterAssetNames("c", assets);
+        const renamedNames = characterAssetNames("c", renamedList);
+        expect(renamedList).not.toBe(assets);
         expect(renamed).not.toBe(copy);
         expect(renamed).toEqual([["MoonRISE", "assets/dawn.png", "png"]]);
         expect(renamedNames).not.toBe(names);
         expect(renamedNames).toEqual(["moonrise"]);
         expect(characterFieldPlain("c", "additionalAssets")).toBe(renamed);
-        expect(characterAssetNames("c", assets)).toBe(renamedNames);
-        // Readers must never lowercase or mutate either the live tuples or an older copy.
+        expect(characterAssetNames("c", live.additionalAssets)).toBe(renamedNames);
+        // Readers must never lowercase or mutate either the live tuples or an older list.
         expect(copy).toEqual([["SunSET pose", "assets/dawn.png", "png"]]);
-        expect(assets[0][0]).toBe("MoonRISE");
+        expect(assets[0][0]).toBe("SunSET pose");
+        expect(characterAssetNames("c", assets)).toBe(names);
 
-        assets[0][1] = "assets/new.webp";
-        assets[0][2] = "webp";
+        live.additionalAssets = [["MoonRISE", "assets/new.webp", "webp"]];
         expect(characterFieldPlain("c", "additionalAssets")).toEqual([["MoonRISE", "assets/new.webp", "webp"]]);
-        assets.push(["Another", "assets/another.png", "png"]);
-        expect(characterAssetNames("c", assets)).toEqual(["moonrise", "another"]);
-        assets.splice(0, 1);
-        expect(characterAssetNames("c", assets)).toEqual(["another"]);
+        live.additionalAssets = [...live.additionalAssets, ["Another", "assets/another.png", "png"]];
+        expect(characterAssetNames("c", live.additionalAssets)).toEqual(["moonrise", "another"]);
+        live.additionalAssets = live.additionalAssets.filter((_, index) => index !== 0);
+        expect(characterAssetNames("c", live.additionalAssets)).toEqual(["another"]);
 
         patchRawCharacter("c", [["additionalAssets", [["Remote", "remote.png", "png"]]]]);
         expect(characterAssetNames("c", live.additionalAssets)).toEqual(["remote"]);
@@ -85,14 +102,43 @@ describe("asset list name caches", () => {
         expect(characterFieldPlain("c", "absent")).toBeUndefined();
     });
 
-    it("refreshes uncacheable character names and plain create-mode module names", () => {
-        initializeRecords({ characters: [{ chaId: "c", name: "C", additionalAssets: [["Before", "p", "png"]] }] });
+    it("a retained wrapper of a list that later resolves to frozen lists is never a cache key", () => {
+        // A list of another shape (a fourth element that is an object) is a mutable wrapper; the
+        // challenge's finding 1 (Sol, 2026-10-19): the wrapper's identity is stable across the
+        // replacements that follow, so it must stay on the stamp path.
+        initializeRecords({
+            characters: [{ chaId: "c", name: "C", additionalAssets: [["Seed", "p", "png", { odd: true }]] }],
+        });
         const live = character();
+        const held = live.additionalAssets;
+        expect(isRecordWrapper(held)).toBe(true);
+        expect(isFrozenAssetList(held)).toBe(false);
+        expect(characterAssetNames("c", held)).toEqual(["seed"]);
+        for (const name of ["Old", "New"]) {
+            live.additionalAssets = [[name, "p", "png"]];
+            expect(isFrozenAssetList(live.additionalAssets)).toBe(true);
+            expect(isFrozenAssetList(held)).toBe(false);
+            expect(characterAssetNames("c", held)).toEqual([name.toLowerCase()]);
+            expect(characterAssetNames("c", live.additionalAssets)).toEqual([name.toLowerCase()]);
+        }
+        // The wrapper's names are still reused while its stamp is unchanged.
+        const names = characterAssetNames("c", held);
+        live.name = "unrelated";
+        expect(characterAssetNames("c", held)).toBe(names);
+    });
+
+    it("refreshes uncacheable character names of a mutable list and plain create-mode module names", () => {
+        // A tuple holding an object is a list of another shape: mutable, wrapped, edited in place.
+        initializeRecords({
+            characters: [{ chaId: "c", name: "C", additionalAssets: [["Before", "p", "png", { odd: true }]] }],
+        });
+        const live = character();
+        expect(isRecordWrapper(live.additionalAssets)).toBe(true);
         const before = characterAssetNames("c", live.additionalAssets);
         // Non-JSON data makes this record uncacheable through the public write boundary.
         live.note = new Date(0);
         expect(characterFieldStamp("c", "additionalAssets")).toBeNull();
-        live.additionalAssets[0][0] = "AFTER";
+        writable(live.additionalAssets[0])[0] = "AFTER";
         expect(characterAssetNames("c", live.additionalAssets)).toEqual(["after"]);
         expect(before).toEqual(["before"]);
 

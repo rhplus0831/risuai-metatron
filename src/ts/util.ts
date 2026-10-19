@@ -239,7 +239,7 @@ export function assetExtension(asset: readonly string[]): string {
 /** How many asset rows an asset list renders at first and adds per "Load More". */
 export const ASSET_LIST_PAGE = 100;
 
-export function defaultEmotion(em: [string, string][]) {
+export function defaultEmotion(em: readonly (readonly [string, string])[]) {
     if (!em) {
         return "";
     }

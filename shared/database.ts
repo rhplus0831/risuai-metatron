@@ -632,7 +632,7 @@ export interface character {
     readonly chatPage: number;
     viewScreen: "emotion" | "none" | "imggen";
     bias: [string, number][];
-    emotionImages: [string, string][];
+    emotionImages: readonly (readonly [string, string])[];
     globalLore: loreBook[];
     chaId: string;
     sdData: [string, string][];
@@ -717,7 +717,7 @@ export interface character {
      * `memoryTrimAck` holds only while it equals this (`supaMemoryOnCount` in `shared/characters.ts`).
      */
     supaMemoryOnCount?: number;
-    additionalAssets?: [string, string, string][];
+    additionalAssets?: readonly (readonly [string, string, string])[];
     ttsReadOnlyQuoted?: boolean;
     replaceGlobalNote: string;
     backgroundHTML?: string;
@@ -762,12 +762,12 @@ export interface character {
     group_only_greetings?: string[];
     creation_date?: number;
     modification_date?: number;
-    ccAssets?: Array<{
+    ccAssets?: readonly Readonly<{
         type: string;
         uri: string;
         name: string;
         ext: string;
-    }>;
+    }>[];
     defaultVariables?: string;
     lowLevelAccess?: boolean;
     hideChatIcon?: boolean;
@@ -807,7 +807,7 @@ export interface groupChat {
     globalLore: loreBook[];
     autoMode: boolean;
     useCharacterLore: boolean;
-    emotionImages: [string, string][];
+    emotionImages: readonly (readonly [string, string])[];
     customscript: customscript[];
     chaId: string;
     alternateGreetings?: string[];
@@ -855,7 +855,7 @@ export interface groupChat {
     translatorNote?: string;
     additionalData?: any;
     depth_prompt?: { depth: number; prompt: string };
-    additionalAssets?: [string, string, string][];
+    additionalAssets?: readonly (readonly [string, string, string])[];
     utilityBot?: boolean;
     license?: string;
     prebuiltAssetCommand?: boolean;

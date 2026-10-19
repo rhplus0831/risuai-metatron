@@ -118,6 +118,7 @@
     const assetsOwnerId = $derived(currentCharacter.chaId);
     let assetQuery = $derived.by(() => {
         assetsOwnerId;
+        clearRenameHold();
         return "";
     });
     let shownAssets = $derived.by(() => {
@@ -125,15 +126,61 @@
         assetQuery;
         return ASSET_LIST_PAGE;
     });
+    // The asset list is immutable: every edit replaces it. The list this component's own rename made
+    // keeps the matches, so a row stays visible while its name is being edited; any other new list
+    // (an addition, a deletion, another tab's copy) matches again.
+    let renamedList: unknown = null;
+    let previousMatches: { owner: unknown; query: string; indices: number[] } | null = null;
+
+    function clearRenameHold() {
+        previousMatches = null;
+        renamedList = null;
+    }
+
+    function setAssetQuery(query: string) {
+        if (query !== assetQuery) clearRenameHold();
+        assetQuery = query;
+    }
+
     const matchedAssets = $derived.by(() => {
         const ownerId = assetsOwnerId;
         const query = assetQuery.trim().toLowerCase();
         const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
         const length = list?.length ?? 0;
         if (!query) return null;
-        // Track only the owner, query, field and length: a row stays visible throughout a rename.
-        return length ? untrack(() => matchingAssetIndices(characterAssetNames(ownerId, list), query)) : [];
+        const previous = previousMatches;
+        if (previous && list === renamedList && previous.owner === ownerId && previous.query === query) {
+            return previous.indices;
+        }
+        const indices = length ? untrack(() => matchingAssetIndices(characterAssetNames(ownerId, list), query)) : [];
+        previousMatches = { owner: ownerId, query, indices };
+        return indices;
     });
+
+    function renameAsset(index: number, name: string) {
+        if (currentCharacter.type !== "character") return;
+        const list = currentCharacter.additionalAssets;
+        if (!list?.[index]) return;
+        currentCharacter.additionalAssets = list.map((asset, i) => {
+            if (i !== index) return asset;
+            const renamed: [string, string, string] = [...asset];
+            renamed[0] = name;
+            return renamed;
+        });
+        // The stored list (adoption may store another array than the one assigned).
+        renamedList = untrack(() => (currentCharacter as character).additionalAssets);
+    }
+
+    function renameEmotion(index: number, name: string) {
+        const list = currentCharacter.emotionImages;
+        if (!list?.[index]) return;
+        currentCharacter.emotionImages = list.map((emotion, i) => {
+            if (i !== index) return emotion;
+            const renamed: [string, string] = [...emotion];
+            renamed[0] = name;
+            return renamed;
+        });
+    }
     const assetCount = $derived(
         matchedAssets?.length ??
             (currentCharacter.type === "character" ? (currentCharacter.additionalAssets?.length ?? 0) : 0),
@@ -538,7 +585,8 @@
                                 if (!iconRemoveMode) {
                                     changeCharImage(currentCharacter.chaId, i);
                                 } else if (currentCharacter.type === "character") {
-                                    (currentCharacter as character).ccAssets.splice(i, 1);
+                                    const character = currentCharacter as character;
+                                    character.ccAssets = character.ccAssets.filter((_, index) => index !== i);
                                     iconRemoveMode = false;
                                 }
                             }}
@@ -656,7 +704,8 @@
                                         <TextInput
                                             marginBottom
                                             size="lg"
-                                            bind:value={currentCharacter.emotionImages[index][0]}
+                                            value={currentCharacter.emotionImages[index][0]}
+                                            oninput={(event) => renameEmotion(index, event.currentTarget.value)}
                                         />
                                     </td>
                                     <td>
@@ -813,14 +862,15 @@
                                         if (!char) {
                                             return;
                                         }
-                                        char.additionalAssets.push(
+                                        // The list is immutable: appended to the latest one, replaced whole.
+                                        char.additionalAssets = [
+                                            ...(char.additionalAssets ?? []),
                                             ...da.map((f, i): [string, string, string] => [
                                                 f.name,
                                                 keys[i],
                                                 extensions[i],
                                             ]),
-                                        );
-                                        char.additionalAssets = char.additionalAssets;
+                                        ];
                                     }
                                 }}
                             >
@@ -830,7 +880,11 @@
                     </tr>
                     <tr>
                         <td colspan="2">
-                            <TextInput fullwidth placeholder={language.search} bind:value={assetQuery} />
+                            <TextInput
+                                fullwidth
+                                placeholder={language.search}
+                                bind:value={() => assetQuery, setAssetQuery}
+                            />
                         </td>
                     </tr>
                     {#if matchedAssets?.length === 0}
@@ -868,7 +922,8 @@
                                     <TextInput
                                         size="sm"
                                         marginBottom
-                                        bind:value={currentCharacter.additionalAssets[index][0]}
+                                        value={assets[0]}
+                                        oninput={(event) => renameAsset(index, event.currentTarget.value)}
                                         placeholder="..."
                                     />
                                 </td>
@@ -879,9 +934,8 @@
                                         onclick={() => {
                                             if (currentCharacter.type === "character") {
                                                 setCurrentChatMeta({ fmIndex: -1 });
-                                                let additionalAssets = currentCharacter.additionalAssets;
-                                                additionalAssets.splice(index, 1);
-                                                currentCharacter.additionalAssets = additionalAssets;
+                                                currentCharacter.additionalAssets =
+                                                    currentCharacter.additionalAssets.filter((_, i) => i !== index);
                                             }
                                         }}
                                     >

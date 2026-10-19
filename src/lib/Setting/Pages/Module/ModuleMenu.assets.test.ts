@@ -218,21 +218,27 @@ describe("paged asset lists", () => {
         expect(rowNames("module")).toEqual(["Target remote"]);
     });
 
-    it("sticker selection receives the live source tuple after edits and list replacement", () => {
+    it("sticker selection receives the live source tuple after a rename and a list replacement", () => {
         const prefix: Asset[] = Array.from({ length: 103 }, (_, i) => [`Other ${i}`, `p${i}`, "mp3"]);
         const view = render("sticker", [...prefix, ["Target", "old-path", "mp3"]]);
+        // A character's asset list is immutable (heap plan B2): a frozen leaf, never a wrapper.
+        expect(isRecordWrapper(view.character.additionalAssets)).toBe(false);
+        expect(Object.isFrozen(view.character.additionalAssets)).toBe(true);
         input(search(), "target");
         expect(rowNames("sticker")).toEqual(["Target"]);
-        const tuple = view.character.additionalAssets[103];
-        tuple[0] = "Renamed";
-        tuple[1] = "live-path";
+        expect(() => ((view.character.additionalAssets![103] as unknown as string[])[0] = "x")).toThrow(TypeError);
+        const kept = view.character.additionalAssets![0];
+        // A rename replaces the list whole: the matches are computed again under the current query.
+        view.character.additionalAssets = [...prefix, ["Renamed", "live-path", "mp3"]];
         flushSync();
+        expect(rowNames("sticker")).toEqual([]);
+        expect(target.textContent).toContain(language.noMatchingAssets);
+        input(search(), "renamed");
         expect(rowNames("sticker")).toEqual(["Renamed"]);
         click(stickerButtons()[0]);
         expect(view.onSelect).toHaveBeenLastCalledWith(["Renamed", "live-path", "mp3"]);
-        expect(view.onSelect.mock.calls[0][0]).toBe(tuple);
-        input(search(), "renamed");
-        expect(rowNames("sticker")).toEqual(["Renamed"]);
+        expect(view.onSelect.mock.calls[0][0]).toBe(view.character.additionalAssets![103]);
+        expect(Object.isFrozen(view.onSelect.mock.calls[0][0])).toBe(true);
         input(search(), "target");
         expect(rowNames("sticker")).toEqual([]);
         view.character.additionalAssets = [...prefix, ["Target replacement", "new-path", "mp3"]];
@@ -240,7 +246,9 @@ describe("paged asset lists", () => {
         expect(rowNames("sticker")).toEqual(["Target replacement"]);
         click(stickerButtons()[0]);
         expect(view.onSelect).toHaveBeenLastCalledWith(["Target replacement", "new-path", "mp3"]);
-        expect(view.onSelect.mock.calls[1][0]).toBe(view.character.additionalAssets[103]);
+        expect(view.onSelect.mock.calls[1][0]).toBe(view.character.additionalAssets![103]);
+        // The unchanged tuples are shared between the old and the new lists.
+        expect(view.character.additionalAssets![0]).toBe(kept);
     });
 
     describe("the immutable module list (heap plan B1)", () => {

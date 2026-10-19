@@ -12,9 +12,10 @@ vi.mock("../../globalApi.svelte", () => ({
 }));
 vi.mock("../transformClient", () => ({ captureTransform: () => null, serverProcessScript: vi.fn() }));
 
-import { getDistance, ParseMarkdown, resetAssetsCache } from "../parser.svelte";
+import { getDistance, ParseMarkdown, resetAssetsCache, type simpleCharacterArgument } from "../parser.svelte";
 import { boundedDistance, findAssetPrefix } from "../assetSearch";
 import { selectedCharacter } from "../../storage/characterStore.svelte";
+import { isRecordWrapper } from "../../storage/records.svelte";
 import { selectCharacter } from "../../storage/selection.svelte";
 import { settings } from "../../storage/settingsViews.svelte";
 import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
@@ -63,7 +64,8 @@ describe("parser asset inputs", () => {
             expect(await tracked).toContain('src="assets/module-edited.png"');
             expect(text(await direct)).toBe("assets/module-edited.png");
             expect(text(await parse("cat"))).toBe("assets/cat.png");
-            char().additionalAssets[0][1] = "assets/character-edited.png";
+            // A character's asset list is immutable too (heap plan B2): the edit replaces it whole.
+            char().additionalAssets = [asset("cat", "assets/character-edited.png")];
             const changed = parse("cat", "img");
             expect(await changed).toContain('src="assets/character-edited.png"');
         } finally {
@@ -123,9 +125,41 @@ describe("parser fuzzy assets", () => {
         expect(text(await parse("cot"))).toBe("");
         settings.ui.assetMaxDifference = 1;
         expect(text(await parse("cot"))).toBe("assets/cat.png");
-        char().additionalAssets[0][1] = "assets/fuzzy-edited.png";
+        char().additionalAssets = [asset("cat", "assets/fuzzy-edited.png")];
         const edited = parse("cot");
         expect(text(await edited)).toBe("assets/fuzzy-edited.png");
+    });
+
+    it("keys the once-built index by a frozen list, never by a retained wrapper of a list that later resolves to one", async () => {
+        // A list of another shape (a fourth tuple element that is an object) stays a mutable wrapper
+        // (heap plan B2); a simple-character argument built then keeps that wrapper. Once the field
+        // holds frozen lists, each replacement must still rebuild the index the wrapper reads
+        // (Sol's challenge finding 1, 2026-10-19).
+        settings.ui.assetMaxDifference = 1;
+        install([["cat", "assets/first.png", "png", { odd: true }] as unknown as Asset]);
+        const held = char().additionalAssets;
+        expect(isRecordWrapper(held)).toBe(true);
+        const simple: simpleCharacterArgument = {
+            type: "simple",
+            chaId: "c",
+            customscript: [],
+            additionalAssets: held,
+        };
+        const lookup = () => ParseMarkdown("{{raw::cot}}", simple, "normal", -1, {}, null);
+        expect(text(await lookup())).toBe("assets/first.png");
+        for (const [name, path] of [
+            ["cut", "assets/second.png"],
+            ["cit", "assets/third.png"],
+        ]) {
+            char().additionalAssets = [asset(name, path)];
+            expect(isRecordWrapper(char().additionalAssets)).toBe(false);
+            expect(Object.isFrozen(char().additionalAssets)).toBe(true);
+            expect(text(await lookup()), path).toBe(path);
+            // The same answer through the live frozen list, and again after a flush.
+            expect(text(await parse("cot"))).toBe(path);
+            flushSync();
+            expect(text(await lookup()), `${path} after a flush`).toBe(path);
+        }
     });
 
     it("matches a full scan on deterministic UTF-16 names and lets a later overflow beat distance one", async () => {
