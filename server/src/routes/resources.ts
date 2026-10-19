@@ -13,6 +13,7 @@ import {
 } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
+import { compressedJson } from "../http/compressedJson.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
@@ -106,7 +107,7 @@ export function registerResourceRoutes(
                 }));
             }
         }
-        return c.json(read);
+        return compressedJson(c, read);
     });
 
     app.post("/api/resources/read", limiter, async (c) => {
@@ -157,7 +158,7 @@ export function registerResourceRoutes(
         }
         try {
             const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
-            return c.json({
+            return compressedJson(c, {
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),
             });
@@ -239,7 +240,7 @@ export function registerResourceRoutes(
         if (!kind) {
             return c.json({ error: "Unknown resource kind" }, 404);
         }
-        return c.json({
+        return compressedJson(c, {
             epoch: store.epoch(),
             items: store.list(kind).map((record) => ({ ...record, data: project(kind, record.data) })),
         });
@@ -267,7 +268,11 @@ export function registerResourceRoutes(
         if (!resource) {
             return c.json({ error: "Resource not found", epoch: store.epoch() }, 404);
         }
-        return c.json({ epoch: store.epoch(), revision: resource.revision, data: project(kind, resource.data) });
+        return compressedJson(c, {
+            epoch: store.epoch(),
+            revision: resource.revision,
+            data: project(kind, resource.data),
+        });
     });
 
     app.put("/api/resources/:kind/:id", limiter, async (c) => {
