@@ -568,6 +568,28 @@ describe("POST /api/backups/export", () => {
         expect(rm.mock.calls.filter(([target]) => path.basename(String(target)).startsWith("export-"))).toHaveLength(1);
     });
 
+    it("releases the staging copy and the lifetime when the client aborts after the first chunk without cancelling", async () => {
+        const s = await defaultServer();
+        await writeAsset(s, "assets/a.png", "A".repeat(100_000));
+        const controller = new AbortController();
+        const res = await s.request(
+            "/api/backups/export",
+            { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal: controller.signal },
+            null,
+        );
+        expect(res.status).toBe(200);
+        const reader = res.body!.getReader();
+        expect((await reader.read()).done).toBe(false);
+        expect(readdirSync(tmpDir(s))).toHaveLength(1);
+        // The adapter stops pulling: the generator waits at a `yield` and nothing cancels the stream.
+        controller.abort();
+        await waitFor(() => readdirSync(tmpDir(s)).length === 0);
+        let stopped = false;
+        const stopping = s.context.snapshots.stop().then(() => (stopped = true));
+        await waitFor(() => stopped);
+        await stopping;
+    });
+
     it("cleans up an export the client abandoned during preparation, and keeps shutdown waiting until then", async () => {
         const s = await defaultServer();
         const holding = defer();

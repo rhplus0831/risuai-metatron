@@ -134,8 +134,8 @@ export function registerBackupRoutes(
         // The export's lifetime (preparation and streaming) is tracked, so shutdown waits for it.
         // Preparation always runs to its end (an abort meanwhile only asks it to stop early at its
         // next step), and one finalizer removes the staging folder and releases the lifetime after
-        // it has settled: when it failed, when the client is gone, or when the stream ends, is
-        // cancelled, or is dropped before it started.
+        // it has settled: when it failed, when the client is gone (before or during the stream), or
+        // when the stream ends or is cancelled.
         const signal = c.req.raw.signal;
         let release!: () => void;
         const lifetime = new Promise<void>((resolve) => (release = resolve));
@@ -255,9 +255,7 @@ export function registerBackupRoutes(
             missing,
         };
 
-        let streamStarted = false;
         async function* records(): AsyncGenerator<Uint8Array> {
-            streamStarted = true;
             try {
                 const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf-8");
                 yield encodeRecordHeader("manifest.json", manifestBytes.length);
@@ -270,21 +268,25 @@ export function registerBackupRoutes(
                 await finalize();
             }
         }
-        // A client that leaves before the adapter reads the stream would leave it unread: finish
-        // then. Once the generator runs, its own `finally` does.
+        // A client that leaves may never cancel the stream (the adapter can stop pulling with the
+        // generator suspended at a `yield`), so the request-signal abort returns the generator: its
+        // `finally` finalizes once the step it is in settles, and `finalize` covers one that never
+        // started (it has no `finally` to run).
+        const iterator = records();
         signal.addEventListener(
             "abort",
             () => {
-                if (!streamStarted) {
-                    void finalize();
-                }
+                void iterator
+                    .return(undefined)
+                    .catch(() => {})
+                    .finally(finalize);
             },
             { once: true },
         );
 
         c.header("Content-Type", "application/octet-stream");
         c.header("Cache-Control", "no-store");
-        return c.body(iteratorStream(records(), finalize), 200);
+        return c.body(iteratorStream(iterator, finalize), 200);
     });
 
     app.post(BACKUP_IMPORT_PATH, limiter, async (c) => {
