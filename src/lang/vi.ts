@@ -670,7 +670,6 @@ export const languageVietnamese = {
     pluginContainsExternalJS: "Plugin này chứa Javascript bên ngoài.",
     createGroupImg: "Tạo biểu tượng nhóm",
     waifuWidth: "Chiều rộng trò chuyện Waifu",
-    files: "Các tập tin",
     backupConfirm: "Bạn có thực sự muốn lưu bản sao lưu?",
     backupLoadConfirm: "Bạn có thực sự muốn tải bản sao lưu? Tất cả dữ liệu sẽ bị mất!",
     backupLoadConfirm2: "Bạn có thực sự muốn tải bản sao lưu không? Tất cả dữ liệu sẽ bị mất!",

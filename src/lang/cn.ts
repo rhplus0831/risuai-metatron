@@ -632,7 +632,6 @@ export const languageChinese = {
     pluginContainsExternalJS: "此插件包含外部 Javascript。",
     createGroupImg: "产生群组头像",
     waifuWidth: "角色对话框宽度",
-    files: "文件",
     backupConfirm: "你确定要保存备份吗？",
     backupLoadConfirm: "你确定要读取备份吗？所有数据将被覆盖！",
     backupLoadConfirm2: "你**真的、真的**确定要加载备份吗？这将会清除所有数据！",

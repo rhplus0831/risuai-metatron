@@ -7,7 +7,7 @@
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
 </script>
 
-<h2 class="mb-2 text-2xl font-bold mt-2">{language.files}</h2>
+<h2 class="mb-2 text-2xl font-bold mt-2">{language.backups}</h2>
 
 <Button
     onclick={async () => {

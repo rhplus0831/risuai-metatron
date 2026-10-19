@@ -10,17 +10,18 @@
         BoxIcon,
         CodeIcon,
         ContactIcon,
+        DatabaseBackupIcon,
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
         MousePointerClickIcon,
-        UserIcon,
         CircleXIcon,
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
+    import type { Component } from "svelte";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
@@ -57,12 +58,76 @@
     import HotkeySettings from "./Pages/HotkeySettings.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
-    // The Model entry covers its three tabs (`Model/ModelMenuTabs.svelte`).
-    const modelMenuSelected = $derived(
-        $SettingsMenuIndex === MODEL_SETTINGS_MENU ||
-            $SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU ||
-            $SettingsMenuIndex === API_KEYS_SETTINGS_MENU,
-    );
+    /**
+     * The sidebar, in groups (settings UI plan slice 9). An entry opens its first menu index and is
+     * highlighted on any of them: Model covers its three tabs (`Model/ModelMenuTabs.svelte`), Prompt its
+     * template editor (13). Labels are read at render, so a language switch shows in the next render.
+     * Plugin-added menus follow the last group.
+     */
+    interface NavEntry {
+        menus: number[];
+        icon: Component;
+        label: () => string;
+    }
+    const navGroups: { id: string; label: () => string; entries: NavEntry[] }[] = [
+        {
+            id: "chat",
+            label: () => language.settingsNavGroupChatSetup,
+            entries: [
+                {
+                    menus: [MODEL_SETTINGS_MENU, MODEL_PROFILES_SETTINGS_MENU, API_KEYS_SETTINGS_MENU],
+                    icon: CpuIcon,
+                    label: () => language.model,
+                },
+                { menus: [PROMPT_SETTINGS_MENU, 13], icon: ScrollTextIcon, label: () => language.prompt },
+                { menus: [12], icon: ContactIcon, label: () => language.persona },
+            ],
+        },
+        {
+            id: "features",
+            label: () => language.settingsNavGroupFeatures,
+            entries: [
+                { menus: [MEMORY_SETTINGS_MENU], icon: BrainIcon, label: () => language.memorySettings },
+                { menus: [IMAGE_GENERATION_SETTINGS_MENU], icon: ImageIcon, label: () => language.imageGeneration },
+                { menus: [VOICE_SETTINGS_MENU], icon: AudioLinesIcon, label: () => language.voiceSettings },
+                {
+                    menus: [TRANSLATION_SETTINGS_MENU],
+                    icon: LanguagesIcon,
+                    label: () => language.translationSettings,
+                },
+                { menus: [14], icon: PackageIcon, label: () => language.modules },
+                { menus: [4], icon: CodeIcon, label: () => language.plugin },
+            ],
+        },
+        {
+            id: "interface",
+            label: () => language.settingsNavGroupInterface,
+            entries: [
+                { menus: [3], icon: MonitorIcon, label: () => language.display },
+                {
+                    menus: [INTERACTION_SETTINGS_MENU],
+                    icon: MousePointerClickIcon,
+                    label: () => language.interactionSettings,
+                },
+                { menus: [11], icon: AccessibilityIcon, label: () => language.accessibility },
+                { menus: [10], icon: GlobeIcon, label: () => language.language },
+                { menus: [15], icon: KeyboardIcon, label: () => language.hotkey },
+            ],
+        },
+        {
+            id: "data",
+            label: () => language.settingsNavGroupData,
+            entries: [{ menus: [0], icon: DatabaseBackupIcon, label: () => language.backups }],
+        },
+        {
+            id: "advanced",
+            label: () => language.settingsNavGroupAdvanced,
+            entries: [
+                { menus: [6], icon: ActivityIcon, label: () => language.advancedSettings },
+                { menus: [77], icon: BoxIcon, label: () => language.supporterThanks },
+            ],
+        },
+    ];
     if (window.innerWidth >= 900 && $SettingsMenuIndex === -1) {
         $SettingsMenuIndex = MODEL_SETTINGS_MENU;
     }
@@ -75,203 +140,42 @@
                 class="flex h-full flex-col p-4 pt-8 gap-2 overflow-y-auto relative rs-setting-cont-3 shrink-0 bg-darkbg"
                 class:w-full={window.innerWidth < 700}
             >
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={modelMenuSelected}
-                    class:text-textcolor2={!modelMenuSelected}
-                    onclick={() => {
-                        $SettingsMenuIndex = MODEL_SETTINGS_MENU;
-                    }}
-                >
-                    <CpuIcon />
-                    <span>{language.model}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === PROMPT_SETTINGS_MENU || $SettingsMenuIndex === 13}
-                    class:text-textcolor2={$SettingsMenuIndex !== PROMPT_SETTINGS_MENU && $SettingsMenuIndex !== 13}
-                    onclick={() => {
-                        $SettingsMenuIndex = PROMPT_SETTINGS_MENU;
-                    }}
-                >
-                    <ScrollTextIcon />
-                    <span>{language.prompt}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 12}
-                    class:text-textcolor2={$SettingsMenuIndex !== 12}
-                    onclick={() => {
-                        $SettingsMenuIndex = 12;
-                    }}
-                >
-                    <ContactIcon />
-                    <span>{language.persona}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === MEMORY_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== MEMORY_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
-                    }}
-                >
-                    <BrainIcon />
-                    <span>{language.memorySettings}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === IMAGE_GENERATION_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== IMAGE_GENERATION_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = IMAGE_GENERATION_SETTINGS_MENU;
-                    }}
-                >
-                    <ImageIcon />
-                    <span>{language.imageGeneration}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === VOICE_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== VOICE_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = VOICE_SETTINGS_MENU;
-                    }}
-                >
-                    <AudioLinesIcon />
-                    <span>{language.voiceSettings}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 3}
-                    class:text-textcolor2={$SettingsMenuIndex !== 3}
-                    onclick={() => {
-                        $SettingsMenuIndex = 3;
-                    }}
-                >
-                    <MonitorIcon />
-                    <span>{language.display}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 10}
-                    class:text-textcolor2={$SettingsMenuIndex !== 10}
-                    onclick={() => {
-                        $SettingsMenuIndex = 10;
-                    }}
-                >
-                    <GlobeIcon />
-                    <span>{language.language}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === TRANSLATION_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== TRANSLATION_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = TRANSLATION_SETTINGS_MENU;
-                    }}
-                >
-                    <LanguagesIcon />
-                    <span>{language.translationSettings}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== INTERACTION_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = INTERACTION_SETTINGS_MENU;
-                    }}
-                >
-                    <MousePointerClickIcon />
-                    <span>{language.interactionSettings}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 11}
-                    class:text-textcolor2={$SettingsMenuIndex !== 11}
-                    onclick={() => {
-                        $SettingsMenuIndex = 11;
-                    }}
-                >
-                    <AccessibilityIcon />
-                    <span>{language.accessibility}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 14}
-                    class:text-textcolor2={$SettingsMenuIndex !== 14}
-                    onclick={() => {
-                        $SettingsMenuIndex = 14;
-                    }}
-                >
-                    <PackageIcon />
-                    <span>{language.modules}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 4}
-                    class:text-textcolor2={$SettingsMenuIndex !== 4}
-                    onclick={() => {
-                        $SettingsMenuIndex = 4;
-                    }}
-                >
-                    <CodeIcon />
-                    <span>{language.plugin}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 0}
-                    class:text-textcolor2={$SettingsMenuIndex !== 0}
-                    onclick={() => {
-                        $SettingsMenuIndex = 0;
-                    }}
-                >
-                    <UserIcon />
-                    <span>{language.files}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 15}
-                    class:text-textcolor2={$SettingsMenuIndex !== 15}
-                    onclick={() => {
-                        $SettingsMenuIndex = 15;
-                    }}
-                >
-                    <KeyboardIcon />
-                    <span>{language.hotkey}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 6}
-                    class:text-textcolor2={$SettingsMenuIndex !== 6}
-                    onclick={() => {
-                        $SettingsMenuIndex = 6;
-                    }}
-                >
-                    <ActivityIcon />
-                    <span>{language.advancedSettings}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 77}
-                    class:text-textcolor2={$SettingsMenuIndex !== 77}
-                    onclick={() => {
-                        $SettingsMenuIndex = 77;
-                    }}
-                >
-                    <BoxIcon />
-                    <span>{language.supporterThanks}</span>
-                </button>
-                {#each additionalSettingsMenu as menu}
-                    <button
-                        class="flex gap-2 items-center hover:text-textcolor text-textcolor2"
-                        onclick={() => {
-                            menu.callback();
-                        }}
-                    >
-                        <PluginDefinedIcon ico={menu} />
-                        <span>{menu.name}</span>
-                    </button>
+                {#each navGroups as group (group.id)}
+                    <div class="flex flex-col gap-2" role="group" aria-labelledby="settings-nav-{group.id}">
+                        <h3
+                            id="settings-nav-{group.id}"
+                            class="mt-2 text-xs font-semibold uppercase tracking-wide text-textcolor2"
+                        >
+                            {group.label()}
+                        </h3>
+                        {#each group.entries as entry (entry.menus[0])}
+                            {@const selected = entry.menus.includes($SettingsMenuIndex)}
+                            <button
+                                class="flex gap-2 items-center hover:text-textcolor"
+                                class:text-textcolor={selected}
+                                class:text-textcolor2={!selected}
+                                onclick={() => {
+                                    $SettingsMenuIndex = entry.menus[0];
+                                }}
+                            >
+                                <entry.icon />
+                                <span>{entry.label()}</span>
+                            </button>
+                        {/each}
+                        {#if group.id === "advanced"}
+                            {#each additionalSettingsMenu as menu}
+                                <button
+                                    class="flex gap-2 items-center hover:text-textcolor text-textcolor2"
+                                    onclick={() => {
+                                        menu.callback();
+                                    }}
+                                >
+                                    <PluginDefinedIcon ico={menu} />
+                                    <span>{menu.name}</span>
+                                </button>
+                            {/each}
+                        {/if}
+                    </div>
                 {/each}
 
                 {#if window.innerWidth < 700}

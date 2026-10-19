@@ -723,7 +723,6 @@ export const languageChineseTraditional = {
     pluginContainsExternalJS: "此外掛包含外部 JavaScript",
     createGroupImg: "產生群組圖示",
     waifuWidth: "Waifu 對話寬度",
-    files: "檔案",
     backupConfirm: "確定要儲存備份嗎？",
     backupLoadConfirm: "確定要載入備份嗎？目前資料將由備份內容覆寫！",
     backupLoadConfirm2: "再次確認：真的要載入備份嗎？目前資料將由備份內容覆寫！",

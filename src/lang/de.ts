@@ -685,7 +685,6 @@ export const languageGerman = {
     pluginContainsExternalJS: "Dieses Plugin enthält externes Javascript.",
     createGroupImg: "Gruppenicon generieren",
     waifuWidth: "Breite des Waifu Chat-Bereichs",
-    files: "Daten",
     backupConfirm: "Möchten Sie wirklich die Sicherung speichern?",
     backupLoadConfirm: "Möchten Sie wirklich das Backup laden? Alle Daten gehen verloren!",
     backupLoadConfirm2:

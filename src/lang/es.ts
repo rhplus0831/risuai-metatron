@@ -676,7 +676,6 @@ export const languageSpanish = {
     pluginContainsExternalJS: "Este complemento contiene Javascript externo.",
     createGroupImg: "Generar icono de grupo",
     waifuWidth: "Ancho del Chat Waifu",
-    files: "Archivos",
     backupConfirm: "¿Realmente deseas guardar el respaldo?",
     backupLoadConfirm: "¿Realmente deseas cargar el respaldo? ¡Todos los datos se perderán!",
     backupLoadConfirm2: "¿Realmente, realmente deseas cargar el respaldo? ¡Todos los datos se perderán!",
