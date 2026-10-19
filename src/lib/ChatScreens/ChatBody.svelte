@@ -28,6 +28,7 @@
         ParseMarkdown,
         postTranslationParse,
         trimMarkdown,
+        trimMarkdownSharingStyles,
         type CbsConditions,
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
@@ -36,7 +37,10 @@
         bilingualInterleave,
         type BilingualInterleaveOptions,
         pruneEmptyBilingualPairs,
+        pruneEmptyBilingualPairsIn,
     } from "../../ts/translator/bilingualInterleave";
+    import { type ChatStyle, getChatStyleRegistry } from "../../ts/parser/chatStyles";
+    import ChatRowStyles from "./ChatRowStyles.svelte";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
@@ -381,6 +385,24 @@
         }
     };
 
+    // Under a chat screen, shareable `<style>`s use its registry (heap plan C2): the body keeps inert
+    // comment placeholders, and `ChatRowStyles` holds their CSS and attributes. Elsewhere they stay inline.
+    const chatStyles = getChatStyleRegistry();
+    const NO_STYLES: readonly ChatStyle[] = [];
+    const styleTag = /<(?:risu-)?style/i;
+
+    function shownBody(source: string): { html: string; styles: readonly ChatStyle[] } {
+        if (!chatStyles || !source || !styleTag.test(source)) {
+            return {
+                html: addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(source)), modelShortName),
+                styles: NO_STYLES,
+            };
+        }
+        // Pruned before the styles are taken out: a pair side holding only a style is kept, as before.
+        const { html, styles } = trimMarkdownSharingStyles(source, pruneEmptyBilingualPairsIn);
+        return { html: addMetadataToElement(html, modelShortName), styles };
+    }
+
     let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++parseRun));
 
     /** Wait for a settled DOM render, including auto-translation and replacement parses. */
@@ -410,8 +432,10 @@
     {@html LOADING_HTML}
 {:else}
     {#await markParsingResult}
-        {@html addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(lastParsed)), modelShortName)}
+        {@const shown = shownBody(lastParsed)}
+        {#if chatStyles}<ChatRowStyles styles={shown.styles} messageIndex={idx} />{/if}{@html shown.html}
     {:then md}
-        {@html addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(md)), modelShortName)}
+        {@const shown = shownBody(md)}
+        {#if chatStyles}<ChatRowStyles styles={shown.styles} messageIndex={idx} />{/if}{@html shown.html}
     {/await}
 {/if}

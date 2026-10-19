@@ -2,7 +2,7 @@
     import type { AnyClientCharacter, ClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import type { DeepReadonly, Message, StreamingDisplayOptimizationMode } from "src/ts/storage/database.svelte";
-    import { mount, onDestroy, tick, unmount, untrack } from "svelte";
+    import { getAllContexts, mount, onDestroy, tick, unmount, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
@@ -74,6 +74,9 @@
     };
     const rows = new Map<string, Row>();
     const rowElements = new WeakMap<Element, Row>();
+    // The rows are mounted by hand; they get this component's contexts (the chat screen's shared
+    // stylesheets among them) explicitly rather than from whichever effect mounts them.
+    const rowContexts = getAllContexts();
     const capturing = $derived(loadPages === Infinity);
 
     // Mounting outlives the visibility batch: neither images nor its 1200 ms deadline arm rows.
@@ -400,6 +403,7 @@
                         element.classList.remove("far");
                         row.instance = mount(Chat, {
                             target: element,
+                            context: rowContexts,
                             props: {
                                 ...next,
                                 isLastMemory: false,

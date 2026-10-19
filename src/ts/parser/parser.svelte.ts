@@ -1,4 +1,5 @@
 import { boundedDistance } from "./assetSearch";
+import type { ChatStyle } from "./chatStyles";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
@@ -1050,6 +1051,12 @@ export function trimMarkdown(data: string) {
         return "";
     }
 
+    restoreStyles(root);
+    return root.innerHTML;
+}
+
+/** Turns each `<risu-style>` element of `trimMarkdown`'s sanitized tree into its `<style>`. */
+function restoreStyles(root: HTMLElement) {
     // Only real <risu-style> elements are decoded. A <risu-style> that survived
     // inside an attribute value is not an element, so it is left as inert text
     // and a <style> tag can never be restored into an attribute context.
@@ -1066,8 +1073,40 @@ export function trimMarkdown(data: string) {
         style.textContent = decoded.css.replaceAll(/<\/(?=style)/gi, "<\\/");
         el.replaceWith(style);
     }
+}
 
-    return root.innerHTML;
+/**
+ * `trimMarkdown` for a chat row whose styles its chat screen shares (`chatStyles.ts`, heap plan C2):
+ * the same sanitized tree with its `<risu-style>`s restored, `prepare` run on it, then shareable
+ * styles replaced by an inert CSS comment in place, their CSS and sanitized attributes returned
+ * in document order. Placeholders keep their attributes and structure (including `:empty`).
+ * Layer/scope sheets stay untouched at their row positions; layers inside imports are not detected.
+ */
+export function trimMarkdownSharingStyles(
+    data: string,
+    prepare?: (root: HTMLElement) => void,
+): { html: string; styles: ChatStyle[] } {
+    if (!data) {
+        return { html: "", styles: [] };
+    }
+    const root = DOMPurify.sanitize(data, {
+        ...trimPurifyConfig,
+        RETURN_DOM: true,
+    }) as HTMLElement | null;
+    if (!root) {
+        return { html: "", styles: [] };
+    }
+    if (data.includes("<risu-style")) restoreStyles(root);
+    prepare?.(root);
+    const styles: ChatStyle[] = [];
+    for (const style of Array.from(root.querySelectorAll("style"))) {
+        const css = style.textContent ?? "";
+        if (css === "" || /@layer\b|\blayer\(|@scope\b/i.test(css)) continue;
+        const attributes: [string, string][] = Array.from(style.attributes, ({ name, value }) => [name, value]);
+        styles.push({ css, attributes });
+        style.textContent = "/**/";
+    }
+    return { html: root.innerHTML, styles };
 }
 
 const metaCodes = [

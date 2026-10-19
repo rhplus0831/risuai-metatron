@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found) and D1 (record wrapper nodes and root lists after deletes) landed; C2 (one stylesheet per chat style) measured, not sliced. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found), D1 (record wrapper nodes and root lists after deletes) and C2 (one stylesheet per chat style) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -345,7 +345,7 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   and faces there stay until another screen or character replaces it; that is the
   feature, not a leak, and the fixture seeds neither source.
 
-- **C2. One stylesheet per distinct chat style** (_candidate_, measured, not sliced; `cbs-rendering.md`).
+- **C2. One stylesheet per distinct chat style** (_hard_, measured first; `cbs-rendering.md`).
   `trimMarkdown` (`parser.svelte.ts` ~1024) turns each row's `<risu-style>` into a `<style>`
   inside that row's HTML. N mounted rows that repeat a style therefore cost N sheets, N
   imports and N × faces (the user's chat: 14 × 105). A chat-screen registry could keep one
@@ -380,6 +380,49 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   - Not measured: memory outside the snapshot. The driver answers no font file (404); the
     user's chat downloads real ones (1,349 `SimpleFontData` in the snapshot). Whether
     decoded font data is per copy or shared is open.
+
+  **Landed.** The chat screen (`DefaultChatScreen`) keeps a `ChatStyleRegistry`
+  (`parser/chatStyles.ts`): one `<style>` per distinct CSS and attribute list, in a hidden
+  container at the end of `.default-chat-screen`, held by the mounted rows that use it
+  (`ChatRowStyles`) and removed when none does. A row's body goes through
+  `trimMarkdownSharingStyles`: its `<style>`s keep their element and attributes with an inert
+  `/**/` text, so structural selectors (`:first-child`, `:empty`, `:has`) match as before.
+  - Cascade, by the user's decision: today's order kept, not the "first appearance" option
+    first chosen (the review found the rows' DOM order is newest message first, then the
+    greeting). A sheet stands at its latest use, (-message index, slot), so the oldest
+    message's style, the greeting's last, wins a tie as its last copy did.
+  - Kept inline at their row position: sheets with `@layer`, `layer(` or `@scope` (layer
+    order comes from the first declaration; an implicit scope from the owner's parent),
+    empty ones, and the custom-GUI sheets. Layers declared inside an imported file are not
+    detected. Outside the chat screen (`BookmarkList`, component tests) rows keep their own
+    `<style>`s.
+  - Driver (same build and fixture; the baseline a copy of the build before, run with
+    `HEAP_STYLE_COPIES=3`):
+
+    | `chats`         | Before | C2    |
+    | --------------- | ------ | ----- |
+    | JS self size MB | 125.5  | 123.0 |
+    | `FontFace`      | 720    | 240   |
+    | Sheets          | 12     | 13    |
+    | Imports fetched | 12     | 6     |
+
+    Per chat: one shared sheet, none in the rows, 240 faces. The other steps are within
+    0.6 MB of the earlier runs, and every check passes. The extra sheet is the emptied row
+    copies (each a `/**/` sheet) beside the shared one.
+
+  - Tests: `chatStyles.test.ts` (registry: keys, release, same-flush retention, real-gap
+    recreation, order with the greeting last, moves, attach and destroy),
+    `trimMarkdownSharingStyles.test.ts` (the real parser: placeholders, attributes, kept-inline
+    layer and scope sheets, the `<risu-style` guard, prune before extraction, unchanged
+    `trimMarkdown`), `ChatBody.styles.svelte.test.ts` (two rows sharing one sheet, the order,
+    the same sheet across a re-render, release on unmount, inline without a registry) and
+    `Chats.context.svelte.test.ts` (hand-mounted rows get the screen's context). The four
+    cascade counterexamples of the review were checked once in Chrome, before and after.
+  - Leftovers: a CSS-only change no longer mutates the row, so `Chats` does not re-observe a
+    `.far` row (its remembered size updates when it nears the viewport); rows `Chats` trims
+    keep their sheets until their deferred unmount, a few frames; after a real gap (a
+    `{#key}` reload, a remount) a sheet is made again; `html-to-image`'s `insertRule` into live
+    sheets during a screenshot predates C2; plugins that serialize a row get the placeholders.
 
 ## Phase D: leaks from code reading (measure, then fix)
 
