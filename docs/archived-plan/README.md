@@ -21,6 +21,7 @@ git show 154711858:docs/plan/chat-toggles-and-presets.md
 git show 1bb0c8eee:docs/plan/large-asset-import.md
 git show f5895b925:docs/plan/sidebar-chat-status.md
 git show 46eeee597:docs/plan/settings-ui-reorg.md
+git show 723700902:docs/plan/boot-resource-cache.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -43,6 +44,7 @@ it is not a current architecture guide.
 | Sidebar Chat Status                 | `f5895b925`: `docs/plan/sidebar-chat-status.md`                           | [UI/theming](../structure/ui-theming.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                           |
 | Data-Loss Under Concurrency         | `01ceb829b`: `docs/plan/data-loss-concurrency.md`                         | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md) |
 | Settings UI Reorganization          | `46eeee597`: `docs/plan/settings-ui-reorg.md`                             | [settings](../structure/settings-i18n.md), [app shell/routes](../structure/app-shell.md), [media/translation](../structure/media-aux.md), [LLM requests](../structure/llm-requests.md)                                                                                                                 |
+| Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                             |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -62,6 +64,14 @@ commit and its "Decisions made by landed slices" paragraph records the choices t
 bound and `chatGroups` table, 7b's add-only order repair, 6d's fail-closed barrier). Every slice
 was verified by tests only; the browser checks the slices listed (the reload notice panel,
 two-tab delete/edit races, a network drop and reconnect, concurrent order edits) were not run.
+Boot Resource Cache landed four slices on 2026-10-19 on the `boot-resource-cache` branch:
+compressed resource reads (`1d382e8d0`), the `POST /api/resources/boot` read that skips what the
+client holds (`9b831002a`), the IndexedDB boot cache (`ad7370e9e`), and the browser measurement
+and check (`723700902`, `util/playwright/measureBoot.mjs`, `checkBootCache.mjs`). On a synthetic
+server of the reported shape at 10 Mbps the main screen came after 18.3 s with the uncompressed
+plain read, 6.5 s on a first (cold) boot, and 0.51 s on a warm boot; the archived Slice 4 section
+holds the full table and the decisions (no server hash cache; compression settings and `presets`
+as an item kind kept).
 
 ## Server-Owned Data Chronology
 
@@ -153,6 +163,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - The recovery badge requires a manual check with the server killed mid-stream;
     this archive did not run that check.
   - The browser check's `--base` production mode was implemented but not exercised.
+- Boot resource cache:
+  - The reporting user has not compared DevTools Timing on their server before and after.
+  - Only headless Chrome was checked: no Firefox, Safari, mobile, or private-window run.
+  - A browser's first boot still downloads the whole compressed read (6 s at 10 Mbps on
+    the measured data); chats are not cached (chat summaries are always sent); the
+    client's work after the read is unchanged.
+  - No sign-out calls `clearBootCache` yet.
+  - A `risu-boot-cache` database another opener created at version 1 without the stores
+    makes every load fail and fall back without clearing it (only another script on the
+    origin can create one).
+  - Found while measuring, outside the plan: the app's static files are served with
+    `Last-Modified` only (no `Cache-Control`, no 304 for `If-Modified-Since`, no
+    compression), so once Chrome's heuristic freshness lapses a boot downloads the
+    app's ~3.8 MB of scripts in full again.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 
