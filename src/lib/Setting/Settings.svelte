@@ -13,6 +13,7 @@
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
+        MousePointerClickIcon,
         UserIcon,
         CircleXIcon,
         KeyboardIcon,
@@ -41,11 +42,13 @@
         MEMORY_SETTINGS_MENU,
         IMAGE_GENERATION_SETTINGS_MENU,
         VOICE_SETTINGS_MENU,
+        INTERACTION_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
     import LanguageSettings from "./Pages/LanguageSettings.svelte";
     import TranslationSettings from "./Pages/TranslationSettings.svelte";
+    import InteractionSettings from "./Pages/InteractionSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
     import PromptSettings from "./Pages/PromptSettings.svelte";
@@ -170,6 +173,17 @@
                 >
                     <LanguagesIcon />
                     <span>{language.translationSettings}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== INTERACTION_SETTINGS_MENU}
+                    onclick={() => {
+                        $SettingsMenuIndex = INTERACTION_SETTINGS_MENU;
+                    }}
+                >
+                    <MousePointerClickIcon />
+                    <span>{language.interactionSettings}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
@@ -307,6 +321,8 @@
                         <LanguageSettings />
                     {:else if $SettingsMenuIndex === TRANSLATION_SETTINGS_MENU}
                         <TranslationSettings />
+                    {:else if $SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
+                        <InteractionSettings />
                     {:else if $SettingsMenuIndex === 11}
                         <AccessibilitySettings />
                     {:else if $SettingsMenuIndex === 12}

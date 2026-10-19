@@ -144,14 +144,6 @@ export const advancedSettingsItems: SettingItem[] = [
     },
     // More Toggles
     { id: "adv.devTools", type: "check", labelKey: "enableDevTools", bindKey: "enableDevTools", classes: "mt-4" },
-    {
-        id: "adv.scrollToActive",
-        type: "check",
-        labelKey: "enableScrollToActiveChar",
-        bindKey: "enableScrollToActiveChar",
-        helpKey: "enableScrollToActiveChar",
-        classes: "mt-4",
-    },
 
     // Node Specific
     {
@@ -181,6 +173,23 @@ export const advancedSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
     { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError", classes: "mt-4" },
+    // From Accessibility (settings UI plan slice 5), with Advanced's spacing.
+    {
+        id: "acc.requestInfoInsideChat",
+        type: "check",
+        labelKey: "requestInfoInsideChat",
+        bindKey: "requestInfoInsideChat",
+        keywords: ["request", "info", "chat"],
+        classes: "mt-4",
+    },
+    {
+        id: "acc.inlayErrorResponse",
+        type: "check",
+        labelKey: "inlayErrorResponse",
+        bindKey: "inlayErrorResponse",
+        keywords: ["inlay", "error", "response"],
+        classes: "mt-4",
+    },
     {
         id: "adv.toolUsage",
         type: "check",
@@ -188,7 +197,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "rememberToolUsage",
         classes: "mt-4",
     },
-    { id: "adv.bookmark", type: "check", labelKey: "bookmark", bindKey: "enableBookmark", classes: "mt-4" },
     {
         id: "adv.simpleTool",
         type: "check",
@@ -297,13 +305,6 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.requestHistoryLimit",
         ]),
     },
-    // Temporary: the two items the plan's move table sends to the Interaction page, which slice 5
-    // creates (and then removes this section); slice 4 moved the rest to their pages.
-    {
-        id: "advanced.other",
-        labelKey: "settingsSectionOtherSettings",
-        items: itemsById(advancedSettingsItems, ["adv.scrollToActive", "adv.bookmark"]),
-    },
     {
         id: "advanced.developer",
         labelKey: "settingsSectionDeveloperDiagnostics",
@@ -314,6 +315,8 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.promptInfo",
             "adv.promptTextInfo",
             "adv.cssErr",
+            "acc.requestInfoInsideChat",
+            "acc.inlayErrorResponse",
             "adv.export",
             "adv.diagnosticsPanel",
         ]),

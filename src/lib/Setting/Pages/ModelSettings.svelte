@@ -14,8 +14,9 @@
     import AuxModelSelectors from "./Model/AuxModelSelectors.svelte";
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
     import BindingScopeNote from "../BindingScopeNote.svelte";
+    import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
-    import { modelSettingsSections } from "src/ts/setting/modelSettingsData";
+    import { modelAdditionalParamsItems, modelSettingsSections } from "src/ts/setting/modelSettingsData";
 
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
@@ -63,6 +64,8 @@
     {/if}
 </div>
 <Accordion styled name="{language.additionalParams} " help="additionalParams">
+    <!-- The table and the toggle under it are providers fields, not fields of the selected preset. -->
+    <p class="mb-2 text-sm text-textcolor2">{language.additionalParamsSharedDesc}</p>
     <table class="contain w-full max-w-full tabler">
         <tbody>
             <tr>
@@ -104,6 +107,7 @@
             {/each}
         </tbody>
     </table>
+    <SettingRenderer items={modelAdditionalParamsItems} />
 </Accordion>
 
 <SettingsSections sections={modelSettingsSections} />

@@ -54,6 +54,7 @@ import SettingSegmented from "src/lib/Setting/Wrappers/SettingSegmented.svelte";
 import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
 import { activeMainProfile, activeModelPreset, activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
+import { interactionSettingsItems } from "../../setting/interactionSettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 
 type Mounted = ReturnType<typeof mount>;
@@ -473,7 +474,7 @@ describe("SettingSegmented", () => {
     // inherit, as `initialChatBinding` reads it, so an unset or unexpected `ui` value is not rewritten
     // by the hidden-option fallback when the page opens; a choice writes the `ui` record.
     it("acc.newChatBinding shows an unset or unexpected value as inherit without a write, and writes a choice into the ui record", () => {
-        const segmented = accessibilitySettingsItems.find((entry) => entry.id === "acc.newChatBinding")!;
+        const segmented = interactionSettingsItems.find((entry) => entry.id === "acc.newChatBinding")!;
         // The fixture has no `ui` record until a write creates it.
         const ui = () => recordData<Record<string, unknown>>("ui") ?? {};
         expect(settings.ui.newChatBinding).toBeUndefined();

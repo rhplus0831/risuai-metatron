@@ -17,3 +17,5 @@ export const IMAGE_GENERATION_SETTINGS_MENU = 19;
 export const VOICE_SETTINGS_MENU = 20;
 /** The translator and its options (`TranslationSettings.svelte`); the UI language stays on menu 10. */
 export const TRANSLATION_SETTINGS_MENU = 21;
+/** Chat input, message editing, and the menus and chat list (`InteractionSettings.svelte`). */
+export const INTERACTION_SETTINGS_MENU = 22;

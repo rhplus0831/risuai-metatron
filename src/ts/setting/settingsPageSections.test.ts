@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
+import {
+    accessibilitySettingsHeader,
+    accessibilitySettingsItems,
+    accessibilitySettingsSections,
+} from "./accessibilitySettingsData";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
 import { displaySettingsItems, displaySettingsSections, displaySettingsTabs } from "./displaySettingsData.svelte";
+import {
+    interactionSettingsHeader,
+    interactionSettingsItems,
+    interactionSettingsSections,
+} from "./interactionSettingsData";
 import { memorySettingsItems, memorySettingsSections, memorySupaMemoryItems } from "./memorySettingsData";
-import { modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
+import { modelAdditionalParamsItems, modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
 import { personaSettingsItems } from "./personaSettingsData";
 import { promptSettingsItems, promptSettingsSections } from "./promptSettingsData";
 import { itemsById } from "./sections";
@@ -58,7 +68,7 @@ const PAGES: SectionedPage[] = [
     {
         name: "model",
         leaves: [modelSettingsItems],
-        header: [],
+        header: modelAdditionalParamsItems,
         sections: modelSettingsSections,
     },
     {
@@ -85,6 +95,19 @@ const PAGES: SectionedPage[] = [
         header: personaSettingsItems,
         sections: [],
     },
+    // Slice 5: Accessibility split into the Interaction page and what stays.
+    {
+        name: "interaction",
+        leaves: [interactionSettingsItems],
+        header: interactionSettingsHeader,
+        sections: interactionSettingsSections,
+    },
+    {
+        name: "accessibility",
+        leaves: [accessibilitySettingsItems],
+        header: accessibilitySettingsHeader,
+        sections: accessibilitySettingsSections,
+    },
 ];
 
 /** Item pairs whose second item's condition reads the first: they must share a section. */
@@ -93,6 +116,9 @@ const DEPENDENT_PAIRS: [string, string][] = [
     ["adv.promptInfo", "adv.promptTextInfo"],
     // Not a condition, but the minimum only means something with auto-continue on (slice 4).
     ["adv.autoCont", "adv.autoContinueMin"],
+    ["acc.autoScrollToNewMessage", "acc.alwaysScrollToNewMessage"],
+    ["acc.autoScrollToNewMessage", "acc.newMessageButtonStyle"],
+    ["acc.alwaysScrollToNewMessage", "acc.newMessageButtonStyle"],
     ["lang.translatorLang", "lang.translatorType"],
     ["lang.translatorType", "lang.deeplKey"],
     ["lang.translatorType", "lang.deeplFree"],
@@ -188,7 +214,7 @@ describe("settings page sections", () => {
         ]);
     });
 
-    it("takes Advanced apart (slice 4): only its own sections' items and the two Interaction items stay, and the local network controls left the catalog", () => {
+    it("takes Advanced apart (slices 4 and 5): only its own sections' items stay, and the local network controls left the catalog", () => {
         const advancedIds = advancedSettingsSections.flatMap((section) => section.items.map((item) => item.id));
         for (const moved of [
             "adv.retries",
@@ -200,13 +226,26 @@ describe("settings page sections", () => {
             "adv.emoPrompt",
             "adv.personaNote",
             "display.showPromptComparison",
+            "adv.scrollToActive",
+            "adv.bookmark",
         ]) {
             expect(advancedIds, moved).not.toContain(moved);
         }
-        expect(
-            advancedSettingsSections.find((section) => section.id === "advanced.other")!.items.map((item) => item.id),
-        ).toEqual(["adv.scrollToActive", "adv.bookmark"]);
+        expect(advancedSettingsSections.map((section) => section.id)).not.toContain("advanced.other");
         const catalog = getFullSettingsData();
+        const chatNavigation = interactionSettingsSections.find(
+            (section) => section.id === "interaction.chatNavigation",
+        )!;
+        for (const id of ["adv.scrollToActive", "adv.bookmark"]) {
+            expect(
+                chatNavigation.items.map((item) => item.id),
+                id,
+            ).toContain(id);
+            expect(
+                catalog.filter((item) => item.id === id),
+                id,
+            ).toHaveLength(1);
+        }
         expect(
             catalog.filter((item) => item.bindKey === "localNetworkMode" || item.bindKey === "localNetworkTimeoutSec"),
         ).toEqual([]);

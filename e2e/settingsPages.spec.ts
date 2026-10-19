@@ -37,6 +37,7 @@ const PAGES: [number, string][] = [
     [3, "display"],
     [10, "language"],
     [21, "translation"],
+    [22, "interaction"],
     [11, "accessibility"],
     [14, "modules"],
     [4, "plugins"],
@@ -112,10 +113,10 @@ test("every settings page mounts through the records without an error or a write
     await visitAll();
     expect(batches).toEqual([]);
 
-    // A section field through `bind:checked` (Accessibility), and a nested section field through
+    // A section field through `bind:checked` (Interaction), and a nested section field through
     // `bind:value` (Image Generation: `NAIImgConfig.width`).
     const swipe = await read<boolean>(page, "swipe");
-    await openSettings(page, 11);
+    await openSettings(page, 22);
     const label = await page.evaluate(async () => (await import("/src/lang/index.ts")).language.SwipeRegenerate);
     await content.getByText(label, { exact: true }).first().click();
     await settle(page);

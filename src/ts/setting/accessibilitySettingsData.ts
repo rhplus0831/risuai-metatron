@@ -1,12 +1,16 @@
 /**
  * Accessibility Settings Data
  *
- * Data-driven definition of all settings in AccessibilitySettings page.
+ * Data-driven definition for the AccessibilitySettings page: scrolling to new messages and keeping the
+ * chat input and menu within reach; the page ends with a link to Display's sizes. The interaction
+ * preferences that shared this page moved to the Interaction page (`interactionSettingsData.ts`,
+ * settings UI plan slice 5), the lorebook ones to Memory, the developer ones to Advanced, and the
+ * additional parameters toggle to Model.
  */
 
-import type { SettingItem } from "./types";
+import type { SettingItem, SettingSection } from "./types";
+import { itemsById } from "./sections";
 import { language } from "src/lang";
-import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 
 export const accessibilitySettingsItems: SettingItem[] = [
     // Header
@@ -15,134 +19,6 @@ export const accessibilitySettingsItems: SettingItem[] = [
         type: "header",
         labelKey: "accessibility",
         options: { level: "h2" },
-    },
-
-    // Checkboxes
-    {
-        id: "acc.askRemoval",
-        type: "check",
-        labelKey: "askRemoval",
-        bindKey: "askRemoval",
-        keywords: ["ask", "removal", "confirm", "delete"],
-    },
-    {
-        id: "acc.swipe",
-        type: "check",
-        labelKey: "SwipeRegenerate",
-        bindKey: "swipe",
-        keywords: ["swipe", "regenerate", "gesture"],
-    },
-    {
-        id: "acc.instantRemove",
-        type: "check",
-        labelKey: "instantRemove",
-        bindKey: "instantRemove",
-        keywords: ["instant", "remove", "delete"],
-    },
-    {
-        id: "acc.sendWithEnter",
-        type: "check",
-        labelKey: "sendWithEnter",
-        bindKey: "sendWithEnter",
-        keywords: ["send", "enter", "keyboard", "submit"],
-    },
-    {
-        id: "acc.fixedChatTextarea",
-        type: "check",
-        labelKey: "fixedChatTextarea",
-        bindKey: "fixedChatTextarea",
-        keywords: ["fixed", "chat", "textarea", "input"],
-    },
-    {
-        id: "acc.clickToEdit",
-        type: "check",
-        labelKey: "clickToEdit",
-        bindKey: "clickToEdit",
-        keywords: ["click", "edit", "message"],
-    },
-    {
-        id: "acc.enableBlockPartialEdit",
-        type: "check",
-        labelKey: "enableBlockPartialEdit",
-        bindKey: "enableBlockPartialEdit",
-        keywords: ["partial", "edit", "block", "hover"],
-    },
-    {
-        id: "acc.longPressToPopupEditor",
-        type: "check",
-        labelKey: "longPressToPopupEditor",
-        bindKey: "longPressToPopupEditor",
-        keywords: ["long", "press", "popup", "editor"],
-    },
-    {
-        id: "acc.enableDragPartialEdit",
-        type: "check",
-        labelKey: "enableDragPartialEdit",
-        bindKey: "enableDragPartialEdit",
-        keywords: ["partial", "edit", "drag", "selection"],
-    },
-    {
-        id: "acc.botSettingAtStart",
-        type: "check",
-        labelKey: "botSettingAtStart",
-        bindKey: "botSettingAtStart",
-        keywords: ["bot", "setting", "start", "open"],
-    },
-    {
-        id: "acc.showMenuChatList",
-        type: "check",
-        labelKey: "showMenuChatList",
-        bindKey: "showMenuChatList",
-        keywords: ["menu", "chat", "list", "show"],
-    },
-    {
-        id: "acc.showMenuHypaMemoryModal",
-        type: "check",
-        labelKey: "showMenuHypaMemoryModal",
-        bindKey: "showMenuHypaMemoryModal",
-        keywords: ["menu", "hypa", "memory", "modal"],
-    },
-    {
-        id: "acc.goCharacterOnImport",
-        type: "check",
-        labelKey: "goCharacterOnImport",
-        bindKey: "goCharacterOnImport",
-        keywords: ["character", "import", "navigate"],
-    },
-    {
-        id: "acc.sideMenuRerollButton",
-        type: "check",
-        labelKey: "sideMenuRerollButton",
-        bindKey: "sideMenuRerollButton",
-        keywords: ["side", "menu", "reroll", "button"],
-    },
-    {
-        id: "acc.localActivationInGlobalLorebook",
-        type: "check",
-        labelKey: "localActivationInGlobalLorebook",
-        bindKey: "localActivationInGlobalLorebook",
-        keywords: ["local", "activation", "global", "lorebook"],
-    },
-    {
-        id: "acc.requestInfoInsideChat",
-        type: "check",
-        labelKey: "requestInfoInsideChat",
-        bindKey: "requestInfoInsideChat",
-        keywords: ["request", "info", "chat"],
-    },
-    {
-        id: "acc.inlayErrorResponse",
-        type: "check",
-        labelKey: "inlayErrorResponse",
-        bindKey: "inlayErrorResponse",
-        keywords: ["inlay", "error", "response"],
-    },
-    {
-        id: "acc.bulkEnabling",
-        type: "check",
-        labelKey: "bulkEnabling",
-        bindKey: "bulkEnabling",
-        keywords: ["bulk", "enable", "multiple"],
     },
     {
         id: "acc.autoScrollToNewMessage",
@@ -177,27 +53,11 @@ export const accessibilitySettingsItems: SettingItem[] = [
         },
     },
     {
-        id: "acc.createFolderOnBranch",
+        id: "acc.fixedChatTextarea",
         type: "check",
-        labelKey: "createFolderOnBranch",
-        bindKey: "createFolderOnBranch",
-        keywords: ["create", "folder", "branch"],
-    },
-    {
-        id: "acc.newChatBinding",
-        type: "segmented",
-        labelKey: "newChatBinding",
-        bindKey: "newChatBinding",
-        // Shown as the creation reads it (`initialChatBinding`): anything but `empty` is `inherit`, so
-        // an unexpected value is not reset to the last option when the page opens.
-        getValue: (ctx) => (ctx.settings.ui.newChatBinding === "empty" ? "empty" : DEFAULT_NEW_CHAT_BINDING),
-        options: {
-            segmentOptions: [
-                { value: "inherit", labelKey: "newChatBindingInherit" },
-                { value: "empty", labelKey: "newChatBindingEmpty" },
-            ],
-        },
-        keywords: ["new", "chat", "preset", "persona", "binding", "inherit"],
+        labelKey: "fixedChatTextarea",
+        bindKey: "fixedChatTextarea",
+        keywords: ["fixed", "chat", "textarea", "input"],
     },
     {
         id: "acc.hamburgerButtonBottom",
@@ -206,11 +66,24 @@ export const accessibilitySettingsItems: SettingItem[] = [
         bindKey: "hamburgerButtonBottom",
         keywords: ["hamburger", "button", "bottom", "menu", "sidebar", "accessibility"],
     },
+];
+
+/** The page heading, above the sections. */
+export const accessibilitySettingsHeader: SettingItem[] = itemsById(accessibilitySettingsItems, ["acc.header"]);
+
+export const accessibilitySettingsSections: SettingSection[] = [
     {
-        id: "acc.applyAdditionalParamsToAll",
-        type: "check",
-        labelKey: "applyAdditionalParamsToAll",
-        bindKey: "applyAdditionalParamsToAll",
-        keywords: ["apply", "additional", "parameters", "to", "all", "models"],
+        id: "accessibility.scrolling",
+        labelKey: "settingsSectionScrolling",
+        items: itemsById(accessibilitySettingsItems, [
+            "acc.autoScrollToNewMessage",
+            "acc.alwaysScrollToNewMessage",
+            "acc.newMessageButtonStyle",
+        ]),
+    },
+    {
+        id: "accessibility.reachability",
+        labelKey: "settingsSectionReachability",
+        items: itemsById(accessibilitySettingsItems, ["acc.fixedChatTextarea", "acc.hamburgerButtonBottom"]),
     },
 ];

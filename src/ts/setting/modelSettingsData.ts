@@ -113,7 +113,23 @@ export const modelSettingsItems: SettingItem[] = [
         componentId: "CustomModelsSettings",
         componentProps: { noAccordion: true },
     },
+    // From Accessibility (settings UI plan slice 5).
+    {
+        id: "acc.applyAdditionalParamsToAll",
+        type: "check",
+        labelKey: "applyAdditionalParamsToAll",
+        bindKey: "applyAdditionalParamsToAll",
+        keywords: ["apply", "additional", "parameters", "to", "all", "models"],
+    },
 ];
+
+/**
+ * Rendered in place inside the Additional Params accordion, under its table (outside any section):
+ * whether that table applies to every model, not only the reverse proxy (`getAdditionalParameters`).
+ */
+export const modelAdditionalParamsItems: SettingItem[] = itemsById(modelSettingsItems, [
+    "acc.applyAdditionalParamsToAll",
+]);
 
 /** The Preset tab's sections, below its handwritten controls. */
 export const modelSettingsSections: SettingSection[] = [

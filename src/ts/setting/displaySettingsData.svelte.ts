@@ -649,5 +649,20 @@ export const displaySettingsTabs: DisplaySettingsTab[] = [
     },
 ];
 
+/** The tab another page asked Display to open on its next mount (`requestDisplayTab`), or null. */
+let requestedDisplayTab: string | null = null;
+
+/** Make the next Display mount open the tab with this id (the Accessibility page's sizes link). */
+export function requestDisplayTab(id: string): void {
+    requestedDisplayTab = id;
+}
+
+/** The index of the requested tab, or 0 (Theme) when none was asked for; the request is used up. */
+export function takeRequestedDisplayTab(): number {
+    const index = displaySettingsTabs.findIndex((tab) => tab.id === requestedDisplayTab);
+    requestedDisplayTab = null;
+    return Math.max(0, index);
+}
+
 /** Every section of every tab, in tab order: the legacy GUI's stacked page. */
 export const displaySettingsSections: SettingSection[] = displaySettingsTabs.flatMap((tab) => tab.sections);

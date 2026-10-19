@@ -13,6 +13,7 @@ import {
 import { language } from "src/lang";
 import { accessibilitySettingsItems } from "./accessibilitySettingsData";
 import { advancedSettingsItems } from "./advancedSettingsData";
+import { interactionSettingsItems } from "./interactionSettingsData";
 import {
     basicParameterItems,
     modelParameterItems,
@@ -150,6 +151,7 @@ export function getFullSettingsData(searchTerm = "") {
         memorySettingsItems,
         voiceSettingsItems,
         personaSettingsItems,
+        interactionSettingsItems,
     );
 
     if (!searchTerm) return full;

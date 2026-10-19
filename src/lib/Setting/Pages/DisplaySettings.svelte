@@ -3,10 +3,16 @@
     import { language } from "src/lang";
     import { languageText } from "src/ts/setting/utils";
     import SettingsSections from "../SettingsSections.svelte";
-    import { displaySettingsSections, displaySettingsTabs } from "src/ts/setting/displaySettingsData.svelte";
+    import {
+        displaySettingsSections,
+        displaySettingsTabs,
+        takeRequestedDisplayTab,
+    } from "src/ts/setting/displaySettingsData.svelte";
 
-    // The legacy GUI stacks every tab's sections, in tab order, with no tab bar (-1).
-    let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
+    // The legacy GUI stacks every tab's sections, in tab order, with no tab bar (-1). Otherwise the tab
+    // another page asked for, else Theme; the request is used up either way.
+    const requestedTab = takeRequestedDisplayTab();
+    let submenu = $state(settings.ui.useLegacyGUI ? -1 : requestedTab);
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.display}</h2>
