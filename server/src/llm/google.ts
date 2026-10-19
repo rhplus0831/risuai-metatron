@@ -6,7 +6,7 @@ import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { InlaySignature } from "../../../shared/llm/request.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import { textifyReadableStream } from "./transport.ts";
-import { simplifySchema } from "./util.ts";
+import { simplifySchema, sleep } from "./util.ts";
 import { SseLines } from "./sseLines.ts";
 import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
@@ -39,6 +39,15 @@ interface GeminiPart {
 interface GeminiChat {
     role: "user" | "model" | "function";
     parts: GeminiPart[];
+}
+
+/**
+ * The wait in ms before retry `retry` (1-based) of the request that follows a tool call: 1, 2, 4, then
+ * 8 s for every later retry, so a 429 or 524 is not re-sent at once. The loops wait with the request's
+ * abort signal, so Stop ends the wait and sends nothing more.
+ */
+function toolRetryDelay(retry: number): number {
+    return Math.min(1000 * 2 ** (retry - 1), 8000);
 }
 
 export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
@@ -393,7 +402,8 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
         }
     }
 
-    if (systemPrompt === "") {
+    // A whitespace-only system prompt is a blank `systemInstruction`, which the API refuses.
+    if (systemPrompt.trim() === "") {
         delete body.systemInstruction;
     }
 
@@ -843,6 +853,12 @@ async function requestGoogle(
             if (resRec.type != "fail") {
                 break;
             }
+            if (attempt <= db.requestRetrys) {
+                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                if (arg.abortSignal?.aborted) {
+                    break;
+                }
+            }
         } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 
         // Does not include the text response if simplifiedToolUse is enabled
@@ -1181,6 +1197,12 @@ function wrapToolStream(
                                 // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
                                 break;
+                            }
+                            if (attempt <= db.requestRetrys) {
+                                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                                if (arg.abortSignal?.aborted) {
+                                    break;
+                                }
                             }
                         } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 

@@ -400,7 +400,8 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         delete body.thinking;
     }
 
-    if (systemPrompt === "") {
+    // `body.system` is the trimmed prompt: a whitespace-only one would be sent as `""`, which the API refuses.
+    if (systemPrompt.trim() === "") {
         delete body.system;
     }
 

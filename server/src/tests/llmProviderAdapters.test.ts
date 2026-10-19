@@ -216,6 +216,8 @@ type Scenario = {
     toolAnswer?: { type: "text"; text: string }[];
     /** A format per model id, over the catalogue's (the `nanogpt` entry is Chat in the catalogue). */
     formats?: Record<string, LLMFormat>;
+    /** The request's abort controller (Stop), when the case aborts it. */
+    controller?: AbortController;
     upstream: (call: Upstream) => CannedResponse;
 };
 
@@ -268,7 +270,7 @@ async function run(scenario: Scenario): Promise<Recorded> {
     const known = new Map(Object.entries(scenario.known ?? {}));
     ids.next = 0;
     vertexLogins.length = 0;
-    const controller = new AbortController();
+    const controller = scenario.controller ?? new AbortController();
     const transport = createTransport({
         signal: controller.signal,
         log: (entry) => logs.push(entry.url),
@@ -2174,4 +2176,123 @@ describe("model profiles", () => {
             ),
         ).toContain("connection it names no longer exists");
     });
+});
+
+// PocketRisu's shared-code fixes that applied here (`docs/research/pocketrisu-fix-crosscheck.md`).
+describe("a whitespace-only system prompt (crosscheck row 2)", () => {
+    const blankSystem = (): RequestArgs => ({
+        ...prompt(),
+        formated: [{ role: "system", content: " \n\t " }, ...prompt().formated.slice(1)],
+    });
+
+    it("is left out of the Anthropic body, which would carry an empty `system`", async () => {
+        const recorded = await run({
+            settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" } },
+            arg: blankSystem(),
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0].body).not.toHaveProperty("system");
+        expect((recorded.calls[0].body as { messages: unknown }).messages).toEqual(ANTHROPIC_MESSAGES);
+    });
+
+    it("is left out of the Google body, which would carry a blank `systemInstruction`", async () => {
+        const recorded = await run({
+            settings: { preset: { aiModel: "gemini-2.5-flash" } },
+            arg: blankSystem(),
+            upstream: () => json({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }),
+        });
+        const { systemInstruction: _, ...rest } = GOOGLE_BODY;
+        expect(recorded.calls.map((call) => call.body)).toEqual([rest]);
+    });
+});
+
+describe("the Gemini retries after a tool call (crosscheck row 3)", () => {
+    // The clock is fake (the waits), the I/O real: `settle` gives the request real turns, with no
+    // wall-clock bound, until the condition holds.
+    const settle = async (done: () => boolean) => {
+        while (!done()) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const FUNCTION_CALL = { functionCall: { id: "fc-1", name: "rollDice", args: { sides: 6 } } };
+    const busy = () => json({ error: { code: 429, message: "Resource exhausted", status: "RESOURCE_EXHAUSTED" } }, 429);
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** A tool round trip whose follow-up request fails `failures` times, then answers. */
+    function roundTrip(streaming: boolean, failures: number, controller?: AbortController) {
+        const state = { followUps: 0, ended: false };
+        const pending = run({
+            settings: {
+                preset: { aiModel: "gemini-2.5-flash" },
+                providers: { requestRetrys: 3, ...(streaming ? { useStreaming: true } : {}) },
+            },
+            arg: { ...prompt(), useStreaming: streaming },
+            tools: [ROLL_DICE],
+            toolAnswer: [{ type: "text", text: "4" }],
+            controller,
+            upstream: (call) => {
+                if (!JSON.stringify(call.body).includes("functionResponse")) {
+                    const first = { candidates: [{ content: { parts: [FUNCTION_CALL] } }] };
+                    return streaming ? sse([first]) : json(first);
+                }
+                state.followUps += 1;
+                if (state.followUps <= failures) {
+                    return busy();
+                }
+                const answer = { candidates: [{ content: { parts: [{ text: "rolled a 4" }] } }] };
+                return streaming ? sse([answer]) : json(answer);
+            },
+        }).finally(() => {
+            state.ended = true;
+        });
+        /** Runs until the next wait is armed (or the request ended): the follow-ups sent so far. */
+        const waiting = async () => {
+            await settle(() => state.ended || vi.getTimerCount() > 0);
+            return state.followUps;
+        };
+        return { state, pending, waiting };
+    }
+
+    for (const streaming of [false, true]) {
+        const label = streaming ? "streaming" : "buffered";
+
+        it(`waits 1, 2, then 4 s before each retry (${label})`, async () => {
+            const { pending, waiting } = roundTrip(streaming, 3);
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(999);
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1999);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await waiting()).toBe(3);
+            await vi.advanceTimersByTimeAsync(3999);
+            expect(await waiting()).toBe(3);
+            await vi.advanceTimersByTimeAsync(1);
+            const recorded = await pending;
+            expect(recorded.calls).toHaveLength(5);
+            expect(recorded.alerts).toEqual([]);
+            const text = streaming ? JSON.stringify(recorded.chunks.at(-1)) : JSON.stringify(recorded.result);
+            expect(text).toContain("rolled a 4");
+        });
+
+        it(`sends nothing more once Stop ends a wait (${label})`, async () => {
+            const controller = new AbortController();
+            const { state, pending, waiting } = roundTrip(streaming, 3, controller);
+            expect(await waiting()).toBe(1);
+            controller.abort();
+            const recorded = await pending;
+            expect(state.followUps).toBe(1);
+            expect(recorded.calls).toHaveLength(2);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+    }
 });
