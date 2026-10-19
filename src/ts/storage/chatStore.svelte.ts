@@ -2521,7 +2521,8 @@ export function setChatMeta(
         if (value === undefined) {
             continue;
         }
-        if (JSON.stringify($state.snapshot(chat[key])) !== JSON.stringify(value)) {
+        // Serialized as it is (a `$state.snapshot` would drop a nested own `__proto__`).
+        if (JSON.stringify(chat[key]) !== JSON.stringify(value)) {
             changes[key] = clone(value);
         }
     }
@@ -3886,21 +3887,10 @@ export function recoverChatConflicts(
             server.data &&
             group.expected === canonicalChat(server.data)
         ) {
-            // Our create (and the rest of its group) landed before the answer was lost.
+            // Our create (and the rest of its group) landed before the answer was lost: the whole
+            // group is settled at the server's revision, so none of its ops applies a second time.
             holdChatRevision(group.key, server.revision);
-            const rest = group.ops.slice(1);
-            if (rest.length > 0) {
-                retry.push({
-                    ...group,
-                    baseRevision: server.revision,
-                    ops: rest,
-                    groupId: uuidv4(),
-                    resent: undefined,
-                    inDoubt: undefined,
-                });
-            } else {
-                settleKey(group.key, group.seq);
-            }
+            settleKey(group.key, group.seq);
             continue;
         }
         if (group.ops.some((op) => op.op === "delete") && server.revision === null) {
@@ -4098,8 +4088,9 @@ function dropLockedEdits(
 }
 
 /**
- * Requeues recovered groups; a recognized create continues as ordinary work on its revision. A group
- * sent or repaired as a resend stays one (the 409 rolled it back unanswered, or recovery isolated it).
+ * Requeues recovered groups: ordinary work is merged in front of the newer ops. A group sent or
+ * repaired as a resend stays one (the 409 rolled it back unanswered, or recovery isolated it), as does
+ * a create (a recognized create is settled, never requeued).
  */
 function requeueRecovered(groups: readonly SentChatGroup[]) {
     for (const group of groups) {

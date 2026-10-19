@@ -235,6 +235,24 @@ describe("mirror and queue", () => {
         expect(take().groups).toEqual([]);
     });
 
+    it("queues a metadata value that differs from the mirror only in a nested own __proto__ key", async () => {
+        const { server, chat, ref, commit } = await boot();
+        const stored = () => (server.chat("c", "k")!.data as any).scriptstate;
+        chat.setChatMeta(ref, { scriptstate: JSON.parse('{"$a": "1", "__proto__": {"x": 1}}') });
+        commit();
+        expect(Object.hasOwn(stored(), "__proto__")).toBe(true);
+        // Equal to the mirror once its own `__proto__` key is left out (as a `$state.snapshot` does).
+        chat.setChatMeta(ref, { scriptstate: { $a: "1" } });
+        const { work } = commit();
+        expect(work.groups.map((group) => group.ops)).toEqual([
+            [{ op: "meta", set: { scriptstate: { $a: "1" } }, unset: [] }],
+        ]);
+        expect(stored()).toEqual({ $a: "1" });
+        expect(Object.hasOwn(stored(), "__proto__")).toBe(false);
+        expect(Object.hasOwn((chat.findChat(ref) as any).scriptstate, "__proto__")).toBe(false);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
     it("removes several messages as one op that needs the current revision", async () => {
         const { server, chat, ref, take } = await boot();
         server.chatBatch([

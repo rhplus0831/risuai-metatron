@@ -1178,6 +1178,38 @@ describe("group idempotency ids (data-loss slice 6b)", () => {
         expect(fake.texts("c", "k")).toEqual(["unload write"]);
     });
 
+    it("settles a lost create recognized by its content together with the rest of its group, resending none of it", async () => {
+        const { fake, sync, chat } = await boot();
+        const refN = { chaId: "c", chatId: "n" };
+        chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any);
+        const sent = chat.takeChatWork(new Set());
+        const [group] = sent.groups;
+        expect(group.ops.map((op) => op.op)).toEqual(["create"]);
+        // A create group that carries more ops (no producer builds one today): they land with it.
+        group.ops.push({ op: "setText", id: "x", text: "X" });
+        // Landed, but not remembered by its id: the resend meets the ordinary checks and conflicts.
+        fake.chatBatch(
+            chat.chatWorkBody(sent).chats.map((text) => {
+                const { groupId: _groupId, ...landed } = JSON.parse(text);
+                return landed;
+            }),
+        );
+        const landed = fake.chat("c", "n")!.revision;
+        chat.requeueChatWork(sent, { lost: true });
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual([]);
+        // The server got the resend alone and applied nothing more: the setText is not sent again.
+        const groups = groupsOf(fake, "n");
+        expect(groups).toHaveLength(1);
+        expect(groups[0]).toMatchObject({ groupId: group.groupId, retry: true, ops: group.ops });
+        expect(fake.chat("c", "n")!.revision).toBe(landed);
+        expect(fake.texts("c", "n")).toEqual(["X"]);
+        expect(chat.chatSaveVersion(refN)).toBe(1);
+        expect(chat.hasChatWork()).toBe(false);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
     it("takes the ordinary recovery, with the notice, for a retry whose id the chat no longer remembers (expired), instead of repairing its anchor and applying it again", async () => {
         const { fake, sync, chat } = await boot();
         chat.appendMessage(refK, m("d", "D"), { anchor: { after: "b" } });
