@@ -347,7 +347,7 @@ describe("prereroll candidates (C1)", () => {
     /** The screen's swipe over the candidates: a candidate is applied with `setMessageText`. */
     const swipe = (ref: chat.ChatRef, id: string, step: typeof Prereroll, genId: string) => {
         const text = step(genId);
-        if (text) {
+        if (text !== null) {
             edit(ref, id, text);
         }
         return text;
@@ -370,15 +370,34 @@ describe("prereroll candidates (C1)", () => {
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "B, edited"]);
     });
 
-    it("an emptied candidate is skipped, not a barrier", () => {
+    it("an emptied candidate is shown again by swiping back to it", () => {
         const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-empty")]);
         chat.selectChat("c", ref.chatId);
         addRerolls("gen-empty", ["A", "B", "C"], ref, "r1");
         expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("B");
         edit(ref, "r1", "");
         expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("C");
+        expect(swipe(ref, "r1", PreUnreroll, "gen-empty")).toBe("");
+        expect(texts(ref)).toEqual(["Hi", ""]);
         expect(swipe(ref, "r1", PreUnreroll, "gen-empty")).toBe("A");
+        expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("");
         expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("C");
+    });
+
+    it("an empty alternative is shown and saved, and the ends stay where they are", () => {
+        const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-blank")]);
+        chat.selectChat("c", ref.chatId);
+        addRerolls("gen-blank", ["A", "", ""], ref, "r1");
+        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBeNull();
+        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBe("");
+        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBe("");
+        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBeNull();
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", ""]);
+        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBe("");
+        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBe("A");
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "A"]);
     });
 
     it("a copy of the chat holding the same reply does not use or change the candidates", () => {

@@ -26,17 +26,16 @@ function currentCandidates(genId: string): Candidates | null {
 }
 
 /**
- * Swaps to the next candidate of `entry` in direction `step`, skipping empty ones: the screen does
- * not apply an empty candidate (`if (r)`), so the cursor never rests on one either. Null at the end.
+ * Swaps to the next candidate of `entry` in direction `step`, an empty one included (the screen
+ * applies any candidate that is not null, so a reply emptied by an edit is reachable). Null at the end.
  */
 function swapFrom(entry: Candidates, step: 1 | -1) {
-    for (let index = entry.index + step; index >= 0 && index < entry.values.length; index += step) {
-        if (entry.values[index]) {
-            entry.index = index;
-            return entry.values[index];
-        }
+    const index = entry.index + step;
+    if (index < 0 || index >= entry.values.length) {
+        return null;
     }
-    return null;
+    entry.index = index;
+    return entry.values[index];
 }
 
 export function Prereroll(genId: string) {

@@ -40,8 +40,6 @@
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
-        applyChatResult,
-        captureChatBaseline,
         chatOwnerToken,
         type ChatRef,
         currentChatRef,
@@ -314,7 +312,7 @@
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = Prereroll(genId);
-            if (r) {
+            if (r !== null) {
                 setMessageText(ref, lastMessage.chatId, r);
                 return;
             }
@@ -380,7 +378,7 @@
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = PreUnreroll(genId);
-            if (r) {
+            if (r !== null) {
                 setMessageText(ref, lastMessage.chatId, r);
                 return;
             }
