@@ -580,3 +580,13 @@ describe("text entry outside an input or textarea (crosscheck row 13)", () => {
         expect(document.activeElement).toBe(composer);
     });
 });
+
+describe("the model select hotkey (crosscheck row 14)", () => {
+    it("Ctrl+M opens the model preset list and closes it again", () => {
+        openModelPresetList.set(false);
+        press("m");
+        expect(get(openModelPresetList)).toBe(true);
+        press("m");
+        expect(get(openModelPresetList)).toBe(false);
+    });
+});

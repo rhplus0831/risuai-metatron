@@ -31,13 +31,20 @@ vi.mock("src/ts/process/files/inlays", () => ({
 
 vi.mock("@dqbd/tiktoken", () => ({
     Tiktoken: class {
+        freed = false;
         constructor(bpeRanks: string) {
             mocks.constructedWith.push(bpeRanks);
         }
         encode(text: string) {
+            // The WASM handle is gone once freed.
+            if (this.freed) {
+                throw new Error("encode on a freed Tiktoken");
+            }
             return Array.from(text, (char) => char.codePointAt(0) ?? 0);
         }
-        free() {}
+        free() {
+            this.freed = true;
+        }
     },
 }));
 
@@ -150,5 +157,35 @@ describe("ChatTokenizer", () => {
         expect(await new ChatTokenizer(1, "noName").tokenizeChats([{ role: "user", content: "ab", name: "x" }])).toBe(
             3,
         );
+    });
+});
+
+describe("tiktoken parsers (crosscheck row 14)", () => {
+    it("counts for both encoders at once, neither on a parser the other count freed", async () => {
+        const base = { ...mocks.fixture };
+        try {
+            // A cl100k_base parser is loaded (the WebLLM model of the fixture).
+            expect(Array.from(await encode("a"))).toEqual([97]);
+            // An o200k_base count starts loading its parser; a cl100k_base count runs meanwhile.
+            activeMainProfile.modelId = "custom";
+            activeMainProfile.currentPluginProvider = "absent";
+            const o200k = encode("hi");
+            activeMainProfile.modelId = base.modelId;
+            activeMainProfile.currentPluginProvider = base.currentPluginProvider;
+            const cl100k = encode("yo");
+            expect((await Promise.all([o200k, cl100k])).map((tokens) => Array.from(tokens))).toEqual([
+                [104, 105],
+                [121, 111],
+            ]);
+            // Both stay loaded: switching back and forth loads nothing more.
+            const built = mocks.constructedWith.length;
+            activeMainProfile.modelId = "custom";
+            activeMainProfile.currentPluginProvider = "absent";
+            expect(Array.from(await encode("hi"))).toEqual([104, 105]);
+            expect(mocks.constructedWith.length).toBe(built);
+        } finally {
+            activeMainProfile.modelId = base.modelId;
+            activeMainProfile.currentPluginProvider = base.currentPluginProvider;
+        }
     });
 });

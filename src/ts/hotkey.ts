@@ -111,6 +111,10 @@ export function initHotkey() {
                     openPersonaList.set(!get(openPersonaList));
                     break;
                 }
+                case "modelSelect": {
+                    openModelPresetList.set(!get(openModelPresetList));
+                    break;
+                }
                 case "toggleCSS": {
                     SafeModeStore.set(!get(SafeModeStore));
                     updateTextThemeAndCSS();
