@@ -11,7 +11,7 @@ Active planning and implementation:
 - [Open Bug Fixes](open-bug-fixes.md): reachable bugs from the project memory,
   rechecked at `5c3665fdb`; A1, G1 landed.
 - [Boot Resource Cache](boot-resource-cache.md): compressed resource reads and a
-  per-record, per-module browser cache for the boot read; slice 1 landed.
+  per-record, per-module browser cache for the boot read; slices 1 and 2 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
