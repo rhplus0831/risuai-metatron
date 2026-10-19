@@ -5,8 +5,9 @@
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI. Seeds 12 enabled modules of 11,000 `[name, path, "avif"]` assets each, two
 // ~2 MB characters (a 300-entry lorebook) with 300 additional assets, 60 emotion images and 24
-// `ccAssets` icons each, and five small characters whose chats carry a `<style>` of 120 `@font-face`
-// rules and an `@import`ed stylesheet (a `data:` URL) of 120 more. Then takes a CDP
+// `ccAssets` icons each, and five small characters whose chats' replies (three per chat) each carry
+// the same `<style>` of 120 `@font-face` rules and an `@import`ed font service stylesheet of 120 more
+// (a remote URL a context route answers). Then takes a CDP
 // heap snapshot (after a forced GC) at each step, without reloading the page after boot:
 // 1. `boot`: the app loaded;
 // 2. `character-assets`: a big character's emotion and additional asset lists (its settings' second
@@ -24,8 +25,8 @@
 // more (count, and the outermost ones' retained size), likely duplicated large strings (same size and first 1,024 characters:
 // a snapshot keeps no more of a string), `FontFace`/`CSSStyleSheet`. The numbers are measurements: compare
 // them with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks are that the seed
-// was stored, the asset and description edits reached the server, and no page error or unexpected
-// egress.
+// was stored, the asset and description edits reached the server, the chat styles' faces are counted
+// on the chat screen and back to the boot count after it, and no page error or unexpected egress.
 //
 // Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default they
 // go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default 16000),
@@ -48,6 +49,8 @@ const BIG_CHARACTERS = 2;
 const SMALL_CHARACTERS = 5;
 const CC_ASSETS = 24;
 const FONT_FACES = 120;
+// A chat's three styled replies, each with its inline and its imported faces.
+const CHAT_FONT_FACES = 3 * 2 * FONT_FACES;
 const port = 6264;
 const base = `http://localhost:${port}`;
 
@@ -139,9 +142,14 @@ const fontFaces = (family) =>
             `src:url(/fonts/${family}-${i}.woff2) format("woff2");` +
             `unicode-range:U+${(0xac00 + i * 96).toString(16)}-${(0xac00 + i * 96 + 95).toString(16)};}`,
     ).join("");
-// A chat style with inline faces and an `@import`ed stylesheet of more (a `data:` URL: no egress).
+// The font service the chat styles `@import`: a remote stylesheet URL, answered by a context route
+// (no egress), as the user's chats import one.
+const FONT_HOST = "fonts.heap-check.invalid";
+const importedCss = (url) => fontFaces(`${new URL(url).searchParams.get("family")}Imported`);
+// A chat style with inline faces and an `@import`ed stylesheet of more. Every reply of a chat carries
+// the same style, as a character's reply format repeats it.
 const fontStyle = (family) =>
-    `<style>@import url("data:text/css;base64,${Buffer.from(fontFaces(`${family}Imported`)).toString("base64")}");` +
+    `<style>@import url("https://${FONT_HOST}/css?family=${family}");` +
     `${fontFaces(family)}.heap-font{font-family:"${family}","${family}Imported";}</style>` +
     `<p class="heap-font">가나다라마바사</p>`;
 
@@ -150,6 +158,15 @@ try {
     browser = await chromium.launch({ executablePath: chromePath, headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const blocked = await isolateContext(context);
+    // Registered after `isolateContext`, so it runs first for the font service's URLs. Only the
+    // stylesheet is served (and counted); its faces' font files are not.
+    let importsServed = 0;
+    await context.route(`https://${FONT_HOST}/**`, (route) => {
+        const url = route.request().url();
+        if (new URL(url).pathname !== "/css") return route.fulfill({ status: 404 });
+        importsServed++;
+        return route.fulfill({ contentType: "text/css", body: importedCss(url) });
+    });
     const pageErrors = [];
     let auth = null;
     let epoch = null;
@@ -285,7 +302,7 @@ try {
                     localLore: [],
                     message: Array.from({ length: 6 }, (_, k) => ({
                         role: k % 2 === 0 ? "user" : "char",
-                        data: k === 1 ? fontStyle(`HeapFont${i}`) : `Message ${k} of chat ${i}.`,
+                        data: k % 2 === 1 ? fontStyle(`HeapFont${i}`) : `Message ${k} of chat ${i}.`,
                         chatId: randomUUID(),
                     })),
                 },
@@ -449,7 +466,7 @@ try {
     // character settings of a character switched to on its closed-chat screen alert a tokenizer
     // `TypeError` (`CharConfig.svelte` `loadTokenize` gets an undefined note without a chat).
     await page.getByRole("button", { name: "Chat", exact: true }).first().click({ timeout: 60_000 });
-    for (const id of smallIds) {
+    for (const [i, id] of smallIds.entries()) {
         await page.locator(`[data-char-id="${id}"]`).first().click();
         await page
             .getByRole("button", { name: /Open most recent chat/ })
@@ -471,6 +488,29 @@ try {
                 throw error;
             });
         await page.locator(".default-chat-screen .chattext").first().waitFor({ timeout: 30_000 });
+        // The rows render after their wrapper: wait for this chat's three styled replies (the
+        // parser prefixes their class names, so find them by their style's family) and the faces.
+        const chatFonts = (family) => ({
+            styles: [...document.querySelectorAll(".default-chat-screen style")].filter((style) =>
+                style.textContent.includes(`"${family}"`),
+            ).length,
+            fonts: document.fonts.size,
+        });
+        // `chatOf` numbers the families over all characters, the big ones first.
+        const family = `HeapFont${BIG_CHARACTERS + i}`;
+        await page
+            .waitForFunction(
+                ([family, faces]) =>
+                    [...document.querySelectorAll(".default-chat-screen style")].filter((style) =>
+                        style.textContent.includes(`"${family}"`),
+                    ).length === 3 && document.fonts.size >= faces,
+                [family, CHAT_FONT_FACES],
+                { timeout: 30_000 },
+            )
+            .catch(async (error) => {
+                console.error("chat fonts:", await page.evaluate(chatFonts, family));
+                throw error;
+            });
         await page.waitForTimeout(1000);
     }
     await snapshot("chats");
@@ -563,6 +603,16 @@ try {
     }
     await homeButton.click({ timeout: 10_000 });
     await snapshot("home");
+
+    // Slice C1: the chat styles' faces (inline and imported) are on the chat screen, and leave with it.
+    const faces = Object.fromEntries(rows.map((row) => [row.step, row.fontFaces]));
+    check("fonts: the chat styles' import was fetched", importsServed > 0, { importsServed });
+    check("fonts: on the chat screen, one copy per styled reply", faces.chats === faces.boot + CHAT_FONT_FACES, {
+        boot: faces.boot,
+        chats: faces.chats,
+        expected: faces.boot + CHAT_FONT_FACES,
+    });
+    check("fonts: gone after the chat", faces["module-assets"] === faces.boot && faces.home === faces.boot, faces);
 
     check("no page errors", pageErrors.length === 0, pageErrors.length ? pageErrors : undefined);
     const egress = unexpectedEgress(blocked);

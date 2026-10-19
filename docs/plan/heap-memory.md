@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists) and B2 (frozen character asset lists) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists) and C1 (fonts after a chat: no holder, per-row copies found) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -307,6 +307,63 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   holder is named as Blink-internal with the evidence.
   _Test_: if code changes, a component test that the injected `<style>` leaves with its
   chat.
+
+  **Landed** (investigation; no app code changed). No app-side holder was found: the
+  message rows' faces leave with their rows. The user's after-chats snapshot was taken
+  with a chat on screen:
+  - All 53 sheets are active ones in the document's `StyleEngine`, and all 1,496 faces
+    sit in its `CSSFontSelector`'s `FontFaceCache`. No sheet or `<style>` is detached.
+  - 14 of the 31 `<style>` elements are inside mounted message rows
+    (`.default-chat-screen` → `.risu-chat` → `.chattext`). One is in `BackgroundDom`'s
+    layer, one is the app's own in `<body>`, and 15 belong to the browser's own shadow
+    roots (`<textarea>`, `<select>`, `<option>`); the app attaches no shadow root.
+  - 1,470 of the faces are one font service stylesheet of 105 faces, `@import`ed by each
+    of those 14 rows. Blink parses it once per row (14 `StyleRuleImport`s,
+    1,496 `StyleRuleFontFace`s), so the faces grow with the mounted rows that repeat a
+    style, not with time.
+
+  The driver now models this: every reply (three per chat) carries the same style, whose
+  `@import` is a remote URL that a context route answers (no egress). Before each chat's
+  snapshot it waits for the three styled replies and their faces (`document.fonts`). Three
+  checks pass: the import is fetched, the chat screen holds exactly one copy of the faces
+  per styled reply, and the count is back to the boot value afterwards.
+
+  | Step            | `FontFace` | Sheets |
+  | --------------- | ---------- | ------ |
+  | `boot`          | 0          | 9      |
+  | `chats`         | 720        | 12     |
+  | `module-assets` | 0          | 9      |
+  | `home`          | 0          | 9      |
+
+  720 is 3 rows × (120 inline + 120 imported). Each row's `<style>` is its own sheet with
+  its own rules (no shared `StyleSheetContents`). The per-row copies are the open chat's
+  cost, a candidate for C2.
+
+  Not covered: `BackgroundDom` (`ChatScreen.svelte`) renders the character's
+  `backgroundHTML` and the modules' `backgroundEmbedding` whenever a character is
+  selected, also on its closed-chat screen ("Go back" clears only the open chat). Styles
+  and faces there stay until another screen or character replaces it; that is the
+  feature, not a leak, and the fixture seeds neither source.
+
+- **C2. One stylesheet per distinct chat style** (_candidate_, not sliced; `cbs-rendering.md`).
+  `trimMarkdown` (`parser.svelte.ts` ~1024) turns each row's `<risu-style>` into a `<style>`
+  inside that row's HTML. N mounted rows that repeat a style therefore cost N sheets, N
+  imports and N × faces (the user's chat: 14 × 105). A chat-screen registry could keep one
+  `<style>` per distinct CSS text, counted by the rows that use it, and remove it when the
+  last of those rows unmounts. `decodeStyleRule` already prefixes the inline rules'
+  selectors with `.chattext` and has no per-row scope; `@font-face` rules and imported
+  sheets are global either way. So the selectors stay the same.
+  - What changes: the cascade order between different styles. Today, with rows styled
+    A, B, A, the later A wins a conflict with B; with one shared A placed first, B would win.
+  - The `{@html}` rows (and their PartialEdit/translation re-renders) would need to stop
+    owning their `<style>`.
+  - The driver's route answered 12 stylesheet requests for the 15 styled rows it opened.
+    Playwright routing turns off the HTTP cache, so this count says nothing about a real
+    font service's caching.
+  - Measure first, with a controlled comparison (the same build and fixture, one styled
+    reply against three). The only number so far is an aggregate across runs: at `chats`,
+    B2's driver (240 faces, `data:` imports) had 121.8 MB of JS self size and this one
+    (720 faces) 125.4 MB; the other steps also moved by up to ~0.9 MB.
 
 ## Phase D: leaks from code reading (measure, then fix)
 
