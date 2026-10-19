@@ -137,6 +137,7 @@ Theme and GUI helpers:
   - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
   - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`.
+- A list of inputs over a list that can change while one of them has focus keys its rows by entry and binds each input to the entry captured at mount (getter/setter functions that drop a write once the list no longer holds it), never `bind:value={list[i]}` in an unkeyed `#each`: Chrome fires `change` on a focused, edited control while removing it, and an index binding resolves `list[i]` at that moment. The lorebook and character asset editors follow this ([characters-modules](characters-modules.md) Invariants).
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores, `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values, callback props (`onclick`, `onchange`), and `children: Snippet`.
 

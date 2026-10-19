@@ -4,7 +4,7 @@
     import { type loreBook } from "src/ts/storage/database.svelte";
     import LoreBookData from "./LoreBookData.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
-    import { replaceRecordList } from "src/ts/storage/records.svelte";
+    import { DetachedWrapperError, replaceRecordList } from "src/ts/storage/records.svelte";
     import { onDestroy, onMount, tick } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { v4 } from "uuid";
@@ -308,6 +308,71 @@
 
     onMount(createStb);
 
+    // Rows are keyed by their entry and bind to the entry they were mounted for (D1). A row whose
+    // entry the shown list no longer holds (deleted, or the list now belongs to another character,
+    // chat, or module) gets a throwaway entry: a write it still makes while it unmounts (a focused
+    // prompt's `change` as Chrome removes it) lands nowhere, and reading it never throws.
+    const shownList = (): loreBook[] => {
+        if (externalLoreBooks) return externalLoreBooks;
+        if (submenu === 1) return localLore.value;
+        if (globalMode) return settings.loreBook[selectedLoreBookPage()].data;
+        return selectedCharacter()?.globalLore;
+    };
+    const listHolding = (book: loreBook, index = -1): loreBook[] | null => {
+        try {
+            const list = shownList();
+            // Derived membership can be stale while a nested list is inert/destroyed. Read the
+            // live list, using the row index only as a hint: identity must still match. This keeps
+            // repeated binding reads O(1) in the usual case, with a scan only after a row moves.
+            return list && (list[index] === book || list.includes(book)) ? list : null;
+        } catch (error) {
+            // The list itself can belong to a removed record (for example a deleted module).
+            if (error instanceof DetachedWrapperError) return null;
+            throw error;
+        }
+    };
+    const goneEntry = (): loreBook => ({
+        key: "",
+        comment: "",
+        content: "",
+        mode: "normal",
+        insertorder: 100,
+        alwaysActive: false,
+        secondkey: "",
+        selective: false,
+    });
+    const liveEntry = (book: loreBook, index: number) => (listHolding(book, index) ? book : goneEntry());
+    const replaceEntry = (book: loreBook, next: loreBook) => {
+        const list = listHolding(book);
+        if (!list) return;
+        const index = list.indexOf(book);
+        if (index !== -1) list[index] = next;
+    };
+    /** Removes `book` (a folder with its entries) from the shown list, if the list still holds it. */
+    const removeEntry = (book: loreBook) => {
+        const lore = listHolding(book);
+        if (!lore) return;
+        if (openedRefs.has(book)) {
+            onClose(!book.folder, book);
+        }
+        if (book.mode === "folder") {
+            // Close items belonging to the folder if they are open
+            lore.forEach((item) => {
+                if (item.folder === book.key && openedRefs.has(item)) {
+                    onClose(true, item);
+                }
+            });
+            // Filter out the folder and all items belonging to it, in place (one write of the list)
+            replaceRecordList(
+                lore,
+                lore.filter((item) => item !== book && item.folder !== book.key),
+            );
+        } else {
+            const index = lore.indexOf(book);
+            if (index !== -1) lore.splice(index, 1);
+        }
+    };
+
     let openedDetails = 0; // Count only lorebook details (for drag deactivation)
     let openedRefs = $state(new Set()); // Track both folders + lorebooks (for UI state)
 
@@ -315,6 +380,8 @@
     let openFolders = $derived(() => {
         let count = 0;
         for (const ref of openedRefs) {
+            // A ref the list no longer holds may be a removed record element: never read it.
+            if (!listHolding(ref as loreBook)) continue;
             if (ref && typeof ref === "object" && "mode" in ref && ref.mode === "folder") {
                 count++;
             }
@@ -378,42 +445,16 @@
             {#if externalLoreBooks.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
-                {#each externalLoreBooks as book, i}
+                {#each externalLoreBooks as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
                             {idgroup}
-                            bind:value={externalLoreBooks[i]}
+                            bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
-                            isOpen={openedRefs.has(book)}
+                            isOpen={!!listHolding(book, i) && openedRefs.has(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
-                            onRemove={() => {
-                                if (openedRefs.has(book) && !book.folder) {
-                                    onClose(true, book);
-                                } else if (openedRefs.has(book) && book.folder) {
-                                    onClose(false, book);
-                                }
-
-                                let lore = externalLoreBooks;
-
-                                // When deleting a folder, also delete all items that belong to that folder
-                                if (book.mode === "folder") {
-                                    // Close items belonging to the folder if they are open
-                                    lore.forEach((item) => {
-                                        if (item.folder === book.key && openedRefs.has(item)) {
-                                            onClose(true, item);
-                                        }
-                                    });
-
-                                    // Filter out the folder and all items belonging to it
-                                    lore = lore.filter((item) => item !== book && item.folder !== book.key);
-                                } else {
-                                    // Delete regular item
-                                    lore.splice(i, 1);
-                                }
-
-                                externalLoreBooks = lore;
-                            }}
+                            onRemove={() => removeEntry(book)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             bind:externalLoreBooks
@@ -432,42 +473,16 @@
             {#if currentCharacter.globalLore.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
-                {#each currentCharacter.globalLore as book, i}
+                {#each currentCharacter.globalLore as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
                             {idgroup}
-                            bind:value={currentCharacter.globalLore[i]}
+                            bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
-                            isOpen={openedRefs.has(book)}
+                            isOpen={!!listHolding(book, i) && openedRefs.has(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
-                            onRemove={() => {
-                                if (openedRefs.has(book) && !book.folder) {
-                                    onClose(true, book);
-                                } else if (openedRefs.has(book) && book.folder) {
-                                    onClose(false, book);
-                                }
-
-                                let lore = currentCharacter.globalLore;
-
-                                // When deleting a folder, also delete all items that belong to that folder
-                                if (book.mode === "folder") {
-                                    // Close items belonging to the folder if they are open
-                                    lore.forEach((item) => {
-                                        if (item.folder === book.key && openedRefs.has(item)) {
-                                            onClose(true, item);
-                                        }
-                                    });
-
-                                    // Filter out the folder and all items belonging to it
-                                    lore = lore.filter((item) => item !== book && item.folder !== book.key);
-                                } else {
-                                    // Delete regular item
-                                    lore.splice(i, 1);
-                                }
-
-                                currentCharacter.globalLore = lore;
-                            }}
+                            onRemove={() => removeEntry(book)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             {lorePlus}
@@ -487,42 +502,16 @@
             {#if localLore.value.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
-                {#each localLore.value as book, i}
+                {#each localLore.value as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
                             {idgroup}
-                            bind:value={localLore.value[i]}
+                            bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
-                            isOpen={openedRefs.has(book)}
+                            isOpen={!!listHolding(book, i) && openedRefs.has(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
-                            onRemove={() => {
-                                if (openedRefs.has(book) && !book.folder) {
-                                    onClose(true, book);
-                                } else if (openedRefs.has(book) && book.folder) {
-                                    onClose(false, book);
-                                }
-
-                                let lore = localLore.value;
-
-                                // When deleting a folder, also delete all items that belong to that folder
-                                if (book.mode === "folder") {
-                                    // Close items belonging to the folder if they are open
-                                    lore.forEach((item) => {
-                                        if (item.folder === book.key && openedRefs.has(item)) {
-                                            onClose(true, item);
-                                        }
-                                    });
-
-                                    // Filter out the folder and all items belonging to it
-                                    lore = lore.filter((item) => item !== book && item.folder !== book.key);
-                                } else {
-                                    // Delete regular item
-                                    lore.splice(i, 1);
-                                }
-
-                                localLore.value = lore;
-                            }}
+                            onRemove={() => removeEntry(book)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             {lorePlus}

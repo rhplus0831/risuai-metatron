@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The emotion image table on `CharConfig`'s view screen tab (large-asset-import slice 4a), mounted
 // over the real records, selection, paging constant, `LazyFileSrc`, and `rmCharEmotion`. It pages
-// like the additional-asset list, reads each preview only once its row nears the viewport, and
-// binds rename and delete by source index. Unrelated panels, dialogs and file loading are doubled.
+// like the additional-asset list, reads each preview only once its row nears the viewport, and keys
+// its rows by tuple, so a rename binds the tuple the row was mounted for and a delete addresses the
+// row's source index (open-bug-fixes slice C7). Unrelated panels, dialogs and file loading are doubled.
 
 const holdFileSrc = vi.fn((path: string) => ({ src: Promise.resolve(`/file/${path}`), release: () => {} }));
 vi.mock("src/ts/globalApi.svelte", () => ({
@@ -201,9 +202,6 @@ describe("CharConfig emotion images", () => {
         button(language.loadMore)!.click();
         flushSync();
 
-        // Every delete below removes a row after the renamed one, so the row typed into is never the
-        // one the shrink unmounts (that unmount throws in its binding getter, a known hazard in
-        // docs/structure/characters-modules.md).
         input(rows()[ASSET_LIST_PAGE].name, "renamed");
         const expected = first.map((emotion) => [...emotion]);
         expected[ASSET_LIST_PAGE][0] = "renamed";
@@ -222,5 +220,72 @@ describe("CharConfig emotion images", () => {
         expect(record("c1").emotionImages.map((emotion) => [...emotion])).toEqual(expected);
         expect(names()).toEqual(expected.map((emotion) => emotion[0]));
         expect(names()[ASSET_LIST_PAGE - 1]).toBe("renamed");
+    });
+
+    it("deletes while another row's input is pending, or the typed-into row itself, without a throw", async () => {
+        // Rows are keyed by their tuple (open-bug-fixes slice C7): the typed-into row's binding is
+        // read again after a tick (Svelte's `bind_value`), by then unmounted or moved by the shrink.
+        const first = emotions("joy", 5);
+        installCharacters(first, []);
+        selectCharacter("c1");
+        render();
+        const unhandled: unknown[] = [];
+        const onRejection = (reason: unknown) => unhandled.push(reason);
+        process.on("unhandledRejection", onRejection);
+        try {
+            // Typing into the last row, then deleting the first in the same task: an index binding
+            // of the last row would read past the shrunken list's end; the keyed row stays mounted.
+            const last = rows()[4];
+            last.name.focus();
+            last.name.value = "last renamed";
+            last.name.dispatchEvent(new Event("input", { bubbles: true }));
+            rows()[0].remove.click();
+            flushSync();
+            await settle();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const expected = first.map((emotion) => [...emotion]);
+            expected[4][0] = "last renamed";
+            expected.splice(0, 1);
+            expect(record("c1").emotionImages.map((emotion) => [...emotion])).toEqual(expected);
+            expect(names()).toEqual(expected.map((emotion) => emotion[0]));
+
+            // Typing into a row and deleting that row in the same task unmounts the row typed into.
+            const zero = rows()[0];
+            zero.name.focus();
+            zero.name.value = "gone";
+            zero.name.dispatchEvent(new Event("input", { bubbles: true }));
+            zero.remove.click();
+            flushSync();
+            await settle();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expected.splice(0, 1);
+            expect(record("c1").emotionImages.map((emotion) => [...emotion])).toEqual(expected);
+            expect(names()).toEqual(expected.map((emotion) => emotion[0]));
+        } finally {
+            process.off("unhandledRejection", onRejection);
+        }
+        expect(unhandled).toEqual([]);
+    });
+
+    it("renames the entry a row was mounted for, not the next character's, across a character switch", async () => {
+        const first = emotions("joy", 3);
+        const second = emotions("calm", 3);
+        installCharacters(first, second);
+        selectCharacter("c1");
+        render();
+
+        const row = rows()[1];
+        row.name.focus();
+        row.name.value = "joy renamed";
+        row.name.dispatchEvent(new Event("input", { bubbles: true }));
+        selectCharacter("c2");
+        flushSync();
+        await settle();
+
+        const expected = first.map((emotion) => [...emotion]);
+        expected[1][0] = "joy renamed";
+        expect(record("c1").emotionImages.map((emotion) => [...emotion])).toEqual(expected);
+        expect(record("c2").emotionImages.map((emotion) => [...emotion])).toEqual(second);
+        expect(names()).toEqual(second.map((emotion) => emotion[0]));
     });
 });

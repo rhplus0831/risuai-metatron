@@ -142,13 +142,26 @@
         matchedAssets?.slice(0, shownAssets) ??
             Array.from({ length: Math.min(shownAssets, assetCount) }, (_, index) => index),
     );
-    // The emotion list pages the same way, reset per character; rows read the live list by index.
+    // Rows are keyed by their tuple and bind to the tuple they were mounted for (D1); a row whose
+    // tuple the table no longer shows (deleted, another character) reads "" and writes nothing.
+    const assetRows = $derived.by(() => {
+        const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
+        return list ? assetIndices.map((index) => list[index]) : [];
+    });
+    const assetRowSet = $derived(new Set(assetRows));
+    // The emotion list pages the same way, reset per character; a page is a prefix, so a row's index
+    // is its source index.
     let shownEmotions = $derived.by(() => {
         assetsOwnerId;
         return ASSET_LIST_PAGE;
     });
     const emotionCount = $derived(currentCharacter.emotionImages?.length ?? 0);
-    const emotionIndices = $derived(Array.from({ length: Math.min(shownEmotions, emotionCount) }, (_, index) => index));
+    const emotionRows = $derived(currentCharacter.emotionImages?.slice(0, Math.min(shownEmotions, emotionCount)) ?? []);
+    const emotionRowSet = $derived(new Set(emotionRows));
+    const shownName = (rows: Set<unknown>, tuple: string[]) => (rows.has(tuple) ? tuple[0] : "");
+    const renameShown = (rows: Set<unknown>, tuple: string[], name: string) => {
+        if (rows.has(tuple)) tuple[0] = name;
+    };
     let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
 
     $effect.pre(() => {
@@ -639,13 +652,13 @@
                                 <td colspan="3">{language.noImages}</td>
                             </tr>
                         {:else}
-                            {#each emotionIndices as index}
+                            {#each emotionRows as emotion, index (emotion)}
                                 <tr>
                                     <td class="font-medium truncate w-1/3">
                                         {#if settings.ui.hideAllImages}
                                             <img src="/none.webp" alt="img" class="w-full" />
                                         {:else}
-                                            <LazyFileSrc path={currentCharacter.emotionImages[index][1]}>
+                                            <LazyFileSrc path={emotion[1]}>
                                                 {#snippet children(src)}
                                                     <img {src} alt="img" class="w-full" />
                                                 {/snippet}
@@ -656,14 +669,19 @@
                                         <TextInput
                                             marginBottom
                                             size="lg"
-                                            bind:value={currentCharacter.emotionImages[index][0]}
+                                            bind:value={
+                                                () => shownName(emotionRowSet, emotion),
+                                                (name) => renameShown(emotionRowSet, emotion, name)
+                                            }
                                         />
                                     </td>
                                     <td>
                                         <button
                                             class="font-medium cursor-pointer hover:text-green-500"
                                             onclick={() => {
-                                                rmCharEmotion(currentCharacter.chaId, index);
+                                                if (emotionRowSet.has(emotion)) {
+                                                    rmCharEmotion(currentCharacter.chaId, index);
+                                                }
                                             }}><TrashIcon /></button
                                         >
                                     </td>
@@ -842,8 +860,7 @@
                             <td class="text-textcolor2"> No Assets</td>
                         </tr>
                     {:else}
-                        {#each assetIndices as index}
-                            {@const assets = currentCharacter.additionalAssets[index]}
+                        {#each assetRows as assets (assets)}
                             {@const extension = assetExtension(assets)}
                             <tr>
                                 <td class="font-medium truncate">
@@ -868,7 +885,10 @@
                                     <TextInput
                                         size="sm"
                                         marginBottom
-                                        bind:value={currentCharacter.additionalAssets[index][0]}
+                                        bind:value={
+                                            () => shownName(assetRowSet, assets),
+                                            (name) => renameShown(assetRowSet, assets, name)
+                                        }
                                         placeholder="..."
                                     />
                                 </td>
@@ -877,9 +897,11 @@
                                     <button
                                         class="hover:text-blue-500"
                                         onclick={() => {
-                                            if (currentCharacter.type === "character") {
-                                                setCurrentChatMeta({ fmIndex: -1 });
+                                            if (currentCharacter.type === "character" && assetRowSet.has(assets)) {
                                                 let additionalAssets = currentCharacter.additionalAssets;
+                                                const index = additionalAssets.indexOf(assets);
+                                                if (index === -1) return;
+                                                setCurrentChatMeta({ fmIndex: -1 });
                                                 additionalAssets.splice(index, 1);
                                                 currentCharacter.additionalAssets = additionalAssets;
                                             }
