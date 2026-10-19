@@ -245,6 +245,10 @@
     ) {
         if (!elementOrText || !messageData) return;
 
+        // Hidden before any dialog opens: the buttons live on `document.body`, above the chat screen's
+        // stacking context (`isolate`) that holds the dialogs.
+        hideBlockButton();
+        hideDragButton();
         const requestId = ++matchingRequestId;
 
         // Set matching options based on mode
@@ -257,6 +261,9 @@
         const translationRequested = translatedView && !!getTranslationEditContext;
         const translationContext = await getTranslationContextIfNeeded();
         if (requestId !== matchingRequestId) return;
+        // A hover during the await may have shown them again.
+        hideBlockButton();
+        hideDragButton();
         if (translationRequested && !translationContext) {
             matchingState = createMatchingState();
             showMatchFailedModal = true;
@@ -296,9 +303,6 @@
         } else {
             matchingState.mode = mode;
         }
-
-        hideBlockButton();
-        hideDragButton();
     }
 
     // Start block edit/delete

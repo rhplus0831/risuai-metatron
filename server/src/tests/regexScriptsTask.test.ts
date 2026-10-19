@@ -11,7 +11,7 @@ import { createScriptWorkerPool, type RegexScriptsHost } from "../scripts/worker
 // exactly once where its script matched; an abort inside a host effect ending the task with no
 // later host call; the bounds shared with Lua tasks as JSON (a CBS argument over 16 MiB failing the
 // task with no later host call, not even a later script's effect; a result over 16 MiB as JSON
-// refused whether the raw text or its escaping crosses the cap, also for a `@@move_top` that never
+// refused whether the raw text or its escaping crosses the cap, also for a `@@repeat_back` that never
 // reaches `parse`); and the worker reused by a plain run afterwards. The engine's own semantics are
 // pinned in `regex.test.ts`; the send that runs this task in `promptRunner.test.ts`.
 
@@ -122,15 +122,28 @@ describe("the regex scripts task", () => {
     }, 60_000);
 
     it("refuses a result over the cap as JSON, whether by its length or by its escaping, also without a parse round trip", async () => {
-        const { host: plain } = recordingHost({ parse: (text) => text });
-        // 9 MiB doubled by `@@move_top` (no `parse` for a move): 18 MiB of text.
-        const raw = await run("x".repeat(9 * MIB), [script({ in: "^.*$", out: "@@move_top $&$&" })], plain);
+        // `@@repeat_back` appends the previous reply's match (`y` or `\\` runs, absent from the text)
+        // with no `parse`.
+        const appending = (previous: string) =>
+            recordingHost({ parse: (text) => text, repeatBack: () => previous }).host;
+        // 9 MiB of text and 9 MiB appended: 18 MiB of text.
+        const raw = await run(
+            "x".repeat(9 * MIB),
+            [script({ in: "y+", out: "@@repeat_back end" })],
+            appending("y".repeat(9 * MIB)),
+        );
         expect(raw).toEqual({ error: "Regex scripts: the result is too large" });
-        // 5 MiB of quotes doubled: 10 MiB of text, over 20 MiB once escaped as JSON.
-        const escaped = await run('"'.repeat(5 * MIB), [script({ in: "^.*$", out: "@@move_top $&$&" })], plain);
+        // 5 MiB of quotes and 5 MiB of backslashes: 10 MiB of text, over 20 MiB once escaped as JSON.
+        const escaped = await run(
+            '"'.repeat(5 * MIB),
+            [script({ in: "\\\\+", out: "@@repeat_back end" })],
+            appending("\\".repeat(5 * MIB)),
+        );
         expect(escaped).toEqual({ error: "Regex scripts: the result is too large" });
-        // The same move on a small text is fine, on the same worker.
-        expect(await run("ab", [script({ in: "a", out: "@@move_top $&$&" })], plain)).toEqual({ data: "aa\nb" });
+        // The same append on a small text is fine, on the same worker.
+        expect(await run("ab", [script({ in: "y+", out: "@@repeat_back end" })], appending("yy"))).toEqual({
+            data: "abyy",
+        });
     }, 60_000);
 
     it("reports a script's own failure the engine's way (skipped) and keeps the worker for the next run", async () => {

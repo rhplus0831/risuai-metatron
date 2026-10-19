@@ -408,3 +408,43 @@ describe("PartialEditController occurrence targeting", () => {
         expect(ui.saved[0].newData).toBe("EDITNext");
     });
 });
+
+describe("the hover buttons over a dialog (crosscheck row 12)", () => {
+    // The buttons live on `document.body`, above the chat screen's stacking context (`isolate`) that
+    // holds the dialogs: a dialog opens with them hidden, or they would stay clickable over it.
+    const wrapper = () => document.querySelector<HTMLElement>(".partial-edit-btn-wrapper");
+    // A drag case's selection outlives its body, and a hover over a selection shows no buttons.
+    beforeEach(() => {
+        window.getSelection()?.removeAllRanges();
+    });
+    const hover = async () => {
+        document.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 5, bubbles: true }));
+        await vi.waitFor(() => expect(wrapper()?.style.display).toBe("flex"));
+    };
+
+    it("hides them when the match failure opens", async () => {
+        const ui = render({
+            translatedView: true,
+            context: async () => null,
+            saveTranslation: vi.fn(async () => true),
+        });
+        await ui.start("edit", { settle: false });
+        expect(ui.query(".partial-match-failed-modal")).not.toBeNull();
+        expect(wrapper()!.style.display).toBe("none");
+    });
+
+    it("hides them again when a hover showed them while the translation context loaded", async () => {
+        const context = deferred<null>();
+        const ui = render({
+            translatedView: true,
+            context: () => context.promise,
+            saveTranslation: vi.fn(async () => true),
+        });
+        await hover();
+        ui.query<HTMLButtonElement>(".partial-edit-btn-edit")!.click();
+        await hover();
+        context.resolve(null);
+        await vi.waitFor(() => expect(ui.query(".partial-match-failed-modal")).not.toBeNull());
+        expect(wrapper()!.style.display).toBe("none");
+    });
+});

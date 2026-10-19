@@ -60,6 +60,9 @@
             language,
             theme,
             readOnly: readonly,
+            // Chrome's EditContext input keeps a stale Ctrl after the Ctrl+X popup editor opens, and its
+            // host is no text field to the hotkey guard: the textarea input avoids both.
+            editContext: false,
             automaticLayout: true,
             minimap: { enabled: false },
             wordWrap: "on",

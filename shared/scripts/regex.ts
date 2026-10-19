@@ -189,6 +189,8 @@ export function runRegexScripts(
                                 }
                             }
                         }
+                        // The moved text goes through the CBS parser like any other replacement.
+                        data = parse(data);
                     } else {
                         data = parse(data.replace(reg, outScript));
                     }

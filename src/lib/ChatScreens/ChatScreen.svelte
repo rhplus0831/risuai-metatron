@@ -39,8 +39,9 @@
     });
 </script>
 
+<!-- `isolate`: bot HTML/CSS with a high z-index stays inside the chat screen, under the app's popups and alerts. -->
 {#if settings.ui.theme === "waifu"}
-    <div class="grow h-full flex justify-center relative" style={bgImg.length < 4 ? wallPaper : bgImg}>
+    <div class="isolate grow h-full flex justify-center relative" style={bgImg.length < 4 ? wallPaper : bgImg}>
         <SideBarArrow />
         <BackgroundDom />
         {#if currentCharacter !== undefined}
@@ -66,7 +67,7 @@
         </div>
     </div>
 {:else}
-    <div class="grow h-full min-w-0 relative justify-center flex">
+    <div class="isolate grow h-full min-w-0 relative justify-center flex">
         <SideBarArrow />
         <BackgroundDom />
         <div style={bgImg} class="h-full w-full" class:max-w-6xl={settings.ui.classicMaxWidth}>

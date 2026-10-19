@@ -179,10 +179,8 @@ type tokenizerType =
     | "GLM4"
     | "GLM5";
 
-let tikParser: Tiktoken = null;
 let tokenizersTokenizer: Tokenizer = null;
 let tokenizersType: tokenizerType = null;
-let lastTikModel = "cl100k_base";
 
 let googleCloudTokenizedCache = new Map<string, number>();
 
@@ -239,24 +237,36 @@ async function gemmaTokenize(text: string) {
     return gemmaTokenizer.encode(text);
 }
 
-async function tikJS(text: string, model = "cl100k_base") {
-    if (!tikParser || lastTikModel !== model) {
-        tikParser?.free();
-        if (model === "cl100k_base") {
-            const { Tiktoken } = await import("@dqbd/tiktoken");
-            const cl100k_base = await import("@dqbd/tiktoken/encoders/cl100k_base.json");
-            lastTikModel = model;
+type TikModel = "cl100k_base" | "o200k_base";
 
-            tikParser = new Tiktoken(cl100k_base.bpe_ranks, cl100k_base.special_tokens, cl100k_base.pat_str);
-        }
-        if (model === "o200k_base") {
-            const { Tiktoken } = await import("@dqbd/tiktoken");
-            const o200k_base = await import("src/etc/o200k_base.json");
-            lastTikModel = model;
-            tikParser = new Tiktoken(o200k_base.bpe_ranks, o200k_base.special_tokens, o200k_base.pat_str);
-        }
+/**
+ * The tiktoken parsers, one per encoder, kept once loaded and never freed: counts for both encoders can
+ * run at once, and none may encode on a handle another count has freed. A failed load is dropped, so a
+ * later count tries again.
+ */
+const tikParsers = new Map<TikModel, Promise<Tiktoken>>();
+
+async function loadTikParser(model: TikModel): Promise<Tiktoken> {
+    const { Tiktoken } = await import("@dqbd/tiktoken");
+    const encoder =
+        model === "o200k_base"
+            ? await import("src/etc/o200k_base.json")
+            : await import("@dqbd/tiktoken/encoders/cl100k_base.json");
+    return new Tiktoken(encoder.bpe_ranks, encoder.special_tokens, encoder.pat_str);
+}
+
+async function tikJS(text: string, model: TikModel = "cl100k_base") {
+    let parser = tikParsers.get(model);
+    if (!parser) {
+        parser = loadTikParser(model);
+        tikParsers.set(model, parser);
+        parser.catch(() => {
+            if (tikParsers.get(model) === parser) {
+                tikParsers.delete(model);
+            }
+        });
     }
-    return tikParser.encode(text);
+    return (await parser).encode(text);
 }
 
 async function tokenizeWebTokenizers(text: string, type: tokenizerType) {
