@@ -96,7 +96,7 @@ vi.mock("src/ts/storage/resourceSync.svelte", () => {
 });
 
 import { language } from "src/lang";
-import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     ackChatWork,
     assembleChats,
@@ -338,6 +338,49 @@ describe("branching a pinned chat", () => {
         expect(branch).not.toHaveProperty("pinned");
         expect(branchedChat).not.toHaveProperty("pinned");
         expect(findChat(ref)).toHaveProperty("pinned", true);
+    });
+});
+
+// Slice C3 of `docs/plan/open-bug-fixes.md`: "Create Folder on Branch" reads the source chat's folder
+// through `chatFolderOf`, so a `folderId` naming no folder of the character counts as no folder.
+describe("branching with Create Folder on Branch", () => {
+    async function branch() {
+        const ui = render();
+        ui.click(ui.target.querySelector(".button-icon-menu"));
+        await vi.waitFor(() => expect(popupStore.children).not.toBeNull());
+        const popupTarget = document.createElement("div");
+        ui.target.appendChild(popupTarget);
+        mounted.push(mount(PopupList, { target: popupTarget }));
+        flushSync();
+        ui.click(ui.button(language.branch));
+        await vi.waitFor(() => expect(chatList("c")).toHaveLength(2));
+    }
+    const owner = () => characterList().find((entry) => entry?.chaId === "c")!;
+
+    it("creates the branch folder for a chat whose folder id names no folder", async () => {
+        const { ref } = boot("dangling-source");
+        settings.ui.createFolderOnBranch = true;
+        owner().chatFolders = [{ id: "other", name: "Other", folded: false }];
+        setChatMeta(ref, { folderId: "gone" });
+        await branch();
+        const folders = owner().chatFolders;
+        expect(folders.map((folder) => folder.name)).toEqual(["Branches of K", "Other"]);
+        const branchFolder = folders[0].id;
+        const copy = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+        expect(findChat(ref)?.folderId).toBe(branchFolder);
+        expect(copy.folderId).toBe(branchFolder);
+    });
+
+    it("keeps a chat that is in an existing folder there, with no new folder", async () => {
+        const { ref } = boot("filed-source");
+        settings.ui.createFolderOnBranch = true;
+        owner().chatFolders = [{ id: "f", name: "Folder", folded: false }];
+        setChatMeta(ref, { folderId: "f" });
+        await branch();
+        expect(owner().chatFolders.map((folder) => folder.id)).toEqual(["f"]);
+        const copy = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+        expect(findChat(ref)?.folderId).toBe("f");
+        expect(copy.folderId).toBe("f");
     });
 });
 

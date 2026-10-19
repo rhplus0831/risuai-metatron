@@ -97,6 +97,7 @@
     import ChatBody from "./ChatBody.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
+    import { chatFolderOf } from "../SideBars/chatFolders";
     import { llmTranslationCacheKey, readLLMCacheEntry, writeLLMCacheEntry } from "../../ts/translator/translator";
     import {
         beginStoredTranslationEdit,
@@ -1521,7 +1522,7 @@
                 return;
             }
 
-            if (settings.ui.createFolderOnBranch && !currentChat.folderId) {
+            if (settings.ui.createFolderOnBranch && chatFolderOf(currentChat, owner.chatFolders) == null) {
                 const folderId = v4();
                 owner.chatFolders ??= [];
                 owner.chatFolders.unshift({

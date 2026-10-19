@@ -318,6 +318,10 @@
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
                                     onclick={async (e) => {
                                         e.stopPropagation();
+                                        // By id, as the delete below: the row's item follows the folder
+                                        // list and `chara` the selected character while the dialogs are open.
+                                        const chaId = chara.chaId;
+                                        const folderId = folder.id;
                                         const sel = parseInt(
                                             await alertSelect([language.changeFolderColor, language.cancel]),
                                         );
@@ -334,7 +338,13 @@
                                                     "default",
                                                 ];
                                                 const sel = parseInt(await alertSelect(colors));
-                                                folder.color = colors[sel];
+                                                const owner = characterList().find((entry) => entry?.chaId === chaId);
+                                                const target = owner?.chatFolders?.find(
+                                                    (entry) => entry.id === folderId,
+                                                );
+                                                if (target) {
+                                                    target.color = colors[sel];
+                                                }
                                                 break;
                                         }
                                     }}

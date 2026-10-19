@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, unmount } from "svelte";
+import { fromStore, writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `docs/plan/chat-binding.md`, slice 6: the two new-chat buttons (`SideChatList.svelte`'s and the
@@ -59,7 +60,7 @@ vi.mock("src/ts/globalApi.svelte", () => ({
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
-import { alertConfirm } from "src/ts/alert";
+import { alertConfirm, alertSelect } from "src/ts/alert";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
@@ -340,6 +341,95 @@ describe("a chat whose folder does not exist", () => {
         expect(chatEntry({ chaId: "c", chatId: "k" })).not.toHaveProperty("folderId");
         expect(byChaId("g").chatFolders.map((entry) => entry.id)).toEqual(["same"]);
         expect(chatEntry({ chaId: "g", chatId: "gk" })?.folderId).toBe("same");
+    });
+});
+
+// Slice C3 of `docs/plan/open-bug-fixes.md`: the folder color dialogs resolve the character and the
+// folder by the ids captured before the first dialog, never by the row's `#each` item or `chara`.
+describe("a folder color chosen while the folders change", () => {
+    /** The first dialog answers "change color" at once; the color list waits for `pick`. */
+    function holdColorDialog() {
+        let pick!: (value: string) => void;
+        vi.mocked(alertSelect).mockClear();
+        vi.mocked(alertSelect)
+            .mockImplementationOnce(async () => "0")
+            .mockImplementationOnce(() => new Promise<string>((resolve) => (pick = resolve)));
+        return (color: string) => pick(String(["red", "green", "blue"].indexOf(color)));
+    }
+    const colorButton = (target: HTMLElement, index: number) => {
+        const folder = target.querySelector<HTMLElement>(`[data-risu-chat-folder-idx="${index}"]`)!;
+        return [...folder.querySelector("button")!.querySelectorAll<HTMLElement>('[role="button"]')][0];
+    };
+    const colors = (chaId: string) => byChaId(chaId).chatFolders.map((folder) => [folder.id, folder.color]);
+
+    it("recolors the chosen folder after another folder was put first", async () => {
+        byChaId("c").chatFolders = [
+            { id: "a", name: "Folder A", folded: false },
+            { id: "b", name: "Folder B", folded: false },
+        ];
+        const pick = holdColorDialog();
+        const { target } = renderSide("c");
+        colorButton(target, 1).click();
+        await vi.waitFor(() => expect(alertSelect).toHaveBeenCalledTimes(2));
+
+        byChaId("c").chatFolders = [{ id: "x", name: "Folder X", folded: false }, ...byChaId("c").chatFolders];
+        flushSync();
+        pick("green");
+        await vi.waitFor(() => expect(colors("c")).toContainEqual(["b", "green"]));
+        expect(colors("c")).toEqual([
+            ["x", undefined],
+            ["a", undefined],
+            ["b", "green"],
+        ]);
+    });
+
+    it("recolors nothing when the chosen folder was deleted meanwhile", async () => {
+        byChaId("c").chatFolders = [
+            { id: "a", name: "Folder A", folded: false },
+            { id: "b", name: "Folder B", folded: false },
+        ];
+        const pick = holdColorDialog();
+        const { target } = renderSide("c");
+        colorButton(target, 0).click();
+        await vi.waitFor(() => expect(alertSelect).toHaveBeenCalledTimes(2));
+
+        byChaId("c").chatFolders = byChaId("c").chatFolders.filter((folder) => folder.id !== "a");
+        flushSync();
+        pick("red");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+        expect(colors("c")).toEqual([["b", undefined]]);
+    });
+
+    it("recolors the first character's folder after the selection moved to another character", async () => {
+        byChaId("c").chatFolders = [{ id: "same", name: "Shared", folded: false }];
+        byChaId("g").chatFolders = [{ id: "same", name: "Shared G", folded: false }];
+        const pick = holdColorDialog();
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        // The selected character as `Sidebar.svelte` passes it: a reactive prop.
+        const selected = writable(byChaId("c"));
+        const chara = fromStore(selected);
+        mounted.push(
+            mount(SideChatList, {
+                target,
+                props: {
+                    get chara() {
+                        return chara.current;
+                    },
+                },
+            }),
+        );
+        flushSync();
+        colorButton(target, 0).click();
+        await vi.waitFor(() => expect(alertSelect).toHaveBeenCalledTimes(2));
+
+        selected.set(byChaId("g"));
+        flushSync();
+        expect(target.querySelector('[data-risu-chat-folder-idx="0"]')!.textContent).toContain("Shared G");
+        pick("blue");
+        await vi.waitFor(() => expect(colors("c")).toEqual([["same", "blue"]]));
+        expect(colors("g")).toEqual([["same", undefined]]);
     });
 });
 
