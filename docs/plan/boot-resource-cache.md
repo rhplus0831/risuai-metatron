@@ -1,6 +1,6 @@
 # Boot Resource Cache Plan
 
-Status: planned 2026-10-19 at `91ba3c594`; slice 1 landed (1d382e8d0), slice 2 landed (9b831002a), slice 3 landed (ad7370e9e). Source: a user report that a
+Status: planned 2026-10-19 at `91ba3c594`; slice 1 landed (1d382e8d0), slice 2 landed (9b831002a), slice 3 landed (ad7370e9e), slice 4 measured 2026-10-19 (`util/playwright/measureBoot.mjs`; results under Slice 4). Complete. Source: a user report that a
 remote server holding asset-heavy modules boots slowly, with the boot response saved
 from that server (`save/New_Request-1792397488943.json` in the main checkout; ignored
 by git, holds user data: read sizes from it, never commit or quote it). Line numbers
@@ -264,11 +264,78 @@ A new module `src/ts/storage/bootCache.ts` and its use in `bootstrap.ts:loadData
 - Ask the reporting user to compare DevTools Timing on their server before and after.
 - Archive this plan; record leftovers (for example: chats are not cached, the client's
   install cost after the read is unchanged).
+- As built: `util/playwright/measureBoot.mjs` (production build, headless Chrome, CDP
+  throttling, the server on `PORT`, default 6264). Synthetic data of the reported shape:
+  14 modules of 9,100 or 9,493 asset tuples (130,151, ~125 bytes each, 16.31 MB), 18
+  characters of ~250 KB (4.51 MB), 50 presets (0.81 MB): a 21.67 MB plain read, 7.00 MB
+  compressed (zstd 1, the reported body gave 6.76 MB). Scenarios: `plain` (the boot route
+  blocked so the app falls back, `Accept-Encoding: identity`: the uncompressed fallback
+  baseline, close to the boot before the plan), `cold` (cache deleted), `warm`, `module` (one module's assets changed),
+  `character` (one description changed). The script blocks public hosts through CDP, not
+  `isolateContext`: Playwright's request routing turns the HTTP cache off, which made every
+  boot download the app's 3.83 MB of scripts again (3.4 s at 10 Mbps) in a first version.
+  Startup retains the pre-spawn port probe and requires the spawned child's listening
+  URL on stdout before accepting an HTTP answer.
+- Checks (all 61 pass in both runs): for every cached boot, the boot route answered with
+  no fallback read and the cache was read and written; the request the tab sent equals
+  `prepareBootRequest` of the IndexedDB contents read back from the page (the real adapter
+  in Chrome wrote them), and the answer expanded against them in Node equals a plain read
+  text for text; what the tab then wrote to IndexedDB (texts captured from its own expanded
+  snapshot) equals a plain read record for record (revision and text; an item record's
+  item texts in order); a warm boot claims all 18 characters, the modules and presets
+  records, and exactly the server's 14 module hashes; no page error, no page request to a
+  host other than the four blocked ones (the server's own egress is not watched).
+- The tab's own snapshot (`util/playwright/checkBootCache.mjs`, all 24 pass): the production
+  page's modules cannot be reached, so this check runs the dev stack and wraps
+  `loadBootSnapshot` as Vite serves `bootCache.ts`, keeping `JSON.stringify(snapshot)` of
+  what `loadData` hands to `seedResources`. On smaller data (14 modules of 300 assets, one
+  listed twice; 6 characters, one with a TTS API key; 20 presets) the snapshot equals a
+  plain read text for text after a cold boot, a warm boot, a module edit, a module reorder,
+  a character edit, delete, and create, and a fallback with the boot route aborted; every
+  cached boot used the boot route, and no boot request (fallback attempts included)
+  claimed the credential character; the full-cache claims are checked on the compared
+  document's requests. After each reload the check polls `loadedStore` in that same
+  document (following it if Vite or the app reloads) and takes its snapshot; not finishing
+  within 120 s fails the run. Each scenario made one boot request (the fallback then one
+  plain read).
+- Results, medians of 3 runs, 2026-10-19 (load 1–7). "Main screen" is from navigation
+  start to the loading screen gone; the app's scripts came from the HTTP cache. `plain` is
+  the uncompressed fallback path, so it also includes the cache read and a blocked boot
+  request, not exactly the pre-plan boot. "Server" is the time to the first byte.
+
+  | 10 Mbps, 40 ms | Main screen | Read on the wire | Decoded  | Read time | Server | IndexedDB read / write |
+  | -------------- | ----------- | ---------------- | -------- | --------- | ------ | ---------------------- |
+  | plain          | 18.34 s     | 21.67 MB         | 21.67 MB | 17.78 s   | 310 ms | 44 ms / –              |
+  | cold           | 6.51 s      | 7.00 MB          | 21.67 MB | 5.97 s    | 351 ms | 5 ms / 69 ms           |
+  | warm           | 0.51 s      | 0.02 MB          | 0.02 MB  | 65 ms     | 5 ms   | 37 ms / 3 ms           |
+  | module         | 0.98 s      | 0.44 MB          | 1.16 MB  | 466 ms    | 107 ms | 39 ms / 9 ms           |
+  | character      | 0.54 s      | 0.05 MB          | 0.27 MB  | 90 ms     | 9 ms   | 38 ms / 5 ms           |
+
+  From the end of the read to the main screen: 0.25–0.37 s in every scenario.
+  Unthrottled (loopback, not the target): plain 0.76 s to the main screen, cold 0.81 s
+  (the cold boot route's first byte comes ~60 ms after the plain read's), warm 0.32 s,
+  module 0.81 s, character 0.34 s.
+
+- Decisions: no server hash cache (a boot with one stale modules record gets its first
+  byte ~0.1 s later than a warm one: parse, hash, and answer of a 16 MB record); the
+  compression threshold and level stay (32 KiB, zstd 1 / gzip 1); `presets` stays an
+  item kind.
+- Leftovers: the reporting user has not compared DevTools Timing on their server yet;
+  only headless Chrome was checked (no Firefox, Safari, mobile, or private-window run);
+  a browser's first boot still downloads the whole compressed read (6 s at 10 Mbps here);
+  chats are not cached (chat summaries are always sent); the client's work after the read
+  is unchanged (0.25–0.37 s from the end of the read to the main screen on this data); there is no
+  sign-out to call `clearBootCache`. A `risu-boot-cache` database that another opener
+  created at version 1 without the stores makes every load fail (fallback, nothing
+  cleared); only another script on the origin can do that. Outside this plan: the app's
+  static files are served with `Last-Modified` only (no `Cache-Control`, no 304 for
+  `If-Modified-Since`, no compression), so once Chrome's heuristic freshness lapses a boot
+  downloads its 3.83 MB of scripts in full again.
 
 ## Open Questions
 
 - `presets` in `ITEM_KINDS`: 0.7 MB here; worth it only if its items have stable ids and
   edits touch one preset at a time. Default: include it, drop it in slice 2 if it
-  complicates the store read.
+  complicates the store read. Resolved: included (slice 2), kept (slice 4).
 - The compression threshold and level: start at 32 KiB / zstd 1 / gzip 1; slice 4 may
-  tune them.
+  tune them. Resolved: kept (slice 4).
