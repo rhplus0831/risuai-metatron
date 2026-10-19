@@ -47,7 +47,11 @@ vi.mock("../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => hooks.parse(text)),
     parseMarkdownSafe: vi.fn(),
 }));
-vi.mock("./index.svelte", () => ({ doingChat: { set: vi.fn(), subscribe: vi.fn() } }));
+// The send pipeline is not under test: only its busy flag and its busy target store (the lore write fence).
+vi.mock("./index.svelte", async () => {
+    const { writable } = await import("svelte/store");
+    return { doingChat: { set: vi.fn(), subscribe: vi.fn() }, sendingChatRef: writable(null) };
+});
 vi.mock("../translator/translator", () => ({ translateHTML: vi.fn() }));
 vi.mock("./inlayScreen", () => ({ updateInlayScreen: vi.fn() }));
 vi.mock("./files/inlays", () => ({
@@ -98,12 +102,17 @@ const module = (id: string, key: string) => ({
 });
 
 /** Boots the harness with a character `Lore` and its chat `l1` (one user message `m1`), and loads the wrapper. */
-async function boot(messages = [message("m1", "user", "nothing")], characterFields: Record<string, unknown> = {}) {
+async function boot(
+    messages = [message("m1", "user", "nothing")],
+    characterFields: Record<string, unknown> = {},
+    seed: (fake: any) => void = () => {},
+) {
     vi.resetModules();
     hooks.parse = (text) => text;
     hooks.tokenized = [];
     const booted = await bootMutations((fake) => {
         server.current = fake;
+        seed(fake);
     });
     const { characterStore, selectionModule, activePersona } = booted;
     activePersona.name = "User";
@@ -290,5 +299,130 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(result.matchLog).toEqual([
             { prompt: "\x01{{Member}}:a dragon\x01", source: "message 0 by char", activated: "/dragon/" },
         ]);
+    }, 30_000);
+});
+
+// Slice C1 of `docs/plan/open-bug-fixes.md`: adding a chat lorebook entry or folder sends the chat's
+// whole `localLore`, so while a send of this tab (`sendingChatRef`) or a job this tab follows
+// (`followedJobs`) runs in that chat it is refused with the `chatGenerating` notice and nothing is
+// written, as the lore draft's fence does (`localLoreDraft.fence.test.ts`).
+describe("adding chat lorebook entries during a job in the chat", () => {
+    async function fenced() {
+        const booted = await boot();
+        const { followedJobs } = await import("./serverCommands");
+        const { chatStatusKey } = await import("./chatStatus.svelte");
+        const { sendingChatRef } = await import("./index.svelte");
+        const { language } = await import("src/lang");
+        const follow = (target: { chaId: string; chatId: string } | null) =>
+            followedJobs.set(target ? new Map([["job-1", chatStatusKey(target)]]) : new Map());
+        const stored = () => booted.chat.findChat(booted.ref)?.localLore.map((entry) => entry.comment);
+        return { ...booted, follow, sendingChatRef, language, stored };
+    }
+
+    it("refuses an entry and a folder while a job this tab follows runs in the chat, and adds again once it ends", async () => {
+        const { lorebook, follow, language, stored, sync, fake, ref, chaId } = await fenced();
+        await sync.flushResources();
+        follow(ref);
+        const batches = fake.batchCount();
+        lorebook.addLorebook(1);
+        lorebook.addLorebookFolder(1);
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(alerts.error).toHaveBeenNthCalledWith(1, language.chatGenerating);
+        expect(alerts.error).toHaveBeenNthCalledWith(2, language.chatGenerating);
+        expect(stored()).toEqual([]);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+        expect(fake.chat(chaId, "l1")?.data.localLore).toEqual([]);
+
+        follow(null);
+        lorebook.addLorebook(1);
+        lorebook.addLorebookFolder(1);
+        expect(stored()).toEqual(["New Lore 1", "New Folder"]);
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        await sync.flushResources();
+        expect(fake.chat(chaId, "l1")?.data.localLore.map((entry: any) => entry.comment)).toEqual([
+            "New Lore 1",
+            "New Folder",
+        ]);
+    }, 30_000);
+
+    it("is fenced by this tab's own send of the chat only", async () => {
+        const { lorebook, sendingChatRef, language, stored, ref, chaId } = await fenced();
+        sendingChatRef.set({ chaId, chatId: "other" });
+        lorebook.addLorebook(1);
+        expect(stored()).toEqual(["New Lore 1"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+
+        sendingChatRef.set(ref);
+        lorebook.addLorebook(1);
+        lorebook.addLorebookFolder(1);
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(alerts.error).toHaveBeenCalledWith(language.chatGenerating);
+        expect(stored()).toEqual(["New Lore 1"]);
+        sendingChatRef.set(null);
+    }, 30_000);
+});
+
+// Slice C1: the export of the Global Lore Book page (`"sglobal"`, the list `LoreBookList` shows in
+// `globalMode`) and of the chat lorebook while the selected chat is still loading.
+describe("exportLoreBook", () => {
+    const pages = [
+        { name: "First", data: [lore("p1", "one", "First page")] },
+        { name: "Second", data: [lore("p2", "two", "Second page"), lore("p3", "three", "Also second")] },
+    ];
+    async function exporting(seed?: (fake: any) => void) {
+        const booted = await boot(undefined, undefined, seed);
+        const globalApi = await import("../globalApi.svelte");
+        const download = vi.spyOn(globalApi, "downloadFile").mockResolvedValue(undefined as any);
+        const { language } = await import("src/lang");
+        const exported = (call = 0) => JSON.parse(Buffer.from(download.mock.calls[call][1] as any).toString("utf-8"));
+        return { ...booted, download, language, exported };
+    }
+
+    it("exports the selected Global Lore Book page", async () => {
+        const { lorebook, selectionModule, exported, language } = await exporting((fake) =>
+            fake.set("loreBook", "main", pages),
+        );
+        await lorebook.exportLoreBook("sglobal");
+        expect(exported(0)).toEqual({ type: "risu", ver: 1, data: pages[0].data });
+        selectionModule.selectLoreBookPage(1);
+        await lorebook.exportLoreBook("sglobal");
+        expect(exported(1)).toEqual({ type: "risu", ver: 1, data: pages[1].data });
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
+    }, 30_000);
+
+    it("exports an empty list when there is no Global Lore Book page", async () => {
+        const { lorebook, exported } = await exporting((fake) => fake.set("loreBook", "main", []));
+        await lorebook.exportLoreBook("sglobal");
+        expect(exported()).toEqual({ type: "risu", ver: 1, data: [] });
+        expect(alerts.error).not.toHaveBeenCalled();
+    }, 30_000);
+
+    it("exports the selected chat's lorebook, and refuses with a notice while that chat is still loading", async () => {
+        const { lorebook, chat, ref, chaId, sync, download, exported, language } = await exporting();
+        chat.setChatMeta(ref, { localLore: [lore("local", "l", "Local")] });
+        await lorebook.exportLoreBook("local");
+        expect(exported()).toEqual({ type: "risu", ver: 1, data: [lore("local", "l", "Local")] });
+
+        // More idle chats than the chat module keeps loaded: the trim evicts one, and selecting it
+        // starts its load (the selected chat is null until the read answers).
+        for (let i = 0; i < chat.MAX_LOADED_CHATS + 2; i++) {
+            chat.createChat(chaId, { id: `x${i}`, name: `X${i}`, note: "", localLore: [], message: [] } as any);
+        }
+        await sync.flushResources();
+        chat.trimLoadedChats();
+        const evicted = chat
+            .chatList(chaId)
+            .map((entry) => entry.id)
+            .find((id) => chat.findChat({ chaId, chatId: id }) === undefined);
+        expect(evicted).toBeDefined();
+        chat.selectChat(chaId, evicted!);
+        expect(chat.currentChatRef()).toEqual({ chaId, chatId: evicted });
+        expect(chat.selectedChat()).toBeNull();
+        await lorebook.exportLoreBook("local");
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.error).toHaveBeenCalledWith(language.localLoreExportNotLoaded);
+        expect(download).toHaveBeenCalledTimes(1);
     }, 30_000);
 });

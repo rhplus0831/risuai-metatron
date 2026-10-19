@@ -1,5 +1,6 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
-import { settings } from "../storage/settingsViews.svelte";
+import { get } from "svelte/store";
+import { selectedLoreBookPage, settings } from "../storage/settingsViews.svelte";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
@@ -25,14 +26,34 @@ import {
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 import { upgradeLorebook } from "../../../shared/modules.ts";
+import { chatStatusKey, generatingChatKeys } from "./chatStatus.svelte";
+import { sendingChatRef } from "./index.svelte";
 
-/** Appends entries to the selected chat's local lore (through the chat module). */
+/**
+ * Whether a send of this tab or a job this tab knows of runs in `ref`'s chat: the fence of
+ * `localLoreDraft.svelte.ts`. A local lore write sends the whole array as this tab holds it, so one
+ * written while the job runs would drop the entries its Lua `upsertLocalLoreBook` writes.
+ */
+function localLoreWriteFenced(ref: ChatRef): boolean {
+    const sending = get(sendingChatRef);
+    return (
+        (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
+        generatingChatKeys().has(chatStatusKey(ref))
+    );
+}
+
+/** Appends entries to the selected chat's local lore (through the chat module); refused during a job there. */
 function appendLocalLore(entries: loreBook[]) {
     const ref = currentChatRef();
     const chat = ref ? findChat(ref) : undefined;
-    if (ref && chat) {
-        setChatMeta(ref, { localLore: [...$state.snapshot(chat.localLore ?? []), ...entries] });
+    if (!ref || !chat) {
+        return;
     }
+    if (localLoreWriteFenced(ref)) {
+        alertError(language.chatGenerating);
+        return;
+    }
+    setChatMeta(ref, { localLore: [...$state.snapshot(chat.localLore ?? []), ...entries] });
 }
 
 export function addLorebook(type: number) {
@@ -196,6 +217,11 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
             // Loaded again: the dialog may have outlasted the chat's stay in memory.
             const chat = await ensureChatLoaded(chatTarget);
             if (chat && chatOwnerToken(chatTarget.chaId) === chatOwner) {
+                // Checked at the write: a job may have started in the chat while the dialog was open.
+                if (localLoreWriteFenced(chatTarget)) {
+                    alertError(language.chatGenerating);
+                    return;
+                }
                 setChatMeta(chatTarget, { localLore: [...$state.snapshot(chat.localLore ?? []), ...lore] });
             }
         }
@@ -253,9 +279,21 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
 
 export async function exportLoreBook(mode: "global" | "local" | "sglobal") {
     try {
-        const char = selectedCharacter();
-        const chat = mode === "sglobal" ? undefined : selectedChat();
-        const lore = mode === "global" ? char.globalLore : chat.localLore;
+        let lore: unknown;
+        if (mode === "global") {
+            lore = selectedCharacter().globalLore;
+        } else if (mode === "sglobal") {
+            // The Global Lore Book page `LoreBookList` shows in `globalMode`.
+            lore = settings.loreBook[selectedLoreBookPage()]?.data ?? [];
+        } else {
+            const chat = selectedChat();
+            if (!chat) {
+                // The selected chat is not loaded yet: there is no lorebook to export.
+                alertError(language.localLoreExportNotLoaded);
+                return;
+            }
+            lore = chat.localLore ?? [];
+        }
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risu",

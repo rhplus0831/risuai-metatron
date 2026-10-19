@@ -696,6 +696,7 @@ export const languageKorean = {
     group: "그룹",
     groupLoreInfo: "그룹 로어북은 이 그룹의 모든 채팅에 적용됩니다.",
     localLoreInfo: "챗 로어북은 이 채팅에만 적용됩니다.",
+    localLoreExportNotLoaded: "채팅을 아직 불러오는 중입니다. 불러온 뒤에 로어북을 내보내 주세요.",
     removeConfirm: "정말로 삭제하시겠습니까: ",
     removeConfirm2: "정말로, 정말로 삭제하시겠습니까: ",
     exportConfirm: "엑스포트하시겠습니까?",

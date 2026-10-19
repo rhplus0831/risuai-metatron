@@ -777,6 +777,7 @@ export const languageEnglish = {
     group: "Group",
     groupLoreInfo: "Group Lorebook applys to all chats in the group.",
     localLoreInfo: "Chat Lorebook only applies to the current chat.",
+    localLoreExportNotLoaded: "This chat is still loading. Export its lorebook once it has loaded.",
     removeConfirm: "Do you really want to remove: ",
     removeConfirm2: "Do you REALLY want to remove: ",
     exportConfirm: "Do you want to export this?",

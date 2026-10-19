@@ -32,7 +32,7 @@ vi.mock("../alert", () => ({
     alertConfirm: vi.fn(async () => true),
 }));
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
     changeLanguage: vi.fn(),
 }));
 vi.mock("./modules", () => ({
@@ -226,5 +226,68 @@ describe("the lorebook conversion of an imported file", () => {
         const selected = character(alpha);
         const ref = { chaId: alpha, chatId: selected.chats[selected.chatPage].id };
         expect(plain(chat.findChat(ref)!.localLore)).toEqual([old("Old", "<char> local\n@@end")]);
+    });
+});
+
+// Slice C1 of `docs/plan/open-bug-fixes.md`: the local import sends the chat's whole `localLore`, so
+// while a send of this tab (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in the
+// captured chat at the write, it is refused with the `chatGenerating` notice and nothing is written, as
+// the lore draft's fence does (`localLoreDraft.fence.test.ts`). A job that starts while the dialog is
+// open counts: the fence is checked after it.
+describe("importLoreBook(local) during a job in the chat", () => {
+    async function local() {
+        const booted = await boot();
+        const { followedJobs } = await import("./serverCommands");
+        const { chatStatusKey } = await import("./chatStatus.svelte");
+        const { sendingChatRef } = await import("./index.svelte");
+        const selected = booted.character(booted.alpha);
+        const ref = { chaId: booted.alpha, chatId: selected.chats[selected.chatPage].id };
+        const follow = (target: { chaId: string; chatId: string } | null) =>
+            followedJobs.set(target ? new Map([["job-1", chatStatusKey(target)]]) : new Map());
+        const stored = () => plain(booted.chat.findChat(ref)!.localLore);
+        const runLocal = async (file: { name: string; data: Uint8Array }, during: () => void = () => {}) => {
+            picker.answer = async () => {
+                during();
+                return file;
+            };
+            await booted.lorebook.importLoreBook("local");
+        };
+        return { ...booted, ref, follow, sendingChatRef, stored, runLocal };
+    }
+
+    it("refuses while a job this tab follows runs in the chat, also one started while the dialog was open", async () => {
+        const { runLocal, follow, ref, stored, sync, fake } = await local();
+        const batches = fake.batchCount();
+        follow(ref);
+        await runLocal(nativeFile([lore("New", "n")]));
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.error).toHaveBeenCalledWith("generating");
+        expect(stored()).toEqual([]);
+        follow(null);
+
+        await runLocal(nativeFile([lore("New", "n")]), () => follow(ref));
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(stored()).toEqual([]);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+        follow(null);
+
+        await runLocal(nativeFile([lore("New", "n")]));
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(stored()).toEqual([lore("New", "n")]);
+    });
+
+    it("is fenced by this tab's own send of the chat only", async () => {
+        const { runLocal, sendingChatRef, ref, stored } = await local();
+        sendingChatRef.set({ chaId: ref.chaId, chatId: "other" });
+        await runLocal(nativeFile([lore("Other", "o")]));
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(stored()).toEqual([lore("Other", "o")]);
+
+        sendingChatRef.set(ref);
+        await runLocal(nativeFile([lore("Mine", "m")]));
+        expect(alerts.error).toHaveBeenCalledWith("generating");
+        expect(stored()).toEqual([lore("Other", "o")]);
+        sendingChatRef.set(null);
     });
 });
