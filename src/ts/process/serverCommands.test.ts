@@ -92,6 +92,13 @@ class RequestError extends Error {
 vi.mock("src/lang", () => ({
     language: {
         chatGenerating: "generating",
+        serverJob: {
+            lost: "job lost",
+            discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
+            saveFailed: "save failed: {0}",
+            chatLoadFailed: "load failed: {0}",
+            chatNotSaved: "not saved",
+        },
         chatBinding: {
             refused: "cannot send",
             fields: { modelPresetId: "Model preset", promptPresetId: "Prompt preset", personaId: "Persona" },
@@ -236,7 +243,7 @@ describe("followJobToEnd", () => {
         expect(await lost).toBe("lost");
         expect(stubs.release).toHaveBeenCalledWith("j");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError.mock.calls[0][0]).toMatch(/lost/);
+        expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
 
         stubs.read.mockResolvedValueOnce({ ...status, epoch: "other" });
         const other = commands.followJobToEnd("j2", ref);
@@ -452,7 +459,7 @@ describe("runServerButton", () => {
         await commands.runServerButton(char, "go", ref);
         expect(stubs.create).not.toHaveBeenCalled();
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError).toHaveBeenLastCalledWith(expect.stringMatching(/could not be loaded.*offline/));
+        expect(stubs.alertError).toHaveBeenLastCalledWith("load failed: offline");
     });
 
     it("runs nothing for a group, a discarding or rejected flush, a chat gone meanwhile, or an unsaved chat", async () => {
@@ -467,9 +474,9 @@ describe("runServerButton", () => {
         await commands.runServerButton(char, "go", ref);
         expect(stubs.create).not.toHaveBeenCalled();
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
-            expect.stringMatching(/discarded/),
-            expect.stringMatching(/offline/),
-            expect.stringMatching(/not saved/),
+            "discarded: button",
+            "save failed: offline",
+            "not saved",
         ]);
     });
 
@@ -560,9 +567,9 @@ describe("runServerManualTrigger", () => {
         expect(onStart).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(0);
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
-            "A conflict discarded local changes; the trigger did not run",
-            expect.stringMatching(/offline/),
-            expect.stringMatching(/not saved/),
+            "discarded: trigger",
+            "save failed: offline",
+            "not saved",
             "generating",
         ]);
     });
@@ -798,8 +805,26 @@ describe("runServerJob", () => {
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
-            "Local changes could not be saved: A character is still being generated; try again when it finishes",
-            "Local changes could not be saved: offline",
+            "save failed: A character is still being generated; try again when it finishes",
+            "save failed: offline",
+        ]);
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it("shows a send's refusals as `language.serverJob` entries, the error's text in their `{0}` taken literally", async () => {
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.flush.mockRejectedValueOnce(new Error("quota $& {0} $1"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.refresh.mockRejectedValueOnce(new Error("offline $'"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.held.mockReturnValueOnce(null);
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "discarded: send",
+            "save failed: quota $& {0} $1",
+            "load failed: offline $'",
+            "not saved",
         ]);
         expect(stubs.create).not.toHaveBeenCalled();
     });
@@ -951,7 +976,7 @@ describe("the job's chat (Phase 6 slice 9b)", () => {
         stubs.load.mockRejectedValueOnce(new Error("offline"));
         await commands.runServerButton(char, "go", ref);
         expect(stubs.create).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError).toHaveBeenLastCalledWith(expect.stringMatching(/could not be loaded.*offline/));
+        expect(stubs.alertError).toHaveBeenLastCalledWith("load failed: offline");
         expect(pinsBalanced()).toBe(true);
         // A refused flush and a target that is not listed: nothing created, the pin released.
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
@@ -982,7 +1007,7 @@ describe("the job's chat (Phase 6 slice 9b)", () => {
         expect(follows()).toHaveLength(1);
         expect(stubs.release).toHaveBeenCalledWith("j2");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError.mock.calls[0][0]).toMatch(/lost/);
+        expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
         expect(pinsBalanced()).toBe(true);
 
         stubs.load.mockReset().mockResolvedValue(undefined);

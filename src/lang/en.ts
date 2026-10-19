@@ -1330,6 +1330,17 @@ export const languageEnglish = {
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
     chatGeneratingElsewhere: "Another chat is still generating a reply. Wait until it finishes.",
+    serverJob: {
+        lost: "The connection to the server job was lost; reload the chat to see its changes",
+        discarded: {
+            send: "A conflict discarded local changes; the send did not run",
+            button: "A conflict discarded local changes; the button did not run",
+            trigger: "A conflict discarded local changes; the trigger did not run",
+        },
+        saveFailed: "Local changes could not be saved: {0}",
+        chatLoadFailed: "The chat could not be loaded: {0}",
+        chatNotSaved: "This chat is not saved on the server yet",
+    },
     newChatBinding: "New Chat Presets and Persona",
     newChatBindingInherit: "Current Chat",
     newChatBindingEmpty: "Nothing Set",

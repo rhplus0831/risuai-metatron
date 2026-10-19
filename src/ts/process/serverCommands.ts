@@ -48,6 +48,11 @@ function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/** A `language` message with the error's text in its `{0}` (a function replacer, so `$` patterns stay literal). */
+function withError(message: string, error: unknown): string {
+    return message.replace("{0}", () => errorText(error));
+}
+
 /**
  * The jobs whose `/multisend` follow-ups this tab has started: a job's are started once, however
  * often its terminal is seen. Kept for the tab's lifetime (only jobs that had follow-ups).
@@ -237,7 +242,7 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<GenerationTermin
  */
 function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     if (end === "lost") {
-        alertError("The connection to the server job was lost; reload the chat to see its changes");
+        alertError(language.serverJob.lost);
     } else if (end.type === "error" && end.reason === "maintenance") {
         // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
         const at = Date.now();
@@ -268,12 +273,15 @@ export async function resumeServerJobs(): Promise<void> {
  */
 export type ServerCommandOutcome = "started" | "followed" | "refused" | "unknown";
 
+/** What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, or a manual trigger. */
+export type ServerJobLabel = "send" | "button" | "trigger";
+
 /** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
 export type ServerJobRequest = {
     kind: GenerationKind;
     command?: GenerationCommand;
-    /** What did not run, for the refusal alert ("the button did not run"). */
-    label: string;
+    /** What did not run, for the refusal alert (`language.serverJob.discarded`). */
+    label: ServerJobLabel;
     context?: Partial<Pick<GenerationContext, "mode" | "input" | "userMessageId" | "continueMessageId" | "triggerId">>;
 };
 
@@ -341,7 +349,7 @@ async function runPinnedServerJob(
         try {
             const { discarded } = await flushResources();
             if (discarded.length > 0) {
-                alertError(`A conflict discarded local changes; the ${request.label} did not run`);
+                alertError(language.serverJob.discarded[request.label]);
                 return refused;
             }
         } catch (error) {
@@ -353,14 +361,14 @@ async function runPinnedServerJob(
                 }
                 return refused;
             }
-            alertError(`Local changes could not be saved: ${errorText(error)}`);
+            alertError(withError(language.serverJob.saveFailed, error));
             return refused;
         }
         let current: boolean;
         try {
             current = await refreshStaleChat(ref);
         } catch (error) {
-            alertError(`The chat could not be loaded: ${errorText(error)}`);
+            alertError(withError(language.serverJob.chatLoadFailed, error));
             return refused;
         }
         if (current) {
@@ -371,7 +379,7 @@ async function runPinnedServerJob(
     try {
         target = await ensureChatLoaded(ref);
     } catch (error) {
-        alertError(`The chat could not be loaded: ${errorText(error)}`);
+        alertError(withError(language.serverJob.chatLoadFailed, error));
         return refused;
     }
     if (!target || options.signal?.aborted) {
@@ -379,7 +387,7 @@ async function runPinnedServerJob(
     }
     const chatRevision = heldChatRevision(ref);
     if (chatRevision === null) {
-        alertError("This chat is not saved on the server yet");
+        alertError(language.serverJob.chatNotSaved);
         return refused;
     }
     let jobId: string;
@@ -477,7 +485,7 @@ async function runServerCommand(
     return outcome;
 }
 
-function commandLabel(command: GenerationCommand): string {
+function commandLabel(command: GenerationCommand): ServerJobLabel {
     return command.type === "button" ? "button" : "trigger";
 }
 
