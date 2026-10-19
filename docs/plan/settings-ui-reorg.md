@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029), 2 (0b254f208), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
@@ -22,6 +22,13 @@ a page-wide gate (`translator`/`translatorType`) from the dependent-controls rul
 7 builds Display from `displaySettingsTabs`, lays the tab row out as a grid (two by two on
 a phone), and parks `display.showPromptComparison` at the end of `advanced.other` for slice
 4; Advanced's Legacy section is now always visible (`display.useLegacyGUI` has no condition).
+3 keeps Memory, Image Generation and Voice handwritten (`MemorySettings`,
+`ImageGenerationSettings`, `VoiceSettings`; Voice's two sections copy `SettingsSections`'
+markup), puts their entries where Other Bots was (slice 9 regroups them), names the page
+"Memory" (`memorySettings`) and "Voice & Emotion" (`voiceSettings`), and keeps the alias in
+`SETTINGS_PAGE_ALIASES`. It also seeds the WaveSpeed LoRA rows from the saved list (the
+mount used to clear it); the fetched WaveSpeed model list still resets when the page is
+left (a known leftover).
 
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
@@ -266,6 +273,6 @@ parallel sessions after 3, but 4, 5 and 6 all add to the section test's page lis
 
 ## Continue Remaining Work
 
-Next: slice 1 or 2. Record each landed slice in the Status line with its commit, and the
+Next: slice 4 (needs 3, landed), then 5 and 8; 9 last. Record each landed slice in the Status line with its commit, and the
 decisions a slice makes where the plan leaves a choice. When every slice has landed, move this file to the archive as
 `docs/archived-plan/README.md` describes.
