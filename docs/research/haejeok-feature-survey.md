@@ -15,10 +15,10 @@ the text says otherwise.
   the last upstream commit both forks merged.
 - Divergence since the merge-base:
 
-  | Side | Commits | Merges | Diff from base | Main areas |
-  | ---- | ------- | ------ | -------------- | ---------- |
-  | H | 1647 (1581 by nevaeh5379; 0 by kwaroran) | 212 | 1610 files, +380k / −82k | `src/ts/process`, `src/ts/storage` (SQL backends), `packages/` (backup-core, protocol, storage-*, comfyui-workflow, chat-core), `server/node`, `android/`, `src-tauri/` |
-  | M | 484 (437 by RH+, 17 upstream) | 18 | 1340 files, +369k / −99k | `server/src`, `shared/`, `src/ts/storage`, settings pages |
+  | Side | Commits                                  | Merges | Diff from base           | Main areas                                                                                                                                                              |
+  | ---- | ---------------------------------------- | ------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | H    | 1647 (1581 by nevaeh5379; 0 by kwaroran) | 212    | 1610 files, +380k / −82k | `src/ts/process`, `src/ts/storage` (SQL backends), `packages/` (backup-core, protocol, storage-*, comfyui-workflow, chat-core), `server/node`, `android/`, `src-tauri/` |
+  | M    | 484 (437 by RH+, 17 upstream)            | 18     | 1340 files, +369k / −99k | `server/src`, `shared/`, `src/ts/storage`, settings pages                                                                                                               |
 
 - Caveats:
   - H's own work starts on 2026-06-04. It was merged with upstream up to
@@ -36,21 +36,21 @@ the text says otherwise.
     roughly 30 "Pin X to generation targets" commits, address problems M avoids
     by design.
   - Research was split into six clusters, each read in both trees. Claims marked
-    *verified* were re-checked by hand at M `44e18f2ae`. Others come from the
+    _verified_ were re-checked by hand at M `44e18f2ae`. Others come from the
     cluster reads, and any uncertainty is stated.
 
 Dependencies H added that M lacks, with what they are used for:
 
-| Dependency | Used for | M? |
-| ---------- | -------- | -- |
-| `es-hangul` | Korean initial-consonant (choseong) and romanized search (`src/ts/util/koreanSearch.ts`) | no |
-| `viewerjs` | Lightbox for illustrations | no |
-| `@ffmpeg/ffmpeg`, `@ffmpeg/util` | WebM→WebP in the log exporter | no |
-| `sharp` (server) | Server-made thumbnails, illustration re-encode | no (only an unbuilt transitive dependency) |
-| `@humanspeak/svelte-json-view-lite` | ComfyUI workflow tree viewer | no |
-| `valibot` | Normalization defaults and preset schema | M has hand-written `SectionSpec` normalizers |
-| `@logtape/logtape` | Console logging in 5 client files | M has a server diagnostics journal |
-| `@sqlite.org/sqlite-wasm`, `pg`, `mssql`, `oracledb`, `@aws-sdk/*`, `@capacitor/*`, `appium`, `webdriverio` | Storage backends, Android | not applicable |
+| Dependency                                                                                                  | Used for                                                                                 | M?                                           |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `es-hangul`                                                                                                 | Korean initial-consonant (choseong) and romanized search (`src/ts/util/koreanSearch.ts`) | no                                           |
+| `viewerjs`                                                                                                  | Lightbox for illustrations                                                               | no                                           |
+| `@ffmpeg/ffmpeg`, `@ffmpeg/util`                                                                            | WebM→WebP in the log exporter                                                            | no                                           |
+| `sharp` (server)                                                                                            | Server-made thumbnails, illustration re-encode                                           | no (only an unbuilt transitive dependency)   |
+| `@humanspeak/svelte-json-view-lite`                                                                         | ComfyUI workflow tree viewer                                                             | no                                           |
+| `valibot`                                                                                                   | Normalization defaults and preset schema                                                 | M has hand-written `SectionSpec` normalizers |
+| `@logtape/logtape`                                                                                          | Console logging in 5 client files                                                        | M has a server diagnostics journal           |
+| `@sqlite.org/sqlite-wasm`, `pg`, `mssql`, `oracledb`, `@aws-sdk/*`, `@capacitor/*`, `appium`, `webdriverio` | Storage backends, Android                                                                | not applicable                               |
 
 M had already removed `@browsermt/bergamot-translator`, `pyodide`, `peerjs`,
 `openid-client`, `express-rate-limit` and `acorn`. H keeps them, mostly from
@@ -65,6 +65,7 @@ along). Effort: S / M / L.
 ### (a) User-facing features
 
 **A1. Persistent in-chat branches and branch graph**
+
 - **What it is:** rerolls, "edit as branch" and manual forks become timelines
   inside one chat, browsed in a git-style graph modal (tree, timeline and radial
   layouts, density modes, pinch zoom). A JSON export mode keeps the branches.
@@ -90,6 +91,7 @@ along). Effort: S / M / L.
 - **Effort:** L.
 
 **A2. Reroll from any reply**
+
 - **What it is:** a reroll button on every reply, and on a trailing user message.
 - **In H:** `src/ts/chatReroll.ts` (`resolveRerollTarget`), `76062ad13`,
   `ddd77bfe8`, `bca1a588f`.
@@ -99,6 +101,7 @@ along). Effort: S / M / L.
 - **Effort:** S for the stopgap; otherwise part of A1.
 
 **A3. Message search across chats**
+
 - **What it is:** a popup that searches message text in all chats, scoped to
   all, active or archived. A hit opens the chat and scrolls to the message.
 - **In H:** `src/lib/Others/MessageSearch.svelte` (`12d6479cc`).
@@ -112,6 +115,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A4. Korean-aware fuzzy matching for lists**
+
 - **What it is:** choseong search (typing ㅎㅈ finds 해적) plus
   English↔Hangul keyboard and romanization matching.
 - **In H:** `src/ts/util/koreanSearch.ts` (`86ee613c0`, `1e5f9eeed`, uses
@@ -122,11 +126,12 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **A5. Recent chats across characters**
+
 - **What it is:** a sidebar list of the most recent chats from all characters,
   with avatar, preview, relative time and search.
 - **In H:** `src/lib/SideBars/RecentSessionsList.svelte` (`383dbe395`),
   `src/ts/recentChatActivity.ts`, PR #96. Backed by an SQL `listRecentChats`.
-- **In M:** the home screen shows recent *characters* by `lastInteraction`,
+- **In M:** the home screen shows recent _characters_ by `lastInteraction`,
   and pinned chats. `ChatSummary` (`shared/chats.ts`) has no per-chat time, and
   `Chat.lastDate` is not maintained.
 - **Fit:** port concept. Stamp a per-chat time when a job commits, add it and
@@ -135,6 +140,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A6. Chat tabs**
+
 - **What it is:** a strip of open chats with unread and loading markers, a
   draft per tab, drag reorder, a show/hide setting, and up to 2 split panes.
 - **In H:** `src/ts/chatTabs.svelte.ts`, `src/lib/ChatScreens/ChatTabs.svelte`.
@@ -149,6 +155,7 @@ along). Effort: S / M / L.
 - **Effort:** M for the strip; L with panes.
 
 **A7. BTW side threads (`/btw`)**
+
 - **What it is:** a side panel with a separate thread that sees the main
   chat up to the moment it was opened. It can use its own prompt preset,
   modules and toggles, never writes to the main chat, and threads can be
@@ -164,6 +171,7 @@ along). Effort: S / M / L.
 - **Effort:** M–L.
 
 **A8. Shared author notes**
+
 - **What it is:** named notes that many chats can point to instead of their own
   note, edited in one place, with a draft-recovery banner on conflict.
 - **In H:** `src/ts/authorNote.ts`, `src/lib/SideBars/AuthorNoteEditor.svelte`,
@@ -178,6 +186,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A9. Illustrations**
+
 - **What it is:** the main prompt asks the model to place
   `<Illustration>` markers. After the reply, an auxiliary model writes image
   tags for each marker and images are generated into per-message slots. A slot
@@ -201,6 +210,7 @@ along). Effort: S / M / L.
 - **Effort:** L.
 
 **A10. ComfyUI saved workflows**
+
 - **What it is:** several named workflows to choose from, import from the
   ComfyUI server's `/userdata`, conversion of UI-format workflows to API
   format, and a lazy JSON tree viewer.
@@ -216,6 +226,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A11. Themed chat log exporter**
+
 - **What it is:** an export modal with live preview. Formats: HTML, Markdown,
   text, and PNG/JPEG/WebP images. It offers headers and footers, avatar
   options, find-and-replace rules, range export, and WebM→WebP via ffmpeg.wasm.
@@ -232,6 +243,7 @@ along). Effort: S / M / L.
 - **Effort:** L for the exporter; S for `pngStitch`.
 
 **A12. Asset manager with folders and batch editing**
+
 - **What it is:** a floating manager for additional assets with nested
   folders, drag and drop, marquee and Shift/Ctrl selection, batch delete, and
   regex batch rename with sequence tokens (`{n:03}`).
@@ -247,10 +259,11 @@ along). Effort: S / M / L.
 - **Effort:** M with a lighter UI; L for full parity.
 
 **A13. Stop a generation from another tab or device**
+
 - **What it is:** any client can stop a chat's running job.
 - **In H:** `1a872b06b`, `de34819be` (lifecycle and errors shared across
   clients).
-- **In M:** *verified*. `ownJob(jobId, clientId)`
+- **In M:** _verified_. `ownJob(jobId, clientId)`
   (`server/src/jobs/generationJobs.ts:1195`) requires the job's own
   `clientId` for abort. Other tabs only see `chatGeneratingElsewhere` and the
   locks.
@@ -261,11 +274,12 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **A14. Upstream RisuAI backup import**
+
 - **What it is:** restore a backup made by upstream RisuAI (`database.risudat`,
   msgpackr with gzip or deflate, with chats stored in cold storage).
 - **In H:** `packages/backup-core/src/node/{legacyStream,legacyFormat,importService}.ts`,
   `d50db05f6`, `3def53af2`.
-- **In M:** *verified*. `planImport` in `server/src/routes/backups.ts:436`
+- **In M:** _verified_. `planImport` in `server/src/routes/backups.ts:436`
   refuses archives that contain `database.risudat`. `persistence.md` says no
   migration is planned.
 - **Fit:** port concept. Decode on the server, put cold-storage chats back
@@ -275,6 +289,7 @@ along). Effort: S / M / L.
 - **Effort:** L.
 
 **A15. Per-module auxiliary model and request routing rules**
+
 - **What it is:** a module can name its own auxiliary model, used by its
   trigger, Lua and plugin auxiliary calls. Rules route auxiliary requests
   whose prompt contains given phrases to a module's model. This solves issue
@@ -299,6 +314,7 @@ along). Effort: S / M / L.
 - **Effort:** M for the per-module model; M–L with rules.
 
 **A16. Module folders and custom order**
+
 - **What it is:** folders (name, colour) and a user-set order for modules,
   with drag and touch moves.
 - **In H:** `80d84a04d`, `984dcdcda`, `5e3b07dcd`, PR #109 (merged, reverted,
@@ -312,6 +328,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A17. Character list sort, favorites, context menu, Duplicate Character**
+
 - **In H:** `f6040fa79`, `1a0aa3758`. Sort by default, name, recent or
   favorite; a favorites filter (`characterFavorites`); right-click to
   favorite or hide. `src/ts/characters.ts` duplicate (fixes `9729880ef`,
@@ -324,6 +341,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **A18. Small chat-screen items**
+
 - **Generation stats float:** a card with model, elapsed time, time to first
   token and tokens per second (`GenerationStatsFloat.svelte`,
   `src/ts/process/chat/generationStats.ts`, `a0bfba7b6`, `03c730d5c`). M's
@@ -337,11 +355,12 @@ along). Effort: S / M / L.
 ### (b) Performance / memory / lazy loading
 
 **B1. Server-made thumbnails for lists**
+
 - **In H:** `server/node/storage/assetStorage.ts` (`readThumbnail`, sharp,
   cached as `__thumbs/<hex>_<w>x<h>.webp`). `?thumb=1` gives 128², `display`
   gives 512×768. Client batching in `ThumbnailBatchLoader`
   (`globalApi.svelte.ts`). Commits `24d2cdafb`, `4c993a5c5`, `fa6c6ba32`.
-- **In M:** *verified* nothing (`rg -il "thumbnail|sharp" server/src` is
+- **In M:** _verified_ nothing (`rg -il "thumbnail|sharp" server/src` is
   empty). Catalog, sidebar rail and persona icons decode full-size card PNGs.
 - **Fit:** port concept. Add `GET /api/assets/thumb?key=&size=` with a cache
   keyed by content hash and size. It fits hashed assets, the service-worker
@@ -350,6 +369,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **B2. Deferred and debounced token counting in CharConfig**
+
 - **In H:** `src/ts/deferredTokenCalculator.ts` (`9021c009b`). The first
   count waits for idle time, edits are debounced by 150 ms, stale results are
   dropped by a generation number, and unchanged fields are reused.
@@ -360,6 +380,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **B3. Tokenizer load queue**
+
 - **In H:** `src/ts/tokenizerQueue.ts` serializes loading and encoding of the
   shared web tokenizers.
 - **In M:** `tokenizeWebTokenizers` in `src/ts/tokenizer.ts` can fetch
@@ -370,10 +391,11 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **B4. Lazy-loaded locales**
+
 - **In H:** `src/lang/index.ts` imports English eagerly and loads the other
   languages on demand (`e2a3e9641`, which also adds an optional-runtime chunk
   group: eager JS went from 3.77 MB to 1.29 MB).
-- **In M:** *verified*. `src/lang/index.ts` statically imports all 7 locales. A
+- **In M:** _verified_. `src/lang/index.ts` statically imports all 7 locales. A
   stale `dist/` suggests a `lang` chunk of about 767 KB that stays in the heap;
   measure before acting.
 - **Fit:** port concept. `changeLanguage` has to become async, and the boot
@@ -381,6 +403,7 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **B5. Low-spec mode preset**
+
 - **In H:** `e48296e3f`, setting `lowSpecMode`. It changes thumbnails for
   avatars, the number of chat load pages, cache limits, retained messages,
   reroll history, idle-release batch size and the engine cap.
@@ -391,6 +414,7 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **B6. Small rendering fixes**
+
 - Keyed `{#each}` rows by `chaId` / `chat.id` (`f2cb44a37`). M still has
   unkeyed loops in `SideChatList.svelte`, `Sidebar.svelte` and
   `MobileCharacters.svelte`. Port as-is, minding the rows' local state. S.
@@ -405,6 +429,7 @@ along). Effort: S / M / L.
   `rerollHistory.ts` caps slots but not the bundles in a slot. Port as-is. S.
 
 **B7. Bounded caches (`BoundedCache`, `imageCacheLimits.ts`)**
+
 - **In H:** an LRU by entry count and bytes, with limits tiered by device. An
   evicted blob URL is revoked (`8015825a9`, `812d56554`, `8502af5fd`).
 - **In M:** the parser `fileSrcCache` is an unbounded Map. Pinned
@@ -416,6 +441,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **B8. Releasing inactive character details and paging long chats in memory**
+
 - **In H:** characters' details are dropped in idle batches with a warm LRU
   (`025a4ef99`). Chats are read in pages of 40 messages, keeping the newest
   200 in memory (`14be15842`, `server/node/util/messagePagination.ts`).
@@ -427,6 +453,7 @@ along). Effort: S / M / L.
 - **Effort:** L each.
 
 **B9. Hypa V1 query-embedding cache**
+
 - **In H:** `59c4eb7a8`, `3a1926337` (cache queries; merge identical
   in-flight embeddings).
 - **In M:** V2/V3 go through `getEmbeds` with the persistent
@@ -438,6 +465,7 @@ along). Effort: S / M / L.
 ### (c) Data / backup / storage
 
 **C1. Chunked, resumable backup upload with progress**
+
 - **In H:** 4 MiB chunks. A retry at the last offset is accepted only if its
   size and SHA-256 match, and idle uploads expire after one hour
   (`packages/backup-core/src/node/importUploadStore.ts`, `de787f72a`,
@@ -453,6 +481,7 @@ along). Effort: S / M / L.
 - **Effort:** M; S–M for progress alone.
 
 **C2. Orphan asset report and cleanup**
+
 - **In H:** the Storage Explorer collects every referenced key (characters,
   modules, personas, backgrounds, folder icons, thumbnails) and flags the rest
   (`StorageExplorer/utils.ts`, `b46e74865`, `1e4342cc6`, `e46c9f293`).
@@ -466,6 +495,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **C3. Snapshot browser and per-record restore**
+
 - **In H:** a revision-history browser with an audit drawer, diff modal and
   per-row restore (`src/lib/Setting/Pages/DbExplorer/components/DbRevision*.svelte`,
   `60489e18a`). It reads a `system_revisions` table.
@@ -478,6 +508,7 @@ along). Effort: S / M / L.
 - **Effort:** M–L.
 
 **C4. Plugin storage explorer and per-key plugin storage patches**
+
 - **In H:** `PluginStorageExplorerSettings.svelte` (`63ff15238`): list keys
   with search, type and size; edit, add and delete. Plugin custom storage
   syncs per key (`9931dbb84`, PR #179).
@@ -488,6 +519,7 @@ along). Effort: S / M / L.
 - **Fit:** the explorer ports as-is (S). Per-key patches are a concept port (M).
 
 **C5. Batched plugin `getDatabase` transfer**
+
 - **In H:** PR #200 (`d1c568c85`, `019af3e9a`,
   `src/ts/plugins/apiV3/databaseSnapshot.svelte.ts`, `databaseTransfer.ts`).
   Object, array and set operations stream into a receiver inside the iframe,
@@ -500,6 +532,7 @@ along). Effort: S / M / L.
 ### (d) Plugin / scripting / API
 
 **D1. Plugin safe mode**
+
 - **In H:** `src/ts/safeMode.ts`, `2f8b6ef2a`, `e2e/safe-mode.spec.ts`.
   `?safe=1` makes `loadPlugins()` return early; plugins and their settings are
   untouched.
@@ -510,6 +543,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **D2. Browser crash guard for plugins**
+
 - **In H:** PR #181, `src/ts/plugins/pluginCrashGuard.ts`. It blames and
   disables the plugin that crashed boot, but uses a native Capacitor plugin.
 - **In M:** none.
@@ -518,6 +552,7 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **D3. `{{trigger_id}}` read from a global in the tab parser**
+
 - **In H:** the pinning series passes `matcherArg.triggerId` explicitly
   (`19569195b`..`fc7228af2`).
 - **In M:** `parser.svelte.ts` reads the global `CurrentTriggerIdStore`, so
@@ -531,6 +566,7 @@ along). Effort: S / M / L.
 ### (e) Ops / deployment / tooling / testing
 
 **E1. Health endpoint, Docker HEALTHCHECK, and a Caddy HTTPS compose file**
+
 - **In H:** `docker-compose.rustfs.caddy.yml` with a two-line Caddyfile for
   automatic HTTPS, plus DDNS updaters for Cloudflare and dynv6.
 - **In M:** a `Dockerfile` (node:24-slim, no HEALTHCHECK), `server.sh`, and a
@@ -541,6 +577,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **E2. Degraded recovery mode when the store will not open**
+
 - **In H:** `77e778d37` keeps HTTP up with a repair UI when SQL is down.
 - **In M:** a failed store open or integrity check makes `main.ts` exit(1).
 - **Fit:** port concept. Serve a minimal authenticated page that lists
@@ -548,6 +585,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **E3. Termux self-host on Android, one-line installer, off-host backups**
+
 - **In H:**
   - `deploy/termux/{install.sh,haejeok.sh}`: runit services and `haejeok open|start|stop|logs|update`.
   - `install.sh`: umask 077, generated credentials.
@@ -560,6 +598,7 @@ along). Effort: S / M / L.
 - **Effort:** M each.
 
 **E4. Runtime-dependency check**
+
 - **In H:** `tooling/check-node-runtime-dependencies.ts` walks the server's
   import graph and fails on any import that is not a declared dependency.
 - **In M:** `self-host-server.md` says server dependencies must be prod
@@ -569,6 +608,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **E5. E2E specs worth adding**
+
 - Backup round trip, including the streamSaver download (H
   `e2e/local-backup.spec.ts`). `backup-sync-hub.md` lists `LocalWriter` as
   untested.
@@ -580,6 +620,7 @@ along). Effort: S / M / L.
 ### (f) UI / UX details
 
 **F1. Settings search**
+
 - **In H:** `src/ts/setting/searchIndex.ts`, `SettingsSearch.svelte`,
   `94885b492`. Results are ranked by label then keywords then help text, in
   both the current language and English. The page scrolls to
@@ -592,6 +633,7 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **F2. `color-scheme` and native control theming**
+
 - **In H:** `55efcdd8c` sets `document.documentElement.style.colorScheme`
   and styles `<option>`. `6017ae077` makes selects consistent across themes.
   `323d16328` styles checked checkboxes in light themes.
@@ -601,6 +643,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **F3. Prompt editor: add by type, Expand/Collapse All, taller fields**
+
 - **In H:** `8636fae09`, `0c08e3974`.
 - **In M:** Expand/Collapse is only the Ctrl+Alt+O hotkey, and Add always
   makes a plain item (`PromptSettings.svelte`).
@@ -608,6 +651,7 @@ along). Effort: S / M / L.
 - **Effort:** S.
 
 **F4. Chat edge fade and textarea resizing**
+
 - **In H:** PR #197 (`d247cb166`, `def823074`): settings `chatEdgeFade`,
   `chatEdgeFadeSize`, `chatEdgeFadeCurve`, `chatEdgeFadeFromBottom`,
   `fixedChatTextareaBottomCover`. Resizable composer: `70ff40f2b`,
@@ -618,15 +662,17 @@ along). Effort: S / M / L.
 - **Effort:** S–M.
 
 **F5. Model browser with favorites and recents**
+
 - **In H:** `src/lib/UI/Model/ModelBrowser.svelte`,
   `src/ts/model/modelFavorites.svelte.ts` (`localStorage`), `3f1cced6c`,
   `30eb9fef9`.
 - **In M:** `ModelList.svelte` (provider accordion) and `ModelGrid.svelte`.
 - **Fit:** port concept. Store favorites in the synced settings, and consider
-  favorite *model profiles* instead.
+  favorite _model profiles_ instead.
 - **Effort:** M.
 
 **F6. Auto-adapting card colours for light themes**
+
 - **In H:** `src/ts/gui/colorAdapt.ts` (about 650 lines, 4 algorithms, no
   tests, `796adfc45`). It recolours inline styles and CSS in the parser.
 - **In M:** nothing.
@@ -635,6 +681,7 @@ along). Effort: S / M / L.
 - **Effort:** M.
 
 **F7. Persona list search (and optionally a two-pane editor)**
+
 - **In H:** `DesktopPersonaSettings.svelte` (`85fc19735`, `ebf10fbbe`).
 - **In M:** icon grid, with search only for linked modules.
 - **Fit:** port concept.
@@ -643,12 +690,13 @@ along). Effort: S / M / L.
 ## 3. Top recommendations
 
 1. **Small fixes Haejeok already found that metatron still has** (S, port as-is):
-   - **DeepLX throttle never waits** (*verified*): `src/ts/translator/translator.ts:288-294` only sets `waitTrans` when it is already in the future. H `6bac0a3a3` (PR #343) schedules `max(now, waitTrans) + 3000`.
-   - **Translated lines lose their breaks** (*verified*): `runTranslator` at `translator.ts:195-201` joins adjacent non-empty lines without `\n`, so `"a\nb"` becomes `"ab"`. This hits client Google/DeepL/DeepLX, TTS and the playground; the server's `translateProtectingLines` is correct. H `8bcb19014`, issue #322.
+   - **DeepLX throttle never waits** (_verified_): `src/ts/translator/translator.ts:288-294` only sets `waitTrans` when it is already in the future. H `6bac0a3a3` (PR #343) schedules `max(now, waitTrans) + 3000`.
+   - **Translated lines lose their breaks** (_verified_): `runTranslator` at `translator.ts:195-201` joins adjacent non-empty lines without `\n`, so `"a\nb"` becomes `"ab"`. This hits client Google/DeepL/DeepLX, TTS and the playground; the server's `translateProtectingLines` is correct. H `8bcb19014`, issue #322.
    - **Unchecked greeting index**: `alternateGreetings[fmIndex]` in `DefaultChatScreen.svelte:1067-1092`, `shared/cbs/registry.ts` and `server/src/prompt/triggers.ts`. H `src/ts/firstMessageSelection.ts` (PR #58) normalizes out-of-range indexes to -1; put it in `shared/`. This also covers the "old fmIndex" leftover in memory.
    - **Wrong blob MIME**: `getFileSrc` blob URLs default to `image/png`. H `src/ts/media/mimeType.ts` (`284764fd2`) closes the "blob URL MIME" leftover.
 
    These are cheap, contained and confirmed in code.
+
 2. **Stop a generation from another tab or device (A13).** It is a small change at
    `ownJob`, and it fixes a visible gap now that sends survive switching chats and
    other tabs show the reply as locked.

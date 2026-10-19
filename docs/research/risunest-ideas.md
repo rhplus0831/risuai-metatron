@@ -9,6 +9,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 ## 1. Portable feature and concept candidates (ranked by value to effort)
 
 ### 1. Alert queue (dialogs wait their turn, statuses replace each other) — S/M
+
 - **RN:** `src/ts/alertQueue.ts:37` `createAlertQueue`.
   - Loading, progress and toast messages share one status slot, and the newest replaces the old.
   - Every other alert is a FIFO dialog that resolves only its own caller (`open()`).
@@ -26,6 +27,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Check the job-channel queue (`jobChannel.ts`) does not double-queue.
 
 ### 2. Safe boot / startup exclusions — S
+
 - **RN:**
   - `src/ts/storage/startupExclusions.ts:5-13` defines the categories: plugins, modules, global regex, theme/CSS, sync, auto-update and account.
   - A boot attempt counter and stage trail (`src/ts/storage/bootAttempt.ts:25-66`) opens a recovery shell after repeated failures (`recoveryMode.svelte.ts:70-95`).
@@ -41,6 +43,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Server-side work (regex, Lua) is per job, so "skip modules or global regex" would have to travel in the job request. A client-only first slice that covers plugins and CSS is the cheap part.
 
 ### 3. Plugin quick wins: body expiry, live reload, v2.1 report — S
+
 - **RN:**
   - Unread `nativeFetch` response bodies expire after `UNREAD_PLUGIN_STREAM_TIMEOUT_MS = 60_000` (`src/ts/plugins/apiV3/factory.ts:611`, timer ~`:898-950`, documented at `plugins.md:913`).
   - When a received change touches the plugin list, plugins reload once idle (`plugins.svelte.ts:464-492`, `pluginCompatibility.ts:75-110`).
@@ -54,6 +57,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** client-only. Hang a deferred `loadPlugins` off the `plugins` live-apply branch and reuse RN's idle wait. The unread-body timer goes in `SandboxHost`.
 
 ### 4. Unit-test network guard — S
+
 - **RN:**
   - `vitest.setup.ts:8-36` wraps `fetch` and `WebSocket` and hooks happy-dom's fetch interceptor, which also covers XHR and iframe loads.
   - `afterEach(() => testNetwork.finish())` fails a test even when its code caught the blocked request.
@@ -67,6 +71,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Expect a first run to surface existing offenders.
 
 ### 5. CI pipeline and production-image hygiene — S/M
+
 - **RN:**
   - `.github/workflows/pr-check.yml` runs `check`, `build`, `check:production-bundle`, `test`, Playwright, the test-reference action and `test:node`, plus a separate job for the inventory and the frontends.
   - Actions are pinned by SHA and checkouts use `persist-credentials: false`.
@@ -81,6 +86,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Optionally a small bundle check over `dist/`.
 
 ### 6. Staged backup import with a preview (prepare → confirm → commit or cancel) — M
+
 - **RN:**
   - Imports are jobs with an explicit `AwaitingActivation` phase. The data is fully staged, the user confirms, and only then does the swap happen (`src-tauri/src/native_file_jobs/mod.rs:3665-3682`, `src/ts/storage/contentImportOperation.ts:9-28`).
   - Reports tell the user what was preserved, converted or excluded (`compatibleBackupReport.ts:28-42`, `exportExcludedReport.ts:8-26`, `preservationReportMessage.ts:8-15`).
@@ -91,6 +97,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** reuse the Realm staging slot and token. Prepare spools the file and indexes the archive (it already does in `planImport`) and returns a manifest summary. Commit runs today's import. The UI is a confirm dialog in `src/ts/drive/backuplocal.ts` `LoadLocalBackup`.
 
 ### 7. Asset garbage collection and a storage dashboard — M
+
 - **RN:**
   - The storage dashboard (`src/lib/Setting/Pages/RisuNestStorageDashboard.svelte`, `src/ts/storage/risuNestStorageDashboard.ts:66-135`) shows sizes for media, inlays, plugins, snapshots and conflict backups, plus record counts.
   - Unused-file cleanup previews first, then deletes. It explains why each file is kept: in use, held by a snapshot, a repair, a sync, a migration or a running job (`src-tauri/src/asset_repository/migration_gc.rs`, `job_pins.rs`). Snapshots record which assets they reference (`snapshot.rs:475`).
@@ -107,6 +114,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Reference extraction must cover every place an `assets/…` key can appear: characters, personas, presets, modules, inlays, the `ui` section and folders.
 
 ### 8. Snapshot management: manual, labeled, pinned, downloadable — S/M
+
 - **RN:**
   - Snapshots are taken automatically once a day, manually, and before a repair, each tagged with a reason (`nativePersistentMaintenance.ts:16-17,327-364`).
   - Retention keeps at most 8 snapshots within max(4 × database size, 512 MiB), dropping the oldest periodic ones first (`snapshot_archive.rs:350-366`).
@@ -122,6 +130,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Combine with item 7, because pinned snapshots extend asset reachability.
 
 ### 9. Persisted reroll candidates and interrupted-reroll recovery — M
+
 - **RN:**
   - Reroll candidates live on the last reply as `responseVariants {groupId, selectedId, candidates[]}` (`src/ts/responseVariants.ts:5-46`, verified), ported from PocketRisu (commit `d543bea91`, according to the research pass).
   - `Chat.rerollRecovery` records the original tail before a reroll, and `recoverInterruptedReroll` restores it after a crash (`src/ts/durableReroll.ts:76`, verified).
@@ -139,6 +148,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Size budget: each candidate copies messages, so it needs a cap.
 
 ### 10. Upstream RisuAI interchange: import `.bin` and export a compatible `.bin` — L (also a policy decision)
+
 - **RN:**
   - Restores upstream RisuAI `.bin` backups, RisuAI account backups and PocketRisu backups:
     - `src/ts/storage/databaseRestore.ts:44-143`
@@ -154,6 +164,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - This conflicts with the "no migration owed" stance, so the user needs to decide.
 
 ### 11. Plugin storage: isolation per plugin, local device spaces, and a data manager — M/L
+
 - **RN:**
   - `pluginStorage`, `safeLocalStorage` and `getLocalPluginStorage()` are scoped to the plugin's `//@name` (`src/ts/plugins/pluginStorageStore.ts:25-47` `forOwner`, `plugins.md:646-651`).
   - Values that have no owner are claimed or assigned (`pluginClaimSession.ts`, `storage/pluginValueAssignDialog.ts`).
@@ -174,6 +185,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Isolation breaks plugins that read each other's keys (RN documents this), so it needs RN's claim/assign migration.
 
 ### 12. Data health scan (optional repair later) — M
+
 - **RN:**
   - A quick or deep scan sorts findings by severity and code: missing or invalid reference, alias mismatch, orphan record, unreferenced object.
   - It previews repairs, takes a snapshot first, and keeps an undo journal. Reports can be exported with owner names masked.
@@ -183,6 +195,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** a server route over `resources.sqlite` plus `save/assets`, with a report in the Diagnostics panel. Start read-only and add repairs one by one through the existing mutation modules.
 
 ### 13. Pinned upstream compatibility contracts for the cross-user formats — M
+
 - **RN:**
   - `.github/actions/test-references/action.yml:6-23` pins `kwaroran/Risuai@c454df88…` and `PocketRisu@b315d898…`. `scripts/compatibleExportContract.mjs:18-77` checks the checkout's revision and the source-file hashes.
   - `scripts/compatibleExportReferenceHarness.mjs` extracts the real upstream decoder and encoder and runs them in a VM without network or timers.
@@ -195,6 +208,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** a node-test that checks out a pinned upstream, extracts `exportModuleLegacy`, `readModule`, `CharXImporter` and `PngChunk`, and compares bytes on synthetic fixtures. Tag it `slow`, or give it its own script outside V1.
 
 ### 14. Chat screenshot with range selection and paged output — M
+
 - **RN:**
   - A dialog picks a recent or full turn range (`src/ts/chatScreenshotRange.ts:132-136`).
   - It renders 8 messages at a time off screen at 960 px and cuts them into 8,000 px pages (`chatScreenshotCapture.ts:53-61`).
@@ -204,6 +218,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** client-only. The capture surface can reuse metatron's row components. Hold the chat steady by chat and message id (D1) instead of RN's revision lease.
 
 ### 15. Message navigation: previous / next message, jump to top — S
+
 - **RN:** a floating nav with top, previous message, next message and bottom (`src/lib/ChatScreens/DefaultChatScreen.svelte:1475-1513`; `Chats.svelte:2690` `jumpTo`, `:2895` `jumpToTop`, `:2915` `navigateMessage`, verified).
 - **MT:** only a scroll-to-bottom button (`DefaultChatScreen.svelte:152,671-704`, according to the research pass). Searching `src/lib` for `navigateMessage`, `jumpToTop` and similar names finds nothing (verified).
 - **Why:** reading long role-play replies on a phone is a common need.
@@ -212,6 +227,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - Jumping to the top of a 2,000-message chat has to page rows in, so reuse the reveal or staging logic.
 
 ### 16. Inlay inventory and image size reservation — M
+
 - **RN:**
   - Inlay inventory by type and extension with counts and bytes, and bulk conversion to WebP with progress and cancel (`src/ts/process/files/inlayInventory.ts:40-61`, `RisuNestInlayInventory.svelte`, `inlayOptimization*.ts`).
   - Image geometry: a background job saves width and height, and rendering writes `width`/`height` attributes so layout does not jump (`imageGeometryJob.ts`, `imageGeometryRender.ts:10-30`).
@@ -225,6 +241,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** the server reads dimensions when an inlay is written, through a header parse with no decode. A backfill job runs on the server, and the parser adds the attributes. Inventory and conversion are a server job with a settings page.
 
 ### 17. Engineering rules worth adopting from `AGENTS.md` and `tests/` — S
+
 - **RN:**
   - `AGENTS.md:23`: before committing, `git grep` each changed product file and export across `tests/`, `scripts/`, `benchmarks/` and `.github/`.
   - `:24`: a check that cannot start is reported as unverified, not passed.
@@ -239,6 +256,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Adaptation:** add rules to STRUCTURE.md V-section. Add a small inventory script that compares discovered `*.test.ts` and `e2e/*.spec.ts` files against the runners, and cross-checks `slow` tags against the doc table.
 
 ### 18. Device and session management, with QR pairing — M
+
 - **RN (Sync daemon):**
   - `device add` issues a credential per device and stores only its verifier. `device add --qr` prints a registration QR (`server/sync/src/main.rs:13,91-229`).
   - `device revoke ID` (`server/sync/src/store/mod.rs:418-450`, `management/mod.rs:439`).
@@ -254,6 +272,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - QR pairing: a logged-in tab shows a short-lived one-time token as a QR of `https://<server>/pair?t=…`. The phone's camera app opens it and the phone registers its key without typing the password. No native barcode scanner is needed.
 
 ### 19. Lower priority (recorded so they are not lost)
+
 - **Optional off-site backup push (M).**
   - RN has encrypted external providers: WebDAV, S3, Google Drive, OneDrive, GitHub releases (`src-tauri/src/external_storage/providers/`), with retention and pinned points.
   - MT keeps everything in `save/`. A scheduled server job pushing the version-2 archive to S3 or WebDAV would cover disk loss. Lower priority because Docker users often back up volumes already.
@@ -279,6 +298,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 ## 2. Already covered, or not portable
 
 **Metatron already has an equivalent, or a stronger one:**
+
 - **Toggle bindings and toggle presets** (RN `toggleBindings.ts`, `chatBindings.svelte.ts`): MT's per-chat toggles and presets are more complete (`src/ts/toggles/`, `shared/togglePresets.ts`, `shared/chatBinding.ts`).
 - **Desktop and system notifications** (RN `desktopNotifications.ts`): MT has Web Push (`server/src/push/`, `public/sw.js`).
 - **Android generation keep-alive and mobile background tasks** (RN `androidGenerationKeepAlive.ts`, `mobileBackgroundTask.ts`): MT generation runs on the server.
@@ -305,6 +325,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - **Runtime performance profile, Standard / Low-spec** (RN `runtimePerformanceProfile.ts:19-50`): most of the budgets it tunes (Hypa batch, script caches, prompt history limit) live on MT's server, and MT's client already has chat paging settings. Low value.
 
 **Tied to Tauri or native, with no sensible web or server analogue:**
+
 - Tauri shell, Android and iOS projects, and the patched crates: wry, tauri-plugin-http, updater, window-state, single-instance, ios-native.
 - Native download compatibility and webview link routing (`webviewDownload.ts`, `9a7aa531a`, `021069a3e`).
 - Barcode scanner plugin. QR pairing is re-expressed as a camera-app URL in item 18.
@@ -314,7 +335,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
 - Signed release catalog and updater (`crates/release-update`, `scripts/release/sign.mjs`, `publication.mjs`). MT ships as git or Docker. Only the release-notes check (item 19) carries over.
 - `small-object-store` (SQLite small blobs per owner) and the `external-storage-format` crate: no use unless off-site encrypted backup is built (item 19).
 - Android SAF and iOS file-picker routes, native file jobs, native CAS byte transport, and the AppImage, Android and iOS platform pages.
-- Benchmarks for Android, iOS, macOS, Linux and native storage. The *practice* of keeping harnesses outside `pnpm test` (`benchmarks/harnessConfig.ts`, `vitest.benchmark.config.ts`) is already roughly matched by MT's `util/playwright/measure*.mjs`, which only lacks type checking (item 17).
+- Benchmarks for Android, iOS, macOS, Linux and native storage. The _practice_ of keeping harnesses outside `pnpm test` (`benchmarks/harnessConfig.ts`, `vitest.benchmark.config.ts`) is already roughly matched by MT's `util/playwright/measure*.mjs`, which only lacks type checking (item 17).
 
 ---
 

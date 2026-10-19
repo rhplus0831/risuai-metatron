@@ -1,7 +1,7 @@
 # PocketRisu shared-code fixes: do they apply to metatron? (2026-10-20)
 
 Read-only check of the 18 rows in [pocketrisu-risubard-picks.md §5](pocketrisu-risubard-picks.md#5-shared-code-bugs-fixed-by-pocketrisu-to-check-in-metatron)
-against metatron `aa7bb7c52`. Each PocketRisu commit was read with `git -C /home/codex/PocketRisu show`,
+against metatron `291a8ec6f`. Each PocketRisu commit was read with `git -C /home/codex/PocketRisu show`,
 then the matching metatron code was traced (client, `server/src/`, `shared/`). Four Opus sub-agents did
 the first pass; the session re-read the code behind every "still present" row before recording it. No code
 was changed.

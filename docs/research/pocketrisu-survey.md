@@ -56,6 +56,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
 ### 2.1 Server and storage
 
 #### SQLite KV store replacing `save/` hex files (L)
+
 - **What it does for the user.** Everything (DB blob, assets, plugin storage, snapshots, caches, config) lives in `save/risuai.db`. Old hex-file `save/` folders are migrated automatically on first boot; the originals are kept until the user removes them from the migration page.
 - **Mechanism.**
   - Schema: `kv(key TEXT PRIMARY KEY, value BLOB, updated_at INTEGER)`.
@@ -71,6 +72,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - `/api/remove` refuses `assets/` and `remotes/` keys (409), so stale client bundles cannot delete shared assets (459873b2).
 
 #### Content-defined chunk store with dedup, snapshot sharing and mark-sweep GC (M)
+
 - **What it does for the user.**
   - A huge `database.bin` no longer hits SQLite's single-BLOB limit.
   - A small edit rewrites only the changed chunks.
@@ -89,6 +91,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - Commits: 32a7f50b, f3f781e3, 4bc5ed48, 770c64ce, 201d752f. Follow-up fixes: 365af41c, 77d273ac, 9fb5b2b4.
 
 #### Patch-sync save protocol (`/api/patch`, `/api/write`, `/api/read`) (L)
+
 - **What it does for the user.** A normal save sends a small JSON Patch of the stripped database instead of re-uploading `database.bin`. The server applies it in memory and persists on a 5 s debounce. A full upload remains the fallback.
 - **Mechanism.**
   - **Server state:**
@@ -122,6 +125,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - A 409 carries per-root-key and per-character hashes. The client logs which keys diverged (`databaseHashDiagnostics`, `server/node/server.cjs:101`; 08d89655).
 
 #### Lazy chat loading with server-side strip and merge, plus message-level delta sync (L)
+
 - **What it does for the user.**
   - The boot download contains only chat stubs. A chat's messages are fetched when it is opened and saved separately.
   - Reopening or saving a long chat transfers only new messages. Measured on a 2,000-message chat: open time went from about 14 s to about 0.9 s, and saves from about 2 MB to 0.1–3 KB (f91987b1).
@@ -142,11 +146,13 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - Data-loss fixes along the way: 22df0cf6, f2fadc82, a7958139, 8e7284b0 (hybrid stub self-heal).
 
 #### Server-side duplicate-ID repair (S)
+
 - **What it does for the user.** If two characters or two chats share an id, the server renames the later ones once, on the fully decoded DB, and persists the result.
 - **Mechanism.** `dedupeCharacterAndChatIds` (`server/node/server.cjs:460`), plus a test at `server/node/duplicateIds.test.ts`.
 - **Design decisions.** The browser used to rename duplicates locally, which left the body under the old id on the server; the next save then dropped it (4f43a9e0, 001b151a).
 
 #### Lazy asset manifests (L; contributed by Laily6026)
+
 - **What it does for the user.** Characters and modules with thousands of emotion or additional assets no longer put whole name→path tables into the reactive DB. They are fetched lazily and cached, which speeds up boot and lowers memory use.
 - **Mechanism.**
   - **Storage.** Manifests are ordered `[name, path, ext?]` tuples, deflate-compressed, in tables `asset_manifests`, `asset_manifest_live` and `asset_manifest_migration`. Ids are content-addressed: `sha256(kind\0owner\0contentHash)`.
@@ -162,6 +168,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - A long fix series makes plugins see hydrated arrays, and lets only a list the plugin actually received replace a manifest (4a70de8d, f79c8989, b69fafa9, 856807a2).
 
 #### Inlays as files, server thumbnails, WebP by default, direct asset URLs (L)
+
 - **What it does for the user.**
   - Chat images, audio and video ("inlays") are stored as `save/inlays/<id>.<ext>` with a `.meta.json` sidecar instead of base64 KV rows.
   - Galleries get 320 px WebP thumbnails built by the server.
@@ -181,6 +188,7 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - The inlay N+1 info requests became a batch call (7f9ee47b).
 
 #### Character deactivation into a server-side archive, and archive-based trash (L)
+
 - **What it does for the user.**
   - "Deactivate" moves a character's card, lorebook, scripts and every chat out of `database.bin` into its own server row. A dimmed stub stays in the lists; one click reactivates it.
   - Trash means "deactivate plus a trash marker". It is never auto-purged.
@@ -206,14 +214,17 @@ Size key: S = small (under about 200 lines or one module), M = medium, L = large
   - Activation races with pending saves were fixed in 64659d41, e697e1b7 and 75955ec9.
 
 #### Plugin storage moved out of `database.bin` into per-key server KV (L)
+
 See 2.6.
 
 #### Per-chat composer drafts stored server-side (M)
+
 See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 
 ### 2.2 Data safety and backup
 
 #### Server-side DB snapshots with retention, sizing and in-place restore (M)
+
 - **What it does for the user.**
   - The DB is snapshotted automatically, at most every 5 minutes after a successful persist, and before one-way migrations.
   - The user can set count and byte limits (defaults 20 and 500 MB), see each snapshot's logical size and dedup savings, delete one, or restore one in place.
@@ -228,6 +239,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - A failed restore no longer wipes plugin storage (adf1ab95).
 
 #### Server-side `.bin` backups (save, list, restore, download, change directory) (M)
+
 - **What it does for the user.** Full backups are written to a folder on the server. Downloads go through the browser's download manager, streamed to disk rather than held in tab memory.
 - **Mechanism.**
   - `POST /api/backup/server/save` (`server/node/server.cjs:5571`) checks free space against the estimate plus 5%, streams NDJSON progress, and writes `.tmp` then renames.
@@ -238,6 +250,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Backup downloads deliberately omit `x-session-id`, so they never move the writer lock.
 
 #### Backup export variants: full, upstream-targeted, settings-only (M)
+
 - **What it does for the user.**
   - **Full:** streams every asset, with plugin storage and archived characters re-inlined.
   - **Upstream:** drops the inlay namespaces, whose slash-containing entry names break upstream's importer (5e461a0d).
@@ -248,6 +261,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - A module's cost is computed as "all minus without-modules", so assets shared with others are never billed to the module.
 
 #### Backup import hardening (M)
+
 - **What it does for the user.**
   - Before upload the server checks a size cap and requires free disk of at least twice the backup size.
   - The import streams NDJSON progress with heartbeats, so reverse proxies do not 502.
@@ -263,6 +277,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Other commits: f3426126 (NDJSON instead of a long silent request), e7e5564b (quadratic `Buffer.concat`), 0f8018cc and c942a040 (upstream `_coldplugin` and flat `coldstorage_<uuid>.json` entries, applied only as a migration).
 
 #### Boot backup reminder, disk warnings, transfer-size warning (S)
+
 - **What it does for the user.**
   - An optional boot prompt offers to back up first. Its button is disabled when the estimated backup would not fit on disk.
   - Disk use warns at 90% and 95%, tracked separately for the backup disk.
@@ -270,6 +285,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Mechanism.** `/api/backup/boot-reminder` (`server/node/server.cjs:8246`). `src/ts/transferSize.ts:36` (`nextTransferSizeState`, with hysteresis). Boot estimates never override a size measured from an actual save.
 
 #### Orphan sweeps (auto and manual) and save-folder migration (M)
+
 - **What it does for the user.**
   - At boot, remote caches of deleted characters are removed after 7 days.
   - Unreferenced `assets/*` older than 7 days are removed only if the user opted in (`nodeOnlyAutoCleanAssets`).
@@ -284,11 +300,13 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - GPT-SoVITS reference audio and plugin-stored assets are protected (3b8b6401).
 
 #### Persist failures surfaced as toasts, and retry (S)
+
 - **What it does for the user.** A failed debounced disk write (for example a BLOB that is too large) is reported on the next patch response as `persistWarning`, and the client shows one toast. The server retries after 30 s.
 - **Mechanism.** `recordPersistFailure` (`server/node/server.cjs:140`), `retryDatabasePersistLater` (`:370`), `showPersistWarningOnce` (`src/ts/globalApi.svelte.ts:434`).
 - **Design decisions.** Before fb3316af and c3fa8e84, failures were dropped until the next edit, which lost data if the server restarted.
 
 #### Storage request retries and real error messages (S)
+
 - **What it does for the user.**
   - `authFetch` retries 502/503/504 responses and network `TypeError`s up to 3 times with jitter, regenerating auth headers on each attempt.
   - Failures surface as a `StorageRequestError` with the operation and HTTP status.
@@ -296,6 +314,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Mechanism.** `src/ts/storage/nodeStorage.ts` (e57c0435).
 
 #### `beforeunload` guard, SQLite WAL management (S)
+
 - **What it does for the user.**
   - A `beforeunload` guard was restored (eac0954a).
   - The WAL file stays small: `journal_size_limit` plus a TRUNCATE checkpoint every 5 minutes and on SIGTERM.
@@ -306,6 +325,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.3 Generation and model jobs
 
 #### Durable server-side model job relay (L)
+
 - **What it does for the user.** For model-preset requests, the server, not the browser, makes the provider call. Locking the phone, closing the tab or losing Wi-Fi no longer kills a generation: the server keeps reading and stores the reply, and the client puts it into the chat when it comes back. This is on by default (`nodeOnlyServerSideRequests ??= true`, b1506ecf).
 - **Mechanism.**
   - **The server is a pure recorder.** It relays the provider's raw bytes unchanged and appends the same bytes to a journal file, `save/model-jobs/<id>`. It never parses SSE or JSON.
@@ -328,6 +348,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: 924b51ed, 00ad8601, e6d510e7, 393c8700, 29431409, 9c9e5770.
 
 #### Client job transport: `jobFetch` (M)
+
 - **What it does for the user.** A dropped stream resumes in place without an error. A send retried after a gateway timeout re-attaches to its own job instead of failing with "chat busy".
 - **Mechanism.** `makeJobFetch()` returns a drop-in replacement for `fetch`, plugged into the adapters' `fetchImpl`, so the parsers still see a normal provider `Response`.
   1. **Create the job.** If creation fails with a network error, 404 or 5xx, fall back to the direct proxied path.
@@ -343,6 +364,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - **Aborts reach the provider at once.** Client aborts cancel the upstream request immediately (3b715ae9).
 
 #### Boot and tab-return recovery, partial fill (L)
+
 - **What it does for the user.** Replies that finished while the tab was dead show up in their chats at boot or on return. Generations still running show a "background" toast and are slotted in when done. A message that was only partly saved is completed from the journal.
 - **Mechanism.** `initModelJobRecovery()` (`src/ts/process/request/jobRecovery.ts:885`) runs discovery at boot, on `visibilitychange` and on `online`. The pass is single-flight and retries with backoff.
   - **Finished jobs** (`recoverTerminalJob`, `:459`): fetch the journal and decode it with the same pure parsers a live run uses. Then insert a new message, or fill the message whose `generationInfo.generationId` or `message.chatId` matches, but only if the stored text is shorter. Failures become a `risuerror` block. Then save and claim.
@@ -355,6 +377,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - **Discovery always runs**, even with the feature switched off.
 
 #### Resumable sends: pending-send tombstones with atomic claim (M)
+
 - **What it does for the user.** If the tab dies before the main request fires (for example during input translation or memory summarization), opening that chat later re-runs the send. This happens exactly once, on one device.
 - **Mechanism.**
   - **Server table** `pending_sends(chat_id PK, generation_id, created_at)`, swept after 48 h.
@@ -371,6 +394,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: a994b904, 706f170d.
 
 #### Stop escalation and per-chat generation state (M)
+
 - **What it does for the user.**
   - Generation state is a per-chat map instead of a single global flag. A send blocked by another chat now says which chat (ab77ae21).
   - If a generation ignores its abort signal (a stalled plugin provider or stream), Stop drops its entry after 8 s and clears its tombstone.
@@ -381,6 +405,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commit: 4302bbee.
 
 #### Request log and token-usage statistics (L)
+
 - **What it does for the user.**
   - A **Request log** tab lists every provider request with the body sent, the assembled response, timings, route and tokens, with filters.
   - A **Usage** tab shows summary cards, a per-day stacked chart, and per-model and per-source tables.
@@ -398,6 +423,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Trade-offs.** If a tab dies mid-request, that log entry is lost. Job-recovered entries have no request body.
 
 #### ModelPreset system: profile registry, adapters, schema-driven editor (L, the largest client feature)
+
 - **What it does for the user.** Instead of upstream's per-provider model settings, the user builds **model presets** from a catalog of provider/model **profiles**: OpenAI, Anthropic, Google, Vertex, OpenRouter, Vercel AI Gateway, NanoGPT, Ollama Cloud, DeepSeek, and "Compatible (Custom)" endpoints. The catalog updates from GitHub at runtime. The preset editor is generated from each profile's schema, and also offers:
   - a key pool (saved API keys reused across presets);
   - per-preset streaming and "decoupled streaming";
@@ -429,6 +455,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: f80aaaf6, 2ee61b3e, fb87a537, 7b58ecd1, baa6eeca, a5e8db48, 3caee21b, ecbc8395, 8e24ca96, 48f20097.
 
 #### Model binding slots, per chat and per module (L)
+
 - **What it does for the user.**
   - Each chat has a main slot, a sub slot, and per-task aux slots (memory, emotion, translate, other).
   - A slot holds a model preset, "the global legacy model", or a pinned legacy model.
@@ -446,6 +473,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: 5216c14c, a35658e9, 47f9a412, 1da764dc, 80680a6d, b0df2a9d.
 
 #### Gemini / Vertex context caching (L)
+
 - **What it does for the user.** For presets with the `cache` capability, the stable start of the prompt is stored in Gemini's server-side `cachedContents`. A "cache hit N" badge appears in the status toast.
 - **Mechanism.**
   - Pure decision functions: `evaluateGeminiCacheBeforeRequest` (`src/ts/preset/cache/geminiContextCache.ts:284`) and `decideGeminiCacheAfterResponse`.
@@ -456,10 +484,12 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Only real prefix mismatches count toward disabling. When an applied cache is evicted, the request falls back to an uncached one (fb157cea).
 
 #### Floating request-status toast (M)
+
 - **What it does for the user.** Each request gets a sonner toast showing its phase (connecting, thinking, responding, stalled, done, failed, aborted), elapsed time, output and thinking tokens, tokens per second, and a chip saying which task it is (main, translate, memory, emotion, sub).
 - **Mechanism.** `src/ts/status/requestStatus.ts:69` (store, 3 s stall threshold) and `src/lib/UI/GUI/RequestStatusToast.svelte`. Token counts are corrected from provider usage at the end (909f920c).
 
 #### Streaming display throttle (M)
+
 - **What it does for the user.**
   - "Balanced" (the fork default) repaints streaming text at most every 125 ms, on an animation frame.
   - "Strong" also defers edit-output scripts until the stream ends.
@@ -468,6 +498,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Origin.** Ported from upstream #1422 (49dd0b7e, default `off` there); f5a68ea9 made balanced the default; ab518fca.
 
 #### Smaller generation items
+
 - **Claude Message Batches API** (`db.claudeBatching`). Polling runs inside a `ReadableStream`, cancel goes to `/cancel`, and thinking blocks are aggregated (`src/ts/process/request/anthropic.ts:608`, c555455a). Legacy path only. (S)
 - **NanoGPT provider** with balance and subscription lookups (`src/ts/model/nanogpt.ts`). Upstream #1343 port. (M)
 - **Translator prompt presets** in `.risutl` format (`src/ts/translator/presets.ts`). Upstream #1370 port. (S)
@@ -479,6 +510,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.4 Prompt presets, toggles and bindings
 
 #### Per-chat prompt preset binding and parameter override (M)
+
 - **What it does for the user.** A chat can be bound to a prompt preset. Entering the chat switches the global preset. A chat can also opt to apply the prompt preset's sampling parameters (temperature, top_p, …) on top of its model preset.
 - **Mechanism.**
   - `chat.bindedBotPreset` holds a **stable string id**. Before this, a numeric index was used (3966c178, `botPreset.id`).
@@ -487,6 +519,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Design decisions.** The numeric `botPresetsId` is still the active pointer, for `.bin` compatibility. A missing selected preset is saved as a "recovered" preset (1ae2094a).
 
 #### Toggle pins, toggle presets, default toggles, per-character toggles (L)
+
 - **What it does for the user.**
   - **Pins:** each chat remembers its prompt-toggle values.
   - **Toggle presets:** named, with JSON export and import, a dirty highlight and a diff count on save.
@@ -503,17 +536,20 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: e04830ef, add78e7d, 79246bcf, 104c424e, 1aec7599, 6493d859, db12f2cf, 617aa4f8, abe9d3b9.
 
 #### Persona binding UI, persona folders and inline editor; module binding button (M)
+
 - **What it does for the user.** The sidebar has inline controls to bind a persona, prompt preset, model preset or memory preset to the chat, plus a Modules button. Persona edits sync to the chats bound to that persona (2f1aa8ae). There is a duplicate-persona button.
 - **Mechanism.** `src/lib/SideBars/SideChatList.svelte:486-505` mounts `ModelBind`, `PromptBind`, `PersonaBind`, `MemoryBind`, `Toggles` and the module button.
 - **Commits.** c4a78414, 91913532, d1daac7d, 714d703a, 1b9ab5a1.
 
 #### Role selection for prompt blocks (S)
+
 - **What it does for the user.** Prompt blocks and lorebook entries can carry a role (`src/lib/UI/PromptDataItem.svelte:56`).
 - **Origin.** Upstream port (f8fb60fb, ee98b43d).
 
 ### 2.5 Lorebook and memory
 
 #### Long-term memory presets with per-chat or per-character binding (L)
+
 - **What it does for the user.** Long-term memory (HypaV3 settings, with a budget) is now a preset. It is bound per chat, falling back to the character, then the global setting, with "default" and "off" options. HypaV3 also gained a configurable `queryChatCount` (0bc4ec83).
 - **Mechanism.**
   - `src/ts/process/memory/memoryPresets.ts`: `getMemoryBinding` (`:130`) and `resolveMemoryPresetId`.
@@ -522,10 +558,12 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Design decisions.** Legacy chats that never had memory enabled stay off (0ab8207c).
 
 #### Stable message ids for copied or branched chats (S)
+
 - **What it does for the user.** Copying or branching a chat re-issues message ids and rewrites in-chat references. HypaV3 summaries that point past the branch cut are dropped, so memory and bookmarks never collide between the two chats.
 - **Mechanism.** `reissueMessageIds` (`src/ts/chatClone.ts:21`).
 
 #### Lorebook fixes (S)
+
 - The global lorebook page rendering and its add-entry targeting were repaired, and global lorebook import/export was fixed (b6a0cdfb, c99ed3d4).
 - CBS is evaluated before lorebook tokens are counted for cutoff (8c0a24fd, an upstream port).
 - Lorebook sortable drag classes are now scoped (b0766848).
@@ -534,6 +572,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.6 Plugins and plugin storage
 
 #### `pluginCustomStorage` moved to per-key server KV (L)
+
 - **What it does for the user.** Long-term-memory plugins can store hundreds of MB without freezing the browser or breaking saves. Before this, the data sat three times in tab memory: the live DB, the patcher baseline, and per-key JSON. User guide: `docs/en/plugin-storage.md`.
 - **Mechanism.**
   - **Storage.** Each key is a KV row, `plugin-storage/<base64url(key)>`. Snapshots are content-addressed (`plugin-storage-snapshot/<id>` maps plus `plugin-storage-blob/<sha256>`, with GC).
@@ -555,6 +594,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - **A built-in Plugin Storage viewer** (System menu) covers save, localStorage and IndexedDB, with search, JSON edit and bulk delete (15b23d00, 90e3f4a1). It replaces a community plugin that could not reach IndexedDB from its iframe.
 
 #### Plugin security and lifecycle changes (M)
+
 - **Permissions:**
   - Permission grants are **permanent**. Only permission kinds a plugin has not been granted before trigger a prompt; upstream re-asks every 3 days (acb8689b).
   - Grants are keyed by `JSON.stringify([name, desc])` (23b3784d).
@@ -571,6 +611,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.7 Chat UI
 
 #### Composer redesign and fullscreen compose (L)
+
 - **What it does for the user.**
   - A Gemini-style rounded "pill" composer with the menu on the left and a round send button.
   - It switches to a two-row layout once the text wraps, and grows up to about 60% of the viewport.
@@ -582,6 +623,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - **Floating composer reverted.** A "floating" composer over the messages (2947e778) was reverted in 949e1359 because it ignored `fixedChatTextarea`.
 
 #### Per-chat composer drafts (M)
+
 - **What it does for the user.** Unsent text, including the translate buffer, survives switching chats, opening settings, reloads and moving to another device.
 - **Mechanism.**
   - One KV row per draft: `drafts/<chaId>/<chatId>` (`src/ts/storage/chatDraft.ts:27`).
@@ -591,6 +633,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Drafts of deleted chats are removed in one boot sweep (`sweepOrphanDrafts`, `:140`; 8e2a0ad8).
 
 #### Persistent swipe history and swipe UI (M)
+
 - **What it does for the user.**
   - Rerolled alternatives are kept on the message itself (`swipes[]` and `swipeId`), so they survive reloads and sync.
   - Navigation is circular, with ← → buttons and a separate ↻ regenerate button.
@@ -600,6 +643,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Origin.** Community PR #10 (a77eea6f), redesigned in b64f6250. The reroll data-loss fix is 01e732dc.
 
 #### Smaller chat items
+
 - **Scroll navigation buttons** (4 / 2 / off). They appear while you scroll, move to the previous or next message, and in "4" mode also jump to the top or bottom (`DefaultChatScreen.svelte:943`; a1138e2a, 6c30f249). (S)
 - **Configurable initial and incremental message render counts**, defaults 30 and 15 (`src/ts/chatLoadPages.ts`; 3e4c8072, an upstream #1448 port). (S)
 - **Disable the first message per chat.** The greeting is excluded from the prompt but still shown (`Chat.firstMessageDisabled`, read at `src/ts/process/index.svelte.ts:923`; 150dcc73). (S)
@@ -615,6 +659,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.8 Character and library management
 
 #### Character manager popup (L)
+
 - **What it does for the user.** A full-screen manager for the character rail, with:
   - search and sorting (order, recent, name, created, chats);
   - filters (all, hidden, deactivated);
@@ -626,25 +671,30 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Commit.** 35cc6fd3, which replaced `GridCatalog` and `MobileCharacters`.
 
 #### Folder-organized lists everywhere (M)
+
 - **What it does for the user.** Personas, prompt presets, model presets, modules, plugins and memory presets can all be grouped into folders, through one shared list component.
 - **Mechanism.** `groupByFolder` (`src/ts/folders.ts:15`) treats items whose folder is missing as uncategorized. Folder lists are `db.personaFolders`, `promptPresetFolders`, `modelPresetFolders`, `moduleFolders`, `pluginFolders` and `memoryPresetFolders`. The shared component is `src/lib/UI/FolderedList.svelte`.
 - **Commits.** d1daac7d, 8edefb60, b8edb68e, 8e01a5fa, be1781e3, 30d8e0d8.
 
 #### Character package export and import (M)
+
 - **What it does for the user.** One zip holds a character's card (CharX), its chats, its bound personas, and the inlays referenced from those chats. It can be imported as a new character or into an existing one.
 - **Mechanism.** `src/ts/characterPackage.ts:392` (`exportCharacterPackage`), `:616` (import). Placeholder chats are hydrated before export, and the export aborts if one is missing (9a3fdb3e, 970ec0b1).
 
 #### Character ↔ module conversion; module export as CharX or RisuM (S)
+
 - **What it does for the user.** "Convert to Module" and "Convert to Character" buttons. Modules keep the character's icon. Module export lets the user choose CharX (recommended) or RisuM (legacy).
 - **Origin and mechanism.** The conversion logic is an upstream port (`src/ts/interchangeability.ts`). The buttons and the format choice are fork-specific (c2603b52, 98f7599a, e196d2a7). Converted owners keep their own asset manifest (dd718991).
 
 #### Removed: group chats (M)
+
 - **What changed.** Group chats were removed: 399f8b3e deleted `src/ts/process/group.ts` and the group code paths. Legacy group entries are purged at boot (`purgeUnsupportedGroupChats`, `src/ts/storage/database.svelte.ts:1931`).
 - **Also removed:** Loadout (95713491), Easy Panel (5385d5fa) and LoreBook+ (d490d6ba). `RisuSaveType.LOADOUTS` is still decoded and skipped, so old `.bin` files load.
 
 ### 2.9 Settings, dashboard and observability
 
 #### Settings search with deep links (M)
+
 - **What it does for the user.** A command-palette search over setting labels, keywords and help text, in the current language and English. Picking a result opens the page and sub-tab, scrolls to the row, and flashes it.
 - **Mechanism.**
   - `src/ts/setting/searchIndex.ts:223` (`searchSettings`, ranking label > keyword > help, capped at 30) and `:292` (`navigateToSearchResult`).
@@ -655,6 +705,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Commit.** 1aac7c30.
 
 #### Declarative row-layout settings and the `Sh*` component library (L)
+
 - **What it does for the user.** Settings pages use rows: label and short help on the left, control on the right. Sliders and text inputs move under the label on narrow screens. Dialogs, selects, switches, sliders and accordions are accessible bits-ui components.
 - **Mechanism.**
   - `layout: 'stacked'|'row'|'block'` on `SettingItem` (`src/ts/setting/types.ts:29`), rendered by `src/lib/Setting/SettingRenderer.svelte` and `Wrappers/SettingRowLayout.svelte`.
@@ -664,6 +715,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Notes.** A batch of "Kei" primitives was ported in 87274fe8 (`ShCombobox`, `SettingLayout`, `ShTooltip`, …). Several of them are not yet used anywhere.
 
 #### Storage dashboard (L)
+
 - **What it does for the user.** One screen shows:
   - free and used disk;
   - how `risuai.db` breaks down (KV data, chunked blob, snapshots, reclaimable freelist pages);
@@ -678,6 +730,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Commits: c6a74b96, ab6d7ec3, 0b897948.
 
 #### System logs: server and client errors persisted (L)
+
 - **What it does for the user.** Errors and warnings from both server and client are stored in `save/logs.db` and shown under System → Logs. Filters cover level, origin and tags, plus an "explicit only" option. Times are shown in localized relative form.
 - **Mechanism.**
   - **Capture.** `src/ts/log-capture.ts:89` is imported first in `main.ts`. It patches `console.error`/`warn` and listens for `error` and `unhandledrejection`.
@@ -687,6 +740,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Commits.** 691328cb, e242759f, b0bc66cc, 59091bfa, fab2675a.
 
 #### Smaller settings items
+
 - **Theme presets** with save, load, copy, export, import and reorder. Fresh installs apply preset 0, "PocketRisu Standard" (`src/ts/storage/database.svelte.ts:2923`; f1469e30, 2446dd23). (M)
 - **PocketRisu Standard theme**, with its own markup branch, the chat-width preset (standard, wide, no limit) and a light-mode fix. The upstream look is kept as "Standard Risu" (b520d880, ac58f888, 64eb0f68). (M)
 - **Catppuccin and Gruvbox palettes**, with legacy palettes hidden behind a toggle (3103d74a). (S)
@@ -703,6 +757,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 ### 2.10 Ops, install and update
 
 #### Distribution: portable builds, Docker, install script, Termux (L)
+
 - **What it does for the user.** Four ways to install:
   - **Portable archives** for win-x64, macos-arm64, linux-x64 and linux-arm64, bundling Node 24 and `cloudflared`, with native launchers (a Windows `.exe` built from `scripts/portable/launcher.c` and a generated macOS `.app`).
   - **A multi-arch Docker image** (`ghcr.io/pocketrisu/pocketrisu`).
@@ -717,6 +772,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - Release assets are published twice, under the new and legacy names, so v1.5.x self-updaters still find them.
 
 #### Self-update for portable builds (L)
+
 - **What it does for the user.** "Update now" in the web UI downloads the platform archive, swaps files with rollback, restarts the server, and the client polls until the new version answers. Users who installed via `update.sh` or `update.bat` get the same logic from the CLI.
 - **Mechanism.**
   - **Route:** `POST /api/self-update` (`server/node/server.cjs:8441`). It requires auth, allows one update in flight, and streams NDJSON progress.
@@ -733,6 +789,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
   - **No checksum or signature check** of the archive; integrity relies on HTTPS plus the structural checks.
 
 #### Update check, analytics, public stats, supporters (S, through a Cloudflare Worker)
+
 - **What it does for the user.**
   - The home screen shows an update badge with severity, and a one-time popup per version with release-note text supplied by the worker.
   - It also shows DAU and visit badges, and a Patreon supporter dialog that the worker can switch on remotely.
@@ -744,6 +801,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Notes.** These routes are unauthenticated. `/api/public-stats` ignores the opt-out.
 
 #### Remote access: Cloudflare Quick Tunnel (M)
+
 - **What it does for the user.** Settings → Remote Access starts a `*.trycloudflare.com` URL and shows it as a QR code. On Termux the UI hides it because `cloudflared` does not work there.
 - **Mechanism.**
   - The server looks for `cloudflared` in `bin/`, then on PATH, and downloads it from GitHub if neither exists.
@@ -752,6 +810,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Related.** Remote access over plain HTTP required moving JWT signing to the server (see auth below). The transfer-size warning exists because the tunnel caps request bodies at 100 MB.
 
 #### Auth: server-signed JWT, persistent session cookie, login rate limit (S)
+
 - **Mechanism.**
   - **JWT.** Upstream signs ECDSA JWTs in the browser with `crypto.subtle`, which needs a secure context. PocketRisu signs HS256 on the server: a 5-minute token from `save/__jwt_secret`, refreshable (9ad5d4c0).
   - **Session cookie.** A `risu-session` cookie (HttpOnly, SameSite=Strict, 7 days) is persisted in `save/__sessions` so it survives restarts. It lets `<img src=/api/asset/...>` and backup downloads authenticate without JavaScript (`server/node/server.cjs:3781`).
@@ -760,6 +819,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 - **Gaps.** The password is stored in plaintext in `save/__password`. `/api/token/refresh` accepts expired tokens indefinitely. There is no `trust proxy`, so behind the tunnel all clients share one rate-limit bucket.
 
 #### Local network mode, proxy changes (M)
+
 - **Local network mode** (an upstream port, f0c5cabe). LAN or self-hosted model servers are reached through `/proxy-stream-jobs` over a WebSocket, with caps. PocketRisu also accepts single-label hostnames such as Docker DNS names (`isLocalNetworkHost`, `server/node/server.cjs:2233`).
 - **Proxy fixes:**
   - The idle watchdog on the `/proxy2` relay is 10 minutes (#84).
@@ -779,23 +839,23 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 
 ### 2.12 Performance work (beyond the storage items above)
 
-| Item | Mechanism | Commit |
-|---|---|---|
-| Stop restyling every message on scroll | The scrollbar auto-hide wrote an *inherited* CSS custom property every frame. Registering it with `@property --risu-scrollbar-alpha { inherits:false }` (`src/styles.css:455`) cut style recalc from about 150 ms to about 5 ms on a 200-message chat. | 603fdf83 |
-| Chat render hot paths | Build the asset map once per message, scope `querySelector` to the chat body, memoize watermark encoding (upstream #1369 port). | 439ef0eb |
-| Composer measurement | One `$effect` per keystroke. The translate box is measured only when its value changes. | e218c42e, 18dc4dc2 |
-| Token counts and highlighting off the keystroke path | Per-field 400 ms trailing debounces with sequence guards, a 200 ms highlight debounce, and closed lorebook entries are not tokenized. | da9e58ea |
-| Save change detection | String-compare fast paths, per-root-key and per-module diffs, `deepTouch` subscription without cloning, modules edited on a detached copy. | cdb48a19, 4a0ccf3c, 9ea2a2c3, 219dc859 |
-| Encode only when needed | The full DB is encoded only for a full write; patch saves estimate the payload size. Save stages are measured (`src/ts/storage/saveMetrics.ts`). | f5b75a35 |
-| Network contention on chat open | Batched asset-name lookups, a shared manifest cache, home hub cards delayed by 1.5 s. | 5d68dba7 |
-| Lua edit dispatch | Skipped when there are no listeners; `editDisplay` is passed as a raw string. | f5bccfaf |
-| Character order lookups | Sets instead of `indexOf` scans. | c85e4a9c |
-| Dynamic asset index | The match index is built only when a tag needs it. | e85b6031 |
-| Gemma tokenizer | Loaded once. | eb55bfbd |
-| Boot remote-cache sweep | Uses the warm cache instead of a full DB decode. | 792cd6fc |
-| Snapshot sizing | One pass instead of re-reading every snapshot. | f8b7da77 |
-| Inlay cache | Sized to `navigator.deviceMemory`. | e04f5d61 |
-| Realm search | Adds a `?cache=30` hint (upstream port). | d9a78e4b |
+| Item                                                 | Mechanism                                                                                                                                                                                                                                              | Commit                                 |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| Stop restyling every message on scroll               | The scrollbar auto-hide wrote an _inherited_ CSS custom property every frame. Registering it with `@property --risu-scrollbar-alpha { inherits:false }` (`src/styles.css:455`) cut style recalc from about 150 ms to about 5 ms on a 200-message chat. | 603fdf83                               |
+| Chat render hot paths                                | Build the asset map once per message, scope `querySelector` to the chat body, memoize watermark encoding (upstream #1369 port).                                                                                                                        | 439ef0eb                               |
+| Composer measurement                                 | One `$effect` per keystroke. The translate box is measured only when its value changes.                                                                                                                                                                | e218c42e, 18dc4dc2                     |
+| Token counts and highlighting off the keystroke path | Per-field 400 ms trailing debounces with sequence guards, a 200 ms highlight debounce, and closed lorebook entries are not tokenized.                                                                                                                  | da9e58ea                               |
+| Save change detection                                | String-compare fast paths, per-root-key and per-module diffs, `deepTouch` subscription without cloning, modules edited on a detached copy.                                                                                                             | cdb48a19, 4a0ccf3c, 9ea2a2c3, 219dc859 |
+| Encode only when needed                              | The full DB is encoded only for a full write; patch saves estimate the payload size. Save stages are measured (`src/ts/storage/saveMetrics.ts`).                                                                                                       | f5b75a35                               |
+| Network contention on chat open                      | Batched asset-name lookups, a shared manifest cache, home hub cards delayed by 1.5 s.                                                                                                                                                                  | 5d68dba7                               |
+| Lua edit dispatch                                    | Skipped when there are no listeners; `editDisplay` is passed as a raw string.                                                                                                                                                                          | f5bccfaf                               |
+| Character order lookups                              | Sets instead of `indexOf` scans.                                                                                                                                                                                                                       | c85e4a9c                               |
+| Dynamic asset index                                  | The match index is built only when a tag needs it.                                                                                                                                                                                                     | e85b6031                               |
+| Gemma tokenizer                                      | Loaded once.                                                                                                                                                                                                                                           | eb55bfbd                               |
+| Boot remote-cache sweep                              | Uses the warm cache instead of a full DB decode.                                                                                                                                                                                                       | 792cd6fc                               |
+| Snapshot sizing                                      | One pass instead of re-reading every snapshot.                                                                                                                                                                                                         | f8b7da77                               |
+| Inlay cache                                          | Sized to `navigator.deviceMemory`.                                                                                                                                                                                                                     | e04f5d61                               |
+| Realm search                                         | Adds a `?cache=30` hint (upstream port).                                                                                                                                                                                                               | d9a78e4b                               |
 
 ---
 
@@ -816,7 +876,7 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 
 4. **The single-writer lock moves on freshness plus a user gesture** (`server/node/session-lock.cjs`, with a long rationale comment at `:3-38`).
    - Page loads register a boot time but never steal the lock.
-   - A non-active session takes over only if (a) it booted *after* the active session's last accepted write, so it cannot clobber anything, and (b) the client reports a user gesture within the last 15 s (`x-user-active`).
+   - A non-active session takes over only if (a) it booted _after_ the active session's last accepted write, so it cannot clobber anything, and (b) the client reports a user gesture within the last 15 s (`x-user-active`).
    - Automatic writes from a fresh session (boot housekeeping, flush-on-hide) pass without moving the lock. Stale sessions get 423.
    - An unknown session counts as "unknown", not "stale", to avoid reload loops on flaky links.
    - On losing the lock with unsaved edits, the client offers "download unsaved edits as JSON / reload / cancel" (`resolveSessionHandoff`, `src/ts/globalApi.svelte.ts:585`). This replaced "last page load wins", which kicked the PC whenever the OS restored a phone tab.
@@ -899,26 +959,26 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 
 `plugins.md` is essentially upstream's document; only `readInlay` was added there (608e3194). Fork-specific behaviour is documented in `docs/en/plugin-storage.md` and `docs/en/deactivate-characters.md`.
 
-| API / behaviour | What it does | Pointer | Origin |
-|---|---|---|---|
-| `Risuai.readInlay(id)` | Returns `{data (data URI), ext, type}` for an inlay id, or null. Requires the `inlay` permission. | `src/ts/plugins/apiV3/v3.svelte.ts:938` | Upstream PR #1454, cherry-picked (608e3194). The permission gate is also an upstream port (d0bafc2f). |
-| `Risuai.parseRisuChat(text, opts)` | Runs the CBS parser with character, chat and message context. Restricted to the active chat. | `v3.svelte.ts:1103` | Upstream #1520 port (887d85e5, 448ce9ae) |
-| `registerSetting(..., id?)` / `registerButton({..., id?})` | Upsert by id instead of duplicating on re-register. | `v3.svelte.ts:1241` | 696d8e64 (port of upstream 82088217) |
-| `pluginStorage.getItem/setItem/removeItem/clear/keys/length` | Async, per key, backed by server KV. The recommended way to read another plugin's keys (the key space is shared). | `src/ts/plugins/pluginStorageStore.ts:242` | Fork (f0d4eee3) |
-| `getDatabase().pluginCustomStorage` | **Empty by default.** Filled only when the user enables "Provide all plugin data (RisuAI compatible)" for that plugin (`nodeOnlyFullStorageAccess`). A one-time console hint explains this. | `v3.svelte.ts:970`, `src/ts/plugins/pluginDbProxy.ts:67` | Fork (cccaf9ee, 838b47e5) |
-| `setDatabase({pluginCustomStorage})` | **Merges** keys; missing keys are not deleted. Delete goes through `pluginStorage.removeItem/clear`. | `pluginDbProxy.ts:53` | Fork (ebe32742) |
-| V2/V2.1 sync storage | All keys are preloaded through one gzipped NDJSON stream before the first V2 plugin runs. V2 plugins do not run if the preload fails. | `server/node/server.cjs:4152` | Fork (ee482f74, 0c6105f4) |
-| Origin tagging | Storage writes record which plugin wrote them, shown in the Plugin Storage viewer. | `src/ts/plugins/pluginStorageMeta.ts:55` | Fork (ec789767) |
-| Permissions | Grants are permanent (no 3-day reconfirm). Only new permission kinds prompt. Grants are keyed by `[name, desc]`. Dialogs are serialized. Each plugin has a reset button. | `v3.svelte.ts:643` | Fork (acb8689b, 23b3784d, f757d6f6, 30918a2a) |
-| Install gates | V2.0 plugins need `allowV2Plugin` to install and run. V2.1 installs need `allowV21Plugin`; upstream blocks them. | `src/ts/plugins/plugins.svelte.ts:369`, `:390`, `:995` | Fork opt-ins (511b2769, 127b975d) |
-| `screen-wake-lock` | Allowed on the plugin iframe. | `src/ts/plugins/apiV3/factory.ts:794` | Fork (0b74cd89) |
-| Request logging | `risuFetch`/`nativeFetch` from V2 and V3 plugins are recorded in the request log (`logSource:'plugin'`, with its own 32 MB cap). | `src/ts/plugins/plugins.svelte.ts:20` | Fork (2deffd1f) |
-| Asset manifests | `getDatabase`/`getCharacter*` hydrate lazy manifests so plugins see legacy arrays. Write-back may replace a manifest only with a list the plugin was handed. | `src/ts/plugins/pluginCharacterSnapshot.ts:245` | Fork (4a70de8d, f79c8989, b69fafa9, 856807a2) |
-| Deactivated characters | Invisible to plugins: the stub list is not in `allowedDbKeys`, so plugins treat them as deleted. | `plugins.svelte.ts:560` | Fork (96d58161) |
-| Plugin chat index APIs | `getChatFromIndex`/`setChatToIndex` work on chats that have not been opened (lazy stubs). | — | Fork fix (114b77d0) |
-| Plain-HTTP origins | The SandboxHost nonce uses `uuid.v4()`, so V3 plugins load without a secure context. | `factory.ts` | Fork fix (3ca27e1b) |
-| Lifecycle | Updated V3 plugins reload in isolation. Argument values and enabled state survive updates. Relative icon URLs are allowed. App alerts render above fullscreen plugin frames. | — | Fork fixes (a55c4eef, c81938a4, 52a64e8b, b88fc33d) |
-| Sandbox (upstream ports) | MessagePort pump for stream callbacks, listener and resource leak fixes on terminate and unload, `allowedIPC` sender check. | `factory.ts` | Upstream #1308, #1301, #1307, #1405 ports |
+| API / behaviour                                              | What it does                                                                                                                                                                                | Pointer                                                  | Origin                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `Risuai.readInlay(id)`                                       | Returns `{data (data URI), ext, type}` for an inlay id, or null. Requires the `inlay` permission.                                                                                           | `src/ts/plugins/apiV3/v3.svelte.ts:938`                  | Upstream PR #1454, cherry-picked (608e3194). The permission gate is also an upstream port (d0bafc2f). |
+| `Risuai.parseRisuChat(text, opts)`                           | Runs the CBS parser with character, chat and message context. Restricted to the active chat.                                                                                                | `v3.svelte.ts:1103`                                      | Upstream #1520 port (887d85e5, 448ce9ae)                                                              |
+| `registerSetting(..., id?)` / `registerButton({..., id?})`   | Upsert by id instead of duplicating on re-register.                                                                                                                                         | `v3.svelte.ts:1241`                                      | 696d8e64 (port of upstream 82088217)                                                                  |
+| `pluginStorage.getItem/setItem/removeItem/clear/keys/length` | Async, per key, backed by server KV. The recommended way to read another plugin's keys (the key space is shared).                                                                           | `src/ts/plugins/pluginStorageStore.ts:242`               | Fork (f0d4eee3)                                                                                       |
+| `getDatabase().pluginCustomStorage`                          | **Empty by default.** Filled only when the user enables "Provide all plugin data (RisuAI compatible)" for that plugin (`nodeOnlyFullStorageAccess`). A one-time console hint explains this. | `v3.svelte.ts:970`, `src/ts/plugins/pluginDbProxy.ts:67` | Fork (cccaf9ee, 838b47e5)                                                                             |
+| `setDatabase({pluginCustomStorage})`                         | **Merges** keys; missing keys are not deleted. Delete goes through `pluginStorage.removeItem/clear`.                                                                                        | `pluginDbProxy.ts:53`                                    | Fork (ebe32742)                                                                                       |
+| V2/V2.1 sync storage                                         | All keys are preloaded through one gzipped NDJSON stream before the first V2 plugin runs. V2 plugins do not run if the preload fails.                                                       | `server/node/server.cjs:4152`                            | Fork (ee482f74, 0c6105f4)                                                                             |
+| Origin tagging                                               | Storage writes record which plugin wrote them, shown in the Plugin Storage viewer.                                                                                                          | `src/ts/plugins/pluginStorageMeta.ts:55`                 | Fork (ec789767)                                                                                       |
+| Permissions                                                  | Grants are permanent (no 3-day reconfirm). Only new permission kinds prompt. Grants are keyed by `[name, desc]`. Dialogs are serialized. Each plugin has a reset button.                    | `v3.svelte.ts:643`                                       | Fork (acb8689b, 23b3784d, f757d6f6, 30918a2a)                                                         |
+| Install gates                                                | V2.0 plugins need `allowV2Plugin` to install and run. V2.1 installs need `allowV21Plugin`; upstream blocks them.                                                                            | `src/ts/plugins/plugins.svelte.ts:369`, `:390`, `:995`   | Fork opt-ins (511b2769, 127b975d)                                                                     |
+| `screen-wake-lock`                                           | Allowed on the plugin iframe.                                                                                                                                                               | `src/ts/plugins/apiV3/factory.ts:794`                    | Fork (0b74cd89)                                                                                       |
+| Request logging                                              | `risuFetch`/`nativeFetch` from V2 and V3 plugins are recorded in the request log (`logSource:'plugin'`, with its own 32 MB cap).                                                            | `src/ts/plugins/plugins.svelte.ts:20`                    | Fork (2deffd1f)                                                                                       |
+| Asset manifests                                              | `getDatabase`/`getCharacter*` hydrate lazy manifests so plugins see legacy arrays. Write-back may replace a manifest only with a list the plugin was handed.                                | `src/ts/plugins/pluginCharacterSnapshot.ts:245`          | Fork (4a70de8d, f79c8989, b69fafa9, 856807a2)                                                         |
+| Deactivated characters                                       | Invisible to plugins: the stub list is not in `allowedDbKeys`, so plugins treat them as deleted.                                                                                            | `plugins.svelte.ts:560`                                  | Fork (96d58161)                                                                                       |
+| Plugin chat index APIs                                       | `getChatFromIndex`/`setChatToIndex` work on chats that have not been opened (lazy stubs).                                                                                                   | —                                                        | Fork fix (114b77d0)                                                                                   |
+| Plain-HTTP origins                                           | The SandboxHost nonce uses `uuid.v4()`, so V3 plugins load without a secure context.                                                                                                        | `factory.ts`                                             | Fork fix (3ca27e1b)                                                                                   |
+| Lifecycle                                                    | Updated V3 plugins reload in isolation. Argument values and enabled state survive updates. Relative icon URLs are allowed. App alerts render above fullscreen plugin frames.                | —                                                        | Fork fixes (a55c4eef, c81938a4, 52a64e8b, b88fc33d)                                                   |
+| Sandbox (upstream ports)                                     | MessagePort pump for stream callbacks, listener and resource leak fixes on terminate and unload, `allowedIPC` sender check.                                                                 | `factory.ts`                                             | Upstream #1308, #1301, #1307, #1405 ports                                                             |
 
 ---
 
@@ -926,57 +986,57 @@ See 2.3. Each draft is its own KV row, `drafts/<chaId>/<chatId>`.
 
 Selection rule: `fix:` commits authored in the fork that touch code PocketRisu still shares with upstream RisuAI (request builders, chat screen, translator, plugin sandbox, save patcher, HypaV3), not PocketRisu-only subsystems. Commits marked "(upstream cherry-pick)" carry a `Cherry-picked-from:` trailer, so upstream has them too; a fork that has merged recent upstream may already have those. The rest were found and fixed in PocketRisu.
 
-| Commit | Area | Fix |
-|---|---|---|
-| `01e732dc` | chat / reroll | A failed or cancelled reroll lost every earlier swipe, because the cloned slice was never restored. The full message array is now restored on failure. Editing a swipe also wrote only `message.data`, so moving away and back reverted the edit; edits now also go to `swipes[swipeId]` (`src/lib/ChatScreens/Chat.svelte`, `DefaultChatScreen.svelte`). |
-| `4302bbee` | generation lock | A send stuck in an await that ignores its abort signal (a stalled plugin provider or stream) held the global send lock until reload. Stop now escalates: if the generation is still registered 8 s after abort, its entry is dropped. `endGeneration` is owner-scoped (by generationId), so a late wake-up cannot end a newer send (`src/ts/process/generationState.ts`). |
-| `3b715ae9` | abort | Cancel the upstream provider request as soon as the client aborts, instead of letting it run to completion (`src/ts/process/request/jobFetch.ts`, `google.ts`). |
-| `794bb80a` | Anthropic/Bedrock | Non-streaming Anthropic/Bedrock requests were not passed the abort signal, so Stop did nothing (`src/ts/process/request/anthropic.ts`). |
-| `865bc087` | Gemini | The retry loops in google.ts re-fired immediately on 429/524 and kept the UI "generating" for the whole retry budget. Retries now back off exponentially (1, 2, 4, 8 s) with an abort-aware sleep. |
-| `926ae621` | Anthropic/Google | An empty system prompt produced an API 400. |
-| `e245c7ff` | OpenAI-compatible streaming | Accumulated streamed reasoning was not reset, and OpenRouter-style incremental reasoning deltas were mishandled. `appendStreamingFragment` now handles both cumulative and incremental providers (`src/ts/process/request/openAI/requests.ts`). |
-| `eee781c4` | MCP | `decodeToolCall` used wrong `slice` arguments and always returned an empty string (`src/ts/process/mcp/mcp.ts`). |
-| `ab5bd4ce` | prompt build | The personaPrompt block was gated on the global `db.personaPrompt`, so a chat-bound persona's prompt was silently dropped when the global one was empty. |
-| `70de21ed` | vision | Chat formatting looked only at legacy model flags, so inlay images were dropped (and captioned locally) for vision-capable models configured another way. The fix shares one `presetSupportsVision()` gate between the formatter and the request builder. |
-| `a876e542` | auto-translate | During streamed auto-translate, every chunk re-ran the whole translation pipeline and the text flickered between blank and content. Translation now runs as one flight per message: the latest snapshot is queued and empty results cannot replace rendered content (`src/lib/ChatScreens/ChatBody.svelte`). |
-| `be05bd5d` | translator / hotkeys / NAI | Four silent breakages. (1) The LLM translation cache was stored under the mutated text (after `<risu-style>` extraction), so every styled message missed the cache and re-billed the model. (2) A throw in the prompt-preview hotkey left a non-closable wait dialog open and the generation locked. (3) Older saves lacked the NAI vibe fields, which crashed the vibe panel. (4) Tokenizer fixes. |
-| `9ff600a2` | HypaMemory v2 | The in-memory embedding cache returned shared objects, and metadata was written onto them, so one query could clear a summary and crash similarity search ("reading 'text'"). Cache hits are now copied. |
-| `23b3784d` | plugin V3 security | Plugin permission grants were keyed by plugin name only, so granting one permission authorized all of them, and reset prefix-matched other plugins. Grants are now keyed by `JSON.stringify([name, desc])` (`src/ts/plugins/apiV3/v3.svelte.ts`). |
-| `7349a459` | plugin IPC security (upstream cherry-pick) | `postPluginChannelMessage` checked the receiver's own name, not the sender's, against `allowedIPC`. |
-| `3ca27e1b` | plain-HTTP origins | `crypto.randomUUID` (secure-context only) threw in SandboxHost, Pyodide and google.ts when the app was served over plain HTTP (LAN or self-host), so V3 plugins failed to load. Replaced with `uuid.v4()`, which uses `getRandomValues`. |
-| `efe1001b`, `34a786d7`, `11c3c717` | plugin sandbox (upstream cherry-picks) | A MessagePort pump replaces ReadableStream transfer for plugin stream callbacks (this also fixes WebKit). Also: a leaked message listener in `SandboxHost.terminate()` and resources leaked on V3 plugin unload. |
-| `4fa479fc` | save patcher | `normalizeJSON` nulled the second occurrence of any shared (non-circular) object, because it tracked every visited node rather than only the ancestor path. This silently corrupted persisted data. |
-| `5c93fb9a`, `330e5b10` | save patcher | `push(...arr)` spread overflowed the call stack on large character, module or preset array diffs (`src/ts/storage/risuSave.ts`). |
-| `15b729aa` | save / state | Stack overflow on circular references in module data. |
-| `758727d0` | Monaco popup editor | Chrome's Monaco EditContext kept a stale Ctrl state after opening the editor with Ctrl+X, so typed a/s/d fired global hotkeys. Fixed with `editContext:false`. |
-| `0b6bb772` | chat HTML | Bot HTML/CSS z-index escaped the chat layer and covered app popups. The chat container now gets `isolation: isolate`. |
-| `fd699924`, `429f6ead` | mobile | App height is kept synced to the dynamic viewport on mobile Chrome (`src/ts/viewportHeight.ts`), and pull-to-refresh is blocked outside the chat scroller. |
-| `221f29c2` | PWA | A broken `share_target` in `public/manifest.json` blocked PWA install on Samsung Internet. |
-| `97cb9ccf` | node proxy | The reverse proxy forwarded the upstream `Content-Length` after Node fetch had already decompressed the body, which truncated responses. |
-| `7e5f3d4a` | regex scripts | CBS macros in `@@move_top`/`@@move_bottom` output were not parsed (`src/ts/process/scripts.ts`). |
-| `8d14b6c0` | per-chat toggles | Loading a chat's toggle pin cleared every toggle the pin did not name, wiping toggles added later. Pins now record their unset keys explicitly. Turning a switch on and off also left a false dirty mark. |
-| `d0391cc4`, `416ddf75` | chat render | The previous message unmounted when the reroll target moved. Concurrent message edit modes were possible (upstream cherry-pick). |
-| `5f6b44b7` | local transformers | Local transformer models now download from Hugging Face directly instead of RisuAI's mirror (`allowLocalModels=false`; the old cache keys still resolve). |
-| `4594674b`, `0f8018cc`, `c942a040` | upstream backup compatibility | Encrypted upstream account backups are rejected with an explanation, and the database is verified before it is replaced. Newer upstream cold-storage plugin storage (`_coldplugin`) and flat `coldstorage_<uuid>.json` backup entries are folded back in on import. |
+| Commit                             | Area                                       | Fix                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `01e732dc`                         | chat / reroll                              | A failed or cancelled reroll lost every earlier swipe, because the cloned slice was never restored. The full message array is now restored on failure. Editing a swipe also wrote only `message.data`, so moving away and back reverted the edit; edits now also go to `swipes[swipeId]` (`src/lib/ChatScreens/Chat.svelte`, `DefaultChatScreen.svelte`).                                           |
+| `4302bbee`                         | generation lock                            | A send stuck in an await that ignores its abort signal (a stalled plugin provider or stream) held the global send lock until reload. Stop now escalates: if the generation is still registered 8 s after abort, its entry is dropped. `endGeneration` is owner-scoped (by generationId), so a late wake-up cannot end a newer send (`src/ts/process/generationState.ts`).                           |
+| `3b715ae9`                         | abort                                      | Cancel the upstream provider request as soon as the client aborts, instead of letting it run to completion (`src/ts/process/request/jobFetch.ts`, `google.ts`).                                                                                                                                                                                                                                     |
+| `794bb80a`                         | Anthropic/Bedrock                          | Non-streaming Anthropic/Bedrock requests were not passed the abort signal, so Stop did nothing (`src/ts/process/request/anthropic.ts`).                                                                                                                                                                                                                                                             |
+| `865bc087`                         | Gemini                                     | The retry loops in google.ts re-fired immediately on 429/524 and kept the UI "generating" for the whole retry budget. Retries now back off exponentially (1, 2, 4, 8 s) with an abort-aware sleep.                                                                                                                                                                                                  |
+| `926ae621`                         | Anthropic/Google                           | An empty system prompt produced an API 400.                                                                                                                                                                                                                                                                                                                                                         |
+| `e245c7ff`                         | OpenAI-compatible streaming                | Accumulated streamed reasoning was not reset, and OpenRouter-style incremental reasoning deltas were mishandled. `appendStreamingFragment` now handles both cumulative and incremental providers (`src/ts/process/request/openAI/requests.ts`).                                                                                                                                                     |
+| `eee781c4`                         | MCP                                        | `decodeToolCall` used wrong `slice` arguments and always returned an empty string (`src/ts/process/mcp/mcp.ts`).                                                                                                                                                                                                                                                                                    |
+| `ab5bd4ce`                         | prompt build                               | The personaPrompt block was gated on the global `db.personaPrompt`, so a chat-bound persona's prompt was silently dropped when the global one was empty.                                                                                                                                                                                                                                            |
+| `70de21ed`                         | vision                                     | Chat formatting looked only at legacy model flags, so inlay images were dropped (and captioned locally) for vision-capable models configured another way. The fix shares one `presetSupportsVision()` gate between the formatter and the request builder.                                                                                                                                           |
+| `a876e542`                         | auto-translate                             | During streamed auto-translate, every chunk re-ran the whole translation pipeline and the text flickered between blank and content. Translation now runs as one flight per message: the latest snapshot is queued and empty results cannot replace rendered content (`src/lib/ChatScreens/ChatBody.svelte`).                                                                                        |
+| `be05bd5d`                         | translator / hotkeys / NAI                 | Four silent breakages. (1) The LLM translation cache was stored under the mutated text (after `<risu-style>` extraction), so every styled message missed the cache and re-billed the model. (2) A throw in the prompt-preview hotkey left a non-closable wait dialog open and the generation locked. (3) Older saves lacked the NAI vibe fields, which crashed the vibe panel. (4) Tokenizer fixes. |
+| `9ff600a2`                         | HypaMemory v2                              | The in-memory embedding cache returned shared objects, and metadata was written onto them, so one query could clear a summary and crash similarity search ("reading 'text'"). Cache hits are now copied.                                                                                                                                                                                            |
+| `23b3784d`                         | plugin V3 security                         | Plugin permission grants were keyed by plugin name only, so granting one permission authorized all of them, and reset prefix-matched other plugins. Grants are now keyed by `JSON.stringify([name, desc])` (`src/ts/plugins/apiV3/v3.svelte.ts`).                                                                                                                                                   |
+| `7349a459`                         | plugin IPC security (upstream cherry-pick) | `postPluginChannelMessage` checked the receiver's own name, not the sender's, against `allowedIPC`.                                                                                                                                                                                                                                                                                                 |
+| `3ca27e1b`                         | plain-HTTP origins                         | `crypto.randomUUID` (secure-context only) threw in SandboxHost, Pyodide and google.ts when the app was served over plain HTTP (LAN or self-host), so V3 plugins failed to load. Replaced with `uuid.v4()`, which uses `getRandomValues`.                                                                                                                                                            |
+| `efe1001b`, `34a786d7`, `11c3c717` | plugin sandbox (upstream cherry-picks)     | A MessagePort pump replaces ReadableStream transfer for plugin stream callbacks (this also fixes WebKit). Also: a leaked message listener in `SandboxHost.terminate()` and resources leaked on V3 plugin unload.                                                                                                                                                                                    |
+| `4fa479fc`                         | save patcher                               | `normalizeJSON` nulled the second occurrence of any shared (non-circular) object, because it tracked every visited node rather than only the ancestor path. This silently corrupted persisted data.                                                                                                                                                                                                 |
+| `5c93fb9a`, `330e5b10`             | save patcher                               | `push(...arr)` spread overflowed the call stack on large character, module or preset array diffs (`src/ts/storage/risuSave.ts`).                                                                                                                                                                                                                                                                    |
+| `15b729aa`                         | save / state                               | Stack overflow on circular references in module data.                                                                                                                                                                                                                                                                                                                                               |
+| `758727d0`                         | Monaco popup editor                        | Chrome's Monaco EditContext kept a stale Ctrl state after opening the editor with Ctrl+X, so typed a/s/d fired global hotkeys. Fixed with `editContext:false`.                                                                                                                                                                                                                                      |
+| `0b6bb772`                         | chat HTML                                  | Bot HTML/CSS z-index escaped the chat layer and covered app popups. The chat container now gets `isolation: isolate`.                                                                                                                                                                                                                                                                               |
+| `fd699924`, `429f6ead`             | mobile                                     | App height is kept synced to the dynamic viewport on mobile Chrome (`src/ts/viewportHeight.ts`), and pull-to-refresh is blocked outside the chat scroller.                                                                                                                                                                                                                                          |
+| `221f29c2`                         | PWA                                        | A broken `share_target` in `public/manifest.json` blocked PWA install on Samsung Internet.                                                                                                                                                                                                                                                                                                          |
+| `97cb9ccf`                         | node proxy                                 | The reverse proxy forwarded the upstream `Content-Length` after Node fetch had already decompressed the body, which truncated responses.                                                                                                                                                                                                                                                            |
+| `7e5f3d4a`                         | regex scripts                              | CBS macros in `@@move_top`/`@@move_bottom` output were not parsed (`src/ts/process/scripts.ts`).                                                                                                                                                                                                                                                                                                    |
+| `8d14b6c0`                         | per-chat toggles                           | Loading a chat's toggle pin cleared every toggle the pin did not name, wiping toggles added later. Pins now record their unset keys explicitly. Turning a switch on and off also left a false dirty mark.                                                                                                                                                                                           |
+| `d0391cc4`, `416ddf75`             | chat render                                | The previous message unmounted when the reroll target moved. Concurrent message edit modes were possible (upstream cherry-pick).                                                                                                                                                                                                                                                                    |
+| `5f6b44b7`                         | local transformers                         | Local transformer models now download from Hugging Face directly instead of RisuAI's mirror (`allowLocalModels=false`; the old cache keys still resolve).                                                                                                                                                                                                                                           |
+| `4594674b`, `0f8018cc`, `c942a040` | upstream backup compatibility              | Encrypted upstream account backups are rejected with an explanation, and the database is verified before it is replaced. Newer upstream cold-storage plugin storage (`_coldplugin`) and flat `coldstorage_<uuid>.json` backup entries are folded back in on import.                                                                                                                                 |
 
 ---
 
 ## Appendix A. `server/node/server.cjs` route map (fork additions and changes)
 
-| Area | Routes (line) |
-|---|---|
+| Area           | Routes (line)                                                                                                                                                                                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Auth / session | `GET /api/test_auth` (3731) · `POST /api/login` (3750, rate-limited) · `POST /api/token/refresh` (3764) · `GET /api/session/lock-status` (3772) · `POST /api/session` (3781, cookie) · `POST /api/set_password` (4057) · `POST /api/model-preset/google-service-account/token` (3976) |
-| KV / sync | `GET /api/read` (4068) · `GET /api/remove` (4182) · `GET /api/list` (4224) · `POST /api/write` (4322) · `POST /api/db/flush` (4552) · `POST /api/patch` (4567) |
-| Chats | `GET`/`POST /api/chat-content/:chaId/:chatIndex` (6057 / 6102) |
-| Assets | `GET /api/asset/:hexKey` (3890) · `/api/asset-manifests/*` (4923–4982) · `POST /api/assets/bulk-read` and `bulk-write` (5049 / 5117) · `GET /api/inlays/references` (6889) · `POST /api/inlays/compress` (8318) |
-| Plugin storage | `GET /api/plugin-storage/index` (4136) · `GET /api/plugin-storage/all` (4152) |
-| Logs | `/api/logs` POST/GET/DELETE (4248 / 4280 / 4304) · `/api/request-logs*` (`request-logs.cjs:552-628`, registered at 4320) |
-| Model jobs | `/api/model-jobs*`, `/api/pending-sends*` (`model-jobs.cjs`, registered at 3717) · `/proxy-stream-jobs` (3646 / 3695) |
-| Backup | `/api/backup/export` (5282) + `settings-estimate` (5267) · `/api/backup/import/prepare` (5441) + `/import` (5474) · `/api/backup/server/{save,list,restore,download,path}` (5571–5825, 8265) · `/api/backup/boot-reminder` (8246) |
-| Migration | `/api/migrate/save-folder/{scan,execute,upload}` (6322–6375) · `/cleanup/{scan,execute}` (6439 / 6454) |
-| Archive | `POST /api/characters/:chaId/archive` (6993) · `archive-batch` (7024) · `activate` (7062) · `GET archived/inline` (7138) · `POST /api/db/archive/purge-orphans` (7161) · `DELETE .../archive` (7182) |
-| Dashboard | `GET /api/db/stats{,/characters,/modules}` (7572 / 7752 / 7895) · `POST /api/db/assets/{purge-orphans,auto-sweep}` (7951 / 7966) · `POST /api/db/optimize` (7985) · `POST /api/db/wal-checkpoint` (8042) · `/api/db/snapshots{,/limits,/restore}` (8070–8161) |
-| Ops | `GET /api/public-stats` (8391) · `GET /api/supporters` (8406) · `GET /api/update-check` (8422) · `POST /api/self-update` (8441) · `/api/tunnel/{status,start,stop}` (8870 / 8881 / 8972) · `POST /api/termux-notify` (1219) |
+| KV / sync      | `GET /api/read` (4068) · `GET /api/remove` (4182) · `GET /api/list` (4224) · `POST /api/write` (4322) · `POST /api/db/flush` (4552) · `POST /api/patch` (4567)                                                                                                                        |
+| Chats          | `GET`/`POST /api/chat-content/:chaId/:chatIndex` (6057 / 6102)                                                                                                                                                                                                                        |
+| Assets         | `GET /api/asset/:hexKey` (3890) · `/api/asset-manifests/*` (4923–4982) · `POST /api/assets/bulk-read` and `bulk-write` (5049 / 5117) · `GET /api/inlays/references` (6889) · `POST /api/inlays/compress` (8318)                                                                       |
+| Plugin storage | `GET /api/plugin-storage/index` (4136) · `GET /api/plugin-storage/all` (4152)                                                                                                                                                                                                         |
+| Logs           | `/api/logs` POST/GET/DELETE (4248 / 4280 / 4304) · `/api/request-logs*` (`request-logs.cjs:552-628`, registered at 4320)                                                                                                                                                              |
+| Model jobs     | `/api/model-jobs*`, `/api/pending-sends*` (`model-jobs.cjs`, registered at 3717) · `/proxy-stream-jobs` (3646 / 3695)                                                                                                                                                                 |
+| Backup         | `/api/backup/export` (5282) + `settings-estimate` (5267) · `/api/backup/import/prepare` (5441) + `/import` (5474) · `/api/backup/server/{save,list,restore,download,path}` (5571–5825, 8265) · `/api/backup/boot-reminder` (8246)                                                     |
+| Migration      | `/api/migrate/save-folder/{scan,execute,upload}` (6322–6375) · `/cleanup/{scan,execute}` (6439 / 6454)                                                                                                                                                                                |
+| Archive        | `POST /api/characters/:chaId/archive` (6993) · `archive-batch` (7024) · `activate` (7062) · `GET archived/inline` (7138) · `POST /api/db/archive/purge-orphans` (7161) · `DELETE .../archive` (7182)                                                                                  |
+| Dashboard      | `GET /api/db/stats{,/characters,/modules}` (7572 / 7752 / 7895) · `POST /api/db/assets/{purge-orphans,auto-sweep}` (7951 / 7966) · `POST /api/db/optimize` (7985) · `POST /api/db/wal-checkpoint` (8042) · `/api/db/snapshots{,/limits,/restore}` (8070–8161)                         |
+| Ops            | `GET /api/public-stats` (8391) · `GET /api/supporters` (8406) · `GET /api/update-check` (8422) · `POST /api/self-update` (8441) · `/api/tunnel/{status,start,stop}` (8870 / 8881 / 8972) · `POST /api/termux-notify` (1219)                                                           |
 
 ## Appendix B. Gaps and risks seen while surveying (for calibrating what to copy)
 

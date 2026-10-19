@@ -1,6 +1,7 @@
 # What RisuBard adds on top of PocketRisu
 
 This report covers the repository at `/home/codex/RisuBard`:
+
 - Origin: `rpaddict/RisuBard`
 - `package.json` version: 0.9.72
 - HEAD: `6cf7d89`, dated 2026-10-18
@@ -12,11 +13,13 @@ All `path:line` pointers are relative to that root. I checked each one with `rg 
 PocketRisu's commits are not in RisuBard's history. The root commit is `4c25786` ("feat: publish initial RisuBard source", 2026-08-17, 1,248 files). It is a squashed snapshot that already contains 105 `risubard*` files, so git cannot show where PocketRisu ends and RisuBard begins.
 
 I used three other sources instead:
+
 - the 0.8.4 → 0.9.72 patchnotes in `patchnote/`;
 - the roughly 110 design plans in `docs/superpowers/plans/`;
 - a file-list comparison against a current PocketRisu checkout at `/home/codex/PocketRisu` (v1.15.0, `f71e1ccc`). This found 939 tracked files under `src/` and `server/` that exist only in RisuBard.
 
 PocketRisu has kept developing since the fork, so some features exist on both sides. Where that applies, the text says so. Some pieces are known to come from PocketRisu or upstream RisuAI, not RisuBard:
+
 - `server/node/model-jobs.cjs`, `request-logs.cjs` and `session-lock.cjs`. RisuBard extended them; for example, it added request purposes and an injection manifest to the request log.
 - the help-key checker;
 - chat-bound personas (`Chat.bindedPersona`);
@@ -31,9 +34,9 @@ RisuBard is a self-hosted RisuAI derivative that calls itself a "Next-Gen LLM St
 
 1. **The original chat is evidence.** Messages are never deleted to save tokens. Every message keeps a stable `chatId`, and memory pages point back to the message IDs they came from.
 2. **BardWiki holds long-lived story state.** Each chat gets a folder of Obsidian-compatible Markdown files.
-   - *Event* pages record each confirmed turn.
-   - *Canonical* pages (also called canon pages in this report) cover characters, locations, factions, creatures, items, concepts and the current scene.
-   - An auxiliary LLM writes these after a turn is *confirmed*. Its output is schema-bound JSON. The application serializes that JSON to Markdown and applies changes as section patches that are checked against a content hash.
+   - _Event_ pages record each confirmed turn.
+   - _Canonical_ pages (also called canon pages in this report) cover characters, locations, factions, creatures, items, concepts and the current scene.
+   - An auxiliary LLM writes these after a turn is _confirmed_. Its output is schema-bound JSON. The application serializes that JSON to Markdown and applies changes as section patches that are checked against a content hash.
 3. **Each request is compiled under explicit token limits.**
    - Recent history is a window of the last N assistant turns.
    - Wiki pages marked "always" are required input; if they cannot be loaded, generation fails rather than proceeding without them.
@@ -43,7 +46,8 @@ RisuBard is a self-hosted RisuAI derivative that calls itself a "Next-Gen LLM St
 ### How it differs architecturally from PocketRisu
 
 **Storage**
-- PocketRisu stores data in a SQLite/chunk-store `database.bin` with WAL maintenance. RisuBard replaced this with a *file-native* data root:
+
+- PocketRisu stores data in a SQLite/chunk-store `database.bin` with WAL maintenance. RisuBard replaced this with a _file-native_ data root:
   - per-entity JSON and JSONL files plus content-addressed blobs;
   - a `.sha256` sidecar on every file;
   - writes that go to a temp file, fsync, then rename;
@@ -52,14 +56,16 @@ RisuBard is a self-hosted RisuAI derivative that calls itself a "Next-Gen LLM St
   - a lock on the whole data directory;
   - polling for external edits, with a review dialog.
 - The browser client still saves the monolithic `Database` object through `/api/patch` and `/api/write`. The server applies those writes back onto the canonical files.
-- `database.bin` survives only as a lazily rebuilt compatibility *projection*.
+- `database.bin` survives only as a lazily rebuilt compatibility _projection_.
 - Commits made right after the snapshot remove PocketRisu's chunk store and WAL code: `a8a37b5`, `e42d829` and `b152f43`, all on 2026-08-20.
 
 **Memory**
+
 - HypaMemory and SupaMemory are bypassed for chat responses (`src/ts/process/index.svelte.ts:2515`). BardWiki takes their place.
 - Plugins that read `hypaV3Data`, `hypaV2Data` or `supaMemoryData` receive a virtual projection of the BardWiki context instead.
 
 **Request assembly**
+
 - The inherited `sendChat` pipeline keeps its structure. RisuBard splices in a retrieved-memory block (attached to the description slot) and a required-wiki system message (placed at the top).
 - The chat-history trimming is replaced by an assistant-turn window.
 - Upstream lorebook activation stays, with three additions:
@@ -69,20 +75,21 @@ RisuBard is a self-hosted RisuAI derivative that calls itself a "Next-Gen LLM St
 - A small, UI-independent package, `packages/risubard-core`, holds the deterministic context compiler and the memory-delta contracts that the server uses.
 
 **UI**
+
 - New docked workspaces: the BardWiki dock, a save/load dialog, the Character Vault, a lorebook and Grimoire workspace, BardPainter, and the Prompt and Character Assistants.
 - A theme-token contract that is enforced by a test.
 - A restructured settings navigation.
 
 ### Rough size of RisuBard-only code (non-test)
 
-| Area | Lines |
-| --- | --- |
-| `src/ts/risubard/` | about 16k |
-| `server/node/risubard-*` | about 13.6k |
-| New storage `.cjs` modules | about 6.9k, plus a 7,681-line `server.cjs` |
-| BardPainter | about 8.7k |
-| Lorebook and Grimoire | about 8.3k |
-| `src/lib/Others/RisuBard*.svelte` | about 12.2k |
+| Area                              | Lines                                      |
+| --------------------------------- | ------------------------------------------ |
+| `src/ts/risubard/`                | about 16k                                  |
+| `server/node/risubard-*`          | about 13.6k                                |
+| New storage `.cjs` modules        | about 6.9k, plus a 7,681-line `server.cjs` |
+| BardPainter                       | about 8.7k                                 |
+| Lorebook and Grimoire             | about 8.3k                                 |
+| `src/lib/Others/RisuBard*.svelte` | about 12.2k                                |
 
 The repository has 594 test files in total.
 
@@ -93,6 +100,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 ## 2. Feature inventory
 
 **How to read this section**
+
 - **Size:** S means under 500 lines of code, M means 500 to 3,000, L means over 3,000. Tests are not counted.
 - **Coupling:** how tightly the feature depends on RisuBard's file-native storage, its server, or BardWiki.
 
@@ -126,21 +134,23 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 - **Writes and locking.** Writes are atomic (temp file, then rename) but are **not fsynced** (`writeAtomically`, `risubard-markdown-wiki.ts:617`). A reader/writer queue per (character, chat) orders operations. Operations that touch several chats take all the relevant locks in sorted order (`server/node/risubard-memory-runtime.cjs:58`).
 - **Routes.** All routes are POST requests under `/api/risubard/memory/*`:
 
-  | Group | Paths |
-  | --- | --- |
-  | Reading | `view`, `catalog`, `wiki/documents`, `wiki/search`, `wiki/story`, `inquiry`, `embedding-catalog` |
-  | Saving | `wiki/save`, `wiki/document/save`, `wiki/document/manual-save` |
-  | Context policy | `context-mode` |
-  | Removal | `trash`, `event/retract`, `event/retract-sources` |
-  | Bulk edit | `wiki/replace` |
-  | Reboot | `reboot/*` |
-  | Fork and transfer | `fork`, `fork/complete`, `inherit`, `import` |
-  | Save slots | `save-slot/*` |
+  | Group             | Paths                                                                                            |
+  | ----------------- | ------------------------------------------------------------------------------------------------ |
+  | Reading           | `view`, `catalog`, `wiki/documents`, `wiki/search`, `wiki/story`, `inquiry`, `embedding-catalog` |
+  | Saving            | `wiki/save`, `wiki/document/save`, `wiki/document/manual-save`                                   |
+  | Context policy    | `context-mode`                                                                                   |
+  | Removal           | `trash`, `event/retract`, `event/retract-sources`                                                |
+  | Bulk edit         | `wiki/replace`                                                                                   |
+  | Reboot            | `reboot/*`                                                                                       |
+  | Fork and transfer | `fork`, `fork/complete`, `inherit`, `import`                                                     |
+  | Save slots        | `save-slot/*`                                                                                    |
 
   Request bodies are checked for exact keys and capped at 512 KB (`server/node/risubard-memory-routes.cjs`).
+
 - **Workspace performance (0.9.64).** The server keeps a per-chat catalog and rereads only the documents that changed. When the tab opens it receives only the table of contents (6.5 MB down to 1.4 MB at 3,000 turns), and document bodies load on demand. Folders show 100 documents at a time. The server reads the wiki ahead of time when a chat opens.
 
 **Decisions and limits**
+
 - The model never chooses IDs, paths or frontmatter. That rule is in the writer skill.
 - The 12,000-character body limit was removed on purpose in 0.9.40 and 0.9.52. The design note is `docs/architecture/2026-09-29-bardwiki-long-chat-checkpoint.md`: "do not silently cut a source and then replace the whole document".
 - `.bak`-style history is kept under `.risubard-history` and is never pruned.
@@ -150,7 +160,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 
 #### 2.1.2 Confirmation-driven automatic writing
 
-**What it does for the user.** After each exchange, an event page records what happened, and the relevant canonical pages are created or updated. A reply only counts once it is *confirmed*. That happens when the next generation succeeds, or when the user chooses "confirm" from the message menu. Rerolls and swipe candidates are never recorded.
+**What it does for the user.** After each exchange, an event page records what happened, and the relevant canonical pages are created or updated. A reply only counts once it is _confirmed_. That happens when the next generation succeeds, or when the user chooses "confirm" from the message menu. Rerolls and swipe candidates are never recorded.
 
 **How it works**
 
@@ -166,6 +176,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
   - `canonicalUpdateCandidates{type,title,aliases,reason,action:create|update,targetDocumentId,confidence}`
 
   Each string is capped at 500 characters. When the full canonical pages fit the budget, the same call also returns `canonicalPatches`, which saves a second call (`server/node/risubard-combined-memory.ts:18`).
+
 - **Call 2: canonical rewrite** (`bardwiki-canonical-update`). It runs only for candidates that call 1 did not already patch. Targets are split into batches that fit the token budget. Output: `{documents:[{candidateIndex, sections:[{heading, operation: upsert|delete, content}]}]}`.
 - **Applying changes.**
   - The event page is serialized by `serializeMemoryWriterDraft` (`risubard-memory-writer.ts:769`) and saved by `saveConfirmedTurn` (`risubard-markdown-wiki.ts:1500`).
@@ -178,6 +189,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 - **Language and style.** The writing language (Korean or English) is chosen independently of the UI and chat language. It is fixed per document; changing it does not translate existing pages. The canonical writing style is chosen separately: concise, standard, ultra-compressed, or a custom style up to 1,000 characters.
 
 **Decisions and limits**
+
 - Only confirmed text is evidence.
 - At most 8 canonical targets per turn by default.
 - Invalid or empty output leaves the wiki unchanged; the full reply is never saved as a fallback note.
@@ -201,6 +213,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 **What it does for the user.** The model stops confusing the order of similar events that happened outside the recent window. The plan's example is breakfast before sleeping versus breakfast after.
 
 **How it works**
+
 - The client sends the order of up to 96 messages that come before the recent window (`server/node/risubard-inquiry-timeline.ts:5`).
 - The server builds a `narrative-memory:recent-flow` source. It lists up to 8 event titles, oldest first, each labelled with how many turns ago it happened. Its size is capped at `min(400, maximum/4)` tokens.
 - Retrieved event pages also carry the "N turns ago" label.
@@ -212,6 +225,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 **What it does for the user.** A compact plot-overview page (overview, turning points, open threads) is updated every N confirmed events and links to representative events. A "story so far" tab joins each active event's summary in message order and links back to the source messages.
 
 **How it works**
+
 - A reserved `other` page carries a checkpoint comment, `<!-- risubard-story-arc-checkpoint: <eventId> -->`.
 - `buildStoryArcUpdatePlan` (`server/node/risubard-story-arc-writer.ts:134`) synthesizes a candidate once enough new events exist. The rewrite has to link at least one event from the current window.
 - The ArcPlotter settings set caps on the number of arcs, turning points, open threads and characters.
@@ -225,6 +239,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 **What it does for the user.** Rebuilds the whole wiki from the chat transcript. The user picks a starting turn and chooses whether each batch covers 1 or 2 turns. Progress can be watched as a temporary wiki fills up. The job can be paused or resumed and survives an app restart. The old wiki is replaced atomically only at the end. This is also the supported way to "translate" a wiki into a new writing language.
 
 **How it works**
+
 - The job state lives on the chat as `chat.risuBardWikiReboot` (`createWikiRebootJob`, `src/ts/risubard/wikiReboot.ts:105`). It holds the staging chat ID `reboot-<uuid>`, the batch size, the language (fixed when the job starts), target and completed IDs, and per-message receipts.
 - Each batch runs `begin`, then `record`, then `complete`. `begin` writes a recovery manifest and copies of the baseline pages.
 - After a crash, `recoverRebootBatch` (`risubard-markdown-wiki.ts:1178`) either uses the recorded receipt or rolls the batch back.
@@ -238,6 +253,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 **What it does for the user.** A natural-language terminal at the bottom of the wiki dock. Examples: "make a page per character and record the current relationships", or one of 14 templates such as COMBINE, SPLIT, DEDUPLICATE, RECONCILE, TIMELINE, RENAME and RECLASSIFY (`src/ts/risubard/bardChatCommandTemplates.ts:9`). It can edit several documents at once. You choose which context to inject: wiki, chat, system prompt, character description, persona, or lorebooks. The last run can be undone once, and changed pages get a "New" badge.
 
 **How it works**
+
 - `executeDirectWikiCommand` (`src/ts/risubard/directWikiCommand.ts:400`) makes one `bardwiki-admin` call with a schema of operations: `upsert`, `trash` or `retract-event`, with `targetDocumentId`, `type`, `title`, `aliases` and `markdown`.
 - Long pages are edited block by block (`splitDirectWikiBlocks`, `src/ts/risubard/directWikiBlocks.ts:26`). Block IDs come from the position and SHA-256 of each block, so no markers are inserted into the canonical file. Blocks the model leaves alone keep their original bytes.
 - All targets are planned before anything is written.
@@ -248,12 +264,14 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 #### 2.1.8 Fork, inherit, import/export and copy to lorebook
 
 **What it does for the user.**
+
 - Copying a chat or branching at the newest message carries the wiki along.
 - "Start a new chat with this wiki" continues the memory in a blank chat.
 - A portable `.json` wiki package can be exported and imported.
 - Any page can be copied into the character lorebook as an inactive entry.
 
 **How it works**
+
 - **Fork** (`forkMemoryWorkspace`, `server/node/risubard-memory-fork.ts:164`): stage into `<dest>.fork-<uuid>` with a `.risubard-fork.json` marker, then the client saves the chat, then calls `fork/complete` with finalize or discard. This two-phase fork is reused by Character Vault cloning.
 - **Historical branches** (from an older message) are refused on the server: "historical branches require save/load" (`:197`).
 - **Inherit** (`server/node/risubard-wiki-transfer.ts:10`) copies `wiki/` and prefixes its sources with `inherited:<hash>:`, so retraction and ordering logic treat them as coming before the new chat.
@@ -269,12 +287,14 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 **What it does for the user.** When turned on, it finds wiki pages and past messages even when the wording differs. It reuses the HypaMemory embedding settings and is off by default.
 
 **How it works**
+
 - **Chunking.** Pages are chunked by headings and paragraphs, about 1,000 characters each with 120 characters of overlap, with the title and heading prefixed (`src/ts/risubard/wikiEmbeddingChunks.ts:16`).
 - **Embedding and storage.** The client embeds the chunks. Vectors are cached by `hash('wiki-vector-v1', provider.identity, docId, text)` (`src/ts/risubard/wikiEmbeddingIndex.ts:105`), encoded as `RBV1` plus Float32 little-endian (`wikiVectorCodec.ts`), and stored at `<data>/bardwiki-vectors/<aa>/<hash>.rbv` (`server/node/bardwiki-vector-store.cjs:42`). Reads and writes are batched through `/api/read-many`.
 - **Ranking.** Results are merged with lexical results by reciprocal-rank fusion, using rank rather than the raw score (k=60), so different embedding models combine stably.
 - **Stale vectors.** Vectors whose `contentHash` no longer matches are ignored.
 
 **Decisions**
+
 - Vectors were moved out of the main key-value store in 0.9.64, because tens of thousands of entries made every asset save rewrite a 29 MB manifest.
 - Embedding is never turned on silently.
 - If embedding is not ready or fails, search falls back to lexical.
@@ -284,6 +304,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 #### 2.1.10 OOC turns and the OOC notepad
 
 **What it does for the user.**
+
 - Assistant replies marked `<!-- OOC_turn -->` are out-of-character. They are always left out of wiki analysis, reboot and past-message search.
 - They can be hidden from the chat.
 - A notepad dialog groups them by turn range (for example `4–5`, `8`, `10–12`), with search and jump-to-message.
@@ -297,6 +318,7 @@ There is also a private edition called "Novelist" (a manuscript mode, kept in a 
 #### 2.1.11 Legacy structured graph and `packages/risubard-core`
 
 The `risubard-core` package (about 3.4k lines) contains:
+
 - `contextCompiler.ts`: `compileContext` at `packages/risubard-core/src/contextCompiler.ts:54`. Required sources come first and throw if they exceed the input limit. Optional sources are then sorted by priority, then by recency, and greedily packed. Omitted sources are listed with `reason:'budget'`.
 - `memoryDelta.ts`: a reducer over add-fact, append-event and invalidate-fact operations, each with evidence references.
 - `narrativeDelta`, `narrativeGraph`, `narrativeIndex` and `narrativeInquiry`.
@@ -324,6 +346,7 @@ Default layout, where `risuBardCacheFriendlyContext` is off:
 The server returns sources in this order: the recent-flow summary, then the selected wiki pages, then original-message excerpts headed "Original historical chat evidence (role, order N)".
 
 **Required versus optional**
+
 - **Required:** pages with `contextMode === 'always'` plus every `scene` page. They are fetched in a separate call with no ranking and no per-source cap, up to 32 pages (`server/node/risubard-markdown-inquiry.ts:12`). A failed read is retried once with a 60-second timeout. If it still fails, **generation aborts** with an error (`index.svelte.ts:1618`).
 - **Optional:** any failure is non-fatal. The request goes out without memory, and a diagnostic records why.
 
@@ -331,23 +354,23 @@ The server returns sources in this order: the recent-flow summary, then the sele
 
 Defaults are in `src/ts/risubard/risuBardSettings.ts:12-22`:
 
-| Setting | Default |
-| --- | --- |
-| target | 4,000 |
-| events | 3,000 |
-| perSource | 2,000 |
-| maximum | 7,500 |
-| analysis | 8,192 |
-| historical-source matches | 8 |
-| inquiry timeout | 10 s |
+| Setting                   | Default |
+| ------------------------- | ------- |
+| target                    | 4,000   |
+| events                    | 3,000   |
+| perSource                 | 2,000   |
+| maximum                   | 7,500   |
+| analysis                  | 8,192   |
+| historical-source matches | 8       |
+| inquiry timeout           | 10 s    |
 
 Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 
-| Preset | target | events | perSource | maximum |
-| --- | --- | --- | --- | --- |
-| 절약 (economy) | 3,000 | 2,000 | 1,500 | 5,500 |
-| 보통 (standard, default) | 4,000 | 3,000 | 2,000 | 7,500 |
-| 넉넉 (generous) | 6,000 | 4,000 | 2,500 | 10,500 |
+| Preset                   | target | events | perSource | maximum |
+| ------------------------ | ------ | ------ | --------- | ------- |
+| 절약 (economy)           | 3,000  | 2,000  | 1,500     | 5,500   |
+| 보통 (standard, default) | 4,000  | 3,000  | 2,000     | 7,500   |
+| 넉넉 (generous)          | 6,000  | 4,000  | 2,500     | 10,500  |
 
 - **Reserving room for required pages.** `reserveRequiredWikiBudget` (`requiredWikiContext.ts:7`) subtracts required tokens from `maximum`. If fewer than 256 tokens remain, the optional lookup is skipped.
 - **Lanes inside the inquiry** (`risubard-markdown-inquiry.ts` ~776–950):
@@ -367,6 +390,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** A "recent messages for the response" setting, with a matching but independent "recent messages for analysis" setting. Both are configurable globally, per bot, and per chat. Past user messages can be optionally left out, but the current user message is always kept.
 
 **How it works**
+
 - `selectNarrativeWorkingMessages` (`narrativeContext.ts:655`) keeps the last N **assistant replies**, the user messages between them, and the pending user message. N defaults to 12. The first message is added only when fewer turns exist.
 - The upstream SupaMemory and HypaMemory summarizers are skipped (`index.svelte.ts:2515`).
 
@@ -377,6 +401,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.2.3 Retrieval: lexical, link graph, semantic, and the optional "BardChan" reranker
 
 **How it works**
+
 - **Lexical scoring** (`risubard-markdown-inquiry.ts:315`):
   - IDF-weighted, so a rare clue outranks common words (0.9.6);
   - title and alias matches, links, content and keywords;
@@ -392,6 +417,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** Original chat lines that fell out of the window come back as evidence, labelled "과거 원문 · 턴 N" ("original past message, turn N"). For example, the exact wording of a promise.
 
 **How it works**
+
 - **Lexical, on the client** (`findHistoricalSourceMatches`, `src/ts/risubard/historicalSourceRecall.ts:202`): BM25-style IDF over messages older than the response window. Excerpts are cut to 1,200 characters around the best term. Default 8 matches, maximum 32.
 - **Semantic.** An index per message, merged with the lexical results by RRF (`mergeHistoricalSourceMatches`, `historicalSourceEmbedding.ts:96`).
 - **Evidence requests.** Selected event pages carry `sourceMessageIds`. The server sends back `evidenceRequests`, and the client resolves those IDs locally and queries again once (`narrativeContext.ts:455-476`). That way the exact source turn of a selected event is preferred over text that merely looks similar.
@@ -404,6 +430,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** A single dropdown: off, economy, balanced or recall. It lets the retrieval budget grow as the chat grows, up to a user-set ceiling (default 12,000).
 
 **How it works** (`src/ts/risubard/dynamicMemoryBudget.ts:8`)
+
 - `growth = maxGrowth[mode] · p · (2 − p)`, where `p = min(1, chars/500,000)` and `maxGrowth` is 0.25, 0.5 or 1 for economy, balanced and recall. This is a quadratic ease-out that levels off at 500k characters of active assistant text.
 - `maximum`, `target`, `events` and `analysis` grow. `perSource` stays fixed.
 - It is projected at runtime only (`resolveDynamicMemorySettings`, `:69`); saved settings are untouched.
@@ -423,17 +450,19 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.2.7 Body-free context trace, injection manifest and "chat evidence report"
 
 **What it does for the user.**
+
 - Each generated message records what went into it.
 - The wiki log tab shows requests and wiki saves in one stream.
 - A per-chat **evidence report** can be exported as Markdown. A sample is in `log/risubard-chat-evidence-*.md`. Each request lists its purpose, model, provider, result, duration, input/output/reasoning/cached tokens, and an "input composition" table: tokens per system message, chat history, wiki, lorebook and so on.
 
 **How it works**
+
 - **Per-message trace:** `generationInfo.risuBardContext`, built by `createRisuBardContextTrace` (`src/ts/risubard/memoryActivity.ts:49`). It records the recent message IDs and roles, the selected wiki paths, inquiry timing, the selected token count, and a diagnostic (`createWikiInquiryDiagnostic`, `src/ts/risubard/wikiInquiryDiagnostics.ts:41`).
   - The diagnostic status is one of skipped, failed, empty, not-injected, partial or injected.
-  - "Injected" is *verified* by finding each `[source "id"]` tag and its content in the final formatted prompt, after preset and Lua edits.
+  - "Injected" is _verified_ by finding each `[source "id"]` tag and its content in the final formatted prompt, after preset and Lua edits.
 - **Request-log manifest.** `buildInjectionManifest` (`src/ts/status/requestStatus.ts:130`) splits each message's exact token count across its tagged sources (`{kind,name,tokens}`). Any remainder is reported as "request prompt overhead".
 - **Purposes.** `src/ts/requestPurpose.ts:3` defines 11 purposes: chat-response, bardwiki-analysis, bardwiki-canonical-update, bardwiki-admin, bardwiki-bard-chan-rerank, persona-builder, lore-builder, bard-painter, bard-lore-analysis, prompt-assistant and character-assistant. A server whitelist must match (`server/node/request-logs.cjs:19`).
-- **Evidence report.** `buildChatRequestEvidence` (`src/ts/risubard/chatRequestEvidence.ts:333`) loads body-free rows. The report states that it excludes prompts, responses, headers and auth; only the reasoning *token count* is included.
+- **Evidence report.** `buildChatRequestEvidence` (`src/ts/risubard/chatRequestEvidence.ts:333`) loads body-free rows. The report states that it excludes prompts, responses, headers and auth; only the reasoning _token count_ is included.
 - **Turn receipt.** Each `char` message records what the wiki writer did as a `CanonicalTurnReceipt` (`src/ts/risubard/canonicalTurnReceipt.ts:13`): source message IDs, event IDs, `changes{documentId,action,afterHash}`, warnings and notes. It is displayed under the message by `RisuBardTurnReceipt.svelte`.
 
 **Caveat.** The README says "request logs omit request and response bodies". The developer request log (`server/node/request-logs.cjs:10,76-77`) actually stores request and response bodies after passing them through `maskSensitive`. Each body is capped at 2 MB, and the whole store at 256 MB. Bodies are returned only when `bodies=1` is requested. The body-free claim holds for the evidence report, the context trace and the wiki activity log.
@@ -442,7 +471,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 
 #### 2.2.8 Request pipeline hardening
 
-- **`modelProvenance.ts:15`.** Logs the model ID actually sent on the wire, separately from the preset's display name. Since 0.8.11, display and request use the same binding rules, and background wiki jobs use the *owning* chat's model binding even if the user has switched chats.
+- **`modelProvenance.ts:15`.** Logs the model ID actually sent on the wire, separately from the preset's display name. Since 0.8.11, display and request use the same binding rules, and background wiki jobs use the _owning_ chat's model binding even if the user has switched chats.
 - **`responseRetryPolicy.ts`.**
   - The retry count is clamped to 0–20.
   - Transport errors are retried only when no tools are involved.
@@ -458,6 +487,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.3.1 Visual-novel-style save slots: manual, quicksave and autosave
 
 **What it does for the user.**
+
 - The save/load dialog shows an autosave strip, a fixed quicksave tile, and a grid of manual slots.
 - Each slot shows the turn count, the last user and character lines, and the latest wiki event title with an excerpt.
 - You can save new, overwrite, rename, delete, load in place, or "load as new chat".
@@ -466,6 +496,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 - Loading rolls back **the chat, its variables and scriptstate, the chat lorebook, and the BardWiki together**.
 
 **How it works**
+
 - **Contents of a slot.** `chat.bin` holds the whole chat as msgpack. `risubard-save.json` is the manifest (saveId, sourceChatId, name, turnCount, latestMessageId, latestEvent). `risubard-save-files.json` lists `{path,hash,size}` for every file in the wiki workspace.
 - **Shared page store.** Files go into a content-addressed store shared by all slots of a character, `characters/<id>/save-store/<hh>/<sha256>` (`snapshotWorkspaceToStore`, `server/node/risubard-memory-save-store.ts:116`). An unchanged page is stored once. Files are re-hashed only when their stat stamp changes. Pages are garbage-collected when a slot is replaced or deleted (`releaseStorePages`, `:233`).
 - **Routes.** `POST /api/risubard/memory/save-slot` (`server/node/risubard-memory-routes.cjs:195`) plus `/list`, `/preview`, `/rename`, `/delete` and `/load`.
@@ -482,7 +513,8 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 - **Quicksave.** One reserved ID per chat.
 
 **Decisions**
-- Plan `2026-08-27-save-slot-only-history.md` makes save slots *the only* point you can rewind to. Per-turn wiki snapshots and per-document undo were removed.
+
+- Plan `2026-08-27-save-slot-only-history.md` makes save slots _the only_ point you can rewind to. Per-turn wiki snapshots and per-document undo were removed.
 - Because of that, deleting messages that serve as wiki evidence, or branching from history, is either blocked or sent through save/load plus reboot.
 - An overwrite writes the new slot completely before replacing the old one.
 - No limit on the number of manual slots was found.
@@ -508,6 +540,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.3.4 Chat content paging and chunked upload
 
 **How it works**
+
 - **Download.** `GET /api/chat-content/:chaId/:chatIndex/page` (`server/node/server.cjs:5839`) returns metadata plus a slice of messages (10–500 per page, default 200). The client fetches the pages concurrently, checks they are contiguous and the total is stable, then **reassembles the full array**. This limits transfer spikes, not client memory.
 - **Upload.** Optional chunks (default 8 MiB) go to `/api/chat-content-upload` (`server/node/chat-content-upload.cjs:11`). Limits: 2 GiB maximum, 8 pending uploads, a 10-minute TTL. No live chat changes until the last chunk is accepted.
 
@@ -515,7 +548,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 
 #### 2.3.5 Message deletion that respects wiki evidence
 
-**What it does for the user.** The dialog offers to delete one message, or a message plus everything after it, and shows exact counts. It warns that linked event pages will be retracted, that other canonical pages are *not* rolled back, and that a wiki reboot is the way to get exact history.
+**What it does for the user.** The dialog offers to delete one message, or a message plus everything after it, and shows exact counts. It warns that linked event pages will be retracted, that other canonical pages are _not_ rolled back, and that a wiki reboot is the way to get exact history.
 
 **How it works.** `rm()` (`src/lib/ChatScreens/Chat.svelte:154`) collects the stable IDs of the removed messages and calls `retractWikiEventsBySourceMessages` **before** changing the array. If retraction fails, the deletion is aborted.
 
@@ -538,8 +571,9 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** The message being read stays in place while images or inlays load and messages re-render. The new message's start is shown when you open a chat.
 
 **How it works**
+
 - `captureChatScrollAnchor` and `restoreChatScrollAnchor` (`src/lib/ChatScreens/chatScrollAnchor.ts:74`) record the topmost visible paragraph or media element and its offset. `ResizeObserver` restores the position before paint.
-- `retainedChatHtml` (`src/lib/ChatScreens/retainedChatHtml.ts:75`) patches the committed DOM against the *previous parser output* instead of replacing `innerHTML`. Detached copies are built in an inert document so `<audio autoplay>` does not fire.
+- `retainedChatHtml` (`src/lib/ChatScreens/retainedChatHtml.ts:75`) patches the committed DOM against the _previous parser output_ instead of replacing `innerHTML`. Detached copies are built in an inert document so `<audio autoplay>` does not fire.
 
 **Size and coupling.** S–M, pure UI, portable.
 
@@ -558,12 +592,14 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** User data is stored as ordinary files under `RISUBARD_DATA_ROOT` (`docs/en/file-native-storage.md`). Corruption is confined to individual files and is recoverable. Startup reads only small manifests.
 
 **How it works**
+
 - **Choosing the root** (`resolveDataRoot`, `server/node/data-root.cjs:20`):
   - `RISUBARD_DATA_ROOT` if set;
   - on Termux, `~/.local/share/risubard`;
   - otherwise `<cwd>/save`.
 
   Roots on Android `/sdcard` and `/storage/emulated` are **rejected**, because fsync and rename are unreliable there.
+
 - **Layout:**
   - `settings/app.json`
   - `secrets/credentials.json`, split out of the settings by a key-name regex
@@ -576,6 +612,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
   - `trash/`, `migration-backups/`
 
   Every canonical file has a `.sha256` sidecar and one `.bak`.
+
 - **Message durability.** User messages are fsynced before the model request goes out. Streaming drafts are written to `draft.json` so a half-finished reply can be recovered.
 - **"Projection"** is the legacy RisuAI `Database` object rebuilt from the canonical files, plus a compatibility `database.bin` that is rebuilt lazily (`server/node/compatibility-cache.cjs:8`).
   - The client still sends `/api/patch` (JSON-Patch plus `expectedHash`) or `/api/write` (ETag).
@@ -584,15 +621,17 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 - **"Shadow"** (`server/node/projection-shadow.cjs:54`). After saves have been quiet for 3 seconds, it exports the legacy DB from the files and deep-compares it with memory. Results go to `logs/storage-observation.jsonl`. A match allows the faster "deferred compatibility" path.
 
 **Measured effect** (0.9.39/0.9.40, a 60 MB save, median):
+
 - typical save: 3.40 s → 0.30 s
 - file-reflect time: 2.53 s → 0.29 s
 - temp data per save: 55.7 MiB → 2.6 MiB
 
-**Size and coupling.** L: about 6.9k lines across about 40 `.cjs` files, plus wiring in `server.cjs`. This *is* the storage layer.
+**Size and coupling.** L: about 6.9k lines across about 40 `.cjs` files, plus wiring in `server.cjs`. This _is_ the storage layer.
 
 #### 2.4.2 Crash-safe write protocol, journal, `.bak` and trash
 
 **How it works**
+
 - **Single-file writes** (`atomicWriteFile`, `server/node/file-store.cjs:154`):
   1. Write a temp file opened with `wx` and mode 0600, then fsync it.
   2. Re-read it and compare the sha256.
@@ -608,9 +647,11 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
   5. Clean up.
 
   `recoverTransactions` (`:548`) replays leftover journals forward when the server starts.
+
 - **Trash.** `moveToTrash` (`:564`) moves the file, its sidecar and its `.bak` to `trash/<ISO stamp>/<relpath>`. This applies to deleted presets, modules, personas, lorebooks, chats and finalized drafts.
 
 **Limits found in the code**
+
 - Only one previous version (`.bak`) is kept per file. There is no N-revision history.
 - `.bak` files and `trash/` are never pruned automatically.
 - Deleting a whole character is a **hard** `rmSync` inside the journal (`file-store.cjs:271`; it is emitted at `user-data-repository.cjs:915`). That contradicts "deletes move to trash".
@@ -619,18 +660,20 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.4.3 Locks and single-writer sessions
 
 - **Data root lock** (`acquireDataRootLock`, `server/node/data-root-lock.cjs:62`). Created with `mkdir .risubard-server.lock` plus `owner.json{pid,token}`. A stale lock is renamed and removed. Fails with `DATA_ROOT_IN_USE`. In 0.9.64 the portable "development" and "normal" launchers became mutually exclusive.
-- **Session lock** (`server/node/session-lock.cjs:63`, inherited from PocketRisu). Another session may take over only if it booted after the holder's last write *and* sends `x-user-active: 1`. Otherwise it gets 423.
+- **Session lock** (`server/node/session-lock.cjs:63`, inherited from PocketRisu). Another session may take over only if it booted after the holder's last write _and_ sends `x-user-active: 1`. Otherwise it gets 423.
 - **Session handoff** (`createSessionHandoff`, `src/ts/storage/sessionHandoff.ts:17`). Never discards unsaved local state without asking the user to download it or reload (0.9.42).
 
 #### 2.4.4 Save conflicts and external-change review
 
 **What it does for the user.**
+
 - If another program changes a data file while the app is open, saving **pauses** and a review dialog opens. It shows the changed files, the changed fields, and lore entries that were added, removed or modified. Credential values are hidden (`••••••`).
 - **"Accept external changes"** merges character and lorebook changes in place. Any other kind of change triggers a full reload. Unsaved local edits to the same entries are kept in a browser recovery record, or downloaded as JSON.
 - **"Keep app content"** backs the external files up to `trash/external-changes-*` before overwriting them.
 - Broken JSON is shown with its line and column and cannot be accepted.
 
 **How it works**
+
 - **Detection** uses projection-revision fingerprints (size, `mtimeNs` and sidecar per file) compared with `cache/canonical-projection-revision.json`. Edited files are identified by a sha256 mismatch with their sidecar (`server/node/external-change-review.cjs:38`).
 - **Polling.** When the setting is on, the client polls every 3 seconds while visible. Otherwise detection happens at the next save, which returns 409 `EXTERNAL_CHANGES_PENDING` or `CANONICAL_FILES_CHANGED`.
 - **Save sequence.** `beginSave` and `settle` (`server/node/canonical-projection-sync.cjs:78`) accept only the save's own writes. A file another program changed during the save stays pending (0.9.71 fix).
@@ -638,15 +681,17 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 - **Resolve route.** `POST /api/external-changes/resolve` (`server.cjs:3707`).
 
 **History and dead code**
+
 - A recursive `fs.watch` live monitor (0.9.41) was **retired** in 0.9.66: Node's emulated recursive watch stalled the server on Linux, Docker and Termux (`server/node/live-file-monitoring.cjs:7`). Polling and fingerprints replaced it.
 - An "external edit session" mode (pause saves, edit, adopt) is now unreachable code.
 - Since 0.9.72, character asset folders are re-read only with an explicit "asset reload" button.
 
-**Size and coupling.** M, tightly coupled to file-native storage. The *UX policy* is portable: pause and review instead of silently overwriting, show field-level diffs, mask secrets, back up whichever side loses. So is the "files changed while the app was closed are adopted on the next read, with JSON position errors" rule.
+**Size and coupling.** M, tightly coupled to file-native storage. The _UX policy_ is portable: pause and review instead of silently overwriting, show field-level diffs, mask secrets, back up whichever side loses. So is the "files changed while the app was closed are adopted on the next read, with JSON position errors" rule.
 
 #### 2.4.5 Asset integrity and per-character asset folders (V3/V4 pilots)
 
 **What it does for the user.**
+
 - Assets are content-addressed.
 - An opt-in "V3" layout gives each character a readable, name-based folder with its assets copied in. Files dropped into that folder can be registered with "asset reload".
 - An opt-in "V4" removes a character's exclusive assets from the shared KV manifest to keep it small. The originals are kept and the change can be reverted.
@@ -654,12 +699,14 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 - Both are developer-settings pilots.
 
 **How it works**
+
 - `kvGetOriginal` re-hashes on every read and throws on mismatch (`server/node/file-kv.cjs:236`).
 - `readVerified` (`server/node/character-assets.cjs:399`) checks size and fstat identity before and after the read, refuses symlinks, and verifies the sha256 unless a trusted stat stamp (`dev:ino:size:mtimeNs:ctimeNs`) is cached. Files changed within the last 5 seconds are always re-hashed.
 - The directory mapping never reuses or reassigns a published folder name (`server/node/character-directories.cjs:73`).
 - `findClosestAsset` (`src/ts/parser/closestAsset.ts:45`) is a Levenshtein nearest-name fallback for missing asset references. It was extended to module assets in 0.9.72.
 
 **Decisions** (`docs/ko/asset-integrity.md`)
+
 - Stat stamps are hints that something changed, not proofs.
 - fs-verity was considered and rejected.
 - **Regression tests count reads, not time.** An unchanged `sync()` must do zero asset-body reads and zero index writes. Changing one asset must not read unrelated assets.
@@ -691,6 +738,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** A full-screen manager for large collections. Square cards with a name overlay on hover. Folders with colours and cover images, an "unfiled" view, and sorting. Multi-select to move, rename, delete or clone, with or without chats. Sidebar "quick access" pins for characters and folders, with a "new" badge. Storage-layout badges such as V3 and V4.
 
 **How it works**
+
 - Pure functions in `src/ts/characterVault.ts` act on `Database.characters`, `characterOrder` and a new `Database.characterVault{quickAccess,newCharacterIds}`.
 - `createCharacterVaultClones` (`src/ts/characterVault.ts:79`) assigns new `chaId`s, gives names a collision-safe ` (2)` suffix (`src/ts/displayName.ts`), assigns new chat IDs, and records `chatForks`.
 - `cloneSelected` (`src/lib/SideBars/CharacterVaultDialog.svelte:345`) first loads placeholder chats. It then forks each chat's wiki through `/api/risubard/memory/fork` (`risubard-memory-routes.cjs:389`), forces a full save, and finally finalizes or rolls back the forks.
@@ -711,6 +759,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** Card and module imports can be cancelled. A live progress panel is fed by server events. If the browser dies partway, the next load offers to roll back or reset. Very large `.charx` files trigger a "module or character?" prompt before anything is unpacked. Success is reported only after both the browser and the server have saved (0.9.32).
 
 **How it works**
+
 - `ImportTransaction` (`src/ts/storage/importTransaction.ts:36`) keeps a write-ahead journal in `localStorage` (`risubard-pending-import-v1`). It never overwrites content-addressed assets that already exist. Rollback removes the owners first, then the new keys.
 - `runImport` (`src/ts/importSession.ts:114`) subscribes to `/api/import-progress/:id` and waits for the server's canonical flush before committing.
 - `inspectCharx` (`src/ts/charxPreflight.ts:9`) reads only the ZIP central directory (ZIP64 and JPEG-prefixed files included). It asks the user at 150 MB or 5,000 assets.
@@ -732,6 +781,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** Personas can be global (as upstream) or **owned by a character**. Badges show the scope, and personas can be copied between stores. Each chat binds a persona, and new chats inherit the previous chat's persona. A pin toggles that inheritance (0.9.32). A chat-bound persona is highlighted with a "binding" colour, distinct from the global selection.
 
 **How it works**
+
 - `character.personas?: RisuPersona[]`, with new fields `id`, `note`, `embeddedModule` and `portraitPrompt`.
 - `getEffectivePersona` (`src/ts/personaScopes.ts:53`) resolves the character's own personas, then global ones, then `db.selectedPersona`.
 - The per-chat binding uses the upstream `Chat.bindedPersona`, which PocketRisu also has. RisuBard adds the character scope, the inheritance pin, and stable persona IDs.
@@ -749,6 +799,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** An LLM editor, outside the chat, that writes or revises a persona description. You choose context sources: the system prompt (all text blocks of the current preset, with overlays and toggle conditions applied), the character description, character or module lorebooks, task and style presets, and an undo history of originals.
 
 **How it works**
+
 - `buildPersonaBuilderMessages` (`src/ts/personaBuilder.ts:267`) builds a system message with `<instruction>` blocks, and a user message with `<context name=…>` blocks, a `<draft>`, and the user's OOC instruction. Closing tags inside content are escaped.
 - Character lore is matched against the instruction plus the draft by the real lorebook engine, so only relevant entries go in (0.8.13).
 - A non-streaming `requestChatData` call returns the new draft.
@@ -760,6 +811,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** A brush button draws a 1024×1024 waist-up portrait from the persona description using NovelAI. An LLM first fills in tags for composition, appearance, clothing and expression. A one-line edit such as "make the hair silver" changes only that part.
 
 **How it works.**
+
 - The LLM call returns JSON. The contract is at `src/ts/bardPainter/personaPortrait.ts:40`.
 - The result is cached on the persona as `portraitPrompt`, together with a hash of the description, so an unchanged description skips the LLM.
 - The image request reuses BardPainter's request builder.
@@ -771,17 +823,20 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 **What it does for the user.** Both are docked right-sidebar chats for creators, opened from the developer tools.
 
 **Prompt Assistant** advises on a prompt preset.
-- It can attach up to 200 recent chat lines, plus the *actual final prompt* of the last request, taken from the request log.
+
+- It can attach up to 200 recent chat lines, plus the _actual final prompt_ of the last request, taken from the request log.
 - It notices preset edits made since the last question and mentions them first.
 - Block references in its answer become links that open the Prompt V2 editor at that block.
 - It is advice-only.
 
 **Character Assistant** analyzes a bot: its fields, extra greetings, lorebook, regex and triggers, and optionally linked modules, the current preset and toggles, and a reference bot.
+
 - It reads only what it needs.
 - It proposes **edit cards** that you apply, skip, apply in bulk or revert. Conflicts are detected.
 - A **play-test** mode drives N turns of real chat as a simulated user, either automatic or step-by-step. It runs in a new "play test N" chat through the normal send pipeline, so triggers, regex, preset and lorebook all apply. Each turn records which lorebook entries actually fired.
 
 **How it works**
+
 - **Prompt Assistant** is two-stage (`sendPromptAssistant`, `src/ts/risubard/promptAssistantStore.ts:268`).
   - A select call sees only a block index, about 15% of the preset's size, and returns the block numbers it needs.
   - A streaming answer call then receives those blocks, plus any blocks that changed since the last send (detected by fingerprint diff).
@@ -800,12 +855,14 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.8.1 Lorebook workspace
 
 **What it does for the user.**
+
 - A full-pane editor that replaces the inline list. It has a folder tree, multi-select with an anchor, drag and drop (before, after or inside), batch editing, keys that can expand to full width, resizable panes, and session restore per scope (selection, open folders, scroll, caret).
 - A new folder is created above the selection. Move buttons shift items by 10 or 1 (0.9.64).
-- Since 0.9.67 it opens *inside the chat area*, so the Character Assistant stays visible beside it.
+- Since 0.9.67 it opens _inside the chat area_, so the Character Assistant stays visible beside it.
 - A CBS condition view splits nested `if`, `or` and `equal` blocks into condition and body without running them. A CBS variable sidebar collects variable names and candidate values and edits chat or default values (0.8.13).
 
 **How it works**
+
 - `src/lib/SideBars/LoreBook/LoreBookWorkspace.svelte` (1,855 lines).
 - Pure operations live in `src/ts/lorebook/workspaceOperations.ts`, for example `ensureLorebookIds` at `:136`.
 - "Local activation" switches a character lore entry on per chat. It inserts a `mode:'child'`, `alwaysActive` stub with the same ID into `chat.localLore`.
@@ -816,6 +873,7 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 #### 2.8.2 Lorebook matching and activation changes
 
 **How it works**
+
 - `matchesLorebookKey` (`src/ts/process/lorebookMatching.ts:22`) supports three modes:
   - `partial`: upstream behaviour;
   - `whitespace`: whole-token match;
@@ -828,19 +886,20 @@ Presets (`src/ts/risubard/memoryBudgetPreset.ts:35`):
 
 **What it does for the user.** With "use for generation" on for a character, Grimoire picks only the relevant character-lore entries for each turn instead of scanning keys across the whole book. It uses no LLM at generation time. Each entry carries search metadata:
 
-| Field | Values or meaning |
-| --- | --- |
-| kind | system, character, location, faction, item, event, concept or other |
-| aliases, tags | extra names and topic words |
-| search summary | a short text used for matching |
-| facets | `key=value` pairs, each with search aliases |
-| activation | required, keyed (key or alias hit), retrieve (key plus relevance) or never |
-| injection role | `full` or `index-only` |
+| Field          | Values or meaning                                                                         |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| kind           | system, character, location, faction, item, event, concept or other                       |
+| aliases, tags  | extra names and topic words                                                               |
+| search summary | a short text used for matching                                                            |
+| facets         | `key=value` pairs, each with search aliases                                               |
+| activation     | required, keyed (key or alias hit), retrieve (key plus relevance) or never                |
+| injection role | `full` or `index-only`                                                                    |
 | explicit links | each with a relation and a retrieval direction: supporting, discoverable, ambient or none |
 
 A **search preview** shows what was selected, what was excluded, and why.
 
 **How it works**
+
 - **Storage.** `BardLoreState` (schema 2) is stored on `character.bardLore` (`src/ts/lorebook/bardLore.ts:7-157`). Metadata sits in a **side table keyed by `sourceLegacyId` and `sourceHash`**, and `materializeBardLoreEntries` (`:839`) joins it back onto `globalLore`. Original entries are never rewritten, and editing an entry in either the normal lorebook or Grimoire syncs both ways (0.9.15).
 - **Selection** (`selectBardLoreEntries`, `src/ts/lorebook/bardLoreRetrieval.ts:103`):
   1. Required entries go in first. If they exceed the maximum, a `BardLoreBudgetError` is thrown rather than dropping any silently.
@@ -857,6 +916,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 #### 2.8.4 Grimoire AI metadata analysis (`docs/ko/grimoire-ai-analysis.md`)
 
 **What it does for the user.** An optional batch LLM pass drafts the metadata.
+
 - Drafts are kept for side-by-side review and applied explicitly. They never change the lore text.
 - A two-pane workbench shows the request plan (estimated requests and input tokens), lets you pick targets and filter by type, and shows status per item.
 - "Recommended settings" are provided.
@@ -865,6 +925,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 - Large rosters whose estimated output exceeds the output limit are unchecked by default.
 
 **How it works**
+
 - Batches are planned by input-token budget.
 - Entries in the prompt are addressed by integer `ref`, not UUID.
 - The strict JSON schema is `bardLoreAnalysisSchema`, about line 181 of `src/ts/lorebook/bardLoreAnalysis.ts`. Each entry has `ref, kind, activation, aliases, tags, summary, facets, injection, atoms, links[{targetRef, relation, retrieval}]`.
@@ -883,6 +944,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 **What it does for the user.** An LLM assistant, outside the chat, that writes or revises a single lore entry. Context sources: system prompt, description, lorebook, module lore, and a message range (0.9.34). Task and style presets are available in Korean and English.
 
 **How it works.**
+
 - `buildLoreBuilderMessages` (`src/ts/loreBuilder.ts:242`) builds the prompt with escaped `<instruction>`, `<context>` and `<draft>` blocks.
 - Related lore is chosen by the real `loadLoreBookV3Prompt`.
 - The output is Markdown that the user applies.
@@ -894,6 +956,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 #### 2.9.1 Prompt V2 workbench (0.9.23, 0.9.31)
 
 **What it does for the user.** A three-pane editor for prompt blocks (list, editor, preview) with these parts:
+
 - visual and source modes;
 - per-block activation conditions edited as a form;
 - a **live toggle preview** that shades body text active or inactive for simulated toggle values;
@@ -901,6 +964,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 - find and replace across blocks.
 
 **How it works.**
+
 - Conditions **compile to plain CBS**, so presets stay upstream-compatible. The output has the form `{{#when::keep::{{equal::{{getglobalvar::KEY}}::VAL}}::and::…}}…{{/when}}` (`compilePromptV2Text`, `src/ts/promptV2.ts:68`).
 - Hand-written CBS is detected and marked as not editable in the form.
 - The toggle template is parsed into a tree of groups and dividers.
@@ -913,6 +977,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 **What it does for the user.** Extract blocks from other presets, by default those whose title contains `📙`, into "profiles". Map each one to skip, or to go before, replace, or go after a target block of the active preset, **without editing that preset**. Save the combinations as "application presets". A composed preview can be saved as a new preset.
 
 **How it works.**
+
 - `composePromptBlockOverlay` (`src/ts/promptBlockOverlay.ts:471`) runs at request time (`index.svelte.ts:1442`) and in BardPainter.
 - Rules reference blocks by `{index, name, type}` and fall back gracefully when the target moves.
 - Toggles referenced by the injected blocks can be appended to the toggle template.
@@ -944,6 +1009,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 ### 2.10 First Message Studio (0.8.10 → beta 0.8.12)
 
 **What it does for the user.** A no-code builder for interactive opening screens:
+
 - multi-step choices that set variables;
 - free-text inputs;
 - localized strings, with LLM translation of the UI text;
@@ -955,6 +1021,7 @@ A **search preview** shows what was selected, what was excluded, and why.
 Cards built with it **still play in stock RisuAI**.
 
 **How it works**
+
 - **Project model.** `FirstMessageStudioProject` (`src/ts/firstMessageStudio.ts:111`) holds stages, options, effects, `nextStageId`, inputs, presentation, variables, localization, appearance and scenario rules.
 - **Runtime.** A pure state machine (`applyStudioOption`, `:556`) persists variables as `$name` in `scriptstate`.
 - **Storage.** The editable source is `character.firstMessageStudio`, exported as `extensions.risuai.firstMessageStudio` (`src/ts/characterCards.ts:94`).
@@ -964,6 +1031,7 @@ Cards built with it **still play in stock RisuAI**.
   3. a managed block in `defaultVariables`.
 
   It replaces only entries it owns. RisuBard renders the native Svelte runtime instead of the compiled version (`Chat.svelte:277`).
+
 - **Sharing.** Project files use the envelope `{type:'risubard-first-message-studio', version:1, project}`.
 
 **Size and coupling.** M (about 1.05k lines of TS and 1.36k of Svelte). **No storage coupling; the most portable feature in the fork.**
@@ -973,6 +1041,7 @@ Cards built with it **still play in stock RisuAI**.
 **What it does for the user.** Copies one rendered message, or a whole chat or message range, as rich HTML that pastes cleanly into the arca.live editor (a Korean forum). Character CSS, backgrounds, dialogue and thought colours, and images survive. There is a title header with an optional avatar (oval, square or thumbnail-title). Image width, font size and paragraph spacing are adjustable. Inactive messages, comments and placeholders are left out.
 
 **How it works**
+
 - `exportArcaHtml` (`src/ts/arcaExport.ts:719`) walks the **live rendered DOM**:
   - computed styles are inlined through an allowlist;
   - horizontal flex layouts are rewritten as tables;
@@ -987,6 +1056,7 @@ Cards built with it **still play in stock RisuAI**.
 ### 2.12 BardPainter and media (0.9.43 → 0.9.67)
 
 **What it does for the user.**
+
 1. Select a passage in a chat message and get a NovelAI V4.5/V5 illustration of that moment.
 2. Edit the generated prompt blocks for each subject.
 3. Keep saved **character identities and outfits**, either global or per bot (outfits shared across characters since 0.9.58).
@@ -1006,6 +1076,7 @@ There is also a gallery per character and chat, and pasting an external image in
 7. **Insertion.** `insertPainterReference` (`src/ts/bardPainter/selection.ts:162`) inserts `{{inlay::<id>}}` at the paragraph you picked.
 
 **Storage.**
+
 - Per chat: `chat.bardPainter`.
 - Per bot: `character.bardPainter`, exported as `extensions.risubard.bardPainter`.
 - Global: `Database.bardPainter*`.
@@ -1015,6 +1086,7 @@ There is also a gallery per character and chat, and pasting an external image in
 ### 2.13 Plugin API
 
 **Summary.** RisuBard adds:
+
 - the `Risuai.bardWiki` API;
 - a compatibility shim that projects BardWiki into legacy HypaMemory and SupaMemory fields;
 - the provider options `overrideRequestStatus` and `structuredOutput`;
@@ -1033,12 +1105,14 @@ Details are in §4.
 **What it does for the user.** Each colour scheme can edit 28 semantic roles: binding, info, success, warning, danger and secondary, each with bg, border and on- variants, plus overlay, shadow, media and switch-thumb. Palettes can be picked visually. Code highlighting and the Monaco editor follow the theme.
 
 **How it works.**
+
 - `src/ts/gui/uiThemeTokens.ts` is a typed registry with labels and dark and light defaults.
 - `ColorScheme.uiColors` overrides are accepted only as valid hex. They are emitted as `--risu-theme-*` mapped to `--color-*`.
 - `monacoTheme.ts` expands the values to hex, because Monaco cannot read CSS variables.
 - `textTheme.ts` picks chat text colours with contrast in mind.
 
 **Enforcement.** `src/lib/UI/GUI/ThemeTokenContract.test.ts` (`pnpm check:theme-tokens`) requires that:
+
 - every token is declared in `styles.css` under `@theme static`;
 - global rules contain **no raw hex, rgb, hsl, `white` or `black`**;
 - no Tailwind gray or slate scales are used;
@@ -1096,6 +1170,7 @@ Details are in §4.
   - storage observation.
 
   The vitest config matches PocketRisu's; the suite contents differ.
+
 - **Benchmarks.** `pnpm bench:wiki-scale` runs synthetic 100, 1,000, 5,000 and 10,000-turn wiki scale tests on both client and server.
 - **Release process.** The patchnote format is strict: each version has `[기능]` (feature), `[안정성]` (stability), `[성능]` (performance) and similar tags, and an `*-arca.txt` forum copy. Measured numbers are presented as measurements, with their sample sizes and caveats.
 - **Plans.** About 110 dated plans in `docs/superpowers/plans/` record goals, global constraints, a "review focus" and tasks. Example: the timeline plan requires that user chat content never goes into test fixtures, because the repository is public.
@@ -1108,9 +1183,9 @@ These are worth considering even if the feature itself is not ported.
 
 1. **Keep evidence, memory and compiled context separate.** Keep the original transcript untouched as evidence. Keep long-lived state in a reviewable store. Compile each request under explicit limits. The docs repeat that "tokens are a cap, not a quota". The long-chat experiment (`docs/ko/memory-wiki-long-chat-experiment.md`) gives the measured cost: 17,247 input tokens against an estimated 67,950 for a full transcript, at turn 21.
 
-2. **Required context fails loudly; optional context degrades quietly.** If a required source cannot be loaded, the request stops with an error rather than being trimmed. Optional sources may be left out, and the trace records why. When a canon page *is* trimmed, it carries this marker: "omitted parts are not evidence of absence". That marker is a cheap guard against the model treating absence as fact.
+2. **Required context fails loudly; optional context degrades quietly.** If a required source cannot be loaded, the request stops with an error rather than being trimmed. Optional sources may be left out, and the trace records why. When a canon page _is_ trimmed, it carries this marker: "omitted parts are not evidence of absence". That marker is a cheap guard against the model treating absence as fact.
 
-3. **Verify that injection actually happened.** The diagnostic searches the *final* formatted prompt for each `[source "id"]` tag, after preset and Lua edits, and reports one of injected, partial or not-injected. A pipeline with programmable prompt edits needs this; without it, "we retrieved X" says nothing about "the model saw X".
+3. **Verify that injection actually happened.** The diagnostic searches the _final_ formatted prompt for each `[source "id"]` tag, after preset and Lua edits, and reports one of injected, partial or not-injected. A pipeline with programmable prompt edits needs this; without it, "we retrieved X" says nothing about "the model saw X".
 
 4. **Injection manifest and purpose taxonomy on every model call.** Record per-source token attribution as `{kind,name,tokens}`, with any remainder labelled "overhead". Use a fixed list of request purposes that the client and the server whitelist share. Offer a per-chat evidence report that contains no message bodies. This makes cost and "why did it forget X" questions answerable.
 
@@ -1120,7 +1195,7 @@ These are worth considering even if the feature itself is not ported.
 
 7. **A confirmation boundary for memory.** A reply becomes memory only when the user continues past it or confirms it. Rerolls and swipes are never recorded. Each confirmed turn stores a receipt with source IDs, changed documents and `afterHash`, which makes the operation idempotent to retry.
 
-8. **Deleting evidence retracts what was derived from it.** Before deleting messages, retract the memory events derived from them, and abort the deletion if that fails. Be explicit about what is *not* rolled back.
+8. **Deleting evidence retracts what was derived from it.** Before deleting messages, retract the memory events derived from them, and abort the deletion if that fails. Be explicit about what is _not_ rolled back.
 
 9. **Save slots as the single rewind boundary.** Instead of keeping per-turn memory snapshots, offer save/load points that snapshot chat plus memory together, deduplicated through a content-addressed page store. Loading restores the story, not the user's current preferences: persona, preset, model binding and toggles stay as they are. Autosave runs only after generation and memory writing have both finished.
 
@@ -1148,7 +1223,7 @@ These are worth considering even if the feature itself is not ported.
     - A forward-replayed journal for multi-file commits.
     - A data-root process lock.
     - Reject roots on filesystems without reliable rename and fsync (Android shared storage).
-    - Stat-stamp caches treated as *hints*, with re-hashing inside a 5-second "racy" window.
+    - Stat-stamp caches treated as _hints_, with re-hashing inside a 5-second "racy" window.
     - A background shadow comparison between the canonical files and the compatibility projection.
     - Diagnostic reports that contain no personal data.
 
@@ -1165,7 +1240,7 @@ These are worth considering even if the feature itself is not ported.
 
 23. **Script safety.** Lua `setGlobalVar` refuses `toggle_*` keys so bot scripts cannot flip preset toggles (`src/ts/process/scriptings.ts:153`).
 
-24. **Honest documentation.** Docs and patchnotes separate measured from estimated numbers, give sample sizes, and say what was *not* validated. Examples: "recall targets of 80% and 96% are goals, not achieved"; "no full-transcript A/B was run". Rolled-back features are announced as rolled back: V2 storage, batch analysis, the chronology tab, live file watching.
+24. **Honest documentation.** Docs and patchnotes separate measured from estimated numbers, give sample sizes, and say what was _not_ validated. Examples: "recall targets of 80% and 96% are goals, not achieved"; "no full-transcript A/B was run". Rolled-back features are announced as rolled back: V2 storage, batch analysis, the chronology tab, live file watching.
 
 ---
 
@@ -1178,6 +1253,7 @@ All of the following were absent from the PocketRisu checkout at v1.15.0. Types 
 The full reference is `docs/ko/bardwiki-plugin-api.md`; the implementation is `src/ts/risubard/pluginBardWiki.ts`, 492 lines. It is also reachable as `risuai.bardWiki`.
 
 **Methods**
+
 - `getContext({ query? })` returns `{ content, sources, recentMessages, metrics }`.
   - `content` is ready to insert into a prompt.
   - `recentMessages` follows the chat's "response recent messages" setting and always includes the latest user message.
@@ -1189,6 +1265,7 @@ The full reference is `docs/ko/bardwiki-plugin-api.md`; the implementation is `s
 - `trashDocument(id)` moves the document to the BardWiki trash.
 
 **Scope and permissions**
+
 - Every call is scoped to the current character and saved chat. A plugin cannot name another chat or a server path.
 - Reads need no permission.
 - The first write asks for a per-plugin BardWiki write permission. If the user denies it, the call returns `null`.
@@ -1251,15 +1328,16 @@ Plugins that read chats through `getCharacter()`, `getChar()`, the index getters
 
 ### 5.2 Features that were rolled back or retired
 
-| Feature | Shipped | Outcome |
-| --- | --- | --- |
-| V2 named-folder storage | 0.9.26–0.9.27 | Rolled back in 0.9.28; offline converter added |
-| BardWiki "Batch analysis" | 0.9.32 | Rolled back in 0.9.33 after HTTP 400 errors |
-| Recursive `fs.watch` live file monitoring | 0.9.41 | Removed in 0.9.66; it stalled servers on Linux, Docker and Termux. Replaced by polling and conflict review (0.9.69) |
-| "External edit session" mode | — | Now unreachable code |
-| Character chronology tab | 0.9.52 | Removed in 0.9.53 |
+| Feature                                   | Shipped       | Outcome                                                                                                             |
+| ----------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| V2 named-folder storage                   | 0.9.26–0.9.27 | Rolled back in 0.9.28; offline converter added                                                                      |
+| BardWiki "Batch analysis"                 | 0.9.32        | Rolled back in 0.9.33 after HTTP 400 errors                                                                         |
+| Recursive `fs.watch` live file monitoring | 0.9.41        | Removed in 0.9.66; it stalled servers on Linux, Docker and Termux. Replaced by polling and conflict review (0.9.69) |
+| "External edit session" mode              | —             | Now unreachable code                                                                                                |
+| Character chronology tab                  | 0.9.52        | Removed in 0.9.53                                                                                                   |
 
 Other items in this category:
+
 - The legacy v2 structured graph memory survives only for old wikis.
 - The "unreviewed / `.risubard-review`" acceptance flow is implemented but never triggered by automatic writes.
 - Per-turn wiki snapshots and per-document undo were removed in favour of save slots (0.9.2).
