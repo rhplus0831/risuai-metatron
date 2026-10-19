@@ -170,7 +170,10 @@ describe("translateHTML media regressions", () => {
             const rendered = body(
                 await translateHTML(nodes.map((text) => `<span>${text}</span>`).join(""), false, "", 0),
             );
-            expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([nodes.join("■"), ...nodes]);
+            expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+                nodes.join("\n■\n"),
+                ...nodes,
+            ]);
             expect([...rendered.querySelectorAll("span")].map((node) => node.textContent)).toEqual(
                 nodes.map((text) => `KO:${text}`),
             );
@@ -400,6 +403,42 @@ describe("translate memory cache ownership", () => {
         expect(calls()).toBe(2);
         await expect(translate("retry-source", false)).resolves.toBe("KO:retry-source");
         expect(calls()).toBe(2);
+    });
+});
+
+describe("runTranslator line breaks", () => {
+    it("sends the lines between two empty or asset lines as one chunk with their line breaks, as the server does", async () => {
+        const text = "first\nsecond\n\nthird\n{{img::x}}\nfourth\nfifth";
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(
+            "KO:first\nsecond\n\nKO:third\n{{img::x}}\nKO:fourth\nfifth",
+        );
+        expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+            "first\nsecond",
+            "third",
+            "fourth\nfifth",
+        ]);
+    });
+
+    it("keeps a DeepLX batch's asset lines protected and gives each node its text without the separator's line breaks", async () => {
+        // A provider that keeps every line break of the request.
+        deps.globalFetch.mockImplementation(async (_url: string, init: Request) => ({
+            ok: true,
+            data: { data: (init.body.text as string).toUpperCase() },
+        }));
+        const rendered = body(
+            await translateHTML("<p>{{img::a}}</p><p>hello</p><p>{{raw::b}}</p><b>bold</b> tail", false, "", 0),
+        );
+        expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+            "■\nhello\n■",
+            "■\nbold\n■\n tail",
+        ]);
+        expect([...rendered.querySelectorAll("p")].map((node) => node.textContent)).toEqual([
+            "{{img::a}}",
+            "HELLO",
+            "{{raw::b}}",
+        ]);
+        expect(rendered.querySelector("b")?.textContent).toBe("BOLD");
+        expect(rendered.lastChild?.textContent).toBe(" TAIL");
     });
 });
 
