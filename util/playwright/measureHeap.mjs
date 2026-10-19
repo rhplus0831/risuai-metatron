@@ -39,7 +39,9 @@
 //
 // Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default they
 // go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default 16000),
-// `DEBUG` (server output).
+// `HEAP_STEPS` (comma-separated step names: only these, and `boot`, are captured and analysed; every
+// step's UI actions still run, since each starts from the state the one before left, and a check that
+// compares a step not captured prints SKIP), `DEBUG` (server output).
 //
 // Usage: pnpm build && node util/playwright/measureHeap.mjs
 import { spawn, execFile } from "node:child_process";
@@ -96,6 +98,35 @@ const snapshotDir = keepSnapshots
     : await mkdtemp(path.join(os.tmpdir(), "risu-heap-"));
 await mkdir(snapshotDir, { recursive: true });
 const analyzeHeapMB = Number(process.env.HEAP_ANALYZE_MB ?? 16000);
+
+const STEPS = [
+    "boot",
+    "character-assets",
+    "character-asset-edit",
+    "chats",
+    "chat-shared-style",
+    "module-assets",
+    "module-asset-edit",
+    "module-edit",
+    "home",
+    "character-recreate",
+    "boot-character-delete",
+    "boot-module-delete",
+];
+// Checked before anything starts, so a typo does not cost a run that measures nothing.
+const capturedSteps = process.env.HEAP_STEPS
+    ? new Set([
+          "boot",
+          ...process.env.HEAP_STEPS.split(",")
+              .map((step) => step.trim())
+              .filter(Boolean),
+      ])
+    : new Set(STEPS);
+const unknownSteps = [...capturedSteps].filter((step) => !STEPS.includes(step));
+if (unknownSteps.length > 0) {
+    console.error(`Unknown HEAP_STEPS: ${unknownSteps.join(", ")} (steps: ${STEPS.join(", ")}).`);
+    process.exit(1);
+}
 
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-measure-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
@@ -359,7 +390,10 @@ try {
     await cdp.send("HeapProfiler.enable");
     const rows = [];
     const snapshot = async (step) => {
+        if (!STEPS.includes(step)) throw new Error(`snapshot of an unlisted step: ${step}`);
+        // The wait stays for a step not captured, so the steps after it keep their timing.
         await page.waitForTimeout(1500);
+        if (!capturedSteps.has(step)) return;
         await cdp.send("HeapProfiler.collectGarbage");
         const file = path.join(snapshotDir, `${step}.heapsnapshot`);
         const out = createWriteStream(file);
@@ -763,40 +797,58 @@ try {
     // entry).
     const bytes = Object.fromEntries(rows.map((row) => [row.step, row.totalBytes]));
     const MiB = 1048576;
-    check("deletes: the recreated characters leave nothing", bytes["character-recreate"] <= bytes.home + 2 * MiB, {
-        home: bytes.home,
-        "character-recreate": bytes["character-recreate"],
-    });
-    check(
-        "deletes: the booted character is freed",
-        bytes["boot-character-delete"] <= bytes["character-recreate"] - 2 * MiB,
-        {
+    // A check comparing snapshots runs only when `HEAP_STEPS` captured all of them.
+    const compared = (name, steps, run) => {
+        const missing = steps.filter((step) => !capturedSteps.has(step));
+        if (missing.length === 0) run();
+        else console.log(`SKIP ${name} (not captured: ${missing.join(", ")})`);
+    };
+    compared("deletes: the recreated characters leave nothing", ["home", "character-recreate"], () =>
+        check("deletes: the recreated characters leave nothing", bytes["character-recreate"] <= bytes.home + 2 * MiB, {
+            home: bytes.home,
             "character-recreate": bytes["character-recreate"],
-            "boot-character-delete": bytes["boot-character-delete"],
-        },
+        }),
+    );
+    compared("deletes: the booted character is freed", ["character-recreate", "boot-character-delete"], () =>
+        check(
+            "deletes: the booted character is freed",
+            bytes["boot-character-delete"] <= bytes["character-recreate"] - 2 * MiB,
+            {
+                "character-recreate": bytes["character-recreate"],
+                "boot-character-delete": bytes["boot-character-delete"],
+            },
+        ),
     );
 
     // Slice C1: the chat styles' faces (inline and imported) are on the chat screen, and leave with it.
     const faces = Object.fromEntries(rows.map((row) => [row.step, row.fontFaces]));
     check("fonts: the chat styles' import was fetched", importsServed > 0, { importsServed });
-    check("fonts: on the chat screen, one copy per styled reply", faces.chats === faces.boot + CHAT_FONT_FACES, {
-        boot: faces.boot,
-        chats: faces.chats,
-        expected: faces.boot + CHAT_FONT_FACES,
-    });
-    check("fonts: gone after the chat", faces["module-assets"] === faces.boot && faces.home === faces.boot, faces);
+    compared("fonts: on the chat screen, one copy per styled reply", ["chats"], () =>
+        check("fonts: on the chat screen, one copy per styled reply", faces.chats === faces.boot + CHAT_FONT_FACES, {
+            boot: faces.boot,
+            chats: faces.chats,
+            expected: faces.boot + CHAT_FONT_FACES,
+        }),
+    );
+    compared("fonts: gone after the chat", ["module-assets", "home"], () =>
+        check("fonts: gone after the chat", faces["module-assets"] === faces.boot && faces.home === faces.boot, faces),
+    );
     // Slice C2's measurement: the two snapshots of the same screen differ in two rows' copies of the
     // style, so the difference is what one shared stylesheet would save there.
-    check("fonts: one copy after emptying", faces["chat-shared-style"] === faces.boot + ROW_FONT_FACES, {
-        boot: faces.boot,
-        "chat-shared-style": faces["chat-shared-style"],
-        expected: faces.boot + ROW_FONT_FACES,
-    });
-    const rowCopies = bytes.chats - bytes["chat-shared-style"];
-    console.log(
-        `style copies: chats - chat-shared-style = ${(rowCopies / 1048576).toFixed(2)} MiB for ${STYLED_REPLIES - 1} ` +
-            `copies (${(rowCopies / (STYLED_REPLIES - 1) / ROW_FONT_FACES).toFixed(0)} bytes per face)`,
+    compared("fonts: one copy after emptying", ["chat-shared-style"], () =>
+        check("fonts: one copy after emptying", faces["chat-shared-style"] === faces.boot + ROW_FONT_FACES, {
+            boot: faces.boot,
+            "chat-shared-style": faces["chat-shared-style"],
+            expected: faces.boot + ROW_FONT_FACES,
+        }),
     );
+    compared("style copies", ["chats", "chat-shared-style"], () => {
+        const rowCopies = bytes.chats - bytes["chat-shared-style"];
+        console.log(
+            `style copies: chats - chat-shared-style = ${(rowCopies / 1048576).toFixed(2)} MiB for ${STYLED_REPLIES - 1} ` +
+                `copies (${(rowCopies / (STYLED_REPLIES - 1) / ROW_FONT_FACES).toFixed(0)} bytes per face)`,
+        );
+    });
 
     check("no page errors", pageErrors.length === 0, pageErrors.length ? pageErrors : undefined);
     const egress = unexpectedEgress(blocked);
