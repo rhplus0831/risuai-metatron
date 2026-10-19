@@ -298,7 +298,7 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
 /**
  * Imports a `.risum` file through the server (historical `docs/plan/large-asset-import.md` slice 2c); every
  * `.risum` file entry point (the module dialog, the drop, `#share_module`, `#import=`, the launch
- * queue) calls it, then adds the module itself. Only the file's header and main record are read
+ * queue) calls it, then adds the module through `addImportedModule`. Only the file's header and main record are read
  * here (`file.slice`, decoded with the reader the server uses, `shared/moduleImport.ts`), and on that
  * module, before anything is sent, the low-level access question is asked and `prepareModuleImport`
  * runs. Then the file itself is uploaded (`importModuleOverServer`, its progress in the wait alert),
@@ -453,7 +453,8 @@ function moduleImportErrorMessage(error: unknown): string {
 }
 
 /**
- * Adds an imported module and waits until the server holds it: the save runs at once
+ * Adds an imported module and waits until the server holds it (every module import entry point: the
+ * module dialog, the drop, `#import_module=`, `#share_module`, `#import=`, the launch queue): the save runs at once
  * (`flushResources` in a mutation scope begun before the add), with `moduleImportSaving` in the wait
  * alert. True when the module is saved; replaces only its own wait alert with success or clears it.
  * A conflict that replaced this tab's modules with another writer's (`modules/main` in the scope's
@@ -464,7 +465,7 @@ function moduleImportErrorMessage(error: unknown): string {
  * conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails.
  * The flush saves every pending change, not only the module.
  */
-async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
+export async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
     const scope = beginMutationScope();
     const id = addModule(module);
     alertWait(language.moduleImportSaving);

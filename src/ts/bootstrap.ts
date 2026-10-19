@@ -69,7 +69,6 @@ export async function loadData() {
                 recordClientEvent({ kind: "serviceWorker", phase: "unsupported" });
                 setUsingSw(false);
             }
-            characterURLImport();
             try {
                 const isInStandaloneMode =
                     window.matchMedia("(display-mode: standalone)").matches ||
@@ -102,6 +101,9 @@ export async function loadData() {
             // Saving starts before plugins load, so the browser-local import below can save.
             startResourceSync();
             watchRemoteRecords();
+            // After saving starts: a link's or share's module import waits for its save's
+            // acknowledgement (`addImportedModule`), which a flush before the start would skip.
+            characterURLImport();
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
             await loadPluginPermissions();

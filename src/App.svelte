@@ -18,7 +18,6 @@
         gridOpenStore,
     } from "./ts/stores.svelte";
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
-    import { addModule } from "./ts/storage/collectionStore.svelte";
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
     import ReloadNotice from "./lib/Others/ReloadNotice.svelte";
@@ -30,7 +29,7 @@
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
     import { importPreset } from "./ts/storage/presets.svelte";
-    import { importModuleFile } from "./ts/process/modules";
+    import { addImportedModule, importModuleFile } from "./ts/process/modules";
     import { alertNormal } from "./ts/alert";
     import { language } from "./lang";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
@@ -99,11 +98,11 @@
             alertNormal(language.successImport);
         } else if (name.endsWith(".risum")) {
             // The dropped `File` itself goes to the server (large-asset-import slice 2c); the module
-            // comes back prepared, or null when declined or failed (alerted).
+            // comes back prepared, or null when declined or failed (alerted). Success is alerted only
+            // once the save is acknowledged (`addImportedModule`).
             const module = await importModuleFile(file);
             if (module) {
-                addModule(module);
-                alertNormal(language.successImport);
+                await addImportedModule(module, { announce: true });
             }
         } else {
             await importCharacterProcess({

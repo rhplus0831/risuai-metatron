@@ -609,6 +609,109 @@ describe("the import alert waits for the acknowledgement (data-loss plan slice 5
         expect(names(record("modules"))).toEqual(["Announced", "Silent"]);
         expect(fake.batchCount()).toBe(2);
     });
+
+    // Open-bug-fixes slice C5: the link and file entry points in `characterCards.ts` add through
+    // `addImportedModule` too, and open the module settings only once the save is acknowledged.
+    const ENTRIES = ["#import_module=", "#import=", "launch queue"] as const;
+    /**
+     * Starts `entry`'s import of a module named `name`. `importing` is the hash import's own promise;
+     * the launch queue's consumer returns nothing, so its import ends with the timers advanced after it.
+     */
+    const startEntry = async (
+        h: Awaited<ReturnType<typeof boot>>,
+        entry: (typeof ENTRIES)[number],
+        name: string,
+    ): Promise<{ importing: Promise<unknown> }> => {
+        const { modules, cards, stores } = h;
+        stores.settingsOpen.set(false);
+        stores.SettingsMenuIndex.set(-1);
+        if (entry === "#import_module=") {
+            const data = Buffer.from(
+                JSON.stringify({ type: "risuModule", name, id: "link-id", description: "", lorebook: [] }),
+            ).toString("base64");
+            vi.stubGlobal("location", new URL(`http://localhost/#import_module=${encodeURIComponent(data)}`));
+            return { importing: cards.characterURLImport() };
+        }
+        const file = new File([new Uint8Array((await risum(modules, name)).data)], `${name}.risum`);
+        if (entry === "#import=") {
+            vi.stubGlobal("location", new URL("http://localhost/#import=http://localhost/linked.risum"));
+            vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+            const response = new Response("opaque", {
+                headers: { "content-disposition": `attachment; filename="${name}.risum"` },
+            });
+            vi.spyOn(response, "blob").mockResolvedValue(file);
+            vi.stubGlobal(
+                "fetch",
+                vi.fn(async () => response),
+            );
+            return { importing: cards.characterURLImport() };
+        }
+        const setConsumer = vi.fn();
+        vi.stubGlobal("launchQueue", { setConsumer });
+        vi.stubGlobal("location", new URL("http://localhost/"));
+        await cards.characterURLImport();
+        setConsumer.mock.calls[0][0]({ files: [{ name: file.name, getFile: async () => file }] });
+        return { importing: Promise.resolve() };
+    };
+    const settingsShown = (h: Awaited<ReturnType<typeof boot>>) =>
+        get(h.stores.settingsOpen) === true && get(h.stores.SettingsMenuIndex) === 14;
+
+    it.each(ENTRIES)(
+        "%s shows successImport and the module settings only once the batch is acknowledged",
+        async (entry) => {
+            const h = await boot();
+            const { list, record, fake, shown } = h;
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => (release = resolve));
+            intercept(async (url, answer) => {
+                const response = await answer();
+                if (url === "/api/resources/batch") {
+                    await held;
+                }
+                return response;
+            });
+            let settled = false;
+            const importing = (await startEntry(h, entry, "Linked")).importing.finally(() => (settled = true));
+            await vi.advanceTimersByTimeAsync(2_000);
+            // The server applied the batch; its answer is held: the module is listed, nothing announced yet.
+            expect(names(list())).toEqual(["Linked"]);
+            expect(names(record("modules"))).toEqual(["Linked"]);
+            expect(shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(settingsShown(h)).toBe(false);
+            if (entry !== "launch queue") {
+                expect(settled).toBe(false);
+            }
+            release();
+            await vi.advanceTimersByTimeAsync(0);
+            await importing;
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+            expect(shown()).toEqual({ type: "normal", msg: language.successImport });
+            expect(settingsShown(h)).toBe(true);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(fake.batchCount()).toBe(1);
+        },
+    );
+
+    it.each(ENTRIES)(
+        "%s reports moduleImportDiscarded when a conflict discards this tab's modules: no success, no settings",
+        async (entry) => {
+            const h = await boot();
+            const { list, record, fake, collectionStore } = h;
+            const m0 = await saved(h);
+            collectionStore.updateModule(m0, { name: "mine" });
+            remote(fake, (modules) => (modules[0].name = "theirs"));
+            const { importing } = await startEntry(h, entry, "Lost");
+            await vi.advanceTimersByTimeAsync(2_000);
+            await importing;
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(clearedAfterSaving()).toBe(false);
+            expect(settingsShown(h)).toBe(false);
+            expect(names(list())).toEqual(["theirs"]);
+            expect(names(record("modules"))).toEqual(["theirs"]);
+        },
+    );
 });
 
 // Slice 2c: drive the file boundary and its callers, keeping the module/save stores real.

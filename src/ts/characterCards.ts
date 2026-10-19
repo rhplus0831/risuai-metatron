@@ -34,7 +34,7 @@ import {
     characterSnapshot,
     type ClientCharacter,
 } from "./storage/characterStore.svelte";
-import { addModule, incrementStatic } from "./storage/collectionStore.svelte";
+import { incrementStatic } from "./storage/collectionStore.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
 import { reencodeImage } from "./process/files/inlays";
@@ -42,6 +42,7 @@ import { PngChunk } from "./pngChunk";
 import type { OnnxModelFiles } from "./process/transformers";
 import { CharXImporter, CharXWriter } from "./process/processzip";
 import {
+    addImportedModule,
     exportModuleLegacy,
     importModuleFile,
     prepareModuleImport,
@@ -598,10 +599,10 @@ export async function characterURLImport() {
         if (!(await prepareModuleImport(importData))) {
             return false;
         }
-        addModule(importData);
-        alertNormal(language.successImport);
-        SettingsMenuIndex.set(14);
-        settingsOpen.set(true);
+        if (await addImportedModule(importData, { announce: true })) {
+            SettingsMenuIndex.set(14);
+            settingsOpen.set(true);
+        }
         return;
     }
     if (hash.startsWith("#import_preset=")) {
@@ -628,11 +629,13 @@ export async function characterURLImport() {
             if (!md) {
                 return false;
             }
-            const id = addModule(md);
-            alertNormal(language.successImport);
-            SettingsMenuIndex.set(14);
-            settingsOpen.set(true);
-            return id;
+            // The share is consumed once the module was added, whether or not its save was
+            // acknowledged (the failure is alerted): importing it again would add it twice.
+            if (await addImportedModule(md, { announce: true })) {
+                SettingsMenuIndex.set(14);
+                settingsOpen.set(true);
+            }
+            return true;
         });
     }
     if (hash.startsWith("#share_preset")) {
@@ -685,10 +688,10 @@ export async function characterURLImport() {
             if (!md) {
                 return;
             }
-            addModule(md);
-            alertNormal(language.successImport);
-            SettingsMenuIndex.set(14);
-            settingsOpen.set(true);
+            if (await addImportedModule(md, { announce: true })) {
+                SettingsMenuIndex.set(14);
+                settingsOpen.set(true);
+            }
             return;
         }
     }

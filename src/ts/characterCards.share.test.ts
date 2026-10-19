@@ -8,16 +8,23 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
 // WEB-01: the page consumes pending shares through Cache Storage, including before SW control.
 // Keep the importers and record writes real; stub only external services and user decisions.
-const { server, alerts } = vi.hoisted(() => ({
-    server: { current: null as any },
-    alerts: {
-        error: vi.fn(),
-        normal: vi.fn(),
+const { server, alerts } = vi.hoisted(() => {
+    // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
+    // (`boot` installs it in `current`): `addImportedModule` reads it back to replace only its own
+    // wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls for the assertions.
+    const alerts = {
+        current: null as null | { set: (data: { type: string; msg: string }) => void },
+        show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),
+        error: vi.fn((msg: unknown) => alerts.show("error")(msg)),
+        normal: vi.fn((msg: unknown) => alerts.show("normal")(msg)),
+        wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
+        clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
         store: { set: vi.fn(), subscribe: vi.fn() },
-    },
-}));
+    };
+    return { server: { current: null as any }, alerts };
+});
 
 vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -29,12 +36,12 @@ vi.mock("./alert", () => ({
     alertNormalWait: alerts.normalWait,
     alertConfirm: alerts.confirm,
     alertStore: alerts.store,
-    alertWait: vi.fn(),
+    alertWait: alerts.wait,
     alertInput: vi.fn(async () => ""),
     alertSelect: vi.fn(async () => ""),
     alertAddCharacter: vi.fn(),
     alertCardExport: vi.fn(),
-    alertClear: vi.fn(),
+    alertClear: alerts.clear,
     alertModuleSelect: vi.fn(),
     alertMd: vi.fn(),
     waitAlert: vi.fn(),
@@ -76,6 +83,7 @@ async function boot() {
     const modules = await import("./process/modules");
     const presets = await import("./storage/presets.svelte");
     const cards = await import("./characterCards");
+    alerts.current = booted.stores.alertStore;
     booted.stores.settingsOpen.set(false);
     booted.stores.SettingsMenuIndex.set(-1);
     return { ...booted, cards, modules, presets };
@@ -159,6 +167,62 @@ describe("characterURLImport pending shares", () => {
         expectRead(share);
         expect(share.entries.has(share.url)).toBe(false);
         expect(app.settings.modules[0].id).not.toBe("source-id");
+    });
+
+    // Open-bug-fixes slice C5: the module is added through `addImportedModule`, so success and the
+    // settings page wait for the save's acknowledgement.
+    it("announces a shared module and opens its settings only once the save is acknowledged", async () => {
+        const app = await boot();
+        const share = pendingShare("module", await moduleBytes(app));
+        const realFetch = app.fake.fetch.bind(app.fake) as (url: string, init?: RequestInit) => Promise<Response>;
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        vi.spyOn(app.fake, "fetch").mockImplementation(async (url: string, init?: RequestInit) => {
+            const response = await realFetch(url, init);
+            if (url === "/api/resources/batch") {
+                await held;
+            }
+            return response;
+        });
+        let settled = false;
+        const importing = app.cards.characterURLImport().finally(() => (settled = true));
+        await vi.advanceTimersByTimeAsync(2_000);
+        // The server applied the batch; its answer is held.
+        expect(settled).toBe(false);
+        expect(app.settings.modules.map((module) => module.name)).toEqual(["Shared module"]);
+        expect(app.fake.record("modules", "main").data.map((module: any) => module.name)).toEqual(["Shared module"]);
+        expect(get(app.stores.alertStore)).toMatchObject({ type: "wait", msg: language.moduleImportSaving });
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(get(app.stores.settingsOpen)).toBe(false);
+        expect(share.cache.delete).not.toHaveBeenCalled();
+        release();
+        await importing;
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+        expect(get(app.stores.settingsOpen)).toBe(true);
+        expect(get(app.stores.SettingsMenuIndex)).toBe(14);
+        expect(share.entries.has(share.url)).toBe(false);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("reports moduleImportDiscarded for a shared module a conflict discards, opens no settings, and consumes the share", async () => {
+        const app = await boot();
+        const m0 = app.collectionStore.addModule({ id: "m0", name: "m0", lorebook: [] });
+        await app.sync.flushResources();
+        app.collectionStore.updateModule(m0, { name: "mine" });
+        // Another tab's rename of the saved module: this tab's edit and its import lose the conflict.
+        const stored = JSON.parse(JSON.stringify(app.fake.record("modules", "main").data));
+        stored[0].name = "theirs";
+        app.fake.set("modules", "main", stored);
+        const share = pendingShare("module", await moduleBytes(app));
+        const importing = app.cards.characterURLImport();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await importing;
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(get(app.stores.settingsOpen)).toBe(false);
+        expect(app.settings.modules.map((module) => module.name)).toEqual(["theirs"]);
+        // Added once already: importing the share again would add the module twice.
+        expect(share.entries.has(share.url)).toBe(false);
     });
 
     it("imports a preset, opens prompt settings, then consumes its entry", async () => {
