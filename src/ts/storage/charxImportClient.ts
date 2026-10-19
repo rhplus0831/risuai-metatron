@@ -22,7 +22,7 @@ export function importCharxOverServer(file: Blob, options: ServerImportOptions =
 }
 
 /** The result line, told apart by its `assets`, with the shape the importer reads. */
-function readCharxResult(line: Record<string, unknown>): CharxImportResult | null {
+export function readCharxResult(line: Record<string, unknown>): CharxImportResult | null {
     if (!("assets" in line)) {
         return null;
     }

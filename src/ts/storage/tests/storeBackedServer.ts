@@ -251,8 +251,17 @@ export class StoreBackedServer {
         return this.store.readRefs([], { chatCollections: [characterId] }).chatCollections[0].order;
     }
 
-    /** Applies chat groups as another tab would. */
-    chatBatch(chats: { characterId: string; chatId: string; baseRevision: string | null; ops: ChatOp[] }[]) {
+    /** Applies chat groups as another tab would (with the tab's `groupId` and `retry` when given). */
+    chatBatch(
+        chats: {
+            characterId: string;
+            chatId: string;
+            baseRevision: string | null;
+            ops: ChatOp[];
+            groupId?: string;
+            retry?: true;
+        }[],
+    ) {
         return this.store.applyChanges({ chats });
     }
 

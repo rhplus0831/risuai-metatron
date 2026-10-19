@@ -81,6 +81,8 @@ import {
     type ChatWork,
     chatWorkBody,
     forgetCharacter,
+    settleCharacterDelete,
+    ackCharacterDelete,
     hasChatWork,
     hydrateChat,
     hydrateChatPatch,
@@ -247,6 +249,21 @@ const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
 
 /** What the server holds for each record this client knows: `<kind>\0<id>` → revision and JSON text. */
 const persisted = new Map<string, Persisted>();
+/**
+ * The text this client sent for a record whose answer was lost (a network failure or a 5xx, not a
+ * refusal), on the saved base revision it was sent on: the server holds it or still the saved copy.
+ * Keyed like `persisted`. While a key has one, every cycle resends exactly that text on that base
+ * (`collectOperations`), and the key's newer text, a revert to the saved text included, waits for
+ * the next cycle: on a given base only one write can land, so one text per key is enough, and the
+ * retry's answer (or its 409's read, compared with the op as for any retry) settles it. A live
+ * update or a job's record does not go into the mirror meanwhile (`canApplyRemote`,
+ * `applyHydration`). A feed patch (`applyRemotePatch`) or a conflict read (`recoverConflictedWork`,
+ * say for a delete sent after it) equal to it is the lost write: it becomes the saved base at the
+ * server's revision with no discard, and the newer text is sent on it. Cleared then, on the
+ * acknowledgement of a write of the key, when the server refuses that text (400, 413), and when a
+ * conflict replaces the record.
+ */
+const inDoubt = new Map<string, { baseRevision: string | null; text: string; parts: RecordParts | null }>();
 /** Dirty record keys → the generation of their latest mark. */
 const dirty = new Map<string, number>();
 /** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
@@ -272,6 +289,14 @@ let timerDeadline = 0;
 let backoffUntil = 0;
 /** Characters whose chat list must be read from the server (a recovery inserted or emptied them). */
 const hydrate = new Set<string>();
+/**
+ * Characters whose chat list an acknowledgement of this client's own write showed another writer
+ * changed (`ackChatWork`): read and applied as a live update that keeps a queued reorder
+ * (`applyRemoteCollection` with `keepPendingOrder`), unless a kept chat with a held revision is
+ * missing from the server's list: then the reorder is discarded with the notice and report. Their
+ * reorders wait until then.
+ */
+const listRefresh = new Set<string>();
 let inFlight: Promise<void> | null = null;
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
@@ -332,6 +357,7 @@ const MAX_REMOTE_READS = 1000;
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
+    inDoubt.clear();
     characterTexts.clear();
     moduleTexts = null;
     for (const [kind, records] of Object.entries(result.kinds)) {
@@ -402,6 +428,7 @@ function hasPendingWork(): boolean {
         hasPendingMembership(true) ||
         hasChatWork(canSaveCharacter) ||
         hydrate.size > 0 ||
+        listRefresh.size > 0 ||
         llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
         hasRemoteWork()
     ) {
@@ -1127,12 +1154,44 @@ function updateOperation(
 function collectOperations(): {
     ops: PendingOp[];
     captured: Map<string, number>;
+    /** In-doubt keys resent as sent this cycle while a newer local text waits: not settled. */
+    heldBack: Set<string>;
     membership: number;
     chatWork: ChatWork;
 } {
     const captured = new Map(dirty);
     const membership = membershipGeneration;
     const ops: PendingOp[] = [];
+    const heldBack = new Set<string>();
+    /**
+     * Resends an in-doubt key's text exactly as sent (`inDoubt`); its newer local text (`localText`)
+     * waits for the next cycle, the key unsettled. False when the key is not in doubt (any more): its
+     * saved base moved, or the text equals the saved one but for key order.
+     */
+    function resendInDoubt(key: string, kind: string, id: string, localText: string | undefined): boolean {
+        const doubt = inDoubt.get(key);
+        if (!doubt) {
+            return false;
+        }
+        const current = persisted.get(key);
+        if ((current?.revision ?? null) !== doubt.baseRevision) {
+            inDoubt.delete(key);
+            return false;
+        }
+        const sent = { text: doubt.text, parts: doubt.parts };
+        const op = current
+            ? updateOperation(key, kind, id, current, sent)
+            : pendingOp({ key, kind, id, baseRevision: null, ...sent });
+        if (!op) {
+            inDoubt.delete(key);
+            return false;
+        }
+        addOperation(op);
+        if (localText !== doubt.text) {
+            heldBack.add(key);
+        }
+        return true;
+    }
     function addOperation(op: PendingOp) {
         if (recordQuarantine(op.key)) {
             return;
@@ -1149,6 +1208,9 @@ function collectOperations(): {
             continue;
         }
         const projection = collectionProjection(collection);
+        if (resendInDoubt(key, collection, SINGLETON_RESOURCE_ID, projection?.text)) {
+            continue;
+        }
         const current = persisted.get(key);
         // An absent collection (e.g. no plugin storage yet) has no record to write.
         if (projection !== undefined && projection.text !== current?.text) {
@@ -1170,6 +1232,9 @@ function collectOperations(): {
         const key = characterKey(id);
         // A character whose refused delete was undone: nothing waits any more.
         jobBlockedRecords.delete(key);
+        if (inDoubt.has(key) && resendInDoubt(key, RESOURCE_KIND.characters, id, characterProjection(character).text)) {
+            continue;
+        }
         const current = persisted.get(key);
         if (current && !captured.has(key)) {
             continue;
@@ -1187,6 +1252,16 @@ function collectOperations(): {
             }
         }
     }
+    for (const key of inDoubt.keys()) {
+        // A create whose answer was lost, of a character removed since: resent, so that its delete
+        // follows on the revision it gets (or nothing, when it never landed).
+        if (key.startsWith(characterPrefix) && !persisted.has(key)) {
+            const id = key.slice(characterPrefix.length);
+            if (!present.has(id)) {
+                resendInDoubt(key, RESOURCE_KIND.characters, id, undefined);
+            }
+        }
+    }
     const creating = new Set<string>();
     for (const op of ops) {
         if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
@@ -1198,7 +1273,9 @@ function collectOperations(): {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
             if (!present.has(id) && !isRecordJobBlocked(key)) {
-                forgetCharacter(id);
+                // Its chats' work is settled now; the revisions held of them stay until the deletion
+                // is acknowledged, for a re-add of the id before that (`settleCharacterDelete`).
+                settleCharacterDelete(id);
                 characterTexts.delete(id);
                 addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
@@ -1206,7 +1283,13 @@ function collectOperations(): {
             }
         }
     }
-    return { ops, captured, membership, chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS }) };
+    return {
+        ops,
+        captured,
+        heldBack,
+        membership,
+        chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS, holdOrders: listRefresh }),
+    };
 }
 
 /** One request of a cycle: resource ops, then chat groups and reorders. */
@@ -1351,14 +1434,24 @@ async function cycle() {
     if (halted || trackedCharacters() === undefined) {
         return;
     }
-    for (const stage of [reloadDeferredChats, hydrateCharacters, applyRemoteUpdates, refreshIdleChats]) {
-        await stage();
+    const stages: (() => Promise<boolean | void>)[] = [
+        reloadDeferredChats,
+        hydrateCharacters,
+        applyRemoteUpdates,
+        refreshIdleChats,
+    ];
+    for (const stage of stages) {
+        const discardedWork = await stage();
         if (halted) {
             // A restore replaced the data meanwhile: nothing more is applied or sent.
             return;
         }
+        if (discardedWork) {
+            // At once: a later stage's failure must not swallow it.
+            showReloadedNotice();
+        }
     }
-    const { ops, captured, membership, chatWork } = collectOperations();
+    const { ops, captured, heldBack, membership, chatWork } = collectOperations();
     // The credential writes queued so far go after this batch; one queued while it is in flight
     // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
     const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
@@ -1396,17 +1489,27 @@ async function cycle() {
                 if (quarantineRejectedChat(error, batch.work)) {
                     return;
                 }
-                requeueChatWork(batch.work);
+                // No answer: the server may have committed the batch (a lost response). Its chat
+                // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
+                // in doubt.
+                const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
+                requeueChatWork(batch.work, { lost });
+                if (lost) {
+                    noteInDoubt(batch.ops);
+                }
                 if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
                     const match = /^ops\[(\d+)\]/.exec(error.message);
                     const op = match ? batch.ops[Number(match[1])] : undefined;
                     if (op) {
+                        // The server refuses that text: it never held it.
+                        inDoubt.delete(op.key);
                         quarantineRecord(op, error);
                     } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
                         // The error names no record (including order/envelope errors). Probe each
                         // unit separately next cycle so unrelated records and chats can still save.
                         isolateBatches = true;
                     } else if (batch.ops[0]) {
+                        inDoubt.delete(batch.ops[0].key);
                         quarantineRecord(batch.ops[0], error, false);
                     } else if (batch.work.groups[0]) {
                         quarantineChat(batch.work.groups[0]);
@@ -1420,15 +1523,21 @@ async function cycle() {
                 throw error;
             }
             batch.ops.forEach((op, opIndex) => {
+                inDoubt.delete(op.key);
                 const revision = result.results[opIndex]?.revision;
                 if (op.text === null || revision === null || revision === undefined) {
                     persisted.delete(op.key);
+                    if (op.text === null && op.kind === RESOURCE_KIND.characters) {
+                        // The character's chats went with it: their state is forgotten now (a
+                        // character added again under the id meanwhile creates its chats anew).
+                        ackCharacterDelete(op.id);
+                    }
                 } else {
                     persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                 }
             });
             for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
-                hydrate.add(characterId);
+                listRefresh.add(characterId);
             }
         }
     }
@@ -1437,7 +1546,7 @@ async function cycle() {
     }
     await sendSecretOps(capturedSecretOps);
     for (const [key, marked] of captured) {
-        if (recordQuarantine(key)) {
+        if (recordQuarantine(key) || heldBack.has(key)) {
             continue;
         }
         if (isRecordJobBlocked(key)) {
@@ -1765,6 +1874,7 @@ function acceptRemote(item: RemoteItem) {
             ? pluginStorageLosses(key, item)
             : null;
     quarantinedRecords.delete(key);
+    inDoubt.delete(key);
     applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
         persisted.delete(key);
@@ -2286,6 +2396,34 @@ function sameJson(a: string, b: string): boolean {
     }
 }
 
+/**
+ * Keeps the texts of a batch whose answer was lost as in-doubt (`inDoubt`). A key already in doubt
+ * keeps its entry (the batch resent that text, or deleted the record); a deletion starts none.
+ */
+function noteInDoubt(ops: readonly PendingOp[]) {
+    for (const op of ops) {
+        if (op.text !== null && !inDoubt.has(op.key)) {
+            inDoubt.set(op.key, { baseRevision: op.baseRevision, text: op.text, parts: op.parts ?? null });
+        }
+    }
+}
+
+/**
+ * When the server's copy of `key` is its in-doubt text (a lost write landed): that text becomes the
+ * saved base at `revision`, the in-doubt entry is cleared, and the key is marked, so the next cycle
+ * sends this client's newer text on it (nothing when the mirror holds that text).
+ */
+function adoptInDoubt(key: string, revision: string, text: string): boolean {
+    const doubt = inDoubt.get(key);
+    if (!doubt || !sameJson(doubt.text, text)) {
+        return false;
+    }
+    inDoubt.delete(key);
+    persisted.set(key, { revision, text: doubt.text, parts: doubt.parts });
+    markKey(key);
+    return true;
+}
+
 /** A conflicting revision already received over the feed or the job's hydration connection. */
 function rebuildConflictRecord(conflict: { kind: string; id: string; revision: string | null }): RemoteItem | null {
     if (conflict.revision === null || parseRevisionToken(conflict.revision)?.epoch !== getResourceEpoch()) {
@@ -2314,8 +2452,27 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
  * Another tab or device wrote records this batch was based on. Rebuilds an already received revision
  * or reads it back, then puts the server version into the mirror, unless the server already holds
  * exactly what this client sent (a retry after a lost response). The rest of the batch goes out in the next cycle.
+ * The reload notice is shown once per recovery, when it discarded anything, also when a read after
+ * the first discard throws.
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
+    const notice = { owed: false };
+    try {
+        await recoverConflictedWork(error, batch, work, notice);
+    } finally {
+        if (notice.owed && !halted) {
+            showReloadedNotice();
+        }
+    }
+}
+
+/** The body of `recoverFromConflict`: sets `notice.owed` as soon as anything is discarded. */
+async function recoverConflictedWork(
+    error: ResourceConflictError,
+    batch: readonly PendingOp[],
+    work: ChatWork,
+    notice: { owed: boolean },
+) {
     const sent = new Map(batch.map((op) => [op.key, op]));
     const refs: { kind: string; id: string }[] = [];
     const rebuilt: RemoteItem[] = [];
@@ -2323,6 +2480,7 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
     const generatingChats = new Set<string>();
+    const expiredChats = new Set<string>();
     /** Per generating chat: the locked messages its group targets (their edits are dropped). */
     const lockedMessages = new Map<string, string[]>();
     let generating = false;
@@ -2353,7 +2511,11 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         }
         if (isChatConflict(conflict)) {
             chatRefs.push({ characterId: conflict.characterId, id: conflict.id });
-            conflictedChats.add(`${conflict.characterId}\u0000${conflict.id}`);
+            const key = `${conflict.characterId}\u0000${conflict.id}`;
+            conflictedChats.add(key);
+            if (conflict.reason === "expired") {
+                expiredChats.add(key);
+            }
         } else if (isChatOrderConflict(conflict)) {
             conflictedOrders.add(conflict.characterId);
         } else {
@@ -2380,7 +2542,7 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         showGeneratingNotice();
     }
     if (generatingRecovery.reloaded) {
-        showReloadedNotice();
+        notice.owed = true;
     }
     const remainingWork = {
         groups: work.groups.filter((group) => !generatingChats.has(group.key)),
@@ -2399,8 +2561,13 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         conflictedChats,
         conflictedOrders,
         (read.chats ?? []) as RemoteChat[],
+        undefined,
+        undefined,
+        expiredChats,
     );
-    let reloaded = recovered.reloaded;
+    if (recovered.reloaded) {
+        notice.owed = true;
+    }
     for (const characterId of recovered.refresh) {
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
         hydrate.add(characterId);
@@ -2412,9 +2579,16 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         if (text !== null && op?.text != null && sameJson(op.text, text)) {
             // A retry after a lost response: the server holds what was sent (a patch's result keeps
             // the server's key order, so the text may differ in order only).
+            inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
             continue;
         }
+        if (text !== null && adoptInDoubt(key, item.revision!, text)) {
+            // An earlier lost write landed (this op, say a delete, is newer): its text is the base,
+            // and this client's newer change goes next cycle.
+            continue;
+        }
+        inDoubt.delete(key);
         if (mergeConcurrentChange(item, key)) {
             continue;
         }
@@ -2423,27 +2597,34 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
             hydrate.add(item.id);
         }
         acceptRemote(item);
-        reloaded = true;
+        notice.owed = true;
     }
-    if (hydrate.size > 0) {
-        reloaded = (await hydrateCharacters()) || reloaded;
-    }
-    if (reloaded) {
-        showReloadedNotice();
+    if (hydrate.size > 0 && (await hydrateCharacters())) {
+        notice.owed = true;
     }
 }
 
 /**
  * Reads the chat lists of characters a recovery inserted or whose chats changed on the server (their
  * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
- * listed until its read succeeds.
+ * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
+ * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
+ * generation runs on it; an acknowledgement's (`listRefresh`) is applied as a live update that keeps
+ * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
+ * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
+ * and stays listed while the list cannot be applied yet. Returns whether anything was discarded
+ * (the caller shows the reload notice), not whether anything was read.
  */
 async function hydrateCharacters(): Promise<boolean> {
-    // A character with a running generation waits until it ends.
-    const ids = [...hydrate].filter((id) => !isCharacterGenerating(id));
+    // A recovery's character with a running generation waits until it ends.
+    const ids = [
+        ...[...hydrate].filter((id) => !isCharacterGenerating(id)),
+        ...[...listRefresh].filter((id) => !hydrate.has(id)),
+    ];
     if (ids.length === 0) {
         return false;
     }
+    const issued = heldChatRevisionsByCharacter(ids);
     const read = await readRefs(
         ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
         { chatSummaryCollections: ids },
@@ -2451,20 +2632,39 @@ async function hydrateCharacters(): Promise<boolean> {
     if (halted) {
         return false;
     }
+    let discardedWork = false;
     const records = new Map(read.items.map((item) => [item.id, item]));
     for (const collection of read.chatSummaryCollections ?? []) {
-        const record = records.get(collection.characterId);
+        const id = collection.characterId;
+        const record = records.get(id);
+        if (!hydrate.has(id)) {
+            if (!listRefresh.has(id)) {
+                continue;
+            }
+            // Without an order (gone on the server) nothing is applied here: the live update or this
+            // client's next save removes the character, with the notice when that discards anything.
+            const discardsBefore = chatDiscardSequence();
+            if (!collection.order || applyRemoteCollection(collection, issued.get(id), { keepPendingOrder: true })) {
+                listRefresh.delete(id);
+            }
+            if (chatDiscardSequence() > discardsBefore) {
+                discardedWork = true;
+            }
+            continue;
+        }
         if (!collection.order && record && record.revision === null) {
             // The character itself is gone on the server: remove it with its chats.
             acceptRemote(record);
+            discardedWork = true;
         } else if (collection.order) {
-            acceptRemoteCollection(collection);
+            discardedWork = acceptRemoteCollection(collection) || discardedWork;
         } else {
-            console.error(`[Save] Character ${collection.characterId} has no chat order on the server`);
+            console.error(`[Save] Character ${id} has no chat order on the server`);
         }
-        hydrate.delete(collection.characterId);
+        hydrate.delete(id);
+        listRefresh.delete(id);
     }
-    return true;
+    return discardedWork;
 }
 
 /** The raw `$state` object of a character in the mirror (reads and raw writes; no wrapper). */
@@ -2476,19 +2676,19 @@ function findMirrorCharacter(id: string): (character | groupChat) | undefined {
 /**
  * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
  * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
- * The reload notice is shown only when a chat was replaced or removed (its work discarded), not
- * when every chat was skipped (a new job locked it, or the read did not list it).
+ * Returns whether a chat was replaced or removed (its work discarded: the cycle shows the reload
+ * notice); false when every chat was skipped (a new job locked it, or the read did not list it).
  */
-async function reloadDeferredChats() {
+async function reloadDeferredChats(): Promise<boolean> {
     const released = deferredReloads();
     if (released.length === 0) {
-        return;
+        return false;
     }
     const read = await readRefs([], {
         chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
     if (halted) {
-        return;
+        return false;
     }
     const discardsBefore = chatDiscardSequence();
     for (const chat of read.chats ?? []) {
@@ -2497,9 +2697,7 @@ async function reloadDeferredChats() {
             hydrate.add(refresh);
         }
     }
-    if (chatDiscardSequence() > discardsBefore) {
-        showReloadedNotice();
-    }
+    return chatDiscardSequence() > discardsBefore;
 }
 
 /**
@@ -2604,15 +2802,16 @@ function applySettingsRecord(
 /**
  * Puts a server record into the mirror (data null: the record is gone): a settings record through
  * `applyRaw` (nothing is marked), a character in place. After `presets`, `modelPresets`, or
- * `personas`, this tab's selections are resolved against the new list.
+ * `personas`, this tab's selections are resolved against the new list. A character removed by
+ * another writer discards its chats' unsent work (`forgetCharacter`); returns whether it had any.
  */
-function applyToMirror(kind: string, id: string, data: unknown) {
+function applyToMirror(kind: string, id: string, data: unknown): boolean {
     if (isSection(kind) || isSettingsCollection(kind)) {
         applySettingsRecord(kind, data);
         if (kind === COLLECTION_KIND.personas || kind === COLLECTION_KIND.modelPresets) {
             reconcileSelection();
         }
-        return;
+        return false;
     }
     switch (kind) {
         case RESOURCE_KIND.presets:
@@ -2625,24 +2824,28 @@ function applyToMirror(kind: string, id: string, data: unknown) {
                     reconcileSelection();
                 }
             }
-            return;
+            return false;
         case RESOURCE_KIND.characters: {
             const existed = findMirrorCharacter(id) !== undefined;
             noteMirrorReplaced();
             if (data === null && !existed) {
-                return;
+                // Removed here too (its deletion collected, its chats' work settled): what this
+                // client held of its chats is forgotten.
+                forgetCharacter(id);
+                return false;
             }
             // The raw path: the server record has only the character's own fields, so its render key
             // is kept and its chats stay the chat module's; a new one's chats arrive with a
             // collection read (`recoverFromConflict`). A removed selected character selects home.
             applyRawCharacter(id, data as Record<string, unknown> | null);
             if (data === null) {
-                forgetCharacter(id);
                 characterTexts.delete(id);
+                return forgetCharacter(id, { discard: true });
             }
-            return;
+            return false;
         }
     }
+    return false;
 }
 
 /**
@@ -2874,7 +3077,25 @@ function applyRemotePatch(ref: {
     }
     const key = recordKey(ref.kind, ref.id);
     const held = persisted.get(key);
-    if (held?.revision !== patch.baseRevision || !canApplyRemote(key, ref)) {
+    if (held?.revision !== patch.baseRevision) {
+        return false;
+    }
+    if (inDoubt.has(key)) {
+        // The echo of a lost write is taken as the saved base; the mirror keeps this client's text.
+        if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
+            return false;
+        }
+        const data = patchedRecord(held.text, patch);
+        if (data === null || !adoptInDoubt(key, ref.revision, recordText(ref.kind, data))) {
+            return false;
+        }
+        const waiting = remoteRecords.get(key);
+        if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
+            remoteRecords.delete(key);
+        }
+        return true;
+    }
+    if (!canApplyRemote(key, ref)) {
         return false;
     }
     const changed =
@@ -2995,7 +3216,7 @@ function applyCollectionPatch(kind: string, id: string, heldText: string, patch:
 
 /** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
 function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
-    if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
+    if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key) || inDoubt.has(key)) {
         return false;
     }
     const held = persisted.get(key);
@@ -3067,14 +3288,18 @@ function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): bo
     return false;
 }
 
-/** Puts a live update into the mirror as the server holds it: no discard, no settled key, no notice. */
+/**
+ * Puts a live update into the mirror as the server holds it: no settled resource key, no notice.
+ * Nothing of the record is discarded (`canApplyRemote` held it while it had a local change); a deleted
+ * character's unsent chat work is, and this returns whether there was any.
+ */
 function applyRemoteRecord(
     item: { kind: string; id: string; revision: string | null; data: unknown },
     collection?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] },
-) {
+): boolean {
     const key = recordKey(item.kind, item.id);
     const isNew = item.kind === RESOURCE_KIND.characters && !persisted.has(key);
-    applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
+    const discardedWork = applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
         persisted.delete(key);
     } else {
@@ -3087,6 +3312,7 @@ function applyRemoteRecord(
         applyRemoteCollection(collection);
     }
     notifyRemoteListeners(item.kind, item.id);
+    return discardedWork;
 }
 
 /**
@@ -3096,9 +3322,10 @@ function applyRemoteRecord(
  * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
  * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
  * issued for, or a later one its answer covers. A deletion applies only if the held revision is
- * unchanged since the read was issued; otherwise it is read again.
+ * unchanged since the read was issued; otherwise it is read again. Returns whether a character
+ * deletion discarded unsent chat work (the cycle shows the reload notice).
  */
-async function applyRemoteUpdates() {
+async function applyRemoteUpdates(): Promise<boolean> {
     settleRemoteRecords();
     for (const entry of [...remoteRecords.values()]) {
         if (entry.patch) {
@@ -3119,7 +3346,7 @@ async function applyRemoteUpdates() {
         MAX_REMOTE_READS,
     );
     if (records.length === 0 && collections.length === 0) {
-        return;
+        return false;
     }
     const issuedEntries = new Map(records);
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
@@ -3131,8 +3358,9 @@ async function applyRemoteUpdates() {
     );
     await tick();
     if (halted) {
-        return;
+        return false;
     }
+    let discardedWork = false;
     const collectionOf = new Map((read.chatSummaryCollections ?? []).map((entry) => [entry.characterId, entry]));
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
@@ -3157,7 +3385,7 @@ async function applyRemoteUpdates() {
             if (held.revision !== issuedHeld.get(key) || !canApplyRemote(key, entry)) {
                 continue;
             }
-            applyRemoteRecord(item);
+            discardedWork = applyRemoteRecord(item) || discardedWork;
             if (settled) {
                 remoteRecords.delete(key);
             }
@@ -3194,6 +3422,7 @@ async function applyRemoteUpdates() {
             remoteCollections.delete(id);
         }
     }
+    return discardedWork;
 }
 
 function notifyRemoteListeners(kind: string, id: string) {
@@ -3268,7 +3497,12 @@ export function applyHydration(record: HydrationRecord): boolean {
     if (order === null || order <= 0) {
         return false;
     }
-    if (sendingKeys.has(key) || isRecordJobBlocked(key) || projectRecord(record.kind, record.id) !== held.text) {
+    if (
+        sendingKeys.has(key) ||
+        isRecordJobBlocked(key) ||
+        inDoubt.has(key) ||
+        projectRecord(record.kind, record.id) !== held.text
+    ) {
         // A local change (or one being sent): keep the newest event and check it again after the
         // next cycle; by then the save has landed (and is older) or conflicted and reloaded. A dirty
         // mark alone, with the projection still equal to the saved text, is no change.
@@ -3376,14 +3610,14 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
     const firstChatDiscard = options.scope?.chat ?? chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
-    const hydrating = new Set(hydrate);
+    const hydrating = new Set([...hydrate, ...listRefresh]);
     const secretTarget = new Set(llmSecretState.queue.map((op) => op.id));
     const pending = () =>
         llmSecretState.queue.some((op) => secretTarget.has(op.id)) ||
         unsettled().length > 0 ||
         membershipAcked < membershipTarget ||
         unsettledChatObligations(chatObligations).length > 0 ||
-        [...hydrating].some((id) => hydrate.has(id));
+        [...hydrating].some((id) => hydrate.has(id) || listRefresh.has(id));
     for (let attempt = 0; attempt < 10 && pending(); attempt += 1) {
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");

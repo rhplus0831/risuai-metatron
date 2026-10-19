@@ -284,6 +284,43 @@ describe("copyPreset and importPreset", () => {
         expect(copy.formatingOrder).not.toBe(source.formatingOrder);
     });
 
+    // The archive feature (risuai-fastify `ee5382a9a` port): `archived` is list metadata of one
+    // install. A copy and an import start active; a preset share file never carries it (fastify's
+    // export does, so a file with it imports active too).
+    it("copyPreset of an archived preset starts active, and the source stays archived", () => {
+        bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, archived: true }] });
+        expect(settings.presets[0].archived).toBe(true);
+        copyPreset("source");
+        const [source, copy] = settings.presets;
+        expect(source.archived).toBe(true);
+        expect(copy.name).toBe("Source Copy");
+        expect(copy.temperature).toBe(33);
+        expect(Object.hasOwn(copy, "archived")).toBe(false);
+    });
+
+    it("a JSON import with `archived: true` (another fork's export) starts active", async () => {
+        bootWith();
+        const file = { name: "Archived elsewhere", temperature: 12, archived: true };
+        await importPreset({ name: "archived.json", data: new TextEncoder().encode(JSON.stringify(file)) });
+        const imported = settings.presets[1];
+        expect(imported.name).toBe("Archived elsewhere");
+        expect(imported.temperature).toBe(12);
+        expect(Object.hasOwn(imported, "archived")).toBe(false);
+    });
+
+    it("neither export format carries `archived`, so a shared file never arrives hidden in the recipient's archive", async () => {
+        bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, archived: true }] });
+        const risup = await downloadPreset("source", "return");
+        expect(ownKeys(risup.data)).not.toContain("archived");
+        expect(ownKeys(risup.data)).toEqual([...EXPORTED_KEYS, "maxContext"].sort());
+        const decoded = await decodeRisup(risup.buf as Uint8Array);
+        expect(ownKeys(decoded)).not.toContain("archived");
+        const json = await downloadPreset("source", "json");
+        expect(ownKeys(json.data)).not.toContain("archived");
+        // The stored record keeps it: only the file leaves it out.
+        expect(settings.presets[0].archived).toBe(true);
+    });
+
     it("a JSON import gets a fresh id even when the file carries one, keeps its values, and drops the ui fields", async () => {
         bootWith();
         const file = {

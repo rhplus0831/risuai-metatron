@@ -953,6 +953,12 @@ export interface botPreset {
     enableCustomFlags?: boolean;
     customFlags?: LLMFlags[];
     image?: string;
+    /**
+     * List organization only (`PROMPT_PRESET_LOCAL_FIELDS`, `shared/presets.ts`): `true` hides the
+     * preset from the preset list's default view. It is not a prompt field: never forwarded to the
+     * root, left out of `.risup` exports, and dropped by a copy or an import.
+     */
+    archived?: boolean;
     regex?: customscript[];
     reasonEffort?: number;
     thinkingTokens?: number;

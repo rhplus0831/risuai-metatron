@@ -602,4 +602,19 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         expect(readSettingsRoot("aiModel")).toBe("model-a");
         expect(preset("b").temperature).toBe(50);
     });
+
+    it("applyPresetTemplate keeps the preset's `archived` (list metadata) and never takes the template's", () => {
+        // The archive feature (risuai-fastify `ee5382a9a` port): applying prompt settings does not
+        // reorganize the list, whether the preset is archived or not.
+        boot();
+        preset("a").archived = true;
+        applyPresetTemplate({ ...PRESET_DEFAULTS, name: "Template", temperature: 33, archived: false } as any);
+        expect(presets()[0]).toMatchObject({ id: "a", name: "A", temperature: 33, archived: true });
+
+        changeToPreset("b");
+        expect(Object.hasOwn(preset("b"), "archived")).toBe(false);
+        applyPresetTemplate({ ...PRESET_DEFAULTS, name: "Template", temperature: 44, archived: true } as any);
+        expect(presets()[1]).toMatchObject({ id: "b", name: "B", temperature: 44 });
+        expect(Object.hasOwn(presets()[1], "archived")).toBe(false);
+    });
 });

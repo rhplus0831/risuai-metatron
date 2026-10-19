@@ -11,6 +11,8 @@
     } from "../../ts/storage/presets.svelte";
     import { addModelPreset } from "../../ts/storage/collectionStore.svelte";
     import {
+        ArchiveIcon,
+        ArchiveRestoreIcon,
         CopyIcon,
         Share2Icon,
         PencilIcon,
@@ -33,7 +35,15 @@
 
     let editMode = $state(false);
     let isDragging = $state(false);
+    /** The drop slot under the pointer, as a position in the shown rows (`visibleEntries`). */
     let dragOverIndex = $state(-1);
+    /** The prompt list's archived view: only archived presets (the default view hides them). */
+    let showArchived = $state(false);
+    let viewToggle = $state<HTMLButtonElement>();
+    let renaming = $state<string | null>(null);
+
+    /** A listed record: name and id for both kinds; `image` and `archived` only on a prompt preset. */
+    type ListedPreset = { id: string; name?: string; image?: string; archived?: boolean };
 
     interface Props {
         close?: any;
@@ -46,9 +56,16 @@
     let { close = () => {}, kind = "prompt", chatRef }: Props = $props();
     const isPrompt = $derived(kind === "prompt");
     const field = $derived<"promptPresetId" | "modelPresetId">(isPrompt ? "promptPresetId" : "modelPresetId");
-    /** The listed records: name and id for both kinds, `image` only on a prompt preset. */
-    const presets = $derived<{ id: string; name?: string; image?: string }[]>(
-        isPrompt ? settings.presets : settings.modelPresets,
+    /** The records of this kind, in list order. */
+    const presets = $derived<ListedPreset[]>(isPrompt ? settings.presets : settings.modelPresets);
+    /**
+     * The shown rows, each with its position in `presets` (`index`): on the prompt list the active
+     * or the archived presets by the view, on the model list every preset.
+     */
+    const visibleEntries = $derived.by(() =>
+        presets.flatMap((preset, index) =>
+            !isPrompt || (preset.archived === true) === showArchived ? [{ preset, index }] : [],
+        ),
     );
     /** The chat the list picks for (decision 8): the given chat, else the open chat; null at home. */
     const shownRef = $derived(chatRef ?? currentChatRef());
@@ -60,6 +77,14 @@
     $effect(() => {
         if (chatRef && !chatEntry(chatRef)) {
             close();
+        }
+    });
+
+    /** A remote archive must move focus away from the editor whose preset left the view. */
+    $effect(() => {
+        if (renaming !== null && !visibleEntries.some((entry) => entry.preset.id === renaming)) {
+            renaming = null;
+            viewToggle?.focus();
         }
     });
 
@@ -82,6 +107,26 @@
         } else {
             addModelPreset({ name: MODEL_PRESET_DEFAULT_NAME });
         }
+    }
+
+    function toggleArchiveView() {
+        isDragging = false;
+        dragOverIndex = -1;
+        showArchived = !showArchived;
+    }
+
+    /**
+     * Archives or restores prompt preset `id` (by id: the list can change). Only its list metadata
+     * changes: the tab's selection and the chats bound to it stay. Its row leaves the view, so the
+     * focus moves to the view toggle instead of staying on the control the next row reuses.
+     */
+    function setArchived(id: string, archived: boolean) {
+        const target = settings.presets.find((preset) => preset.id === id);
+        if (!target || (target.archived === true) === archived) {
+            return;
+        }
+        target.archived = archived;
+        viewToggle?.focus();
     }
 
     /** Removes preset `id` after the dialog; the list can change meanwhile, so it acts by id. */
@@ -114,22 +159,27 @@
         }
         // Chats bound to it keep the id and show it as deleted; only the tab's selection moves on.
         if (selection.presetId === id) {
-            const next = botPresets.find((entry) => entry.id !== id);
+            const next =
+                botPresets.find((entry) => entry.id !== id && entry.archived !== true) ??
+                botPresets.find((entry) => entry.id !== id);
             selectPreset(next.id);
         }
         botPresets.splice(index, 1);
     }
 
+    // The comparison picks by preset id (a reorder, deletion, or the view toggle in between leaves
+    // them on the same presets); `PromptDiffModal` takes positions, resolved when it opens.
     let showDiffModal = $state(false);
-    let selectedDiffPreset = $state<number | null>(null);
-    let firstPresetId = $state<number | null>(null);
-    let secondPresetId = $state<number | null>(null);
+    let selectedDiffPreset = $state<string | null>(null);
+    let firstPresetId = $state<string | null>(null);
+    let diffPair = $state<{ first: number; second: number } | null>(null);
 
     function movePreset(fromIndex: number, toIndex: number) {
         if (fromIndex === toIndex) return;
         if (fromIndex < 0 || toIndex < 0 || fromIndex >= presets.length || toIndex > presets.length) return;
 
         const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+        if (adjustedToIndex === fromIndex) return;
         // One write of the presets record (Phase 6 slice 4: a reorder past a frame budget through the
         // record's wrappers). The selection is by id, so a reorder leaves it on the same preset.
         moveRecordListItem(isPrompt ? settings.presets : settings.modelPresets, fromIndex, adjustedToIndex);
@@ -139,27 +189,52 @@
         return e.dataTransfer?.types.includes(RISU_PRESET_DRAG_TYPE) ?? false;
     }
 
-    function markPresetDrag(e: DragEvent, index: number) {
+    /** The drag carries the preset's id, resolved on drop: the list can change during a drag. */
+    function markPresetDrag(e: DragEvent, id: string) {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", "preset");
-        e.dataTransfer.setData(RISU_PRESET_DRAG_TYPE, index.toString());
+        e.dataTransfer.setData(RISU_PRESET_DRAG_TYPE, id);
     }
 
-    function handlePresetDrop(targetIndex: number, e: DragEvent) {
+    /**
+     * The position in `presets` a drop on shown slot `slot` inserts at: before that shown row, or,
+     * past the last one, just after it (the hidden rows keep their places). -1 for no slot.
+     */
+    function dropIndexOfSlot(slot: number): number {
+        if (!Number.isInteger(slot) || slot < 0) {
+            return -1;
+        }
+        if (slot < visibleEntries.length) {
+            return visibleEntries[slot].index;
+        }
+        const last = visibleEntries.at(-1);
+        return last ? last.index + 1 : presets.length;
+    }
+
+    function handlePresetDrop(slot: number, e: DragEvent) {
         if (!isPresetDrag(e)) {
             return;
         }
         e.preventDefault();
         e.stopPropagation();
-        const sourceIndex = parseInt(e.dataTransfer?.getData(RISU_PRESET_DRAG_TYPE) || "0");
+        const sourceId = e.dataTransfer?.getData(RISU_PRESET_DRAG_TYPE) ?? "";
+        // A vanished source or unchanged shown order must not move hidden rows or queue a write.
+        const sourceSlot = visibleEntries.findIndex((entry) => entry.preset.id === sourceId);
+        if (sourceSlot === -1 || slot === sourceSlot || slot === sourceSlot + 1) {
+            return;
+        }
+        const sourceIndex = presets.findIndex((preset) => preset.id === sourceId);
+        const targetIndex = dropIndexOfSlot(slot);
+        if (sourceIndex === -1 || targetIndex === -1) {
+            return;
+        }
         movePreset(sourceIndex, targetIndex);
     }
 
-    async function handleDiffMode(id: number) {
+    function handleDiffMode(id: string) {
         if (selectedDiffPreset === id) {
             selectedDiffPreset = null;
             firstPresetId = null;
-            secondPresetId = null;
             return;
         }
 
@@ -167,19 +242,24 @@
 
         if (firstPresetId === null) {
             firstPresetId = id;
-            secondPresetId = null;
             return;
         }
 
-        secondPresetId = id;
+        const first = settings.presets.findIndex((preset) => preset.id === firstPresetId);
+        const second = settings.presets.findIndex((preset) => preset.id === id);
         selectedDiffPreset = null;
+        firstPresetId = null;
+        if (first === -1 || second === -1) {
+            return;
+        }
+        diffPair = { first, second };
         showDiffModal = true;
     }
 
     function closeDiff() {
         showDiffModal = false;
+        diffPair = null;
         firstPresetId = null;
-        secondPresetId = null;
         selectedDiffPreset = null;
     }
 </script>
@@ -188,7 +268,30 @@
     <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl w-124 max-h-full overflow-y-auto">
         <div class="flex items-center text-textcolor mb-4">
             <h2 class="mt-0 mb-0">{isPrompt ? language.promptPresets : language.modelPresets}</h2>
-            <div class="grow flex justify-end">
+            <div class="grow flex justify-end items-center">
+                {#if isPrompt}
+                    <button
+                        type="button"
+                        bind:this={viewToggle}
+                        data-preset-archive-view
+                        class="flex items-center gap-1 rounded-sm border border-darkborderc px-2 py-1 mr-2 text-sm cursor-pointer hover:text-green-500"
+                        class:text-textcolor={showArchived}
+                        class:text-textcolor2={!showArchived}
+                        aria-label={showArchived
+                            ? language.showActivePromptPresets
+                            : language.showArchivedPromptPresets}
+                        title={showArchived ? language.showActivePromptPresets : language.showArchivedPromptPresets}
+                        onclick={toggleArchiveView}
+                    >
+                        {#if showArchived}
+                            <ArchiveRestoreIcon size={18} />
+                            <span>{language.activePromptPresets}</span>
+                        {:else}
+                            <ArchiveIcon size={18} />
+                            <span>{language.archivedPromptPresets}</span>
+                        {/if}
+                    </button>
+                {/if}
                 <button class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer items-center" onclick={close}>
                     <XIcon size={24} />
                 </button>
@@ -197,13 +300,20 @@
         {#if shownRef}
             <span class="text-textcolor2 text-sm mb-2">{language.chatBinding.forChat(shownChatName ?? "")}</span>
         {/if}
-        {#each presets as preset, i}
+        {#if isPrompt && visibleEntries.length === 0}
+            <span class="text-textcolor2 text-sm" data-preset-empty-state>
+                {showArchived ? language.noArchivedPromptPresets : language.noActivePromptPresets}
+            </span>
+        {/if}
+        <!-- `v` is the row's shown position (the drop slots and the numbers); actions go by the preset's id. -->
+        {#each visibleEntries as entry, v}
+            {@const preset = entry.preset}
             <div
                 class="w-full transition-all duration-200"
-                class:h-0.5={!isDragging || dragOverIndex !== i}
-                class:h-1={isDragging && dragOverIndex === i}
-                class:bg-blue-500={isDragging && dragOverIndex === i}
-                class:shadow-lg={isDragging && dragOverIndex === i}
+                class:h-0.5={!isDragging || dragOverIndex !== v}
+                class:h-1={isDragging && dragOverIndex === v}
+                class:bg-blue-500={isDragging && dragOverIndex === v}
+                class:shadow-lg={isDragging && dragOverIndex === v}
                 class:hover:bg-gray-600={!isDragging}
                 role="listitem"
                 ondragover={(e) => {
@@ -213,13 +323,13 @@
                     e.preventDefault();
                     e.stopPropagation();
                     e.dataTransfer.dropEffect = "move";
-                    dragOverIndex = i;
+                    dragOverIndex = v;
                 }}
                 ondragleave={(e) => {
                     dragOverIndex = -1;
                 }}
                 ondrop={(e) => {
-                    handlePresetDrop(i, e);
+                    handlePresetDrop(v, e);
                     dragOverIndex = -1;
                 }}
             ></div>
@@ -234,13 +344,15 @@
                 class:bg-selected={preset.id === selectedPresetId}
                 class:draggable-preset={!editMode}
                 draggable={!editMode ? "true" : "false"}
+                onfocusin={() => (renaming = preset.id)}
+                onfocusout={() => (renaming = null)}
                 ondragstart={(e) => {
                     if (editMode) {
                         e.preventDefault();
                         return;
                     }
                     isDragging = true;
-                    markPresetDrag(e, i);
+                    markPresetDrag(e, preset.id);
 
                     const dragElement = document.createElement("div");
                     dragElement.textContent = preset?.name || "Unnamed Preset";
@@ -269,9 +381,9 @@
                     const elementCenter = rect.top + rect.height / 2;
 
                     if (mouseY < elementCenter) {
-                        dragOverIndex = i;
+                        dragOverIndex = v;
                     } else {
-                        dragOverIndex = i + 1;
+                        dragOverIndex = v + 1;
                     }
                 }}
                 ondrop={(e) => {
@@ -280,14 +392,17 @@
                 }}
             >
                 {#if editMode}
-                    <TextInput
-                        bind:value={() => preset.name, (value) => (preset.name = value)}
-                        placeholder="string"
-                        padding={false}
-                    />
+                    {#key preset.id}
+                        <TextInput
+                            bind:value={() => preset.name, (value) => (preset.name = value)}
+                            placeholder="string"
+                            padding={false}
+                        />
+                    {/key}
                 {:else}
-                    {#if isPrompt && i < 9}
-                        <span class="w-2 text-center mr-2 text-textcolor2">{i + 1}</span>
+                    <!-- The Ctrl+1..9 numbers count the active presets (`hotkey.ts`), so the archived view has none. -->
+                    {#if isPrompt && !showArchived && v < 9}
+                        <span class="w-2 text-center mr-2 text-textcolor2">{v + 1}</span>
                     {/if}
                     {#if isPrompt && preset.image}
                         <img
@@ -302,14 +417,14 @@
                 <div class="grow flex justify-end">
                     {#if isPrompt && settings.ui.showPromptComparison}
                         <div
-                            class="{selectedDiffPreset === i
+                            class="{selectedDiffPreset === preset.id
                                 ? 'text-green-500'
                                 : 'text-textcolor2 hover:text-green-500'} cursor-pointer mr-2"
                             role="button"
                             tabindex="0"
                             onclick={(e) => {
                                 e.stopPropagation();
-                                handleDiffMode(i);
+                                handleDiffMode(preset.id);
                             }}
                             onkeydown={(e) => {
                                 if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
@@ -337,6 +452,33 @@
                         <CopyIcon size={18} />
                     </div>
                     {#if isPrompt}
+                        {@const archiveLabel =
+                            preset.archived === true ? language.restorePromptPreset : language.archivePromptPreset}
+                        <div
+                            class="text-textcolor2 hover:text-green-500 cursor-pointer mr-2"
+                            role="button"
+                            tabindex="0"
+                            data-preset-archive-action
+                            aria-label={`${archiveLabel}: ${preset.name ?? ""}`}
+                            title={archiveLabel}
+                            onclick={(e) => {
+                                e.stopPropagation();
+                                setArchived(preset.id, preset.archived !== true);
+                            }}
+                            onkeydown={(e) => {
+                                if ((e.key === "Enter" || e.key === " ") && e.currentTarget instanceof HTMLElement) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    e.currentTarget.click();
+                                }
+                            }}
+                        >
+                            {#if preset.archived === true}
+                                <ArchiveRestoreIcon size={18} />
+                            {:else}
+                                <ArchiveIcon size={18} />
+                            {/if}
+                        </div>
                         <div
                             class="text-textcolor2 hover:text-green-500 cursor-pointer mr-2"
                             role="button"
@@ -376,10 +518,10 @@
 
         <div
             class="w-full transition-all duration-200"
-            class:h-0.5={!isDragging || dragOverIndex !== presets.length}
-            class:h-1={isDragging && dragOverIndex === presets.length}
-            class:bg-blue-500={isDragging && dragOverIndex === presets.length}
-            class:shadow-lg={isDragging && dragOverIndex === presets.length}
+            class:h-0.5={!isDragging || dragOverIndex !== visibleEntries.length}
+            class:h-1={isDragging && dragOverIndex === visibleEntries.length}
+            class:bg-blue-500={isDragging && dragOverIndex === visibleEntries.length}
+            class:shadow-lg={isDragging && dragOverIndex === visibleEntries.length}
             class:hover:bg-gray-600={!isDragging}
             role="listitem"
             ondragover={(e) => {
@@ -389,35 +531,38 @@
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = "move";
-                dragOverIndex = presets.length;
+                dragOverIndex = visibleEntries.length;
             }}
             ondragleave={(e) => {
                 dragOverIndex = -1;
             }}
             ondrop={(e) => {
-                handlePresetDrop(presets.length, e);
+                handlePresetDrop(visibleEntries.length, e);
                 dragOverIndex = -1;
             }}
         ></div>
 
         <div class="flex mt-2 items-center">
-            <button
-                class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
-                onclick={() => {
-                    addListed();
-                }}
-            >
-                <PlusIcon />
-            </button>
-            {#if isPrompt}
+            <!-- The archived view only lists: a new or imported preset starts active. -->
+            {#if !showArchived}
                 <button
-                    class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
+                    class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                     onclick={() => {
-                        importPreset();
+                        addListed();
                     }}
                 >
-                    <HardDriveUploadIcon size={18} />
+                    <PlusIcon />
                 </button>
+                {#if isPrompt}
+                    <button
+                        class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
+                        onclick={() => {
+                            importPreset();
+                        }}
+                    >
+                        <HardDriveUploadIcon size={18} />
+                    </button>
+                {/if}
             {/if}
             <button
                 class="text-textcolor2 hover:text-green-500 cursor-pointer"
@@ -428,14 +573,14 @@
                 <PencilIcon size={18} />
             </button>
         </div>
-        {#if isPrompt}
+        {#if isPrompt && !showArchived}
             <span class="text-textcolor2 text-sm">{language.quickPreset}</span>
         {/if}
     </div>
 </div>
 
-{#if showDiffModal && firstPresetId !== null && secondPresetId !== null}
-    <PromptDiffModal {firstPresetId} {secondPresetId} onClose={closeDiff} />
+{#if showDiffModal && diffPair}
+    <PromptDiffModal firstPresetId={diffPair.first} secondPresetId={diffPair.second} onClose={closeDiff} />
 {/if}
 
 <style>

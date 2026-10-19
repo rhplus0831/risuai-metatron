@@ -652,8 +652,10 @@ describe("what a save sends", () => {
 
 describe("lost acknowledgements", () => {
     it("recognizes a lost acknowledgement of a character patch on the retry's 409 by JSON value (the server keeps its key order): no reload, no notice", async () => {
-        const { fake, sync, character, record, revision, ops, agree, noNotice } = await boot();
+        const { fake, sync, live, character, record, revision, ops, agree, noNotice } = await boot();
         const element = character("c");
+        // No feed echo: it would settle the lost write before the retry (the 409 path is tested here).
+        live.paused = true;
         fake.dropNextBatchResponse = true;
         // The edit moves `desc` to the end of the local record and changes `name`; the server's
         // record keeps `desc` where it was: same value, different text.
@@ -695,7 +697,9 @@ describe("lost acknowledgements", () => {
         noNotice();
     }, 20_000);
     it("recognizes a lost acknowledgement of a modules item patch on the retry, with a module's keys in another order", async () => {
-        const { fake, sync, collectionStore, settings, record, revision, ops, agree, noNotice } = await boot();
+        const { fake, sync, live, collectionStore, settings, record, revision, ops, agree, noNotice } = await boot();
+        // No feed echo: it would settle the lost write before the retry (the 409 path is tested here).
+        live.paused = true;
         fake.dropNextBatchResponse = true;
         // The module replaced with `extra` first: locally `{ extra, id, name }`, on the server (the
         // base item with `extra` assigned) `{ id, name, extra }`.
@@ -718,6 +722,70 @@ describe("lost acknowledgements", () => {
         await sync.flushResources();
         await vi.advanceTimersByTimeAsync(2000);
         expect(fake.batchCount()).toBe(2);
+    }, 20_000);
+    it("takes the feed echo of a lost write as the saved base (data-loss slice 6c): more typing goes as one patch on its revision, no 409, no notice", async () => {
+        const { fake, sync, character, record, revision, ops, reads, agree, noNotice } = await boot();
+        const element = character("c");
+        const base = revision("characters", "c");
+        fake.dropNextBatchResponse = true;
+        element.name = "lost";
+        // The echo arrives with the commit, while the batch is in flight: it waits for the cycle.
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const landed = revision("characters", "c");
+        expect(landed).not.toBe(base);
+        element.name = "typed after the lost answer";
+        // (The retry backoff runs on the real clock: the flush runs the cycle now.)
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(ops()).toEqual([
+            expect.objectContaining({ baseRevision: base, patch: { set: { name: "lost" }, remove: [] } }),
+            expect.objectContaining({
+                baseRevision: landed,
+                patch: { set: { name: "typed after the lost answer" }, remove: [] },
+            }),
+        ]);
+        expect(record("characters", "c").name).toBe("typed after the lost answer");
+        expect(reads()).toBe(0);
+        agree("characters", "c");
+        noNotice();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(2);
+    }, 20_000);
+    it("sends a revert after a lost answer whose echo arrived: the saved value goes back on the echo's revision", async () => {
+        const { fake, sync, character, record, revision, ops, agree, noNotice } = await boot();
+        const element = character("c");
+        const saved = element.name;
+        fake.dropNextBatchResponse = true;
+        element.name = "lost";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const landed = revision("characters", "c");
+        element.name = saved;
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(fake.batchCount()).toBe(2);
+        expect(ops().at(-1)).toEqual(
+            expect.objectContaining({ baseRevision: landed, patch: { set: { name: saved }, remove: [] } }),
+        );
+        expect(record("characters", "c").name).toBe(saved);
+        agree("characters", "c");
+        noNotice();
+    }, 20_000);
+    it("does not apply the echo of a lost write over a revert made before it arrived", async () => {
+        const { fake, sync, live, flushFeed, character, record, agree, noNotice } = await boot();
+        const element = character("c");
+        const saved = element.name;
+        live.paused = true;
+        fake.dropNextBatchResponse = true;
+        element.name = "lost";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        element.name = saved;
+        // The echo arrives after the revert (the mirror equals the saved text again).
+        live.paused = false;
+        flushFeed();
+        expect(element.name).toBe(saved);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(element.name).toBe(saved);
+        expect(record("characters", "c").name).toBe(saved);
+        agree("characters", "c");
+        noNotice();
     }, 20_000);
 });
 

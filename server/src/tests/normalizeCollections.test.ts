@@ -593,6 +593,32 @@ describe("presets", () => {
             rejects(normalizePresetCollection, input, "presets must be an array of objects");
         }
     });
+
+    it("keeps a prompt preset's boolean `archived` (list metadata), drops any other value, and leaves an absent one absent", () => {
+        // The archive feature (risuai-fastify `ee5382a9a` port): what a tab archives survives the
+        // server's normalization and a reload, and a record without the flag is not rewritten for it.
+        const out = normalizePresetCollection([
+            { id: "a", name: "a", archived: true },
+            { id: "b", name: "b", archived: false },
+            { id: "c", name: "c", archived: "yes" },
+            { id: "d", name: "d", archived: null },
+            { id: "e", name: "e" },
+        ]);
+        expect(out.map((preset) => (Object.hasOwn(preset, "archived") ? preset.archived : "absent"))).toEqual([
+            true,
+            false,
+            "absent",
+            "absent",
+            "absent",
+        ]);
+        expectIdempotent(normalizePresetCollection, [
+            { id: "a", name: "a", archived: true },
+            { id: "e", name: "e" },
+        ]);
+        // The stored text of a record without the flag is the same with and without this field in the schema.
+        const stored = serialize(normalizePresetCollection([{ id: "e", name: "e" }]));
+        expect(stored.text).not.toContain("archived");
+    });
 });
 
 describe("modelPresets", () => {

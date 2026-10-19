@@ -329,7 +329,8 @@ describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it.each(["Chub", "Realm"])("%s hands the PNG response body stream to the importer", async (entry) => {
+    // The Realm download no longer reaches the tab's reader: the server reads it (`characterCardsRealmImport.test.ts`).
+    it("Chub hands the PNG response body stream to the importer", async () => {
         const b = await boot();
         const response = new Response(streamed(pngWithText({ chara: cardV3("Downloaded") })).stream, {
             headers: { "content-type": "image/png" },
@@ -340,20 +341,12 @@ describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
         const before = b.ids();
         const fetch = vi.fn(async () => response);
         vi.stubGlobal("fetch", fetch);
-        if (entry === "Chub") {
-            vi.stubGlobal("location", new URL("http://localhost/?charahub=author/card"));
-            await b.cards.characterURLImport();
-            expect(fetch).toHaveBeenCalledWith(
-                "https://api.chub.ai/api/characters/download",
-                expect.objectContaining({ method: "POST" }),
-            );
-        } else {
-            await b.cards.downloadRisuHub("fixture");
-            expect(fetch).toHaveBeenCalledWith(
-                "https://realm.risuai.net/api/v1/download/dynamic/fixture?cors=true",
-                expect.any(Object),
-            );
-        }
+        vi.stubGlobal("location", new URL("http://localhost/?charahub=author/card"));
+        await b.cards.characterURLImport();
+        expect(fetch).toHaveBeenCalledWith(
+            "https://api.chub.ai/api/characters/download",
+            expect.objectContaining({ method: "POST" }),
+        );
         expect(reading.mock.calls[0]?.[0]).toBe(response.body);
         expect(reading).toHaveBeenCalledTimes(1);
         expect(b.ids()).toHaveLength(before.length + 1);

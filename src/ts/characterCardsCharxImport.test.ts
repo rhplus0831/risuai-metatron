@@ -140,8 +140,6 @@ describe("CharX files through the server and real records", () => {
         "share",
         "deep link",
         "launch queue",
-        "Realm zip",
-        "Realm charx",
     ])("%s uploads the File/Blob once and persists embedded assets and module fields", async (entry) => {
         const b = await boot();
         const module = await b.modules.exportModuleLegacy(embedded as any, { saveData: false, alertEnd: false });
@@ -153,7 +151,7 @@ describe("CharX files through the server and real records", () => {
         const response = new Response(new Uint8Array(zip), {
             headers: {
                 "content-disposition": 'attachment; filename="uploaded.charx"',
-                "content-type": entry === "Realm zip" ? "application/zip" : "application/charx",
+                "content-type": "application/charx",
             },
         });
         // Response.blob() is a different realm's Blob in this harness. The importer must
@@ -161,7 +159,7 @@ describe("CharX files through the server and real records", () => {
         const downloaded = await response.blob();
         vi.spyOn(response, "blob").mockResolvedValue(downloaded);
         const responseRead = vi.spyOn(response, "arrayBuffer");
-        const input = ["share", "deep link", "Realm zip", "Realm charx"].includes(entry) ? downloaded : file;
+        const input = ["share", "deep link"].includes(entry) ? downloaded : file;
         const wholeRead = vi.spyOn(input, "arrayBuffer");
         const fileReader = vi.spyOn(FileReader.prototype, "readAsArrayBuffer");
         const before = b.ids();
@@ -180,12 +178,6 @@ describe("CharX files through the server and real records", () => {
             await b.cards.characterURLImport();
             setConsumer.mock.calls[0][0]({ files: [{ name: file.name, getFile: async () => file }] });
             await vi.advanceTimersByTimeAsync(0);
-        } else if (entry.startsWith("Realm")) {
-            vi.stubGlobal(
-                "fetch",
-                vi.fn(async () => response),
-            );
-            await b.cards.downloadRisuHub("fixture");
         } else {
             vi.stubGlobal(
                 "location",
@@ -268,6 +260,59 @@ describe("CharX files through the server and real records", () => {
             expect(b.saveAsset).toHaveBeenCalledTimes(1);
             expect(b.character(id)).toMatchObject({ additionalAssets: [["Backdrop", keyOf(payload), "webp"]] });
             expect(alerts.error).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([true, false])(
+        "asks a card's lowLevelAccess before its data URI assets are saved (accepted: %s)",
+        async (accepted) => {
+            const b = await boot();
+            const inline = Buffer.from("inline asset bytes");
+            const card = cardV3(
+                "Powerful",
+                {
+                    assets: [
+                        {
+                            type: "x-risu-asset",
+                            name: "Inline",
+                            uri: `data:image/png;base64,${inline.toString("base64")}`,
+                            ext: "png",
+                        },
+                    ],
+                },
+                { lowLevelAccess: true },
+            );
+            alerts.confirm.mockImplementation(async () => accepted);
+            // The fake server has no batch asset write: the queue answers content keys here.
+            const assetQueue = await import("./storage/assetQueue");
+            const saveAssets = vi.spyOn(assetQueue, "saveAssets").mockImplementation(async (items) => {
+                const keys: string[] = [];
+                for await (const item of items as Iterable<{ load: () => Uint8Array | Promise<Uint8Array> }>) {
+                    keys.push(keyOf(await item.load()));
+                }
+                return keys;
+            });
+            const saved = () => saveAssets.mock.calls.filter(([items]) => (items as unknown[]).length > 0);
+            const before = b.ids();
+            const id = await b.cards.importCharacterProcess({ name: "local.charx", data: charx(card, {}) });
+            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.error).not.toHaveBeenCalled();
+            if (accepted) {
+                expect(saved()).toHaveLength(1);
+                const call = saveAssets.mock.calls.indexOf(saved()[0]);
+                expect(saveAssets.mock.invocationCallOrder[call]).toBeGreaterThan(
+                    alerts.confirm.mock.invocationCallOrder[0],
+                );
+                expect(b.character(id)).toMatchObject({
+                    lowLevelAccess: true,
+                    additionalAssets: [["Inline", keyOf(inline), "png"]],
+                });
+            } else {
+                expect(id).toBeFalsy();
+                expect(saved()).toEqual([]);
+                expect(b.saveAsset).not.toHaveBeenCalled();
+                expect(b.ids()).toEqual(before);
+            }
         },
     );
 

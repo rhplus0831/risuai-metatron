@@ -159,7 +159,8 @@ describe("periodic snapshots", () => {
         await sleep(100);
         expect(manager.list()).toHaveLength(2);
 
-        // A checkpoint for a message without its generation is ignored; a conflicting batch rolls back.
+        // A checkpoint for a message without its generation is ignored; a conflicting batch (an
+        // append after a gone anchor) rolls back.
         store.applyChanges({
             chats: [group(revision, [{ op: "setText", id: "a", text: "x", generation: { id: "g", seq: 1 } }])],
         });
@@ -168,7 +169,11 @@ describe("periodic snapshots", () => {
                 chats: [
                     group(revision, [
                         { op: "meta", set: { note: "n" } },
-                        { op: "setText", id: "missing", text: "x" },
+                        {
+                            op: "append",
+                            messages: [{ role: "user", data: "x", chatId: "b" }],
+                            anchor: { after: "missing" },
+                        },
                     ]),
                 ],
             }),

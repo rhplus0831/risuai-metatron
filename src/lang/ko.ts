@@ -787,6 +787,14 @@ export const languageKorean = {
     promptPreset: "프롬프트 프리셋",
     modelPresets: "모델 프리셋",
     promptPresets: "프롬프트 프리셋",
+    activePromptPresets: "활성",
+    archivedPromptPresets: "보관됨",
+    showActivePromptPresets: "활성 프롬프트 프리셋 표시",
+    showArchivedPromptPresets: "보관된 프롬프트 프리셋 표시",
+    archivePromptPreset: "프롬프트 프리셋 보관",
+    restorePromptPreset: "프롬프트 프리셋 복원",
+    noActivePromptPresets: "활성화된 프롬프트 프리셋이 없습니다",
+    noArchivedPromptPresets: "보관된 프롬프트 프리셋이 없습니다",
     imageGeneration: "이미지 생성",
     provider: "공급자",
     key: "키",
@@ -927,6 +935,12 @@ export const languageKorean = {
     newChatBinding: "새 채팅의 프리셋과 페르소나",
     newChatBindingInherit: "현재 채팅",
     newChatBindingEmpty: "설정 없음",
+    openChat: {
+        name: "채팅 이름",
+        rename: "채팅 이름 변경",
+        saveName: "이름 저장",
+        export: "채팅 내보내기",
+    },
     chatBinding: {
         refused: "이 채팅의 모델 프리셋, 프롬프트 프리셋, 페르소나를 모두 설정해야 보낼 수 있습니다.",
         fields: {
@@ -1198,6 +1212,15 @@ export const languageKorean = {
     charxImportFileTooLarge: "캐릭터 파일이 서버가 받을 수 있는 크기보다 큽니다.",
     charxImportRequestFailed: "캐릭터 파일 임포트에 실패했습니다 (HTTP {{status}}).",
     charxImportStopped: "서버가 캐릭터 파일 임포트를 중단했습니다 ({{error}}). 아무것도 추가되지 않았습니다.",
+    realmImportDownloadFailed: "서버가 Realm에서 캐릭터를 내려받지 못했습니다. 잠시 후 다시 시도하세요.",
+    realmImportFileTooLarge: "Realm 캐릭터가 서버가 받을 수 있는 크기보다 큽니다.",
+    realmImportRequestFailed: "Realm 다운로드에 실패했습니다 (HTTP {{status}}).",
+    realmImportStopped: "서버가 Realm 임포트를 중단했습니다 ({{error}}). 아무것도 추가되지 않았습니다.",
+    realmImportInterrupted: "Realm 다운로드 중 서버와의 연결이 끊어졌습니다. 다시 시도하세요.",
+    realmImportExpired:
+        "Realm 임포트가 너무 오래 대기해서 폐기되었습니다. 아무것도 추가되지 않았습니다. 다시 임포트하세요.",
+    realmImportTooManyWaiting:
+        "다른 Realm 임포트가 아직 응답을 기다리고 있습니다. 그 임포트를 마치거나 몇 분 후 다시 시도하세요.",
     download: "다운로드",
     edit: "수정",
     enableGlobal: "글로벌 활성화",

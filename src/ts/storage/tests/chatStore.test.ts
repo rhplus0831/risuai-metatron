@@ -89,22 +89,30 @@ async function boot(server?: StoreBackedServer) {
     const ref = { chaId: "c", chatId: "k" };
     const character = () => characterStore.characterList()[0] as any;
     const take = () => chat.takeChatWork(new Set());
+    /** The request body as the save loop sends it (`groupId` and `retry` included, slice 6b). */
+    const bodyOf = (work: ChatModule["takeChatWork"] extends (...args: any) => infer R ? R : never) => {
+        const body = chat.chatWorkBody(work);
+        return {
+            chats: body.chats.map((text) => JSON.parse(text)),
+            chatOrders: body.chatOrders.map((text) => JSON.parse(text)),
+        };
+    };
     const apply = (work: ChatModule["takeChatWork"] extends (...args: any) => infer R ? R : never) =>
         work.groups.length + work.orders.length === 0
             ? { results: [], chats: [], chatOrders: [] }
-            : server.store.applyChanges({
-                  chats: work.groups.map(({ characterId, chatId, baseRevision, ops }) => ({
-                      characterId,
-                      chatId,
-                      baseRevision,
-                      ops,
-                  })),
-                  chatOrders: work.orders.map(({ characterId, baseRevision, ids }) => ({
-                      characterId,
-                      baseRevision,
-                      ids,
-                  })),
-              });
+            : server.store.applyChanges(bodyOf(work));
+    /**
+     * Applies the work as a server that remembers no group id does (slice 6b: the id was dropped, or
+     * the chat's list of ids moved past it), so a resend meets the ordinary checks instead of the
+     * remembered answer.
+     */
+    const applyForgotten = (work: ReturnType<typeof take>) => {
+        const body = bodyOf(work);
+        return server.store.applyChanges({
+            ...body,
+            chats: body.chats.map(({ groupId: _groupId, retry: _retry, ...group }) => group),
+        });
+    };
     const ack = (work: ReturnType<typeof take>, result: ReturnType<typeof apply>) =>
         chat.ackChatWork(work, result.chats, result.chatOrders);
     /** One save cycle: take, apply on the server, acknowledge. */
@@ -128,11 +136,15 @@ async function boot(server?: StoreBackedServer) {
         const remote = server.store.readRefs([], {
             chats: chats.map((conflict) => ({ characterId: conflict.characterId, id: conflict.id })),
         }).chats;
+        const keyOf = (conflict: any) => `${conflict.characterId}\u0000${conflict.id}`;
         const result = chat.recoverChatConflicts(
             work,
-            new Set(chats.map((conflict) => `${conflict.characterId}\u0000${conflict.id}`)),
+            new Set(chats.map(keyOf)),
             new Set(orders.map((conflict) => conflict.characterId)),
             remote as any,
+            undefined,
+            undefined,
+            new Set(chats.filter((conflict) => conflict.reason === "expired").map(keyOf)),
         );
         for (const characterId of result.refresh) {
             chat.acceptRemoteCollection(
@@ -152,6 +164,7 @@ async function boot(server?: StoreBackedServer) {
         character,
         take,
         apply,
+        applyForgotten,
         ack,
         commit,
         recover,
@@ -445,11 +458,12 @@ describe("conflict recovery", () => {
     });
 
     it("recognizes a create whose acknowledgement was lost and sends the edit made meanwhile after it", async () => {
-        const { server, chat, take, apply, recover, commit } = await boot();
+        const { server, chat, take, applyForgotten, recover, commit } = await boot();
         const ref = { chaId: "c", chatId: "n" };
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "old")] } as any);
         const sent = take();
-        apply(sent);
+        // Landed, but not remembered by its id (slice 6b): the resend is recognized by its content.
+        applyForgotten(sent);
         chat.setMessageText(ref, "x", "newer edit");
         chat.setChatMeta(ref, { note: "newer note" });
         chat.requeueChatWork(sent);
@@ -885,22 +899,31 @@ describe("unload work (pagehide)", () => {
         const { server, chat, ref, take, commit, recover } = await boot();
         chat.setMessageText(ref, "a", "unload write");
 
-        // Lost answer (the request failed, or the page did not survive to see it): the chat's work
-        // resumes on the old base. Had the write landed anyway, the next current-revision op
-        // conflicts and reloads the chat, which is the documented protection of unseen writes.
+        // Lost answer (the request failed, or the page did not survive to see it) after the server
+        // applied it: the group is resent alone, exactly as sent and with `retry` (slice 6b), and the
+        // server answers it as the duplicate it is; the note typed meanwhile follows in its own group
+        // on the revision the unload write produced, so nothing is stale, reloaded, or discarded.
         const [lost] = chat.unloadPendingChatWork(LIMIT);
         chat.trackUnloadWork(lost.work);
-        server.store.applyChanges(JSON.parse(lost.body));
+        const sentBody = JSON.parse(lost.body).chats[0];
+        expect(sentBody.groupId).toEqual(expect.any(String));
+        expect(sentBody.retry).toBeUndefined();
+        const landed = server.store.applyChanges(JSON.parse(lost.body)).chats[0];
         chat.settleUnloadWork(lost.work, null);
         chat.setChatMeta(ref, { note: "after the lost answer" });
+        const resend = commit();
+        expect(
+            resend.work.groups.map((group) => [group.ops, group.baseRevision, group.groupId, group.inDoubt]),
+        ).toEqual([[sentBody.ops, sentBody.baseRevision, sentBody.groupId, true]]);
+        expect(resend.result.chats[0]).toEqual(landed);
+        expect(server.texts("c", "k")[0]).toBe("unload write");
         const note = commit();
-        expect(note.result.chats[0].stale).toBe(true);
-        chat.removeMessages(ref, ["b", "c"]);
-        const { conflicts, reloaded } = recover(take());
-        expect(conflicts).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: expect.any(String) }]);
-        expect(reloaded).toBe(true);
-        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
-        expect(texts(chat.findChat(ref))).toEqual(["unload write", "B", "C"]);
+        expect(note.work.groups.map((group) => group.ops)).toEqual([
+            [{ op: "meta", set: { note: "after the lost answer" }, unset: [] }],
+        ]);
+        expect(note.work.groups[0].groupId).not.toBe(sentBody.groupId);
+        expect(note.result.chats[0].stale).toBeUndefined();
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
         expect((chat.findChat(ref) as any).note).toBe("after the lost answer");
         expect(chat.hasChatWork()).toBe(false);
 
@@ -957,7 +980,10 @@ describe("unload work (pagehide)", () => {
         // the next chat that fits still goes.
         const onlyJ = chat.unloadPendingChatWork(bytes(requestK.body) - 1);
         expect(onlyJ.map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
-        expect(onlyJ[0].body).toBe(requestJ.body);
+        // Built again: the same request but for its fresh group id (slice 6b).
+        const withoutId = (body: string) => JSON.parse(body, (key, value) => (key === "groupId" ? undefined : value));
+        expect(withoutId(onlyJ[0].body)).toEqual(withoutId(requestJ.body));
+        expect(bytes(onlyJ[0].body)).toBe(bytes(requestJ.body));
         expect(chat.unloadPendingChatWork(bytes(requestJ.body) - 1)).toEqual([]);
 
         // Sent: only the prefix leaves k's queue; the rest goes after the answer.
@@ -1577,7 +1603,7 @@ describe("message translations (translation slice 1.1)", () => {
     });
 
     it("drops a translation that is not a MessageTranslation wherever messages come in, so the mirror holds the server's copy and a create whose acknowledgement was lost is recognized with the edit made meanwhile kept", async () => {
-        const { server, chat, take, apply, recover, commit } = await boot();
+        const { server, chat, take, applyForgotten, recover, commit } = await boot();
         const ref = { chaId: "c", chatId: "n" };
         const T = tr("ㄷ", "C");
         const stale = tr("ㅅ", "before the edit");
@@ -1597,7 +1623,8 @@ describe("message translations (translation slice 1.1)", () => {
         expect(message(chat, ref, "x")).not.toHaveProperty("translation");
         expect(message(chat, ref, "y")).not.toHaveProperty("translation");
         const sent = take();
-        apply(sent);
+        // Landed, but not remembered by its id (slice 6b): the retry below meets the ordinary checks.
+        applyForgotten(sent);
         expect(translations(server.chat("c", "n")!.data.message)).toEqual([undefined, undefined, T, stale]);
         expect(stored(server, "n", "x")).toEqual(m("x", "old"));
 
@@ -1712,5 +1739,139 @@ describe("stream updates per frame", () => {
         // The frame that never ran does nothing when it finally does.
         frames[0](0);
         expect(text()).toBe("one two");
+    });
+});
+
+describe("a lost delete with the chat created again under its id, and a lost create (data-loss slice 6b)", () => {
+    const refJ = { chaId: "c", chatId: "j" };
+    const chatJ = { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X")] } as any;
+    /** `k` deleted here with its answer lost (`landed`: the server applied it), then created again under its id. */
+    async function lostDelete(landed: boolean) {
+        const booted = await boot();
+        const { server, chat, ref, take, apply, commit } = booted;
+        chat.createChat("c", chatJ);
+        commit();
+        chat.deleteChat(ref);
+        const work = take();
+        expect(work.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
+        if (landed) {
+            apply(work);
+        }
+        chat.requeueChatWork(work, { lost: true });
+        expect(server.chat("c", "k") === null).toBe(landed);
+        const recreated = chat.createChat("c", {
+            id: "k",
+            name: "K again",
+            note: "",
+            localLore: [],
+            message: [m("n", "N")],
+        } as any);
+        expect(recreated.id).toBe("k");
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j", "k"]);
+        return { ...booted, sent: work.groups[0] };
+    }
+
+    it("keeps the recreation in the list while the server's list still shows the old chat, sends the delete first (its id, retry) and the create after it", async () => {
+        const { server, chat, ref, take, apply, ack, sent } = await lostDelete(false);
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0] as any);
+        // The recreation, at the old chat's server position.
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["N"]);
+        const resend = take();
+        expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
+            [[{ op: "delete" }], sent.groupId, true],
+        ]);
+        const answer = apply(resend);
+        expect(answer.chats[0].revision).toBeNull();
+        ack(resend, answer);
+        expect(chat.hasChatWork()).toBe(true);
+        const create = take();
+        expect(create.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
+        ack(create, apply(create));
+        expect(server.texts("c", "k")).toEqual(["N"]);
+        expect(server.order("c")!.ids).toEqual(["k", "j"]);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        expect(take().groups).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("recognizes the delete as landed when the server no longer has the chat, and the recreation still follows", async () => {
+        const { server, chat, take, recover, commit } = await lostDelete(true);
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0] as any);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j", "k"]);
+        const { conflicts, reloaded } = recover(take());
+        expect(conflicts).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: null }]);
+        expect(reloaded).toBe(false);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        const create = commit();
+        expect(create.work.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
+        expect(server.texts("c", "k")).toEqual(["N"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("keeps the unresolved delete when the recreation is deleted again, so the old chat does not survive on the server", async () => {
+        const { server, chat, ref, take, apply, ack, sent, open } = await lostDelete(false);
+        chat.deleteChat(ref);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+        const resend = take();
+        expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
+            [[{ op: "delete" }], sent.groupId, true],
+        ]);
+        ack(resend, apply(resend));
+        expect(server.chat("c", "k")).toBeNull();
+        // The newer delete has nothing left to delete: settled without a request.
+        expect(take().groups).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+        expect(open()).toEqual([]);
+    });
+
+    it("reports the recreation discarded when the character is deleted elsewhere", async () => {
+        const { chat } = await lostDelete(false);
+        expect(chat.forgetCharacter("c", { discard: true })).toBe(true);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
+    });
+
+    it("counts a lost delete without a recreation as fulfilled by the character's deletion elsewhere", async () => {
+        const { chat, ref, take, commit } = await boot();
+        chat.createChat("c", chatJ);
+        commit();
+        chat.deleteChat(ref);
+        chat.requeueChatWork(take(), { lost: true });
+        expect(chat.forgetCharacter("c", { discard: true })).toBe(false);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+    });
+
+    it("recognizes a lost create by its content when the server does not remember its id, settles it, and keeps the work queued behind it", async () => {
+        const { server, chat, take, recover, commit } = await boot();
+        chat.createChat("c", chatJ);
+        const work = take();
+        // Applied by a server that recorded no id (dropped): a create that landed unremembered.
+        server.store.applyChanges({
+            chats: work.groups.map(({ characterId, chatId, baseRevision, ops }) => ({
+                characterId,
+                chatId,
+                baseRevision,
+                ops,
+            })),
+        });
+        chat.requeueChatWork(work, { lost: true });
+        chat.setChatMeta(refJ, { note: "behind the resend" });
+        const resend = take();
+        expect(resend.groups.map((group) => [group.ops[0].op, group.groupId, group.inDoubt])).toEqual([
+            ["create", work.groups[0].groupId, true],
+        ]);
+        const { conflicts, reloaded } = recover(resend);
+        expect(conflicts).toEqual([
+            { kind: "chat", characterId: "c", id: "j", revision: server.chat("c", "j")!.revision },
+        ]);
+        expect(reloaded).toBe(false);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        const note = commit();
+        expect(note.work.groups.map((group) => group.ops)).toEqual([
+            [{ op: "meta", set: { note: "behind the resend" }, unset: [] }],
+        ]);
+        expect(note.result.chats[0].stale).toBeUndefined();
+        expect((server.chat("c", "j")!.data as any).note).toBe("behind the resend");
+        expect(chat.hasChatWork()).toBe(false);
     });
 });

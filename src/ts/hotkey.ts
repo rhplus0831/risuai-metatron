@@ -454,13 +454,16 @@ function closeBindingLayer(layer: BindingLayer) {
     }
 }
 
-/** Ctrl+1..9: picks the prompt preset for the open chat's binding, else (home) the tab's selection. */
+/**
+ * Ctrl+1..9: picks the prompt preset for the open chat's binding, else (home) the tab's selection.
+ * The number counts the active (not archived) presets in list order, as the list's active view numbers them.
+ */
 function changeToPreset(num: number) {
     // The popup editor writes its draft back to the field it was opened on when it closes; with a
     // forwarded preset field that is the shown preset, so it must not change meanwhile. Nothing runs
     // behind a picker list or the binding dialog, which may be choosing for another chat.
     if (!doingAlert() && !popUpEditorStore.open && topBindingLayer() === null) {
-        let pres = settings.presets;
+        const pres = settings.presets.filter((preset) => preset.archived !== true);
         if (pres.length > num) {
             if (pickBinding("promptPresetId", pres[num].id)) {
                 alertToast(`Changed to Preset: ${pres[num].name}`);

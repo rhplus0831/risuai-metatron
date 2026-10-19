@@ -19,6 +19,7 @@ import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
  * Each field has one owner: the model preset (`MODEL_PRESET_FIELDS`, the `modelPresets` collection)
  * or profile (`MODEL_PROFILE_FIELDS`), or the prompt preset (`PROMPT_PRESET_FIELDS`, the `presets`
  * record); `name` is every record's own (`PRESET_RECORD_FIELDS`), and `image` the prompt preset's.
+ * `archived` (`PROMPT_PRESET_LOCAL_FIELDS`) is the prompt preset's list metadata, not a prompt field.
  * The defaults, kinds, and null rules are shared, so `presetFieldValue` serves every record.
  * The values originated from the `setDatabase` root defaults, not `presetTemplate` (they differ
  * for `maxResponse` and the two textgen URLs).
@@ -185,6 +186,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     enableCustomFlags: false,
     customFlags: [],
     image: "",
+    archived: undefined,
     regex: [],
     reasonEffort: 0,
     thinkingTokens: null,
@@ -278,24 +280,43 @@ export type ModelProfileField = (typeof MODEL_PROFILE_FIELDS)[number];
 /** The fields records hold for themselves (`image` is only on the prompt preset). */
 export const PRESET_RECORD_FIELDS = ["name", "image"] as const satisfies readonly PresetField[];
 
+/**
+ * The prompt preset's list metadata: `archived` hides it from the preset list's default view. A
+ * stored record keeps it (`normalizePreset`), but it is no prompt field: the root views and
+ * `activePreset` do not serve it, and `downloadPreset` does not export it.
+ */
+export const PROMPT_PRESET_LOCAL_FIELDS = ["archived"] as const satisfies readonly PresetField[];
+
 /** The fields the prompt preset owns: every other schema field (the prompt, sampling, reasoning). */
 export type PromptPresetField = Exclude<
     PresetField,
-    ModelPresetField | ModelProfileField | (typeof PRESET_RECORD_FIELDS)[number]
+    | ModelPresetField
+    | ModelProfileField
+    | (typeof PRESET_RECORD_FIELDS)[number]
+    | (typeof PROMPT_PRESET_LOCAL_FIELDS)[number]
 >;
 
 const modelFieldSet = new Set<string>(MODEL_PRESET_FIELDS);
 const profileFieldSet = new Set<string>(MODEL_PROFILE_FIELDS);
 const recordFieldSet = new Set<string>(PRESET_RECORD_FIELDS);
+const localFieldSet = new Set<string>(PROMPT_PRESET_LOCAL_FIELDS);
 
 function isPromptPresetField(field: PresetField): field is PromptPresetField {
-    return !modelFieldSet.has(field) && !profileFieldSet.has(field) && !recordFieldSet.has(field);
+    return (
+        !modelFieldSet.has(field) &&
+        !profileFieldSet.has(field) &&
+        !recordFieldSet.has(field) &&
+        !localFieldSet.has(field)
+    );
 }
 
 /** The prompt preset's fields, in `PRESET_DEFAULTS` order. */
 export const PROMPT_PRESET_FIELDS: readonly PromptPresetField[] = PRESET_FIELDS.filter(isPromptPresetField);
 
-/** Which record owns a preset-schema field (`undefined` for `name`/`image`, which each record has). */
+/**
+ * Which record owns a preset-schema field (`undefined` for `name`/`image`, which each record has;
+ * `"prompt"` for the prompt preset's list metadata, `archived`).
+ */
 export function presetFieldOwner(field: PresetField): "model" | "profile" | "prompt" | undefined {
     return modelFieldSet.has(field)
         ? "model"
@@ -309,6 +330,7 @@ export function presetFieldOwner(field: PresetField): "model" | "profile" | "pro
 /** Kinds of the fields whose default does not show one (no default, or a `null` default). */
 const kindsWithoutDefault: Partial<Record<PresetField, ValueKind>> = {
     promptPreprocess: "boolean",
+    archived: "boolean",
     koboldURL: "string",
     proxyRequestModel: "string",
     credentialId: "string",
@@ -580,7 +602,11 @@ function normalizeFields(source: Record<string, unknown>, fields: readonly Prese
     return record;
 }
 
-const promptRecordFields: readonly PresetField[] = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS];
+const promptRecordFields: readonly PresetField[] = [
+    ...PRESET_RECORD_FIELDS,
+    ...PROMPT_PRESET_LOCAL_FIELDS,
+    ...PROMPT_PRESET_FIELDS,
+];
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
 const profileRecordFields: readonly PresetField[] = ["name", ...MODEL_PROFILE_FIELDS];
 
@@ -591,7 +617,7 @@ export const MODEL_PRESET_DEFAULT_NAME = "New Model Preset";
 export const MODEL_PROFILE_DEFAULT_NAME = "New Connection";
 
 /**
- * A normalized copy of a prompt preset (`normalizeFields` over `name`, `image`, and
+ * A normalized copy of a prompt preset (`normalizeFields` over `name`, `image`, `archived`, and
  * `PROMPT_PRESET_FIELDS`): the model fields an old file or record carries are dropped. The server
  * `presets` normalizer runs this, so a stored preset always has the containers the client reads
  * through (`NAISettings.cfg_scale`, `ooba.formating`). The input is never mutated and must be plain

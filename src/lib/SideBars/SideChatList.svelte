@@ -266,7 +266,11 @@
     >
 
     {#key sorted}
-        <div class="flex flex-col mt-2 overflow-y-auto grow" bind:this={listEle}>
+        <!-- Stretched over the sidebar's side padding so the scrollbar sits at the sidebar's edge. -->
+        <div
+            class="flex flex-col mt-2 overflow-y-auto grow -mr-(--sidebar-gutter) pr-(--sidebar-gutter)"
+            bind:this={listEle}
+        >
             <!-- folder div -->
             <div class="flex flex-col" bind:this={folderEles}>
                 <!-- chat folder -->

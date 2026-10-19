@@ -28,6 +28,8 @@ export type TestServerOptions = {
     pushTransport?: PushTransport;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;
+    /** The Realm download's origin, the `/hub-proxy` target (local upstreams in tests), and the staged import's expiry. */
+    realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -51,6 +53,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         generationRunner: options.generationRunner,
         generationRandom: options.generationRandom,
         pushTransport: options.pushTransport,
+        realm: options.realm,
     });
     return {
         rootDir,
@@ -215,7 +218,8 @@ export type UpstreamRequest = {
 /**
  * A local HTTP upstream that records every request. Paths: `/echo` returns the request as JSON with
  * `cache-control` and CSP headers; `/sse` streams three events; `/stall` sends headers and one
- * chunk, then never ends; `/hang` never responds; `/redirect` sends a relative 302 to `/final`.
+ * chunk, then never ends; `/hang` never responds; `/redirect` sends a relative 302 to `/final`;
+ * `/redirect-off` sends a 302 to another origin (`https://docs.example/lua`).
  */
 export async function startUpstream() {
     const requests: UpstreamRequest[] = [];
@@ -259,6 +263,11 @@ export async function startUpstream() {
             return;
         }
         if (url.startsWith("/hang")) {
+            return;
+        }
+        if (url.startsWith("/redirect-off")) {
+            res.writeHead(302, { location: "https://docs.example/lua", "x-first": "yes" });
+            res.end("moved");
             return;
         }
         if (url.startsWith("/redirect")) {

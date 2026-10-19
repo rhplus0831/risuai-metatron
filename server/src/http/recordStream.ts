@@ -85,6 +85,8 @@ async function* handleRecord(name: string, handle: FileHandle, size: number): As
 export function iteratorStream(
     iterator: AsyncGenerator<Uint8Array>,
     finalize: () => Promise<void> = async () => {},
+    /** Called first on a cancel, so an iterator inside a step can see it and stop that step early. */
+    onCancel: () => void = () => {},
 ): ReadableStream<Uint8Array> {
     return new ReadableStream<Uint8Array>({
         async pull(controller) {
@@ -100,6 +102,7 @@ export function iteratorStream(
             }
         },
         async cancel() {
+            onCancel();
             await iterator.return(undefined);
             await finalize();
         },

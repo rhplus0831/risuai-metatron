@@ -63,16 +63,29 @@ export type ServerImportOptions = {
  * `ServerImportAnswerError` for a malformed answer, and a network failure of the request or of the
  * body read as it is (a `TypeError`).
  */
-export async function importFileOverServer<T>(
+export function importFileOverServer<T>(
     path: string,
     file: Blob,
     readResult: (line: Record<string, unknown>) => T | null,
     options: ServerImportOptions = {},
 ): Promise<T> {
+    return importOverServer(path, { body: file, contentType: "application/octet-stream" }, readResult, options);
+}
+
+/**
+ * `importFileOverServer` with any request body: the Realm download (`realmImportClient.ts`) sends
+ * `{ id }` as JSON, and the server fetches the file itself. Same answer and errors.
+ */
+export async function importOverServer<T>(
+    path: string,
+    request: { body: BodyInit; contentType: string },
+    readResult: (line: Record<string, unknown>) => T | null,
+    options: ServerImportOptions = {},
+): Promise<T> {
     const res = await authFetch(path, {
         method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: file,
+        headers: { "content-type": request.contentType },
+        body: request.body,
     });
     if (!res.ok) {
         throw new ServerImportRequestError(res.status, await answerError(res));

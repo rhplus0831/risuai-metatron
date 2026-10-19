@@ -149,31 +149,47 @@ describe("/proxy2", () => {
 });
 
 describe("/hub-proxy", () => {
-    it("proxies to x-risu-node-path with the hub origin, strips risu-auth, and follows one relative redirect", async () => {
-        server = createTestServer({ password: "pw" });
-        const res = await server.app.request("/hub-proxy/anything?x=1", {
-            headers: { "x-risu-node-path": target("/echo?viahub=1"), "risu-auth": "pw", "x-custom": "hub" },
+    it("reaches only the hub (never x-risu-node-path), strips risu-auth, and follows one redirect within the hub's origin", async () => {
+        server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
+        const res = await server.app.request("/hub-proxy/echo?viahub=1", {
+            headers: {
+                "x-risu-node-path": encodeURIComponent("http://127.0.0.1:1/elsewhere"),
+                "risu-auth": "pw",
+                "x-custom": "hub",
+            },
         });
         expect(res.status).toBe(200);
         const seen = (await res.json()) as { url: string; headers: Record<string, string> };
         expect(seen.url).toBe("/echo?viahub=1");
-        expect(seen.headers.origin).toBe("https://sv.risuai.xyz");
+        expect(seen.headers.origin).toBe(upstream.url);
         expect(seen.headers["x-custom"]).toBe("hub");
         expect(seen.headers["risu-auth"]).toBeUndefined();
         expect(seen.headers["x-risu-node-path"]).toBeUndefined();
+        expect(upstream.requests).toHaveLength(1);
 
-        const redirected = await server.app.request("/hub-proxy/r", {
-            headers: { "x-risu-node-path": target("/redirect") },
-        });
+        const redirected = await server.app.request("/hub-proxy/redirect");
         expect(redirected.status).toBe(200);
         expect(redirected.headers.get("x-final")).toBe("yes");
         expect(redirected.headers.get("x-first")).toBeNull();
         expect(await redirected.text()).toBe("final body");
+        expect(upstream.requests.map((r) => r.url)).toEqual(["/echo?viahub=1", "/redirect", "/final?from=redirect"]);
+    });
 
-        const failed = await server.app.request("/hub-proxy/r", {
-            headers: { "x-risu-node-path": encodeURIComponent("http://127.0.0.1:1/") },
-        });
+    it("answers a redirect to another origin to the browser as it is, without fetching it", async () => {
+        server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
+        const res = await server.app.request("/hub-proxy/redirect-off/docs/lua");
+        expect(res.status).toBe(302);
+        expect(res.headers.get("location")).toBe("https://docs.example/lua");
+        expect(res.headers.get("x-first")).toBe("yes");
+        expect(await res.text()).toBe("moved");
+        expect(upstream.requests.map((r) => r.url)).toEqual(["/redirect-off/docs/lua"]);
+    });
+
+    it("answers 502 when the hub cannot be reached", async () => {
+        server = createTestServer({ password: "pw", realm: { hubURL: "http://127.0.0.1:1" } });
+        const failed = await server.app.request("/hub-proxy/r");
         expect(failed.status).toBe(502);
         expect(((await failed.json()) as { error: string }).error).toMatch(/^Proxy request failed: /);
+        expect(upstream.requests).toHaveLength(0);
     });
 });

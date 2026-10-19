@@ -11,7 +11,7 @@ import type { BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
-import { CHAT_TABLES_SQL, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
+import { CHAT_TABLES_SQL, MAX_CHAT_GROUP_IDS, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     createResourceStore,
@@ -431,15 +431,14 @@ describe("revision rules", () => {
                 JSON.stringify(ops),
             ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current }]);
         }
-        // A by-id op whose target is gone conflicts even on a stale revision; so does a missing anchor.
+        // A begin of a gone message and an append after a gone anchor conflict even on a stale
+        // revision, and roll back the group's earlier op with them.
         for (const ops of [
-            [{ op: "setText", id: "c", text: "gone" }],
-            [{ op: "setMessage", message: m("c") }],
             [{ op: "begin", id: "c", generationId: "g" }],
             [{ op: "append", messages: [m("e")], anchor: { after: "c" } }],
             [
                 { op: "meta", set: { note: "applied first" } },
-                { op: "setText", id: "c", text: "gone" },
+                { op: "append", messages: [m("e")], anchor: { after: "c" } },
             ],
         ] as ChatOp[][]) {
             expect(
@@ -449,6 +448,41 @@ describe("revision rules", () => {
         }
         expect(snapshotState(store)).toBe(state);
         expect(store.writeCount()).toBe(writes);
+        // A setText or setMessage of a gone message changes nothing and is reported `missing`
+        // (data-loss slice 6a); alone, it moves nothing.
+        for (const ops of [
+            [{ op: "setText", id: "c", text: "gone" }],
+            [{ op: "setMessage", message: m("c") }],
+        ] as ChatOp[][]) {
+            expect(store.applyChanges({ chats: [group("k", stale, ops)] }).chats[0], JSON.stringify(ops)).toEqual({
+                characterId: "c",
+                id: "k",
+                revision: current,
+                stale: true,
+                targets: ["missing"],
+            });
+        }
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // With another op in the group, that one commits.
+        const partly = store.applyChanges({
+            chats: [
+                group("k", stale, [
+                    { op: "meta", set: { note: "applied first" } },
+                    { op: "setText", id: "c", text: "gone" },
+                ]),
+            ],
+        }).chats[0];
+        expect(partly).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(current, 1),
+            stale: true,
+            targets: ["missing"],
+        });
+        current = partly.revision!;
+        expect(chat(store, "k")!.data).toMatchObject({ note: "applied first" });
+        expect(messageIds(store, "k")).toEqual(["a", "b", "d"]);
 
         // With the current revision the destructive ops land.
         current = store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["a", "b"] }])] }).chats[0]
@@ -609,27 +643,28 @@ describe("patchMessage (data-loss slice 1a)", () => {
         store.applyChanges({ chats: [group("k", base, [{ op: "setMessage", message: m("b", "B3") }])] });
         expect(row(store, "b")).toEqual(m("b", "B3"));
 
-        // A patch whose target is gone conflicts even on an older revision, and the group's earlier
-        // op is rolled back with it.
+        // A patch whose target is gone changes nothing and is reported `missing` (data-loss slice
+        // 6a); the group's earlier op commits.
         const current = chat(store, "k")!.revision!;
         store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["c"] }])] });
         const after = chat(store, "k")!.revision!;
-        const state = snapshotState(store);
-        const writes = store.writeCount();
-        expect(
-            conflictsOf(() =>
-                store.applyChanges({
-                    chats: [
-                        group("k", base, [
-                            { op: "meta", merge: { scriptstate: { $x: "1" } } },
-                            patch("c", { set: { disabled: true } }),
-                        ]),
-                    ],
-                }),
-            ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: after }]);
-        expect(snapshotState(store)).toBe(state);
-        expect(store.writeCount()).toBe(writes);
+        const gone = store.applyChanges({
+            chats: [
+                group("k", base, [
+                    { op: "meta", merge: { scriptstate: { $x: "1" } } },
+                    patch("c", { set: { disabled: true } }),
+                ]),
+            ],
+        }).chats[0];
+        expect(gone).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(after, 1),
+            stale: true,
+            targets: ["missing"],
+        });
+        expect((chat(store, "k")!.data as { scriptstate?: unknown }).scriptstate).toEqual({ $x: "1" });
+        expect(messageIds(store, "k")).toEqual(["a", "b"]);
     });
 
     it("never changes a stored translation, closes an open generation fence, and applies whatever the stored row's key order", () => {
@@ -2110,16 +2145,19 @@ describe("message translations (translation slice 1.1)", () => {
         });
         revision = r.revision!;
 
-        // A missing message is a conflict (the whole batch rolls back).
-        const before = snapshotState(store);
-        expect(
-            conflictsOf(() =>
-                store.applyChanges({
-                    chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
-                }),
-            ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision }]);
-        expect(snapshotState(store)).toBe(before);
+        // A missing message: its translation is `ignored` and its target `missing` (data-loss slice
+        // 6a); the group's meta op commits.
+        const gone = store.applyChanges({
+            chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
+        }).chats[0];
+        expect(gone).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(revision, 1),
+            translations: ["ignored"],
+            targets: ["missing"],
+        });
+        expect(chat(store, "k")!.data).toMatchObject({ note: "n" });
     });
 
     it("setMessage never changes a stored translation or its absence, setText leaves it to go stale by hash, a generation's checkpoints keep it, setTranslation leaves the fence open, and replace writes what it carries", () => {
@@ -2335,5 +2373,493 @@ describe("message translations (translation slice 1.1)", () => {
             ],
         });
         expect(stored("a")).toEqual(m("a", "A"));
+    });
+});
+
+describe("missing targets (data-loss slice 6a)", () => {
+    const tr = (source: string, text = "translated"): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+    });
+    const patch = (id: string, set: Record<string, unknown>): ChatOp => ({ op: "patchMessage", id, set }) as ChatOp;
+    /** A feed-backed store with `k` (a, b, c), a generation `gb` open on `b`, and `c` removed on the current revision. */
+    function setup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const base = seed(store).chat;
+        const begun = store.applyChanges({ chats: [group("k", base, [{ op: "begin", id: "b", generationId: "gb" }])] })
+            .chats[0].revision!;
+        const current = store.applyChanges({ chats: [group("k", begun, [{ op: "remove", ids: ["c"] }])] }).chats[0]
+            .revision!;
+        return { store, events, base, current };
+    }
+
+    it("reports a gone message per op in op order, aligned with the checkpoint and translation outcomes, and commits the group's other ops", () => {
+        const { store, events, base, current } = setup();
+        const result = store.applyChanges({
+            chats: [
+                group("k", base, [
+                    { op: "setText", id: "c", text: "gone", generation: { id: "gc", seq: 1 } },
+                    { op: "append", messages: [m("d", "D")], anchor: { end: true } },
+                    { op: "setText", id: "b", text: "B2", generation: { id: "gb", seq: 1 } },
+                    patch("c", { disabled: true }),
+                    { op: "setTranslation", id: "c", translation: null },
+                    { op: "setTranslation", id: "b", translation: tr("B2") },
+                    { op: "setMessage", message: m("c", "C2") },
+                    { op: "setText", id: "a", text: "A2" },
+                ]),
+            ],
+        }).chats[0];
+        expect(result).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(current, 4),
+            stale: true,
+            checkpoints: ["ignored", "applied"],
+            translations: ["ignored", "applied"],
+            targets: ["missing", "applied", "missing", "missing", "applied", "missing", "applied"],
+        });
+        expect(chat(store, "k")!.data.message).toEqual([
+            m("a", "A2"),
+            { ...m("b", "B2"), translation: tr("B2") },
+            m("d", "D"),
+        ]);
+        // The feed patch carries the rows the group changed, from the actual base; nothing of `c`.
+        expect(events.at(-1)!.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: result.revision,
+                patch: {
+                    baseRevision: current,
+                    count: 3,
+                    messages: [
+                        { after: null, message: m("a", "A2") },
+                        { after: "a", message: { ...m("b", "B2"), translation: tr("B2") } },
+                        { after: "b", message: m("d", "D") },
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it("moves nothing for a group whose every target is gone: the revision and the write count stay, and the feed carries no patch, on an older and on the current revision", () => {
+        const { store, events, base, current } = setup();
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        const ops: ChatOp[] = [
+            { op: "setText", id: "c", text: "gone" },
+            patch("c", { disabled: true }),
+            { op: "setTranslation", id: "c", translation: null },
+            { op: "setMessage", message: m("c", "C2") },
+        ];
+        expect(store.applyChanges({ chats: [group("k", base, ops)] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: current,
+            stale: true,
+            translations: ["ignored"],
+            targets: ["missing", "missing", "missing", "missing"],
+        });
+        expect(store.applyChanges({ chats: [group("k", current, ops)] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: current,
+            translations: ["ignored"],
+            targets: ["missing", "missing", "missing", "missing"],
+        });
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // Published at the unchanged revision without a patch (as a replayed append is): a client
+        // holding that revision ignores it.
+        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: current }]);
+    });
+
+    it("still rolls the whole group back for an append after a gone anchor, a multi-id remove with a gone id, and a begin of a gone message", () => {
+        const { store, base, current } = setup();
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        for (const ops of [
+            [
+                { op: "setText", id: "c", text: "gone" },
+                { op: "append", messages: [m("d", "D")], anchor: { after: "c" } },
+            ],
+            [
+                { op: "setText", id: "a", text: "A2" },
+                { op: "remove", ids: ["a", "c"] },
+            ],
+            [
+                { op: "setText", id: "a", text: "A2" },
+                { op: "begin", id: "c", generationId: "gc" },
+            ],
+        ] as ChatOp[][]) {
+            for (const revision of [base, current]) {
+                expect(
+                    conflictsOf(() => store.applyChanges({ chats: [group("k", revision, ops)] })),
+                    JSON.stringify(ops),
+                ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current }]);
+            }
+        }
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+    });
+});
+
+describe("group idempotency ids (data-loss slice 6b)", () => {
+    const tr = (source: string, text = "translated"): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+    });
+    /** A group as the tab sends it: with its id, and `retry` for a resend after a lost answer. */
+    const identified = (
+        chatId: string,
+        baseRevision: string | null,
+        ops: ChatOp[],
+        groupId: string,
+        retry = false,
+    ) => ({
+        ...group(chatId, baseRevision, ops),
+        groupId,
+        ...(retry ? { retry: true as const } : {}),
+    });
+    const note = (value: string): ChatOp => ({ op: "meta", set: { note: value }, unset: [] }) as ChatOp;
+    /** A feed-backed store with `k` (a, b, c). */
+    function setup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        return { store, events, base: seed(store).chat };
+    }
+    /** The remembered ids of the live file (its `chatGroups` rows), oldest first. */
+    function rememberedIds(file: string): { chatSeq: number; groupId: string; revision: number }[] {
+        const db = new DatabaseSync(file);
+        try {
+            return db.prepare("SELECT chatSeq, groupId, revision FROM chatGroups ORDER BY seq").all() as never;
+        } finally {
+            db.close();
+        }
+    }
+
+    it("answers a replayed id with the earlier result and changes nothing: another writer's later edit stays, the revision and write count stay, and the feed carries the plain remembered ref", () => {
+        const { store, events, base } = setup();
+        const ops: ChatOp[] = [
+            { op: "append", messages: [m("d", "D")], anchor: { end: true } },
+            { op: "setText", id: "a", text: "mine" },
+        ];
+        const first = store.applyChanges({ chats: [identified("k", base, ops, "g1")] }).chats[0];
+        expect(first).toEqual({ characterId: "c", id: "k", revision: bumped(base, 2) });
+        // Another writer (a server job: no id) edits `a` after it.
+        const theirs = store.applyChanges({
+            chats: [group("k", first.revision!, [{ op: "setText", id: "a", text: "theirs" }])],
+        }).chats[0].revision!;
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        const published = events.length;
+        // The resend after a lost answer, and a replay that is not in doubt: both answered as before.
+        for (const retry of [true, false]) {
+            expect(store.applyChanges({ chats: [identified("k", base, ops, "g1", retry)] }).chats[0]).toEqual(first);
+        }
+        expect(text(store, "k", "a")).toBe("theirs");
+        expect(messageIds(store, "k")).toEqual(["a", "b", "c", "d"]);
+        expect(chat(store, "k")!.revision).toBe(theirs);
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // Published as a plain ref at the remembered (older) revision, without a patch.
+        expect(events).toHaveLength(published + 2);
+        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: first.revision }]);
+        // The same ops under a fresh id are a new group: applied on the stale base, over the other writer.
+        const fresh = store.applyChanges({ chats: [identified("k", base, ops, "g1-fresh")] }).chats[0];
+        expect(fresh).toEqual({ characterId: "c", id: "k", revision: bumped(theirs, 1), stale: true });
+        expect(text(store, "k", "a")).toBe("mine");
+    });
+
+    it("remembers stale, every checkpoint, the translation outcomes, and the missing targets, answering each checkpoint duplicate", () => {
+        const { store, base } = setup();
+        // Another writer removes `c` and opens a generation on `b` (a `begin` needs the current revision).
+        const removed = store.applyChanges({ chats: [group("k", base, [{ op: "remove", ids: ["c"] }])] }).chats[0]
+            .revision!;
+        const current = store.applyChanges({
+            chats: [group("k", removed, [{ op: "begin", id: "b", generationId: "g" }])],
+        }).chats[0].revision!;
+        const ops: ChatOp[] = [
+            { op: "setText", id: "b", text: "one", generation: { id: "g", seq: 1 } },
+            { op: "setTranslation", id: "a", translation: tr("A") },
+            { op: "setTranslation", id: "b", translation: tr("not the stored text") },
+            { op: "setText", id: "c", text: "gone" },
+        ];
+        const first = store.applyChanges({ chats: [identified("k", base, ops, "g2")] }).chats[0];
+        expect(first.stale).toBe(true);
+        expect(first.checkpoints).toEqual(["applied"]);
+        expect(first.translations).toEqual(["applied", "ignored"]);
+        expect(first.targets).toEqual(["applied", "applied", "applied", "missing"]);
+        // The generation closes meanwhile; the replay is answered as the write it was.
+        store.applyChanges({
+            chats: [
+                group("k", first.revision!, [
+                    { op: "setText", id: "b", text: "final", generation: { id: "g", seq: 2, final: true } },
+                ]),
+            ],
+        });
+        const state = snapshotState(store);
+        expect(store.applyChanges({ chats: [identified("k", base, ops, "g2", true)] }).chats[0]).toEqual({
+            ...first,
+            checkpoints: ["duplicate"],
+        });
+        expect(snapshotState(store)).toBe(state);
+        expect(text(store, "k", "b")).toBe("final");
+        expect(current).not.toBe(first.revision);
+    });
+
+    it("answers a replayed create with its message ids, also when the server renamed missing or duplicate ids, and creates no second chat", () => {
+        const { store } = setup();
+        const kept: ChatOp[] = [{ op: "create", chat: { name: "Two", message: [m("x", "X"), m("y", "Y")] } as never }];
+        const renaming: ChatOp[] = [
+            {
+                op: "create",
+                chat: {
+                    name: "Three",
+                    message: [m("x", "X"), m("x", "duplicate id"), { role: "user", data: "no id" }],
+                },
+            } as never,
+        ];
+        const two = store.applyChanges({ chats: [identified("k2", null, kept, "c1")] }).chats[0];
+        expect(two.messageIds).toEqual(["x", "y"]);
+        const three = store.applyChanges({ chats: [identified("k3", null, renaming, "c2")] }).chats[0];
+        expect(three.messageIds).toHaveLength(3);
+        expect(three.messageIds![0]).toBe("x");
+        expect(three.messageIds![1]).not.toBe("x");
+        expect(messageIds(store, "k3")).toEqual(three.messageIds);
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        expect(store.applyChanges({ chats: [identified("k2", null, kept, "c1", true)] }).chats[0]).toEqual(two);
+        expect(store.applyChanges({ chats: [identified("k3", null, renaming, "c2", true)] }).chats[0]).toEqual(three);
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        expect(orderOf(store)!.ids).toEqual(["k", "k2", "k3"]);
+        // The create under a fresh id is what it always was: a conflict with the existing chat.
+        expect(conflictsOf(() => store.applyChanges({ chats: [identified("k2", null, kept, "c1-fresh")] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k2", revision: two.revision },
+        ]);
+    });
+
+    it("remembers a group that changed nothing, so its resend does not apply once another writer recreated its target", () => {
+        const { store, base } = setup();
+        const current = store.applyChanges({ chats: [group("k", base, [{ op: "remove", ids: ["c"] }])] }).chats[0]
+            .revision!;
+        const ops: ChatOp[] = [{ op: "setText", id: "c", text: "mine" }];
+        const first = store.applyChanges({ chats: [identified("k", current, ops, "g3")] }).chats[0];
+        expect(first).toEqual({ characterId: "c", id: "k", revision: current, targets: ["missing"] });
+        // Another writer puts `c` back.
+        store.applyChanges({
+            chats: [group("k", current, [{ op: "append", messages: [m("c", "theirs")], anchor: { end: true } }])],
+        });
+        expect(store.applyChanges({ chats: [identified("k", current, ops, "g3", true)] }).chats[0]).toEqual(first);
+        expect(text(store, "k", "c")).toBe("theirs");
+    });
+
+    it("remembers nothing of a batch another group's conflict rolled back", () => {
+        const { store, base } = setup();
+        const ops: ChatOp[] = [{ op: "setText", id: "a", text: "mine" }];
+        const state = snapshotState(store);
+        expect(
+            conflictsOf(() =>
+                store.applyChanges({
+                    chats: [identified("k", base, ops, "g4"), group("missing", base, [{ op: "delete" }])],
+                }),
+            ),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "missing", revision: null }]);
+        expect(snapshotState(store)).toBe(state);
+        // Not remembered: the resend applies as a first attempt.
+        expect(store.applyChanges({ chats: [identified("k", base, ops, "g4", true)] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(base, 1),
+        });
+        expect(text(store, "k", "a")).toBe("mine");
+    });
+
+    it("answers a remembered id before the generation lock and the anchor check", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        const base = seed(store).chat;
+        const ops: ChatOp[] = [
+            { op: "append", messages: [m("d", "D")], anchor: { after: "b" } },
+            { op: "setText", id: "a", text: "mine" },
+        ];
+        const first = store.applyChanges({ chats: [identified("k", base, ops, "g5")] }).chats[0];
+        // A job takes `a`, and another writer removes the anchor `b`.
+        lock.addToken("t");
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "a" }, { jobId: "J", generationId: "g", token: "t" });
+        const current = store.applyChanges({ chats: [group("k", first.revision!, [{ op: "remove", ids: ["b"] }])] })
+            .chats[0].revision!;
+        const state = snapshotState(store);
+        expect(store.applyChanges({ chats: [identified("k", base, ops, "g5", true)] }).chats[0]).toEqual(first);
+        expect(snapshotState(store)).toBe(state);
+        // The same ops as a new group meet the lock first (and the gone anchor after it).
+        expect(conflictsOf(() => store.applyChanges({ chats: [identified("k", base, ops, "g5-fresh")] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: current, reason: "generating", messageIds: ["a"] },
+        ]);
+    });
+
+    it("remembers the newest 100 ids of a chat: an evicted retry conflicts as expired, a remembered one is answered, and a retry on a newer base or a fresh id applies", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        const base = seed(store).chat;
+        const revisions: string[] = [];
+        let revision = base;
+        for (let index = 1; index <= MAX_CHAT_GROUP_IDS + 1; index += 1) {
+            revision = store.applyChanges({ chats: [identified("k", revision, [note(`n${index}`)], `g${index}`)] })
+                .chats[0].revision!;
+            revisions.push(revision);
+        }
+        const remembered = rememberedIds(path.join(dir, "live.sqlite"));
+        expect(remembered).toHaveLength(MAX_CHAT_GROUP_IDS);
+        expect(remembered[0]).toEqual({ chatSeq: 1, groupId: "g2", revision: counter(revisions[1]) });
+        expect(remembered.at(-1)!.groupId).toBe(`g${MAX_CHAT_GROUP_IDS + 1}`);
+        const current = revisions.at(-1)!;
+        const state = snapshotState(store);
+        // Evicted: its retry may have landed (it did), so it is refused as expired, not applied again.
+        expect(
+            conflictsOf(() => store.applyChanges({ chats: [identified("k", base, [note("n1")], "g1", true)] })),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current, reason: "expired" }]);
+        // An unknown retry whose base is not newer than the oldest remembered group's revision: the same.
+        for (const stale of [base, revisions[0], revisions[1]]) {
+            expect(
+                conflictsOf(() =>
+                    store.applyChanges({ chats: [identified("k", stale, [note("x")], "unknown", true)] }),
+                ),
+            ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: current, reason: "expired" }]);
+        }
+        // Still remembered: answered as it was.
+        expect(
+            store.applyChanges({ chats: [identified("k", revisions[0], [note("n2")], "g2", true)] }).chats[0],
+        ).toEqual({ characterId: "c", id: "k", revision: revisions[1] });
+        expect(snapshotState(store)).toBe(state);
+        expect(chat(store, "k")!.data.note).toBe(`n${MAX_CHAT_GROUP_IDS + 1}`);
+        // A retry on a base newer than the oldest remembered group would still be remembered had it
+        // landed: it applies (stale). A group without `retry` is never refused as expired.
+        expect(
+            store.applyChanges({ chats: [identified("k", revisions[2], [note("newer base")], "unknown-newer", true)] })
+                .chats[0],
+        ).toEqual({ characterId: "c", id: "k", revision: bumped(current, 1), stale: true });
+        expect(store.applyChanges({ chats: [identified("k", base, [note("n1 again")], "g1")] }).chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(current, 2),
+            stale: true,
+        });
+        expect(chat(store, "k")!.data.note).toBe("n1 again");
+        expect(rememberedIds(path.join(dir, "live.sqlite"))).toHaveLength(MAX_CHAT_GROUP_IDS);
+    });
+
+    it("creates the table in a database from before it, keeps the ids across a reopen, drops them with the chat and on a restore, and restores snapshots with and without it", async () => {
+        const dir = tempDir();
+        const file = path.join(dir, "live.sqlite");
+        const ops: ChatOp[] = [{ op: "setText", id: "a", text: "mine" }];
+        let store = createResourceStore({ file, kinds });
+        const base = seed(store).chat;
+        store.close();
+        // A database created before the slice: no `chatGroups` table.
+        const db = new DatabaseSync(file);
+        db.exec("DROP TABLE chatGroups");
+        db.close();
+        store = createResourceStore({ file, kinds });
+        const first = store.applyChanges({ chats: [identified("k", base, ops, "g6")] }).chats[0];
+        expect(first.revision).toBe(bumped(base, 1));
+        expect(store.applyChanges({ chats: [identified("k", base, ops, "g6", true)] }).chats[0]).toEqual(first);
+        store.close();
+        expect(rememberedIds(file).map((row) => row.groupId)).toEqual(["g6"]);
+        // Reopened: still remembered.
+        store = createResourceStore({ file, kinds });
+        expect(store.applyChanges({ chats: [identified("k", base, ops, "g6", true)] }).chats[0]).toEqual(first);
+        expect(text(store, "k", "a")).toBe("mine");
+        // A physical backup carries the table; a restore from it starts without ids (the chats are
+        // deleted, which cascades), and old tokens are refused by the new epoch anyway.
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        expect(rememberedIds(snapshot).map((row) => row.groupId)).toEqual(["g6"]);
+        store.applyChanges({ chats: [identified("k", first.revision!, [note("after the backup")], "g7")] });
+        store.replaceAll(store.readSnapshot(snapshot));
+        store.close();
+        expect(rememberedIds(file)).toEqual([]);
+        store = createResourceStore({ file, kinds });
+        expect(chat(store, "k")!.data.note).toBe("");
+        // A snapshot from before the table restores as well.
+        const older = path.join(dir, "older.sqlite");
+        copyFileSync(snapshot, older);
+        const olderDb = new DatabaseSync(older, { enableForeignKeyConstraints: false });
+        olderDb.exec("DROP TABLE chatGroups");
+        olderDb.close();
+        const restoredBase = chat(store, "k")!.revision;
+        store.applyChanges({ chats: [identified("k", restoredBase, [note("before the older restore")], "g8")] });
+        store.replaceAll(store.readSnapshot(older));
+        expect(chat(store, "k")!.data.note).toBe("");
+        // Deleting the chat drops its ids with it (another incarnation under the id remembers none):
+        // the old group's base names the old incarnation, so it conflicts instead of applying.
+        const k = chat(store, "k")!.revision;
+        store.applyChanges({ chats: [identified("k", k, ops, "g9")] });
+        store.close();
+        expect(rememberedIds(file).map((row) => row.groupId)).toEqual(["g9"]);
+        store = createResourceStore({ file, kinds });
+        const deleted = chat(store, "k")!.revision;
+        store.applyChanges({ chats: [identified("k", deleted, [{ op: "delete" }], "g10")] });
+        store.close();
+        expect(rememberedIds(file)).toEqual([]);
+        store = createResourceStore({ file, kinds });
+        stores.push(store);
+        const recreated = store.applyChanges({
+            chats: [group("k", null, [{ op: "create", chat: { name: "K again", message: [m("a", "A")] } as never }])],
+        }).chats[0];
+        expect(conflictsOf(() => store.applyChanges({ chats: [identified("k", deleted, ops, "g9", true)] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: recreated.revision },
+        ]);
+        expect(text(store, "k", "a")).toBe("A");
+    });
+
+    it("refuses a malformed groupId or retry before anything is written, naming the group", () => {
+        const { store, base } = setup();
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        const length = `groupId must be a string of 1 to 128 characters`;
+        for (const [extra, message] of [
+            [{ groupId: "" }, length],
+            [{ groupId: "x".repeat(129) }, length],
+            [{ groupId: 5 }, length],
+            [{ groupId: null }, length],
+            [{ retry: true }, "retry must be true and needs a groupId"],
+            [{ groupId: "g", retry: false }, "retry must be true and needs a groupId"],
+            [{ groupId: "g", retry: 1 }, "retry must be true and needs a groupId"],
+        ] as [Record<string, unknown>, string][]) {
+            rejects(
+                () =>
+                    store.applyChanges({
+                        chats: [
+                            group("k2", null, [{ op: "create", chat: {} as never }]),
+                            { ...group("k", base, [note("x")]), ...extra } as never,
+                        ],
+                    }),
+                `chats[1]: ${message}`,
+            );
+        }
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // The longest accepted id.
+        expect(
+            store.applyChanges({ chats: [identified("k", base, [note("x")], "x".repeat(128))] }).chats[0].revision,
+        ).toBe(bumped(base, 1));
     });
 });
