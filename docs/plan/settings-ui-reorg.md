@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 4 (2b48d07a3), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
@@ -29,6 +29,14 @@ markup), puts their entries where Other Bots was (slice 9 regroups them), names 
 `SETTINGS_PAGE_ALIASES`. It also seeds the WaveSpeed LoRA rows from the saved list (the
 mount used to clear it); the fetched WaveSpeed model list still resets when the page is
 left (a known leftover).
+4 puts each receiving page's items in its own data file (`modelSettingsData.ts`,
+`promptSettingsData.ts`, `memorySettingsData.ts`, `voiceSettingsData.ts`,
+`personaSettingsData.ts`); gives Custom Models its own collapsible section on the Model page
+(a `noAccordion` editor has no heading); renders `adv.remPunc` inside Memory's SupaMemory
+block, since `supaMemory.ts` is its only reader (so it shows only for SupaMemory); keeps
+`adv.newImgBeta` on Advanced (Performance & media), because it governs character asset images
+in chat, not image generation; and leaves `adv.scrollToActive`/`adv.bookmark` in
+`advanced.other` for slice 5, which creates the Interaction page and removes that section.
 
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
@@ -273,6 +281,6 @@ parallel sessions after 3, but 4, 5 and 6 all add to the section test's page lis
 
 ## Continue Remaining Work
 
-Next: slice 4 (needs 3, landed), then 5 and 8; 9 last. Record each landed slice in the Status line with its commit, and the
+Next: slice 5 (it also empties `advanced.other`), then 8; 9 last. Record each landed slice in the Status line with its commit, and the
 decisions a slice makes where the plan leaves a choice. When every slice has landed, move this file to the archive as
 `docs/archived-plan/README.md` describes.
