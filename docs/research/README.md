@@ -5,14 +5,15 @@ Read-only surveys of sibling RisuAI forks, written on 2026-10-20 against metatro
 covers, and what should not be ported. None of them changed code. Pending decisions
 from each survey are collected at the bottom.
 
-| File | Subject | Written by |
-|---|---|---|
-| [haejeok-feature-survey.md](haejeok-feature-survey.md) | HaejeokRisuai (`/home/codex/HaejeokRisuai`): 47 candidates A1–F7 with fit and effort, top 10 picks, not-worth-porting list, open questions | Opus sub-agent, main claims re-checked by the session |
-| [risunest-ideas.md](risunest-ideas.md) | RisuNest (`/home/codex/RisuNest`): 18 ranked candidates plus a lower-priority bundle, already-covered list, open questions | Opus sub-agent, six claims re-checked by the session |
-| [pocketrisu-risubard-picks.md](pocketrisu-risubard-picks.md) | PocketRisu + RisuBard: the cross-checked pick list (port now / adopt as policy / needs its own plan / do not port / shared-code bug fixes to compare), with a recommended order | Session, from the three surveys below |
-| [pocketrisu-survey.md](pocketrisu-survey.md) | PocketRisu v1.15.0 (`/home/codex/PocketRisu`): ~60 features, 19 design concepts, 29 bug fixes, route map | Opus sub-agent |
-| [risubard-survey.md](risubard-survey.md) | RisuBard 0.9.72 (`/home/codex/RisuBard`): features added on top of PocketRisu, 24 concepts, plugin API, doc/code mismatches | Opus sub-agent |
-| [metatron-inventory-vs-pocketrisu-risubard.md](metatron-inventory-vs-pocketrisu-risubard.md) | What metatron already has, partly has, or lacks, as the baseline for the PocketRisu/RisuBard comparison | Opus sub-agent |
+| File                                                                                         | Subject                                                                                                                                                                         | Written by                                                    |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [haejeok-feature-survey.md](haejeok-feature-survey.md)                                       | HaejeokRisuai (`/home/codex/HaejeokRisuai`): 47 candidates A1–F7 with fit and effort, top 10 picks, not-worth-porting list, open questions                                      | Opus sub-agent, main claims re-checked by the session         |
+| [risunest-ideas.md](risunest-ideas.md)                                                       | RisuNest (`/home/codex/RisuNest`): 18 ranked candidates plus a lower-priority bundle, already-covered list, open questions                                                      | Opus sub-agent, six claims re-checked by the session          |
+| [pocketrisu-risubard-picks.md](pocketrisu-risubard-picks.md)                                 | PocketRisu + RisuBard: the cross-checked pick list (port now / adopt as policy / needs its own plan / do not port / shared-code bug fixes to compare), with a recommended order | Session, from the three surveys below                         |
+| [pocketrisu-survey.md](pocketrisu-survey.md)                                                 | PocketRisu v1.15.0 (`/home/codex/PocketRisu`): ~60 features, 19 design concepts, 29 bug fixes, route map                                                                        | Opus sub-agent                                                |
+| [risubard-survey.md](risubard-survey.md)                                                     | RisuBard 0.9.72 (`/home/codex/RisuBard`): features added on top of PocketRisu, 24 concepts, plugin API, doc/code mismatches                                                     | Opus sub-agent                                                |
+| [metatron-inventory-vs-pocketrisu-risubard.md](metatron-inventory-vs-pocketrisu-risubard.md) | What metatron already has, partly has, or lacks, as the baseline for the PocketRisu/RisuBard comparison                                                                         | Opus sub-agent                                                |
+| [pocketrisu-fix-crosscheck.md](pocketrisu-fix-crosscheck.md)                                 | Whether the 18 PocketRisu shared-code bug fixes (picks §5) apply to metatron: verdicts with file:line evidence; 7 still present, summarized in picks §5.1                       | Opus sub-agents, still-present rows re-checked by the session |
 
 ## Decisions these surveys left open
 
@@ -36,6 +37,6 @@ from each survey are collected at the bottom.
 
 ### PocketRisu / RisuBard ([§6](pocketrisu-risubard-picks.md#6-recommended-order))
 
-1. Whether to start with the read-only comparison of the 18 shared-code bug fixes in §5 (proposed as its own session).
+1. ~~Whether to start with the read-only comparison of the 18 shared-code bug fixes in §5.~~ Done 2026-10-20: [pocketrisu-fix-crosscheck.md](pocketrisu-fix-crosscheck.md). Which of the still-present rows to fix is open.
 2. Direct asset URLs with immutable caching (§2.1) need a security design against DPoP before they can be planned with the heap-memory work.
 3. The plugin permission keying and `pluginCustomStorage` merge rules (§2.3) need a check against the v3 plugin runtime before adoption.

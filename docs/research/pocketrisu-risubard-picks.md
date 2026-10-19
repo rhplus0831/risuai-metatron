@@ -145,6 +145,19 @@ PocketRisu `fix:` commits that changed code shared with upstream (`pocketrisu-su
 | `a876e542`             | Streaming auto-translation reruns the entire pipeline for each chunk; empty results replace rendered content             | Likely inapplicable because server translation runs after completion |
 | `3b715ae9`, `794bb80a` | Client cancellation does not immediately abort provider requests; abort is not passed to non-streaming Anthropic         | Server job abort path                                                |
 
+### 5.1 Still present in metatron (cross-check 2026-10-20)
+
+Verdicts for all 18 rows, with file:line evidence and reproductions, are in [pocketrisu-fix-crosscheck.md](pocketrisu-fix-crosscheck.md). The rows whose defect still exists:
+
+- `926ae621`: Anthropic/Google drop the system field only for an exact `""`, so a whitespace system prompt (for example from a Lua `LLM` call) is still sent and can 400 (`server/src/llm/anthropic.ts:403`, `server/src/llm/google.ts:396`).
+- `865bc087`: Gemini's post-tool-call retry loops still retry immediately with no backoff (`server/src/llm/google.ts:836-846`, `:1166-1185`). Stop does work.
+- `01e732dc`: a reroll whose job fails before any reply arrives (with `inlayErrorResponse` off) loses the old replies, and unReroll cannot bring them back (`src/lib/ChatScreens/DefaultChatScreen.svelte:347-359`). The swipe-edit half does not apply.
+- `7e5f3d4a`: `@@move_top`/`@@move_bottom` output still skips CBS parsing (`shared/scripts/regex.ts:154-190`).
+- `0b6bb772`: the chat screen root has no `isolation: isolate`, so bot HTML with a high z-index covers app popups in every theme except `waifu` (`src/lib/ChatScreens/ChatScreen.svelte:69`).
+- `758727d0`: Monaco runs with the default `editContext: true`, so global hotkeys can fire while typing in the popup editor in Chrome (`src/lib/Others/MonacoEditor.svelte:58-77`).
+- `a876e542`: streamed auto-translate on the rendered path re-translates per chunk and flickers the loading spinner (`src/lib/ChatScreens/ChatBody.svelte:237-277`).
+- `be05bd5d` (side items only; its translation-cache item is already fixed): the client `tikJS` frees the old parser before awaiting the new one (`src/ts/tokenizer.ts:242-259`), and the default Ctrl+M `modelSelect` hotkey has no handler (`src/ts/hotkey.ts`).
+
 ## 6. Recommended Order
 
 1. Compare the bugs in §5 (read-only, half a day).
