@@ -75,6 +75,9 @@
     <span class="text-textcolor2 text-sm">
         {language.pushNotifications.thisBrowser}: {statusText($pushBrowserState)}
     </span>
+    {#if $pushBrowserState.error}
+        <span class="text-draculared text-sm">{$pushBrowserState.error}</span>
+    {/if}
     {#if $pushBrowserState.availability === "ok" && $pushBrowserState.permission !== "denied"}
         <div>
             {#if $pushBrowserState.subscribed}
@@ -82,7 +85,12 @@
                     size="sm"
                     disabled={$pushBrowserState.busy}
                     onclick={() => {
-                        void disablePushOnThisBrowser();
+                        void disablePushOnThisBrowser().then(() => {
+                            const error = $pushBrowserState.error;
+                            if (error) {
+                                alertError(language.pushNotifications.disableFailed(error));
+                            }
+                        });
                     }}
                 >
                     {language.pushNotifications.disableHere}

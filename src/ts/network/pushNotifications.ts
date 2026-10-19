@@ -5,6 +5,7 @@ import {
     PUSH_KEY_PATH,
     PUSH_SUBSCRIPTION_PATH,
 } from "../../../shared/notifications.ts";
+import { language } from "../../lang";
 import { openRoute } from "../router/router.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
@@ -43,7 +44,7 @@ export type PushBrowserState = {
     promptDismissed: boolean;
     /** An enable or disable is running. */
     busy: boolean;
-    /** The last enable or sync failure, shown in the settings. */
+    /** The last enable, disable, or sync failure (localized), shown in the settings until a sync clears it. */
     error: string | null;
 };
 
@@ -51,6 +52,8 @@ const PROMPT_DISMISSED_KEY = "risu-push-prompt-dismissed";
 const OPTED_OUT_KEY = "risu-push-browser-off";
 /** An endpoint whose server removal failed, removed again on the next sync. */
 const PENDING_REMOVAL_KEY = "risu-push-pending-removal";
+/** Set when the browser kept its subscription at a disable: unsubscribed again on the next sync. */
+const PENDING_UNSUBSCRIBE_KEY = "risu-push-pending-unsubscribe";
 const REGISTRATION_TIMEOUT_MS = 10_000;
 
 /**
@@ -173,7 +176,7 @@ async function loadServerKey(): Promise<string | null> {
     }
     const response = await authFetch(PUSH_KEY_PATH);
     if (!response.ok) {
-        throw new Error(`The push key request failed (${response.status})`);
+        throw new Error(language.pushNotifications.keyRequestFailed(response.status));
     }
     const body = (await response.json()) as { publicKey?: unknown };
     serverKey = typeof body.publicKey === "string" && body.publicKey ? body.publicKey : null;
@@ -206,7 +209,7 @@ async function removeOnServer(endpoint: string): Promise<void> {
         body: JSON.stringify({ endpoint }),
     });
     if (!response.ok) {
-        throw new Error(`The push removal failed (${response.status})`);
+        throw new Error(language.pushNotifications.removalFailed(response.status));
     }
 }
 
@@ -219,6 +222,44 @@ async function flushPendingRemoval() {
     try {
         await removeOnServer(endpoint);
         writeStored(PENDING_REMOVAL_KEY, null);
+    } catch {}
+}
+
+/** `unsubscribe()` either rejects or resolves `false` when the browser keeps the subscription. */
+function unsubscribed(subscription: PushSubscription): Promise<boolean> {
+    return subscription.unsubscribe().then(
+        (done) => done !== false,
+        () => false,
+    );
+}
+
+/**
+ * Retries a browser unsubscribe that failed at a disable. Dropped once this browser is turned on again
+ * (here or in another tab), so the wanted subscription is kept.
+ */
+async function flushPendingUnsubscribe(optedOut: boolean) {
+    if (!readStored(PENDING_UNSUBSCRIBE_KEY)) {
+        return;
+    }
+    if (!optedOut) {
+        writeStored(PENDING_UNSUBSCRIBE_KEY, null);
+        return;
+    }
+    try {
+        const registration = await readyRegistration();
+        if (!registration) {
+            return;
+        }
+        const subscription = await registration.pushManager.getSubscription();
+        // Read again after the waits: another tab may have turned this browser on meanwhile.
+        if (readStored(OPTED_OUT_KEY) !== "1" || !readStored(PENDING_UNSUBSCRIBE_KEY)) {
+            return;
+        }
+        if (subscription && !(await unsubscribed(subscription))) {
+            update({ error: language.pushNotifications.unsubscribeFailed });
+            return;
+        }
+        writeStored(PENDING_UNSUBSCRIBE_KEY, null);
     } catch {}
 }
 
@@ -235,13 +276,17 @@ async function ensureSubscribed(): Promise<void> {
     }
     const registration = await readyRegistration();
     if (!registration) {
-        throw new Error("No service worker is active");
+        throw new Error(language.pushNotifications.noServiceWorker);
     }
     let subscription = await registration.pushManager.getSubscription();
     if (subscription && !sameKey(subscription, key)) {
         const stale = subscription.endpoint;
-        await subscription.unsubscribe().catch(() => false);
+        const removed = await unsubscribed(subscription);
         await removeOnServer(stale).catch(() => writeStored(PENDING_REMOVAL_KEY, stale));
+        if (!removed) {
+            // The browser refuses a new key while it holds the old subscription; the next sync retries.
+            throw new Error(language.pushNotifications.unsubscribeFailed);
+        }
         subscription = null;
     }
     subscription ??= await registration.pushManager.subscribe({
@@ -254,7 +299,7 @@ async function ensureSubscribed(): Promise<void> {
         body: JSON.stringify({ subscription: subscription.toJSON() }),
     });
     if (!response.ok) {
-        throw new Error(`The server refused this browser's subscription (${response.status})`);
+        throw new Error(language.pushNotifications.registrationRefused(response.status));
     }
     update({ subscribed: true, error: null });
 }
@@ -274,17 +319,24 @@ export function reconcilePush(): Promise<void> {
     }
     return serial(async () => {
         const permission = currentPermission();
-        const optedOut = readStored(OPTED_OUT_KEY) === "1";
+        let optedOut = readStored(OPTED_OUT_KEY) === "1";
         update({ permission, optedOut, promptDismissed: readStored(PROMPT_DISMISSED_KEY) === "1" });
         if (get(pushBrowserState).availability !== "ok") {
             return;
         }
         await flushPendingRemoval();
+        await flushPendingUnsubscribe(optedOut);
+        // Read again: another tab may have turned this browser on while the retried unsubscribe ran, and
+        // the subscription it registered is then made again below.
+        optedOut = readStored(OPTED_OUT_KEY) === "1";
+        update({ optedOut });
         if (optedOut || permission !== "granted") {
-            update({ subscribed: false });
+            // Here only an unsubscribe still pending is a failure left to show.
+            update({ subscribed: false, ...(readStored(PENDING_UNSUBSCRIBE_KEY) ? {} : { error: null }) });
             return;
         }
         if (!settings.ui.notification) {
+            update({ error: null });
             return;
         }
         try {
@@ -320,6 +372,7 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
                 return false;
             }
             writeStored(OPTED_OUT_KEY, null);
+            writeStored(PENDING_UNSUBSCRIBE_KEY, null);
             update({ optedOut: false });
             if (get(pushBrowserState).availability !== "ok") {
                 return false;
@@ -335,7 +388,10 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
     });
 }
 
-/** Turns push off for this browser (and keeps it off until it is turned on again). */
+/**
+ * Turns push off for this browser (and keeps it off until it is turned on again). A browser that keeps
+ * its subscription is reported in `error` and unsubscribed again at the next sync.
+ */
 export function disablePushOnThisBrowser(): Promise<void> {
     writeStored(OPTED_OUT_KEY, "1");
     return serial(async () => {
@@ -345,8 +401,12 @@ export function disablePushOnThisBrowser(): Promise<void> {
             const subscription = await registration?.pushManager.getSubscription();
             if (subscription) {
                 const endpoint = subscription.endpoint;
-                await subscription.unsubscribe().catch(() => false);
+                const removed = await unsubscribed(subscription);
+                writeStored(PENDING_UNSUBSCRIBE_KEY, removed ? null : "1");
                 await removeOnServer(endpoint).catch(() => writeStored(PENDING_REMOVAL_KEY, endpoint));
+                if (!removed) {
+                    update({ error: language.pushNotifications.unsubscribeFailed });
+                }
             }
             update({ subscribed: false });
         } catch (error) {

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { untrack } from "svelte";
     import { language } from "src/lang";
+    import { alertError } from "src/ts/alert";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import {
@@ -43,7 +44,12 @@
                 size="sm"
                 onclick={() => {
                     // Inside the click: the permission request is its first step.
-                    void enablePushOnThisBrowser();
+                    void enablePushOnThisBrowser().then((subscribed) => {
+                        const error = $pushBrowserState.error;
+                        if (!subscribed && error) {
+                            alertError(language.pushNotifications.failed(error));
+                        }
+                    });
                 }}
             >
                 {language.pushNotifications.promptAccept}

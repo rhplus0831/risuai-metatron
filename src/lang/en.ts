@@ -1584,6 +1584,13 @@ export const languageEnglish = {
         enableHere: "Turn on for this browser",
         disableHere: "Turn off for this browser",
         failed: (message: string) => `Push notifications could not be set up: ${message}`,
+        disableFailed: (message: string) => `Push notifications could not be turned off for this browser: ${message}`,
+        keyRequestFailed: (status: number) => `The push key request failed (${status})`,
+        removalFailed: (status: number) => `The push removal failed (${status})`,
+        noServiceWorker: "No service worker is active",
+        registrationRefused: (status: number) => `The server refused this browser's subscription (${status})`,
+        unsubscribeFailed:
+            "This browser kept its push subscription. Removing it is tried again the next time the app is opened.",
     },
     customFlags: "Custom Flags",
     enableCustomFlags: "Enable Custom Flags",

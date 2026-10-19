@@ -1,5 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { languageEnglish } from "../../lang/en";
 
 // `docs/plan/web-push.md`: this browser's Web Push (`pushNotifications.ts`) over stubbed browser APIs
 // (`Notification`, `PushManager`, `navigator.serviceWorker` with one registration) and a fake
@@ -11,7 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // server refusing a subscription, the browser opt-out with the server removal retried at the next
 // sync, the tab's notification (suppressed while subscribed, the worker's `showNotification`, the
 // page's `Notification` fallback with the click opening the chat), the foreground cleanup of the
-// tagged notifications, and the worker's `risu-open-route` message. The `it.fails` case pins intended
+// tagged notifications, and the worker's `risu-open-route` message. Slice P1: a browser unsubscribe
+// that rejects or resolves `false` (at a disable, and for an older key's subscription) is reported
+// in `error` and retried at the next sync, dropped by a re-enable, and repaired when another tab turns
+// this browser on mid-retry; the failure details follow the selected language. The `it.fails` case pins intended
 // behavior the implementation does not meet yet (Astra's challenge, point 4).
 
 const deps = vi.hoisted(() => ({
@@ -26,6 +30,7 @@ vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
 const PROMPT_DISMISSED = "risu-push-prompt-dismissed";
 const BROWSER_OFF = "risu-push-browser-off";
 const PENDING_REMOVAL = "risu-push-pending-removal";
+const PENDING_UNSUBSCRIBE = "risu-push-pending-unsubscribe";
 const TAG = "risuai-chat-completion";
 
 function base64url(bytes: Uint8Array): string {
@@ -307,6 +312,32 @@ describe("startPushNotifications", () => {
         expect(state(module).subscribed).toBe(true);
     });
 
+    it("a browser that keeps a subscription for an older key fails the sync with the error, removes it on the server, and retries at the next sync", async () => {
+        FakeNotification.permission = "granted";
+        const stale = fakeSubscription("https://fcm.googleapis.com/fcm/send/stale", OLD_KEY_BYTES);
+        stale.unsubscribe.mockResolvedValue(false);
+        current = stale;
+        const module = await boot();
+        expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
+        expect(calls("DELETE")).toEqual([
+            { method: "DELETE", path: "/api/push/subscription", body: { endpoint: stale.endpoint } },
+        ]);
+        expect(calls("PUT")).toEqual([]);
+        expect(state(module)).toMatchObject({
+            subscribed: false,
+            error: languageEnglish.pushNotifications.unsubscribeFailed,
+        });
+        stale.unsubscribe.mockImplementation(async () => {
+            current = null;
+            return true;
+        });
+        showPage();
+        await settle();
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+        expect(calls("PUT")).toHaveLength(1);
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
     it("registers nothing while this browser is opted out or the synced switch is off", async () => {
         FakeNotification.permission = "granted";
         localStorage.setItem(BROWSER_OFF, "1");
@@ -332,6 +363,29 @@ describe("startPushNotifications", () => {
         server.put = 400;
         const module = await boot();
         expect(state(module)).toMatchObject({ subscribed: false, error: expect.stringContaining("400") });
+    });
+});
+
+describe("localized failure details", () => {
+    it("records the server's refusal and a kept subscription in the selected language", async () => {
+        // `afterEach` unstubs the setup's clone as well; `changeLanguage` needs it.
+        vi.stubGlobal("safeStructuredClone", (value: unknown) => JSON.parse(JSON.stringify(value)));
+        const lang = await import("../../lang");
+        lang.changeLanguage("ko");
+        try {
+            FakeNotification.permission = "granted";
+            server.put = 400;
+            const module = await boot();
+            expect(state(module).error).toBe("서버가 이 브라우저의 구독을 거부했습니다 (400)");
+            server.put = 204;
+            await expect(module.enablePushOnThisBrowser()).resolves.toBe(true);
+            current!.unsubscribe.mockResolvedValue(false);
+            await module.disablePushOnThisBrowser();
+            expect(state(module).error).toBe(lang.language.pushNotifications.unsubscribeFailed);
+            expect(state(module).error).toMatch(/^브라우저가 푸시 구독을 해제하지 않았습니다/);
+        } finally {
+            lang.changeLanguage("en");
+        }
     });
 });
 
@@ -436,6 +490,101 @@ describe("disablePushOnThisBrowser", () => {
         expect(calls("DELETE")).toEqual([{ method: "DELETE", path: "/api/push/subscription", body: { endpoint } }]);
         expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
         expect(calls("PUT")).toEqual([]);
+    });
+
+    it.each([
+        { case: "rejects", fail: () => Promise.reject(new DOMException("failed", "AbortError")) },
+        { case: "resolves false", fail: () => Promise.resolve(false) },
+    ])(
+        "reports a browser unsubscribe that $case, keeps the opt-out, and retries it at the next sync",
+        async ({ fail }) => {
+            FakeNotification.permission = "granted";
+            const module = await boot();
+            const subscription = current!;
+            const endpoint = subscription.endpoint;
+            subscription.unsubscribe.mockImplementation(fail);
+            await module.disablePushOnThisBrowser();
+            expect(localStorage.getItem(BROWSER_OFF)).toBe("1");
+            expect(localStorage.getItem(PENDING_UNSUBSCRIBE)).toBe("1");
+            // The server still stops sending to it.
+            expect(calls("DELETE")).toEqual([{ method: "DELETE", path: "/api/push/subscription", body: { endpoint } }]);
+            expect(state(module)).toMatchObject({
+                optedOut: true,
+                subscribed: false,
+                busy: false,
+                error: languageEnglish.pushNotifications.unsubscribeFailed,
+            });
+
+            // Failing again keeps the flag and the error.
+            showPage();
+            await settle();
+            expect(subscription.unsubscribe).toHaveBeenCalledTimes(2);
+            expect(localStorage.getItem(PENDING_UNSUBSCRIBE)).toBe("1");
+            expect(state(module).error).toBe(languageEnglish.pushNotifications.unsubscribeFailed);
+
+            subscription.unsubscribe.mockImplementation(async () => {
+                current = null;
+                return true;
+            });
+            showPage();
+            await settle();
+            expect(subscription.unsubscribe).toHaveBeenCalledTimes(3);
+            expect(localStorage.getItem(PENDING_UNSUBSCRIBE)).toBeNull();
+            expect(state(module)).toMatchObject({ optedOut: true, subscribed: false, error: null });
+            expect(calls("PUT")).toHaveLength(1);
+        },
+    );
+
+    it("drops a pending unsubscribe once this browser is turned on again, keeping its subscription", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const subscription = current!;
+        subscription.unsubscribe.mockResolvedValue(false);
+        await module.disablePushOnThisBrowser();
+        expect(localStorage.getItem(PENDING_UNSUBSCRIBE)).toBe("1");
+        requests.length = 0;
+        await expect(module.enablePushOnThisBrowser()).resolves.toBe(true);
+        expect(localStorage.getItem(PENDING_UNSUBSCRIBE)).toBeNull();
+        expect(calls("PUT")).toEqual([
+            { method: "PUT", path: "/api/push/subscription", body: { subscription: subscription.toJSON() } },
+        ]);
+        showPage();
+        await settle();
+        expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(current).toBe(subscription);
+        expect(state(module)).toMatchObject({ subscribed: true, optedOut: false, error: null });
+    });
+
+    it("subscribes again when another tab turns this browser on while the retried unsubscribe runs", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const subscription = current!;
+        subscription.unsubscribe.mockResolvedValue(false);
+        await module.disablePushOnThisBrowser();
+        let finish!: () => void;
+        subscription.unsubscribe.mockImplementation(
+            () =>
+                new Promise<boolean>((resolve) => {
+                    finish = () => {
+                        current = null;
+                        resolve(true);
+                    };
+                }),
+        );
+        requests.length = 0;
+        showPage();
+        await settle();
+        expect(subscription.unsubscribe).toHaveBeenCalledTimes(2);
+        // The other tab's enable: both flags cleared in the shared storage, its subscription registered.
+        storage.map.delete(BROWSER_OFF);
+        storage.map.delete(PENDING_UNSUBSCRIBE);
+        finish();
+        await settle();
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
+        expect(calls("PUT")).toEqual([
+            { method: "PUT", path: "/api/push/subscription", body: { subscription: current!.toJSON() } },
+        ]);
+        expect(state(module)).toMatchObject({ optedOut: false, subscribed: true, error: null });
     });
 
     // Astra's challenge, point 4: a readable storage is the truth, also when another tab removed a flag.

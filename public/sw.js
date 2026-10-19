@@ -191,7 +191,8 @@ async function showPush(event){
 
 /**
  * Focuses a window of the app and asks it to open the chat (`pushNotifications.ts` answers whether it
- * did); a window that does not answer (still loading) is navigated, and with no window one is opened.
+ * did); a window that does not answer (still loading) is navigated, and with no window, or a navigation
+ * the browser refuses (a window this worker does not control), one is opened.
  */
 async function openFromNotification(route){
     const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
@@ -213,7 +214,13 @@ async function openFromNotification(route){
     }
     try {
         await target.navigate(route)
+        return
     } catch {}
+    if(self.clients.openWindow){
+        try {
+            await self.clients.openWindow(route)
+        } catch {}
+    }
 }
 
 function askToOpen(client, route){

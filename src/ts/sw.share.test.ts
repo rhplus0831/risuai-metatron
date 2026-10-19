@@ -9,7 +9,16 @@ const origin = "https://installed.example:8443";
 const source = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const manifest = JSON.parse(readFileSync(new URL("../../public/manifest.json", import.meta.url), "utf8"));
 
-function worker() {
+type FakeWindow = {
+    url: string;
+    focused: boolean;
+    visibilityState: string;
+    focus: ReturnType<typeof vi.fn>;
+    navigate: ReturnType<typeof vi.fn>;
+    postMessage: ReturnType<typeof vi.fn>;
+};
+
+function worker(windows: FakeWindow[] = []) {
     const entries = new Map<string, Response>();
     const cache = {
         match: async (url: URL) => entries.get(String(url))?.clone(),
@@ -20,9 +29,14 @@ function worker() {
     };
     const open = vi.fn(async () => cache);
     const listeners = new Map<string, (event: unknown) => void>();
+    const clients = {
+        matchAll: vi.fn(async () => windows),
+        openWindow: vi.fn(async () => null),
+    };
     runInNewContext(source, {
         self: {
             location: { origin },
+            clients,
             addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
         },
         caches: { open },
@@ -32,6 +46,9 @@ function worker() {
         File,
         URL,
         Uint8Array,
+        MessageChannel,
+        setTimeout,
+        clearTimeout,
     });
     const dispatch = async (request: Request): Promise<Response> => {
         const respondWith = vi.fn();
@@ -44,7 +61,14 @@ function worker() {
         for (const kind of files) body.append(kind, new File([`${kind} bytes\u0000`], `${kind}.bin`));
         return dispatch(new Request(new URL(manifest.share_target.action, origin), { method: "POST", body }));
     };
-    return { entries, open, dispatch, post };
+    /** A click on a completion notification; resolves when the worker's `waitUntil` work is done. */
+    const click = async (url: string) => {
+        const waitUntil = vi.fn();
+        listeners.get("notificationclick")!({ notification: { close: vi.fn(), data: { url } }, waitUntil });
+        expect(waitUntil).toHaveBeenCalledTimes(1);
+        await waitUntil.mock.calls[0][0];
+    };
+    return { entries, open, dispatch, post, clients, click };
 }
 
 function redirected(response: Response, path: string) {
@@ -108,5 +132,47 @@ describe("PWA share receiver", () => {
         expect(await response.json()).toEqual({ done: true });
         const stored = await sw.dispatch(new Request(origin + "/sw/img/6162"));
         expect(new Uint8Array(await stored.arrayBuffer())).toEqual(bytes);
+    });
+});
+
+describe("notification click", () => {
+    /** A window of the app that does not answer `risu-open-route` (its page is still loading). */
+    function silentWindow(navigate: () => Promise<unknown>): FakeWindow {
+        return {
+            url: origin + "/",
+            focused: true,
+            visibilityState: "visible",
+            focus: vi.fn(async () => {}),
+            navigate: vi.fn(navigate),
+            postMessage: vi.fn(() => {
+                throw new Error("not ready");
+            }),
+        };
+    }
+
+    it("navigates a window that does not answer, and opens none", async () => {
+        const target = silentWindow(async () => null);
+        const sw = worker([target]);
+        await sw.click("/chat/a/b");
+        expect(target.focus).toHaveBeenCalledTimes(1);
+        expect(target.navigate).toHaveBeenCalledWith("/chat/a/b");
+        expect(sw.clients.openWindow).not.toHaveBeenCalled();
+    });
+
+    it("opens a window with the chat route when the navigation is refused", async () => {
+        const target = silentWindow(async () => {
+            throw new TypeError("This service worker is not the client's active service worker.");
+        });
+        const sw = worker([target]);
+        await sw.click("/chat/a/b");
+        expect(target.navigate).toHaveBeenCalledWith("/chat/a/b");
+        expect(sw.clients.openWindow).toHaveBeenCalledWith("/chat/a/b");
+    });
+
+    it("still settles when the fallback window cannot be opened either", async () => {
+        const sw = worker([silentWindow(() => Promise.reject(new TypeError("refused")))]);
+        sw.clients.openWindow.mockRejectedValue(new TypeError("not allowed"));
+        await expect(sw.click("/chat/a/b")).resolves.toBeUndefined();
+        expect(sw.clients.openWindow).toHaveBeenCalledTimes(1);
     });
 });
