@@ -5,8 +5,11 @@ import { openApp } from "../util/playwright/stack.mjs";
 // phase-3-settings-sections/client-section-mirrors.md`, Validation). The stack of
 // `playwright.config.ts` starts with an empty store, so the first boot is the first run: the server
 // materializes every section, collection, and `presets`, and the client's boot (`installBootRecords`)
-// creates only the two Phase 1 lists it fills (no `root` record since slice 6). From then on an idle
-// reload must write nothing: every projection equals the server's normalized text.
+// creates only the two Phase 1 lists it fills (no `root` record since slice 6). It also updates the
+// server's `ui` record once: `applyFirstBootDefaults` (`bootstrap.ts`, which replaced the first-run
+// wizard) sets `didFirstSetup`, and the UI language when the browser's is one the UI has, so that
+// later boots keep those defaults instead of applying them again. From then on an idle reload must
+// write nothing: every projection equals the server's normalized text.
 // The store is shared by every spec of a run, in file order, so this file must run first: the `0-`
 // prefix sorts it before any camelCase name.
 
@@ -25,7 +28,7 @@ function trackBatches(page: Page): string[][] {
 /** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(3000);
 
-test("a fresh store: the first boot creates only modules and plugins; an idle reload writes nothing", async ({
+test("a fresh store: the first boot creates only modules and plugins and records its defaults in ui; an idle reload writes nothing", async ({
     page,
     baseURL,
 }) => {
@@ -35,7 +38,7 @@ test("a fresh store: the first boot creates only modules and plugins; an idle re
 
     await openApp(page, baseURL!);
     await settle(page);
-    expect(batches.flat().sort()).toEqual(["modules+", "plugins+"]);
+    expect(batches.flat().sort()).toEqual(["modules+", "plugins+", "ui"]);
     expect(errors).toEqual([]);
 
     batches.length = 0;
