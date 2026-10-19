@@ -26,7 +26,10 @@
     const currentRef = $derived(currentChatRef());
 </script>
 
-<div class="flex flex-col w-full h-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto">
+<!-- Scrolls itself, stretched over the sidebar's side padding so its scrollbar sits at the sidebar's edge. -->
+<div
+    class="flex flex-col h-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto -mr-(--sidebar-gutter) pr-(--sidebar-gutter)"
+>
     <button
         class="mb-3 flex min-h-10 items-center gap-2 rounded-md px-2 text-textcolor2 hover:bg-selected hover:text-textcolor cursor-pointer"
         onclick={() => setChatOpen(false)}

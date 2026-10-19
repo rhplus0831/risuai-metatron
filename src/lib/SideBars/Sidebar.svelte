@@ -1086,6 +1086,7 @@
     class:min-w-138={!$DynamicGUI && $sideBarSize === 3}
     class:px-2={$DynamicGUI}
     class:px-4={!$DynamicGUI}
+    style:--sidebar-gutter={$DynamicGUI ? "0.5rem" : "1rem"}
     class:dynamic-sidebar={$DynamicGUI}
     class:hidden
     class:flex={!hidden}
