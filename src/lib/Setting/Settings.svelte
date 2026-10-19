@@ -3,6 +3,9 @@
     import {
         AccessibilityIcon,
         ActivityIcon,
+        AudioLinesIcon,
+        BrainIcon,
+        ImageIcon,
         PackageIcon,
         BoxIcon,
         CodeIcon,
@@ -10,7 +13,6 @@
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
-        Sailboat,
         UserIcon,
         CircleXIcon,
         KeyboardIcon,
@@ -24,7 +26,9 @@
     import ModelProfilesSettings from "./Pages/ModelProfilesSettings.svelte";
     import ApiKeysSettings from "./Pages/ApiKeysSettings.svelte";
     import PromptPresetSettings from "./Pages/PromptPresetSettings.svelte";
-    import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
+    import MemorySettings from "./Pages/MemorySettings.svelte";
+    import ImageGenerationSettings from "./Pages/ImageGenerationSettings.svelte";
+    import VoiceSettings from "./Pages/VoiceSettings.svelte";
     import PluginSettings from "./Pages/PluginSettings.svelte";
     import AdvancedSettings from "./Pages/AdvancedSettings.svelte";
     import {
@@ -34,6 +38,9 @@
         MODEL_PROFILES_SETTINGS_MENU,
         PROMPT_SETTINGS_MENU,
         TRANSLATION_SETTINGS_MENU,
+        MEMORY_SETTINGS_MENU,
+        IMAGE_GENERATION_SETTINGS_MENU,
+        VOICE_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
@@ -100,14 +107,36 @@
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 2}
-                    class:text-textcolor2={$SettingsMenuIndex !== 2}
+                    class:text-textcolor={$SettingsMenuIndex === MEMORY_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== MEMORY_SETTINGS_MENU}
                     onclick={() => {
-                        $SettingsMenuIndex = 2;
+                        $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
                     }}
                 >
-                    <Sailboat />
-                    <span>{language.otherBots}</span>
+                    <BrainIcon />
+                    <span>{language.memorySettings}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === IMAGE_GENERATION_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== IMAGE_GENERATION_SETTINGS_MENU}
+                    onclick={() => {
+                        $SettingsMenuIndex = IMAGE_GENERATION_SETTINGS_MENU;
+                    }}
+                >
+                    <ImageIcon />
+                    <span>{language.imageGeneration}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === VOICE_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== VOICE_SETTINGS_MENU}
+                    onclick={() => {
+                        $SettingsMenuIndex = VOICE_SETTINGS_MENU;
+                    }}
+                >
+                    <AudioLinesIcon />
+                    <span>{language.voiceSettings}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
@@ -262,8 +291,12 @@
                                 $SettingsMenuIndex = 13;
                             }}
                         />
-                    {:else if $SettingsMenuIndex === 2}
-                        <OtherBotSettings />
+                    {:else if $SettingsMenuIndex === MEMORY_SETTINGS_MENU}
+                        <MemorySettings />
+                    {:else if $SettingsMenuIndex === IMAGE_GENERATION_SETTINGS_MENU}
+                        <ImageGenerationSettings />
+                    {:else if $SettingsMenuIndex === VOICE_SETTINGS_MENU}
+                        <VoiceSettings />
                     {:else if $SettingsMenuIndex === 3}
                         <DisplaySettings />
                     {:else if $SettingsMenuIndex === 4}

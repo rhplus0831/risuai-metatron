@@ -136,7 +136,7 @@ Settings:
 ## Recipes
 
 - Add a TTS provider: `ttsMode` in `CharConfig.svelte`, the `database.svelte.ts` fields and defaults, and a `sayTTS` case that routes through `playAudio`. Verify the manual button, auto speech, `speak`, `stopTTS`, and hooks.
-- Add an image backend: a branch in `generateAIImage` that handles both inlay and emotion modes, plus DB settings in `OtherBotSettings.svelte`. Verify `inlayScreen`, triggers, and the playground.
+- Add an image backend: a branch in `generateAIImage` that handles both inlay and emotion modes, plus DB settings in `ImageGenerationSettings.svelte` (menu 19, `/settings/image-generation`). Verify `inlayScreen`, triggers, and the playground.
 - Change translation: `translateMain`, `runTranslator`, or `translateHTML`, plus DB defaults. Verify `ChatBody`, input translation, the LLM cache, and `translateVox`. A stored-path change: `storedTranslation.svelte.ts` and the `storedPath` branches of `Chat.svelte`, `ChatBody.svelte`, and `PartialEditController.svelte`; verify the rendered path is unchanged.
 - Change aux routing: `shared/llm/modelSlots.ts` `resolveSlotProfile` (the one routing rule), `AuxModelSelectors.svelte`, `ModelModeExtended`, and the model preset's slot normalization (`shared/presets.ts`) together.
 - Change media compression: `imageType.ts` first, then the compressors. Run both media tests and `inlays.test.ts`.

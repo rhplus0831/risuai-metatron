@@ -4,8 +4,8 @@
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI:
-// - the NovelAI image settings mounting (Other Bots, the Image Generation tab: the nested
-//   `NAIImgConfig` controls), and 100 keystrokes into its width (`NAIImgConfig.width`, a nested section
+// - the NovelAI image settings mounting (the Image Generation page: the nested `NAIImgConfig`
+//   controls), and 100 keystrokes into its width (`NAIImgConfig.width`, a nested section
 //   field bound with `bind:value`), spaced 50 ms apart;
 // - preset reorder: a drop on the preset list (`botpreset.svelte`'s handler, `moveRecordListItem`)
 //   with 50 presets;
@@ -228,17 +228,15 @@ try {
         Object.fromEntries(Object.keys(samples[0]).map((key) => [key, stats(samples.map((sample) => sample[key]))]));
     const menu = (label) => page.locator(`button:has(> span:text-is("${label}"))`).first();
 
-    // 1. The NovelAI image settings (Other Bots, Image Generation: the nested `NAIImgConfig` controls)
+    // 1. The NovelAI image settings (the Image Generation page: the nested `NAIImgConfig` controls)
     // mounting, and typing into a nested section field.
     await settingsButton.click();
     await page.waitForTimeout(500);
-    await menu("Other Bots").click();
-    await page.waitForTimeout(500);
     const mounts = [];
     for (let run = 0; run < WARMUP + RUNS; run++) {
-        await page.getByText("TTS", { exact: true }).first().click();
+        await menu("Voice & Emotion").click();
         await page.waitForTimeout(300);
-        const handle = await page.getByText("Image Generation", { exact: true }).first().elementHandle();
+        const handle = await menu("Image Generation").elementHandle();
         const ms = await page.evaluate((tab) => {
             const start = performance.now();
             tab.click();

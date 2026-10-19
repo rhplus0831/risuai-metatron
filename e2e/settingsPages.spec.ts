@@ -31,7 +31,9 @@ const PAGES: [number, string][] = [
     [16, "prompt"],
     [13, "prompt template"],
     [12, "persona"],
-    [2, "other bots"],
+    [2, "memory"],
+    [19, "image generation"],
+    [20, "voice"],
     [3, "display"],
     [10, "language"],
     [21, "translation"],
@@ -111,7 +113,7 @@ test("every settings page mounts through the records without an error or a write
     expect(batches).toEqual([]);
 
     // A section field through `bind:checked` (Accessibility), and a nested section field through
-    // `bind:value` (Other Bots, Image Generation: `NAIImgConfig.width`).
+    // `bind:value` (Image Generation: `NAIImgConfig.width`).
     const swipe = await read<boolean>(page, "swipe");
     await openSettings(page, 11);
     const label = await page.evaluate(async () => (await import("/src/lang/index.ts")).language.SwipeRegenerate);
@@ -128,8 +130,7 @@ test("every settings page mounts through the records without an error or a write
     await settle(page);
     batches.length = 0;
     const before = await read<{ width: number }>(page, "NAIImgConfig");
-    await openSettings(page, 2);
-    await content.getByText("Image Generation", { exact: true }).first().click();
+    await openSettings(page, 19);
     const width = content
         .locator('xpath=//span[normalize-space(.)="Width"]/following-sibling::*[1]/descendant-or-self::input')
         .first();

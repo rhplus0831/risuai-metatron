@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { CLIENT_ROUTE_SEGMENTS, isClientRoutePath } from "../../../shared/routes.ts";
-import { TRANSLATION_SETTINGS_MENU } from "../settingsMenu";
+import {
+    IMAGE_GENERATION_SETTINGS_MENU,
+    MEMORY_SETTINGS_MENU,
+    TRANSLATION_SETTINGS_MENU,
+    VOICE_SETTINGS_MENU,
+} from "../settingsMenu";
 import {
     formatRoute,
     parseRoute,
@@ -105,6 +110,21 @@ describe("slug tables", () => {
         expect(TRANSLATION_SETTINGS_MENU).toBe(21);
         expect(settingsPageOf(TRANSLATION_SETTINGS_MENU)).toBe("translation");
         expect(parseRoute("/settings/translation")).toEqual({ kind: "settings", page: "translation" });
+    });
+
+    it("give Memory, Image Generation and Voice their own slugs, and read the old bot slug as Memory (settings UI plan slice 3)", () => {
+        expect([MEMORY_SETTINGS_MENU, IMAGE_GENERATION_SETTINGS_MENU, VOICE_SETTINGS_MENU]).toEqual([2, 19, 20]);
+        expect(settingsPageOf(MEMORY_SETTINGS_MENU)).toBe("memory");
+        expect(settingsPageOf(IMAGE_GENERATION_SETTINGS_MENU)).toBe("image-generation");
+        expect(settingsPageOf(VOICE_SETTINGS_MENU)).toBe("voice");
+        expect(Object.hasOwn(SETTINGS_PAGES, "bot")).toBe(false);
+        for (const path of ["/settings/bot", "/settings/bot/"]) {
+            expect(parseRoute(path), path).toEqual({ kind: "settings", page: "memory" });
+        }
+        expect(formatRoute(parseRoute("/settings/bot")!)).toBe("/settings/memory");
+        for (const path of ["/settings/bot/extra", "/settings/Bot", "/playground/bot", "/bot"]) {
+            expect(parseRoute(path), path).toBeNull();
+        }
     });
 
     it("give no slug to the values without a route", () => {

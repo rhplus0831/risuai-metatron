@@ -51,6 +51,9 @@ export {
     MODEL_PROFILES_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
+    MEMORY_SETTINGS_MENU,
+    IMAGE_GENERATION_SETTINGS_MENU,
+    VOICE_SETTINGS_MENU,
 } from "./settingsMenu";
 export const ReloadGUIPointer = writable(0);
 /** Re-render counters of chat rows, by `reloadChatKey` (the message id, so an index shift keeps them). */

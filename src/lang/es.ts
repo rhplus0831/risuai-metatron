@@ -737,7 +737,6 @@ export const languageSpanish = {
     showFirstMessagePages: "Mostrar Páginas del Primer Mensaje",
     roundIcons: "Iconos Redondos",
     streaming: "Streaming",
-    otherBots: "Otros Bots",
     user: "Usuario",
     additionalAssets: "Activos Adicionales",
     editDisplay: "Modificar Visualización",

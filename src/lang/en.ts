@@ -800,6 +800,8 @@ export const languageEnglish = {
     language: "Language",
     // The Translation settings page (settings UI plan slice 6): its menu entry and heading.
     translationSettings: "Translation",
+    memorySettings: "Memory",
+    voiceSettings: "Voice & Emotion",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",
     importCharacter: "Import Character",
@@ -902,7 +904,6 @@ export const languageEnglish = {
     showFirstMessagePages: "Show First Message Pages",
     roundIcons: "Round Icons",
     streaming: "Streaming",
-    otherBots: "Other Bots",
     user: "User",
     additionalAssets: "Additional Assets",
     editDisplay: "Modify Display",

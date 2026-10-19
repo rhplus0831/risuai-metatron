@@ -1089,7 +1089,7 @@
             <span class="text-textcolor">Intonation scale</span>
             <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.INTONATION_SCALE} />
             <span class="text-sm mb-2 text-textcolor2"
-                >To use VOICEVOX, you need to run a colab and put the localtunnel URL in "Settings → Other Bots".
+                >To use VOICEVOX, you need to run a colab and put the localtunnel URL in "Settings → Voice & Emotion".
                 https://colab.research.google.com/drive/1tyeXJSklNfjW-aZJAib1JfgOMFarAwze</span
             >
         {:else if currentCharacter.ttsMode === "novelai"}

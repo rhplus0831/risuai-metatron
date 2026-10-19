@@ -788,6 +788,14 @@ describe("boot (layers)", () => {
         expect(history.paths()).toEqual(["/", "[/settings/prompt]"]);
     });
 
+    it("replaces the old /settings/bot URL with /settings/memory and opens the Memory page (settings UI plan slice 3)", () => {
+        const history = start(new FakeHistory([{ path: "/settings/bot", state: layer(1, "/chat/a/a1") }]));
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe(`settings=true:${SETTINGS_PAGES.memory} grid=false`);
+        expect(history.log).toEqual(["replace /settings/memory"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+    });
+
     it("R4: /settings is the model page on a wide screen and the list on a narrow one", () => {
         let history = start(new FakeHistory([{ path: "/settings", state: layer(1, "/") }]));
         expect(layers()).toBe("settings=true:1 grid=false");
@@ -818,15 +826,15 @@ describe("boot (layers)", () => {
 
     it("keeps a layer opened before the start (an import) over the URL's base, and waits for its base entry", () => {
         settingsOpen.set(true);
-        SettingsMenuIndex.set(SETTINGS_PAGES.bot);
+        SettingsMenuIndex.set(SETTINGS_PAGES.memory);
         flushSync();
         const history = start(new FakeHistory([{ path: "/chat/a/a1" }]));
         expect(screen()).toBe(CHAT_A);
-        expect(layers()).toBe(`settings=true:${SETTINGS_PAGES.bot} grid=false`);
-        expect(history.log).toEqual(["replace /settings/bot", "replace /settings/bot"]);
+        expect(layers()).toBe(`settings=true:${SETTINGS_PAGES.memory} grid=false`);
+        expect(history.log).toEqual(["replace /settings/memory", "replace /settings/memory"]);
         expect(history.state).toEqual(layer(1, "/chat/a/a1", { rootPending: true }));
         click();
-        expect(history.paths()).toEqual(["/chat/a/a1", "[/settings/bot]"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/settings/memory]"]);
         expect(history.entries[0].state).toEqual(STATE);
         expect(history.state).toEqual(layer(1, "/chat/a/a1"));
     });

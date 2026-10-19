@@ -1,9 +1,12 @@
 import {
     API_KEYS_SETTINGS_MENU,
+    IMAGE_GENERATION_SETTINGS_MENU,
+    MEMORY_SETTINGS_MENU,
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
+    VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
 
 /*
@@ -21,7 +24,9 @@ export const SETTINGS_PAGES = {
     prompt: PROMPT_SETTINGS_MENU,
     "prompt-template": 13,
     persona: 12,
-    bot: 2,
+    memory: MEMORY_SETTINGS_MENU,
+    "image-generation": IMAGE_GENERATION_SETTINGS_MENU,
+    voice: VOICE_SETTINGS_MENU,
     display: 3,
     language: 10,
     translation: TRANSLATION_SETTINGS_MENU,
@@ -52,6 +57,14 @@ export const PLAYGROUND_TOOLS = {
 } as const satisfies Record<string, number>;
 
 export type SettingsPage = keyof typeof SETTINGS_PAGES;
+
+/**
+ * Former settings slugs and the page they open now. `parseRoute` reads them as that page, so an old
+ * link or bookmark opens it and the router's boot replace writes the current slug.
+ */
+const SETTINGS_PAGE_ALIASES: Readonly<Record<string, SettingsPage>> = {
+    bot: "memory",
+};
 export type PlaygroundTool = keyof typeof PLAYGROUND_TOOLS;
 
 export type Route =
@@ -152,7 +165,15 @@ export function parseRoute(path: string): Route | null {
             if (second === undefined) {
                 return { kind: "settings", page: null };
             }
-            return third === undefined && hasKey(SETTINGS_PAGES, second) ? { kind: "settings", page: second } : null;
+            if (third !== undefined) {
+                return null;
+            }
+            if (hasKey(SETTINGS_PAGES, second)) {
+                return { kind: "settings", page: second };
+            }
+            return Object.hasOwn(SETTINGS_PAGE_ALIASES, second)
+                ? { kind: "settings", page: SETTINGS_PAGE_ALIASES[second] }
+                : null;
         default:
             return null;
     }

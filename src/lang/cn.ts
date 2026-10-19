@@ -692,7 +692,6 @@ export const languageChinese = {
     showFirstMessagePages: "显示第一条消息页面",
     roundIcons: "圆形头像",
     streaming: "即时串流传输",
-    otherBots: "其他机器人",
     user: "用户",
     additionalAssets: "额外资源",
     editDisplay: "修改显示",

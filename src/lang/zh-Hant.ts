@@ -783,7 +783,6 @@ export const languageChineseTraditional = {
     showFirstMessagePages: "顯示開局訊息分頁",
     roundIcons: "圓形圖示",
     streaming: "串流",
-    otherBots: "其他 Bot",
     user: "使用者",
     additionalAssets: "額外資源",
     editDisplay: "修改顯示",

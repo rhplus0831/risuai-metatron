@@ -12,7 +12,7 @@
         TagIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex } from "src/ts/stores.svelte";
+    import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import type { SearchState, BulkEditState, CategoryManagerState, FilterState, UIState } from "./types";
 
     interface Props {
@@ -74,7 +74,7 @@
     function openGlobalSettings() {
         $hypaV3ModalOpen = false;
         $settingsOpen = true;
-        $SettingsMenuIndex = 2; // Other bot settings
+        $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
     }
 
     function openDropdown(e: MouseEvent) {

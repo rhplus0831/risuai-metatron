@@ -120,16 +120,14 @@ async function openCharacter(c, chaId) {
     await description(c.page).waitFor({ timeout: 15_000 });
 }
 
-/** Opens Other Bots, the Image Generation tab (the nested `NAIImgConfig` controls). */
+/** Opens the Image Generation page (the nested `NAIImgConfig` controls). */
 async function openImageSettings(c) {
     if (!(await c.settingsButton.isVisible().catch(() => false))) {
         await c.page.locator("button:has(svg.lucide-list)").first().click();
     }
     await c.settingsButton.click();
     await c.page.waitForTimeout(500);
-    await menu(c.page, "Other Bots").click();
-    await c.page.waitForTimeout(500);
-    await c.page.getByText("Image Generation", { exact: true }).first().click();
+    await menu(c.page, "Image Generation").click();
     await width(c.page).waitFor({ timeout: 15_000 });
 }
 

@@ -3,7 +3,7 @@ import { createHypaV3Preset, selectedHypaV3Preset } from "../../../../shared/hyp
 
 // Phase 3, slice 4: `hypaV3PresetId` is the selected preset's id (it travels in the `hypaV3Presets`
 // record as `selectedId`). `selectedHypaV3Preset` is the one lookup behind `getCurrentHypaV3Preset`,
-// the `stores.svelte.ts` toggle effect, and `OtherBotSettings.svelte`. The list's defaults and the
+// the `stores.svelte.ts` toggle effect, and `MemorySettings.svelte`. The list's defaults and the
 // id's validity are the server normalizer's job; the client only selects, falling back to the first
 // preset until the next reload when another client deleted the selected one.
 

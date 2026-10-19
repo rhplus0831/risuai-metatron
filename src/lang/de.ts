@@ -747,7 +747,6 @@ export const languageGerman = {
     showFirstMessagePages: "Seiten der ersten Nachricht anzeigen",
     roundIcons: "Runde Icons",
     streaming: "Streaming",
-    otherBots: "Hilfs-KIs",
     user: "Benutzer",
     additionalAssets: "Zusätzliche Medien",
     editDisplay: "Anzeige bearbeiten",

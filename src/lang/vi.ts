@@ -731,7 +731,6 @@ export const languageVietnamese = {
     showFirstMessagePages: "Hiển thị trang tin nhắn đầu tiên",
     roundIcons: "Biểu tượng tròn",
     streaming: "Truyền phát",
-    otherBots: "Bot khác",
     user: "Người dùng",
     additionalAssets: "Tài sản bổ sung",
     editDisplay: "Sửa đổi hiển thị",

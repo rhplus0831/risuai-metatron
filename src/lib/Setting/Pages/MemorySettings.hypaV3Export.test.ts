@@ -51,14 +51,14 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import OtherBotSettings from "./OtherBotSettings.svelte";
+import MemorySettings from "./MemorySettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
 
 function render() {
     const target = document.createElement("div");
     document.body.appendChild(target);
-    mounted.push(mount(OtherBotSettings, { target }));
+    mounted.push(mount(MemorySettings, { target }));
     flushSync();
     const button = (icon: string) => {
         const element = [...target.querySelectorAll("button")].find((entry) => entry.innerHTML.includes(icon));
