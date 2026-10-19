@@ -155,6 +155,23 @@ const savedVersions = $state<Record<string, number>>({});
  */
 const ackedRevisions = new Map<string, string>();
 
+/**
+ * Chats (`keyOf`) this client still holds a revision of that an authoritative chat list showed the
+ * server no longer has, while this client keeps them (local work, a quarantine, a generation, or a
+ * delete that cannot be sent): the server's order cannot hold them, so reorders, create indices, and
+ * order acknowledgements leave them out (`serverHolds`). The held revision stays (the base of their
+ * work, whose conflict removes them). Cleared only by positive membership evidence: a list that
+ * places the chat, an acknowledged create whose answer lists the chat in the order, or the revision
+ * being dropped. A revision installed otherwise (a late acknowledgement or read from before the
+ * deletion) does not clear it.
+ */
+const absentChats = new Set<string>();
+
+/** Whether the server's chat order holds the chat as far as this client knows (`absentChats`). */
+function serverHolds(key: string): boolean {
+    return chatRevisions.has(key) && !absentChats.has(key);
+}
+
 /** Records a chat's held revision (every runtime install but the seed): see `savedVersions`. */
 function holdChatRevision(key: string, revision: string) {
     const first = !chatRevisions.has(key);
@@ -171,6 +188,7 @@ function holdChatRevision(key: string, revision: string) {
 function dropChatRevision(key: string) {
     chatRevisions.delete(key);
     ackedRevisions.delete(key);
+    absentChats.delete(key);
 }
 
 /**
@@ -2869,6 +2887,7 @@ export function seedChats(
 ) {
     chatRevisions.clear();
     ackedRevisions.clear();
+    absentChats.clear();
     orderRevisions.clear();
     staleChats.clear();
     noticedChats.clear();
@@ -3020,7 +3039,8 @@ function orderMembershipReady(chaId: string): boolean {
     const visible = new Set(memberIds(chaId));
     const prefix = `${chaId}\u0000`;
     return [...chatRevisions.keys()].every((key) => {
-        if (!key.startsWith(prefix) || visible.has(key.slice(prefix.length))) {
+        if (!key.startsWith(prefix) || visible.has(key.slice(prefix.length)) || !serverHolds(key)) {
+            // A chat the server no longer has needs no delete before the reorder.
             return true;
         }
         const entry = pending.get(key);
@@ -3051,7 +3071,8 @@ function isOrderQuarantined(chaId: string): boolean {
     if (refused === undefined) {
         return false;
     }
-    const ids = memberIds(chaId).filter((id) => chatRevisions.has(keyOf(chaId, id)));
+    // The ids `takeChatWork` would send now (before this batch's creates).
+    const ids = memberIds(chaId).filter((id) => serverHolds(keyOf(chaId, id)));
     if (JSON.stringify(ids) === refused) {
         return true;
     }
@@ -3449,7 +3470,7 @@ export function takeChatWork(
         const ids = memberIds(entry.characterId);
         const index = ids.slice(0, ids.indexOf(entry.chatId)).filter((otherId) => {
             const otherKey = keyOf(entry.characterId, otherId);
-            return chatRevisions.has(otherKey) || createdHere.has(otherKey);
+            return serverHolds(otherKey) || createdHere.has(otherKey);
         }).length;
         // The mirror copy already holds every queued change.
         const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }]);
@@ -3511,7 +3532,7 @@ export function takeChatWork(
         const visible = new Set(memberIds(chaId));
         const prefix = `${chaId}\u0000`;
         const serverAfter = [...new Set([...chatRevisions.keys(), ...createdHere])].filter(
-            (key) => key.startsWith(prefix) && !deletedHere.has(key),
+            (key) => key.startsWith(prefix) && !deletedHere.has(key) && (serverHolds(key) || createdHere.has(key)),
         );
         if (serverAfter.some((key) => !visible.has(key.slice(prefix.length)))) {
             // The server will still hold a chat the mirror no longer shows (its delete is not in
@@ -3520,7 +3541,7 @@ export function takeChatWork(
         }
         const ids = memberIds(chaId).filter((id) => {
             const key = keyOf(chaId, id);
-            return (chatRevisions.has(key) || createdHere.has(key)) && !deletedHere.has(key);
+            return (serverHolds(key) || createdHere.has(key)) && !deletedHere.has(key);
         });
         const order = { characterId: chaId, baseRevision: base, ids, seq };
         orders.push(order);
@@ -3616,14 +3637,16 @@ function settleOrder(chaId: string, seq: number) {
 
 /**
  * Records the server's answer to chat work that was saved. Returns the characters whose chat list
- * on the server holds chats this client does not know (another tab created or deleted them): their
- * list is to be read again before any reorder is based on the new order revision.
+ * on the server differs from this client's membership, or whose absent chat's create acknowledgement
+ * lacks an order listing it: their list is to be read again before any reorder is sent.
  */
 export function ackChatWork(
     work: ChatWork,
     results: readonly ChatGroupResult[],
     orders: readonly ChatOrderResult[],
 ): string[] {
+    const refresh = new Set<string>();
+    const placedByOrders = new Map(orders.map((order) => [order.characterId, new Set(order.ids)]));
     work.groups.forEach((group, index) => {
         inflight.delete(group.key);
         jobBlocked.delete(group.key);
@@ -3641,6 +3664,14 @@ export function ackChatWork(
                 // seen every change up to the new revision. A newer revision held already (a load
                 // installed a later read while the group was in flight) is not moved back.
                 holdChatRevision(group.key, result.revision);
+            }
+            if (result.revision !== null && group.ops[0]?.op === "create" && absentChats.has(group.key)) {
+                if (placedByOrders.get(group.characterId)?.has(group.chatId)) {
+                    absentChats.delete(group.key);
+                } else {
+                    // A replay can lack an order result: the list must decide membership.
+                    refresh.add(group.characterId);
+                }
             }
             const held = chatRevisions.get(group.key);
             if (
@@ -3663,24 +3694,25 @@ export function ackChatWork(
         }
         settleKey(group.key, group.seq);
     });
-    const refresh: string[] = [];
     for (const order of orders) {
         const prefix = `${order.characterId}\u0000`;
         const known = new Set(
-            [...chatRevisions.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)),
+            [...chatRevisions.keys()]
+                .filter((key) => key.startsWith(prefix) && serverHolds(key))
+                .map((key) => key.slice(prefix.length)),
         );
         if (order.ids.length === known.size && order.ids.every((id) => known.has(id))) {
             orderRevisions.set(order.characterId, order.revision);
         } else {
             // The older revision stays, so a reorder conflicts (and recovers) instead of being refused.
-            refresh.push(order.characterId);
+            refresh.add(order.characterId);
         }
     }
     for (const order of work.orders) {
         inflightOrders.delete(order.characterId);
         settleOrder(order.characterId, order.seq);
     }
-    return refresh;
+    return [...refresh];
 }
 
 /**
@@ -4480,17 +4512,19 @@ export function canApplyRemoteCollection(chaId: string): boolean {
  * `issued` (the revisions held when the list was read). A newer server chat that is not loaded here
  * (or new to the list) takes the summary and revision; a loaded one takes a whole chat when the
  * list has it, else keeps its copy and held revision and is marked stale (the next cycle reads it
- * whole). A chat's notice is dropped only when the adopted state covers it. Nothing is queued.
- * Returns false when the character's order work is busy or a removal was fenced (the caller reads
- * the list again later).
+ * whole). A kept chat with a held revision the list lacks, and a held chat deleted here whose delete
+ * is not acknowledged, are marked as gone from the server's order (`absentChats`): reorders leave
+ * them out. A chat's notice is dropped only when the adopted state covers it. Nothing is queued.
+ * Returns false when the character's order work is busy or a held chat the list lacks changed while
+ * it was read (`issued`; the caller reads the list again later).
  *
  * With `keepPendingOrder` (the membership refresh after this client's own acknowledgement), a queued
  * reorder does not refuse the list: the chats this client listed keep its order, the chats new to it
  * follow in the server's order, and the reorder stays queued, so it is sent next on the new order
  * revision as a permutation of the server's list. When a chat this client keeps and holds a revision
- * of is missing from the server's list, the reorder could not be such a permutation: it is discarded
- * and reported as `chats/<characterId>` (the caller shows the notice), and the server's order and
- * revision are adopted. An order in flight still refuses.
+ * of is missing from the server's list, the reorder (arranged with that chat still listed) is
+ * discarded and reported as `chats/<characterId>` (the caller shows the notice), and the
+ * server's order and revision are adopted. An order in flight still refuses.
  */
 export function applyRemoteCollection(
     collection: {
@@ -4557,21 +4591,45 @@ export function applyRemoteCollection(
         adopted.push({ key, revision: record.revision });
     }
     const removed: string[] = [];
+    const absent: string[] = [];
+    const local = new Set(localIds);
+    const prefix = `${chaId}\u0000`;
     for (const id of localIds) {
         if (placed.has(id)) {
             continue;
         }
         const key = keyOf(chaId, id);
-        if (!chatRevisions.has(key) || !canRefreshChat({ chaId, chatId: id })) {
-            // Not on the server yet, or busy here: kept; its own save (or a conflict) settles it.
+        if (!chatRevisions.has(key)) {
+            // Not on the server yet: kept; its own save settles it.
             next.push(entryAt(chaId, id)!);
             continue;
         }
         if (issued && issued.get(key) !== chatRevisions.get(key)) {
-            // A newer copy arrived while the list was read (a job's chat event): read the list again.
+            // A newer copy arrived while the list was read (a job's chat event, an acknowledgement):
+            // the list may predate it, so neither a removal nor an absence follows from it. Read the
+            // list again.
             return false;
         }
+        if (!canRefreshChat({ chaId, chatId: id })) {
+            // Busy here: kept, its own save (or a conflict) settles it; the server's order no longer
+            // holds it (`absentChats`).
+            next.push(entryAt(chaId, id)!);
+            absent.push(key);
+            continue;
+        }
         removed.push(key);
+    }
+    for (const key of chatRevisions.keys()) {
+        const id = key.slice(prefix.length);
+        if (!key.startsWith(prefix) || placed.has(id) || local.has(id)) {
+            continue;
+        }
+        // Held but no longer in the mirror (deleted here, the delete not acknowledged): the server's
+        // order does not hold it either, so a reorder need not wait for that delete.
+        if (issued && issued.get(key) !== chatRevisions.get(key)) {
+            return false;
+        }
+        absent.push(key);
     }
     if (next.length === 0) {
         // Every chat is gone on the server (the writer's own new chat follows in a later change):
@@ -4599,6 +4657,12 @@ export function applyRemoteCollection(
         }
     }
     orderRevisions.set(chaId, collection.order.revision);
+    for (const id of placed) {
+        absentChats.delete(keyOf(chaId, id));
+    }
+    for (const key of absent) {
+        absentChats.add(key);
+    }
     for (const { key, revision } of adopted) {
         holdChatRevision(key, revision);
         staleChats.delete(key);
@@ -4633,9 +4697,11 @@ export function applyRemoteCollection(
  * waits). An idle chat takes the server's state: a whole chat when it is loaded and the list has one,
  * the summary and revision when it is not loaded (or new to the list); a loaded chat the list gives
  * only a newer summary of keeps its copy and held revision and is marked stale (read whole next).
- * A queued reorder and a dropped chat's work count as discarded (`markOrderDiscarded`,
- * `markDiscarded`: the flush and `MutationScope` reports); returns whether there was any. A dropped
- * idle chat discards nothing.
+ * A kept chat with a held revision the list lacks (quarantined, a create, streamed here), and a held
+ * chat deleted here whose delete is not acknowledged, are marked as gone from the server's order
+ * (`absentChats`): reorders leave them out. A queued reorder and a dropped chat's work count as
+ * discarded (`markOrderDiscarded`, `markDiscarded`: the flush and `MutationScope` reports); returns
+ * whether there was any. A dropped idle chat discards nothing.
  */
 export function acceptRemoteCollection(collection: {
     characterId: string;
@@ -4720,6 +4786,7 @@ export function acceptRemoteCollection(collection: {
             changed(key);
         }
     }
+    const absent: string[] = [];
     for (const id of localIds) {
         if (placed.has(id)) {
             continue;
@@ -4734,11 +4801,13 @@ export function acceptRemoteCollection(collection: {
             inflight.get(key)?.ops[0]?.op === "create"
         ) {
             // Not on the server yet (never sent, or a create whose attempt was rolled back or is
-            // unresolved): it stays and its create goes out.
+            // unresolved): it stays and its create goes out. A quarantined chat stays as it is.
             next.push(mine);
+            absent.push(key);
         } else if (isChatStreamedHere({ chaId, chatId: id })) {
             next.push(mine);
             deferred.add(key);
+            absent.push(key);
         } else {
             if (pending.has(key) || inflight.has(key)) {
                 discardChatWork(key, 0);
@@ -4749,6 +4818,24 @@ export function acceptRemoteCollection(collection: {
             }
             dropChatRevision(key);
             changed(key);
+        }
+    }
+    const local = new Set(localIds);
+    const prefix = `${chaId}\u0000`;
+    for (const key of chatRevisions.keys()) {
+        const id = key.slice(prefix.length);
+        if (key.startsWith(prefix) && !placed.has(id) && !local.has(id)) {
+            // Held but no longer in the mirror (deleted here, the delete not acknowledged).
+            absent.push(key);
+        }
+    }
+    for (const id of placed) {
+        absentChats.delete(keyOf(chaId, id));
+    }
+    for (const key of absent) {
+        if (chatRevisions.has(key)) {
+            // Kept with a held revision the server's order no longer holds (`absentChats`).
+            absentChats.add(key);
         }
     }
     setChatList(chaId, next);

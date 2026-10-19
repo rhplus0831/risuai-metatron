@@ -1238,3 +1238,229 @@ describe("group idempotency ids (data-loss slice 6b)", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 });
+
+// Open-bug-fixes slice A2: a kept chat (quarantined, deleted here with a delete that cannot run) that
+// an authoritative chat list shows gone on the server keeps its draft and held revision but leaves
+// the reorders and create indices (`absentChats`), so the server accepts them as permutations.
+describe("kept absent chats leave the order (open-bug-fixes slice A2)", () => {
+    /** Boots with a third chat `r` the other tab created: the server order is `k, j, r`. */
+    const bootWithR = () =>
+        boot((fake) =>
+            fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "r",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "r", name: "R", message: [] } as any }],
+                },
+            ]),
+        );
+    /** The other tab deletes `j` on its current revision. */
+    const deleteElsewhere = (fake: StoreBackedServer) =>
+        fake.chatBatch([
+            { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
+        ]);
+    /** The live update of a change the other tab made to `j` and the order (the socket's frames). */
+    const announce = (sync: Sync, fake: StoreBackedServer) =>
+        sync.noteRemoteChanges({
+            resources: [],
+            chats: [{ characterId: "c", id: "j", revision: fake.chat("c", "j")?.revision ?? null }],
+            chatOrders: [{ characterId: "c", revision: fake.order("c")!.revision }],
+        });
+    /** Every reorder the server received, in order (as sent). */
+    const sentOrders = (fake: StoreBackedServer) => fake.batchBodies().flatMap((body) => body.chatOrders ?? []);
+    const reads = (fake: StoreBackedServer) =>
+        fake.requests.filter((request) => request.path === "/api/resources/read");
+    /** Quarantines `j` (a meta patch the server refuses); returns a scope begun before the refusal. */
+    async function quarantineJ(sync: Sync, chat: ChatModule) {
+        const scope = sync.beginMutationScope();
+        chat.setChatMeta(refJ, { fmIndex: "not a number" as any });
+        const refused = await sync.flushResources({ scope });
+        expect(refused.discarded).toEqual(["chats/c/j"]);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.error.mock.calls[0][0]).toMatch(/chat j could not be saved/);
+        return scope;
+    }
+
+    it("leaves a quarantined chat another tab deleted out of the reorders and create indices once the live update lists the deletion, keeps its draft, and keeps reporting it; a list that places it again lets it back in", async () => {
+        const { fake, sync, chat, mirrorIds } = await bootWithR();
+        expect(mirrorIds()).toEqual(["k", "j", "r"]);
+        const scope = await quarantineJ(sync, chat);
+        deleteElsewhere(fake);
+        const afterDelete = fake.order("c")!.revision;
+        announce(sync, fake);
+        await vi.advanceTimersByTimeAsync(700);
+        // The list (`applyRemoteCollection`) keeps the quarantined draft after the server's chats.
+        expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        expect((chat.findChat(refJ) as any).fmIndex).toBe("not a number");
+        expect(fake.chat("c", "j")).toBeNull();
+
+        chat.reorderChats("c", ["r", "k", "j"]);
+        const first = await sync.flushResources({ scope });
+        // The reorder lands without `j`, on the order revision the deletion produced; the quarantine
+        // is still the only report, and nothing was reloaded.
+        expect(first.discarded).toEqual(["chats/c/j"]);
+        expect(sentOrders(fake)).toEqual([{ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] }]);
+        expect(fake.order("c")!.ids).toEqual(["r", "k"]);
+        expect(mirrorIds()).toEqual(["r", "k", "j"]);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+
+        // A second reorder, on the revision the first produced.
+        const afterFirst = fake.order("c")!.revision;
+        chat.reorderChats("c", ["k", "j", "r"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(sentOrders(fake).at(-1)).toEqual({ characterId: "c", baseRevision: afterFirst, ids: ["k", "r"] });
+        expect(fake.order("c")!.ids).toEqual(["k", "r"]);
+
+        // A create placed after the absent chat counts only the chats the server holds before it, and
+        // its acknowledgement's order (without `j`) is adopted without a list refresh.
+        const readsBefore = reads(fake).length;
+        chat.createChat("c", { id: "n", name: "N", message: [] } as any, { index: 2 });
+        expect(mirrorIds()).toEqual(["k", "j", "n", "r"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.batchBodies().at(-1).chats[0].ops[0].index).toBe(1);
+        expect(fake.order("c")!.ids).toEqual(["k", "n", "r"]);
+        expect(reads(fake).length).toBe(readsBefore);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+
+        // The other tab creates `j` again under its id: the list places it, so the next reorder
+        // includes it (the quarantined draft keeps its copy).
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { id: "j", name: "J again", message: [] } as any }],
+            },
+        ]);
+        expect(fake.order("c")!.ids).toEqual(["k", "n", "r", "j"]);
+        announce(sync, fake);
+        await vi.advanceTimersByTimeAsync(700);
+        expect(mirrorIds()).toEqual(["k", "n", "r", "j"]);
+        expect((chat.findChat(refJ) as any).fmIndex).toBe("not a number");
+        const afterRecreate = fake.order("c")!.revision;
+        chat.reorderChats("c", ["j", "k", "n", "r"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(sentOrders(fake).at(-1)).toEqual({
+            characterId: "c",
+            baseRevision: afterRecreate,
+            ids: ["j", "k", "n", "r"],
+        });
+        expect(fake.order("c")!.ids).toEqual(["j", "k", "n", "r"]);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("sends a reorder queued before the deletion is known with the quarantined chat, which conflicts on the order revision; the recovery's list marks it, and the next reorder lands without it", async () => {
+        const { fake, sync, chat, mirrorIds } = await bootWithR();
+        const scope = await quarantineJ(sync, chat);
+        deleteElsewhere(fake);
+        const afterDelete = fake.order("c")!.revision;
+        // Not told yet (the live update is not delivered here): the reorder goes out with `j`.
+        chat.reorderChats("c", ["r", "k", "j"]);
+        const first = await sync.flushResources({ scope });
+        // The sent reorder conflicts (409 on the order revision, never the permutation 400) and is
+        // settled with the notice but without a discard report; `acceptRemoteCollection` keeps the
+        // quarantined draft after the server's chats.
+        expect(first.discarded).toEqual(["chats/c/j"]);
+        expect(sentOrders(fake)).toEqual([
+            { characterId: "c", baseRevision: expect.any(String), ids: ["r", "k", "j"] },
+        ]);
+        expect(sentOrders(fake)[0].baseRevision).not.toBe(afterDelete);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(fake.order("c")!.ids).toEqual(["k", "r"]);
+        expect(fake.order("c")!.revision).toBe(afterDelete);
+        expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        expect((chat.findChat(refJ) as any).fmIndex).toBe("not a number");
+
+        chat.reorderChats("c", ["r", "k", "j"]);
+        const second = await sync.flushResources({ scope });
+        expect(second.discarded).toEqual(["chats/c/j"]);
+        expect(sentOrders(fake).at(-1)).toEqual({ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] });
+        expect(fake.order("c")!.ids).toEqual(["r", "k"]);
+        expect(mirrorIds()).toEqual(["r", "k", "j"]);
+        // No order quarantine (`chatOrderRefused`): the one alert is the chat's.
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("no longer holds a reorder for the delete of a quarantined chat deleted here once the list shows another tab deleted it", async () => {
+        const { fake, sync, chat, mirrorIds } = await bootWithR();
+        await quarantineJ(sync, chat);
+        // Deleted here too: the delete can never go out (quarantined), and `j` stays held.
+        chat.deleteChat(refJ);
+        expect(mirrorIds()).toEqual(["k", "r"]);
+        expect(chat.heldChatRevision(refJ)).not.toBeNull();
+        deleteElsewhere(fake);
+        const afterDelete = fake.order("c")!.revision;
+        announce(sync, fake);
+        await vi.advanceTimersByTimeAsync(700);
+        chat.reorderChats("c", ["r", "k"]);
+        // The quarantined chat's unsendable delete stays an open obligation of this flush; the
+        // reorder itself no longer waits for it.
+        await expect(sync.flushResources()).rejects.toThrow(/Could not save every change/);
+        expect(sentOrders(fake)).toEqual([{ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] }]);
+        expect(fake.order("c")!.ids).toEqual(["r", "k"]);
+        expect(mirrorIds()).toEqual(["r", "k"]);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+    });
+
+    it("keeps the absence mark when a replayed create's answer (no order result) arrives after an overlapping list read saw the chat deleted, reads the list again, and reorders without it", async () => {
+        const { fake, sync, chat, mirrorIds } = await bootWithR();
+        // Deleted here, then created again under its id while the old revision is still held.
+        chat.deleteChat(refJ);
+        chat.createChat("c", { id: "j", name: "J again", message: [] } as any);
+        expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        const oldRevision = chat.heldChatRevision(refJ);
+        expect(oldRevision).not.toBeNull();
+        // The other tab deletes the old `j` first, so this tab's create lands; its answer is lost.
+        deleteElsewhere(fake);
+        fake.dropNextBatchResponse = true;
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.chat("c", "j")!.data.name).toBe("J again");
+        expect(fake.order("c")!.ids).toEqual(["k", "r", "j"]);
+        expect(chat.heldChatRevision(refJ)).toBe(oldRevision);
+        const beforeReplay = fake.order("c")!.revision;
+
+        // The resend is answered as a duplicate while `j` exists (no order result); its answer is
+        // held in transit ...
+        fake.holdNextBatchResponse = true;
+        const flight = sync.flushResources();
+        await vi.waitFor(() => expect(fake.releaseBatchResponse).not.toBeNull());
+        expect(fake.batchBodies().at(-1).chats).toEqual([expect.objectContaining({ chatId: "j", retry: true })]);
+        expect(fake.order("c")!.revision).toBe(beforeReplay);
+        // ... while the other tab deletes the recreated `j`, and an on-demand summary read (a load
+        // of a chat the list does not have) applies that list: `j` is kept (in flight) and marked.
+        deleteElsewhere(fake);
+        const afterDelete = fake.order("c")!.revision;
+        expect(afterDelete).not.toBe(beforeReplay);
+        expect(await chat.loadChat({ chaId: "c", chatId: "not-a-chat" })).toBeUndefined();
+        expect(chat.heldOrderRevision("c")).toBe(afterDelete);
+        expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        fake.releaseBatchResponse!();
+        expect((await flight).discarded).toEqual([]);
+        // The replay's answer holds the create's revision but carries no order listing `j`: the
+        // adopted order revision stays the deletion's.
+        expect(chat.heldChatRevision(refJ)).not.toBe(oldRevision);
+        expect(chat.heldOrderRevision("c")).toBe(afterDelete);
+        expect(fake.order("c")!.revision).toBe(afterDelete);
+
+        // The mark stays: the list is read again before the reorder, which leaves `j` out (the
+        // refresh removes the idle chat the server no longer has) and lands, never refused.
+        const readsBefore = reads(fake).length;
+        chat.reorderChats("c", ["r", "k", "j"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(reads(fake).length).toBe(readsBefore + 1);
+        expect(reads(fake).at(-1)!.body.chatSummaryCollections).toEqual(["c"]);
+        expect(sentOrders(fake)).toEqual([{ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] }]);
+        expect(fake.order("c")!.ids).toEqual(["r", "k"]);
+        expect(mirrorIds()).toEqual(["r", "k"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(chat.hasChatWork()).toBe(false);
+    });
+});

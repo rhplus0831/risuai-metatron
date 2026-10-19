@@ -34,8 +34,8 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
  * every plain write, and `/api/llm-secrets/*` for the credential writes; and (large-asset-import
  * slice 2c) `POST /api/import/module`, the `.risum` import's answer without its asset store, and
  * (slice 2d) `POST /api/import/charx`, the CharX import's answer without its asset store. The
- * hooks mirror `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail
- * requests.
+ * hooks mirror `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied,
+ * fail requests.
  *
  * The server modules are loaded at run time (`create`) through a computed specifier: the client
  * `tsconfig.json` is not strict and must not type-check the strict server sources, so a static
@@ -187,6 +187,10 @@ export class StoreBackedServer {
     holdNextBatch = false;
     /** Apply the next batch, then fail the response (a lost acknowledgement). */
     dropNextBatchResponse = false;
+    /** Apply the next batch, then hold its response until `releaseBatchResponse` (an answer in transit). */
+    holdNextBatchResponse = false;
+    /** Resolves a held response; set while `holdNextBatchResponse` is pending. */
+    releaseBatchResponse: (() => void) | null = null;
     /** Answer the next matching requests with this status (or throw a network error for 0). */
     failNext: { status: number; body?: unknown; times: number; match?: (path: string) => boolean } | null = null;
     /** Runs before the next batch is applied (something another tab does meanwhile); one-shot. */
@@ -569,6 +573,15 @@ export class StoreBackedServer {
             if (this.dropNextBatchResponse) {
                 this.dropNextBatchResponse = false;
                 throw new TypeError("Failed to fetch");
+            }
+            if (this.holdNextBatchResponse) {
+                this.holdNextBatchResponse = false;
+                await new Promise<void>((resolve) => {
+                    this.releaseBatchResponse = () => {
+                        this.releaseBatchResponse = null;
+                        resolve();
+                    };
+                });
             }
             return Response.json({ epoch: this.store.epoch(), ...applied });
         }
