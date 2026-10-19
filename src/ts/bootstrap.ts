@@ -16,7 +16,7 @@ import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
-import { setUsingSw, checkCharOrder } from "./globalApi.svelte";
+import { setUsingSw } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readKinds } from "./storage/resourceClient";
 import {
@@ -27,7 +27,7 @@ import {
     startResourceSync,
 } from "./storage/resourceSync.svelte";
 import { characterList, removeCharacters } from "./storage/characterStore.svelte";
-import { queueRemoteCharOrderRepair } from "./storage/characterOrder";
+import { checkCharOrderAtBoot, queueRemoteCharOrderRepair } from "./storage/characterOrder";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
@@ -342,7 +342,8 @@ function updateHeightMode() {
 
 /**
  * The boot's maintenance of the installed characters: those in the trash for more than three days
- * are deleted (one change of the list), and the character order is repaired. The characters arrive
+ * are deleted (one change of the list), and the character order is repaired against the complete
+ * inventory, dropping dangling ids before saving and the event feed start. The characters arrive
  * normalized by the server (`normalizeCharacter`); the client applies no default at boot (Phase 6
  * slice 5b).
  */
@@ -353,7 +354,7 @@ function maintainCharacters() {
             .filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now)
             .map((v) => v.chaId),
     );
-    checkCharOrder();
+    checkCharOrderAtBoot();
 }
 
 /**

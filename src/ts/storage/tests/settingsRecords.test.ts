@@ -440,7 +440,11 @@ describe("bulk writers notify once per record they change", () => {
         expect(notified).toEqual([]);
         settings.characterOrder.push("gone-1", "gone-2", "gone-3");
         notified.length = 0;
+        // Ids of characters this tab never held are kept (not read yet): nothing to write.
         characterOrder.checkCharOrder();
+        expect(notified).toEqual([]);
+        expect(plain(settings.characterOrder)).toContain("gone-1");
+        characterOrder.checkCharOrderAtBoot();
         expect(notified).toEqual(["characterOrder"]);
         expect(plain(settings.characterOrder)).not.toContain("gone-1");
         notified.length = 0;

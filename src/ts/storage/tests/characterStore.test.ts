@@ -379,7 +379,7 @@ describe("removeCharacter", () => {
 });
 
 describe("checkCharOrder", () => {
-    it("appends missing characters, drops stale ids and empty folders, and skips trashed and playground characters", async () => {
+    it("appends missing characters, drops empty folders, keeps unread ids until the boot repair, and skips trashed and playground characters", async () => {
         const { characterOrder, characterStore, settings } = await boot();
         const d = characterStore.addCharacter({ chaId: "d", name: "D" });
         const t = characterStore.addCharacter({ chaId: "t", name: "T" });
@@ -392,6 +392,10 @@ describe("checkCharOrder", () => {
             null,
         ] as any;
         characterOrder.checkCharOrder();
+        // "gone" was never held here (another tab's character not read yet): it keeps its places.
+        expect(plain(settings.characterOrder)).toEqual(["gone", { id: "f2", name: "f", data: ["c", "gone"] }, d]);
+        // The boot repair runs on the complete inventory and drops it.
+        characterOrder.checkCharOrderAtBoot();
         expect(plain(settings.characterOrder)).toEqual([{ id: "f2", name: "f", data: ["c"] }, d]);
         // Trash removes from the order; restore puts it back.
         expect(settings.characterOrder).not.toContain(t);
@@ -409,7 +413,10 @@ describe("checkCharOrder", () => {
             "c",
         ] as any;
         expect(() => characterOrder.checkCharOrder()).not.toThrow();
-        // The legacy folder went; the folder emptied by the member filter survives one call.
+        // The legacy folder went; the unread member keeps its folder.
+        expect(plain(settings.characterOrder)).toEqual([{ id: "f", name: "f", data: ["gone"] }, "c"]);
+        // The folder emptied by the boot repair's member filter survives one call.
+        characterOrder.checkCharOrderAtBoot();
         expect(plain(settings.characterOrder)).toEqual([{ id: "f", name: "f", data: [] }, "c"]);
         characterOrder.checkCharOrder();
         expect(plain(settings.characterOrder)).toEqual(["c"]);

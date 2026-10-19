@@ -96,10 +96,18 @@
         CharEmotion.set({});
     }
 
-    type sortTypeNormal = { type: "normal"; img: string; chaId: string; name: string };
+    type sortTypeNormal = { type: "normal"; img: string; chaId: string; name: string; orderIndex: number };
     type sortType =
         | sortTypeNormal
-        | { type: "folder"; folder: sortTypeNormal[]; id: string; name: string; color: string; img?: string };
+        | {
+              type: "folder";
+              folder: sortTypeNormal[];
+              id: string;
+              name: string;
+              color: string;
+              img?: string;
+              orderIndex: number;
+          };
     let charImages: sortType[] = $state([]);
     let IconRounded = $state(false);
     let openFolders: string[] = $state([]);
@@ -116,30 +124,35 @@
     $effect(() => {
         let newCharImages: sortType[] = [];
         const idObject = getCharacterIndexObject();
-        for (const id of settings.characterOrder) {
+        // Keep persisted positions: hidden ids still occupy root and folder slots.
+        for (const [orderIndex, id] of settings.characterOrder.entries()) {
             if (typeof id === "string") {
-                const index = idObject[id] ?? -1;
+                const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                 if (index !== -1) {
                     const cha = characterList()[index];
+                    if (cha.trashTime) continue;
                     newCharImages.push({
                         img: cha.image ?? "",
                         chaId: cha.chaId,
                         type: "normal",
                         name: cha.name,
+                        orderIndex,
                     });
                 }
             } else {
                 const folder = id;
                 let folderCharImages: sortTypeNormal[] = [];
-                for (const id of folder.data) {
-                    const index = idObject[id] ?? -1;
+                for (const [orderIndex, id] of folder.data.entries()) {
+                    const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                     if (index !== -1) {
                         const cha = characterList()[index];
+                        if (cha.trashTime) continue;
                         folderCharImages.push({
                             img: cha.image ?? "",
                             chaId: cha.chaId,
                             type: "normal",
                             name: cha.name,
+                            orderIndex,
                         });
                     }
                 }
@@ -150,6 +163,7 @@
                     name: folder.name,
                     color: folder.color,
                     img: folder.imgFile,
+                    orderIndex,
                 });
             }
         }
@@ -604,7 +618,7 @@
                 }}
                 ondragenter={preventAll}
             ></div>
-            {#each charImages as char, ind}
+            {#each charImages as char}
                 {@const status =
                     char.type === "normal"
                         ? (characterStatuses.get(char.chaId) ?? null)
@@ -621,12 +635,12 @@
                     role="listitem"
                     draggable="true"
                     ondragstart={(e) => {
-                        avatarDragStart({ index: ind }, e);
+                        avatarDragStart({ index: char.orderIndex }, e);
                     }}
                     ondragend={clearCurrentDrag}
                     ondragover={avatarDragOver}
                     ondrop={(e) => {
-                        avatarDrop({ index: ind }, e);
+                        avatarDrop({ index: char.orderIndex }, e);
                     }}
                     ondragenter={preventAll}
                 >
@@ -851,7 +865,7 @@
                                 }}
                                 ondragenter={preventAll}
                             ></div>
-                            {#each char.folder as char2, ind}
+                            {#each char.folder as char2}
                                 {@const memberStatus = characterStatuses.get(char2.chaId)}
                                 {@const memberStatusLabel = memberStatus
                                     ? chatStatusLabel(memberStatus, char2.name)
@@ -863,14 +877,14 @@
                                     draggable="true"
                                     ondragstart={(e) => {
                                         if (char.type === "folder") {
-                                            avatarDragStart({ index: ind, folder: char.id }, e);
+                                            avatarDragStart({ index: char2.orderIndex, folder: char.id }, e);
                                         }
                                     }}
                                     ondragend={clearCurrentDrag}
                                     ondragover={avatarDragOver}
                                     ondrop={(e) => {
                                         if (char.type === "folder") {
-                                            avatarDrop({ index: ind, folder: char.id }, e);
+                                            avatarDrop({ index: char2.orderIndex, folder: char.id }, e);
                                         }
                                     }}
                                     ondragenter={preventAll}
@@ -939,7 +953,7 @@
                                         e.currentTarget.classList.remove("bg-green-500");
                                         try {
                                             if (char.type === "folder") {
-                                                inserter(drag, { index: ind + 1, folder: char.id });
+                                                inserter(drag, { index: char2.orderIndex + 1, folder: char.id });
                                             }
                                         } finally {
                                             clearCurrentDrag();
@@ -975,7 +989,7 @@
                         e.stopPropagation();
                         e.currentTarget.classList.remove("bg-green-500");
                         try {
-                            inserter(drag, { index: ind + 1 });
+                            inserter(drag, { index: char.orderIndex + 1 });
                         } finally {
                             clearCurrentDrag();
                         }

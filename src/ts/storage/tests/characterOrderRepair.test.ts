@@ -67,6 +67,8 @@ async function load(options: { characters?: string[]; order?: unknown[]; held?: 
     /** The saved revision of a character: "r1" unless the case says otherwise (`null`: an unsaved create). */
     const heldRevision = (chaId: string) => (held.has(chaId) ? held.get(chaId)! : "r1");
     return {
+        checkCharOrder: module.checkCharOrder,
+        checkCharOrderAtBoot: module.checkCharOrderAtBoot,
         queue: () => module.queueRemoteCharOrderRepair(heldRevision),
         held,
         plain: () => JSON.parse(JSON.stringify(stores.order)),
@@ -80,6 +82,89 @@ beforeEach(() => {
 afterEach(() => {
     vi.restoreAllMocks();
     client.readRefs.mockReset();
+});
+
+describe("local and boot character order repair", () => {
+    it("keeps another tab's unread character in its folder when this tab adds a character", async () => {
+        const folder = { id: "f", name: "Tab 1's folder", color: "blue", data: ["tab-1"] };
+        const { checkCharOrder, plain } = await load({ characters: ["held"], order: ["unread-root", folder, "held"] });
+
+        // Tab 2 has received tab 1's order, but not its newly created character record.
+        // Adding here puts the new record in the list before calling the local repair.
+        stores.characters.push({ chaId: "tab-2" }, { chaId: "§playground" }, { chaId: "trash", trashTime: 1 });
+        checkCharOrder();
+
+        const expected = ["unread-root", folder, "held", "tab-2"];
+        expect(plain()).toEqual(expected);
+        expect(stores.assignments).toEqual([expected]);
+        checkCharOrder();
+        expect(stores.assignments).toEqual([expected]);
+    });
+
+    it("strips observed deletions and held trash, dropping folders only when already empty", async () => {
+        const folder = { id: "f", name: "Folder", color: "", data: ["deleted-member"] };
+        const { checkCharOrder, plain } = await load({
+            characters: ["kept", "deleted-root", "deleted-member"],
+            order: ["deleted-root", "kept", folder],
+        });
+        checkCharOrder(); // Observe the characters before this tab deletes them.
+        expect(stores.assignments).toEqual([]);
+
+        stores.characters = [
+            { chaId: "kept" },
+            { chaId: "trash-root", trashTime: 1 },
+            { chaId: "trash-member", trashTime: 1 },
+        ];
+        stores.order = [
+            "deleted-root",
+            "trash-root",
+            "kept",
+            { ...folder, data: ["deleted-member", "trash-member"] },
+            { id: "missing-list", name: "Missing list", color: "" },
+            { id: "empty", name: "Empty", color: "", data: [] },
+        ];
+        checkCharOrder();
+        const filtered = ["kept", { ...folder, data: [] }];
+        expect(plain()).toEqual(filtered);
+        expect(stores.assignments).toEqual([filtered]);
+
+        checkCharOrder();
+        expect(plain()).toEqual(["kept"]);
+        expect(stores.assignments).toEqual([filtered, ["kept"]]);
+        checkCharOrder();
+        expect(stores.assignments).toEqual([filtered, ["kept"]]);
+    });
+
+    it("forgets a fully reflected deletion so another tab can reuse the id in a later order", async () => {
+        const { checkCharOrder, plain } = await load({ characters: ["reused"], order: ["reused"] });
+        checkCharOrder();
+        stores.characters = [];
+        checkCharOrder();
+        expect(plain()).toEqual([]);
+        expect(stores.assignments).toEqual([[]]);
+
+        // Another tab re-creates the id; again its order arrives before its character record.
+        const folder = { id: "new-folder", name: "Recreated", color: "", data: ["reused"] };
+        stores.order = [folder];
+        checkCharOrder();
+        expect(plain()).toEqual([folder]);
+        expect(stores.assignments).toEqual([[]]);
+    });
+
+    it("boot drops never-observed ids against the complete inventory and appends only live unordered characters", async () => {
+        const folder = { id: "f", name: "Folder", color: "", data: ["unread-member", "live-member", "trash"] };
+        const { checkCharOrderAtBoot, plain } = await load({
+            characters: ["live-member", "new-root", "trash", "§playground"],
+            order: ["unread-root", folder],
+        });
+        stores.characters.find((char) => char.chaId === "trash")!.trashTime = 1;
+        checkCharOrderAtBoot();
+        const expected = [{ ...folder, data: ["live-member"] }, "new-root"];
+        expect(plain()).toEqual(expected);
+        expect(stores.assignments).toEqual([expected]);
+        checkCharOrderAtBoot();
+        expect(stores.assignments).toEqual([expected]);
+    });
 });
 
 describe("queueRemoteCharOrderRepair", () => {
