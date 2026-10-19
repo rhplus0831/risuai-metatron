@@ -18,7 +18,9 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
-import { readKinds } from "./storage/resourceClient";
+import { readBoot, readKinds } from "./storage/resourceClient";
+import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
+import { appVer } from "./storage/database.svelte";
 import {
     heldRecordRevision,
     onRemoteRecordApplied,
@@ -46,8 +48,15 @@ export async function loadData() {
         try {
             LoadingStatusState.text = "Loading Save Data...";
             // Chat summaries, not chats (Phase 6 slice 9b): no message row is read here; a chat is
-            // loaded when it is selected or a consumer needs it.
-            const snapshot = await readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true });
+            // loaded when it is selected or a consumer needs it. The read skips what the boot cache
+            // holds (`bootCache.ts`), falling back to the plain read; the cache is written after the boot.
+            const { snapshot, commit: commitBootCache } = await loadBootSnapshot({
+                store: indexedDbBootCacheStore(appVer),
+                appVer,
+                readBoot,
+                readKinds: () => readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true }),
+                report: recordClientEvent,
+            });
             // What the server holds, recorded before normalization changes anything, so the first save
             // writes exactly what the client normalized.
             seedResources(snapshot);
@@ -122,6 +131,8 @@ export async function loadData() {
             loadedStore.set(true);
             // The URL picks the screen (a reload keeps it); from here on the history follows the stores.
             startRouter();
+            // What the boot read gave goes into the boot cache when the tab is idle.
+            void scheduleBootCacheCommit(commitBootCache);
             // Web Push (`docs/plan/web-push.md`): this browser's subscription kept in line, and the
             // one-time banner offered. Nothing here asks for the permission.
             void import("./network/pushNotifications")

@@ -70,6 +70,7 @@ describe("projectDiagnosticEvent", () => {
             "sync",
             "serviceWorker",
             "page",
+            "bootCache",
         ]);
     });
 
@@ -442,6 +443,32 @@ describe("projectDiagnosticEvent", () => {
             at: AT,
             kind: "page",
         });
+        // The boot cache (`src/ts/storage/bootCache.ts`): its phases and reasons by their lists, counts.
+        const bootCache = { at: AT, kind: "bootCache", phase: "fallback", reason: "incomplete", records: 3, items: 10 };
+        expect(projectDiagnosticEvent(bootCache)).toEqual(bootCache);
+        expect(projectDiagnosticEvent({ at: AT, kind: "bootCache", phase: "cleared", reason: "format" })).toEqual({
+            at: AT,
+            kind: "bootCache",
+            phase: "cleared",
+            reason: "format",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "bootCache", phase: "writeFailed", reason: "quota" })).toEqual({
+            at: AT,
+            kind: "bootCache",
+            phase: "writeFailed",
+            reason: "quota",
+        });
+        expect(
+            projectDiagnosticEvent({
+                at: AT,
+                kind: "bootCache",
+                phase: "written",
+                reason: "DOMException: secret",
+                records: -1,
+                items: 1.5,
+                url: "/x",
+            }),
+        ).toEqual({ at: AT, kind: "bootCache" });
         for (const kind of DIAGNOSTIC_EVENT_KINDS) {
             expect(projectDiagnosticEvent({ at: AT, kind, repeat: 3, lastAt: AT + 1 }), kind).toEqual({
                 at: AT,

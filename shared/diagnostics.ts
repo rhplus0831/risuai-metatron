@@ -16,7 +16,7 @@ export { isProviderCode, PROVIDER_CODE_PATTERN };
  *
  * The server writes `http`, `job`, `request`, `runtime`, and `lifecycle`; the browser's collector
  * (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, and the browser kinds `jobLink`,
- * `feed`, `sync`, `serviceWorker`, and `page`.
+ * `feed`, `sync`, `serviceWorker`, `page`, and `bootCache`.
  */
 export const DIAGNOSTIC_EVENT_KINDS = [
     "http",
@@ -29,6 +29,7 @@ export const DIAGNOSTIC_EVENT_KINDS = [
     "sync",
     "serviceWorker",
     "page",
+    "bootCache",
 ] as const;
 
 /** `GET`: the server's ring and state (`server/src/routes/diagnostics.ts`). */
@@ -95,6 +96,24 @@ export const SERVICE_WORKER_PHASES = [
 ] as const;
 
 export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline"] as const;
+
+/**
+ * The boot cache (`src/ts/storage/bootCache.ts`): the boot fell back to the plain read, a cache write
+ * failed, or the cache was cleared after a bad answer or contents.
+ */
+export const BOOT_CACHE_PHASES = ["fallback", "writeFailed", "cleared"] as const;
+
+/** Why: no IndexedDB, a failed or slow cache read, a failed boot request, an answer the cache cannot use, a quota or other write failure. */
+export const BOOT_CACHE_REASONS = [
+    "unavailable",
+    "readFailed",
+    "timeout",
+    "request",
+    "format",
+    "incomplete",
+    "quota",
+    "write",
+] as const;
 
 /** Why a same-origin fetch has no status: it rejected (no answer), or its signal timed out. */
 export const HTTP_FAILURES = ["rejected", "timeout"] as const;
@@ -425,6 +444,12 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
     page: {
         phase: oneOf(PAGE_PHASES),
     },
+    bootCache: {
+        phase: oneOf(BOOT_CACHE_PHASES),
+        reason: oneOf(BOOT_CACHE_REASONS),
+        records: count,
+        items: count,
+    },
 };
 
 /** Every kind's: how many identical events this one stands for and when the last was (the browser's collector folds repeats). */
@@ -487,6 +512,7 @@ const BROWSER_KINDS: ReadonlySet<string> = new Set([
     "sync",
     "serviceWorker",
     "page",
+    "bootCache",
 ]);
 const BROWSER_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
 const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle"]);

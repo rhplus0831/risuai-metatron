@@ -221,8 +221,30 @@ A new module `src/ts/storage/bootCache.ts` and its use in `bootstrap.ts:loadData
 - The live-update path is unchanged: the event feed's first reconcile (`listRevisions`)
   sees the same revisions a full read would have given.
 - Privacy note for the guide: the cache keeps the same records the tab holds, in the
-  browser profile, after the tab closes; credentials are never in it (`llmSecrets` is
-  not a cached kind and is masked anyway).
+  browser profile, after the tab closes. `llmSecrets` is not a cached kind and is masked
+  anyway; characters with a non-empty managed `oaiTTSConfig.apiKey` are excluded.
+  Arbitrary secrets embedded in modules, scripts, or other cached content can remain.
+- As built (Sol plan review, 15 points): any cache-read failure, failed boot request, or
+  unusable answer falls back to one plain `readKinds` (only the unusable answer starts
+  an immediate best-effort fenced clear, independent of bootstrap completion);
+  IndexedDB open/read bounded by 3 s, a blocked open fails, connections close
+  on `versionchange`, writes settle on transaction `complete`; the answer is expanded
+  against the request's advertised claims only (`BootRequestContext`), cache entries are
+  checked at runtime; every requested kind and both chat metadata arrays are required,
+  record variants cannot overlap, and cached character texts must parse to non-array
+  objects whose `chaId` matches the record id; a load reads only the item texts the
+  records name; writes and clears are fenced by a `generation` in the meta, and a clear
+  retains a fresh generation to reject delayed writes; a character with a non-empty
+  `oaiTTSConfig.apiKey` (a plaintext TTS credential) is never cached; texts are captured
+  before installation but `seedResources` still serializes every record itself (reuse
+  left out: it would reach into the save adapter; freshly returned characters and
+  changed items incur the extra stringify on every boot that receives them); a
+  new browser diagnostics kind `bootCache` (`fallback`, `writeFailed`, `cleared`);
+  content-free marks `risu-boot-cache:read-start`, `:read`, `:answer`, `:write-start`,
+  `:written` (only a completed write); `whenBootCacheSettled`
+  for measurements; `clearBootCache` for a future sign-out. The unit tests run the real
+  adapter on `fake-indexeddb` (`src/ts/storage/tests/bootCache.test.ts`) and the real boot
+  route (`bootCacheServer.test.ts`); slice 4 checks the adapter in a real browser.
 - Test: the boot through a filled cache produces the same `ResourceReadKindsResult`
   (same record texts) as a full read; one changed module, one changed character, a
   deleted character, a reordered module list; each fallback path ends in a full read

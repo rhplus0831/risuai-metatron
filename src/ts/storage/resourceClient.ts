@@ -1,8 +1,11 @@
 import {
     type BackupSnapshotInfo,
     type BatchConflict,
+    RESOURCE_BOOT_PATH,
     RESOURCE_EPOCH_HEADER,
     type ResourceBatchResult,
+    type ResourceBootRequest,
+    type ResourceBootResult,
     type ResourceReadKindsResult,
     type ResourceReadRefsResult,
     type ResourceRevisionListing,
@@ -170,6 +173,20 @@ export async function readKinds(
         `kinds=${kinds.map(encodeURIComponent).join(",")}` +
         `${options.chats ? "&chats=1" : ""}${options.chatSummaries ? "&chatSummaries=1" : ""}`;
     return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`));
+}
+
+/**
+ * The boot read that skips what the client holds (`POST /api/resources/boot`; `bootCache.ts`
+ * expands the answer). The answer is the server's as sent: the caller checks its shape.
+ */
+export async function readBoot(request: ResourceBootRequest): Promise<ResourceBootResult> {
+    return checkedEpoch(
+        await sendJson<ResourceBootResult>(RESOURCE_BOOT_PATH, {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify(request),
+        }),
+    );
 }
 
 /**

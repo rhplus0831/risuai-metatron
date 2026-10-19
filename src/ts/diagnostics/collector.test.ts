@@ -77,7 +77,7 @@ describe("projectClientEvent", () => {
         expect(projectClientEvent({ at: AT, kind: "script" })).toBeNull();
         expect(projectClientEvent(null)).toBeNull();
         expect(projectClientEvent({ kind: "page", phase: "boot" })).toBeNull();
-        for (const kind of ["http", "runtime", "jobLink", "feed", "sync", "serviceWorker", "page"]) {
+        for (const kind of ["http", "runtime", "jobLink", "feed", "sync", "serviceWorker", "page", "bootCache"]) {
             const event = projectClientEvent({ at: AT, kind, ...(kind === "runtime" ? { origin: "error" } : {}) });
             expect(event?.kind, kind).toBe(kind);
         }
@@ -149,6 +149,15 @@ describe("projectClientEvent", () => {
         ).toEqual({ at: AT, kind: "feed" });
         const sync = { at: AT, kind: "sync", phase: "conflict", records: 1, chats: 2, orders: 0, generating: 1 };
         expect(projectClientEvent(sync)).toEqual(sync);
+        const bootCache = { at: AT, kind: "bootCache", phase: "fallback", reason: "timeout", records: 0, items: 0 };
+        expect(projectClientEvent(bootCache)).toEqual(bootCache);
+        expect(
+            projectClientEvent({ at: AT, kind: "bootCache", phase: "fallback", reason: "Alice", records: -1 }),
+        ).toEqual({
+            at: AT,
+            kind: "bootCache",
+            phase: "fallback",
+        });
         expect(projectClientEvent({ at: AT, kind: "sync", phase: "reload", reason: "restore" })).toEqual({
             at: AT,
             kind: "sync",
