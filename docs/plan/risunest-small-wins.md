@@ -59,14 +59,18 @@ documented or recorded:
 
 ## Order
 
-- **Phase 1, independent of the storage/boot layer** (any order, each in its own
-  worktree): T1, K1, E1, P1 → P2 (both edit `plugins.svelte.ts`). K2 after T1 and E1, so
-  the first CI run already includes the guard and the inventory check, and after
-  decision D1.
+(T1, K1, E1, P1 in parallel) → (P2, K2 in parallel) → `heap-memory-reduction` merged
+into `metatron` → A1 → E2 → S1.
+
+- **Phase 1, independent of the storage/boot layer**, each in its own worktree. P2 after
+  P1 (both edit `plugins.svelte.ts` and `factory.ts`). K2 after T1 and E1, so the first CI
+  run already includes the guard and the inventory check, and after decision D1.
 - **Phase 2, after `heap-memory-reduction` merges into `metatron`**: A1 → E2 → S1.
-  A1 changes the `alertStore` declaration in `stores.svelte.ts`; E2 rewrites the alert
-  mocks of `src/ts/storage/tests/*`; S1 changes `bootstrap.ts` and goes last (it also
-  uses A1's queue for its notice and P2's reload guard).
+  A1 changes the `alertStore` declaration in `stores.svelte.ts` and comes after P2 (both
+  edit `jobChannel.ts`); E2 rewrites the alert mocks of `src/ts/storage/tests/*` after
+  A1's exports settle; S1 changes `bootstrap.ts` and goes last (it uses A1's queue for its
+  notice and P2's reload guard).
+- Each slice's `Depends:` line is the authoritative dependency list.
 - Several slices add `language.*` keys to `src/lang/en.ts`. Add them next to their
   feature's existing keys so parallel slices rebase cleanly. T1, E1, E2 and K2 all edit
   `docs/structure/build-test-platforms.md`; keep each slice's text in its own paragraph.
@@ -88,6 +92,8 @@ documented or recorded:
 ## Phase 1
 
 ### T1. Unit-test network guard (_small_, `build-test-platforms.md`)
+
+Depends: nothing.
 
 Today `vitest.setup.ts` (83 lines) has no network guard; egress tripwires exist only in the
 Playwright stack (`util/playwright/stack.mjs`). A test that reaches a provider, Realm, a
@@ -140,6 +146,8 @@ tokenizer CDN or the open internet passes or fails with the network.
 
 ### K1. Docker build context and image hygiene (_small_, `self-host-server.md`)
 
+Depends: nothing.
+
 `.dockerignore` holds only `node_modules`, and the builder stage runs `COPY . .`. So the
 build context carries the local `save/` (1.7 GB of user data on the main checkout),
 `.claude/` (1.9 GB of agent worktrees, whose nested `node_modules` the root-only pattern
@@ -164,6 +172,8 @@ copies all of `server/` and `shared/`, so `server/src/tests/` (3.8 MB) and `shar
   excludes).
 
 ### E1. Engineering rules and the test inventory check (_small_, `build-test-platforms.md` with `STRUCTURE.md`)
+
+Depends: nothing.
 
 From RN `AGENTS.md:23-53` and `tests/suiteOwnership.mjs`/`testInventory.mjs`. metatron's V3
 already has determinism and "a plausible wrong implementation would fail it"; it has no
@@ -213,6 +223,8 @@ import("src/ts/alert")`, so a missing or reshaped export is a type error. E1 onl
 
 ### P1. Unread body expiry, abort on unload, non-3.0 plugin report (_small_, `plugins-mcp.md`)
 
+Depends: nothing.
+
 - Unread body expiry. `SandboxHost.replaceStreamsWithPorts`
   (`src/ts/plugins/apiV3/factory.ts` ~624) bridges every host `ReadableStream` sent to a
   plugin (a `nativeFetch` `Response` body through `serialize`, ~512) with a reader that
@@ -253,6 +265,8 @@ import("src/ts/alert")`, so a missing or reshaped export is a type error. E1 onl
   `Flows`/`Known Hazards` (remove the terminate entry if listed there).
 
 ### P2. Reload after a remote plugin change, once idle (_hard_, `plugins-mcp.md`)
+
+Depends: P1.
 
 A live update of `plugins` only runs `applyRaw` (`src/ts/storage/resourceSync.svelte.ts`
 `applyToMirror` ~2833), so a plugin disabled, removed or updated on another device keeps
@@ -308,6 +322,8 @@ this matters more than on RisuNest.
 
 ### K2. One CI pipeline (_small_, `build-test-platforms.md`)
 
+Depends: T1, E1, and decision D1.
+
 There is no CI directory (`.github/`, `.gitea/`, `.forgejo/` are absent); V1's gates run
 only on agent machines. The remote is the self-hosted forge named by `git remote -v`;
 which forge software runs there, and whether it has Actions runners, is not confirmed.
@@ -341,6 +357,8 @@ which forge software runs there, and whether it has Actions runners, is not conf
 ## Phase 2: after `heap-memory-reduction` merges
 
 ### A1. Alert queue (_hard_, `global-api.md`)
+
+Depends: the `heap-memory-reduction` merge into `metatron` (decision D3), P2.
 
 `alertStore` (`src/ts/stores.svelte.ts` ~76) is one plain `writable`. Every helper in
 `src/ts/alert.ts` sets it, and the awaited ones (`alertConfirm`, `alertInput`,
@@ -436,6 +454,8 @@ msg })` closes the visible dialog with `msg`; an identical repeated `normal`, `e
 
 ### E2. Alert mocks through the shared factory (_small_, `build-test-platforms.md`)
 
+Depends: E1, A1.
+
 80 test files mock `alert` with `vi.mock(..., () => ({ ... }))` listing a few helpers.
 `src/ts/storage/tests/resourceSync*.test.ts` lack `alertTerminal`; under heavy load a
 stale module graph reaches it and the run fails with an unhandled error that is not the
@@ -449,6 +469,8 @@ test's (recorded in the project memory, "Storage test alert mock gap").
 - Docs: none beyond E1's rule, unless the factory's path changed.
 
 ### S1. Safe boot (_hard_, `app-shell.md` with `plugins-mcp.md`)
+
+Depends: the `heap-memory-reduction` merge into `metatron`, A1, P2.
 
 Boot errors only `alertError` (`bootstrap.ts` `loadData` catch, ~156); a failed
 `loadPlugins` is swallowed (`try { await loadPlugins(); } catch {}`, ~125-128).
