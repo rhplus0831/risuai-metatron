@@ -1157,6 +1157,13 @@ describe("chat, character, persona, and UI effects", () => {
         expect(texts(h.live)).toEqual(["char:greeting", "user:hi there"]);
     });
 
+    it("v2GetFirstMessage reads a missing or out-of-range greeting index as the main first message", async () => {
+        for (const fmIndex of [2, 9, -2, undefined]) {
+            const h = harness({ triggers: [trig([out("v2GetFirstMessage", "first")])], chat: { fmIndex } });
+            expect((await h.run())?.chat.scriptstate, String(fmIndex)).toMatchObject({ $first: "first" });
+        }
+    });
+
     it("writes the character effects one field at a time on the copy's character, and goes on with a warning when it is gone", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         const loreFields = (name: string, content: string, insertOrder = "5") => ({

@@ -38,7 +38,8 @@ vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModuleRegex
 vi.mock("src/ts/model/modellist", () => ({ getModelInfoForMode: () => ({ id: "gpt-test" }) }));
 vi.mock("src/ts/util", () => ({
     getNodetextToSentence: (node: Node) => node.textContent,
-    sleep: async () => undefined,
+    // On the timers, so the DeepLX spacing runs on the fake clock.
+    sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 }));
 
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -169,7 +170,10 @@ describe("translateHTML media regressions", () => {
             const rendered = body(
                 await translateHTML(nodes.map((text) => `<span>${text}</span>`).join(""), false, "", 0),
             );
-            expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([nodes.join("■"), ...nodes]);
+            expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+                nodes.join("\n■\n"),
+                ...nodes,
+            ]);
             expect([...rendered.querySelectorAll("span")].map((node) => node.textContent)).toEqual(
                 nodes.map((text) => `KO:${text}`),
             );
@@ -399,5 +403,84 @@ describe("translate memory cache ownership", () => {
         expect(calls()).toBe(2);
         await expect(translate("retry-source", false)).resolves.toBe("KO:retry-source");
         expect(calls()).toBe(2);
+    });
+});
+
+describe("runTranslator line breaks", () => {
+    it("sends the lines between two empty or asset lines as one chunk with their line breaks, as the server does", async () => {
+        const text = "first\nsecond\n\nthird\n{{img::x}}\nfourth\nfifth";
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(
+            "KO:first\nsecond\n\nKO:third\n{{img::x}}\nKO:fourth\nfifth",
+        );
+        expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+            "first\nsecond",
+            "third",
+            "fourth\nfifth",
+        ]);
+    });
+
+    it("keeps a DeepLX batch's asset lines protected and gives each node its text without the separator's line breaks", async () => {
+        // A provider that keeps every line break of the request.
+        deps.globalFetch.mockImplementation(async (_url: string, init: Request) => ({
+            ok: true,
+            data: { data: (init.body.text as string).toUpperCase() },
+        }));
+        const rendered = body(
+            await translateHTML("<p>{{img::a}}</p><p>hello</p><p>{{raw::b}}</p><b>bold</b> tail", false, "", 0),
+        );
+        expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.text)).toEqual([
+            "■\nhello\n■",
+            "■\nbold\n■\n tail",
+        ]);
+        expect([...rendered.querySelectorAll("p")].map((node) => node.textContent)).toEqual([
+            "{{img::a}}",
+            "HELLO",
+            "{{raw::b}}",
+        ]);
+        expect(rendered.querySelector("b")?.textContent).toBe("BOLD");
+        expect(rendered.lastChild?.textContent).toBe(" TAIL");
+    });
+});
+
+describe("DeepLX request spacing", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("gives each request the next free slot, 3 s after the one before it, and none to a request after a quiet spell", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+        vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+        media.noWaitForTranslate = false;
+        const start = Date.now();
+        const sentAt: number[] = [];
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => {
+            sentAt.push(Date.now() - start);
+            return reply(url, init);
+        });
+
+        const work = Promise.all(["one", "two", "three"].map((text) => runTranslator(text, false, "ko", "en")));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentAt).toEqual([0]);
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(sentAt).toEqual([0]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(sentAt).toEqual([0, 3000]);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sentAt).toEqual([0, 3000, 6000]);
+        await expect(work).resolves.toEqual(["KO:one", "KO:two", "KO:three"]);
+
+        // The last slot ended at 9000; a request after it goes out at once.
+        await vi.advanceTimersByTimeAsync(10_000);
+        const late = runTranslator("four", false, "ko", "en");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sentAt).toEqual([0, 3000, 6000, 16_000]);
+        await expect(late).resolves.toBe("KO:four");
+    });
+
+    it("sends at once when Don't Wait for Translation is on", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => reply(url, init));
+        const work = Promise.all(["one", "two"].map((text) => runTranslator(text, false, "ko", "en")));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+        await expect(work).resolves.toEqual(["KO:one", "KO:two"]);
     });
 });

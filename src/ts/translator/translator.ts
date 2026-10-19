@@ -16,6 +16,7 @@ import type { TranslatorStep } from "../../../shared/settings.ts";
 import {
     runTranslatorPipeline,
     stripTranslatorReasoning,
+    translateProtectingLines,
     translatorPipelineSignature,
 } from "../../../shared/translation/pipeline.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -184,53 +185,28 @@ export async function runTranslator(
     const source = excludeThoughts ? stripTranslatorReasoning(text) : text;
     const failure = exarg?.failure ?? { failed: false };
     const chunkArg = excludeThoughts ? { ...arg, inputPrepared: true, failure } : arg;
-    const texts = source.split("\n");
-    let chunks: [string, boolean][] = [["", true]];
-
-    for (let i = 0; i < texts.length; i++) {
-        if (
-            texts[i].startsWith("{{img") ||
-            texts[i].startsWith("{{raw") ||
-            texts[i].startsWith("{{video") ||
-            (texts[i].startsWith("{{audio") && texts[i].endsWith("}}")) ||
-            texts[i].length === 0
-        ) {
-            chunks.push([texts[i], false]);
-            chunks.push(["", true]);
-        } else {
-            chunks[chunks.length - 1][0] += texts[i];
-        }
-    }
-
-    let fullResult: string[] = [];
-
-    for (const chunk of chunks) {
-        if (chunk[1]) {
-            const trimed = chunk[0].trim();
-            if (trimed.length === 0) {
-                fullResult.push(chunk[0]);
-                continue;
-            }
-            const result = await translateMain(trimed, chunkArg);
+    // The server's rule (`translateProtectingLines`): the lines between two protected lines go out as
+    // one chunk joined with `\n`. A failure stops at the chunk that failed.
+    const stopped = Symbol("stopped");
+    try {
+        return await translateProtectingLines(source, async (chunk) => {
+            const result = await translateMain(chunk, chunkArg);
             if (failure.failed) {
-                return text;
+                throw stopped;
             }
-
             if (result.startsWith("ERR::")) {
                 failure.failed = true;
                 alertError(result);
-                return text;
+                throw stopped;
             }
-
-            fullResult.push(result.trim());
-        } else {
-            fullResult.push(chunk[0]);
+            return result;
+        });
+    } catch (error) {
+        if (error === stopped) {
+            return text;
         }
+        throw error;
     }
-
-    const result = fullResult.join("\n").trim();
-
-    return result;
 }
 
 async function translateMain(
@@ -287,10 +263,12 @@ async function translateMain(
     }
     if (settings.memoryTranslateMedia.translatorType === "deeplX") {
         if (!settings.memoryTranslateMedia.noWaitForTranslate) {
-            if (waitTrans - Date.now() > 0) {
-                const waitTime = waitTrans - Date.now();
-                waitTrans = Date.now() + 3000;
-                await sleep(waitTime);
+            // Each request takes the next free slot, 3 s after the one before it.
+            const now = Date.now();
+            const slot = Math.max(now, waitTrans);
+            waitTrans = slot + 3000;
+            if (slot > now) {
+                await sleep(slot - now);
             }
         }
 
@@ -514,6 +492,7 @@ export async function translateHTML(
         let batchLength = 0;
         async function translateBatch() {
             if (batch.length === 0) return;
+            // The separator on its own line keeps each node's asset lines protected (`runTranslator`).
             const translated = await translate(batch.map((i) => jobs[i].text).join("\n■\n"), reverse);
             const split = translated.split("■");
             if (split.length !== batch.length) {
@@ -522,8 +501,12 @@ export async function translateHTML(
                     results[i] = await translate(jobs[i].text, reverse);
                 }
             } else {
+                // `runTranslator` keeps the line breaks around each separator; drop them again.
                 batch.forEach((i, index) => {
-                    results[i] = split[index];
+                    let text = split[index];
+                    if (index > 0) text = text.replace(/^\n/, "");
+                    if (index < split.length - 1) text = text.replace(/\n$/, "");
+                    results[i] = text;
                 });
             }
             batch = [];

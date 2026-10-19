@@ -904,15 +904,15 @@ describe("Exclude Chain-of-Thought", () => {
         expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(3);
     });
 
-    it("without Send Text As-Is strips the whole text before the line cut (a block spanning blank and asset lines leaves whole), joins adjacent lines as before, and keys each chunk of the stripped text as prepared", async () => {
+    it("without Send Text As-Is strips the whole text before the line cut (a block spanning blank and asset lines leaves whole), joins adjacent lines with a newline, and keys each chunk of the stripped text as prepared", async () => {
         const text = "intro\n<Thoughts>\nline a\n\n{{img::x}}\nline b\n</Thoughts>\nfirst\nsecond\n\n{{img::y}}\nthird";
         succeed("I", "FS", "T");
         await expect(runTranslator(text, false, "ko", "en")).resolves.toBe("I\n\nFS\n\n\n{{img::y}}\nT");
-        // The tab's chunking concatenates adjacent lines (the server's joins them with a newline).
-        expect(contents()).toEqual(["Other intro", "Other firstsecond", "Other third"]);
+        // Adjacent lines go out as one chunk joined with a newline, as on the server.
+        expect(contents()).toEqual(["Other intro", "Other first\nsecond", "Other third"]);
         expect(await exportLLMCacheAsJSON()).toEqual({
             [keyOf(PREPARED, "intro")]: "I",
-            [keyOf(PREPARED, "firstsecond")]: "FS",
+            [keyOf(PREPARED, "first\nsecond")]: "FS",
             [keyOf(PREPARED, "third")]: "T",
         });
         // Served from those entries again; the raw path reads none of them.

@@ -1,5 +1,6 @@
 import type { Chat, character, groupChat } from "../database.ts";
 import type { LLMModel } from "../llm.ts";
+import { greetingText } from "../greetings.ts";
 import { replaceAllBound } from "./limits.ts";
 import type { CBSRegisterArg, matcherArg } from "./types.ts";
 
@@ -189,7 +190,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                 }
                 pointer--;
             }
-            return chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings![chat.fmIndex!];
+            return greetingText(selchar, chat.fmIndex);
         },
         alias: ["previouscharchat", "lastcharmessage"],
         description:
@@ -211,7 +212,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                     }
                     pointer--;
                 }
-                return chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings![chat.fmIndex!];
+                return greetingText(selchar, chat.fmIndex);
             }
             return "";
         },
@@ -1644,8 +1645,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                     [
                         {
                             role: "char",
-                            data:
-                                chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings![chat.fmIndex!],
+                            data: greetingText(selchar, chat.fmIndex),
                         },
                     ]
                         .concat(chat.message)

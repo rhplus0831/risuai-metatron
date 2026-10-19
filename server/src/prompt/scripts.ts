@@ -1,5 +1,6 @@
 import type { CbsConditions } from "../../../shared/cbs/types.ts";
 import type { character, customscript, groupChat } from "../../../shared/database.ts";
+import { greetingText } from "../../../shared/greetings.ts";
 import type { CallbackResult } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
@@ -221,8 +222,7 @@ export async function runScriptTail(
                         // The chat `chatID` indexes, and its owner's greeting.
                         const chat = services.liveChat();
                         const owner = scope.db.characters.find((entry) => entry?.chaId === chatRef.chaId) as character;
-                        let lastChat =
-                            chat.fmIndex === -1 ? owner.firstMessage : owner.alternateGreetings[chat.fmIndex as number];
+                        let lastChat = greetingText(owner, chat.fmIndex);
                         let pointer = chatID - 1;
                         while (pointer >= 0) {
                             if (chat.message[pointer].role === chat.message[chatID].role) {

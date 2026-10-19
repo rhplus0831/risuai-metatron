@@ -252,7 +252,8 @@ export function isProtectedTranslationLine(line: string): boolean {
 
 /**
  * `text` translated chunk by chunk around its protected lines (`isProtectedTranslationLine`), the
- * Fastify fork's rule (`docs/plan/translation.md` slice 3.2, a preset without Send Text As-Is): the
+ * Fastify fork's rule (`docs/plan/translation.md` slice 3.2, a preset without Send Text As-Is; the
+ * server runner and the tab's `runTranslator`): the
  * lines between two protected lines are one chunk (joined with `\n`), translated trimmed by
  * `translateChunk` and trimmed again; a protected line is kept as it is, and each one is followed by
  * an empty chunk, so the parts joined with `\n` put an extra blank line between two protected lines
