@@ -144,28 +144,31 @@ Rules:
   known revision from another epoch never matches; nothing else needs an epoch check.
   The startup normalization pass (`resourceStore.ts` `normalizeStoredRecords`) bumps the
   revision of every record it rewrites, so a schema migration also misses the cache.
-- Item hash: SHA-256 of the item's stored JSON text, base64url, first 22 characters
-  (128 bits). The stored array text is `[item,item,…]` with each item canonical
-  (`cutRecord` in `resourceStore.ts` relies on the same property), so the client can
-  rebuild the record's text by joining item texts. Hash the stored text, never a
-  re-serialization of a projection.
-- Cost: keep a small server map `kind/id/revision → { hashes, item texts }` (one entry
-  per item kind; the old revision's entry is dropped when a new one is built). Building
-  it is one parse plus one stringify per item, the work `cutRecord` already does; check
-  whether the store's `patchBases` LRU can hand it over instead of a second cache.
-  A `cached: true` record should skip its row's `JSON.parse` (`readKind` parses every
-  row today): add a store read that takes the known revisions and returns data only for
-  the rest, in the same synchronous block as the other kinds, so the answer is still
-  one committed state.
-- `known` limits: at most `MAX_BATCH_OPERATIONS` records plus hashes; malformed entries
-  are a 400. An unknown kind or id in `known` is ignored (the record may be gone).
+- Item hash: SHA-256 of the UTF-8 bytes of `JSON.stringify(item)` for the item as
+  `JSON.parse` of the stored record gives it (the wire-canonical item JSON, which is
+  also what the client's `JSON.stringify` of the received item gives), base64url, first
+  22 characters (132 bits). Never a re-serialization of a projection.
+- As built (Sol plan review): no new store method and no hash cache. `readBoot`
+  (`server/src/routes/resourceBoot.ts`) calls `readKindRevisions` (cached kinds, no
+  parse), `readRefs` (only the stale records), and `readKinds` (the other kinds, with
+  the chat summaries) in one synchronous block, which is one committed state. A stale
+  item record is parsed, stringified per item and hashed on every read (~0.1–0.2 s on
+  a 16 MB record); add a cache keyed by the full revision only if slice 4 shows it
+  matters. Eligibility is one predicate (`BOOT_CACHED_KINDS` and no `project`) for both
+  the inventory and the answer; other kinds are always whole and projected.
+- The answer carries `format: BOOT_RESOURCE_FORMAT` (1).
+- `known` limits: kinds, record claims plus item hashes, and item entries at most 5000
+  each, counted before entries are dropped; malformed entries are a 400; the body has
+  its own 2 MiB cap (413). An entry of an unknown, unrequested or uncached kind, or for
+  an absent record, is ignored. A record claimed with two revisions is a miss; hash
+  lists of one kind add up. `boot` is a reserved kind name.
 - The answer goes through slice 1's compression.
 - Test (`server/src/tests/resourcesBoot.test.ts`): no `known` equals
   `GET /api/resources` (same data after expanding `items`); a matching revision answers
   `cached` and the data is absent; a stale revision answers data; a revision of another
   epoch (after `replaceAll`) answers data; a module edit answers only that item's data
   and the other hashes bare; reordering modules answers the new order with bare hashes;
-  joining the item texts in order reproduces the stored record text; a record created
+  rebuilding an item record from its items in order equals the full read's data; a record created
   or deleted since is present or absent; non-cached kinds are always whole; limits and
   malformed bodies are 400.
 
@@ -187,7 +190,16 @@ A new module `src/ts/storage/bootCache.ts` and its use in `bootstrap.ts:loadData
   [open-bug-fixes.md](open-bug-fixes.md)).
 - Boot: read the whole cache in one read transaction (records and the items they name).
   A record whose items are not all present is dropped from `known`. Send `known` built
-  only from what was actually read. Then expand the answer into a plain
+  only from what was actually read, and none at all when the request would pass
+  `MAX_BOOT_BODY_BYTES` or 5000 entries. Accept an answer only when `format` is
+  `BOOT_RESOURCE_FORMAT`; otherwise fall back. A `cached` item-kind record is rebuilt
+  from the ordered hash list and item texts of the exact snapshot the request advertised
+  (keep that snapshot until the background write is done). An `items` record is rebuilt
+  by position (never by module id: ids may repeat or be missing), keeping repeated
+  hashes, `items: []` as `[]`, and taking an item's value when `data` is present as a
+  property (`null`, `false`, `0`, `""` are values). An item-kind record answered whole
+  (its data was not an array) is installed as is and cached as a whole text record.
+  Then expand the answer into a plain
   `ResourceReadKindsResult` (`cached` → `JSON.parse(text)`, `items` →
   `JSON.parse("[" + texts.join(",") + "]")`) before `seedResources`; nothing after
   `readKinds` changes. `checkedEpoch` still applies.

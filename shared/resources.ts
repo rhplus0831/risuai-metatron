@@ -187,6 +187,79 @@ export type ResourceReadRefsResult = {
 };
 
 /**
+ * The boot read that skips what the client already holds (`docs/plan/boot-resource-cache.md`):
+ * `POST RESOURCE_BOOT_PATH` with a `ResourceBootRequest`, answered with a `ResourceBootResult`.
+ */
+export const RESOURCE_BOOT_PATH = "/api/resources/boot";
+
+/** The boot answer's format. A client accepts omissions (`cached`, an item without `data`) only from this one. */
+export const BOOT_RESOURCE_FORMAT = 1;
+
+/** Most bytes a boot request body may have (413 past it). */
+export const MAX_BOOT_BODY_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The kinds whose records a boot answer may leave out as `cached` (their revision is the known one).
+ * A kind with a server `project` never is, whatever this list says.
+ */
+export const BOOT_CACHED_KINDS: readonly string[] = [
+    RESOURCE_KIND.characters,
+    RESOURCE_KIND.modules,
+    RESOURCE_KIND.presets,
+];
+
+/**
+ * The cached kinds whose array records a boot answer sends item by item (`items`) when their revision
+ * is not the known one, leaving out the data of every item whose hash the client named.
+ */
+export const BOOT_ITEM_KINDS: readonly string[] = [RESOURCE_KIND.modules, RESOURCE_KIND.presets];
+
+/**
+ * An item hash: SHA-256 of the UTF-8 bytes of `JSON.stringify(item)` for the item as `JSON.parse` of
+ * the stored record gives it (the item as a full read sends it, so the client's `JSON.stringify` of a
+ * received item is the same text), base64url, first 22 characters (132 bits).
+ */
+export const BOOT_ITEM_HASH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+
+export type ResourceBootRequest = {
+    /** As `GET /api/resources?kinds=`: at least one, every one registered; duplicates count once. */
+    kinds: string[];
+    /** As `chatSummaries=1`: every chat's summary and every chat order. */
+    chatSummaries?: true;
+    /**
+     * What the client holds. Entries of kinds not requested, not cached, or unknown are ignored. A
+     * record named twice with two revisions is a miss; hashes of one kind named in several entries add up.
+     */
+    known?: {
+        records?: { kind: string; id: string; revision: string }[];
+        items?: { kind: string; hashes: string[] }[];
+    };
+};
+
+/** One array position of an item record: `data` present (as a property) unless the client named `hash`. */
+export type ResourceBootItem = { hash: string; data?: unknown };
+
+/**
+ * A boot answer's record: whole (`data`); `cached` (the client's copy at `revision` is current); or,
+ * for a `BOOT_ITEM_KINDS` array record, one `items` entry per array position in order (duplicates
+ * kept), whose `data` values in order rebuild the record's array.
+ */
+export type ResourceBootRecord =
+    | (ResourceRecord & { cached?: never; items?: never })
+    | { id: string; revision: string; cached: true; data?: never; items?: never }
+    | { id: string; revision: string; items: ResourceBootItem[]; cached?: never; data?: never };
+
+/** `ResourceReadKindsResult` with `chatSummaries` as asked, and records that may be `cached` or `items`. */
+export type ResourceBootResult = {
+    format: typeof BOOT_RESOURCE_FORMAT;
+    epoch: string;
+    /** Every requested kind, each record in creation order (as `GET /api/resources`). */
+    kinds: Record<string, ResourceBootRecord[]>;
+    chatSummaries?: ChatSummary[];
+    chatOrders?: ChatOrderRecord[];
+};
+
+/**
  * The top-level field change of one write of an object record (a field patch): the record at the
  * entry's revision equals the record at `baseRevision` (the same incarnation, one write earlier) with
  * every `set` field assigned its stored value and every `remove` field deleted. Values compare as
