@@ -539,3 +539,44 @@ describe("the preset hotkeys and Escape with the binding layers (slice 5)", () =
         expect(layers()).toMatchObject({ settings: false });
     });
 });
+
+describe("text entry outside an input or textarea (crosscheck row 13)", () => {
+    // A plain-key hotkey (Space: focus the composer) stays away from text being typed: an editable
+    // element (`contenteditable` with no value counts) or an EditContext host, the plain `div`
+    // Chrome's Monaco types into.
+    const setup = (configure: (host: HTMLElement) => void) => {
+        const composer = document.createElement("textarea");
+        composer.className = "text-input-area";
+        const host = document.createElement("div");
+        host.tabIndex = 0;
+        configure(host);
+        document.body.append(composer, host);
+        host.focus();
+        expect(document.activeElement).toBe(host);
+        return { composer, host };
+    };
+    const space = () => new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    const focusInput = defaultHotkeys.find((hotkey) => hotkey.action === "focusInput")!;
+
+    afterEach(() => {
+        document.body.innerHTML = "";
+    });
+
+    it.each([
+        ["an EditContext host", (host: HTMLElement) => Object.assign(host, { editContext: {} })],
+        ["a contenteditable element", (host: HTMLElement) => host.setAttribute("contenteditable", "")],
+    ])("keeps Space in %s", (_, configure) => {
+        const { host } = setup(configure);
+        const event = space();
+        host.dispatchEvent(event);
+        expect(document.activeElement).toBe(host);
+        expect(event.defaultPrevented).toBe(false);
+        expect(hotkeyMatches(focusInput, space())).toBe(false);
+    });
+
+    it("still runs Space from a plain element", () => {
+        const { host, composer } = setup(() => {});
+        host.dispatchEvent(space());
+        expect(document.activeElement).toBe(composer);
+    });
+});

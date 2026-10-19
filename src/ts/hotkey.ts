@@ -46,13 +46,7 @@ export function initHotkey() {
             ev.preventDefault();
             return;
         }
-        if (
-            !ev.ctrlKey &&
-            !ev.altKey &&
-            !ev.shiftKey &&
-            (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) ||
-                document.activeElement.getAttribute("contenteditable"))
-        ) {
+        if (!ev.ctrlKey && !ev.altKey && !ev.shiftKey && isTextEntry(document.activeElement)) {
             return;
         }
 
@@ -398,9 +392,28 @@ export function hotkeyMatches(hotkey: (typeof settings.hotkeys)[number], ev: Key
     if (shift !== ev.shiftKey) return false;
     if (hotkey.key.toLowerCase() !== ev.key.toLowerCase()) return false;
     if (!ctrl && !alt && !shift) {
-        if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return false;
+        if (isTextEntry(document.activeElement)) return false;
     }
     return true;
+}
+
+/**
+ * Whether keys typed into `element` are text, so a plain-key hotkey must not take them: an input, a
+ * textarea, editable content, or an EditContext host (Chrome's input element that is neither, as
+ * Monaco's would be without `editContext: false`).
+ */
+function isTextEntry(element: Element | null): boolean {
+    if (!element) {
+        return false;
+    }
+    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
+        return true;
+    }
+    const editable = element.getAttribute("contenteditable");
+    if ((element as HTMLElement).isContentEditable || (editable !== null && editable !== "false")) {
+        return true;
+    }
+    return ((element as { editContext?: unknown }).editContext ?? null) !== null;
 }
 
 function clickQuery(query: string) {
