@@ -44,10 +44,16 @@ export const pluginHooks = {
     chatOutput: new Set<ChatOutputListener>(),
 };
 
-//Resets these registries before plugins are reloaded, since most of them have no per-plugin unload cleanup.
-//Replacers, provider options, and the provider lists are not reset.
-export function clearPluginHooks() {
+export function clearPluginProviders() {
     pluginHooks.providers.clear();
+    pluginHooks.providerOptions.clear();
+    customProviderStore.set([]);
+}
+
+//Resets these registries before plugins are reloaded, since most of them have no per-plugin unload cleanup.
+//Replacers rely on unload cleanup; loadV3Plugins resets providers and model metadata again after unloads.
+export function clearPluginHooks() {
+    clearPluginProviders();
     pluginHooks.editdisplay.clear();
     pluginHooks.editoutput.clear();
     pluginHooks.editprocess.clear();

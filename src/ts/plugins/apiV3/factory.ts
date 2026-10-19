@@ -621,9 +621,13 @@ export class SandboxHost {
         });
     }
 
-    private replaceStreamsWithPorts(obj: any): { result: any; ports: MessagePort[]; cleanups: (() => void)[] } {
+    private replaceStreamsWithPorts(
+        obj: any,
+        onStreamsFinished?: () => void,
+    ): { result: any; ports: MessagePort[]; cleanups: (() => void)[] } {
         const ports: MessagePort[] = [];
         const cleanups: (() => void)[] = [];
+        let remainingStreams = 0;
         if (!obj || typeof obj !== "object") return { result: obj, ports, cleanups };
 
         const replace = (val: any): any => {
@@ -638,10 +642,12 @@ export class SandboxHost {
             let finished = false;
 
             const finish = () => {
+                if (finished) return;
                 finished = true;
                 ch.port1.onmessage = null;
                 ch.port1.close();
                 this.activeStreamCleanups.delete(cleanup);
+                if (--remainingStreams === 0) onStreamsFinished?.();
             };
 
             const cleanup = () => {
@@ -650,6 +656,7 @@ export class SandboxHost {
             };
             this.activeStreamCleanups.add(cleanup);
             cleanups.push(cleanup);
+            remainingStreams++;
 
             const pump = async () => {
                 if (reading || finished) return;
@@ -689,11 +696,16 @@ export class SandboxHost {
             return { __type: "STREAM_PORT", portIndex: ports.length - 1 };
         };
 
-        if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
-        if (obj.constructor === Object) {
-            const out: any = {};
-            for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
-            return { result: out, ports, cleanups };
+        try {
+            if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
+            if (obj.constructor === Object) {
+                const out: any = {};
+                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                return { result: out, ports, cleanups };
+            }
+        } catch (error) {
+            for (const cleanup of cleanups) cleanup();
+            throw error;
         }
 
         return { result: obj, ports, cleanups };
@@ -829,6 +841,10 @@ export class SandboxHost {
                 let transferables: Transferable[] = [];
                 let streamCleanups: (() => void)[] = [];
 
+                const releaseAbortControllers = () => {
+                    for (const id of usedAbortIds) this.abortControllers.delete(id);
+                };
+
                 const rollbackStreams = () => {
                     for (const cleanup of streamCleanups) {
                         try {
@@ -859,7 +875,7 @@ export class SandboxHost {
                         result: streamResult,
                         ports: streamPorts,
                         cleanups,
-                    } = this.replaceStreamsWithPorts(response.result);
+                    } = this.replaceStreamsWithPorts(response.result, releaseAbortControllers);
                     response.result = streamResult;
                     streamCleanups = cleanups;
                     transferables = this.collectTransferables(response, streamPorts);
@@ -868,7 +884,8 @@ export class SandboxHost {
                     delete response.result;
                     response.error = err?.message || String(err || "Host execution error");
                 } finally {
-                    for (const id of usedAbortIds) this.abortControllers.delete(id);
+                    // Streaming responses keep their signals until every stream finishes or is cleaned up.
+                    if (streamCleanups.length === 0) releaseAbortControllers();
                 }
 
                 console.log("Original request:", data);

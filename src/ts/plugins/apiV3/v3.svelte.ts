@@ -2,6 +2,7 @@ import { selectedCharacter, characterList, characterSnapshot } from "../../stora
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
+    clearPluginProviders,
     customProviderStore,
     pluginHooks,
     type ChatOutputListener,
@@ -1310,8 +1311,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             console.warn(
                 `[WARN] addProvider is a powerful API that can potentially be unsafe if used incorrectly. addProvider's functionality might be limited or changed in future updates to ensure security. please use other APIs if possible.`,
             );
-            let provs = get(customProviderStore);
-            provs.push(name);
+            const provs = get(customProviderStore);
             (pluginHooks.providers.set(name, async (arg, abortSignal) => {
                 // The request's call context is taken before the first await (the permission prompt).
                 const context = takeHandoff();
@@ -1336,7 +1336,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 }
             }),
                 pluginHooks.providerOptions.set(name, options ?? {}));
-            customProviderStore.set(provs);
+            if (!provs.includes(name)) {
+                customProviderStore.set([...provs, name]);
+            }
 
             const modelData: LLMModel = {
                 id: `pluginmodel:::${name}`,
@@ -1360,7 +1362,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 ],
                 tokenizer: options?.model?.tokenizer ?? LLMTokenizer.Unknown,
             };
-            customV3ProviderMetaStore.push(modelData);
+            const modelIndex = customV3ProviderMetaStore.findIndex((model) => model.id === modelData.id);
+            if (modelIndex === -1) {
+                customV3ProviderMetaStore.push(modelData);
+            } else {
+                customV3ProviderMetaStore[modelIndex] = modelData;
+            }
         },
         addTTSPreprocessor: async (func: TTSHookFn<BeforeTTSContext, BeforeTTSResult>) => {
             registerTTSPreprocessor(func);
@@ -2251,6 +2258,10 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
             await unloadV3Plugin(instance.name);
         }),
     );
+
+    // Unloading instances can still register providers until their sandboxes terminate.
+    clearPluginProviders();
+    customV3ProviderMetaStore.length = 0;
 
     for (const entry of documentEventListeners) {
         document.removeEventListener(entry.type, entry.listener, entry.options);

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { get } from "svelte/store";
 import type { RisuPlugin } from "./plugins.svelte";
 
 type Api = Record<string, (...args: any[]) => any>;
@@ -11,7 +12,7 @@ vi.mock("./apiV3/factory", () => ({
             harness.hosts.push(this);
         }
         run(_iframe: unknown, script: string) {
-            this.result = new Function(script)();
+            this.result = new Function("risuai", script)(this.api);
         }
     },
 }));
@@ -51,8 +52,9 @@ vi.mock("./apiV3/permissionStore", () => ({
 }));
 
 import { loadPlugins } from "./plugins.svelte";
-import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./apiV3/v3.svelte";
-import { pluginHooks } from "./pluginHooks";
+import { customV3ProviderMetaStore, executePluginV3, getV3PluginInstance, loadV3Plugins } from "./apiV3/v3.svelte";
+import { customProviderStore, pluginHooks } from "./pluginHooks";
+import { getModelInfo, getModelList, LLMTokenizer } from "src/ts/model/modellist";
 import { registeredCustomPluginMCPs } from "src/ts/process/mcp/pluginmcp";
 import { callTool, getTools, initializeMCPs, MCPs, callOnlyMCPs } from "src/ts/process/mcp/mcp";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -69,6 +71,23 @@ const plugin = (name: string, version = "old", enabled = true): RisuPlugin => ({
     argMeta: {},
 });
 const host = (name: string) => getV3PluginInstance(name)!.host as unknown as (typeof harness.hosts)[number];
+const providerPlugin = (name: string): RisuPlugin => ({
+    ...plugin(name),
+    script: `risuai.addProvider(${JSON.stringify(name)}, async () => ({ success: true, content: "reply" }));`,
+});
+const expectProviders = (names: string[]) => {
+    const ids = names.map((name) => `pluginmodel:::${name}`).sort();
+    expect(get(customProviderStore).slice().sort()).toEqual([...names].sort());
+    expect(customV3ProviderMetaStore.map((model) => model.id).sort()).toEqual(ids);
+    expect(
+        getModelList({ groupedByProvider: true })
+            .filter((group) => group.providerName === "Plugins")
+            .flatMap((group) => group.models.map((model) => model.id))
+            .sort(),
+    ).toEqual(ids);
+    expect([...pluginHooks.providers.keys()].sort()).toEqual([...names].sort());
+    expect([...pluginHooks.providerOptions.keys()].sort()).toEqual([...names].sort());
+};
 const metadata = { identifier: "plugin:reload", name: "reload", version: "1", description: "reload" };
 const tools = [{ name: "version", description: "version", inputSchema: { type: "object" } }];
 const register = (api: Api, value: string) =>
@@ -99,6 +118,67 @@ afterEach(async () => {
 });
 
 describe("plugin reload lifecycle", () => {
+    it("removes disabled and deleted providers, including registrations made during unload", async () => {
+        const disabled = providerPlugin("disabled-provider");
+        const removed = providerPlugin("removed-provider");
+        settings.plugins = [disabled, removed, providerPlugin("keeper-provider")];
+        await loadPlugins();
+        expectProviders([disabled.name, removed.name, "keeper-provider"]);
+
+        const old = host(removed.name);
+        const duringUnload = vi.fn(() => {
+            expect(old.terminate).not.toHaveBeenCalled();
+            old.api.addProvider("unloading-provider", async () => ({ success: true, content: "too late" }));
+        });
+        old.api.onUnload(duringUnload);
+        settings.plugins = [{ ...disabled, enabled: false }, providerPlugin("keeper-provider")];
+        await loadPlugins();
+
+        expect(duringUnload).toHaveBeenCalledTimes(1);
+        expect(old.terminate).toHaveBeenCalledTimes(1);
+        expectProviders(["keeper-provider"]);
+    });
+
+    it("lists a startup provider exactly once after two reloads", async () => {
+        settings.plugins = [providerPlugin("repeat-provider")];
+        await loadPlugins();
+        expectProviders(["repeat-provider"]);
+        for (let reload = 0; reload < 2; reload++) {
+            const old = host("repeat-provider");
+            await loadPlugins();
+            expect(old.terminate).toHaveBeenCalledTimes(1);
+            expect(host("repeat-provider")).not.toBe(old);
+            expectProviders(["repeat-provider"]);
+        }
+    });
+
+    it("replaces a duplicate provider's options and model metadata", async () => {
+        settings.plugins = [providerPlugin("duplicate-provider")];
+        await loadPlugins();
+        const latestModel = {
+            name: "Latest model",
+            shortName: "Latest",
+            fullName: "Latest model version",
+            internalID: "latest-backend",
+            flags: [],
+            parameters: ["temperature"],
+            tokenizer: LLMTokenizer.Unknown,
+        };
+        const latestOptions = { tokenizer: "latest-tokenizer", model: latestModel };
+        host("duplicate-provider").api.addProvider(
+            "duplicate-provider",
+            async () => ({ success: true, content: "latest reply" }),
+            latestOptions,
+        );
+
+        expectProviders(["duplicate-provider"]);
+        expect(pluginHooks.providerOptions.get("duplicate-provider")).toEqual(latestOptions);
+        expect(customV3ProviderMetaStore).toEqual([
+            expect.objectContaining({ id: "pluginmodel:::duplicate-provider", ...latestModel }),
+        ]);
+        expect(getModelInfo("pluginmodel:::duplicate-provider")).toMatchObject(latestModel);
+    });
+
     it("terminates every old sandbox once and executes both updated scripts", async () => {
         settings.plugins = [plugin("one"), plugin("two")];
         await loadPlugins();
