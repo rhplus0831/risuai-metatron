@@ -13,6 +13,9 @@ Active planning and implementation:
   waits for the `heap-memory-reduction` merge.
 - [Search](search.md): `color-scheme`, a Korean-aware list matcher, settings search with
   deep links, and server-side message search across chats; planned.
+- [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
+  (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
+  planned, slice 6 waits for the `heap-memory-reduction` merge.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
