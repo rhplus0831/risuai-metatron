@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: nothing landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling) landed; nothing else landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -67,20 +67,77 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
     parsed from the Buffer, strings one at a time);
   - a summary by type and constructor, and a diff of two snapshots by node id;
   - shortest retainer paths (BFS from the root over strong edges);
-  - dominator retained sizes (Cooper-Harvey-Kennedy over postorder).
+  - dominator retained sizes (Cooper-Harvey-Kennedy over postorder; a WeakMap value is
+    charged to its key, not its table, as in Chrome DevTools).
 
   Add a Playwright driver (`util/playwright/`) that seeds a fixture shaped like the user's
   data, without their content: 12 modules × 11k `[name, path, "avif"]` assets, two
   characters of ~2 MB with a few hundred `additionalAssets`, and chats whose messages
-  carry `<style>` and `@import`ed web fonts. The driver takes CDP heap snapshots after
-  boot, after the first save cycle, after opening the module asset list and the
-  character asset list, after opening five chats, and back on the home screen. It prints
-  the counts each slice checks: `JSProxy` total and per holder, the duplicate large
-  strings, `FontFace`/`CSSStyleSheet`, and total self size.
+  carry `<style>` and `@import`ed web fonts. The driver takes CDP heap snapshots along a
+  session (boot, the character asset list, five chats, the module asset list, a module
+  edit and its save, home) and prints the counts each slice checks: `JSProxy` total and
+  asset-tuple proxies, large proxies, likely duplicate large strings,
+  `FontFace`/`CSSStyleSheet`, and total self size. Per-holder attribution is
+  `analyze.mjs paths`/`top` on a kept snapshot (`HEAP_OUT`).
 
   _Done_: the driver reproduces the table above in shape (proxies ∝ assets, doubled
   texts), and its baseline numbers are recorded here.
   _Test_: a unit test of the loader and the dominator code on a small handmade snapshot.
+
+  **Baseline** (`node util/playwright/measureHeap.mjs` on `heap-memory-reduction` before
+  any fix; reruns agree to 0.1–1 MB). The driver goes boot → character settings → chats →
+  module editor → home with no reload after boot. A chat's style has 120 inline
+  `@font-face` rules and an `@import` (a `data:` URL, no egress) of 120 more. The big
+  characters' bulk is in lorebook entries; see M0-2 below for why.
+
+  | Step               | JS self MB | Proxies | Asset tuple proxies | Large proxies (n / outermost MB) | Likely duplicate large strings (n / extra MB) | FontFace | Sheets |
+  | ------------------ | ---------- | ------- | ------------------- | -------------------------------- | --------------------------------------------- | -------- | ------ |
+  | `boot`             | 191.3      | 133,765 | 132,600             | 26 / 99.4                        | 3 / 15.6                                      | 0        | 9      |
+  | `character-assets` | 242.9      | 134,151 | 132,600             | 26 / 99.4                        | 2 / 13.1                                      | 0        | 9      |
+  | `chats`            | 249.1      | 134,297 | 132,600             | 26 / 99.4                        | 2 / 13.1                                      | 240      | 10     |
+  | `module-assets`    | 240.4      | 134,622 | 132,600             | 26 / 99.8                        | 1 / 2.4                                       | 0        | 9      |
+  | `module-edit`      | 236.1      | 134,326 | 132,600             | 26 / 99.8                        | 1 / 2.4                                       | 0        | 9      |
+  | `home`             | 236.8      | 134,388 | 132,600             | 25 / 99.3                        | 1 / 2.4                                       | 0        | 9      |
+
+  The same report on the user's snapshots: 150,487 / 153,306 proxies, 147,085 asset
+  tuple proxies, ~110 MB retained by the outermost large proxies, 3 likely duplicate
+  groups costing 34.6 MB.
+
+  A snapshot keeps only a string's first 1,024 characters, so "likely duplicate" means
+  the same size and the same first 1,024 characters. That the user's 31 MB pair is one
+  text rests on the code (`persisted` and `moduleTexts` both hold the modules JSON), not
+  on the snapshot alone.
+
+  What the baseline adds to the findings:
+  - Every asset tuple (12 × 11,000 module + 2 × 300 character) is already a proxy at
+    boot, before any edit or asset list. The full read happens during load, not only in
+    a save cycle (B1 should find which reader does it first).
+  - The doubled texts shrink after the first save cycles (3 → 1 groups), as A1
+    describes: an acknowledged write shares the op's string.
+  - **M0-1.** Opening a character's settings loads a tokenizer BPE model on the main
+    thread: a `merges` table of ~280k arrays, ~49 MB retained, kept to the end (the
+    +52 MB at `character-assets` that `home` still holds). Not sliced yet: a candidate
+    for a worker or an on-demand release (see the chat-open notes on the tokenizer
+    thread).
+  - **M0-2.** The character settings tokenize the description and first message on the
+    main thread. With a 1.7 MB description the "Character" tab click took 17–22 s.
+    Not sliced yet.
+  - **M0-3** (bug). With the character settings open on a closed-chat screen, selecting
+    another character alerts `TypeError: Cannot read properties of undefined (reading
+'replace')`: `CharConfig.svelte` `loadTokenize` passes `currentChat?.note`
+    (undefined without a chat) to `tokenizeAccurate`. The driver goes back to the
+    "Chat" tab first. Belongs in the open bug fixes plan.
+  - Both kinds of font faces, inline and `@import`ed, leave with their chat (240 → 0
+    after the module editor replaced the chat screen). The user's 1,496 faces were
+    either still on screen or come from something the fixture lacks (a remote font
+    service's stylesheet, a background HTML, a shadow root). C1 starts from that.
+
+  M0 leftovers (accepted): the loader/dominator unit test above is not written. The
+  driver's readiness and cleanup checks read `server.exitCode` only, so a server child
+  killed by a signal (`exitCode` null, `signalCode` set) between the listen handshake and
+  a later probe could let another responder on port 6264 pass, and cleanup could wait on
+  an exit already emitted. The fix is one exit flag set at spawn that also checks
+  `signalCode`.
 
 ## Sequence A: save adapter
 
@@ -93,8 +150,8 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   so the projection's string can be freed. Spans stay valid because the texts are equal.
   Check the other `persisted.set` paths (remote apply ~1619/~3279, conflict reads) for
   the same pairing: after an ack the op's text already is the cache's source.
-  _Done_: in M0's scenario, no two large (>1 MB) strings with equal content after boot
-  plus one save cycle. Saves are unchanged, and the field-text cache still hits.
+  _Done_: in M0's scenario, no likely duplicate large (>1 MB) strings at `boot` (before
+  any save cycle) either. Saves are unchanged, and the field-text cache still hits.
   _Test_: `src/ts/storage/tests/resourceSyncModuleCache.test.ts` and
   `resourceSyncFieldCache.test.ts`: after a no-op cycle, `moduleTexts.source` is the
   persisted string (identity, through a test hook); after an edit both caches still
