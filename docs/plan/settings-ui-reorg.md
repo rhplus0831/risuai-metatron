@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 4 (2b48d07a3), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 4 (2b48d07a3), 5 (8c36b722b), 6 (45a79902c), 7 (e6185a5db) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
@@ -37,6 +37,15 @@ block, since `supaMemory.ts` is its only reader (so it shows only for SupaMemory
 `adv.newImgBeta` on Advanced (Performance & media), because it governs character asset images
 in chat, not image generation; and leaves `adv.scrollToActive`/`adv.bookmark` in
 `advanced.other` for slice 5, which creates the Interaction page and removes that section.
+5 puts Interaction in `interactionSettingsData.ts` (sections Input, Message editing, Chat &
+navigation; `interaction.header` its one new id) with its entry between Translation and
+Accessibility (slice 9 regroups them), drops the Advanced `mt-4` of the two items it took from
+Advanced and gives the two it sent to Advanced that spacing, renders
+`acc.applyAdditionalParamsToAll` inside the Additional Params accordion under its table (the
+toggle decides whether that table applies to every model), and gives the accordion a "shared by
+every model preset" note (the moved toggle is a `providers` field). Accessibility's sizes link
+opens Display on its Layout & sizing tab through a one-shot `requestDisplayTab`. It also gave
+`acc.longPressToPopupEditor` the en/ko label it never had.
 
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
@@ -281,6 +290,6 @@ parallel sessions after 3, but 4, 5 and 6 all add to the section test's page lis
 
 ## Continue Remaining Work
 
-Next: slice 5 (it also empties `advanced.other`), then 8; 9 last. Record each landed slice in the Status line with its commit, and the
+Next: slice 8, then 9 last. Record each landed slice in the Status line with its commit, and the
 decisions a slice makes where the plan leaves a choice. When every slice has landed, move this file to the archive as
 `docs/archived-plan/README.md` describes.
