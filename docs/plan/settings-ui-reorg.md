@@ -1,6 +1,6 @@
 # Settings UI Reorganization Plan
 
-Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 4 (2b48d07a3), 5 (8c36b722b), 6 (45a79902c), 7 (e6185a5db), 8 (2f053e5c1) landed. Written 2026-10-19 at `63228a7cf` after comparing the settings
+Status: 1 (4a31a2029), 2 (0b254f208), 3 (18a18de17), 4 (2b48d07a3), 5 (8c36b722b), 6 (45a79902c), 7 (e6185a5db), 8 (2f053e5c1), 9 (292433524) landed; every slice is done. Written 2026-10-19 at `63228a7cf` after comparing the settings
 screen with the sibling fork `/home/codex/risuai-fastify` (its `ff9868006` "reorganize
 settings UX", `eb9ac3ea8` "split interaction and accessibility settings", and the rules in
 its `src/docs/ui-ux-guideline.md` and `src/docs/svelte-settings-ui.md`). One slice is one
@@ -55,6 +55,9 @@ character, so its users reach the key through Voice's link. The Playground embed
 edited `supaMemoryKey` and now links to Memory; it keeps its draft in module state for the round
 trip. Left open (Sol minor): the subtitle tool's Whisper mode uses `openAIKey` with no status or
 link there, as before.
+9 builds the sidebar from `navGroups` in `Settings.svelte` (each group a `role="group"` labelled
+by its `h3`), gives Backups a database-backup icon, renames the menu 0 page heading too (it holds
+only the backup actions), and removes the `files` key, which had no other reader.
 
 The goal is placement, not new behavior: every setting ends on the page of the feature it
 configures, catch-all lists (Advanced, Accessibility, Display's Others tab, Other Bots)
@@ -299,6 +302,6 @@ parallel sessions after 3, but 4, 5 and 6 all add to the section test's page lis
 
 ## Continue Remaining Work
 
-Next: slice 9, the last. Record each landed slice in the Status line with its commit, and the
+Every slice has landed; the plan moves to the archive. Record each landed slice in the Status line with its commit, and the
 decisions a slice makes where the plan leaves a choice. When every slice has landed, move this file to the archive as
 `docs/archived-plan/README.md` describes.
