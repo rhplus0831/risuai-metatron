@@ -167,6 +167,18 @@ const ackedRevisions = new Map<string, string>();
  */
 const absentChats = new Set<string>();
 
+/**
+ * Per character id: the resends (`Pending.resend`) of its chats that this tab's deletion of the
+ * character settled while their groups may have landed (open-bug-fixes slice A3), by chat key. The
+ * deletion removes those chats once the server acknowledges it; until then a same-id re-add restores
+ * them (`installCharacterChats`), so it reconciles the chats with their group ids and payloads (6b
+ * replay recognition) instead of forgetting a landed create. Dropped when the server shows the
+ * character gone (`forgetCharacter`), when its deletion is acknowledged, or when an authoritative
+ * chat list of the character is accepted (`acceptRemoteCollection`). A create resend is not kept
+ * only when it is not in doubt and this client holds no revision of the chat (`parkResends`).
+ */
+const parkedResends = new Map<string, Map<string, { chatId: string; resend: Resend }>>();
+
 /** Whether the server's chat order holds the chat as far as this client knows (`absentChats`). */
 function serverHolds(key: string): boolean {
     return chatRevisions.has(key) && !absentChats.has(key);
@@ -1818,10 +1830,15 @@ export function trackUnloadWork(work: ChatWork) {
 /**
  * Records the answer to an unload request the page survived to receive (`results` in group order;
  * null: the request failed or was refused, and its ops go back in front of the queue). An answer is
- * an ordinary acknowledgement.
+ * an ordinary acknowledgement while the group is still the chat's work in flight. An answer to a
+ * group that left it meanwhile changes nothing: its character the server confirmed gone
+ * (`retireCharacterGroups`), or its chat's work an authoritative list discarded.
  */
 export function settleUnloadWork(work: ChatWork, results: readonly ChatGroupResult[] | null) {
     work.groups.forEach((group, index) => {
+        if (inflight.get(group.key)?.groupId !== group.groupId) {
+            return;
+        }
         const taken = { groups: [group], orders: [] };
         if (results?.[index]) {
             ackChatWork(taken, [results[index]], []);
@@ -2888,6 +2905,7 @@ export function seedChats(
     chatRevisions.clear();
     ackedRevisions.clear();
     absentChats.clear();
+    parkedResends.clear();
     orderRevisions.clear();
     staleChats.clear();
     noticedChats.clear();
@@ -3119,7 +3137,8 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
  * stays an update, so the save loop will not adopt its replacement chats. The revisions stay held
  * until the server acknowledges the old character's deletion (`ackCharacterDelete`), so a re-add
  * after a deletion that failed or was refused reconciles the same way. Unsent work is superseded,
- * but an unacknowledged create keeps its payload for replay before the replacement or deletion.
+ * but an unacknowledged create keeps its payload for replay before the replacement or deletion, also
+ * one the deletion's collection settled (`parkedResends`, restored here first).
  * The caller has finished every check that can refuse the character first, and drops the held chats
  * (`forgetCharacterChats`) if insertion throws; the save loop then forgets the absent owner's work.
  *
@@ -3129,6 +3148,7 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
  */
 export function installCharacterChats(chaId: string, chats: Chat[], character: { firstMsgIndex?: unknown }) {
     const prefix = `${chaId}\u0000`;
+    restoreParkedResends(chaId);
     const known = new Set(
         [
             ...chatRevisions.keys(),
@@ -3188,6 +3208,62 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
     syncSelection(chaId);
     if (reconcile) {
         notifyWork();
+    }
+}
+
+/**
+ * Puts the resends a deletion of the character parked (`parkedResends`) back in front of its chats'
+ * work, so the re-add reconciles those chats; a chat that has a resend of its own keeps that one.
+ */
+function restoreParkedResends(chaId: string) {
+    const parked = parkedResends.get(chaId);
+    parkedResends.delete(chaId);
+    for (const [key, { chatId, resend }] of parked ?? []) {
+        const entry = pending.get(key);
+        if (!entry) {
+            pending.set(key, { characterId: chaId, chatId, create: false, resend, ops: [], seq: 0 });
+        } else if (!entry.resend) {
+            entry.resend = resend;
+        }
+    }
+}
+
+/**
+ * Keeps the resends of a character's chats whose group may have landed (`parkedResends`) before its
+ * deletion settles them. A create resend that is not in doubt (no attempt of it can have landed; a
+ * rollback keeps an earlier attempt's doubt) of a chat this client holds no revision of is not kept.
+ */
+function parkResends(chaId: string) {
+    const prefix = `${chaId}\u0000`;
+    const parked = parkedResends.get(chaId) ?? new Map<string, { chatId: string; resend: Resend }>();
+    for (const [key, entry] of pending) {
+        if (!key.startsWith(prefix) || !entry.resend) {
+            continue;
+        }
+        if (isCreateResend(entry) && !entry.resend.inDoubt && !chatRevisions.has(key)) {
+            continue;
+        }
+        parked.set(key, { chatId: entry.chatId, resend: entry.resend });
+    }
+    if (parked.size > 0) {
+        parkedResends.set(chaId, parked);
+    }
+}
+
+/**
+ * The server confirmed a character gone (its deletion acknowledged, or another writer's): its chats'
+ * groups still in flight (an unload request) are of the deleted chats. Their obligation is settled
+ * now and they leave `inflight`, so their late answer is ignored (`settleUnloadWork`): it neither
+ * holds a deleted chat's revision nor requeues work for it, and a chat of a character re-added under
+ * the id meanwhile is not held back by them.
+ */
+function retireCharacterGroups(chaId: string) {
+    const prefix = `${chaId}\u0000`;
+    for (const [key, group] of [...inflight]) {
+        if (key.startsWith(prefix)) {
+            settleKey(key, group.seq);
+            inflight.delete(key);
+        }
     }
 }
 
@@ -3260,10 +3336,13 @@ export function adoptCharacter(chaId: string) {
  * `discard` (another writer deleted it), the chats' unsent work and a queued reorder count as
  * discarded (the flush and `MutationScope` reports, `markDiscarded`); returns whether there was any.
  * A queued delete the deletion fulfils is settled. This tab's own deletion settles them all instead
- * (`ackCharacterDelete`, once the server acknowledged it).
+ * (`ackCharacterDelete`, once the server acknowledged it). Groups still in flight are retired
+ * (`retireCharacterGroups`) and the parked resends dropped: the chats are gone on the server.
  */
 export function forgetCharacter(chaId: string, options: { discard?: boolean } = {}): boolean {
     const discardedWork = dropCharacterWork(chaId, options.discard === true);
+    retireCharacterGroups(chaId);
+    parkedResends.delete(chaId);
     forgetCharacterRevisions(chaId);
     return discardedWork;
 }
@@ -3271,11 +3350,16 @@ export function forgetCharacter(chaId: string, options: { discard?: boolean } = 
 /**
  * Drops a character's chat work and local chat state: its refresh marks and feed locks, its chats'
  * queued work and queued reorder (settled, or with `discard` reported as discarded), its held chats,
- * selection, and loads. What the server holds (`forgetCharacterRevisions`) is kept.
+ * selection, and loads. What the server holds (`forgetCharacterRevisions`) is kept, and so are the
+ * resends that may have landed (`parkResends`) unless another writer deleted the character
+ * (`discard`).
  */
 function dropCharacterWork(chaId: string, discard: boolean): boolean {
     const prefix = `${chaId}\u0000`;
     let discardedWork = false;
+    if (!discard) {
+        parkResends(chaId);
+    }
     releaseFeedLocks(prefix);
     for (const key of [...staleChats, ...deferred, ...noticedChats.keys()]) {
         if (key.startsWith(prefix)) {
@@ -3333,7 +3417,8 @@ function forgetCharacterRevisions(chaId: string) {
  * the server acknowledges the deletion (`ackCharacterDelete`). A deletion that fails, is refused for
  * a generating message, or is still in flight when the same id is added again leaves the server with
  * the character's chats, and the re-added character's chats are reconciled against them by chat id
- * (`installCharacterChats`) as for a re-add before the deletion was collected.
+ * (`installCharacterChats`) as for a re-add before the deletion was collected; the resends settled
+ * here are kept for that (`parkedResends`).
  */
 export function settleCharacterDelete(chaId: string) {
     dropCharacterWork(chaId, false);
@@ -3344,7 +3429,8 @@ export function settleCharacterDelete(chaId: string) {
  * it): its chat state is forgotten. A character added again under the id while the deletion was in
  * flight keeps its chats: the reconciliation queued against the deleted chats is replaced by a create
  * of every chat in mirror order, which goes with the character's own create (the save loop's next
- * cycle sends it, its saved record being gone).
+ * cycle sends it, its saved record being gone). Groups of the deleted chats still in flight are
+ * retired (`retireCharacterGroups`): their late answer changes nothing.
  */
 export function ackCharacterDelete(chaId: string) {
     const prefix = `${chaId}\u0000`;
@@ -3387,6 +3473,9 @@ export function ackCharacterDelete(chaId: string) {
         settleOrder(chaId, orderSeq);
         pendingOrders.delete(chaId);
     }
+    parkedResends.delete(chaId);
+    // After the conversion above (whose sequences cover these groups'), before the creates.
+    retireCharacterGroups(chaId);
     adoptCharacter(chaId);
     notifyWork();
 }
@@ -4720,6 +4809,8 @@ export function acceptRemoteCollection(collection: {
     if (!collection.order || !character) {
         return discardedWork;
     }
+    // The server's list supersedes what a deletion of the character kept for a re-add.
+    parkedResends.delete(chaId);
     orderRevisions.set(chaId, collection.order.revision);
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
     const localIds = memberIds(chaId);
