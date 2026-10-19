@@ -48,6 +48,7 @@ vi.mock("src/ts/stores.svelte", async () => {
 });
 
 import { language } from "src/lang";
+import { summarize } from "src/ts/process/memory/hypav3";
 import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { sendingChatRef } from "src/ts/process/index.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
@@ -130,6 +131,7 @@ const storedSummaries = (ref: ChatRef) => (findChat(ref)?.hypaV3Data as any)?.su
 beforeEach(() => {
     mocks.alertError.mockClear();
     mocks.alertNormalWait.mockClear();
+    vi.mocked(summarize).mockReset();
     chatWork.mockClear();
     install();
     setChatWorkListener(chatWork);
@@ -237,5 +239,136 @@ describe("HypaV3Modal's write fence", () => {
         open(withoutData);
         expect((findChat(withoutData)?.hypaV3Data as any)?.summaries).toEqual([]);
         expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+});
+
+// Slice C2 of `docs/plan/open-bug-fixes.md`: a bulk resummary resolves its selection by summary
+// identity (`summaryKey`) in the copy at Retry and Apply, so a change of the chat that replaces the copy
+// during the summarization await merges the selected summaries or is refused, never others.
+describe("HypaV3Modal's bulk resummary", () => {
+    const three = () => [...summaries(), { text: "three", chatMemos: ["m2"], isImportant: false }];
+
+    // Two summaries without message ids share one identity (`summaryKey` "[]"), as legacy ones can.
+    const sharedKey = () => [
+        { text: "one", chatMemos: [], isImportant: false },
+        { text: "two", chatMemos: [], isImportant: false },
+        { text: "three", chatMemos: ["m2"], isImportant: false },
+    ];
+
+    async function resummarizeFirstAndLast(initial = three()) {
+        setChatMeta(withData, { hypaV3Data: { summaries: initial, categories: [] } });
+        const modal = open(withData);
+        const button = (match: (button: HTMLButtonElement) => boolean) =>
+            [...modal.target.querySelectorAll("button")].find(match)!;
+        button((b) => b.querySelector(".lucide-square-pen") !== null).click();
+        flushSync();
+        const boxes = modal.target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+        expect(boxes).toHaveLength(3);
+        boxes[0].click();
+        boxes[2].click();
+        flushSync();
+
+        let finish!: (text: string) => void;
+        vi.mocked(summarize).mockImplementation(() => new Promise<string>((resolve) => (finish = resolve)));
+        button((b) => b.textContent?.trim() === language.hypaV3Modal.reSummarize).click();
+        flushSync();
+        expect(vi.mocked(summarize).mock.calls[0][0].map((m: any) => m.content)).toEqual(["one", "three"]);
+        return {
+            modal,
+            finish: async (text: string) => {
+                finish(text);
+                await Promise.resolve();
+                await Promise.resolve();
+                flushSync();
+            },
+            apply: () => {
+                button((b) => b.title === language.apply).click();
+                flushSync();
+            },
+            retry: () => {
+                button((b) => b.title === language.hypaV3Modal.retry).click();
+                flushSync();
+            },
+        };
+    }
+
+    it("merges the selected summaries after a write shifted them during the summarization", async () => {
+        const run = await resummarizeFirstAndLast();
+        // A memory write lands meanwhile: a summary placed before the selected ones replaces the copy.
+        setChatMeta(withData, {
+            hypaV3Data: {
+                summaries: [{ text: "zero", chatMemos: ["m9"], isImportant: false }, ...three()],
+                categories: [],
+            },
+        });
+        flushSync();
+        await run.finish("merged");
+
+        run.apply();
+        expect(mocks.alertError).not.toHaveBeenCalled();
+        const stored = (findChat(withData)?.hypaV3Data as any).summaries;
+        expect(stored.map((s: any) => s.text)).toEqual(["zero", "merged", "two"]);
+        expect(stored[1].chatMemos).toEqual(["m0", "m2"]);
+    });
+
+    it("retries with the selected summaries' texts after the copy was replaced", async () => {
+        const run = await resummarizeFirstAndLast();
+        await run.finish("first");
+        setChatMeta(withData, {
+            hypaV3Data: {
+                summaries: [{ text: "zero", chatMemos: ["m9"], isImportant: false }, ...three()],
+                categories: [],
+            },
+        });
+        flushSync();
+
+        vi.mocked(summarize).mockResolvedValue("second");
+        run.retry();
+        expect(vi.mocked(summarize).mock.calls[1][0].map((m: any) => m.content)).toEqual(["one", "three"]);
+        await Promise.resolve();
+        await Promise.resolve();
+        flushSync();
+        run.apply();
+        expect(storedSummaries(withData)).toEqual(["zero", "second", "two"]);
+    });
+
+    it("refuses with the notice when a selected summary is gone, and writes nothing", async () => {
+        const run = await resummarizeFirstAndLast();
+        // A write removes a selected summary meanwhile (another tab's delete, a job's orphan cleanup).
+        setChatMeta(withData, { hypaV3Data: { summaries: summaries(), categories: [] } });
+        flushSync();
+        await run.finish("merged");
+        chatWork.mockClear();
+
+        run.apply();
+        expect(mocks.alertError).toHaveBeenCalledWith(language.hypaV3Modal.bulkResummaryTargetsGone);
+        expect(storedSummaries(withData)).toEqual(["one", "two"]);
+        expect(chatWork).not.toHaveBeenCalled();
+
+        mocks.alertError.mockClear();
+        run.retry();
+        expect(mocks.alertError).toHaveBeenCalledWith(language.hypaV3Modal.bulkResummaryTargetsGone);
+        expect(vi.mocked(summarize)).toHaveBeenCalledTimes(1);
+    });
+
+    it("merges summaries that share an identity with another while the copy is not replaced", async () => {
+        const run = await resummarizeFirstAndLast(sharedKey());
+        await run.finish("merged");
+
+        run.apply();
+        expect(mocks.alertError).not.toHaveBeenCalled();
+        expect(storedSummaries(withData)).toEqual(["merged", "two"]);
+    });
+
+    it("refuses a target whose identity was shared once the copy is replaced, rather than merging the other one", async () => {
+        const run = await resummarizeFirstAndLast(sharedKey());
+        // The selected "one" is removed meanwhile; the unselected "two" now has its identity alone.
+        setChatMeta(withData, { hypaV3Data: { summaries: sharedKey().slice(1), categories: [] } });
+        flushSync();
+        await run.finish("merged");
+
+        run.apply();
+        expect(mocks.alertError).toHaveBeenCalledWith(language.hypaV3Modal.bulkResummaryTargetsGone);
+        expect(storedSummaries(withData)).toEqual(["two", "three"]);
     });
 });

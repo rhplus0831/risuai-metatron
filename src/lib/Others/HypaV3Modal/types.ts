@@ -1,3 +1,5 @@
+import type { SerializableSummary } from "../../../../shared/memory.ts";
+
 export interface SummaryItemState {
     originalRef: HTMLTextAreaElement;
     translationRef: HTMLTextAreaElement;
@@ -37,10 +39,23 @@ export interface ChatMemoSearchResult {
     memoIndex: number;
 }
 
+/** A summary a bulk resummary merges, as last resolved in the modal's copy. */
+export interface BulkResummaryTarget {
+    index: number;
+    /** The copy's object (gone from it once the copy is replaced). */
+    summary: SerializableSummary;
+    /** Its identity (`summaryKey`), and whether no other summary had it at the selection. */
+    key: string;
+    unique: boolean;
+}
+
 export interface BulkResummaryState {
     isProcessing: boolean;
     result: string | null;
-    selectedIndices: number[];
+    /** The chat the selection was made in (`chatStatusKey`). */
+    chatKey: string | null;
+    /** In index order. Resolved again in the current copy before every use (`resolveBulkTargets`). */
+    targets: BulkResummaryTarget[];
     mergedChatMemos: string[];
     isTranslating: boolean;
     translation: string | null;

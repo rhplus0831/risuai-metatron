@@ -22,6 +22,7 @@
         SearchState,
         SearchResult,
         BulkResummaryState,
+        BulkResummaryTarget,
         CategoryManagerState,
         TagManagerState,
         BulkEditState,
@@ -37,6 +38,7 @@
     import { sendingChatRef } from "src/ts/process/index.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
+    import { summaryKey } from "../../../shared/memory.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
@@ -293,19 +295,60 @@
         return results;
     }
 
+    /**
+     * The summaries a bulk resummary merges, found in the current copy (in index order): each by
+     * object while the copy still holds it, else, when its identity (`summaryKey`) was unique at the
+     * selection, the one summary that has it now. Null when the chat is no longer the selected one, or
+     * a summary is gone or ambiguous: the copy can be replaced during the summarization await (a job's
+     * memory write, a change from another tab), and the indices captured before it would name other
+     * summaries.
+     */
+    function resolveBulkTargets(state: BulkResummaryState): BulkResummaryTarget[] | null {
+        const ref = currentChatRef();
+        if (!ref || chatStatusKey(ref) !== state.chatKey) {
+            return null;
+        }
+        const summaries = hypaV3Data.summaries;
+        const keys = summaries.map((summary) => summaryKey(summary));
+        const resolved: BulkResummaryTarget[] = [];
+        for (const target of state.targets) {
+            let found = summaries.indexOf(target.summary);
+            if (found === -1 && target.unique) {
+                const matches = keys.flatMap((other, i) => (other === target.key ? [i] : []));
+                found = matches.length === 1 ? matches[0] : -1;
+            }
+            if (found === -1 || resolved.some((other) => other.index === found)) {
+                return null;
+            }
+            resolved.push({ ...target, index: found, summary: summaries[found] });
+        }
+        return resolved.sort((a, b) => a.index - b.index);
+    }
+
     async function resummarizeBulkSelected() {
         if (bulkEditState.selectedSummaries.size < 2) return;
 
         const sortedIndices = Array.from(bulkEditState.selectedSummaries).sort((a, b) => a - b);
+        if (sortedIndices.some((index) => !hypaV3Data.summaries[index])) return;
+        // The selection by object and identity, resolved again in the copy at Apply and Retry.
+        const keys = hypaV3Data.summaries.map((summary) => summaryKey(summary));
+        const targets: BulkResummaryTarget[] = sortedIndices.map((index) => ({
+            index,
+            summary: hypaV3Data.summaries[index],
+            key: keys[index],
+            unique: keys.filter((key) => key === keys[index]).length === 1,
+        }));
         // The open chat when the action began: the summary request is that chat's, whatever is selected when it runs.
         const summarizeRef = currentChatRef();
         const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
+        const chatKey = summarizeRef ? chatStatusKey(summarizeRef) : null;
 
         try {
             bulkResummaryState = {
                 isProcessing: true,
                 result: null,
-                selectedIndices: sortedIndices,
+                chatKey,
+                targets,
                 mergedChatMemos: [],
                 isTranslating: false,
                 translation: null,
@@ -331,7 +374,8 @@
             bulkResummaryState = {
                 isProcessing: false,
                 result: resummary,
-                selectedIndices: sortedIndices,
+                chatKey,
+                targets,
                 mergedChatMemos: uniqueChatMemos,
                 isTranslating: false,
                 translation: null,
@@ -346,8 +390,12 @@
     async function applyBulkResummary() {
         if (!bulkResummaryState || !bulkResummaryState.result) return;
 
-        const sortedIndices = bulkResummaryState.selectedIndices;
-        const minIndex = sortedIndices[0];
+        const targets = resolveBulkTargets(bulkResummaryState);
+        if (!targets) {
+            alertError(language.hypaV3Modal.bulkResummaryTargetsGone);
+            return;
+        }
+        const minIndex = targets[0].index;
 
         hypaV3Data.summaries[minIndex] = {
             text: bulkResummaryState.result,
@@ -357,8 +405,8 @@
             tags: hypaV3Data.summaries[minIndex].tags,
         };
 
-        for (let i = sortedIndices.length - 1; i > 0; i--) {
-            hypaV3Data.summaries.splice(sortedIndices[i], 1);
+        for (let i = targets.length - 1; i > 0; i--) {
+            hypaV3Data.summaries.splice(targets[i].index, 1);
         }
 
         uiState.collapsedSummaries = new Set(hypaV3Data.summaries.map((_, index) => index));
@@ -370,7 +418,11 @@
     async function rerollBulkResummary() {
         if (!bulkResummaryState) return;
 
-        const sortedIndices = bulkResummaryState.selectedIndices;
+        const targets = resolveBulkTargets(bulkResummaryState);
+        if (!targets) {
+            alertError(language.hypaV3Modal.bulkResummaryTargetsGone);
+            return;
+        }
         const summarizeRef = currentChatRef();
         const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
 
@@ -379,11 +431,12 @@
                 ...bulkResummaryState,
                 isProcessing: true,
                 result: null,
+                targets,
                 isTranslating: false,
                 translation: null,
             };
 
-            const selectedSummaryTexts = sortedIndices.map((index) => hypaV3Data.summaries[index].text);
+            const selectedSummaryTexts = targets.map(({ index }) => hypaV3Data.summaries[index].text);
 
             const oaiMessages: OpenAIChat[] = selectedSummaryTexts.map((text) => ({
                 role: "user",

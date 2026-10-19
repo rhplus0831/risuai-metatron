@@ -1676,6 +1676,8 @@ export const languageEnglish = {
         reSummarize: "Re-summarize",
         reSummarizing: "Re-summarizing...",
         reSummarizeResult: "Re-summarization result",
+        bulkResummaryTargetsGone:
+            "The selected summaries changed while re-summarizing (or another chat is open). Nothing was merged; close the result and select them again.",
         retry: "Retry",
         translate: "Translate",
         tag: "Tag",
