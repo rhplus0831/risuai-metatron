@@ -21,6 +21,7 @@ git show 154711858:docs/plan/chat-toggles-and-presets.md
 git show 1bb0c8eee:docs/plan/large-asset-import.md
 git show f5895b925:docs/plan/sidebar-chat-status.md
 git show 46eeee597:docs/plan/settings-ui-reorg.md
+git show cfe072e4e:docs/plan/open-bug-fixes.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -43,6 +44,7 @@ it is not a current architecture guide.
 | Sidebar Chat Status                 | `f5895b925`: `docs/plan/sidebar-chat-status.md`                           | [UI/theming](../structure/ui-theming.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                           |
 | Data-Loss Under Concurrency         | `01ceb829b`: `docs/plan/data-loss-concurrency.md`                         | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md) |
 | Settings UI Reorganization          | `46eeee597`: `docs/plan/settings-ui-reorg.md`                             | [settings](../structure/settings-i18n.md), [app shell/routes](../structure/app-shell.md), [media/translation](../structure/media-aux.md), [LLM requests](../structure/llm-requests.md)                                                                                                                 |
+| Open Bug Fixes                      | `cfe072e4e`: `docs/plan/open-bug-fixes.md`                                | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [browser notifications](../structure/global-api.md), [media](../structure/media-aux.md) |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -62,6 +64,13 @@ commit and its "Decisions made by landed slices" paragraph records the choices t
 bound and `chatGroups` table, 7b's add-only order repair, 6d's fail-closed barrier). Every slice
 was verified by tests only; the browser checks the slices listed (the reload notice panel,
 two-tab delete/edit races, a network drop and reconnect, concurrent order edits) were not run.
+Open Bug Fixes (the reachable bugs the project memory had recorded, rechecked at `5c3665fdb`)
+landed all 20 slices on 2026-10-19 through the plan runner, one cherry-picked commit each; the
+archived Status line lists every slice's commit (A1 `8956cac09` through I1 `2d2dc8a7d`). Every
+slice was verified by tests and a Sol or Fable review; only C7 (lore, emotion, and asset row
+bindings) was driven in a real browser. The final checks on `metatron` passed (`pnpm check`,
+`test:agent` 5385 passed); the slow-tagged `server/src/tests/importPngCaps.test.ts:52` failed
+before the run and still does, and is not the plan's.
 
 ## Server-Owned Data Chronology
 
@@ -153,6 +162,25 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - The recovery badge requires a manual check with the server killed mid-stream;
     this archive did not run that check.
   - The browser check's `--base` production mode was implemented but not exercised.
+- Open bug fixes:
+  - Not checked in a real browser: P1 (a browser unsubscribe failure, the banner's failure
+    alert, a notification click from an uncontrolled window), M1 (Stop during VITS playback),
+    C8 (a preset switch, a tab return, the credential link's focus, the Thanks page offline),
+    S2 (a real `@hono/node-server` socket abort mid-download), C5 (the `.risum` drop).
+  - A3: with the parent character's create answer also lost, a same-id re-add now fails loudly
+    (the flush rejects) instead of silently, but the replacement's chats still do not reach
+    the server; the cause is `recoverFromConflict`'s `sameJson` branch in `resourceSync.svelte.ts`.
+  - C5: a `#share_module` whose save a conflict discarded still has its pending share cleared
+    (a retry would add the module twice).
+  - C1: the fixed `exportLoreBook("sglobal")` has no caller in the current UI
+    (`LoreBookSetting` is never mounted with `globalMode`).
+  - C8: `SettingSelect.svelte` still writes its fallback when its context is rebuilt (a Known
+    Hazard in `settings-i18n.md`); the de/es/vi streaming help text still claims the 0.125 s
+    throttle.
+  - C2, P1, I1 added strings to `en.ts` (and `ko.ts` where translated); the other locales
+    show them in English.
+  - Owner decision left open: lore regex keys containing a comma are split on every comma
+    (`shared/lore/activation.ts`); tests pin it.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 
