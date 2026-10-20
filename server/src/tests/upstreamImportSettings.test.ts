@@ -220,16 +220,20 @@ function fixture(): Record<string, unknown> {
     };
 }
 
-const S3_KINDS: ResourceKindName[] = [
+/** The S3 kinds (materialized singletons) and the S4 records always emitted (`pluginStorage` only when upstream had one). */
+const EMITTED_KINDS: ResourceKindName[] = [
     ...Object.values(SECTION_KIND),
     ...Object.values(COLLECTION_KIND),
     RESOURCE_KIND.presets,
+    RESOURCE_KIND.modules,
+    RESOURCE_KIND.plugins,
 ];
+const CREATED_KINDS: ResourceKindName[] = [RESOURCE_KIND.modules, RESOURCE_KIND.plugins, RESOURCE_KIND.pluginStorage];
 
 describe("convertUpstreamDatabase: records", () => {
-    it("emits every S3 kind once as a serialized fixed point of its normalizer, and nothing else", () => {
+    it("emits every expected kind once as a serialized fixed point of its normalizer, and nothing else", () => {
         const out = convertUpstreamDatabase(fixture());
-        expect(out.resources.map((resource) => resource.kind).sort()).toEqual([...S3_KINDS].sort());
+        expect(out.resources.map((resource) => resource.kind).sort()).toEqual([...EMITTED_KINDS].sort());
         for (const resource of out.resources) {
             expect(resource.id).toBe("main");
             const kind = kinds.get(resource.kind)!;
@@ -249,15 +253,15 @@ describe("convertUpstreamDatabase: records", () => {
         expect("account" in db && db.account === undefined).toBe(true);
     });
 
-    it("is accepted by a fresh staged store at each materialized record's current revision", () => {
+    it("is accepted by a fresh staged store: materialized records at their current revision, the others created", () => {
         const out = convertUpstreamDatabase(fixture());
         const store = createResourceStore({ file: ":memory:", kinds });
         try {
             for (const resource of out.resources) {
                 const kind = kinds.get(resource.kind)!;
                 const current = store.get(kind, resource.id);
-                expect(current, resource.kind).not.toBeNull();
-                store.put(kind, resource.id, resource.data, current!.revision);
+                expect(current === null, resource.kind).toBe(CREATED_KINDS.includes(resource.kind));
+                store.put(kind, resource.id, resource.data, current?.revision ?? null);
                 expect(store.get(kind, resource.id)!.data, resource.kind).toEqual(resource.data);
             }
         } finally {
@@ -280,6 +284,12 @@ describe("convertUpstreamDatabase: records", () => {
             credentials: credentialsOf(out).length,
             personas: 2,
             customModels: 1,
+            characters: 0,
+            groups: 0,
+            chats: 0,
+            messages: 0,
+            modules: 0,
+            plugins: 0,
         });
         expect(profilesOf(out)[0].id).toBe(DEFAULT_MODEL_PROFILE_ID);
     });
@@ -733,12 +743,15 @@ describe("convertUpstreamDatabase: root migrations and the report", () => {
         expect(excluded(out, "loadouts")).toEqual({ code: "loadouts", count: 1, examples: ["loadouts"] });
         expect(excluded(out, "invalid-setting")).toBeUndefined();
 
+        // The fixture's `enabledModules: ["mod"]` names no module (S4); its `characterOrder: ["c1"]` is dropped silently.
         const quiet = convertUpstreamDatabase(fixture());
         expect(quiet.report.excluded.map((item) => item.code).sort()).toEqual([
             "loadouts",
+            "module-reference-missing",
             "removed-feature",
             "unknown-setting",
         ]);
+        expect(excluded(quiet, "module-reference-missing")?.examples).toEqual(["mod"]);
         expect(excluded(quiet, "removed-feature")?.examples).toEqual(["fullScreen"]);
     });
 

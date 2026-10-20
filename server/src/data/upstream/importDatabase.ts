@@ -1,3 +1,4 @@
+import type { ChatGroup } from "../../../../shared/chats.ts";
 import type { Credential, CredentialType, ModelPreset } from "../../../../shared/database.ts";
 import { newId } from "../../../../shared/ids.ts";
 import { LLMFormat } from "../../../../shared/llm.ts";
@@ -38,41 +39,81 @@ import {
     type UpstreamImportSelection,
 } from "../../../../shared/upstreamBackup.ts";
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
-import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../kinds.ts";
-import { ResourceValidationError, serialize } from "../resourceStore.ts";
+import { ResourceValidationError } from "../resourceStore.ts";
+import type { ColdRecordResult } from "./archive.ts";
+import { collectAssetReferences } from "./assetReferences.ts";
+import { checkClean, convertCharacters } from "./importCharacters.ts";
+import {
+    convertCharacterOrder,
+    convertEnabledModules,
+    convertModules,
+    convertPluginStorage,
+    convertPlugins,
+} from "./importCollections.ts";
+import { kinds, normalizeRecord, storedForm, storeNormalize, tryNormalize } from "./importRecords.ts";
 
 /**
  * The upstream RisuAI flat `Database` → metatron resources converter (`docs/plan/upstream-bin-compat.md`
- * S3: settings, presets, personas, secrets; S4 adds characters, chats, modules, plugins, and assets).
- * It works on the plain object `database.risudat` decodes to and does no I/O. Upstream behavior is
- * read from RisuAI `669b12ce` (`src/ts/storage/database.svelte.ts` `setDatabase`/`setPreset`,
- * `src/ts/bootstrap.ts` `checkNewFormat`); "U" below is that `src/ts/`.
+ * S3: settings, presets, personas, secrets; S4: characters, groups, chats, cold storage, modules,
+ * plugins, plugin storage, assets). It works on the plain object `database.risudat` decodes to and
+ * does no I/O: the cold-storage payloads and the archive's asset keys come in as options. Upstream
+ * behavior is read from RisuAI `669b12ce` (`src/ts/storage/database.svelte.ts` `setDatabase`/`setPreset`,
+ * `src/ts/bootstrap.ts` `checkNewFormat`); "U" below is that `src/ts/`. Characters and chats are
+ * `importCharacters.ts`, the collections that name them and the module and plugin records
+ * `importCollections.ts`, the asset walk `assetReferences.ts`.
  *
  * Every record's data is what its kind's own normalizer (`DEFAULT_RESOURCE_KINDS`) returns for the
  * stored form of the converted input, checked with the store's `serialize`, so a staged store
  * accepts it and its startup pass leaves it unchanged. A value the converter cannot make valid is
- * dropped (a list entry) or replaced by the kind's fresh-boot value (a record) and reported; only a
- * database that is not an object fails the conversion. The input is never mutated.
+ * dropped (a list entry, a character, a chat, a message) or replaced by the kind's fresh-boot value (a
+ * record) and reported; only a database that is not an object fails the conversion. The input is
+ * never mutated. An `options.report` is single-use: pass it to only one conversion.
  *
- * Hand-off: every kind emitted here is a materialized singleton (`SINGLETON_RESOURCE_ID`), so a fresh
- * staged store already holds a record for each; the writer updates those at their current revision.
- * Each `(kind, id)` appears once. `characterOrder` and `enabledModules` are emitted as upstream
- * stored them; S4 replaces them after dropping ids of characters and modules it did not import.
+ * Hand-off (S5 writes the output into a fresh `createResourceStore`, resolving each kind name to the
+ * store's registered kind):
+ * 1. `resources`: singletons (`SINGLETON_RESOURCE_ID`), each `(kind, id)` once. The S3 kinds are
+ *    materialized, so the fresh store holds them and they are updated at their current revision;
+ *    `modules` and `plugins` (always emitted) and `pluginStorage` (when upstream had one) are not, and
+ *    are created: `store.put(kind, id, data, store.get(kind, id)?.revision ?? null)` covers both.
+ * 2. `characters`: `store.put(characters, id, data, null)` each, in order; a character's create also
+ *    creates its empty chat order.
+ * 3. `chats`: ready `ChatGroup`s, one per chat, each `{ characterId, chatId, baseRevision: null,
+ *    ops: [{ op: "create", chat }] }`, with every message's `chatId` valid and unique in its chat (the
+ *    store renames nothing). Send them with `store.applyChanges({ chats })` in batches, in array order
+ *    and after step 2: a create without `index` appends, so each character's chat order is upstream's.
  */
 
 export type UpstreamResource = { kind: ResourceKindName; id: string; data: unknown };
 
 export type UpstreamConversion = {
     resources: UpstreamResource[];
+    characters: { id: string; data: Record<string, unknown> }[];
+    chats: ChatGroup[];
     selection: UpstreamImportSelection;
     report: UpstreamImportReport;
 };
 
+export type UpstreamConversionOptions = {
+    /** Single-use report, populated by this conversion; do not reuse it for another conversion. */
+    report?: UpstreamImportReport;
+    /**
+     * The archive's cold-storage payloads by key (the UUID its record name holds), as S2's
+     * `readColdEntry` returns them. A pointer whose key is absent, or whose result is not `ok`, is
+     * reported `cold-missing` (D3).
+     */
+    cold?: ReadonlyMap<string, ColdRecordResult>;
+    /**
+     * The `assets/<name>` keys the archive holds (S2's `planUpstreamArchive` assets). Without it,
+     * no asset is classified missing (`report.missingAssets` stays empty).
+     */
+    assetKeys?: ReadonlySet<string>;
+    /** The `creation_date` of a character without one (default: `Date.now()`). */
+    now?: number;
+};
+
 type Root = Record<string, unknown>;
 
-const kinds = new Map<string, ResourceKind>(DEFAULT_RESOURCE_KINDS.map((kind) => [kind.name, kind]));
-
-/** Root fields left to S4 (the Phase 1 collections) and to the preset step (`botPresets`). */
+/** Root fields of the Phase 1 records (`importCharacters.ts`, `importCollections.ts`) and of the preset step (`botPresets`). */
 const nonSettingsFields = new Set<string>(PHASE1_FIELDS);
 
 /** Root names of the prompt preset fields (`PRESET_ROOT_ALIASES` reversed). */
@@ -83,7 +124,8 @@ const promptRootNames: Record<string, string> = Object.fromEntries(
 /**
  * Root fields consumed by a conversion step, migrated, or inert upstream metadata: never reported.
  * `proxyKey` becomes a named key, `antiClaudeOverload`/`largeChatPerformanceMode` and the translator
- * and HypaV3 legacy fields feed their migrations, and the cold-storage flag's data is folded by S4.
+ * and HypaV3 legacy fields feed their migrations, and the cold-storage flag's data is folded
+ * (`importCharacters.ts`, `importCollections.ts`).
  */
 const silentFields = new Set<string>([
     "apiType",
@@ -135,10 +177,7 @@ const knownFields = new Set<string>([
     ...FORWARDED_ROOT_KEYS,
 ]);
 
-export function convertUpstreamDatabase(
-    db: unknown,
-    options: { report?: UpstreamImportReport } = {},
-): UpstreamConversion {
+export function convertUpstreamDatabase(db: unknown, options: UpstreamConversionOptions = {}): UpstreamConversion {
     if (!isPlainObject(db)) {
         throw new ResourceValidationError("The upstream database is not an object");
     }
@@ -173,8 +212,28 @@ export function convertUpstreamDatabase(
     }
 
     const personas = convertPersonas(db.personas, root, invalid);
+    const selection: UpstreamImportSelection = {
+        promptPresetId: presets.selectedPromptPresetId,
+        modelPresetId: presets.selectedModelPresetId,
+        personaId: personas.selectedId,
+    };
+    const modules = convertModules(db.modules, report);
+    const library = convertCharacters(db.characters, {
+        report,
+        cold: options.cold,
+        formatVersion: db.formatversion,
+        now: options.now ?? Date.now(),
+        selection,
+        personaIds: new Set(personas.list.map((persona) => persona.id)),
+    });
     for (const kind of Object.values(COLLECTION_KIND)) {
         switch (kind) {
+            case COLLECTION_KIND.characterOrder:
+                push(kind, convertCharacterOrder(root.characterOrder, library.ids, library.renamed, report));
+                break;
+            case COLLECTION_KIND.enabledModules:
+                push(kind, convertEnabledModules(root.enabledModules, modules, report));
+                break;
             case COLLECTION_KIND.personas:
                 push(kind, personas.list);
                 break;
@@ -212,8 +271,26 @@ export function convertUpstreamDatabase(
         }
     }
     push(RESOURCE_KIND.presets, presets.promptPresets);
+    push(RESOURCE_KIND.modules, modules.list);
+    push(RESOURCE_KIND.plugins, convertPlugins(db.plugins, report));
+    const pluginStorage = convertPluginStorage(db.pluginCustomStorage, options.cold, report);
+    if (pluginStorage !== null) {
+        push(RESOURCE_KIND.pluginStorage, pluginStorage);
+    }
 
     reportRootFields(db, report);
+    if (options.assetKeys) {
+        const records = [
+            ...resources,
+            ...library.characters.map((character) => ({ kind: RESOURCE_KIND.characters, data: character.data })),
+        ];
+        for (const reference of collectAssetReferences(records)) {
+            if (!options.assetKeys.has(reference.key)) {
+                // Upstream writes only its `.png` assets into a backup (U `drive/backuplocal.ts`).
+                report.missingAssets.push({ ...reference, expected: !reference.key.endsWith(".png") });
+            }
+        }
+    }
 
     const list = <T>(kind: ResourceKindName) => resources.find((resource) => resource.kind === kind)?.data as T[];
     report.counts.promptPresets = presets.promptPresets.length;
@@ -223,72 +300,11 @@ export function convertUpstreamDatabase(
     report.counts.personas = personas.list.length;
     report.counts.customModels = list<unknown>(COLLECTION_KIND.customModels).length;
 
-    return {
-        resources,
-        selection: {
-            promptPresetId: presets.selectedPromptPresetId,
-            modelPresetId: presets.selectedModelPresetId,
-            personaId: personas.selectedId,
-        },
-        report,
-    };
+    return { resources, characters: library.characters, chats: library.chats, selection, report };
 }
 
 // ---------------------------------------------------------------------------------------------
 // Records and their recovery
-
-/** What the store keeps for `input` written to `kind`: its normalizer on the stored form, checked. */
-function storeNormalize(kind: ResourceKind, input: unknown): unknown {
-    const data = kind.normalize(input === undefined ? undefined : serialize(input).stored, {
-        id: SINGLETON_RESOURCE_ID,
-    });
-    serialize(data);
-    return data;
-}
-
-/**
- * `kind`'s record for `input`; failing that, for its JSON copy (a non-finite number becomes `null`,
- * which the normalizers replace with the field default); failing that, the kind's fresh-boot value,
- * reported under `label` (default: the kind name).
- */
-function normalizeRecord(
-    kindName: ResourceKindName,
-    input: unknown,
-    invalid: (path: string) => void,
-    label: string = kindName,
-): unknown {
-    const kind = kinds.get(kindName)!;
-    const repaired = tryNormalize(kind, input);
-    if (repaired.ok) {
-        return repaired.data;
-    }
-    invalid(label);
-    return storeNormalize(kind, undefined);
-}
-
-function tryNormalize(kind: ResourceKind, input: unknown): { ok: true; data: unknown } | { ok: false } {
-    try {
-        return { ok: true, data: storeNormalize(kind, input) };
-    } catch (error) {
-        if (!(error instanceof ResourceValidationError)) {
-            throw error;
-        }
-    }
-    let copy: unknown;
-    try {
-        copy = plainClone(input);
-    } catch {
-        return { ok: false };
-    }
-    try {
-        return { ok: true, data: storeNormalize(kind, copy) };
-    } catch (error) {
-        if (!(error instanceof ResourceValidationError)) {
-            throw error;
-        }
-        return { ok: false };
-    }
-}
 
 /**
  * The entries of a list record that the kind accepts one by one (each tried as a one-entry record,
@@ -336,18 +352,6 @@ function recoverIndexed(
     return kept;
 }
 
-/** The stored (JSON round trip) form of a small source object, a non-finite number becoming `null`. */
-function storedForm(value: Record<string, unknown>): Record<string, unknown> {
-    try {
-        return serialize(value).stored as Record<string, unknown>;
-    } catch (error) {
-        if (!(error instanceof ResourceValidationError)) {
-            throw error;
-        }
-        return serialize(plainClone(value)).stored as Record<string, unknown>;
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Root
 
@@ -370,14 +374,6 @@ function pick(root: Root, fields: readonly string[]): Record<string, unknown> {
         }
     }
     return picked;
-}
-
-/** U `bootstrap.ts` `checkNewFormat`'s path repair of a database saved before `formatversion` 2. */
-function checkClean(data: string): string {
-    if (data.startsWith("assets") || data.length < 3) {
-        return data;
-    }
-    return "assets/" + data.replace(/\\/g, "/").split("assets/")[1];
 }
 
 /**

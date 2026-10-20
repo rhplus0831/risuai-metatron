@@ -13,9 +13,28 @@ export const UPSTREAM_CONVERTED_CODES = [
     "preset-openai-key-to-credential",
     /** A custom model's key became a named key, bound by the profiles that use that model. */
     "custom-model-key-to-credential",
+    /** A cold-storage character came back from its payload; examples are character names. */
+    "cold-character-restored",
+    /** A cold-storage chat came back from its payload, one per chat; examples are character names. */
+    "cold-chat-restored",
+    /** A plugin storage value came back from cold storage (`_coldplugin`); examples are storage keys. */
+    "cold-plugin-storage-restored",
+    /**
+     * An upstream plugin storage value kept at the top level of `pluginCustomStorage` (upstream's v3
+     * storage before it moved to cold storage) was also copied into metatron's v3 plugin storage;
+     * examples are storage keys.
+     */
+    "legacy-plugin-storage",
+    /** A character's invalid or repeated id was replaced by a new one; examples are names. */
+    "character-id-replaced",
+    /** A character's `postHistoryInstructions` moved into its selected chat's note; examples are names. */
+    "post-history-instructions-to-note",
 ] as const;
 
-/** Data the converter did not import. */
+/**
+ * Data the converter did not import, or kept but cannot use (`plugin-unsupported-version`). Each
+ * entry's `count` is in the unit its code names.
+ */
 export const UPSTREAM_EXCLUDED_CODES = [
     /** A root setting metatron does not know; the examples are field names. */
     "unknown-setting",
@@ -29,6 +48,39 @@ export const UPSTREAM_EXCLUDED_CODES = [
     "invalid-setting",
     /** A custom model with invalid required fields or rejected serialized data; examples are names or positions. */
     "invalid-custom-model",
+    /**
+     * A cold-storage pointer whose payload the backup lacks or holds unreadable (D3), one per pointer:
+     * a character kept as its stub (name, image, an empty chat), a chat kept without its messages, or
+     * a plugin storage value left out. Upstream's own backup never writes a plugin value that is not a
+     * list or an object with `character` or `message`. Examples are character names or storage keys.
+     */
+    "cold-missing",
+    /** A multiuser or playground leftover (`§temp`, `§playground`), one per character. */
+    "temporary-character",
+    /** A character or group left out with its chats (not an object, or refused); examples are names or positions. */
+    "invalid-character",
+    /** A chat left out with its messages, one per chat; examples are character names. */
+    "invalid-chat",
+    /** A module left out; examples are names or positions. */
+    "invalid-module",
+    /** A plugin left out; examples are names or positions. */
+    "invalid-plugin",
+    /**
+     * A part of a kept character, chat, module, plugin, folder, or plugin storage reset to its default
+     * or left out (a message, a lorebook entry, a field of the wrong kind, a stored translation), one
+     * per repair; examples are names or field paths.
+     */
+    "invalid-data",
+    /** A group member whose character was not imported, one per member; examples are group names. */
+    "group-member-missing",
+    /** An `enabledModules` entry naming no imported module's id or namespace; examples are the entries. */
+    "module-reference-missing",
+    /** A plugin kept but not run: metatron loads only plugin API 3.0; examples are plugin names. */
+    "plugin-unsupported-version",
+    /** Upstream keeps plugin data outside the backup (browser storage, permissions); reported once. */
+    "plugin-device-storage",
+    /** A chat that shows inlay images (`{{inlay::id}}`), which upstream keeps outside the backup, one per chat; examples are character names. */
+    "inlays-not-in-backup",
 ] as const;
 
 export type UpstreamConvertedCode = (typeof UPSTREAM_CONVERTED_CODES)[number];
@@ -44,6 +96,28 @@ export type UpstreamReportEntry<Code extends string = string> = {
     examples: string[];
 };
 
+/** Where a referenced asset key is used (`server/src/data/upstream/assetReferences.ts`). */
+export type UpstreamAssetRole =
+    | "profile"
+    | "emotion"
+    | "additional"
+    | "vits"
+    | "ccAsset"
+    | "persona"
+    | "background"
+    | "folder"
+    | "preset"
+    | "module";
+
+/** One referenced `assets/...` key and its first user (a character, persona, folder, preset, or module name; "" for a setting). */
+export type UpstreamAssetReference = { key: string; owner: string; role: UpstreamAssetRole };
+
+/**
+ * A referenced asset the backup does not hold. `expected`: a non-`.png` key, which upstream never
+ * puts in a backup (only its `.png` files are written), so its absence is no damage to the file.
+ */
+export type UpstreamMissingAsset = UpstreamAssetReference & { expected: boolean };
+
 /** How many records of each category the converter produced. */
 export type UpstreamImportCounts = {
     promptPresets: number;
@@ -53,12 +127,24 @@ export type UpstreamImportCounts = {
     credentials: number;
     personas: number;
     customModels: number;
+    /** Imported characters, groups excluded. */
+    characters: number;
+    groups: number;
+    chats: number;
+    messages: number;
+    modules: number;
+    plugins: number;
 };
 
 export type UpstreamImportReport = {
     counts: UpstreamImportCounts;
     converted: UpstreamReportEntry<UpstreamConvertedCode>[];
     excluded: UpstreamReportEntry<UpstreamExcludedCode>[];
+    /**
+     * Referenced assets the backup lacks, one per key (its first user), in reference order. Empty when
+     * the converter was given no asset inventory (`assetKeys`).
+     */
+    missingAssets: UpstreamMissingAsset[];
 };
 
 /** The records the tab selects after the import (D4): the upstream-selected preset and persona. */
@@ -70,9 +156,23 @@ export type UpstreamImportSelection = {
 
 export function createUpstreamImportReport(): UpstreamImportReport {
     return {
-        counts: { promptPresets: 0, modelPresets: 0, modelProfiles: 0, credentials: 0, personas: 0, customModels: 0 },
+        counts: {
+            promptPresets: 0,
+            modelPresets: 0,
+            modelProfiles: 0,
+            credentials: 0,
+            personas: 0,
+            customModels: 0,
+            characters: 0,
+            groups: 0,
+            chats: 0,
+            messages: 0,
+            modules: 0,
+            plugins: 0,
+        },
         converted: [],
         excluded: [],
+        missingAssets: [],
     };
 }
 
