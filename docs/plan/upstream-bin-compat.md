@@ -1,6 +1,8 @@
 # Upstream `.bin` Compatibility Plan
 
-Status: planned 2026-10-20 at `437bcdfe9`; no slice landed. Source: the open decisions in
+Status: planned 2026-10-20 at `437bcdfe9`; no slice landed. `heap-memory-reduction` merged
+into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
+waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
 [docs/research/README.md](../research/README.md) (RisuNest item 10, Haejeok A14), answered
 by the user on 2026-10-20 (U1–U4 below). Upstream RisuAI is read at `/home/codex/Risuai`
 (HEAD `669b12ce`); reference ports at `/home/codex/HaejeokRisuai`
@@ -170,7 +172,8 @@ Retry-After: 5`, and the clients retry them. Writes admitted earlier finish firs
 
 **New code** goes under `server/src/data/upstream/`, with shared report types in
 `shared/upstreamBackup.ts`. On the client, it goes in `src/ts/drive/backuplocal.ts` and a
-new `src/ts/drive/upstreamBackupClient.ts`. No slice edits `src/ts/storage/*`.
+new `src/ts/drive/upstreamBackupClient.ts`. Keep the client code there; edit
+`src/ts/storage/*` only where a step needs an export it lacks.
 
 ## Invariants
 
@@ -207,8 +210,8 @@ new `src/ts/drive/upstreamBackupClient.ts`. No slice edits `src/ts/storage/*`.
   follows the version-2 rule that a downloaded archive carries none (owner answer 12 (a),
   `backups.ts` ~158).
 - Shared code follows T2: no DOM, no runes. `shared/database.ts` asset lists are
-  `readonly` once `heap-memory-reduction` merges (B1/B2), so the converter builds fresh
-  arrays and never mutates input lists in place.
+  `readonly` (`heap-memory-reduction` B1/B2, merged), so the converter builds fresh arrays
+  and never mutates input lists in place.
 - Messages: `Message.chatId` is kept when valid and unique. `normalizeMessageList` assigns
   the rest. Group speakers (`saying`) keep their chaIds.
 
@@ -223,12 +226,12 @@ S1 ∥ S2 ∥ S3 → S4 → S5; S6 after S1 (∥ S3–S5) → S7 after S5 and S6
 - S7 edits `backups.ts` and `backuplocal.ts` after S5 did.
 - S8 checks the finished work against upstream and closes out the guides.
 
-**Parallel with `heap-memory-reduction`.** The branch changes client storage/records files,
-`shared/database.ts` (`readonly` asset tuple types), `shared/modules.ts`,
-`server/src/routes/importModule.ts` and `server/src/prompt/{assemble,runner}.ts`. None of
-those are in this plan's file clusters. No slice edits `src/ts/storage/*`,
-`src/ts/stores.svelte.ts` or the boot path. A slice that finds it must edit one of
-those files, or `shared/database.ts`, stops and waits for the merge.
+**After `heap-memory-reduction`.** It merged into `metatron` as `b122ae132` before any slice
+started, so the earlier rule (no edits to `src/ts/storage/*`, `src/ts/stores.svelte.ts`, the
+boot path or `shared/database.ts` until the merge) is lifted. What it changed and this plan
+must respect: frozen asset lists replaced whole (`records.svelte.ts`, B1/B2), one shared
+string per equal record text in the save caches (A1), and `readonly` asset tuple types in
+`shared/database.ts`. Re-read those before a slice touches the records layer.
 
 ## Index
 
@@ -596,9 +599,9 @@ createKindRegistry(DEFAULT_RESOURCE_KINDS)`), then `store.put` and
   - While the commit runs, the dialog shows a wait state until the answer arrives, so it
     does not look like a hang. Other tabs see the 503 retries and then reload.
   - After commit, write the returned `selection` into the tab's selection storage the way
-    `selection.svelte.ts` persists it, then reload. Check that this needs no edit in
-    `src/ts/storage/`; otherwise defer that one step until the heap merge and write the
-    `risu-selection` localStorage shape from the drive module.
+    `selection.svelte.ts` persists it, then reload. If that module has no export for it,
+    add one there rather than writing the `risu-selection` localStorage shape from the
+    drive module.
   - An `encryption.risudat` refusal shows the U4 message through `alertError` and stays
     on the settings page.
 - Strings: `language.upstreamImport*` in `src/lang/en.ts` (and `ko.ts`, D11).
@@ -786,8 +789,8 @@ Depends: S1–S7.
 
 - Every slice: its tests, `pnpm check`, `pnpm --silent test:agent`, and the guide's focused
   checks. S5 and S7 also run `--tags-filter=slow` if they tagged anything.
-- In the main checkout, run tests with `--exclude ".claude/**"` while the
-  `heap-memory-reduction` worktree exists (Vitest picks up nested worktrees).
+- Run tests from the slice's own worktree. In the main checkout, add
+  `--exclude ".claude/**"` (Vitest picks up nested worktrees, this plan's included).
 - S5, S7, S8: the browser checks above.
 
 ## Decisions
