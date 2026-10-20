@@ -1,21 +1,20 @@
 import { get } from "svelte/store";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAlertQueue, type AlertQueue } from "./alertQueue";
 
 // The terminal notice (`alert.ts` `alertTerminal`, the restore notice since the restore-notice fix
 // after Phase 6 slice 2): it lives outside `alertStore`, so no ordinary alert (normal, error,
 // markdown, toast, wait, or a clear) can replace or resolve it; only `acknowledgeTerminalNotice`
-// (its own OK) resolves it, once. The real module, with the shared alert store as a plain writable.
+// (its own OK) resolves it, once. The real module over the real alert queue (slice A1), a fresh one
+// per test so the dialogs one test leaves open never reach the next.
 
-const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as any } }));
+const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as unknown as AlertQueue } }));
 
-vi.mock("./stores.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    alertStore.current = writable({ type: "none", msg: "" });
-    return { alertStore: alertStore.current };
-});
+vi.mock("./stores.svelte", () => ({
+    alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(alertStore.current, key) }),
+}));
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../lang", () => ({ language: { errors: {} } }));
-vi.mock("./util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
 
 import {
     acknowledgeTerminalNotice,
@@ -37,10 +36,12 @@ async function settled(promise: Promise<unknown>) {
     return done;
 }
 
+beforeEach(() => {
+    alertStore.current = createAlertQueue({ type: "none", msg: "" }, { gapMs: 0 });
+});
 afterEach(() => {
     // Every test ends with no notice shown (the module's state is per document).
     acknowledgeTerminalNotice();
-    alertClear();
 });
 
 describe("alertTerminal", () => {
@@ -56,9 +57,12 @@ describe("alertTerminal", () => {
         alertMd("markdown");
         alertWait("waiting");
         alertClear();
+        // The shown dialog's own close, and the queued ones after it, leave the notice alone.
+        alertStore.current.answer("");
         alertStore.current.set({ type: "none", msg: "" });
         expect(await settled(pending)).toBe(false);
         expect(get(terminalNotice)).toBe("restored");
+        expect(alertStore.current.hasDialogs()).toBe(true);
     });
 
     it("resolves once on acknowledgement and hides the notice; a repeated acknowledgement does nothing", async () => {

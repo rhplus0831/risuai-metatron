@@ -1,4 +1,4 @@
-import { readable, writable } from "svelte/store";
+import { readable } from "svelte/store";
 import { vi } from "vitest";
 
 type AlertModule = typeof import("src/ts/alert");
@@ -20,8 +20,13 @@ type AlertModule = typeof import("src/ts/alert");
  */
 export function createAlertMock(overrides: Partial<AlertModule> = {}): AlertModule {
     const defaults = {
-        alertGenerationInfoStore: writable(null),
         alertStore: { set: vi.fn<AlertModule["alertStore"]["set"]>() },
+        // Runs the helper call as the real one does; no dialog handle (the mocked helpers open none).
+        // A `Mock` drops the call's type parameter, hence the cast.
+        openAlertDialog: vi.fn((open: () => unknown) => ({
+            value: open(),
+            dialog: null,
+        })) as unknown as AlertModule["openAlertDialog"],
         alertError: vi.fn<AlertModule["alertError"]>(),
         alertJobError: vi.fn<AlertModule["alertJobError"]>(),
         waitAlert: vi.fn(async () => {}),

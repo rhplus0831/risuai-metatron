@@ -501,8 +501,9 @@ export async function addImportedModule(module: unknown, { announce }: { announc
         alertError(language.moduleImportDiscarded);
         return false;
     }
-    const alert = get(currentAlertStore);
-    if (alert.type === "wait" && alert.msg === language.moduleImportSaving) {
+    // The status slot (held behind a dialog or shown): only this import's own saving wait is replaced.
+    const alert = currentAlertStore.status();
+    if (alert?.type === "wait" && alert.msg === language.moduleImportSaving) {
         if (announce) {
             alertNormal(language.successImport);
         } else {

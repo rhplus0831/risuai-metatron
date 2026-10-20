@@ -3,7 +3,7 @@ import { selectedChat, type ChatRef } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
-import type { alertData } from "./alert";
+import { createAlertQueue } from "./alertQueue";
 import { moduleUpdate } from "./process/modules";
 import { resetTransformEffects } from "./parser/transformClient";
 
@@ -73,10 +73,8 @@ export const HideIconStore = writable(false);
 export const CustomCSSStore = writable("");
 export const SafeModeStore = writable(false);
 export const CharConfigSubMenu = writable(0);
-export const alertStore = writable({
-    type: "none",
-    msg: "n",
-} as alertData);
+/** The alert slot: one status and a queue of dialogs, each answering its own caller (`alertQueue.ts`). */
+export const alertStore = createAlertQueue({ type: "none", msg: "n" });
 export const hypaV3ModalOpen = writable(false);
 export const hypaV3ProgressStore = writable({
     open: false,

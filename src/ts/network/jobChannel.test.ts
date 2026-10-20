@@ -9,12 +9,14 @@ import type {
     GenerationQuestionEvent,
 } from "../../../shared/jobs.ts";
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
+import { createAlertQueue, type AlertQueue } from "../alertQueue";
 
 // Phase 5 slice 6, the client dispatcher of the job channel (`jobChannel.ts`) with controlled
-// persistence and plugin dependencies and the real alert module over its polling store: the one UI
-// queue (questions answered with the alert's raw value, toasts and modal notices queued behind an
-// open question, cancellation and the job's end closing only the alert they own, stale results
-// dropped, bounded memory), and the callbacks (the barrier before and after the hook with its
+// persistence and plugin dependencies and the real alert module over the real alert queue (RisuNest
+// small wins slice A1; a fresh queue per test, with no gap): the one UI queue (questions answered
+// with the alert's raw value, toasts and modal notices queued behind an open question, cancellation
+// and the job's end removing only the dialog they own, shown or queued behind a local one, stale
+// results dropped, bounded memory), and the callbacks (the barrier before and after the hook with its
 // failure taxonomy, cancellation stopping unstarted work, results that cannot cross the wire,
 // duplicates and replays, the nesting rules, cache pressure, the hook list). The real stores are
 // behind the barrier in `jobChannelBarrier.test.ts`.
@@ -23,6 +25,8 @@ import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 type FixtureChat = { id: string; message?: { chatId: string }[] };
 
 const deps = vi.hoisted(() => ({
+    /** The alert queue of the test running (`stores.alertStore` reaches it through a proxy). */
+    alertQueue: null as unknown as AlertQueue,
     flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[] }>>(),
     applyHydration: vi.fn<(record: unknown) => boolean>(),
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
@@ -90,7 +94,7 @@ vi.mock("../storage/chatStore.svelte", () => {
 vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return {
-        alertStore: writable({ type: "none", msg: "" }),
+        alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(deps.alertQueue, key) }),
         ReloadGUIPointer: writable(0),
         ReloadChatPointer: writable({} as Record<string, number>),
         reloadChatKey: (messageId: string | undefined, idx: number) =>
@@ -223,11 +227,11 @@ function transport() {
 let tx: ReturnType<typeof transport>;
 const send = (event: GenerationChannelEvent, jobId = "J", through = tx) =>
     channel.handleChannelEvent(jobId, event, through);
-/** Lets the alert pollers (10 ms) and the callback chain run. */
+/** Lets the alert queue's gap (0 ms here) and the callback chain run. */
 const pump = (ms = 30) => vi.advanceTimersByTimeAsync(ms);
 const alert = () => get(stores.alertStore);
-/** The user answers the alert the way `AlertComp` does. */
-const userAnswers = (msg: string) => stores.alertStore.set({ type: "none", msg });
+/** The user answers the shown dialog the way `AlertComp` does. */
+const userAnswers = (msg: string) => stores.alertStore.answer(msg);
 
 beforeEach(async () => {
     vi.resetModules();
@@ -244,10 +248,10 @@ beforeEach(async () => {
     deps.showCompletion.mockReset();
     deps.stableDiff.mockReset();
     deps.followTranslations.mockReset();
+    deps.alertQueue = createAlertQueue({ type: "none", msg: "" }, { gapMs: 0 });
     stores = await import("../stores.svelte");
     // The mocked stores module outlives `resetModules`: start each test from idle registries.
     stores.bodyIntercepterStore.length = 0;
-    stores.alertStore.set({ type: "none", msg: "" });
     stores.ReloadGUIPointer.set(0);
     stores.ReloadChatPointer.set({});
     stores.CharEmotion.set({});
@@ -459,7 +463,7 @@ describe("notices and questions", () => {
         expect(deps.followTranslations).toHaveBeenCalledTimes(1);
     });
 
-    it("drops a cancelled queued question, closes only the alert the showing one owns, releases the queue, and never sends its late result", async () => {
+    it("drops a cancelled queued question, removes only the dialog the showing one owns, releases the queue, and never sends its late result", async () => {
         send(question("q1"));
         send(question("q2"));
         send(cancel("q2"));
@@ -467,17 +471,19 @@ describe("notices and questions", () => {
         expect(alert().type).toBe("none");
         await pump();
         expect(tx.answers).toEqual([]);
-        // Local UI replaced the job's alert: a cancel leaves it, but the queue moves on.
+        // A local status set while the question shows does not replace it; the cancel removes the
+        // question's own dialog, and the status set after it shows then.
         send(question("q3"));
         expect(alert()).toMatchObject({ type: "ask", msg: "q q3" });
         stores.alertStore.set({ type: "wait", msg: "local" });
+        expect(alert()).toMatchObject({ type: "ask", msg: "q q3" });
         send(cancel("q3"));
         await pump();
         expect(alert()).toMatchObject({ type: "wait", msg: "local" });
         send(question("q4"));
         await pump();
         expect(alert()).toMatchObject({ type: "ask", msg: "q q4" });
-        // Both q3's abandoned poller and q4's see this answer; only q4 is answered.
+        // q3's dialog closed with "" when cancelled and its result was dropped; only q4 is answered.
         userAnswers("yes");
         await pump();
         expect(tx.answers).toEqual([{ type: "answer", id: "q4", outcome: "answered", value: true }]);
@@ -510,6 +516,69 @@ describe("notices and questions", () => {
         // The ended job's question delivered again (its cancel was lost) is not reopened.
         send(question("q1"));
         expect(alert().type).toBe("none");
+    });
+
+    it("a local alert shown during a job question does not replace it, and a job's dialog waits behind local ones", async () => {
+        send(question("q1"));
+        expect(alert()).toMatchObject({ type: "ask", msg: "q q1" });
+        // A local dialog and a local status while the question shows: the question stays.
+        const local = stores.alertStore.open({ type: "normal", msg: "local notice" });
+        stores.alertStore.set({ type: "wait", msg: "local wait" });
+        await pump();
+        expect(alert()).toMatchObject({ type: "ask", msg: "q q1" });
+        expect(tx.answers).toEqual([]);
+        userAnswers("yes");
+        await pump();
+        expect(tx.answers).toEqual([{ type: "answer", id: "q1", outcome: "answered", value: true }]);
+        // The local dialog follows; a question asked meanwhile waits behind it, and a status set
+        // after that question shows once every dialog closed.
+        expect(alert()).toMatchObject({ type: "normal", msg: "local notice" });
+        send(question("q2"));
+        stores.alertStore.set({ type: "toast", msg: "copied" });
+        await pump();
+        expect(alert()).toMatchObject({ type: "normal", msg: "local notice" });
+        userAnswers("");
+        await expect(local.closed).resolves.toBe("");
+        await pump();
+        expect(alert()).toMatchObject({ type: "ask", msg: "q q2" });
+        userAnswers("no");
+        await pump();
+        expect(tx.answers[1]).toEqual({ type: "answer", id: "q2", outcome: "answered", value: false });
+        expect(alert()).toEqual({ type: "toast", msg: "copied" });
+    });
+
+    it("a cancelled question whose dialog waits behind a local one resolves nothing and leaves no waiter; the job's end does the same", async () => {
+        const local = stores.alertStore.open({ type: "normal", msg: "local notice" });
+        send(question("q1"));
+        send(question("q2"));
+        expect(alert()).toMatchObject({ type: "normal", msg: "local notice" });
+        send(cancel("q1"));
+        await pump();
+        // The queue moved on to q2 (queued behind the local dialog too); q1's dialog is gone.
+        expect(alert()).toMatchObject({ type: "normal", msg: "local notice" });
+        expect(tx.answers).toEqual([]);
+        channel.endJobChannel("J");
+        await pump();
+        expect(tx.answers).toEqual([]);
+        userAnswers("");
+        await expect(local.closed).resolves.toBe("");
+        await pump();
+        // Nothing of the ended job shows, and nothing waits: the queue is idle.
+        expect(alert()).toEqual({ type: "none", msg: "" });
+        expect(stores.alertStore.hasDialogs()).toBe(false);
+        let idle = false;
+        void stores.alertStore.idle().then(() => {
+            idle = true;
+        });
+        await pump();
+        expect(idle).toBe(true);
+        // A later job's question shows: the UI queue was released.
+        send(question("k1", "alertConfirm", { message: "later" }), "K");
+        await pump();
+        expect(alert()).toMatchObject({ type: "ask", msg: "later" });
+        userAnswers("yes");
+        await pump();
+        expect(tx.answers).toEqual([{ type: "answer", id: "k1", outcome: "answered", value: true }]);
     });
 
     it("keeps the remembered requests bounded: the oldest cancelled ones are forgotten, the recent ones stay suppressed", async () => {

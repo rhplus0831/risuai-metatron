@@ -30,6 +30,7 @@ vi.mock("./process/index.svelte", () => ({
 
 import { alertNormal, alertToast, doingAlert, terminalNotice } from "./alert";
 import { activeHotkeys, hotkeyMatches, initHotkey } from "./hotkey";
+import { NEXT_DIALOG_GAP_MS } from "./alertQueue";
 import { defaultHotkeys } from "./defaulthotkeys";
 import { language } from "src/lang";
 import { characterList } from "./storage/characterStore.svelte";
@@ -42,6 +43,7 @@ import { selectCharacter, selectedIndex, selection, selectPreset } from "./stora
 import { activePreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
 import {
+    alertStore,
     chatBindingDialog,
     gridOpenStore,
     openModelPresetList,
@@ -375,6 +377,13 @@ describe("the preset hotkeys and Escape with the binding layers (slice 5)", () =
     });
     const pressPlain = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    /** A whole stroke: the key goes down (`repeat` for an auto-repeat) and, unless held, up again. */
+    const stroke = (key: string, { repeat = false, hold = false } = {}) => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true }));
+        if (!hold) {
+            document.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
+        }
+    };
     const layers = () => ({
         persona: get(openPersonaList),
         model: get(openModelPresetList),
@@ -515,22 +524,116 @@ describe("the preset hotkeys and Escape with the binding layers (slice 5)", () =
         expect(layers()).toMatchObject({ settings: true });
     });
 
-    it("Escape with an alert open closes the alert and leaves the list, the dialog, and the settings", () => {
-        vi.mocked(doingAlert).mockReturnValue(true);
-        settingsOpen.set(true);
-        openPresetList.set({ chatRef: refK });
-        chatBindingDialog.set(refK);
-        pressPlain("Escape");
-        expect(alertToast).toHaveBeenCalledWith("Alert Closed");
-        expect(layers()).toMatchObject({ preset: { chatRef: refK }, dialog: refK, settings: true });
+    it("Escape with an alert open closes the alert and leaves the list, the dialog, and the settings", async () => {
+        vi.useFakeTimers();
+        try {
+            vi.mocked(doingAlert).mockReturnValue(true);
+            settingsOpen.set(true);
+            openPresetList.set({ chatRef: refK });
+            chatBindingDialog.set(refK);
+            // The real queue (slice A1): Escape answers the shown dialog with "" and toasts.
+            const first = alertStore.open({ type: "ask", msg: "sure?" });
+            stroke("Escape");
+            await expect(first.closed).resolves.toBe("");
+            expect(alertToast).toHaveBeenCalledWith("Alert Closed");
+            expect(layers()).toMatchObject({ preset: { chatRef: refK }, dialog: refK, settings: true });
 
-        // Without a layer, an alert and the settings close together, as before.
-        vi.mocked(alertToast).mockClear();
-        closeAll();
-        settingsOpen.set(true);
-        pressPlain("Escape");
-        expect(alertToast).toHaveBeenCalledWith("Alert Closed");
-        expect(layers()).toMatchObject({ settings: false });
+            // Without a layer, an alert and the settings close together, as before.
+            vi.mocked(alertToast).mockClear();
+            closeAll();
+            settingsOpen.set(true);
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            const second = alertStore.open({ type: "ask", msg: "again?" });
+            stroke("Escape");
+            await expect(second.closed).resolves.toBe("");
+            expect(alertToast).toHaveBeenCalledWith("Alert Closed");
+            expect(layers()).toMatchObject({ settings: false });
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            expect(alertStore.hasDialogs()).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // Slice A1 (`createDialogKeyGate` wired in `initHotkey`): a dialog takes Enter only from a stroke
+    // that began after it appeared, never during the gap before it shows, and the default action of
+    // an Enter over an `ask` dialog is prevented whether the stroke is taken or not.
+    it("Enter answers an ask dialog only from a new stroke, not a held one nor one during the gap", async () => {
+        vi.useFakeTimers();
+        try {
+            vi.mocked(doingAlert).mockReturnValue(true);
+            // Enter is held as the dialog appears: its repeats do not answer it.
+            stroke("Enter", { hold: true });
+            const first = alertStore.open({ type: "ask", msg: "first?" });
+            const repeated = new KeyboardEvent("keydown", {
+                key: "Enter",
+                repeat: true,
+                bubbles: true,
+                cancelable: true,
+            });
+            document.dispatchEvent(repeated);
+            await Promise.resolve();
+            expect(repeated.defaultPrevented).toBe(true);
+            expect(alertStore.dialogVisible()).toBe(true);
+            // Released and pressed again: a new stroke answers it.
+            document.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true, cancelable: true }));
+            stroke("Enter");
+            await expect(first.closed).resolves.toBe("yes");
+
+            // The next dialog is queued during the gap: an Enter then answers nothing.
+            const second = alertStore.open({ type: "ask", msg: "second?" });
+            stroke("Enter");
+            await Promise.resolve();
+            expect(alertStore.dialogVisible()).toBe(false);
+            expect(alertStore.hasDialogs()).toBe(true);
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            expect(alertStore.dialogVisible()).toBe(true);
+            // Shown with no key held: the first Enter answers it.
+            stroke("Enter");
+            await expect(second.closed).resolves.toBe("yes");
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            expect(alertStore.hasDialogs()).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // A dialog of another type has buttons of its own: a gate-rejected Enter on one of them (its
+    // default action would click it) is prevented; a new stroke, or a button outside the dialog, is not.
+    it("keeps a held Enter from natively clicking a button of a visible dialog, and nothing else", async () => {
+        vi.useFakeTimers();
+        const dialog = document.createElement("div");
+        dialog.setAttribute("data-alert-dialog", "");
+        const inside = document.createElement("button");
+        dialog.appendChild(inside);
+        const outside = document.createElement("button");
+        document.body.append(dialog, outside);
+        const enterOn = (target: HTMLElement, repeat: boolean) => {
+            const event = new KeyboardEvent("keydown", { key: "Enter", repeat, bubbles: true, cancelable: true });
+            target.dispatchEvent(event);
+            return event;
+        };
+        try {
+            vi.mocked(doingAlert).mockReturnValue(true);
+            stroke("Enter", { hold: true });
+            const select = alertStore.open({ type: "select", msg: "a||b" });
+            expect(enterOn(inside, true).defaultPrevented).toBe(true);
+            expect(enterOn(outside, true).defaultPrevented).toBe(false);
+            expect(alertStore.dialogVisible()).toBe(true);
+            document.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true, cancelable: true }));
+            // A new stroke on the button: the browser's click is left to answer the dialog.
+            expect(enterOn(inside, false).defaultPrevented).toBe(false);
+            select.cancel();
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            // No dialog shown: a held Enter on a dialog-like button is not touched.
+            stroke("Enter", { hold: true });
+            expect(enterOn(inside, true).defaultPrevented).toBe(false);
+            document.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true, cancelable: true }));
+        } finally {
+            dialog.remove();
+            outside.remove();
+            vi.useRealTimers();
+        }
     });
 });
 

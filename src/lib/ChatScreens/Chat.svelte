@@ -851,9 +851,12 @@
                     const currentGenerationInfo =
                         idx >= 0 ? currentChat?.message[idx]?.generationInfo : messageGenerationInfo;
 
+                    // The dialog keeps its own copy of the message: it may wait behind another dialog.
+                    const message = idx >= 0 ? currentChat?.message[idx] : undefined;
                     alertRequestData({
                         genInfo: currentGenerationInfo,
                         idx: idx,
+                        message: message ? $state.snapshot(message) : undefined,
                     });
                 }}
             >

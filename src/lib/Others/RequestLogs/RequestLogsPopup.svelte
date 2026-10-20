@@ -13,6 +13,8 @@
     let tab: "server" | "tab" = $state("server");
     /** The history's job filter: the job the popup was opened for (`alertRequestLogs`), kept across tabs. */
     let jobId: string | null = $state(untrack(() => $alertStore.jobId ?? null));
+    /** This popup's own dialog: its close closes only it. */
+    const own = untrack(() => $alertStore);
 </script>
 
 <div class="fixed inset-0 z-50 bg-black/80 flex justify-center items-start overflow-y-auto p-4">
@@ -22,7 +24,7 @@
             <button
                 class="text-textcolor2 hover:text-textcolor p-1"
                 onclick={() => {
-                    alertStore.set({ type: "none", msg: "" });
+                    alertStore.answer("", own);
                 }}
             >
                 <XIcon />
@@ -42,7 +44,7 @@
         </div>
         <div class="flex-1 overflow-y-auto p-4">
             {#if tab === "server"}
-                <ServerRequestHistory bind:jobId />
+                <ServerRequestHistory bind:jobId closePopup={() => alertStore.answer("", own)} />
             {:else}
                 <TabRequestLogs />
             {/if}

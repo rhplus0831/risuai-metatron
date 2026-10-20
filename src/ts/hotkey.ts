@@ -31,8 +31,15 @@ import { updateTextThemeAndCSS } from "./gui/colorscheme";
 import { defaultHotkeys } from "./defaulthotkeys";
 import { doingChat, previewBody, sendChat } from "./process/index.svelte";
 import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
+import { createDialogKeyGate } from "./alertQueue";
 
 export function initHotkey() {
+    // Every stroke of Enter and Escape, seen before any element can stop it: a dialog takes a key only
+    // from a stroke that began after it appeared (`createDialogKeyGate`).
+    const dialogKeys = createDialogKeyGate(alertStore);
+    window.addEventListener("keydown", (ev) => dialogKeys.keydown(ev), true);
+    window.addEventListener("keyup", (ev) => dialogKeys.keyup(ev), true);
+    window.addEventListener("blur", () => dialogKeys.reset());
     document.addEventListener("keydown", async (ev) => {
         // The terminal notice is a modal dialog with its own keys: no shortcut runs behind it.
         if (get(terminalNotice) !== null) {
@@ -261,9 +268,19 @@ export function initHotkey() {
             }
         }
         if (ev.key === "Escape") {
-            // Read before the toast: `alertToast` replaces the alert, and a toast is no alert.
+            // Read before closing: a dialog (also one waiting for the gap) or a progress overlay.
             const hadAlert = doingAlert();
-            if (hadAlert) {
+            if (alertStore.dialogVisible()) {
+                // The shown dialog closes with "" (its caller's dismissal); the toast says so once
+                // no other dialog waits.
+                if (dialogKeys.accepts(ev)) {
+                    alertStore.answer("");
+                    if (!alertStore.hasDialogs()) {
+                        alertToast("Alert Closed");
+                    }
+                }
+            } else if (!alertStore.hasDialogs() && get(alertStore).type === "progress") {
+                // A progress overlay is a status: the toast replaces it until its next update.
                 alertToast("Alert Closed");
             }
             // Only the topmost layer closes: the settings and the grid stay under a picker list or the
@@ -278,13 +295,21 @@ export function initHotkey() {
             }
             ev.preventDefault();
         }
-        if (ev.key === "Enter") {
+        if (ev.key === "Enter" && alertStore.dialogVisible()) {
             const alertType = get(alertStore).type;
             if (alertType === "ask" || alertType === "normal" || alertType === "error") {
-                alertStore.set({
-                    type: "none",
-                    msg: "yes",
-                });
+                // Never a held or repeated Enter, nor the stroke the dialog appeared during; the
+                // default action (a focused button's click) is kept from answering it either.
+                if (dialogKeys.accepts(ev)) {
+                    alertStore.answer("yes");
+                }
+                ev.preventDefault();
+            } else if (
+                !dialogKeys.accepts(ev) &&
+                ev.target instanceof Element &&
+                ev.target.closest("[data-alert-dialog] button")
+            ) {
+                ev.preventDefault();
             }
         }
     });

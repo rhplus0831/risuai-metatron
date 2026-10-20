@@ -1,9 +1,10 @@
 import { settings } from "./storage/settingsViews.svelte";
 import { get, readonly, writable } from "svelte/store";
-import { sleep } from "./util";
 import { language } from "../lang";
-import { type MessageGenerationInfo } from "./storage/database.svelte";
+import type { Message, MessageGenerationInfo } from "./storage/database.svelte";
 import { alertStore as alertStoreImported } from "./stores.svelte";
+import type { AlertDialog } from "./alertQueue";
+import type { DeepReadonly } from "../../shared/readonly.ts";
 import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
 
 /** A server job's failure as the tab received it, for the error alert's debug actions. */
@@ -47,23 +48,64 @@ export interface alertData {
     jobFailure?: JobFailureInfo;
     /** `requestlogs`: the job the request history opens filtered to. */
     jobId?: string;
+    /** `requestdata`: the generation and the message it shows, captured when it was opened. */
+    generationInfo?: AlertGenerationInfo;
+    /** `none` between two dialogs: the next one is queued and shows after the gap (`alertQueue.ts`). */
+    dialogPending?: boolean;
 }
 
-type AlertGenerationInfoStoreData = {
+type AlertGenerationInfo = {
     genInfo: MessageGenerationInfo;
     idx: number;
+    /**
+     * The message as it was when the dialog was opened (a plain copy): the dialog may wait behind
+     * another one, and the chat may change or unload meanwhile.
+     */
+    message?: DeepReadonly<Message>;
 };
-export const alertGenerationInfoStore = writable<AlertGenerationInfoStoreData>(null);
+/**
+ * Writes to the alert slot (`stores.svelte.ts`): status types (`wait`, `progress`, `toast`) replace
+ * the status, other types queue a dialog, and `none` closes the dialog shown (its own close only; a
+ * status writer ends its status with `alertClear`).
+ */
 export const alertStore = {
     set: (d: alertData) => {
         alertStoreImported.set(d);
     },
 };
 
+/** The dialog handles opened while `openAlertDialog` runs its callback. */
+let capturing: AlertDialog[] | null = null;
+
+/** Queues `data` as a dialog; resolves with the `msg` it closes with. */
+function openDialog(data: alertData): Promise<string> {
+    const dialog = alertStoreImported.open(data);
+    capturing?.push(dialog);
+    return dialog.closed;
+}
+
+/**
+ * For the job channel: runs `open` (one alert helper call, which queues its dialog synchronously)
+ * and returns what it returned with the handle of the dialog it opened (null when it opened none), to
+ * await that dialog's own close or to cancel it (shown or queued; it closes with ""). A notice that
+ * folds into an identical one queued right before it shares that dialog's handle.
+ */
+export function openAlertDialog<T>(open: () => T): { value: T; dialog: AlertDialog | null } {
+    const outer = capturing;
+    const opened: AlertDialog[] = [];
+    capturing = opened;
+    try {
+        const value = open();
+        return { value, dialog: opened[0] ?? null };
+    } finally {
+        capturing = outer;
+    }
+}
+
 export function alertError(msg: string | Error) {
     const data = errorAlert(msg);
     if (data) {
-        alertStoreImported.set(data);
+        void openDialog(data);
     }
 }
 
@@ -75,7 +117,7 @@ export function alertError(msg: string | Error) {
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
     const data = errorAlert(end.message);
     if (data) {
-        alertStoreImported.set({ ...data, jobFailure: { jobId, at, end } });
+        void openDialog({ ...data, jobFailure: { jobId, at, end } });
     }
 }
 
@@ -121,13 +163,9 @@ function errorAlert(msg: string | Error): alertData | null {
     };
 }
 
+/** Resolves once no dialog is shown or queued (statuses do not count). */
 export async function waitAlert() {
-    while (true) {
-        if (get(alertStoreImported).type === "none") {
-            break;
-        }
-        await sleep(10);
-    }
+    await alertStoreImported.idle();
 }
 
 /**
@@ -196,73 +234,63 @@ export function dismissReloadNotice() {
 }
 
 export function alertNormal(msg: string) {
-    alertStoreImported.set({
+    void openDialog({
         type: "normal",
         msg: msg,
     });
 }
 
 export async function alertNormalWait(msg: string) {
-    alertStoreImported.set({
+    await openDialog({
         type: "normal",
         msg: msg,
     });
-    await waitAlert();
 }
 
 export async function alertAddCharacter() {
-    alertStoreImported.set({
+    return await openDialog({
         type: "addchar",
         msg: language.addCharacter,
     });
-    await waitAlert();
-
-    return get(alertStoreImported).msg;
 }
 
 export async function alertChatOptions() {
-    alertStoreImported.set({
+    const result = await openDialog({
         type: "chatOptions",
         msg: language.chatOptions,
     });
-    await waitAlert();
 
-    return parseInt(get(alertStoreImported).msg);
+    return parseInt(result);
 }
 
 export async function alertSelect(msg: string[], display?: string) {
     const message = display !== undefined ? `__DISPLAY__${display}||${msg.join("||")}` : msg.join("||");
-    alertStoreImported.set({
+    return await openDialog({
         type: "select",
         msg: message,
     });
-
-    await waitAlert();
-
-    return get(alertStoreImported).msg;
 }
 
 export async function alertErrorWait(msg: string) {
-    alertStoreImported.set({
+    await openDialog({
         type: "wait2",
         msg: msg,
     });
-    await waitAlert();
 }
 
 export function alertMd(msg: string) {
-    alertStoreImported.set({
+    void openDialog({
         type: "markdown",
         msg: msg,
     });
 }
 
+/**
+ * Whether an alert blocks the screen: a dialog shown or queued (also during the gap between two),
+ * or a progress overlay. A loading `wait` or a toast does not.
+ */
 export function doingAlert() {
-    return (
-        get(alertStoreImported).type !== "none" &&
-        get(alertStoreImported).type !== "toast" &&
-        get(alertStoreImported).type !== "wait"
-    );
+    return alertStoreImported.hasDialogs() || get(alertStoreImported).type === "progress";
 }
 
 export function alertToast(msg: string) {
@@ -279,99 +307,75 @@ export function alertWait(msg: string) {
     });
 }
 
+/** Clears the status (a `wait`, `progress` or toast); a dialog shown or queued stays. */
 export function alertClear() {
-    alertStoreImported.set({
-        type: "none",
-        msg: "",
-    });
+    alertStoreImported.clearStatus();
 }
 
 export async function alertSelectChar() {
-    alertStoreImported.set({
+    return await openDialog({
         type: "selectChar",
         msg: "",
     });
-
-    await waitAlert();
-
-    return get(alertStoreImported).msg;
 }
 
 export async function alertConfirm(msg: string) {
-    alertStoreImported.set({
+    const result = await openDialog({
         type: "ask",
         msg: msg,
     });
 
-    await waitAlert();
-
-    return get(alertStoreImported).msg === "yes";
+    return result === "yes";
 }
 
 export async function alertPluginConfirm(msg: string) {
-    alertStoreImported.set({
+    const result = await openDialog({
         type: "pluginconfirm",
         msg: msg,
     });
 
-    await waitAlert();
-
-    return get(alertStoreImported).msg === "yes";
+    return result === "yes";
 }
 
 export async function alertCardExport() {
-    alertStoreImported.set({
+    const result = await openDialog({
         type: "cardexport",
         msg: "",
     });
 
-    await waitAlert();
-
-    return JSON.parse(get(alertStoreImported).msg) as {
+    return JSON.parse(result) as {
         type: string;
         type2: string;
     };
 }
 
 export async function alertInput(msg: string, datalist?: [string, string][], defaultValue?: string) {
-    alertStoreImported.set({
+    return await openDialog({
         type: "input",
         msg: msg,
         datalist: datalist ?? [],
         defaultValue: defaultValue ?? "",
     });
-
-    await waitAlert();
-
-    return get(alertStoreImported).msg;
 }
 
 export async function alertModuleSelect() {
-    alertStoreImported.set({
+    return await openDialog({
         type: "selectModule",
         msg: "",
     });
-
-    while (true) {
-        if (get(alertStoreImported).type === "none") {
-            break;
-        }
-        await sleep(20);
-    }
-
-    return get(alertStoreImported).msg;
 }
 
-export function alertRequestData(info: AlertGenerationInfoStoreData) {
-    alertGenerationInfoStore.set(info);
-    alertStoreImported.set({
+/** The generation info of a message; the dialog renders from its own copy of `info`. */
+export function alertRequestData(info: AlertGenerationInfo) {
+    void openDialog({
         type: "requestdata",
         msg: info.genInfo.generationId ?? "none",
+        generationInfo: info,
     });
 }
 
 export function showHypaV2Alert() {
-    alertStoreImported.set({
+    void openDialog({
         type: "hypaV2",
         msg: "",
     });
@@ -379,7 +383,7 @@ export function showHypaV2Alert() {
 
 /** The request logs popup; `filter.jobId` opens the server's history filtered to that job. */
 export function alertRequestLogs(filter: { jobId?: string | null } = {}) {
-    alertStoreImported.set({
+    void openDialog({
         type: "requestlogs",
         msg: "",
         ...(filter.jobId ? { jobId: filter.jobId } : {}),

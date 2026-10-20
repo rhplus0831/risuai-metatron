@@ -59,7 +59,7 @@
     - `LoreBookList.svelte`: SortableJS lists and folders. Rows are keyed by entry (`{#each … (book)}`); `LoreBookData`'s `value` is bound through `liveEntry`/`replaceEntry`, and `removeEntry` deletes by identity (a folder through `replaceRecordList`), doing nothing when the shown list no longer holds the entry.
     - `LoreBookData.svelte`: a single entry. `activateLocally` creates a `mode:'child'` link.
   - Modules:
-    - `ModuleSettings.svelte`: the catalog. The row's share button (large-asset-import slice 3b) awaits `exportModule` (CharX) or `exportModuleLegacy` (`.risum`) inside try/catch; both alert their own failure, so the button adds no error alert. Once the export settles, a `wait` or `progress` alert still showing is stale (a failure whose `alertError` set nothing, or a throw) and is cleared (`alertClear`), so the catalog stays usable; an error or success alert stays.
+    - `ModuleSettings.svelte`: the catalog. The row's share button (large-asset-import slice 3b) awaits `exportModule` (CharX) or `exportModuleLegacy` (`.risum`) inside try/catch; both alert their own failure, so the button adds no error alert. Once the export settles, a `wait` or `progress` status still set (`alertStore.status()`) is stale (a failure whose `alertError` set nothing, or a throw) and is cleared (`alertClear`, the status only), so the catalog stays usable; an error or success dialog stays.
     - `ModuleMenu.svelte`: the editor.
     - `ModuleChatMenu.svelte`: per-chat and per-character toggles.
   - `GridCatalog.svelte`: the catalog plus trash.

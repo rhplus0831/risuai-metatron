@@ -19,7 +19,6 @@
     import { tooltip } from "src/ts/gui/tooltip";
     import { alertClear, alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
     import { alertStore } from "src/ts/stores.svelte";
-    import { get } from "svelte/store";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
@@ -34,10 +33,10 @@
     let moduleSearch = $state("");
     let charConversionMode = $state(false);
 
-    // The export is over: a wait or progress alert still showing is stale (a failure the exporter
-    // could not alert), so clear it and keep the row usable.
+    // The export is over: a wait or progress status still set is stale (a failure the exporter
+    // could not alert), so clear it and keep the row usable. A dialog is never closed here.
     function clearStaleExportWait() {
-        const type = get(alertStore).type;
+        const type = alertStore.status()?.type;
         if (type === "wait" || type === "progress") {
             alertClear();
         }
