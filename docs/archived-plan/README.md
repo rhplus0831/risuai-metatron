@@ -23,6 +23,7 @@ git show f5895b925:docs/plan/sidebar-chat-status.md
 git show 46eeee597:docs/plan/settings-ui-reorg.md
 git show cfe072e4e:docs/plan/open-bug-fixes.md
 git show 723700902:docs/plan/boot-resource-cache.md
+git show 639ba5b2e:docs/plan/heap-memory.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -47,6 +48,7 @@ it is not a current architecture guide.
 | Settings UI Reorganization          | `46eeee597`: `docs/plan/settings-ui-reorg.md`                             | [settings](../structure/settings-i18n.md), [app shell/routes](../structure/app-shell.md), [media/translation](../structure/media-aux.md), [LLM requests](../structure/llm-requests.md)                                                                                                                                                                                                                                                                       |
 | Open Bug Fixes                      | `cfe072e4e`: `docs/plan/open-bug-fixes.md`                                | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [browser notifications](../structure/global-api.md), [media](../structure/media-aux.md) |
 | Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                   |
+| Heap Memory Reduction               | `639ba5b2e`: `docs/plan/heap-memory.md`                                   | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [CBS/rendering](../structure/cbs-rendering.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -81,6 +83,17 @@ server of the reported shape at 10 Mbps the main screen came after 18.3 s with t
 plain read, 6.5 s on a first (cold) boot, and 0.51 s on a warm boot; the archived Slice 4 section
 holds the full table and the decisions (no server hash cache; compression settings and `presets`
 as an item kind kept).
+Heap Memory Reduction (two Chrome heap snapshots of a production build with large modules
+and characters, 2026-10-19) landed every slice on the `heap-memory-reduction` branch, merged
+into `metatron` as `b122ae132`: the heap scripts and large-data driver (M0 `133e0b965`), one
+string per equal record text (A1 `c087b8568`), frozen module and character asset lists (B1
+`32f346324`, B2 `4e9aa27d9`), the font investigation (C1 `937f1e456`, no app-side holder), one
+stylesheet per chat style (C2 `7a986ac69`), wrapper nodes released after deletes (D1
+`f37cae9cc`), and the one-shot decode URLs revoked (D2a `d00bde006`; D2b measured and accepted
+in `639ba5b2e`). The driver's JS self size at boot went from 191.3 MB to 61.6 MB and asset
+tuple proxies from 132,600 to 0; the archived file holds every slice's table. At the merge,
+B2's frozen-list `CharConfig` rows replaced open-bug-fixes slice C7's tuple-keyed rows (C7's
+regression tests kept and passing).
 
 ## Server-Owned Data Chronology
 
@@ -205,6 +218,34 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `Last-Modified` only (no `Cache-Control`, no 304 for `If-Modified-Since`, no
     compression), so once Chrome's heuristic freshness lapses a boot downloads the
     app's ~3.8 MB of scripts in full again.
+- Heap memory reduction:
+  - Found by M0, not sliced: opening a character's settings loads a tokenizer BPE model
+    (~49 MB) on the main thread and keeps it; the settings tokenize the description and
+    first message on the main thread (17–22 s for a 1.7 MB description); `loadTokenize`
+    passes an undefined note on a closed-chat character switch (an error alert).
+  - D3 candidate: a Svelte `Batch` kept alive by an `{#await}` block holds the previous
+    `parserAssetInputs`, so a server-deleted module's assets stay reachable (+17.2 MB in
+    the driver's `boot-module-delete` step, measured but unchecked).
+  - D2b accepted: without a working service worker every distinct file shown keeps a Blob
+    of its bytes for the page's life (40.5 MB in the fixture); inlay audio/video object
+    URLs stay in both modes. The fix needs releasable avatar sources and a URL-free
+    placeholder for parser output, `fileSrcCache` with it.
+  - B1/B2: a same-record unproxied list or tuple assigned to a module's `assets` is frozen
+    in place (later edits through its source wrapper throw; no production writer does
+    this); a same-id `replaceCharacterRecordAt` with the character's own frozen list
+    re-stamps that field; in DEV `module.assets = module.assets` nests Svelte's
+    inspectable proxies.
+  - C2: rows `Chats` trims keep their sheets for a few frames; a CSS-only change does not
+    re-observe a `.far` row; a sheet is made again after a real gap; plugins that serialize
+    a row get the inert placeholders; layers declared inside an imported file are not
+    detected.
+  - D1: a throwing mutator's shrink, a local field replacement's cached node, other by-id
+    lists, nested containers' Svelte targets, `defineProperty` length sets and deleted ids'
+    per-character metas are not pruned (all bounded by installed data or small).
+  - Drivers: the loader/dominator unit test is not written; readiness and cleanup in
+    `measureHeap.mjs` and `measureFileSources.mjs` check `exitCode` only (a signal-killed
+    server child is missed); no server-side egress accounting; the user's own style and
+    real font files were not measured.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 

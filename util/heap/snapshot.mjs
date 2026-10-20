@@ -485,7 +485,7 @@ function isStringTriple(s, n) {
 const MB = 1024 * 1024;
 
 /**
- * The numbers the heap memory plan's slices check (`docs/plan/heap-memory.md`):
+ * The numbers the heap memory plan's slices check (archived `docs/plan/heap-memory.md`):
  * - `proxies`: every `JSProxy`, and `tupleProxies`, those whose target is an array with string
  *   elements at 0, 1 and 2 and no other element edge (an asset tuple made a Svelte `$state` proxy;
  *   a snapshot shows no edge for a small-integer element, so `[a, b, c, 1]` would count too);

@@ -159,7 +159,7 @@ Rejected for now:
     substring. Case-insensitive for every script.
   - `matchesAny(texts: (string | undefined)[], query: PreparedQuery): boolean` for the lists.
   - Per-text derived forms are computed per call, not cached (the lists are small; a cache keyed by
-    text would be a new retention path, see the heap plan).
+    text would be a new retention path, see the archived heap memory plan).
 - Test: `src/ts/util/koreanSearch.test.ts`: 해적 matches ㅎㅈ, 해저, 해적, 바다해적 and `gowjr`; it
   does not match ㅎㅂ or 해자; English is case- and space-insensitive (`Long Name` matches
   `longna`); the score order above holds for one text per tier; an empty or whitespace query is

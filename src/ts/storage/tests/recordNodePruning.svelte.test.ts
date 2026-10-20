@@ -20,7 +20,7 @@ import {
     trackedRecord,
 } from "../records.svelte";
 
-// Heap plan D1 (`docs/plan/heap-memory.md`): the record wrapper nodes no longer keep removed data.
+// Heap plan D1 (archived `docs/plan/heap-memory.md`): the record wrapper nodes no longer keep removed data.
 // These are the behavioral contracts of that change (the retention itself is proved by the heap
 // driver, `util/playwright/measureHeap.mjs`, and its retainer analysis, not here): a retained wrapper
 // of a character that left the list through any of the four membership paths throws while the id is

@@ -1,4 +1,4 @@
-// Measurement for the heap memory plan (`docs/plan/heap-memory.md`, slice D2b): the Blob memory the
+// Measurement for the heap memory plan (archived `docs/plan/heap-memory.md`, slice D2b): the Blob memory the
 // page keeps for file sources, with and without the service worker. A file shown through
 // `getFileSrc` (avatars, inlay images, chat assets) is pinned for the page: with the worker its URL
 // is `/sw/img/…` and no Blob is kept; without it the source is an object URL of the file's bytes,

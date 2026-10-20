@@ -1,4 +1,4 @@
-// Measurement for the heap memory plan (`docs/plan/heap-memory.md`, slice M0): the page's JS heap
+// Measurement for the heap memory plan (archived `docs/plan/heap-memory.md`, slice M0): the page's JS heap
 // with large modules and characters, in the shape of the user's 2026-10-19 snapshots but with
 // generated content.
 //

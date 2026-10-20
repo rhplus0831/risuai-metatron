@@ -19,9 +19,6 @@ Active planning and implementation:
 - [Upstream `.bin` Compatibility](upstream-bin-compat.md): import an upstream RisuAI
   `.bin` (staged, with a report, full replace) and export a `.bin` upstream restores;
   planned.
-- [Heap Memory Reduction](heap-memory.md): browser heap that grows with module and
-  character size (asset tuple proxies, doubled record texts), from two heap snapshots;
-  every slice landed (M0, A1, B1, B2, C1, C2, D1, D2), archiving remains.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
