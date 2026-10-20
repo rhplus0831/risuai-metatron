@@ -161,6 +161,9 @@ body {
 }
 
 :root {
+    /* Native controls (select popups, scrollbars, date inputs) follow the scheme's type;
+       updateColorScheme sets it inline from the scheme. Dark matches the default palette below. */
+    color-scheme: dark;
     --FontColorStandard: #fafafa;
     --FontColorBold: #e5e5e5;
     --FontColorItalic: #8c8d93;
