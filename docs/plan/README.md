@@ -12,8 +12,8 @@ Active planning and implementation:
   wins, test network guard, CI and image hygiene, engineering rules; planned; Phase 2's
   wait on the `heap-memory-reduction` merge is over.
 - [Search](search.md): `color-scheme`, a Korean-aware list matcher, settings search with
-  deep links, and server-side message search across chats; slices 1, 2a, 4a, 2b and 2c
-  landed, the rest planned.
+  deep links, and server-side message search across chats; slices 1, 2a, 4a, 2b, 2c and
+  3a landed, the rest planned.
 - [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.
