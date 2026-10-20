@@ -1929,6 +1929,9 @@ export const languageEnglish = {
     duplicatePluginFoundUpdateIt: "Duplicate plugin found. do you want to update the existing plugin?",
     pluginApiVersionUnsupported:
         "This plugin does not declare API version 3.0. Plugin API 2.0 and 2.1 are no longer supported. Add `//@api 3.0` and update the plugin to API 3.0.",
+    pluginApiVersionUnsupportedLoad:
+        "These plugins use an unsupported plugin API version and did not run. Install versions updated to API 3.0.\n\n{plugins}",
+    pluginApiVersionUnsupportedBadge: "Unsupported API",
     pluginUpdateFoundInstallIt: "Plugin update found. Do you want to install the update?",
     goToChat: "Go to Chat",
     bookmark: "Bookmark",

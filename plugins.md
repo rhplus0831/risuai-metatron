@@ -910,6 +910,8 @@ list with two entries of the same `chaId` is refused as a whole, and `setCharact
 
 Across the sandbox, headers must be a record or `[name, value][]` pairs. Bodies may be strings, ArrayBuffer, ArrayBufferView (typed arrays or DataView), or Blob (including File); `null` or `undefined` means no body. When no Content-Type is supplied, strings use `text/plain;charset=UTF-8` and Blob uses its nonempty `type`. `Headers`, `FormData`, `URLSearchParams`, and streams cannot cross the sandbox bridge. Pass `signal` from an AbortController to cancel.
 
+The response body stays open on the host until your plugin reads it. Start reading it (`json()`, `text()`, `arrayBuffer()`, or the first `body.getReader().read()`) within 60 seconds of the response: a body nothing has read by then is cancelled, the host request ends, and a later read fails with `Unread plugin response expired`. Once reading has started, a slow stream is not cut off. If you do not need the body, call `response.body?.cancel()`. When the plugin is unloaded (disabled, updated, or removed), its open bodies are closed, its requests still waiting for a response are aborted if they were given a `signal`, and a response that arrives after the unload is discarded with its body cancelled.
+
 For example, send JSON:
 
 ```javascript
@@ -1728,7 +1730,7 @@ await Risuai.setDatabase(db); // Or setDatabaseLite(db)
 
 ## Migration from API v2.1
 
-API 2.0 and 2.1 plugins no longer install or run. To port one, declare `//@api 3.0` and move it to the API described in this guide.
+API 2.0 and 2.1 plugins no longer install or run. An installed plugin that is not API 3.0 (from an older backup, for example) stays in the plugin list with an "Unsupported API" mark; while it is enabled, the app reports it once per page load (again if its script changes). To port one, declare `//@api 3.0` and move it to the API described in this guide.
 
 **Key differences:**
 

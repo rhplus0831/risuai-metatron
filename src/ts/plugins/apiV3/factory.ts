@@ -212,6 +212,8 @@ await (async function() {
             const port = ports[val.portIndex];
             if (!port) throw new Error('Stream port at index ' + val.portIndex + ' not received');
 
+            // A zero high-water mark pulls only for a pending read, so a pull tells the host the plugin reads
+            // (the host cancels a body nobody pulled from).
             return new ReadableStream({
                 start(controller) {
                     port.onmessage = (e) => {
@@ -233,7 +235,7 @@ await (async function() {
                     port.onmessage = null;
                     port.close();
                 }
-            });
+            }, { highWaterMark: 0 });
         }
 
         if (obj.__type === 'STREAM_PORT') return reconstruct(obj);
@@ -423,6 +425,9 @@ await (async function() {
 })();
 `;
 
+/** A bridged host stream the plugin has not pulled from within this time is cancelled (its fetch and upstream end). */
+export const UNREAD_PLUGIN_STREAM_TIMEOUT_MS = 60_000;
+
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
@@ -440,6 +445,7 @@ export class SandboxHost {
     // 'close' event in stable browsers, so without these the other side of an
     // active stream would wait forever once the iframe is gone.
     private activeStreamCleanups = new Set<() => void>();
+    private terminated = false;
 
     constructor(apiFactory: any) {
         this.apiFactory = apiFactory;
@@ -640,10 +646,12 @@ export class SandboxHost {
             let credits = 0;
             let reading = false;
             let finished = false;
+            let unreadTimeout: ReturnType<typeof setTimeout> | undefined;
 
             const finish = () => {
                 if (finished) return;
                 finished = true;
+                clearTimeout(unreadTimeout);
                 ch.port1.onmessage = null;
                 ch.port1.close();
                 this.activeStreamCleanups.delete(cleanup);
@@ -657,6 +665,13 @@ export class SandboxHost {
             this.activeStreamCleanups.add(cleanup);
             cleanups.push(cleanup);
             remainingStreams++;
+            // An unread body would otherwise hold the host fetch (and a `/proxy` upstream) until the plugin unloads.
+            unreadTimeout = setTimeout(() => {
+                try {
+                    ch.port1.postMessage({ done: true, error: "Unread plugin response expired" });
+                } catch (_) {}
+                cleanup();
+            }, UNREAD_PLUGIN_STREAM_TIMEOUT_MS);
 
             const pump = async () => {
                 if (reading || finished) return;
@@ -688,6 +703,7 @@ export class SandboxHost {
                     reader.cancel();
                     finish();
                 } else if (e.data?.pull) {
+                    clearTimeout(unreadTimeout);
                     credits++;
                     pump();
                 }
@@ -769,6 +785,20 @@ export class SandboxHost {
         }
 
         return obj;
+    }
+
+    private disposeUndeliveredResult(result: any) {
+        const dispose = (value: any) => {
+            if (value instanceof Response) value = value.body;
+            if (value instanceof ReadableStream) void value.cancel().catch(() => {});
+            else if (value instanceof WritableStream) void value.abort().catch(() => {});
+            else if (value instanceof TransformStream) {
+                void value.readable.cancel().catch(() => {});
+                void value.writable.abort().catch(() => {});
+            }
+        };
+        dispose(result);
+        if (result && result.constructor === Object) Object.values(result).forEach(dispose);
     }
 
     private closeActiveStreams() {
@@ -870,6 +900,11 @@ export class SandboxHost {
                         result = await instance[data.method!](...args);
                     }
 
+                    // Unloaded while the call ran: bridge nothing, and end the streams nobody will read.
+                    if (this.terminated) {
+                        this.disposeUndeliveredResult(result);
+                        return;
+                    }
                     response.result = this.serialize(result);
                     const {
                         result: streamResult,
@@ -888,6 +923,7 @@ export class SandboxHost {
                     if (streamCleanups.length === 0) releaseAbortControllers();
                 }
 
+                if (this.terminated) return;
                 console.log("Original request:", data);
                 console.log("Original response:", response, transferables);
                 try {
@@ -949,6 +985,9 @@ export class SandboxHost {
     }
 
     public terminate() {
+        this.terminated = true;
+        // An in-flight host call (a `nativeFetch` still waiting for headers) stops with its sandbox.
+        for (const controller of this.abortControllers.values()) controller.abort();
         if (this.messageHandlerRef) {
             window.removeEventListener("message", this.messageHandlerRef);
             this.messageHandlerRef = null;

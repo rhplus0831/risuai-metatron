@@ -56,6 +56,14 @@
                 {#if hotReloading.includes(plugin.name)}
                     <span class="text-sm rounded bg-amber-700 ml-2 px-2 py-1 text-white"> Hot </span>
                 {/if}
+                {#if plugin.version !== "3.0"}
+                    <span
+                        class="text-xs rounded border border-draculared text-draculared ml-2 px-2 py-0.5"
+                        title={language.pluginApiVersionUnsupported}
+                    >
+                        {language.pluginApiVersionUnsupportedBadge} (API {plugin.version ?? "?"})
+                    </span>
+                {/if}
             </div>
             {#if plugin.customLink}
                 {#each plugin.customLink as link}

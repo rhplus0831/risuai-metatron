@@ -374,11 +374,47 @@ export async function importPlugin(
 
 let pluginReload: Promise<void> = Promise.resolve();
 
+// Identities (name, API version, script hash) of the non-3.0 plugins already reported in this page load.
+const reportedUnsupportedPlugins = new Set<string>();
+
+async function unsupportedPluginIdentity(plugin: RisuPlugin): Promise<string> {
+    const script = plugin.script ?? "";
+    let scriptId = script;
+    try {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script));
+        scriptId = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    } catch (error) {
+        console.error(error);
+    }
+    return JSON.stringify([plugin.name, String(plugin.version ?? ""), scriptId]);
+}
+
+/** Reports each enabled plugin that does not load (not API 3.0) once per page load and identity. */
+async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise<void> {
+    const identities = await Promise.all(plugins.map(unsupportedPluginIdentity));
+    // From here on synchronous, so concurrent loads with the same plugins report them once.
+    const unreported = new Map<string, RisuPlugin>();
+    plugins.forEach((plugin, i) => {
+        if (!reportedUnsupportedPlugins.has(identities[i])) unreported.set(identities[i], plugin);
+    });
+    if (unreported.size === 0) return;
+    const listed = Array.from(
+        unreported.values(),
+        (plugin) => `${plugin.displayName ?? plugin.name} (API ${plugin.version ?? "?"})`,
+    ).join("\n");
+    const message = language.pluginApiVersionUnsupportedLoad.replace("{plugins}", listed);
+    if (hotReloading.length > 0) console.error(message);
+    else alertError(message);
+    for (const identity of unreported.keys()) reportedUnsupportedPlugins.add(identity);
+}
+
 export async function loadPlugins() {
     console.log("Loading plugins...");
 
-    const enabledPlugins = safeStructuredClone(settings.plugins).filter(
-        (p: RisuPlugin) => p.enabled && p.version === "3.0",
+    const enabled = safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled);
+    const enabledPlugins = enabled.filter((p: RisuPlugin) => p.version === "3.0");
+    const report = reportUnsupportedPlugins(enabled.filter((p: RisuPlugin) => p.version !== "3.0")).catch((error) =>
+        console.error(error),
     );
 
     // Capture each caller's list now, but reset and reload only after the previous reload settles.
@@ -387,6 +423,7 @@ export async function loadPlugins() {
         await loadV3Plugins(enabledPlugins);
     });
     pluginReload = reload.catch(() => {});
+    await report;
     await reload;
 }
 

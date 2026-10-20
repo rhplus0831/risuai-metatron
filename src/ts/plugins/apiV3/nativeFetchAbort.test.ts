@@ -33,6 +33,7 @@ vi.mock("./permissionStore", () => ({
 }));
 
 import { fetchNative } from "src/ts/globalApi.svelte";
+import { UNREAD_PLUGIN_STREAM_TIMEOUT_MS } from "./factory";
 import { executePluginV3, loadV3Plugins } from "./v3.svelte";
 
 type Reply = {
@@ -108,6 +109,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    vi.useRealTimers();
     await loadV3Plugins([]);
     for (const port of guestPorts) port.close();
     guestPorts.clear();
@@ -176,5 +178,95 @@ describe("nativeFetch aborts through SandboxHost", () => {
             expect(signal.aborted, outcome).toBe(false);
             expect(aborted, outcome).not.toHaveBeenCalled();
         }
+    });
+});
+
+const bytes = (text: string) => new TextEncoder().encode(text);
+const bodyOf = (chunks: string[], cancel: () => void) =>
+    new Response(
+        new ReadableStream<Uint8Array>({
+            start(controller) {
+                for (const chunk of chunks) controller.enqueue(bytes(chunk));
+            },
+            cancel,
+        }),
+    );
+const signalRef = (abortId: string) => ({ signal: { __type: "ABORT_SIGNAL_REF", abortId, aborted: false } });
+
+describe("unread nativeFetch bodies expire", () => {
+    it("cancels a body the plugin never pulls from at 60 s and tells the plugin why", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const cancelled = vi.fn();
+        vi.mocked(fetchNative).mockResolvedValue(bodyOf(["never read"], cancelled));
+        const port = bodyPort(await callNativeFetch("unread"));
+        const received: unknown[] = [];
+        port.onmessage = (event) => received.push(event.data);
+        port.start();
+
+        await vi.advanceTimersByTimeAsync(UNREAD_PLUGIN_STREAM_TIMEOUT_MS - 1);
+        expect(cancelled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(cancelled).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(received).toEqual([{ done: true, error: "Unread plugin response expired" }]));
+
+        // The stream's end released the call's abort controller.
+        const signal = hostSignal();
+        send({ type: "ABORT_SIGNAL", abortId: "unread" });
+        expect(signal.aborted).toBe(false);
+    });
+
+    it("keeps a body the plugin has pulled from, however slowly it reads on", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const cancelled = vi.fn();
+        vi.mocked(fetchNative).mockResolvedValue(bodyOf(["first", "second"], cancelled));
+        const port = bodyPort(await callNativeFetch("pulled"));
+
+        await vi.advanceTimersByTimeAsync(UNREAD_PLUGIN_STREAM_TIMEOUT_MS - 1);
+        const first = await pull(port);
+        expect(new TextDecoder().decode(first.value)).toBe("first");
+        await vi.advanceTimersByTimeAsync(10 * UNREAD_PLUGIN_STREAM_TIMEOUT_MS);
+        expect(cancelled).not.toHaveBeenCalled();
+        const second = await pull(port);
+        expect(second.done).toBe(false);
+        expect(new TextDecoder().decode(second.value)).toBe("second");
+        expect(hostSignal().aborted).toBe(false);
+    });
+});
+
+describe("terminate ends host calls", () => {
+    it("aborts a nativeFetch still waiting for headers, and bridges nothing when it resolves later", async () => {
+        let resolveFetch!: (response: Response) => void;
+        vi.mocked(fetchNative).mockImplementationOnce(
+            () =>
+                new Promise<Response>((resolve) => {
+                    resolveFetch = resolve;
+                }),
+        );
+        const replies: Reply[] = [];
+        replyToGuest = (reply) => replies.push(reply);
+        send({ type: "CALL_ROOT", reqId: "late", method: "nativeFetch", args: [url, signalRef("late")] });
+        await vi.waitFor(() => expect(fetchNative).toHaveBeenCalledTimes(1));
+        const signal = hostSignal();
+        expect(signal.aborted).toBe(false);
+
+        let channels = 0;
+        vi.stubGlobal(
+            "MessageChannel",
+            class extends NodeMessageChannel {
+                constructor() {
+                    super();
+                    channels++;
+                }
+            },
+        );
+        await loadV3Plugins([]);
+        expect(signal.aborted).toBe(true);
+
+        // A fetch that ignores its signal still resolves; its body is cancelled, never bridged.
+        const cancelled = vi.fn();
+        resolveFetch(bodyOf(["late"], cancelled));
+        await vi.waitFor(() => expect(cancelled).toHaveBeenCalledTimes(1));
+        expect(channels).toBe(0);
+        expect(replies.filter((reply) => reply.data.reqId === "late")).toEqual([]);
     });
 });
