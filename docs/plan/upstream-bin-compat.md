@@ -1,6 +1,10 @@
 # Upstream `.bin` Compatibility Plan
 
-Status: planned 2026-10-20 at `437bcdfe9`; no slice landed. `heap-memory-reduction` merged
+Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat`: S1, S2 and S3
+(merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`; `pnpm check`, `test:agent` and `pnpm build`
+pass on the merge). Next: S4 and S6, which can run in parallel. Each landed slice's
+section ends with a _Landed_ note on where it departed from this plan; S4–S6 open with
+what the earlier slices handed over. `heap-memory-reduction` merged
 into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
 waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
 [docs/research/README.md](../research/README.md) (RisuNest item 10, Haejeok A14), answered
@@ -278,6 +282,36 @@ Depends: nothing.
     `UpstreamFormatError`.
 - Docs: `self-host-server.md` `Files` (the new module).
 
+_Landed_ (`620fc6fc1`, `48d5571af`):
+
+- **API**: `decodeUpstreamDatabase(bytes, { maxDecodedBytes })` and `encodeUpstreamDatabase(db)`
+  in `server/src/data/upstream/risuSave.ts`. `UpstreamFormatError` carries a `format`
+  field (`UpstreamSaveFormat`).
+- **Inflate**: `node:zlib` `gunzipSync` with `maxOutputLength`, not `fflate.decompressSync`.
+  fflate trusts the gzip trailer's size field and never checks the CRC. A zlib or
+  raw-deflate payload is therefore refused, and concatenated gzip members inflate as a
+  whole.
+- **msgpackr**: pinned to exactly `2.0.6`. 1.10.1 throws `ERR_BUFFER_OUT_OF_BOUNDS` on Node 24
+  for strings of 64 or more characters, which was fixed upstream in 1.11.1.
+  - An Opus parity check compared 21 builds in browser and Node modes. The real backup
+    `save/Binary.bin` and a 45 MB synthetic database re-encode byte-identical to
+    upstream's 1.10.1 browser output.
+  - Byte differences appear only for types RisuAI does not store (`Error`, inherited
+    properties, more than 65,535 keys, `DataView`). Decoding differs only for invalid
+    UTF-8, which becomes `U+FFFD`; the server already did this through
+    `msgpackr-extract`.
+  - `.risup` and `.risutl` bytes are unchanged.
+- **int64**: upstream's `\x08` reader uses the default `decode` (BigInt). This codec returns
+  numbers (`int64AsType: "number"`). Upstream's encoder never writes int64 for a number,
+  so nothing real differs; the code and the guide note the exception.
+- **Memory**: the decoded-size cap does not bound MessagePack decode memory. 2.0.6 caps a
+  single array or map header by the bytes left (a 5-byte array32 header now costs 192 KiB
+  instead of ~128 MiB), but nested headers can each allocate up to that bound. S5's
+  worker heap limit (D1) is therefore required, not optional.
+- **Fixture**: `server/src/tests/fixtures/upstream/database-v8.risudat` was written with
+  upstream's own library versions (msgpackr 1.10.1 `index-no-eval`, fflate 0.8.2) by the
+  committed `make-database-v8.mjs`. Its README gives the provenance.
+
 ## S2. Upstream archive classification (_small_, `self-host-server.md`)
 
 Depends: nothing.
@@ -316,6 +350,25 @@ Depends: nothing.
   - an asset name `resolveStorageKey` rejects is ignored and listed;
   - an oversized cold record is reported.
 - Docs: `self-host-server.md` (the classification rules).
+
+_Landed_ (`3d5c8b747`):
+
+- **API**:
+  - `planUpstreamArchive(handle, savePath)` takes `savePath`, because `resolveStorageKey`
+    needs it. Each asset comes back with its storage target, as `planImport` does.
+  - Cold storage is `UpstreamColdEntry = { key, records[] }`, with the records in
+    archive order.
+  - `readColdEntry` returns the last valid payload of a key, as upstream's restore does.
+    `readColdRecord` reports `tooLarge`, `invalidJson` or `invalidPayload` and never
+    throws.
+  - Payload shape is checked as upstream's `isColdStorageBackupData` checks it.
+- **Refusal order**: a malformed container, `encryption.risudat` (`UPSTREAM_ENCRYPTED_MESSAGE`),
+  a version-2 archive, a duplicate name (which also covers two databases), a slashed name,
+  then no database.
+- **`ArchiveRejectedError`** moved from `routes/backups.ts` to `server/src/data/archive.ts` and is
+  exported, so S5's routes answer these refusals with the same 400.
+- **Bare `<uuid>.json` cold records**: confirmed. Upstream wrote `coldstorage/<uuid>.json`,
+  and its writer cut that to the basename.
 
 ## S3. Converter: settings, presets, personas, secrets (_hard_, `persistence.md`)
 
@@ -405,9 +458,53 @@ Depends: nothing (works on plain decoded objects; S1 is not needed to test it).
 - Docs: `persistence.md` (the converter as a writer of resources; the `Backend` note on
   the removed block save format, ~130, names the converter instead of "not built yet").
 
+_Landed_ (`cb4c9ca48`):
+
+- **API**:
+  - `convertUpstreamDatabase(db, { report })` returns `{ resources, selection, report }`
+    (`UpstreamConversion`, `server/src/data/upstream/importDatabase.ts`).
+  - It is pure and does not mutate its input.
+  - Every record is exactly what its kind's normalizer keeps.
+  - A bad setting or list entry is dropped, or reset to its default, and reported. Only a
+    non-object database fails the whole conversion.
+- **Report**: the report type, the code lists (`UPSTREAM_CONVERTED_CODES`,
+  `UPSTREAM_EXCLUDED_CODES`) and the helpers (`createUpstreamImportReport`,
+  `addUpstreamReportEntry`) are in `shared/upstreamBackup.ts`. `UpstreamImportSelection`
+  is there too.
+- **Profile deduplication**: two profiles are the same when their normalized content is
+  equal, compared as key-sorted JSON without `id` and `name`. `modelId`, `maxContext` and
+  `credentialId` all count. Auxiliary-slot models also get deduplicated profiles. The
+  materialized `default` profile is kept, and nothing is merged into it.
+- **Departures from this plan** (each checked against upstream `669b12ce`):
+  - A preset's own `openAIKey`: upstream stopped restoring it on a preset switch
+    (`501167dd`), so only the root key is ever used. A differing preset key is kept as an
+    unbound `openai` named key.
+  - `proxyKey`: metatron's reverse proxy reads no default key, so every distinct proxy key,
+    the root's included, becomes a `custom` named key, bound by that preset's
+    `reverse_proxy` profiles.
+  - Non-selected presets: upstream's `setPreset` lets a preset inherit root values or fixed
+    defaults for fields it lacks. That inheritance is ported. Global fields (NanoGPT,
+    Ollama options) stay the root's.
+  - `translatorPresetId` and `hypaV3PresetId` are list positions upstream. They are mapped
+    to the selected item's id.
+  - Auxiliary slots become profiles, not bare `{ modelId }` slots. A bare slot loses the
+    global connection options and is refused for models that need a profile.
+
 ## S4. Converter: characters, chats, cold storage, the rest (_hard_, `persistence.md`)
 
 Depends: S3.
+
+Handed over from S2 and S3:
+
+- S3 emits `characterOrder` and `enabledModules` unfiltered. S4 replaces both after
+  dropping characters and modules.
+- Repair old character image paths in databases with `formatversion` below 2. Upstream's
+  `checkNewFormat` does this (`bootstrap.ts` ~432).
+- Cold-storage input comes from S2: `UpstreamColdEntry` read with `readColdEntry`.
+  Decide how a key whose records are all invalid is reported; it falls under D3
+  (`cold-missing`).
+- Extend S3's report and code lists in `shared/upstreamBackup.ts`; do not start a second
+  report.
 
 - **Cold storage first.** Use the payloads S2 indexed (passed in as a map; the
   converter does no I/O):
@@ -500,6 +597,14 @@ Depends: S3.
 ## S5. Import worker, routes, and the report dialog (_hard_, `self-host-server.md` + `backup-sync-hub.md`)
 
 Depends: S1, S2, S4.
+
+Handed over from S1–S3:
+
+- A fresh `createResourceStore` materializes the singleton records. The worker must
+  update those at their current revision, not create them.
+- The worker heap limit (`resourceLimits`) is mandatory (S1 _Landed_, Memory).
+- Call `planUpstreamArchive(handle, savePath)`. Answer `ArchiveRejectedError` from
+  `server/src/data/archive.ts` with 400.
 
 - **Worker.** New `server/src/data/upstream/importWorker.ts`, one `worker_threads` worker
   per import, inside the server process (D1). For the pattern, see
@@ -644,6 +749,18 @@ changedSinceReview` with the count, and the store is unchanged and no job aborte
 ## S6. Exporter: store copy → upstream `Database` (_hard_, `persistence.md`)
 
 Depends: S1.
+
+Handed over from S1 and S3:
+
+- Encode with `encodeUpstreamDatabase` (msgpackr 2.0.6, byte-identical to upstream for
+  RisuAI data).
+- S3's import mapping is the inverse to round-trip against:
+  - preset keys as named keys;
+  - every proxy key as a `custom` named key bound by `reverse_proxy` profiles;
+  - auxiliary slots as profiles;
+  - translator and HypaV3 selections as list positions upstream.
+
+  S6's round-trip test (export → decode → S3/S4 import) must hold for these.
 
 - New `server/src/data/upstream/exportDatabase.ts`:
   - `buildUpstreamDatabase(rows, chats, options)` takes the rows of a staged `backupTo`
@@ -805,6 +922,8 @@ The runner takes each default unless the user overrides it.
   - (b) the same on the request thread (simpler, but every request waits while a large
     database decodes);
   - (c) a streaming msgpack walker like Haejeok's `legacyStream.ts` (~1k lines).
+  - S1 showed that nested MessagePack headers can allocate past the decoded-size cap, so
+    (a)'s worker heap limit is required and (b) has no memory bound.
   - Default (a). It keeps the server responsive while a large database decodes, and (c)
     can follow if a real backup exceeds the cap.
 - **D2. Group chats.** Options: (a) import them as groups (metatron supports groups);
@@ -879,4 +998,15 @@ The runner takes each default unless the user overrides it.
 
 ## Leftovers
 
-None yet.
+- S3, accepted minor issues:
+  - A repaired model-preset reference is reported by its generated id, not a name.
+  - `loreBook: null` is reported, where upstream fills the default silently.
+  - `autoTranslate` and `htmlTranslation` are reported as removed, although metatron keeps
+    them per chat.
+  - Rethrowing unexpected errors (S3 review fix 5) has no test, because it would need a
+    private module mocked.
+- S2: its 11 tests in `upstreamArchive.test.ts` were written after Sol's review and were not
+  reviewed by Sol.
+- S1: Docker image not rebuilt since the msgpackr pin (the Dockerfile is back to its
+  pre-S1 state); native `msgpackr-extract` loading in the image is unverified. Real
+  browsers and Vite's bundling of msgpackr 2.0.6 were not checked beyond `pnpm build`.
