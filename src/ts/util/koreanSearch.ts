@@ -44,7 +44,14 @@ export function prepareQuery(query: string): PreparedQuery | null {
         // Shift keys type double consonants and ㅒ/ㅖ, so the typed case comes
         // first; the lowercased form covers a capitalized first letter.
         for (const keys of [typed, text]) {
-            const converted = convertQwertyToHangul(keys);
+            let converted: string;
+            try {
+                converted = convertQwertyToHangul(keys);
+            } catch {
+                // `convertQwertyToHangul` throws on key runs it cannot assemble (`jinja`); such
+                // a query is not Hangul typed in English mode, so it only loses this tier.
+                continue;
+            }
             if (converted !== "" && !qwerty.includes(converted)) qwerty.push(converted);
         }
     }

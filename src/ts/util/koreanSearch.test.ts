@@ -84,6 +84,15 @@ describe("matchText", () => {
         expect(score("해적", "Gowjr")).toBe(MATCH_SCORE.qwerty);
     });
 
+    it("skips a QWERTY form es-hangul cannot assemble and still matches by substring", () => {
+        // `convertQwertyToHangul` throws on both forms of `jinja`.
+        expect(query("jinja").qwerty).toEqual([]);
+        expect(score("Jinja Template", "jinja")).toBe(MATCH_SCORE.prefix);
+        // Only the lowercased form of `EmotionPrompt` throws; the typed form is kept.
+        expect(query("EmotionPrompt").qwerty).toHaveLength(1);
+        expect(score("Emotion Prompt", "EmotionPrompt")).toBe(MATCH_SCORE.exact);
+    });
+
     it("matches decomposed (NFD) text", () => {
         expect(score("해적", "ㅎㅈ")).toBe(MATCH_SCORE.choseong);
     });
