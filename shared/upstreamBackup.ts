@@ -96,20 +96,29 @@ export type UpstreamReportEntry<Code extends string = string> = {
     examples: string[];
 };
 
-/** Where a referenced asset key is used (`server/src/data/upstream/assetReferences.ts`). */
+/**
+ * Where a referenced asset key is used, on import and export alike (`server/src/data/upstream/assetReferences.ts`,
+ * the one walker of both directions).
+ */
 export type UpstreamAssetRole =
     | "profile"
     | "emotion"
     | "additional"
     | "vits"
     | "ccAsset"
-    | "persona"
+    | "sovitsReference"
+    | "userIcon"
     | "background"
+    | "persona"
     | "folder"
     | "preset"
-    | "module";
+    | "module"
+    | "moduleIcon";
 
-/** One referenced `assets/...` key and its first user (a character, persona, folder, preset, or module name; "" for a setting). */
+/**
+ * One referenced `assets/...` key and its first user (a character, group, persona, folder, preset, or
+ * module name, a persona's for its embedded module; "" for a setting).
+ */
 export type UpstreamAssetReference = { key: string; owner: string; role: UpstreamAssetRole };
 
 /**

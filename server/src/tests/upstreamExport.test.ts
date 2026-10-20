@@ -12,11 +12,8 @@ import type { UpstreamReportEntry } from "../../../shared/upstreamBackup.ts";
 import type { UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ValidatedSnapshot } from "../data/resourceStore.ts";
-import {
-    buildUpstreamDatabase,
-    collectUpstreamAssetReferences,
-    type UpstreamExportOptions,
-} from "../data/upstream/exportDatabase.ts";
+import { collectUpstreamAssetReferences } from "../data/upstream/assetReferences.ts";
+import { buildUpstreamDatabase, type UpstreamExportOptions } from "../data/upstream/exportDatabase.ts";
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
 import { decodeUpstreamDatabase, encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
 
@@ -27,9 +24,10 @@ import { decodeUpstreamDatabase, encodeUpstreamDatabase } from "../data/upstream
 // keys without `includeSecrets`, the named-key placement order and reservations, sub-slot proxy keys
 // and option loss, the translator shape and both selections, boot-crashing shapes, the asset walker,
 // character fields, trash and interaction times, dangling and orphan named keys, Vertex bindings,
-// false/zero settings), ordering, input immutability, and the round trip through S1's codec and S3's
-// converter for settings, presets, personas, and secrets. Character and chat round trips wait for S4
-// (`it.todo` below).
+// false/zero settings), ordering, input immutability, and the round trip through S1's codec and the
+// S3/S4 converter: settings, presets, personas, and secrets, and the library written into a fresh
+// staged store as S5 does (characters and groups with their chats in order and message ids, toggles,
+// modules and plugins, trash times and group members).
 
 type Root = Record<string, unknown>;
 type Entry = UpstreamReportEntry<string>;
@@ -365,6 +363,7 @@ function exportOf(snapshot: ValidatedSnapshot, options: Partial<UpstreamExportOp
     return buildUpstreamDatabase(snapshot.rows, snapshot, { ...SELECT_A, ...options });
 }
 
+const byKey = (a: { key: string }, b: { key: string }) => a.key.localeCompare(b.key);
 const entry = (list: Entry[], code: string) => list.find((item) => item.code === code);
 const excluded = (report: UpstreamExportReport, code: string) => entry(report.excluded, code);
 const converted = (report: UpstreamExportReport, code: string) => entry(report.converted, code);
@@ -389,6 +388,77 @@ function roundTrip(snapshot: ValidatedSnapshot, options: Partial<UpstreamExportO
     const exported = exportOf(snapshot, options);
     const decoded = decodeUpstreamDatabase(encodeUpstreamDatabase(exported.db), LIMIT);
     return { exported, decoded: decoded as Root, imported: convertUpstreamDatabase(decoded) };
+}
+
+/** `roundTrip` with the import options an S5 import passes: the exported asset keys as the archive's, and the export time. */
+function libraryRoundTrip(snapshot: ValidatedSnapshot, options: Partial<UpstreamExportOptions> = {}) {
+    const exported = exportOf(snapshot, options);
+    const decoded = decodeUpstreamDatabase(encodeUpstreamDatabase(exported.db), LIMIT) as Root;
+    const imported = convertUpstreamDatabase(decoded, {
+        cold: new Map(),
+        assetKeys: new Set(exported.assetKeys.map((asset) => asset.key)),
+        now: NOW,
+    });
+    return { exported, decoded, imported };
+}
+
+/** Writes a conversion into a fresh store in S4's hand-off order and reads its `backupTo` copy back. */
+async function stage(out: UpstreamConversion): Promise<ValidatedSnapshot> {
+    const store = createResourceStore({ file: ":memory:", kinds });
+    try {
+        for (const resource of out.resources) {
+            const kind = kinds.get(resource.kind)!;
+            store.put(kind, resource.id, resource.data, store.get(kind, resource.id)?.revision ?? null);
+        }
+        for (const character of out.characters) {
+            store.put(kinds.get(RESOURCE_KIND.characters)!, character.id, character.data, null);
+        }
+        store.applyChanges({ chats: out.chats });
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-upstream-export-"));
+        dirs.push(dir);
+        const file = path.join(dir, "staged.sqlite");
+        await store.backupTo(file);
+        return store.readSnapshot(file);
+    } finally {
+        store.close();
+    }
+}
+
+/**
+ * A snapshot's characters by id, each with its chats in chat order and their messages in order: the
+ * ids, names, and the message fields an export carries (translations are left out, D12), the group
+ * speaker (`saying`) included.
+ */
+function libraryOf(snapshot: ValidatedSnapshot) {
+    const messages = new Map<number, { position: number; data: string }[]>();
+    for (const message of snapshot.messages) {
+        messages.set(message.chatSeq, [...(messages.get(message.chatSeq) ?? []), message]);
+    }
+    const chats = new Map(snapshot.chats.map((chat) => [chat.id + "\0" + chat.characterId, chat]));
+    const orders = new Map(snapshot.chatOrders.map((order) => [order.characterId, JSON.parse(order.ids) as string[]]));
+    return Object.fromEntries(
+        snapshot.rows
+            .filter((row) => row.kind === RESOURCE_KIND.characters)
+            .map((row) => [
+                row.id,
+                {
+                    name: (JSON.parse(row.text) as Root).name,
+                    chats: (orders.get(row.id) ?? []).map((id) => {
+                        const chat = chats.get(id + "\0" + row.id)!;
+                        return {
+                            id,
+                            name: (JSON.parse(chat.meta) as Root).name,
+                            messages: (messages.get(chat.seq) ?? [])
+                                .sort((a, b) => a.position - b.position)
+                                .map((message) => {
+                                    const { chatId, role, data, time, saying } = JSON.parse(message.data) as Root;
+                                    return { chatId, role, data, time, saying };
+                                }),
+                        };
+                    }),
+                },
+            ]),
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -604,7 +674,8 @@ describe("buildUpstreamDatabase: characters and chats", () => {
         expect(excluded(report, "chat-fields")!.examples).toEqual(expect.arrayContaining(["pinned", "togglePresetId"]));
         expect(excluded(report, "message-translations")).toMatchObject({ count: 1 });
         expect(excluded(report, "inlays")).toMatchObject({ count: 1, examples: ["Alice"] });
-        expect(report.counts).toMatchObject({ characters: 4, groups: 1, chats: 3, messages: 4 });
+        // Zed and the group hold the empty first chat each.
+        expect(report.counts).toMatchObject({ characters: 4, groups: 1, chats: 5, messages: 4 });
     });
 
     it("strips metatron character fields, refreshes an expired trash time only, and raises lastInteraction", async () => {
@@ -627,7 +698,9 @@ describe("buildUpstreamDatabase: characters and chats", () => {
         const group = characterNamed(db, "Group");
         expect(group.type).toBe("group");
         expect(group.characters).toEqual(["c1", "c2"]);
-        expect(group.chats).toEqual([]);
+        // A character without chats gets upstream's empty first chat (upstream reads `chats[chatPage]` unguarded).
+        expect(group.chats).toEqual([{ message: [], note: "", name: "Chat 1", localLore: [] }]);
+        expect(chatsOf(db, "Zed")).toEqual([{ message: [], note: "", name: "Chat 1", localLore: [] }]);
     });
 
     it("leaves a recent trash time alone", async () => {
@@ -936,7 +1009,7 @@ describe("buildUpstreamDatabase: purity", () => {
     });
 });
 
-describe("buildUpstreamDatabase: round trip through S3's converter", () => {
+describe("buildUpstreamDatabase: round trip through the S3/S4 converter", () => {
     it("brings the settings, translator and HypaV3 selections back", async () => {
         const { imported } = roundTrip(await snapshotOf());
         const translator = record<{ items: Root[]; selectedId: string }>(imported, COLLECTION_KIND.translatorPresets);
@@ -1022,10 +1095,181 @@ describe("buildUpstreamDatabase: round trip through S3's converter", () => {
         expect(JSON.stringify(imported.resources)).not.toContain("NAMED");
     });
 
-    // S4 extends `convertUpstreamDatabase` with characters, chats, modules, and plugins (not on this
-    // branch). Enable these once S4 merges; the exporter-side assertions above already run.
-    it.todo("S4: brings every character and group back with its chats in order and its messages (chatId kept)");
-    it.todo("S4: brings a chat's toggles back from GLGlobalVariables with useLocallySetGlobalVariables");
-    it.todo("S4: brings the modules (repaired lorebooks, assets, icons) and the plugins back");
-    it.todo("S4: keeps the trashed character with its refreshed trash time and the group's members");
+    it("brings every character and group back with its chats in order and its messages (chatId kept)", async () => {
+        const original = await snapshotOf((w) => {
+            seedLibrary(w);
+            // Two group chats in a non-creation order, with message ids and speakers.
+            w.chat("g1", "gk1", {
+                name: "G1",
+                message: [
+                    { role: "char", data: "from Alice", saying: "c1", chatId: "gm1", time: 4000 },
+                    { role: "user", data: "hi all", chatId: "gm2", time: 4100 },
+                    { role: "char", data: "from Bob", saying: "c2", chatId: "gm3", time: 4200 },
+                ],
+            });
+            w.chat(
+                "g1",
+                "gk2",
+                { name: "G2", message: [{ role: "char", data: "Bob", saying: "c2", chatId: "gm4" }] },
+                0,
+            );
+        });
+        const { imported } = libraryRoundTrip(original);
+        const staged = await stage(imported);
+        const expected = libraryOf(original);
+        const library = libraryOf(staged);
+        expect(expected.g1.chats.map((chat) => chat.id)).toEqual(["gk2", "gk1"]);
+        expect(expected.g1.chats[1].messages.map((message) => [message.chatId, message.saying])).toEqual([
+            ["gm1", "c1"],
+            ["gm2", undefined],
+            ["gm3", "c2"],
+        ]);
+        // Zed had no chat: it comes back with the empty first chat the export gave it.
+        expect(expected.c3.chats).toEqual([]);
+        expected.c3.chats = [{ id: library.c3.chats[0]?.id, name: "Chat 1", messages: [] }];
+        expect(library).toEqual(expected);
+        expect(staged.rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id)).toEqual([
+            "c1",
+            "c2",
+            "c3",
+            "g1",
+        ]);
+        expect(imported.report.counts).toMatchObject({ characters: 3, groups: 1, chats: 6, messages: 8 });
+        expect(excluded(imported.report as never, "invalid-chat")).toBeUndefined();
+        expect(excluded(imported.report as never, "invalid-character")).toBeUndefined();
+    });
+
+    it("brings a chat's toggles back from GLGlobalVariables with useLocallySetGlobalVariables", async () => {
+        const original = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.chat("c3", "kt", {
+                name: "Toggles",
+                GLGlobalVariables: { toggle_on: "1", toggle_unset: "", other: "" },
+                message: [],
+            });
+        });
+        const { exported, decoded, imported } = libraryRoundTrip(original);
+        expect(chatsOf(exported.db, "Zed")[0]).toMatchObject({
+            GLGlobalVariables: { toggle_on: "1", toggle_unset: "", other: "" },
+            useLocallySetGlobalVariables: true,
+        });
+        expect(chatsOf(decoded, "Alice")[1].useLocallySetGlobalVariables).toBe(true);
+        // A chat without toggle values gets no flag.
+        expect(chatsOf(decoded, "Alice")[0].useLocallySetGlobalVariables).toBeUndefined();
+        const staged = await stage(imported);
+        const metas = new Map(staged.chats.map((chat) => [chat.id, JSON.parse(chat.meta) as Root]));
+        // Upstream reads a non-"" chat value first whatever the flag, so the flag is dropped and the
+        // "" toggles (upstream's "not set") are removed; other variables are kept as they are.
+        expect(metas.get("kt")!.GLGlobalVariables).toEqual({ toggle_on: "1", other: "" });
+        expect(metas.get("k1")!.GLGlobalVariables).toEqual({ toggle_x: "1" });
+        for (const meta of metas.values()) {
+            expect(meta).not.toHaveProperty("useLocallySetGlobalVariables");
+        }
+    });
+
+    it("brings the modules (repaired lorebooks, assets, icons) and the plugins back", async () => {
+        const plugins = [
+            {
+                name: "runner",
+                displayName: "Runner",
+                script: "console.log('runner')",
+                arguments: { level: "int", mode: ["a", "b"] },
+                realArg: { level: 2, mode: "b" },
+                version: "3.0",
+                customLink: [{ link: "https://plugin.example", hoverText: "Home" }],
+                argMeta: { level: { label: "Level" } },
+                versionOfPlugin: "1.2.0",
+                updateURL: "https://plugin.example/runner.js",
+                enabled: true,
+                allowedIPC: ["other"],
+            },
+            { name: "plug", displayName: "Plug" },
+        ];
+        const original = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(RESOURCE_KIND.plugins, "main", plugins);
+        });
+        const { exported, decoded, imported } = libraryRoundTrip(original);
+        const modules = record<Root[]>(imported, RESOURCE_KIND.modules);
+        expect(modules).toEqual([
+            expect.objectContaining({
+                id: "mod1",
+                name: "Mod",
+                lorebook: [expect.objectContaining({ key: "m", content: "module entry" })],
+                assets: [["pic", "assets/module.png", "png"]],
+                icon: "assets/module-icon.png",
+            }),
+        ]);
+        const personas = record<RisuPersona[]>(imported, COLLECTION_KIND.personas);
+        expect(personas.find((persona) => persona.name === "Vic")?.embeddedModule).toMatchObject({
+            id: "em",
+            lorebook: [expect.objectContaining({ key: "e", content: "embedded" })],
+            assets: [["pic", "assets/embedded.png", "png"]],
+            icon: "assets/embedded-icon.png",
+        });
+        const stored = JSON.parse(original.rows.find((row) => row.kind === RESOURCE_KIND.plugins)!.text) as Root[];
+        expect(stored[0]).toEqual(plugins[0]);
+        expect(record<Root[]>(imported, RESOURCE_KIND.plugins)).toEqual(stored);
+        // Only the record without a version is kept but not run.
+        expect(excluded(imported.report as never, "plugin-unsupported-version")).toMatchObject({
+            count: 1,
+            examples: ["plug"],
+        });
+        expect(record<Root>(imported, RESOURCE_KIND.pluginStorage)).toMatchObject({ keep: "yes" });
+        expect(imported.report.missingAssets).toEqual([]);
+        const staged = await stage(imported);
+        const stagedModules = staged.rows.find((row) => row.kind === RESOURCE_KIND.modules)!;
+        expect(JSON.parse(stagedModules.text)).toEqual(modules);
+        expect(JSON.parse(staged.rows.find((row) => row.kind === RESOURCE_KIND.plugins)!.text)).toEqual(stored);
+        // Both directions walk the same fields (one walker, `assetReferences.ts`): imported with no
+        // asset, every key the export carries is reported missing by the same owner and role, except the
+        // selected persona's icon, which the export meets first as the root `userIcon`.
+        const missing = convertUpstreamDatabase(decoded, { cold: new Map(), assetKeys: new Set(), now: NOW }).report
+            .missingAssets;
+        expect(missing.map(({ key, owner, role }) => ({ key, owner, role })).sort(byKey)).toEqual(
+            exported.assetKeys
+                .map((asset) => (asset.role === "userIcon" ? { key: asset.key, owner: "Uma", role: "persona" } : asset))
+                .sort(byKey),
+        );
+        expect(missing).toContainEqual({
+            key: "assets/ref.wav",
+            owner: "Alice",
+            role: "sovitsReference",
+            expected: true,
+        });
+        expect(missing).toContainEqual({
+            key: "assets/module-icon.png",
+            owner: "Mod",
+            role: "moduleIcon",
+            expected: false,
+        });
+        expect(exported.assetKeys.map((asset) => asset.key).sort()).toEqual(
+            exportOf(staged)
+                .assetKeys.map((asset) => asset.key)
+                .sort(),
+        );
+    });
+
+    it("keeps the trashed character with its refreshed trash time and the group's members", async () => {
+        const { imported } = libraryRoundTrip(await snapshotOf());
+        const staged = await stage(imported);
+        const characters = new Map(
+            staged.rows
+                .filter((row) => row.kind === RESOURCE_KIND.characters)
+                .map((row) => [row.id, JSON.parse(row.text) as Root]),
+        );
+        expect(characters.get("c2")).toMatchObject({ name: "Bob", trashTime: NOW });
+        expect(characters.get("c3")?.trashTime).toBe(0);
+        expect(characters.get("g1")).toMatchObject({
+            type: "group",
+            characters: ["c1", "c2"],
+            characterTalks: [1, 1],
+            characterActive: [true, true],
+        });
+        expect(excluded(imported.report as never, "group-member-missing")).toBeUndefined();
+        // A second export of the staged store leaves the refreshed trash time alone.
+        const again = exportOf(staged, { now: NOW + 1 });
+        expect(characterNamed(again.db, "Bob").trashTime).toBe(NOW);
+        expect(converted(again.report, "trash-time-refreshed")).toBeUndefined();
+    });
 });

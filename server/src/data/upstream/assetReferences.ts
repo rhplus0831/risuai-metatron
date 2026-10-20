@@ -3,15 +3,23 @@ import type { UpstreamAssetReference, UpstreamAssetRole } from "../../../../shar
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
 
 /**
- * The `assets/...` keys a set of resource records references (`docs/plan/upstream-bin-compat.md` S4;
- * S6's export can reuse it): the server equivalent of the tab's backup inventory
- * (`src/ts/drive/backuplocal.ts` `referencedAssets`, `shared/backups.ts` `selectPartialBackupAssets`),
- * plus module assets and icons. Records are `{ kind, data }` as stored; every field is optional and
- * read defensively, since the normalizers do not check asset list shapes. One entry per key, its
- * first user, in record order. Values that are not `assets/` keys (`embeded://`, `ccdefault:`, data
- * URIs) are not assets.
+ * The asset walk of both `.bin` directions (`docs/plan/upstream-bin-compat.md` S4 import, S6 export):
+ * one walker over an upstream flat `Database`, and an adapter that gives it the stored records in that
+ * shape. The server equivalent of the tab's backup inventory (`src/ts/drive/backuplocal.ts`
+ * `referencedAssets`, `shared/backups.ts` `selectPartialBackupAssets`; U `globalApi.svelte.ts` lists
+ * the same), plus module assets and icons.
  */
-export function collectAssetReferences(records: Iterable<{ kind: string; data: unknown }>): UpstreamAssetReference[] {
+
+/**
+ * Every `assets/...` key an upstream `Database` references, once, with the first owner and role that
+ * names it, in this order: character and group images, emotions, additional assets, VITS files, card
+ * assets (`ccAssets` `uri`), the GPT-SoVITS reference audio, the user icon and background, persona
+ * icons and embedded modules, folder images (`img`, `imgFile`), preset images, and module assets and
+ * icons. Every field is optional and read defensively, since neither the store's normalizers nor
+ * upstream check asset list shapes. Values that are not `assets/` keys (`embeded://`, `ccdefault:`,
+ * data URIs, URLs) are not assets.
+ */
+export function collectUpstreamAssetReferences(db: Readonly<Record<string, unknown>>): UpstreamAssetReference[] {
     const found = new Map<string, UpstreamAssetReference>();
     const add = (key: unknown, owner: unknown, role: UpstreamAssetRole) => {
         if (typeof key === "string" && key.startsWith("assets/") && !found.has(key)) {
@@ -19,69 +27,92 @@ export function collectAssetReferences(records: Iterable<{ kind: string; data: u
         }
     };
     const tuples = (list: unknown, owner: unknown, role: UpstreamAssetRole) => {
-        if (Array.isArray(list)) {
-            for (const entry of list) {
-                if (Array.isArray(entry)) {
-                    add(entry[1], owner, role);
-                }
+        for (const entry of items(list)) {
+            if (Array.isArray(entry)) {
+                add(entry[1], owner, role);
             }
         }
     };
-    const module = (value: unknown) => {
+    const module = (value: unknown, owner: unknown) => {
         if (isPlainObject(value)) {
-            add(value.icon, value.name, "module");
-            tuples(value.assets, value.name, "module");
+            tuples(value.assets, owner, "module");
+            add(value.icon, owner, "moduleIcon");
         }
     };
-    const items = (data: unknown) => (Array.isArray(data) ? data.filter(isPlainObject) : []);
+    for (const entry of objects(db.characters)) {
+        const owner = entry.name;
+        add(entry.image, owner, "profile");
+        tuples(entry.emotionImages, owner, "emotion");
+        tuples(entry.additionalAssets, owner, "additional");
+        if (isPlainObject(entry.vits) && isPlainObject(entry.vits.files)) {
+            for (const file of Object.values(entry.vits.files)) {
+                add(file, owner, "vits");
+            }
+        }
+        for (const asset of objects(entry.ccAssets)) {
+            add(asset.uri, owner, "ccAsset");
+        }
+        const sovits = entry.gptSoVitsConfig;
+        if (isPlainObject(sovits) && isPlainObject(sovits.ref_audio_data)) {
+            add(sovits.ref_audio_data.assetId, owner, "sovitsReference");
+        }
+    }
+    add(db.userIcon, "", "userIcon");
+    add(db.customBackground, "", "background");
+    for (const persona of objects(db.personas)) {
+        add(persona.icon, persona.name, "persona");
+        module(persona.embeddedModule, persona.name);
+    }
+    for (const folder of objects(db.characterOrder)) {
+        add(folder.img, folder.name, "folder");
+        add(folder.imgFile, folder.name, "folder");
+    }
+    for (const preset of objects(db.botPresets)) {
+        add(preset.image, preset.name, "preset");
+    }
+    for (const entry of objects(db.modules)) {
+        module(entry, entry.name);
+    }
+    return [...found.values()];
+}
+
+/**
+ * The asset references of stored resource records (`{ kind, data }`, as the import converter emits
+ * them): the records placed where an upstream `Database` holds them (`characters` records into
+ * `characters`, `presets` into `botPresets`, the `ui` section's `customBackground`, the `personas`,
+ * `characterOrder`, and `modules` lists) and walked by `collectUpstreamAssetReferences`. Other kinds
+ * reference no asset; metatron keeps the user icon on the persona.
+ */
+export function collectAssetReferences(records: Iterable<{ kind: string; data: unknown }>): UpstreamAssetReference[] {
+    const characters: unknown[] = [];
+    const db: Record<string, unknown> = { characters };
     for (const { kind, data } of records) {
         switch (kind) {
-            case RESOURCE_KIND.characters: {
-                if (!isPlainObject(data)) {
-                    break;
-                }
-                const name = data.name;
-                add(data.image, name, "profile");
-                tuples(data.emotionImages, name, "emotion");
-                tuples(data.additionalAssets, name, "additional");
-                if (isPlainObject(data.vits) && isPlainObject(data.vits.files)) {
-                    for (const value of Object.values(data.vits.files)) {
-                        add(value, name, "vits");
-                    }
-                }
-                for (const asset of items(data.ccAssets)) {
-                    add(asset.uri, name, "ccAsset");
-                }
-                break;
-            }
-            case RESOURCE_KIND.personas:
-                for (const persona of items(data)) {
-                    add(persona.icon, persona.name, "persona");
-                    module(persona.embeddedModule);
-                }
+            case RESOURCE_KIND.characters:
+                characters.push(data);
                 break;
             case RESOURCE_KIND.ui:
                 if (isPlainObject(data)) {
-                    add(data.customBackground, "", "background");
+                    db.customBackground = data.customBackground;
                 }
                 break;
+            case RESOURCE_KIND.personas:
             case RESOURCE_KIND.characterOrder:
-                for (const folder of items(data)) {
-                    add(folder.img, folder.name, "folder");
-                    add(folder.imgFile, folder.name, "folder");
-                }
+            case RESOURCE_KIND.modules:
+                db[kind] = data;
                 break;
             case RESOURCE_KIND.presets:
-                for (const preset of items(data)) {
-                    add(preset.image, preset.name, "preset");
-                }
-                break;
-            case RESOURCE_KIND.modules:
-                for (const entry of items(data)) {
-                    module(entry);
-                }
+                db.botPresets = data;
                 break;
         }
     }
-    return [...found.values()];
+    return collectUpstreamAssetReferences(db);
+}
+
+function items(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function objects(value: unknown): Record<string, unknown>[] {
+    return items(value).filter(isPlainObject);
 }
