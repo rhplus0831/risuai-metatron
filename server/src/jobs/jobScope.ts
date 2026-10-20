@@ -11,18 +11,15 @@ import type {
 import type { GenerationContext } from "../../../shared/jobs.ts";
 import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
-import { FLAT_SECRET_FIELDS, llmSecretSiblings, NESTED_SECRET_FIELDS } from "../../../shared/llmSecrets.ts";
-import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
-import { PERSONA_ROOT_ALIASES } from "../../../shared/presets.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
 import {
-    COLLECTION_FIELDS,
-    COLLECTION_KIND,
-    COLLECTION_SELECTION_FIELDS,
-    forwardPresetRoots,
-    SECTION_FIELDS,
-    SECTION_KIND,
-} from "../../../shared/sections.ts";
+    characterShell,
+    forwardPersonaRoots,
+    forwardSelectedPreset,
+    projectCollections,
+    projectSections,
+} from "../data/databaseProjection.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import { isValidResourceId, type ResourceStore, type StoredResource } from "../data/resourceStore.ts";
 import { loadRequestDb, type LoadedRequestDb } from "../llm/settings.ts";
@@ -89,22 +86,6 @@ function kindOf(kinds: ResourceKindRegistry, name: string): ResourceKind {
         throw new Error(`Unknown resource kind ${name}`);
     }
     return kind;
-}
-
-/** The client mirror's view of the `llmSecrets` section: its siblings, every credential `""`. */
-function mirrorSecrets(record: Record<string, unknown>): Record<string, unknown> {
-    const fields = SECTION_FIELDS.llmSecrets as readonly string[];
-    const out = llmSecretSiblings(record, fields);
-    for (const field of FLAT_SECRET_FIELDS) {
-        if (fields.includes(field)) {
-            out[field] = "";
-        }
-    }
-    for (const [field, leaf] of Object.entries(NESTED_SECRET_FIELDS)) {
-        out[field] = { ...((out[field] as object) ?? {}), [leaf]: "" };
-    }
-    out.OaiCompAPIKeys = {};
-    return out;
 }
 
 /** The job's ids are not its chat's binding (`docs/plan/chat-binding.md`): 409, with the refusal. */
@@ -220,30 +201,8 @@ export function loadJobScope(
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 
     const db: Record<string, unknown> = {};
-    for (const section of Object.values(SECTION_KIND)) {
-        const record = single(section);
-        if (record === undefined) {
-            throw new Error(`The server has no ${section} record`);
-        }
-        const fields = section === SECTION_KIND.llmSecrets ? mirrorSecrets(record) : record;
-        for (const field of SECTION_FIELDS[section]) {
-            if (Object.hasOwn(fields, field)) {
-                db[field] = (fields as Record<string, unknown>)[field];
-            }
-        }
-    }
-    for (const collection of Object.values(COLLECTION_KIND)) {
-        const record = single(collection);
-        if (record === undefined) {
-            throw new Error(`The server has no ${collection} record`);
-        }
-        if (Object.hasOwn(COLLECTION_SELECTION_FIELDS, collection)) {
-            db[COLLECTION_FIELDS[collection]] = record.items;
-            db[COLLECTION_SELECTION_FIELDS[collection as keyof typeof COLLECTION_SELECTION_FIELDS]] = record.selectedId;
-        } else {
-            db[COLLECTION_FIELDS[collection]] = record;
-        }
-    }
+    projectSections(db, single);
+    projectCollections(db, single);
     const presets = (single(RESOURCE_KIND.presets) ?? []) as botPreset[];
     db.botPresets = presets;
     db.modules = single(RESOURCE_KIND.modules) ?? [];
@@ -287,23 +246,10 @@ export function loadJobScope(
     const modelProfiles = db.modelProfiles as ModelProfile[];
     // The forwarding layer's view for this job: the prompt and derived model/profile roots, the
     // job persona's fields, and the selection indexes.
-    forwardPresetRoots(db, preset as unknown as Record<string, unknown>, modelPreset, modelProfiles);
-    db.botPresetsId = Math.max(
-        0,
-        presets.findIndex((record) => record?.id === preset.id),
-    );
-    for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
-        const value = effectivePersona[field as keyof RisuPersona];
-        db[rootKey] = typeof value === "string" ? value : PERSONA_DEFAULTS[field as keyof typeof PERSONA_DEFAULTS];
-    }
-    db.selectedPersona = Math.max(
-        0,
-        personas.findIndex((record) => record?.id === effectivePersona.id),
-    );
+    forwardSelectedPreset(db, presets, preset, modelPreset, modelProfiles);
+    forwardPersonaRoots(db, effectivePersona, personas);
 
-    const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map(
-        (record) => ({ ...(record.data as object), chats: [], chatPage: 0 }) as unknown as character | groupChat,
-    );
+    const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map((record) => characterShell(record.data));
     db.characters = characters;
     const owner = characters.find((entry) => entry.chaId === context.characterId);
     if (!owner) {
@@ -597,8 +543,7 @@ function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: 
     for (const item of store.readRefs([...missing].map((id) => ({ kind: charactersKind, id }))).items) {
         revisions.set(item.id, item.revision);
         if (item.data !== null) {
-            scope.db.characters.push({ ...(item.data as object), chats: [], chatPage: 0 } as unknown as
-                character | groupChat);
+            scope.db.characters.push(characterShell(item.data));
         }
     }
 }
@@ -630,7 +575,7 @@ export function refreshCharacter(
         return false;
     }
     const chats = index >= 0 ? scope.db.characters[index].chats : [];
-    const next = { ...(row.data as object), chats, chatPage: 0 } as unknown as character | groupChat;
+    const next = characterShell(row.data, chats);
     if (index >= 0) {
         scope.db.characters[index] = next;
     } else {
