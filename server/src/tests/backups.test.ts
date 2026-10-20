@@ -723,12 +723,12 @@ describe("POST /api/backups/import", () => {
                 "This backup was encrypted with a Risu Account and cannot be restored",
             ],
             [
-                "pre-v2 archive",
+                "upstream RisuAI backup",
                 buildArchive([
                     ["a.png", "x"],
                     ["database.risudat", "x"],
                 ]),
-                "This backup was made by an older version, which saved the database in a format this version no longer reads",
+                "This is a RisuAI backup; choose it again and it will be imported as one",
             ],
             ["truncated tail", good.subarray(0, good.length - 1), "The archive is truncated"],
             ["truncated header", good.subarray(0, 6), "The archive has an invalid record header"],
