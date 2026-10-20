@@ -1,4 +1,4 @@
-import type { UpstreamReportEntry } from "./upstreamBackup.ts";
+import type { UpstreamAssetReference, UpstreamReportEntry } from "./upstreamBackup.ts";
 
 /**
  * The report of an upstream RisuAI `.bin` export (`docs/plan/upstream-bin-compat.md` S6): what the
@@ -54,25 +54,6 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
 export type UpstreamExportConvertedCode = (typeof UPSTREAM_EXPORT_CONVERTED_CODES)[number];
 export type UpstreamExportExcludedCode = (typeof UPSTREAM_EXPORT_EXCLUDED_CODES)[number];
 
-/** Where an exported record references an asset. */
-export type UpstreamExportAssetRole =
-    | "profile"
-    | "emotion"
-    | "additional"
-    | "vits"
-    | "ccAsset"
-    | "sovitsReference"
-    | "userIcon"
-    | "background"
-    | "persona"
-    | "folder"
-    | "preset"
-    | "module"
-    | "moduleIcon";
-
-/** One referenced asset: its logical key (`assets/...`), the owner's name, and the reference's role. */
-export type UpstreamExportAsset = { key: string; owner: string; role: UpstreamExportAssetRole };
-
 /** How many records of each category the export holds. */
 export type UpstreamExportCounts = {
     /** Characters, groups included. */
@@ -92,8 +73,8 @@ export type UpstreamExportReport = {
     counts: UpstreamExportCounts;
     converted: UpstreamReportEntry<UpstreamExportConvertedCode>[];
     excluded: UpstreamReportEntry<UpstreamExportExcludedCode>[];
-    /** Referenced assets the export cannot carry because they do not exist. */
-    missing: UpstreamExportAsset[];
+    /** Referenced assets the export cannot carry because they do not exist (the import's walker and roles). */
+    missing: UpstreamAssetReference[];
 };
 
 export function createUpstreamExportReport(): UpstreamExportReport {

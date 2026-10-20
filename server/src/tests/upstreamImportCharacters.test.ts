@@ -706,12 +706,13 @@ describe("convertUpstreamDatabase: assets", () => {
             cold: cold(),
             assetKeys: new Set(["assets/a.png", "assets/b.png", "assets/f.png"]),
         });
+        // In the export walker's order (`collectUpstreamAssetReferences`): characters first.
         expect(out.report.missingAssets).toEqual([
-            { key: "assets/pb.png", owner: "B", role: "persona", expected: false },
-            { key: "assets/mod.png", owner: "M1", role: "module", expected: false },
             { key: "assets/h.webp", owner: "A", role: "emotion", expected: true },
             { key: "assets/add.png", owner: "A", role: "additional", expected: false },
             { key: "assets/m.png", owner: "Missing", role: "profile", expected: false },
+            { key: "assets/pb.png", owner: "B", role: "persona", expected: false },
+            { key: "assets/mod.png", owner: "M1", role: "moduleIcon", expected: false },
         ]);
         // No inventory: no classification. An empty inventory: everything is missing, one entry per key.
         expect(convert(fixture(), { cold: cold() }).report.missingAssets).toEqual([]);

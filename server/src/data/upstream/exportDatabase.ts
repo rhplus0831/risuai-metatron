@@ -31,13 +31,12 @@ import {
     modelPresetRootValue,
     SECTION_FIELDS,
 } from "../../../../shared/sections.ts";
-import { UPSTREAM_REPORT_EXAMPLE_LIMIT, type UpstreamReportEntry } from "../../../../shared/upstreamBackup.ts";
 import {
-    createUpstreamExportReport,
-    type UpstreamExportAsset,
-    type UpstreamExportAssetRole,
-    type UpstreamExportReport,
-} from "../../../../shared/upstreamExportReport.ts";
+    UPSTREAM_REPORT_EXAMPLE_LIMIT,
+    type UpstreamAssetReference,
+    type UpstreamReportEntry,
+} from "../../../../shared/upstreamBackup.ts";
+import { createUpstreamExportReport, type UpstreamExportReport } from "../../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
 import { DEFAULT_RESOURCE_KINDS } from "../kinds.ts";
 import {
@@ -47,6 +46,7 @@ import {
     projectCollections,
     projectSections,
 } from "../databaseProjection.ts";
+import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 
 /**
  * The metatron store → upstream RisuAI flat `Database` exporter (`docs/plan/upstream-bin-compat.md`
@@ -100,7 +100,7 @@ export type UpstreamExport = {
     /** The upstream flat `Database`, plain data for `encodeUpstreamDatabase`. */
     db: Record<string, unknown>;
     /** The referenced assets to write as records (the existing ones when `hasAsset` is given). */
-    assetKeys: UpstreamExportAsset[];
+    assetKeys: UpstreamAssetReference[];
     report: UpstreamExportReport;
 };
 
@@ -374,7 +374,7 @@ export function buildUpstreamDatabase(
     db.formatversion = 5;
 
     const assets = collectUpstreamAssetReferences(db);
-    const assetKeys: UpstreamExportAsset[] = [];
+    const assetKeys: UpstreamAssetReference[] = [];
     for (const asset of assets) {
         if (options.hasAsset && !options.hasAsset(asset.key)) {
             report.missing.push(asset);
@@ -889,6 +889,13 @@ function upstreamCharacters(
             }
             return [chat];
         });
+        // Upstream reads the selected character's `chats[chatPage]` unguarded (U `globalApi.svelte.ts`
+        // change tracker, `parser/chatVar.svelte.ts`), so a character without chats gets the empty one
+        // upstream's creation makes (U `characters.ts`); its boot gives it an id. The import's creation
+        // step adds the same chat (`importCharacters.ts`), so neither side reports it.
+        if (chats.length === 0) {
+            chats.push({ message: [], note: "", name: "Chat 1", localLore: [] } as unknown as Chat);
+        }
         const chatPage =
             options.selectedChat?.characterId === chaId ? Math.max(0, ids.indexOf(options.selectedChat.chatId)) : 0;
         if (
@@ -964,72 +971,4 @@ function upstreamChat(
     }
     chat.localLore = repairLore(chat.localLore, `${path}.localLore`, report);
     return chat as unknown as Chat;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Assets
-
-/**
- * Every `assets/...` key an upstream `Database` references, once, with the first owner and role that
- * names it: character and group images, emotions, additional assets, VITS files, card assets, the
- * GPT-SoVITS reference audio, the user icon and background, persona icons and embedded modules,
- * folder images, preset images, and module assets and icons (U `globalApi.svelte.ts` lists the same).
- */
-export function collectUpstreamAssetReferences(db: Readonly<Record<string, unknown>>): UpstreamExportAsset[] {
-    const found = new Map<string, UpstreamExportAsset>();
-    const add = (key: unknown, owner: unknown, role: UpstreamExportAssetRole) => {
-        if (typeof key === "string" && key.startsWith("assets/") && !found.has(key)) {
-            found.set(key, { key, owner: typeof owner === "string" ? owner : "", role });
-        }
-    };
-    const addModule = (module: unknown, owner: string) => {
-        if (!isPlainObject(module)) {
-            return;
-        }
-        for (const asset of asList<unknown[]>(module.assets)) {
-            add(Array.isArray(asset) ? asset[1] : undefined, owner, "module");
-        }
-        add(module.icon, owner, "moduleIcon");
-    };
-    for (const entry of asList<Root>(db.characters)) {
-        const owner = entry.name;
-        add(entry.image, owner, "profile");
-        for (const emotion of asList<unknown[]>(entry.emotionImages)) {
-            add(Array.isArray(emotion) ? emotion[1] : undefined, owner, "emotion");
-        }
-        for (const asset of asList<unknown[]>(entry.additionalAssets)) {
-            add(Array.isArray(asset) ? asset[1] : undefined, owner, "additional");
-        }
-        if (isPlainObject(entry.vits) && isPlainObject(entry.vits.files)) {
-            for (const file of Object.values(entry.vits.files)) {
-                add(file, owner, "vits");
-            }
-        }
-        for (const asset of asList<Root>(entry.ccAssets)) {
-            add(asset?.uri, owner, "ccAsset");
-        }
-        const sovits = entry.gptSoVitsConfig;
-        if (isPlainObject(sovits) && isPlainObject(sovits.ref_audio_data)) {
-            add(sovits.ref_audio_data.assetId, owner, "sovitsReference");
-        }
-    }
-    add(db.userIcon, "", "userIcon");
-    add(db.customBackground, "", "background");
-    for (const persona of asList<Root>(db.personas)) {
-        add(persona.icon, persona.name, "persona");
-        addModule(persona.embeddedModule, typeof persona.name === "string" ? persona.name : "");
-    }
-    for (const folder of asList<unknown>(db.characterOrder)) {
-        if (isPlainObject(folder)) {
-            add(folder.img, folder.name, "folder");
-            add(folder.imgFile, folder.name, "folder");
-        }
-    }
-    for (const preset of asList<Root>(db.botPresets)) {
-        add(preset.image, preset.name, "preset");
-    }
-    for (const module of asList<Root>(db.modules)) {
-        addModule(module, typeof module.name === "string" ? module.name : "");
-    }
-    return [...found.values()];
 }
