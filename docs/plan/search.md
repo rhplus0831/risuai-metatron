@@ -1,6 +1,6 @@
 # Search Plan
 
-Status: planned 2026-10-20 at `c7628a0bb`; landed 1 (`a6082b735`), 2a (`ceeb22d92`) and 4a (`016028c47`) on 2026-10-20. Source: `docs/research/haejeok-feature-survey.md`
+Status: planned 2026-10-20 at `c7628a0bb`; landed 1 (`a6082b735`), 2a (`ceeb22d92`), 4a (`016028c47`) and 2b (`89bd9a57a`) on 2026-10-20. Source: `docs/research/haejeok-feature-survey.md`
 items F1 (settings search), F2 (`color-scheme`), A3 (message search across chats) and A4
 (Korean-aware matching), and `docs/research/pocketrisu-risubard-picks.md` §1.2 item 9
 (settings search and deep links). HaejeokRisuai (`/home/codex/HaejeokRisuai`) is a read-only
