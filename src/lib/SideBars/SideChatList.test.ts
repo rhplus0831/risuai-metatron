@@ -607,7 +607,7 @@ describe("the chat list modal's new chat button", () => {
     });
 });
 
-// Slice 2b of `docs/plan/search.md`: the filter field matches a chat's name and its folder's name
+// Slice 2b of the archived `docs/plan/search.md`: the filter field matches a chat's name and its folder's name
 // (Decision 4) through the Korean-aware matcher; a filtered view opens its folders without writing
 // `folded`, and every SortableJS instance is disabled while the field is non-empty.
 describe("the chat list filter", () => {

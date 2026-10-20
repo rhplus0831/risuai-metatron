@@ -162,7 +162,7 @@ function parseSearchQuery(body: Record<string, unknown>): ParsedQuery | string {
 }
 
 /**
- * `POST /api/chats/search` (`docs/plan/search.md` slice 4a): one page of a message search over the
+ * `POST /api/chats/search` (archived `docs/plan/search.md` slice 4a): one page of a message search over the
  * stored chats (`store.searchMessages`; the body is `MessageSearchQuery`, the answer
  * `MessageSearchPage`, both in `shared/messageSearch.ts`). Rate-limited, authenticated before the
  * body is read, the body capped at 4 KiB of actual bytes (the app's 100 MiB limit is skipped for

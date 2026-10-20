@@ -1444,7 +1444,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         },
 
         /**
-         * One synchronous batch of a message search (`docs/plan/search.md` slice 4a): the scope's chats
+         * One synchronous batch of a message search (archived `docs/plan/search.md` slice 4a): the scope's chats
          * by `seq` descending, each chat's messages by `position` descending, every message charged
          * and handed to `visit` (with its JSON only when its text matches the `LIKE` pattern), until
          * `visit` ends the request (`stopped`), the batch is full, or the scope is exhausted (`end`).

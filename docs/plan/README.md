@@ -11,9 +11,6 @@ Active planning and implementation:
 - [RisuNest Small Wins](risunest-small-wins.md): alert queue, safe boot, plugin quick
   wins, test network guard, CI and image hygiene, engineering rules; planned; Phase 2's
   wait on the `heap-memory-reduction` merge is over.
-- [Search](search.md): `color-scheme`, a Korean-aware list matcher, settings search with
-  deep links, and server-side message search across chats; every slice landed; final
-  checks and the merge into `metatron` pending.
 - [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.

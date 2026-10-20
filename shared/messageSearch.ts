@@ -1,7 +1,7 @@
 import type { Message } from "./database.ts";
 
 /**
- * Message search across chats (`docs/plan/search.md` slice 4a): the server scans the stored messages'
+ * Message search across chats (archived `docs/plan/search.md` slice 4a): the server scans the stored messages'
  * text (`Message.data`, not translations) with a case-insensitive substring match (ASCII letters only
  * fold, as SQLite `LIKE` does), newest chat incarnation first and newest message first within a chat.
  */

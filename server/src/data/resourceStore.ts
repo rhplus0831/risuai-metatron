@@ -1137,7 +1137,7 @@ export function createResourceStore(options: {
         },
 
         /**
-         * One page of a message search (`docs/plan/search.md` slice 4a, `shared/messageSearch.ts`):
+         * One page of a message search (archived `docs/plan/search.md` slice 4a, `shared/messageSearch.ts`):
          * `LIKE` over each message's text (`$.data`), chats by `seq` descending and messages by
          * position descending, in synchronous batches (`chatTables.searchBatch`) with `yieldTurn`
          * between them, on this store's one connection. Without ids it scans every character except

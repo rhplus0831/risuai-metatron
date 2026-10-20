@@ -17,7 +17,7 @@ import type { MessageSearchRouteOptions } from "../routes/messageSearch.ts";
 import { createSigner, json, TEST_INDEX_HTML } from "./testSupport.ts";
 
 /**
- * `POST /api/chats/search` (`docs/plan/search.md` slice 4a). The server is built with
+ * `POST /api/chats/search` (archived `docs/plan/search.md` slice 4a). The server is built with
  * `createServerContext({ messageSearch })` directly: the yield between batches is a latch the test
  * holds and releases, and the batch and request limits are small, so paging and the between-batch
  * checks are reached without any real time passing.
