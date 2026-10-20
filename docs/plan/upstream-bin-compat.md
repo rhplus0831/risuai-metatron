@@ -1,10 +1,11 @@
 # Upstream `.bin` Compatibility Plan
 
 Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat`: S1, S2 and S3
-(merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`; `pnpm check`, `test:agent` and `pnpm build`
-pass on the merge). Next: S4 and S6, which can run in parallel. Each landed slice's
-section ends with a _Landed_ note on where it departed from this plan; S4–S6 open with
-what the earlier slices handed over. `heap-memory-reduction` merged
+(merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`), then S4 and S6 (merged as `767db8df3`,
+`ac5c6fd05`; `pnpm check`, `test:agent` and `pnpm build` pass on the merge). In progress: S6's
+four round trips through S4's importer (`it.todo` until now) and one asset walker for both
+(S6 _Landed_). Next: S5. Each landed slice's section ends with a _Landed_ note on where it
+departed from this plan; S4–S7 open with what the earlier slices handed over. `heap-memory-reduction` merged
 into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
 waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
 [docs/research/README.md](../research/README.md) (RisuNest item 10, Haejeok A14), answered
@@ -541,12 +542,14 @@ Handed over from S2 and S3:
   - Bindings (D5): `promptPresetId` and `modelPresetId` get the converted selection;
     `bindedPersona` stays when that persona exists and otherwise becomes the selected
     persona; no `bindingReview`.
-  - Chat toggles: upstream's per-chat `GLGlobalVariables` toggle values apply only when
-    the chat has `useLocallySetGlobalVariables`; otherwise upstream reads the global
-    `globalChatVariables`. metatron has no such flag: it reads the chat's
-    `GLGlobalVariables` first and `globalChatVariables` only as the read-only legacy
-    fallback (`cbs-rendering.md` Globals row). So for a chat without the flag, drop its
-    `toggle_*` keys so the global values apply as they did upstream. Drop the flag itself.
+  - Chat toggles (corrected during S4, checked against U `chatVar.svelte.ts`
+    `getGlobalChatVar`): upstream reads the chat's `GLGlobalVariables` first, with or
+    without `useLocallySetGlobalVariables`. The flag only decides where writes go. An empty
+    `""` value counts as unset there, so the global `globalChatVariables` value applies.
+    metatron also reads the chat's `GLGlobalVariables` first, with `globalChatVariables`
+    only as the read-only legacy fallback (`cbs-rendering.md` Globals row), but treats `""`
+    as set for text toggles. So keep `GLGlobalVariables`, remove its `toggle_*` keys whose
+    value is `""`, and drop the flag.
   - The chat order is upstream's array order.
 - **`characterOrder`.** Upstream ids and folders, through `normalizeCharacterOrder`;
   remove ids of dropped characters.
@@ -594,17 +597,62 @@ Handed over from S2 and S3:
 - Docs: `persistence.md` (the cold-storage fold on import; the cold-storage removal note at
   ~141 now says upstream payloads are read on import only).
 
+_Landed_ (`0952e2113`, merged as `767db8df3`):
+
+- **API**: `convertUpstreamDatabase(db, { cold, assetKeys, now? })` returns `{ resources,
+characters, chats, selection, report }`. `cold` holds S2's `readColdEntry` results and
+  `assetKeys` the archive's asset keys; the converter still does no I/O. One report serves
+  one conversion.
+  - `chats` are ready `ChatGroup`s, one per chat: `{ characterId, chatId, baseRevision:
+null, ops: [{ op: "create", chat }] }`, in upstream order.
+  - Every message already has a valid, unique `chatId`, so the store renames nothing.
+- **Files**: `importCharacters.ts` (characters, groups, chats, cold stubs),
+  `importCollections.ts` (`characterOrder`, `enabledModules`, modules, plugins,
+  `pluginStorage`), `assetReferences.ts` (`collectAssetReferences`) and `importRecords.ts`
+  (record helpers moved out of `importDatabase.ts`), all in `server/src/data/upstream/`.
+- **Recovery**: a bad message, field or chat is dropped and reported one at a time, never
+  failing the whole import. A message at the depth limit drops only itself. Repairs (ids,
+  lorebooks, group members) are reported.
+- **Real backup** (`save/Binary.bin`, counts only): 6 characters, 5 from cold records, no
+  `cold-missing`; 8 chats and 2 messages, equal to the raw upstream totals; 2 modules,
+  0 plugins; 0 of 3,393 assets missing. The staged store's `backupTo` copy passes
+  `readSnapshot`.
+- **Departures from this plan** (each checked against upstream `669b12ce`):
+  - Chat toggles: the plan's rule was wrong. The corrected rule is in the Chats bullet
+    above.
+  - The cold-chat marker is `"COLDSTORAGE" + key`, not `"COLDSTORAGE" + key`.
+  - `_coldplugin` values go into `pluginCustomStorage._pluginStorage`, where metatron's
+    v3 plugin storage lives, not the top level.
+  - Before upstream `cad8595a`, upstream kept v3 plugin values at the top level of
+    `pluginCustomStorage`. A file without `_pluginStorage` gets those copied into it.
+  - Upstream's backup writes a cold value only when it is a list, or an object with
+    `character` or `message`. Most `_coldplugin` values are therefore never in the file;
+    their pointers are reported as `cold-missing`.
+  - `enabledModules` selects by id or by namespace, so both are kept when they resolve.
+  - Characters missing from `characterOrder` are not appended; metatron's boot does that.
+  - Old image paths are repaired whatever `formatversion` says.
+
 ## S5. Import worker, routes, and the report dialog (_hard_, `self-host-server.md` + `backup-sync-hub.md`)
 
 Depends: S1, S2, S4.
 
-Handed over from S1–S3:
+Handed over from S1–S4:
 
 - A fresh `createResourceStore` materializes the singleton records. The worker must
   update those at their current revision, not create them.
 - The worker heap limit (`resourceLimits`) is mandatory (S1 _Landed_, Memory).
 - Call `planUpstreamArchive(handle, savePath)`. Answer `ArchiveRejectedError` from
   `server/src/data/archive.ts` with 400.
+- Write S4's output in this order:
+  1. `resources`: `store.put(kind, "main", data, store.get(kind, "main")?.revision ??
+null)`. The S3 kinds already exist in a fresh store; `modules`, `plugins` and
+     `pluginStorage` do not, so they are created.
+  2. `characters`: `store.put(characters, id, data, null)` for each. This also creates
+     each character's empty chat order.
+  3. `chats`: `store.applyChanges({ chats })` in batches, in array order. Each create
+     appends, so every chat order matches upstream's.
+- Pass `convertUpstreamDatabase` the cold entries and the archive's asset keys; use a new
+  report per conversion.
 
 - **Worker.** New `server/src/data/upstream/importWorker.ts`, one `worker_threads` worker
   per import, inside the server process (D1). For the pattern, see
@@ -828,13 +876,57 @@ includeSecrets }`. It returns `{ db, assetKeys, report }`.
   - inlay references are counted.
 - Docs: `persistence.md` (the exporter as a reader of every kind).
 
+_Landed_ (`adc90f97d`, merged as `ac5c6fd05`):
+
+- **API**: `buildUpstreamDatabase(rows, chats, options)` returns `{ db, assetKeys, report }`
+  (`server/src/data/upstream/exportDatabase.ts`). It is pure and synchronous. The options
+  take `selectedChat: { characterId, chatId }` instead of `chatPage`, `hasAsset` to fill the
+  `missing` list, and `now` for the trash times. The report types are in
+  `shared/upstreamExportReport.ts`.
+- **Shared helpers**: `loadJobScope`'s per-field steps moved into
+  `server/src/data/databaseProjection.ts` (`mirrorSecrets`, `projectSections`,
+  `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`).
+  `loadJobScope` calls them with unchanged behavior.
+- **Checks**: 27 tests in `upstreamExport.test.ts`. The four character, chat, module and
+  plugin round trips through S4's importer were left as `it.todo` until S4 merged; they are
+  being enabled now. A throwaway check (not committed) decoded a synthetic export with
+  upstream's own decoder (msgpackr 1.10.1 `index-no-eval` and fflate), and the result
+  matched exactly.
+- **Asset walker**: it has its own `collectUpstreamAssetReferences(db)` over the upstream
+  `Database`, beside S4's `collectAssetReferences(records)`. Merging the two (or pinning
+  identical coverage) is being done with the round trips.
+- **Departures from this plan** (each checked against upstream `669b12ce`):
+  - `lastDate`: upstream's cold storage runs only when `coldstorage` is on, which
+    `setDatabase` sets by default when there are no plugins. A chat goes cold when the
+    larger of `lastDate` and its message times is more than 10 days old, so raising
+    `lastDate` adds nothing. It is kept. A character goes cold by its own
+    `lastInteraction`, so that is raised to its newest chat.
+  - Trash: upstream's boot deletes characters trashed more than 3 days ago. The export
+    refreshes expired trash times so those characters survive the restore, and reports it.
+  - Translator presets change shape, not just index: upstream rebuilds them as `{ name,
+prompt, maxResponse }`. The export takes these from the first enabled step and reports
+    lost steps and options.
+  - Credentials: without `includeSecrets`, the export also blanks the auxiliary service
+    keys in `secrets` (TTS, image, DeepL, embeddings), the characters' TTS keys and the MCP
+    OAuth secrets. The version-2 export keeps all of these. A key typed into free text (a
+    message, a lorebook) is exported as it is; refusing such an export was rejected.
+
 ## S7. Export routes and button (_small_, `backup-sync-hub.md`)
 
 Depends: S5, S6.
 
+Handed over from S6:
+
+- The prepare body names the tab's chat as `selectedChat: { characterId, chatId }` (S6's
+  option), not `chatPage`. The route passes `hasAsset` (an asset file exists on disk) and
+  `now`.
+- The "Include API keys?" question must say that it covers every key: without it, the
+  auxiliary service keys, the characters' TTS keys and the MCP OAuth secrets are blanked
+  too (S6 _Landed_).
+
 - **Routes.**
   - `POST /api/backups/export-upstream/prepare` `{ promptPresetId, modelPresetId,
-personaId, includeSecrets, chatPage? }`:
+personaId, includeSecrets, selectedChat? }`:
     - `snapshots.exclusive(() => store.backupTo(stagingFile))`;
     - S6 on the copy;
     - the encoded bytes are written to staging under a token (same slot/TTL pattern);
@@ -998,6 +1090,10 @@ The runner takes each default unless the user overrides it.
 
 ## Leftovers
 
+- S6, accepted minor issues (found by the Fable review):
+  - Without keys, `authRefreshes` is written as `[]` even when the store had none.
+  - A chosen slot whose credential no longer exists does not keep its field, so a later
+    slot's key can take it.
 - S3, accepted minor issues:
   - A repaired model-preset reference is reported by its generated id, not a name.
   - `loreBook: null` is reported, where upstream fills the default silently.
