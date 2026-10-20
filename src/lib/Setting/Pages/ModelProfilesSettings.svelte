@@ -21,10 +21,15 @@
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     // The editor selection does not change any preset's slot choices; a removed profile falls back
     // to the first.
     const profiles = $derived(settings.modelProfiles ?? []);
+    // A search jump to a Connections item selects its target, the main slot's profile (Decision 16),
+    // before the editor mounts.
+    const jumpProfileId = currentJump()?.profileId;
+    if (jumpProfileId !== undefined) selectedId = jumpProfileId;
     const selected = $derived(profiles.find((profile) => profile.id === selectedId) ?? profiles[0]);
 
     function add() {

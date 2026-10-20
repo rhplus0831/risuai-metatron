@@ -821,6 +821,16 @@ export const languageEnglish = {
     settingsNavGroupInterface: "Interface",
     settingsNavGroupData: "Data",
     settingsNavGroupAdvanced: "Advanced & about",
+    // The settings search at the top of the settings navigation (search plan slice 3b).
+    settingsSearch: {
+        label: "Search settings",
+        placeholder: "Search settings",
+        empty: "No settings match.",
+        hiddenHit: "Hidden by another setting",
+        noMainProfileHit: "The main slot has no connection",
+        hiddenNote: "This setting is hidden by another setting.",
+        noMainProfileNote: "The main slot has no connection, so this setting has no connection to show.",
+    },
     longPressToPopupEditor: "Long Press to Open Popup Editor",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",

@@ -21,12 +21,24 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
+vi.mock("src/ts/parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
+vi.mock("src/ts/process/index.svelte", () => ({}));
 
 import { language } from "src/lang";
+import type { SettingHit } from "src/ts/setting/searchIndex";
+import {
+    currentJump,
+    finishJump,
+    jumpVersion,
+    openSetting,
+    scrollToSetting,
+    SETTING_HIGHLIGHT_MS,
+} from "src/ts/setting/settingJump.svelte";
 import type { SettingItem, SettingSection } from "src/ts/setting/types";
 import type { Database } from "src/ts/storage/database.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 import SettingsSections from "./SettingsSections.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -123,5 +135,78 @@ describe("SettingsSections", () => {
         flushSync();
         expect(target.querySelector('[data-settings-section="test.experimental"]')).not.toBeNull();
         expect(target.querySelector('section[data-settings-section="test.hiddenOrdinary"]')).not.toBeNull();
+    });
+});
+
+// Search plan slice 3b: a collapsible section the pending jump names (`currentJump()`, read at mount)
+// starts open; the jump's finish neither closes it nor drops the row's ring; a later re-creation of
+// the accordion (Display switches tabs on one instance) stays closed once the jump finished.
+describe("SettingsSections with a search jump", () => {
+    const MENU = 6;
+    const legacy = (): SettingSection => ({
+        id: "test.legacy",
+        labelKey: "settingsSectionLegacy",
+        collapsible: true,
+        items: [check("test.unrec", "showUnrecommended")],
+    });
+    const experimental = (): SettingSection => ({
+        id: "test.experimental",
+        labelKey: "settingsSectionExperimental",
+        collapsible: true,
+        items: [check("test.exp", "useExperimental")],
+    });
+    const jumpTo = (overrides: Partial<SettingHit>) =>
+        openSetting({
+            kind: "item",
+            id: "test.unrec",
+            label: "test.unrec",
+            breadcrumb: [],
+            target: { menu: MENU, sectionId: "test.legacy" },
+            available: true,
+            score: 1,
+            ...overrides,
+        });
+    const expanded = (target: HTMLElement, id: string) =>
+        target.querySelector(`[data-settings-section="${id}"] button`)?.getAttribute("aria-expanded");
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        SettingsMenuIndex.set(MENU);
+    });
+
+    afterEach(() => {
+        finishJump(jumpVersion());
+        settingsOpen.set(false);
+        SettingsMenuIndex.set(-1);
+        vi.useRealTimers();
+    });
+
+    it("mounts the named section open and the other closed; both the opening and the ring survive finishJump", async () => {
+        const version = jumpTo({});
+        const target = render([legacy(), experimental()]);
+        expect(expanded(target, "test.legacy")).toBe("true");
+        expect(expanded(target, "test.experimental")).toBe("false");
+
+        await expect(scrollToSetting("test.unrec", target)).resolves.toBe(true);
+        const ringed = target.querySelector<HTMLElement>('[data-setting-id="test.unrec"] > .ring-2');
+        expect(ringed).not.toBeNull();
+
+        finishJump(version);
+        flushSync();
+        expect(currentJump()).toBeNull();
+        expect(expanded(target, "test.legacy")).toBe("true");
+        expect(ringed!.isConnected).toBe(true);
+        expect(ringed!.classList.contains("ring-primary-500")).toBe(true);
+        vi.advanceTimersByTime(SETTING_HIGHLIGHT_MS);
+        expect(ringed!.classList.contains("ring-2")).toBe(false);
+    });
+
+    it("keeps the named section closed for an unavailable jump, and for a jump to another page", () => {
+        jumpTo({ available: false, reason: "hidden" });
+        expect(expanded(render([legacy()]), "test.legacy")).toBe("false");
+
+        jumpTo({ target: { menu: MENU + 1, sectionId: "test.legacy" } });
+        SettingsMenuIndex.set(MENU);
+        expect(expanded(render([legacy()]), "test.legacy")).toBe("false");
     });
 });

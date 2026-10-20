@@ -21,7 +21,19 @@
         ScrollTextIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
-    import type { Component } from "svelte";
+    import { untrack, type Component } from "svelte";
+    import type { Attachment } from "svelte/attachments";
+    import { getModelInfoForMode } from "src/ts/model/modellist";
+    import { settingContext } from "src/ts/setting/utils";
+    import { searchSettings, type SettingUnavailableReason } from "src/ts/setting/searchIndex";
+    import {
+        currentJump,
+        finishJump,
+        jumpVersion,
+        openSetting,
+        scrollToSection,
+        scrollToSetting,
+    } from "src/ts/setting/settingJump.svelte";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
@@ -128,6 +140,76 @@
             ],
         },
     ];
+    /**
+     * The settings search (search plan slice 3b). The query lives as long as the settings stay open (this
+     * component; a phone's page round trip keeps it); while it is non-empty the navigation lists the hits
+     * instead of the groups. The context is the one the pages render with (`SettingsSections`).
+     */
+    let query = $state("");
+    const hits = $derived(
+        query.trim() === ""
+            ? null
+            : searchSettings(
+                  query,
+                  settingContext({
+                      modelInfo: getModelInfoForMode("model"),
+                      subModelInfo: getModelInfoForMode("submodel"),
+                  }),
+              ),
+    );
+
+    function onSearchKeydown(event: KeyboardEvent) {
+        // An IME (Korean) uses Enter and Escape to end or cancel its composition.
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === "Enter" && hits && hits.length > 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            openSetting(hits[0]);
+        } else if (event.key === "Escape" && query !== "") {
+            event.preventDefault();
+            event.stopPropagation();
+            query = "";
+        }
+    }
+
+    function unavailableHitText(reason: SettingUnavailableReason | undefined): string {
+        return reason === "noMainProfile"
+            ? language.settingsSearch.noMainProfileHit
+            : language.settingsSearch.hiddenHit;
+    }
+
+    /** The unavailable hit's note on the page its jump mounted (Decision 9); any remount resets it. */
+    let jumpNotice = $state<SettingUnavailableReason | null>(null);
+
+    /**
+     * Runs on each mount of the keyed page, after the page initialized (its tab, its accordions'
+     * `startOpen`, the Connections selection): an available hit scrolls to and rings its row or section,
+     * an unavailable one shows the note; the jump then finishes. Untracked, so it runs once per mount.
+     */
+    const runJump: Attachment<HTMLDivElement> = (page) => {
+        let active = true;
+        untrack(() => {
+            const jump = currentJump();
+            jumpNotice = jump && !jump.available ? (jump.reason ?? "hidden") : null;
+            if (!jump) return;
+            if (!jump.available) {
+                finishJump(jump.version);
+                return;
+            }
+            const isCurrent = () => active && page.isConnected && currentJump()?.version === jump.version;
+            const scrolled =
+                jump.kind === "item"
+                    ? scrollToSetting(jump.id, page, isCurrent)
+                    : jump.kind === "section" && jump.sectionId
+                      ? scrollToSection(jump.sectionId, page, isCurrent)
+                      : Promise.resolve(false);
+            void scrolled.catch(() => false).finally(() => finishJump(jump.version));
+        });
+        return () => {
+            active = false;
+        };
+    };
+
     if (window.innerWidth >= 900 && $SettingsMenuIndex === -1) {
         $SettingsMenuIndex = MODEL_SETTINGS_MENU;
     }
@@ -140,7 +222,41 @@
                 class="flex h-full flex-col p-4 pt-8 gap-2 overflow-y-auto relative rs-setting-cont-3 shrink-0 bg-darkbg"
                 class:w-full={window.innerWidth < 700}
             >
-                {#each navGroups as group (group.id)}
+                <div class="flex flex-col gap-2" class:w-56={window.innerWidth >= 700}>
+                    <input
+                        type="search"
+                        class="w-full rounded-md border border-darkborderc bg-transparent px-2 py-1 text-sm text-textcolor shadow-xs transition-colors duration-200 focus:border-borderc focus:outline-hidden focus:ring-2 focus:ring-borderc"
+                        placeholder={language.settingsSearch.placeholder}
+                        aria-label={language.settingsSearch.label}
+                        autocomplete="off"
+                        bind:value={query}
+                        onkeydown={onSearchKeydown}
+                    />
+                    {#if hits !== null}
+                        <div class="flex flex-col gap-1" role="group" aria-label={language.settingsSearch.label}>
+                            {#each hits as hit (`${hit.kind}:${hit.id}`)}
+                                <button
+                                    class="flex flex-col items-start rounded-md px-2 py-1 text-left text-textcolor2 hover:bg-selected hover:text-textcolor"
+                                    onclick={() => {
+                                        openSetting(hit);
+                                    }}
+                                >
+                                    <span class="break-words text-textcolor">{hit.label}</span>
+                                    {#if hit.breadcrumb.length > 0}
+                                        <span class="break-words text-xs">{hit.breadcrumb.join(" › ")}</span>
+                                    {/if}
+                                    {#if !hit.available}
+                                        <span class="text-xs text-draculared">{unavailableHitText(hit.reason)}</span>
+                                    {/if}
+                                </button>
+                            {/each}
+                            {#if hits.length === 0}
+                                <p class="text-sm text-textcolor2">{language.settingsSearch.empty}</p>
+                            {/if}
+                        </div>
+                    {/if}
+                </div>
+                {#each hits === null ? navGroups : [] as group (group.id)}
                     <div class="flex flex-col gap-2" role="group" aria-labelledby="settings-nav-{group.id}">
                         <h3
                             id="settings-nav-{group.id}"
@@ -191,10 +307,19 @@
             </div>
         {/if}
         {#if window.innerWidth >= 700 || $SettingsMenuIndex !== -1}
-            {#key $SettingsMenuIndex}
+            <!-- Keyed by the jump version too (never by the pending jump), so a jump remounts its page. -->
+            {#key `${$SettingsMenuIndex}:${jumpVersion()}`}
                 <div
                     class="grow py-6 px-4 bg-bgcolor flex flex-col text-textcolor overflow-y-auto relative rs-setting-cont-4 min-w-0"
+                    {@attach runJump}
                 >
+                    {#if jumpNotice}
+                        <p class="mb-4 rounded-md border border-darkborderc p-2 text-sm text-textcolor2" role="status">
+                            {jumpNotice === "noMainProfile"
+                                ? language.settingsSearch.noMainProfileNote
+                                : language.settingsSearch.hiddenNote}
+                        </p>
+                    {/if}
                     {#if $SettingsMenuIndex === 0}
                         <UserSettings />
                     {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}

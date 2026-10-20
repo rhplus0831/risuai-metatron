@@ -17,12 +17,16 @@
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { modelAdditionalParamsItems, modelSettingsSections } from "src/ts/setting/modelSettingsData";
+    import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
             getModelInfoForMode(mode),
         ),
     );
+    // A search jump to an item inside Additional Params opens it (read at mount).
+    const jump = currentJump();
+    const openAdditionalParams = jump?.available === true && jump.opener === "model.additionalParams";
 </script>
 
 <ModelMenuTabs />
@@ -63,7 +67,7 @@
         <Check bind:check={settings.providers.reverseProxyOobaMode} name={language.reverseProxyOobaMode} />
     {/if}
 </div>
-<Accordion styled name="{language.additionalParams} " help="additionalParams">
+<Accordion styled name="{language.additionalParams} " help="additionalParams" startOpen={openAdditionalParams}>
     <!-- The table and the toggle under it are providers fields, not fields of the selected preset. -->
     <p class="mb-2 text-sm text-textcolor2">{language.additionalParamsSharedDesc}</p>
     <table class="contain w-full max-w-full tabler">
