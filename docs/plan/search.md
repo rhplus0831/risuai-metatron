@@ -18,14 +18,15 @@ _hard_. Each slice ends with its tests (under "Test"), `pnpm check`, `pnpm forma
 contract. Tests follow the two-gate rule (STRUCTURE.md V3): no wall-clock, sleep or scheduler
 dependence in the default gate; control the clock, inject the limit, or use a latch.
 
-No slice edits the files of the unmerged `heap-memory-reduction` branch (`src/ts/storage/*`,
-`src/ts/stores.svelte.ts`, `src/ts/characters.ts`, `src/ts/assetList.ts`,
-`src/ts/parser/parser.svelte.ts`, `src/lib/SideBars/CharConfig.svelte`,
-`src/ts/process/modules.ts`, `src/ts/util.ts`, `server/src/prompt/assemble.ts`,
-`server/src/prompt/runner.ts`). Slices import from them (`selectChat`, `authFetch`,
-`settingsOpen`, `SettingsMenuIndex`, `gridOpenStore`) and set their stores, but never edit them,
-so no slice carries `Depends: heap-memory-reduction merge`. The verifier found no slice that needs
-such an edit. A slice that finds it must edit one of them stops and records it instead.
+The `heap-memory-reduction` branch this plan was written beside has since merged into
+`metatron` (`b122ae132`, plan archived at `fd13d5381`), so no slice waits on that merge. The plan
+was still sized so that no slice edits its files (`src/ts/storage/*`, `src/ts/stores.svelte.ts`,
+`src/ts/characters.ts`, `src/ts/assetList.ts`, `src/ts/parser/parser.svelte.ts`,
+`src/lib/SideBars/CharConfig.svelte`, `src/ts/process/modules.ts`, `src/ts/util.ts`,
+`server/src/prompt/assemble.ts`, `server/src/prompt/runner.ts`): slices import from them
+(`selectChat`, `authFetch`, `settingsOpen`, `SettingsMenuIndex`, `gridOpenStore`) and set their
+stores. Keep that scope: a slice that finds it must edit one of them stops and records why, so the
+orchestrator can widen the slice deliberately instead of the slice drifting into shared files.
 
 ## Problem
 
