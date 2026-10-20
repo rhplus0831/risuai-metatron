@@ -468,8 +468,13 @@
                 const img = new Image();
                 //@ts-expect-error Uint8Array buffer type (ArrayBufferLike) is incompatible with BlobPart's ArrayBuffer
                 const blob = new Blob([sel.data], { type: "image/png" });
-                img.src = URL.createObjectURL(blob);
-                await img.decode();
+                const url = URL.createObjectURL(blob);
+                img.src = url;
+                try {
+                    await img.decode();
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
                 canvas.width = 48;
                 canvas.height = 48;
                 ctx.drawImage(img, 0, 0, 48, 48);

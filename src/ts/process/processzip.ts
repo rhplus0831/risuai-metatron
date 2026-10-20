@@ -79,7 +79,11 @@ export class CharXWriter {
         const imgURL = URL.createObjectURL(imgBlob);
         const imgElement = document.createElement("img");
         imgElement.src = imgURL;
-        await imgElement.decode();
+        try {
+            await imgElement.decode();
+        } finally {
+            URL.revokeObjectURL(imgURL);
+        }
         canvas.width = imgElement.width;
         canvas.height = imgElement.height;
         ctx.drawImage(imgElement, 0, 0);

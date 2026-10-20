@@ -515,6 +515,20 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   either fixed or recorded as accepted.
   _Test_: `src/ts/globalApiRetention.test.ts`.
 
+  **D2a landed** (the one-shot URLs). Each now keeps its object URL and revokes it in a
+  `finally` once the image is drawn or decoded, also when the load fails or a cancelled
+  job's check throws. The sites:
+  - `postInlayAsset` and `reencodeImage` (`inlays.ts`);
+  - the `inlayImage` callback (`jobChannel.ts`);
+  - `writeJpeg` (`processzip.ts`);
+  - the preset icon (`PromptPresetSettings.svelte`);
+  - the image translator's input (`PlaygroundImageTrans.svelte`). Its later redraws use the
+    decoded image.
+
+  The last three were found beyond the list above. Tests: `inlays.test.ts` ("one-shot
+  decode URLs"): `postInlayAsset` drawn and failed, `reencodeImage` decoded and failed.
+  The pinned sources (D2b measurement, then fix or accept) are still open.
+
 ## Out of scope
 
 - Dropping `persisted` texts (hash-only change detection). They are the patch bases and

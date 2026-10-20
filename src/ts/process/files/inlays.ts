@@ -358,12 +358,17 @@ export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
     const imgObj = new Image();
 
     if (inlayImageExts.includes(extention)) {
-        imgObj.src = URL.createObjectURL(new Blob([asBuffer(img.data)], { type: `image/${extention}` }));
-
-        return await writeInlayImage(imgObj, {
-            name: img.name,
-            ext: extention,
-        });
+        // Only the draw reads this URL; it is released once the write is done or failed.
+        const url = URL.createObjectURL(new Blob([asBuffer(img.data)], { type: `image/${extention}` }));
+        imgObj.src = url;
+        try {
+            return await writeInlayImage(imgObj, {
+                name: img.name,
+                ext: extention,
+            });
+        } finally {
+            URL.revokeObjectURL(url);
+        }
     }
 
     if (inlayAudioExts.includes(extention)) {
@@ -701,8 +706,13 @@ export async function reencodeImage(img: Uint8Array) {
     }
     const canvas = document.createElement("canvas");
     const imgObj = new Image();
-    imgObj.src = URL.createObjectURL(new Blob([asBuffer(img)], { type: `image/png` }));
-    await imgObj.decode();
+    const url = URL.createObjectURL(new Blob([asBuffer(img)], { type: `image/png` }));
+    imgObj.src = url;
+    try {
+        await imgObj.decode();
+    } finally {
+        URL.revokeObjectURL(url);
+    }
     let drawHeight = imgObj.height;
     let drawWidth = imgObj.width;
     canvas.width = drawWidth;
