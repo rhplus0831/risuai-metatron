@@ -12,9 +12,42 @@ import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 // so the removal-time `change` is dispatched here from a patched `Element.prototype.remove`.
 // SortableJS, the tokenizer, and the alert dialogs are doubled.
 
-vi.mock("sortablejs/modular/sortable.core.esm.js", () => ({
-    default: { create: () => ({ destroy() {} }) },
-}));
+/** The SortableJS instances the lists created (happy-dom cannot drag): their options and lifecycle. */
+const sortables = vi.hoisted(
+    () =>
+        [] as {
+            el: HTMLElement;
+            options: Record<string, unknown>;
+            /** The `disabled` option the instance was created with. */
+            createdDisabled: boolean;
+            destroyed: boolean;
+        }[],
+);
+vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
+    class Sortable {
+        el: HTMLElement;
+        options: Record<string, unknown>;
+        createdDisabled: boolean;
+        destroyed = false;
+        constructor(el: HTMLElement, options: Record<string, unknown>) {
+            this.el = el;
+            this.options = options;
+            this.createdDisabled = !!options.disabled;
+            sortables.push(this);
+        }
+        option(name: string, value?: unknown) {
+            if (value === undefined) return this.options[name];
+            this.options[name] = value;
+        }
+        destroy() {
+            this.destroyed = true;
+        }
+        static create(el: HTMLElement, options: Record<string, unknown>) {
+            return new Sortable(el, options);
+        }
+    }
+    return { default: Sortable };
+});
 vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn(async () => 0) }));
 const mocks = vi.hoisted(() => ({ alertConfirm: vi.fn(async () => true) }));
 vi.mock("src/ts/alert", () => ({
@@ -104,6 +137,7 @@ async function settle() {
 }
 
 beforeEach(() => {
+    sortables.length = 0;
     unhandled = [];
     process.on("unhandledRejection", onRejection);
     mocks.alertConfirm.mockReset();
@@ -330,5 +364,234 @@ describe("LoreBookList rows keyed by entry", () => {
 
         expect(props.externalLoreBooks.map((book) => book.comment)).toEqual(["x0", "x2"]);
         expect(labels()).toEqual(["x0", "x2"]);
+    });
+});
+
+// The list filter (Search plan slice 2c, Decision 5): the outermost list owns the one query field;
+// an entry matches on `comment`, `key` and `secondkey` (a chat's `child` link also on the entry it
+// links), never on `content`; a folder on its own name. A match inside a folder shows the folder
+// expanded (its stored expansion untouched) with only the matching entries, a folder-name match all
+// of them. Hidden rows stay mounted with the `hidden` class, so visibility is read through the row
+// and its ancestors. Every Sortable instance is disabled while filtered, including those created
+// meanwhile, and enabled again after clearing. The query resets when the list's owner changes.
+describe("LoreBookList filter", () => {
+    const library = (): loreBook[] => [
+        entry("Sword", { key: "excalibur" }),
+        entry("Shield", { key: "shield", content: "forged beside excalibur" }),
+        entry("Helm", { key: "helm", secondkey: "zeta" }),
+        entry("해적선", { key: "ship" }),
+        folder("Folder", "fkey"),
+        entry("Beta", { key: "beta", folder: "fkey" }),
+        entry("Gamma", { key: "gamma", folder: "fkey" }),
+    ];
+    const filterField = () => target.querySelector<HTMLInputElement>(":scope > input")!;
+    /** Every filter field rendered anywhere under the root (the nested lists must render none). */
+    const filterFields = () =>
+        [...target.querySelectorAll<HTMLInputElement>("input")].filter(
+            (input) => input.placeholder === filterField().placeholder,
+        );
+    function search(text: string) {
+        const field = filterField();
+        field.value = text;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    }
+    /** Whether the filter shows the row: neither it nor a row above it carries `hidden`. */
+    const shown = (row: HTMLElement) => {
+        for (let node: HTMLElement | null = row; node && node !== target; node = node.parentElement) {
+            if (node.classList.contains("hidden")) return false;
+        }
+        return true;
+    };
+    const label = (row: HTMLElement) => row.querySelector("button")!.textContent!.trim();
+    const visibleLabels = (root: ParentNode = target) => rows(root).filter(shown).map(label);
+    const folderRow = () => rows().find((row) => label(row) === "Folder")!;
+    const live = () => sortables.filter((sortable) => !sortable.destroyed);
+    function renderExternal() {
+        install({ alpha: [] });
+        selectCharacter("alpha");
+        const props = reactiveProps({ externalLoreBooks: library() });
+        instance = mount(LoreBookList, { target, props });
+        flushSync();
+        return props;
+    }
+
+    it("shows only the entries a key, a second key, or a choseong comment query matches, never a content match", () => {
+        renderExternal();
+        expect(filterFields()).toHaveLength(1);
+        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+
+        search("excal");
+        // Shield holds "excalibur" in its content only (Decision 5).
+        expect(visibleLabels()).toEqual(["Sword"]);
+        expect(labels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+
+        search("zeta");
+        expect(visibleLabels()).toEqual(["Helm"]);
+
+        search("ㅎㅈ");
+        expect(visibleLabels()).toEqual(["해적선"]);
+
+        search("");
+        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+        expect(filterField().value).toBe("");
+    });
+
+    it("expands a folder to the matching entry only, with no second field, and collapses it back on clearing", () => {
+        renderExternal();
+        expect(detail(folderRow())).toBeNull();
+
+        search("beta");
+        expect(visibleLabels()).toEqual(["Folder", "Beta"]);
+        expect(detail(folderRow())).not.toBeNull();
+        expect(nestedRows(folderRow()).map((row) => [label(row), shown(row)])).toEqual([
+            ["Beta", true],
+            ["Gamma", false],
+        ]);
+        expect(filterFields()).toHaveLength(1);
+
+        // The forced folder's toggle does nothing: no stored expansion is written.
+        folderRow().querySelector("button")!.click();
+        flushSync();
+        expect(detail(folderRow())).not.toBeNull();
+        expect(visibleLabels()).toEqual(["Folder", "Beta"]);
+
+        search("");
+        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+        expect(detail(folderRow())).toBeNull();
+    });
+
+    it("shows every entry of a folder whose name matches", () => {
+        renderExternal();
+
+        search("fold");
+        expect(visibleLabels()).toEqual(["Folder", "Beta", "Gamma"]);
+        expect(nestedRows(folderRow()).map(shown)).toEqual([true, true]);
+    });
+
+    it("disables drag while filtered, on every list created meanwhile, and enables it again after clearing", () => {
+        renderExternal();
+        expect(live().map((sortable) => sortable.options.disabled)).toEqual([false]);
+        const root = live()[0];
+
+        search("beta");
+        expect(root.options.disabled).toBe(true);
+        // The forced folder's nested list starts its instance disabled.
+        expect(
+            live().map((sortable) => [sortable === root, sortable.createdDisabled, sortable.options.disabled]),
+        ).toEqual([
+            [true, false, true],
+            [false, true, true],
+        ]);
+
+        // An instance created while filtered by closing a detail (nested and root) is disabled too.
+        const beta = nestedRows(folderRow())[0];
+        open(beta);
+        beta.querySelector("button")!.click();
+        flushSync();
+        search("excal");
+        const sword = rows()[0];
+        open(sword);
+        expect(live()).toEqual([]);
+        sword.querySelector("button")!.click();
+        flushSync();
+        expect(live().map((sortable) => [sortable.createdDisabled, sortable.options.disabled])).toEqual([[true, true]]);
+        expect(sortables.filter((sortable) => sortable.createdDisabled)).toHaveLength(3);
+
+        search("");
+        expect(live().map((sortable) => [sortable.createdDisabled, sortable.options.disabled])).toEqual([
+            [true, false],
+        ]);
+        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+    });
+
+    it("keeps hidden rows mounted with their open details, and an entry renamed under the filter stays shown", () => {
+        renderExternal();
+        const nested = open(folderRow());
+        const beta = nestedRows(folderRow())[0];
+        open(beta);
+
+        search("excal");
+        expect(shown(folderRow())).toBe(false);
+        expect(detail(folderRow())).toBe(nested);
+        expect(detail(beta)).not.toBeNull();
+
+        const sword = rows()[0];
+        type(open(sword).querySelector("input")!, "Other");
+        flushSync();
+        expect(visibleLabels()).toEqual(["Other"]);
+
+        search("");
+        expect(visibleLabels()).toEqual(["Other", "Shield", "Helm", "해적선", "Folder", "Beta", "Gamma"]);
+        expect(detail(folderRow())).toBe(nested);
+        expect(detail(beta)).not.toBeNull();
+    });
+
+    it("matches a chat's child link on the linked entry, and resets the query when the character, the tab, or the chat changes", () => {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "alpha",
+                    type: "character",
+                    name: "alpha",
+                    globalLore: [entry("Sword", { key: "excalibur" }), entry("Dragon", { id: "g1" })],
+                    chatPage: 0,
+                    chats: [
+                        {
+                            id: "k1",
+                            name: "K1",
+                            note: "",
+                            localLore: [
+                                entry("Lantern"),
+                                { ...entry(""), mode: "child", id: "g1", alwaysActive: true } as loreBook,
+                            ],
+                            message: [],
+                        },
+                        { id: "k2", name: "K2", note: "", localLore: [entry("Mirror")], message: [] },
+                    ],
+                },
+                {
+                    chaId: "beta",
+                    type: "character",
+                    name: "beta",
+                    globalLore: [entry("Sword", { key: "excalibur" }), entry("Shield")],
+                    chatPage: 0,
+                    chats: [{ id: "k3", name: "K3", note: "", localLore: [], message: [] }],
+                },
+            ],
+        } as any);
+        selectCharacter("alpha");
+        selectChat("alpha", "k1");
+        flushSync();
+        const props = reactiveProps({ submenu: 0 });
+        instance = mount(LoreBookList, { target, props });
+        flushSync();
+
+        search("excal");
+        expect(visibleLabels()).toEqual(["Sword"]);
+        selectCharacter("beta");
+        flushSync();
+        expect(filterField().value).toBe("");
+        expect(visibleLabels()).toEqual(["Sword", "Shield"]);
+
+        search("shie");
+        expect(visibleLabels()).toEqual(["Shield"]);
+        selectCharacter("alpha");
+        flushSync();
+        search("excal");
+        expect(visibleLabels()).toEqual(["Sword"]);
+        props.submenu = 1;
+        flushSync();
+        expect(filterField().value).toBe("");
+        expect(visibleLabels()).toEqual(["Lantern", "Dragon"]);
+
+        // The child link has empty fields of its own: it matches on the entry it links.
+        search("drag");
+        expect(visibleLabels()).toEqual(["Dragon"]);
+        selectChat("alpha", "k2");
+        flushSync();
+        expect(filterField().value).toBe("");
+        expect(visibleLabels()).toEqual(["Mirror"]);
+        expect(unhandled).toEqual([]);
     });
 });
