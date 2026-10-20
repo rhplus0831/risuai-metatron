@@ -1833,6 +1833,23 @@ function handleCycleError(error: unknown) {
     }
 }
 
+/** Work run synchronously before the restore notice (`beforeRestoreReload`), or null. */
+let restoreReloadHook: (() => void) | null = null;
+
+/**
+ * Registers one hook before the restore notice, replacing any previous hook; returns its unregister.
+ * The upstream import stores its prepared selection here when the socket reports the new epoch
+ * before the commit's answer (`upstreamBackupClient.ts`). The notice never waits on the network.
+ */
+export function beforeRestoreReload(fn: () => void): () => void {
+    restoreReloadHook = fn;
+    return () => {
+        if (restoreReloadHook === fn) {
+            restoreReloadHook = null;
+        }
+    };
+}
+
 /**
  * The server data was replaced (restore or import): every revision here is void. Also reached from
  * `resourceClient` for a 412 or a changed epoch on any other resource request (inlays, permissions).
@@ -1846,6 +1863,12 @@ async function haltForRestore() {
         clearTimeout(timer);
         timer = null;
     }
+    try {
+        restoreReloadHook?.();
+    } catch (error) {
+        console.error("[Save] Before restore reload:", error);
+    }
+    restoreReloadHook = null;
     // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
     // user acknowledged it.
     await alertTerminal(language.resourceRestored);

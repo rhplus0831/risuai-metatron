@@ -16,6 +16,7 @@
     import Button from "../UI/GUI/Button.svelte";
     import { XIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import RequestLogsPopup from "./RequestLogs/RequestLogsPopup.svelte";
+    import UpstreamImportReport from "../Setting/Pages/UpstreamImportReport.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { language } from "src/lang";
@@ -215,7 +216,7 @@
     }
 </script>
 
-{#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs"}
+{#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs" && $alertStore.type !== "upstreamImportReport"}
     <div
         class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center"
         class:vis={$alertStore.type === "wait2"}
@@ -1039,6 +1040,8 @@
     </div>
 {:else if $alertStore.type === "requestlogs"}
     <RequestLogsPopup />
+{:else if $alertStore.type === "upstreamImportReport"}
+    <UpstreamImportReport />
 {/if}
 
 <style>

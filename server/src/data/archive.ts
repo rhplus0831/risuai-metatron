@@ -52,7 +52,7 @@ export function encodeRecordHeader(name: string, length: number): Uint8Array {
  * strict UTF-8, every record must fit, and the last one must end exactly at the end of the file. The
  * index stops with an error at `MAX_ARCHIVE_RECORDS` records or `MAX_ARCHIVE_NAME_TOTAL_BYTES` of names.
  */
-export async function indexArchive(handle: FileHandle): Promise<ArchiveRecord[]> {
+export async function indexArchive(handle: FileHandle, signal?: AbortSignal): Promise<ArchiveRecord[]> {
     const { size } = await handle.stat();
     const records: ArchiveRecord[] = [];
     // Headers are read through one window, so many tiny records cost few reads.
@@ -61,6 +61,7 @@ export async function indexArchive(handle: FileHandle): Promise<ArchiveRecord[]>
     let windowLength = 0;
     const bytesAt = async (at: number, length: number): Promise<Buffer> => {
         if (at < windowStart || at + length > windowStart + windowLength) {
+            signal?.throwIfAborted();
             const { bytesRead } = await handle.read(window, 0, window.length, at);
             windowStart = at;
             windowLength = bytesRead;

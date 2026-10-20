@@ -5,6 +5,7 @@ import { language } from "../lang";
 import { type MessageGenerationInfo } from "./storage/database.svelte";
 import { alertStore as alertStoreImported } from "./stores.svelte";
 import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
+import type { UpstreamImportReport } from "../../shared/upstreamBackup.ts";
 
 /** A server job's failure as the tab received it, for the error alert's debug actions. */
 export type JobFailureInfo = {
@@ -37,7 +38,8 @@ export interface alertData {
         | "branches"
         | "progress"
         | "pluginconfirm"
-        | "requestlogs";
+        | "requestlogs"
+        | "upstreamImportReport";
     msg: string;
     submsg?: string;
     datalist?: [string, string][];
@@ -375,6 +377,41 @@ export function showHypaV2Alert() {
         type: "hypaV2",
         msg: "",
     });
+}
+
+/** The report `alertUpstreamImportReport` shows (`UpstreamImportReport.svelte`), null when none is shown. */
+export const upstreamImportReportStore = writable<{
+    report: UpstreamImportReport;
+    changedWrites: number | null;
+    answer(restore: boolean): void;
+} | null>(null);
+
+/**
+ * Shows a prepared upstream RisuAI import's report with its full-replace warning; resolves true when
+ * the user chose Restore, false for Cancel (or any other way the dialog closed).
+ */
+export async function alertUpstreamImportReport(
+    report: UpstreamImportReport,
+    options: { changedWrites?: number } = {},
+): Promise<boolean> {
+    let restore = false;
+    const dialog = {
+        report,
+        changedWrites: options.changedWrites ?? null,
+        answer: (value: boolean) => {
+            restore = value;
+        },
+    };
+    upstreamImportReportStore.set(dialog);
+    alertStoreImported.set({
+        type: "upstreamImportReport",
+        msg: "",
+    });
+    await waitAlert();
+    if (get(upstreamImportReportStore) === dialog) {
+        upstreamImportReportStore.set(null);
+    }
+    return restore;
 }
 
 /** The request logs popup; `filter.jobId` opens the server's history filtered to that job. */

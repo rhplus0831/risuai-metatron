@@ -81,6 +81,8 @@ export const UPSTREAM_EXCLUDED_CODES = [
     "plugin-device-storage",
     /** A chat that shows inlay images (`{{inlay::id}}`), which upstream keeps outside the backup, one per chat; examples are character names. */
     "inlays-not-in-backup",
+    /** An archive record whose name has no asset storage location (too long, for example), one per record; examples are the names. */
+    "asset-name-invalid",
 ] as const;
 
 export type UpstreamConvertedCode = (typeof UPSTREAM_CONVERTED_CODES)[number];
@@ -209,3 +211,54 @@ export function addUpstreamReportEntry<Code extends string>(
         entry.examples.push(example);
     }
 }
+
+/**
+ * The import routes (`server/src/routes/backupsUpstream.ts`, `docs/plan/upstream-bin-compat.md` S5):
+ *
+ * 1. Prepare: the `.bin` as the raw body. Archive refusals (a Risu Account backup among them) are a
+ *    400 before anything streams; then the answer is NDJSON: `UpstreamImportProgress` lines, then one
+ *    `UpstreamImportPrepared` line, or one `{ error }` line when the conversion failed (the live store
+ *    is never touched by a prepare).
+ * 2. Commit `{ token, acceptWrites? }`: replaces every resource with the staged store (full replace,
+ *    U3) and answers `UpstreamImportCommitted`; `409 { error: UPSTREAM_CHANGED_SINCE_REVIEW, writes }`
+ *    when resources were written since the prepare and `acceptWrites` does not name that count (D13).
+ *    Or cancel `{ token }`: the staged import is removed.
+ */
+export const UPSTREAM_IMPORT_PREPARE_PATH = "/api/backups/import-upstream/prepare";
+export const UPSTREAM_IMPORT_COMMIT_PATH = "/api/backups/import-upstream/commit";
+export const UPSTREAM_IMPORT_CANCEL_PATH = "/api/backups/import-upstream/cancel";
+
+/** How long a prepared import waits for its commit or cancel (from the prepare's answer). */
+export const UPSTREAM_STAGED_TTL_MS = 10 * 60 * 1000;
+/** How many prepared imports may wait at once; a prepare past it is a 409 `UPSTREAM_TOO_MANY_STAGED`. */
+export const MAX_UPSTREAM_STAGED = 1;
+/** A prepared import's token: a UUID. */
+export const UPSTREAM_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The 404 `error` text of a commit whose prepared import is gone (expired, cancelled, or committed). */
+export const UPSTREAM_IMPORT_EXPIRED = "Import expired";
+/** The 409 `error` text of a prepare while another prepared import waits. */
+export const UPSTREAM_TOO_MANY_STAGED = "Another RisuAI backup import is waiting for its answer";
+/** The 409 `error` of a commit refused because resources were written since the prepare (D13). */
+export const UPSTREAM_CHANGED_SINCE_REVIEW = "changedSinceReview";
+
+/** The prepare's steps, in order; `assets` and `cold` count records, `write` counts chats. */
+export const UPSTREAM_IMPORT_PHASES = ["decode", "cold", "convert", "write", "validate", "assets"] as const;
+export type UpstreamImportPhase = (typeof UPSTREAM_IMPORT_PHASES)[number];
+
+/** A prepare progress line: `done` of `total` items of `phase` (0 of 1 when it has no count). */
+export type UpstreamImportProgress = { phase: UpstreamImportPhase; done: number; total: number };
+
+/** The prepare's result line. */
+export type UpstreamImportPrepared = {
+    token: string;
+    report: UpstreamImportReport;
+    selection: UpstreamImportSelection;
+};
+
+/** The commit's answer: the new epoch, the assets added and kept, and the selection to apply (D4). */
+export type UpstreamImportCommitted = {
+    epoch: string;
+    assetsWritten: number;
+    assetsSkipped: number;
+    selection: UpstreamImportSelection;
+};

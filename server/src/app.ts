@@ -40,6 +40,13 @@ import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
+import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
+import { UPSTREAM_IMPORT_PREPARE_PATH } from "../../shared/upstreamBackup.ts";
+import {
+    DEFAULT_MAX_UPSTREAM_DB_BYTES,
+    defaultUpstreamImportHeapMb,
+    type UpstreamImportRunner,
+} from "./data/upstream/importRunner.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
 import { CHARX_IMPORT_PATH, registerCharxImportRoutes } from "./routes/importCharx.ts";
 import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
@@ -110,6 +117,11 @@ export function createServerContext(options: {
      * for its commit (tests replace them).
      */
     realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
+    /**
+     * The upstream RisuAI import (`routes/backupsUpstream.ts`): how long a prepared import waits for its
+     * commit, and what runs a prepare (tests replace them; the default is a worker per import).
+     */
+    upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -171,6 +183,8 @@ export function createServerContext(options: {
     });
     // The Realm imports staged by a prepare and waiting for their commit (`routes/importRealm.ts`).
     const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs });
+    // The upstream imports prepared and waiting for their commit (`routes/backupsUpstream.ts`).
+    const upstreamStaging = createUpstreamImportStaging({ ttlMs: options.upstreamImport?.stagedTtlMs });
     // Before every other maintenance listener, so its start is the first thing recorded; it never
     // throws. Its end says whether the data was replaced (a new epoch).
     snapshots.onMaintenance(async () => {
@@ -344,6 +358,9 @@ export function createServerContext(options: {
         push.close();
         // The staged Realm imports waiting for their commit are removed (a running commit is tracked).
         void realmStaging.close();
+        // A running upstream prepare ends now (its worker is terminated), not after the HTTP drain, and
+        // the prepared imports are removed (a running commit is tracked).
+        void upstreamStaging.close();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
         }
@@ -443,8 +460,8 @@ export function createServerContext(options: {
         }
     });
 
-    // The backup, module, and CharX imports stream their bodies to disk with their own cap; Hono's
-    // limiter would buffer them.
+    // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk with
+    // their own cap; Hono's limiter would buffer them.
     const limitBody = bodyLimit({
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
@@ -457,6 +474,7 @@ export function createServerContext(options: {
         const ownLimit =
             (c.req.method === "POST" &&
                 (route === BACKUP_IMPORT_PATH ||
+                    route === UPSTREAM_IMPORT_PREPARE_PATH ||
                     route === MODULE_IMPORT_PATH ||
                     route === CHARX_IMPORT_PATH ||
                     route === REALM_IMPORT_PATH ||
@@ -594,6 +612,8 @@ export function createServerContext(options: {
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
     });
+    // One archive import at a time: the version-2 import and the upstream prepare and commit share it.
+    const backupImportSlot = createImportSlot();
     registerBackupRoutes(app, {
         savePath,
         store: resources,
@@ -602,6 +622,30 @@ export function createServerContext(options: {
         limiter: authenticatedRouteLimiter.middleware,
         maxImportBytes,
         diagnostics,
+        slot: backupImportSlot,
+    });
+    const maxUpstreamDatabaseBytes = parsePositiveInteger(
+        "RISU_MAX_UPSTREAM_DB_BYTES",
+        process.env.RISU_MAX_UPSTREAM_DB_BYTES,
+        DEFAULT_MAX_UPSTREAM_DB_BYTES,
+    );
+    registerUpstreamImportRoutes(app, {
+        savePath,
+        store: resources,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maxImportBytes,
+        slot: backupImportSlot,
+        diagnostics,
+        staging: upstreamStaging,
+        maxDatabaseBytes: maxUpstreamDatabaseBytes,
+        heapMb: parsePositiveInteger(
+            "RISU_UPSTREAM_IMPORT_HEAP_MB",
+            process.env.RISU_UPSTREAM_IMPORT_HEAP_MB,
+            defaultUpstreamImportHeapMb(maxUpstreamDatabaseBytes),
+        ),
+        runner: options.upstreamImport?.runner,
     });
     // One module, CharX, or Realm import at a time: each holds a spooled file and a write loop. A
     // staged Realm import waiting for its commit is in `realmStaging`, not in the slot.
@@ -652,6 +696,7 @@ export function createServerContext(options: {
         eventSockets,
         diagnostics,
         realmStaging,
+        upstreamStaging,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -697,6 +742,7 @@ export function createServerContext(options: {
                 // too), while every store is open: the diagnostics' final state follows them.
                 .then(() => snapshots.stop())
                 .then(() => realmStaging.close())
+                .then(() => upstreamStaging.close())
                 .then(() => {
                     diagnostics.close();
                     diagnostics.writeState();
@@ -717,6 +763,18 @@ export function createServerContext(options: {
             return disposing;
         },
     };
+}
+
+/** A positive safe integer from the environment variable `name`, else `fallback` when unset or empty. */
+function parsePositiveInteger(name: string, raw: string | undefined, fallback: number): number {
+    if (raw === undefined || raw === "") {
+        return fallback;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`Invalid ${name}: ${raw}`);
+    }
+    return value;
 }
 
 function parseMaxImportBytes(raw: string | undefined): number {

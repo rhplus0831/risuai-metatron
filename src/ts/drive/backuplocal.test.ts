@@ -6,16 +6,26 @@ import type { BackupArchiveManifest } from "../../../shared/resources.ts";
 // missing-asset report names what the database referenced, a failed or cancelled download cancels
 // the response and aborts the writer, and a restore posts the file and reloads.
 
-const { alerts, flush, writer, requests, exportResponse } = vi.hoisted(() => ({
+const { alerts, flush, writer, requests, exportResponse, upstream, hooks, persisted } = vi.hoisted(() => ({
     alerts: {
         alertError: vi.fn(),
         alertNormal: vi.fn(),
         alertWait: vi.fn(),
         alertMd: vi.fn(),
         alertConfirm: vi.fn(async () => true),
+        alertUpstreamImportReport: vi.fn(async () => true),
         alertStore: { set: vi.fn() },
     },
     flush: vi.fn(async () => ({ discarded: [] as string[] })),
+    /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
+    upstream: {
+        prepare: null as (() => Response | Promise<Response>) | null,
+        commit: null as ((body: Record<string, unknown>, epoch: string | null) => Response | Promise<Response>) | null,
+        cancel: vi.fn(() => new Response(null, { status: 204 })),
+    },
+    /** The restore-reload hook the upstream import registers (`beforeRestoreReload`). */
+    hooks: { current: null as (() => void) | null, unregistered: 0 },
+    persisted: vi.fn(),
     writer: {
         initResult: true as boolean | Error,
         chunks: [] as Uint8Array[],
@@ -28,12 +38,45 @@ const { alerts, flush, writer, requests, exportResponse } = vi.hoisted(() => ({
 }));
 
 vi.mock("../alert", () => alerts);
-vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: flush }));
+vi.mock("../storage/resourceSync.svelte", () => ({
+    flushResources: flush,
+    beforeRestoreReload: (fn: () => void) => {
+        hooks.current = fn;
+        return () => {
+            if (hooks.current === fn) {
+                hooks.current = null;
+            }
+            hooks.unregistered += 1;
+        };
+    },
+}));
+vi.mock("../storage/selection.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../storage/selection.svelte")>()),
+    persistSelection: persisted,
+}));
 vi.mock("src/lang", () => ({
     language: {
         partialBackupFirstConfirm: "first?",
         partialBackupSecondConfirm: "second?",
         backupDiscardedChanges: "changes replaced",
+        upstreamImport: {
+            phases: {
+                decode: "Reading the database",
+                cold: "Reading cold storage",
+                convert: "Converting",
+                write: "Writing chats",
+                validate: "Checking the result",
+                assets: "Unpacking images",
+            },
+            uploading: "Uploading the backup...",
+            restoring: "Restoring the backup...",
+            success: "Restored. Refreshing your app.",
+            changedSinceReview: (count: number) => `${count} changes since the preview; restore anyway?`,
+            requestFailed: (status: number) => `failed (${status})`,
+            interrupted: "connection lost; nothing replaced",
+            commitInterrupted: "connection lost while restoring; it may have been restored",
+            tooLarge: "too large",
+        },
     },
 }));
 vi.mock("../globalApi.svelte", () => ({
@@ -67,18 +110,27 @@ vi.mock("../storage/serverAuth", () => ({
             if (header.get("x-resource-epoch") !== "epoch-1") {
                 return Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
             }
-            if ((await new Response(init.body as Blob).text()) === "bad archive") {
+            if ((await new Response(init.body as Blob).text()).includes("refuse-me")) {
                 return Response.json({ error: "The archive is from before this version" }, { status: 400 });
             }
             return Response.json({ epoch: "epoch-1", assetsWritten: 1, assetsSkipped: 0 });
+        }
+        if (path === "/api/backups/import-upstream/prepare") {
+            return upstream.prepare!();
+        }
+        if (path === "/api/backups/import-upstream/commit") {
+            return upstream.commit!(JSON.parse(init.body as string), new Headers(init.headers).get("x-resource-epoch"));
+        }
+        if (path === "/api/backups/import-upstream/cancel") {
+            return upstream.cancel();
         }
         return Response.json({ error: "unexpected" }, { status: 500 });
     },
 }));
 
-import { setResourceEpoch } from "../storage/resourceClient";
+import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
-import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "./backuplocal";
+import { LoadLocalBackup, readFirstRecordName, SaveLocalBackup, SavePartialLocalBackup } from "./backuplocal";
 
 const encoder = new TextEncoder();
 
@@ -110,7 +162,7 @@ function installInventory() {
 }
 
 /** One archive record: u32 LE name length, utf8 name, u32 LE data length, bytes. */
-function record(name: string, data: Uint8Array): Uint8Array {
+function record(name: string, data: Uint8Array): Uint8Array<ArrayBuffer> {
     const encodedName = encoder.encode(name);
     const out = new Uint8Array(4 + encodedName.byteLength + 4 + data.byteLength);
     const view = new DataView(out.buffer);
@@ -184,6 +236,11 @@ beforeEach(() => {
     writer.chunks.length = 0;
     writer.initResult = true;
     writer.failWriteAt = -1;
+    upstream.prepare = null;
+    upstream.commit = null;
+    hooks.current = null;
+    hooks.unregistered = 0;
+    alerts.alertUpstreamImportReport.mockReset().mockResolvedValue(true);
     installInventory();
     setResourceEpoch("epoch-1");
     vi.stubGlobal("location", { reload: vi.fn() });
@@ -340,48 +397,297 @@ describe("SavePartialLocalBackup", () => {
     });
 });
 
-describe("LoadLocalBackup", () => {
-    async function load(file: File) {
-        const realCreate = document.createElement.bind(document);
-        let input: HTMLInputElement | null = null;
-        vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
-            const el = realCreate(tag);
-            if (tag === "input") {
-                input = el as HTMLInputElement;
-                el.click = () => {};
-            }
-            return el;
-        });
-        LoadLocalBackup();
-        expect(input).not.toBeNull();
-        expect(input!.accept).toBe(".bin");
-        Object.defineProperty(input, "files", { value: [file], configurable: true });
-        await input!.onchange!(new Event("change"));
-    }
+/** A version-2 archive: the manifest first, then the database (bytes the mock never reads). */
+const versionTwoFile = (manifest = "{}") =>
+    new File(
+        [record("manifest.json", encoder.encode(manifest)), record("resources.sqlite", new Uint8Array([1]))],
+        "v2.bin",
+    );
+/** An upstream RisuAI backup: assets first, the database last. */
+const upstreamFile = () =>
+    new File([record("a.png", new Uint8Array([1, 2, 3])), record("database.risudat", new Uint8Array([4]))], "up.bin");
+const ndjson = (lines: unknown[], status = 200) =>
+    new Response(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), { status });
+const report = { counts: { characters: 1 }, converted: [], excluded: [], missingAssets: [] };
+const selection = { promptPresetId: "pp", modelPresetId: "mp", personaId: "pe" };
+const prepared = { token: "11111111-1111-4111-8111-111111111111", report, selection };
+const committed = (extra: Record<string, unknown> = {}) =>
+    Response.json({ epoch: "epoch-9", assetsWritten: 1, assetsSkipped: 0, selection, ...extra });
+const storedSelection = { presetId: "pp", modelPresetId: "mp", personaId: "pe" };
+const paths = () => requests.map((r) => r.path);
+const commitBodies = () =>
+    requests
+        .filter((r) => r.path === "/api/backups/import-upstream/commit")
+        .map((r) => JSON.parse(r.init.body as string));
 
-    it("posts the file to the import route with the loaded epoch and reloads", async () => {
-        await load(new File(["archive bytes"], "backup.bin"));
+async function load(file: File) {
+    const realCreate = document.createElement.bind(document);
+    let input: HTMLInputElement | null = null;
+    const created = vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+        const el = realCreate(tag);
+        if (tag === "input") {
+            input = el as HTMLInputElement;
+            el.click = () => {};
+        }
+        return el;
+    });
+    LoadLocalBackup();
+    created.mockRestore();
+    expect(input).not.toBeNull();
+    expect(input!.accept).toBe(".bin");
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await input!.onchange!(new Event("change"));
+}
+
+describe("readFirstRecordName", () => {
+    it("reads the first record's name from the file head, null for anything that is not a record header", async () => {
+        expect(await readFirstRecordName(versionTwoFile())).toBe("manifest.json");
+        expect(await readFirstRecordName(upstreamFile())).toBe("a.png");
+        expect(await readFirstRecordName(new File([record("x".repeat(4096), new Uint8Array(0))], "max.bin"))).toBe(
+            "x".repeat(4096),
+        );
+        expect(await readFirstRecordName(new File([], "empty.bin"))).toBeNull();
+        expect(await readFirstRecordName(new File([new Uint8Array([3, 0])], "short.bin"))).toBeNull();
+        expect(await readFirstRecordName(new File([new Uint8Array([0, 0, 0, 0, 65])], "nameless.bin"))).toBeNull();
+        expect(
+            await readFirstRecordName(new File([record("y".repeat(4097), new Uint8Array(0))], "long.bin")),
+        ).toBeNull();
+        const header = new Uint8Array(4 + 2);
+        new DataView(header.buffer).setUint32(0, 2, true);
+        header.set([0xff, 0xfe], 4);
+        expect(await readFirstRecordName(new File([header], "not-utf8.bin"))).toBeNull();
+    });
+});
+
+describe("LoadLocalBackup", () => {
+    it("posts a version-2 archive (manifest first) to the import route with the loaded epoch and reloads", async () => {
+        const file = versionTwoFile();
+        await load(file);
         expect(requests).toHaveLength(1);
         expect(requests[0].path).toBe("/api/backups/import");
         const headers = new Headers(requests[0].init.headers);
         expect(headers.get("content-type")).toBe("application/octet-stream");
         expect(headers.get("x-resource-epoch")).toBe("epoch-1");
-        expect(await new Response(requests[0].init.body as Blob).text()).toBe("archive bytes");
+        expect(new Uint8Array(await new Response(requests[0].init.body as Blob).arrayBuffer())).toEqual(
+            new Uint8Array(await file.arrayBuffer()),
+        );
         expect(alerts.alertStore.set).toHaveBeenCalledWith({ type: "wait", msg: "Success, Refreshing your app." });
         expect((location as any).reload).toHaveBeenCalled();
         expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(alerts.alertUpstreamImportReport).not.toHaveBeenCalled();
     });
 
     it("shows the server's refusal and does not reload", async () => {
-        await load(new File(["bad archive"], "backup.bin"));
+        await load(versionTwoFile("refuse-me"));
         expect(alerts.alertError).toHaveBeenCalledWith("The archive is from before this version");
         expect((location as any).reload).not.toHaveBeenCalled();
     });
 
     it("reloads without an error when the server data changed since this tab loaded (412)", async () => {
         setResourceEpoch("stale");
-        await load(new File(["archive bytes"], "backup.bin"));
+        await load(versionTwoFile());
         expect(alerts.alertError).not.toHaveBeenCalled();
         expect((location as any).reload).toHaveBeenCalled();
+    });
+});
+
+describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
+    afterEach(() => {
+        setEpochMismatchListener(null);
+    });
+
+    it("uploads it to the prepare route with the epoch, shows the phases and the report, commits on Restore, stores the selection, and reloads", async () => {
+        const file = upstreamFile();
+        upstream.prepare = () =>
+            ndjson([{ phase: "decode", done: 0, total: 1 }, { phase: "cold", done: 1, total: 2 }, prepared]);
+        upstream.commit = (body, epoch) => {
+            expect(body).toEqual({ token: prepared.token });
+            expect(epoch).toBe("epoch-1");
+            expect(hooks.current).not.toBeNull();
+            return committed();
+        };
+        await load(file);
+        expect(paths()).toEqual(["/api/backups/import-upstream/prepare", "/api/backups/import-upstream/commit"]);
+        const headers = new Headers(requests[0].init.headers);
+        expect(headers.get("content-type")).toBe("application/octet-stream");
+        expect(headers.get("x-resource-epoch")).toBe("epoch-1");
+        expect(new Uint8Array(await new Response(requests[0].init.body as Blob).arrayBuffer())).toEqual(
+            new Uint8Array(await file.arrayBuffer()),
+        );
+        expect(alerts.alertWait.mock.calls.map((call) => call[0])).toEqual([
+            "Uploading the backup...",
+            "Reading the database...",
+            "Reading cold storage... (1/2)",
+            "Restoring the backup...",
+        ]);
+        expect(alerts.alertUpstreamImportReport).toHaveBeenCalledTimes(1);
+        expect(alerts.alertUpstreamImportReport).toHaveBeenCalledWith(report);
+        expect(persisted).toHaveBeenCalledTimes(1);
+        expect(persisted).toHaveBeenCalledWith(storedSelection);
+        expect(hooks.current).toBeNull();
+        expect(alerts.alertStore.set).toHaveBeenCalledWith({ type: "wait", msg: "Restored. Refreshing your app." });
+        expect((location as any).reload).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("cancels the prepared import on the server when the report is declined, without committing", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => {
+            throw new Error("no commit expected");
+        };
+        alerts.alertUpstreamImportReport.mockResolvedValueOnce(false);
+        await load(upstreamFile());
+        expect(paths()).toEqual(["/api/backups/import-upstream/prepare", "/api/backups/import-upstream/cancel"]);
+        expect(JSON.parse(requests[1].init.body as string)).toEqual({ token: prepared.token });
+        expect(persisted).not.toHaveBeenCalled();
+        expect((location as any).reload).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("asks again in the report dialog with the count of changes since the preview and resends with that count (D13)", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        const answers = [
+            Response.json({ error: "changedSinceReview", writes: 2 }, { status: 409 }),
+            Response.json({ error: "changedSinceReview", writes: 3 }, { status: 409 }),
+            committed(),
+        ];
+        upstream.commit = () => answers.shift()!;
+        await load(upstreamFile());
+        expect(commitBodies()).toEqual([
+            { token: prepared.token },
+            { token: prepared.token, acceptWrites: 2 },
+            { token: prepared.token, acceptWrites: 3 },
+        ]);
+        expect(alerts.alertUpstreamImportReport.mock.calls).toEqual([
+            [report],
+            [report, { changedWrites: 2 }],
+            [report, { changedWrites: 3 }],
+        ]);
+        expect(persisted).toHaveBeenCalledWith(storedSelection);
+        expect((location as any).reload).toHaveBeenCalledTimes(1);
+        expect(paths()).not.toContain("/api/backups/import-upstream/cancel");
+    });
+
+    it("cancels when the re-ask is declined, after unregistering the reload hook", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => Response.json({ error: "changedSinceReview", writes: 1 }, { status: 409 });
+        alerts.alertUpstreamImportReport.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+        await load(upstreamFile());
+        expect(paths()).toEqual([
+            "/api/backups/import-upstream/prepare",
+            "/api/backups/import-upstream/commit",
+            "/api/backups/import-upstream/cancel",
+        ]);
+        expect(hooks.current).toBeNull();
+        expect(persisted).not.toHaveBeenCalled();
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("shows a refusal of the backup, a failed conversion, or a malformed answer and leaves the page", async () => {
+        const cases: [string, () => Response, string][] = [
+            [
+                "refused",
+                () => Response.json({ error: "This backup was encrypted with a Risu Account" }, { status: 400 }),
+                "This backup was encrypted with a Risu Account",
+            ],
+            ["too large", () => Response.json({ error: "File too large" }, { status: 413 }), "too large"],
+            ["a refusal without a body", () => new Response("<html>", { status: 502 }), "failed (502)"],
+            [
+                "a failed conversion",
+                () =>
+                    ndjson([
+                        { phase: "decode", done: 0, total: 1 },
+                        { error: "The backup could not be imported: boom" },
+                    ]),
+                "The backup could not be imported: boom",
+            ],
+            [
+                "a result line without a selection",
+                () => ndjson([{ token: prepared.token, report }]),
+                "The result line is not a prepared RisuAI backup import",
+            ],
+        ];
+        for (const [label, answer, message] of cases) {
+            requests.length = 0;
+            alerts.alertError.mockClear();
+            upstream.prepare = answer;
+            await load(upstreamFile());
+            expect(alerts.alertError, label).toHaveBeenCalledTimes(1);
+            expect(alerts.alertError, label).toHaveBeenCalledWith(message);
+            expect(paths(), label).toEqual(["/api/backups/import-upstream/prepare"]);
+            expect(alerts.alertUpstreamImportReport, label).not.toHaveBeenCalled();
+            expect((location as any).reload, label).not.toHaveBeenCalled();
+        }
+    });
+
+    it("reloads without an error on a 412 at the prepare", async () => {
+        upstream.prepare = () => Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
+        await load(upstreamFile());
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect((location as any).reload).toHaveBeenCalledTimes(1);
+        expect(paths()).toEqual(["/api/backups/import-upstream/prepare"]);
+    });
+
+    it("on a 412 at the commit unregisters the hook before the epoch listener runs, reloads, and cancels", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
+        const listener = vi.fn(() => {
+            expect(hooks.current).toBeNull();
+        });
+        setEpochMismatchListener(listener);
+        await load(upstreamFile());
+        expect(listener).toHaveBeenCalledWith("epoch-2");
+        expect(persisted).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect((location as any).reload).toHaveBeenCalledTimes(1);
+        expect(paths()).toEqual([
+            "/api/backups/import-upstream/prepare",
+            "/api/backups/import-upstream/commit",
+            "/api/backups/import-upstream/cancel",
+        ]);
+    });
+
+    it("stores the prepared selection from the reload hook when the restore is detected before the commit answers", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        const fromCommit = { promptPresetId: "pp", modelPresetId: "mp", personaId: "pe-commit" };
+        upstream.commit = () => {
+            // The socket reported the new epoch: the save adapter halts and runs the hook, synchronously.
+            hooks.current!();
+            return committed({ selection: fromCommit });
+        };
+        await load(upstreamFile());
+        expect(persisted.mock.calls).toEqual([[storedSelection], [{ ...storedSelection, personaId: "pe-commit" }]]);
+        expect((location as any).reload).toHaveBeenCalledTimes(1);
+    });
+
+    it("says the restore may have happened when the connection breaks during the commit, keeping the hook", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => {
+            throw new TypeError("Failed to fetch");
+        };
+        await load(upstreamFile());
+        expect(alerts.alertError).toHaveBeenCalledWith("connection lost while restoring; it may have been restored");
+        expect(hooks.current).not.toBeNull();
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("shows a commit refused by the server and unregisters the hook", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => Response.json({ error: "Another import is running" }, { status: 409 });
+        await load(upstreamFile());
+        expect(alerts.alertError).toHaveBeenCalledWith("Another import is running");
+        expect(hooks.current).toBeNull();
+        expect(hooks.unregistered).toBe(1);
+        expect(persisted).not.toHaveBeenCalled();
+        expect(paths().at(-1)).toBe("/api/backups/import-upstream/cancel");
+    });
+
+    it("says nothing was replaced when the connection breaks during the upload", async () => {
+        upstream.prepare = () => {
+            throw new TypeError("Failed to fetch");
+        };
+        await load(upstreamFile());
+        expect(alerts.alertError).toHaveBeenCalledWith("connection lost; nothing replaced");
+        expect(paths()).toEqual(["/api/backups/import-upstream/prepare"]);
     });
 });

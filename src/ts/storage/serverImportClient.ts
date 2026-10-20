@@ -74,17 +74,18 @@ export function importFileOverServer<T>(
 
 /**
  * `importFileOverServer` with any request body: the Realm download (`realmImportClient.ts`) sends
- * `{ id }` as JSON, and the server fetches the file itself. Same answer and errors.
+ * `{ id }` as JSON, and the server fetches the file itself. Same answer and errors. `headers` are
+ * added to the request (the upstream backup import's epoch, `upstreamBackupClient.ts`).
  */
 export async function importOverServer<T>(
     path: string,
-    request: { body: BodyInit; contentType: string },
+    request: { body: BodyInit; contentType: string; headers?: Record<string, string> },
     readResult: (line: Record<string, unknown>) => T | null,
     options: ServerImportOptions = {},
 ): Promise<T> {
     const res = await authFetch(path, {
         method: "POST",
-        headers: { "content-type": request.contentType },
+        headers: { ...request.headers, "content-type": request.contentType },
         body: request.body,
     });
     if (!res.ok) {
