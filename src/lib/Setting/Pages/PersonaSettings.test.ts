@@ -386,6 +386,24 @@ describe("PersonaSettings module links", () => {
         expect(page.names()).toEqual(["Dup A", "unnamed", "Zeta"]);
     });
 
+    it("the search matches Korean names by initial consonants and by a half-composed last syllable, keeping the list's order", () => {
+        install([
+            { id: "zeta", name: "Zeta", description: "" },
+            { id: "captain", name: "해적 선장", description: "" },
+            { id: "beach", name: "해변", description: "" },
+            { id: "ship", name: "해적선", description: "" },
+        ]);
+        const page = renderLinks();
+        const pirates = page.names().filter((name) => name?.startsWith("해적"));
+        expect(pirates).toHaveLength(2);
+        page.search("ㅎㅈ");
+        expect(page.names()).toEqual(pirates);
+        page.search("해저");
+        expect(page.names()).toEqual(pirates);
+        page.search("ㅎㅂ");
+        expect(page.names()).toEqual(["해변"]);
+    });
+
     it("a row toggles the id on the open chat's bound persona in canonical form, keeping unknown ids and dropping blank ones; the tab's persona is untouched", () => {
         install(catalog, { modules: ["missing", "  ", "zeta", "zeta"] });
         const page = renderLinks();
