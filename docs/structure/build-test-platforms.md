@@ -18,6 +18,7 @@
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack runner)
   - `util/agentTest.mjs`, `util/agentTestReporter.ts` (the `test:agent` wrapper and its reporter), `util/requireHuman.mjs` (the human gate)
   - `util/testInventory.mjs` (the `check:tests` test inventory check)
+  - `util/ci/check.sh` and `.gitlab-ci.yml` (the CI gate and its GitLab pipeline)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
 - Not here:
@@ -97,6 +98,7 @@ Web:
 
 - Production: `pnpm build` produces `dist/`, which only the Hono self-host server (`pnpm run server`, `server/src/`) or Docker serves. Served any other way (static hosting), the client shows the `NodeServerRequired` notice.
 - Development: `pnpm run server` plus `pnpm dev`.
+- CI: the forge is a self-hosted GitLab, and `.gitlab-ci.yml` runs one job, `check`, for pushes to `metatron` and `main` and for merge requests that target them (`workflow: rules`; nothing else starts a pipeline). The job runs on the `node:24` image with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm` is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI. The pnpm store is cached at `node_modules/.pnpm-store` (`PNPM_STORE_DIR`, which the script passes to `pnpm install`), keyed on `pnpm-lock.yaml`; inside `node_modules` the formatting check, Vitest, and the test inventory skip it. The job uses no secrets and no `save/` data. The Runner's Docker executor should mount `/tmp` as tmpfs (`[runners.docker] tmpfs`): on a disk-backed `/tmp` the SQLite fsyncs of `server/src/tests/resourcePatchParts.test.ts` "stores what the whole-record path stores, for field patches of a character" took 3.8 s alone in a `node:24` container (0.4 s on tmpfs) and ran past Vitest's 5 s default in a full run. A person can run the same script locally (it checks the Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1).
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python llama.cpp sidecar were removed.
 
 ## State
