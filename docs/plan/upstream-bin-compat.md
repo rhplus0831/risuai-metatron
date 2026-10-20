@@ -4,7 +4,7 @@ Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat
 (merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`), then S4 and S6 (merged as `767db8df3`,
 `ac5c6fd05`), then S6's four round trips through S4's importer and one asset walker for both
 (`d9532709e`, merged as `0e6317f92`; `pnpm check`, `test:agent` and `pnpm build` pass on the
-merge), then S5 (on its own branch, not yet merged into `upstream-bin-compat`). Next: S7 after S5's merge. Each landed slice's section ends with a _Landed_ note on where it
+merge), then S5 (merged as `0a6484846`), then S7 (on its own branch, not yet merged into `upstream-bin-compat`). Next: S8 after S7's merge. Each landed slice's section ends with a _Landed_ note on where it
 departed from this plan; S4–S7 open with what the earlier slices handed over. `heap-memory-reduction` merged
 into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
 waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
@@ -1014,6 +1014,51 @@ personaId, includeSecrets, selectedChat? }`:
     sent, and the writer gets the stream.
 - Docs: `backup-sync-hub.md` (`Files`, `Flows`, `Recipes`), `self-host-server.md`
   `Routes`.
+
+_Landed_ (S7 branch, one commit; `opus-lite`: Sol found two blocking issues and one minor, all fixed in one round):
+
+- **Files**: `server/src/routes/backupsUpstreamExport.ts` (`createUpstreamExportStaging`,
+  `registerUpstreamExportRoutes`), route paths, TTL, cap, request and answer types in
+  `shared/upstreamExportReport.ts`; `upstreamAssetRecordName` in `server/src/data/upstream/archive.ts`;
+  `listAssetKeys` exported from `backups.ts`; client `SaveUpstreamLocalBackup` and `streamToFile` in
+  `backuplocal.ts`, `tabExportRequest`/`prepareUpstreamExport`/`downloadUpstreamExport`/`cancelUpstreamExport`
+  in `upstreamBackupClient.ts`; `language.upstreamExport` in `en.ts` and `ko.ts`.
+- **Slot decision**: the export stays out of S5's import slot. It writes nothing live (a `backupTo` copy
+  under `snapshots.exclusive`, as the version-2 export, which takes no slot either), so it runs beside a
+  waiting or running import. It has its own staging (10-minute TTL, at most 4 waiting or being prepared;
+  a burst past that is refused before it copies the store).
+- **Departures from this plan**:
+  - A third route, `POST /api/backups/export-upstream/cancel` `{ token }` (204 always), used when the user
+    declines the report, so a declined export does not hold a place for 10 minutes.
+  - The download takes the token out when it starts: a second download, or one after an interrupted
+    stream, is a 404 (prepare again).
+  - Order in the tab: the keys question comes before the flush and the prepare, because its answer is a
+    prepare parameter. The report is a confirmation ending in "Download it now?"; No cancels. The
+    button keeps the sibling buttons' `backupConfirm` first.
+  - The tab's selection is `tabSelectionIds()` (the tab's records, not the open chat's binding); the open
+    chat is `currentChatRef()`. Both are read in `upstreamBackupClient.ts`, because `backuplocal.ts` also
+    runs in a node-environment test that cannot load rune modules statically.
+  - Asset records: a referenced key whose name no record can hold, or that upstream's restore would not
+    read back as that asset (`/` or `\`, `database.risudat`, `encryption.risudat`, a cold-storage name,
+    `manifest.json`/`resources.sqlite`, a leading BOM or lone surrogate that upstream's `TextDecoder`
+    changes) gets no record and is reported under a new excluded code `asset-names`; a file that is no
+    longer a regular file, or is over 4 GiB, is moved to `missing` after the projection. The report's
+    `counts.assets` is the number of records written.
+  - The staged store copy is removed as soon as it is projected; only `database.risudat` waits (with the
+    keys when `includeSecrets` was chosen) until download, cancel, expiry, or shutdown.
+  - 413 when the encoded database is over 4 GiB or the records exceed `MAX_ARCHIVE_RECORDS`.
+- **For S8**: the prepare's `readSnapshot`, projection, and encoding run synchronously on the serving
+  thread and hold the whole store in memory (Known Hazard in `self-host-server.md`); measure it on the real
+  backup's store. The export of the real library can be produced with the button or the two routes; this
+  server's own import reads an export back (route test), but upstream's `LoadLocalBackup` was not run.
+- **Tests**: `server/src/tests/upstreamExportRoute.test.ts` (9, default suite: the layout and decode, keys
+  only with `includeSecrets`, `asset-names`, the read-back through the upstream import, refusals and the
+  cap, expiry under fake timers, a client leaving mid-download, the staging, the name rule) and 7
+  `SaveUpstreamLocalBackup` cases in `backuplocal.test.ts`. Not tested: the client sending `selectedChat`
+  (the fake inventory holds no open chat; the server side of `selectedChat` is tested), and shutdown during
+  a prepare (Sol reproduced it against the code before its fix, in a throwaway script).
+- **Not verified**: no browser check of the button, the dialogs, or the streamSaver download; no restore
+  in upstream RisuAI (S8).
 
 ## S8. Compatibility checks and close-out (_small_, `backup-sync-hub.md`)
 

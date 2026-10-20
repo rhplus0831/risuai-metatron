@@ -6,13 +6,15 @@ import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resou
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { flushResources } from "../storage/resourceSync.svelte";
+import type { UpstreamExportCounts, UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 
 /**
  * Local backup archives, built and restored by the server (`/api/backups/export` and `/import`):
  * a `manifest.json` record, the resource database snapshot (`resources.sqlite`), and the assets under
  * their logical keys. Any other archive (an upstream RisuAI backup holding `database.risudat`, or one
  * of this app's from before this format) is restored through the upstream import
- * (`upstreamBackupClient.ts`).
+ * (`upstreamBackupClient.ts`). `SaveUpstreamLocalBackup` saves the other way: a `.bin` upstream RisuAI
+ * restores.
  */
 
 type AssetInfo = { charName: string; assetName: string };
@@ -119,16 +121,46 @@ async function downloadArchive(
         return null;
     }
     const response = await exportBackup(partial);
+    // Read from the stream head (written by the chunk callback).
+    const read: { head: Uint8Array; manifest: BackupArchiveManifest | null } = {
+        head: new Uint8Array(0),
+        manifest: null,
+    };
+    const saved = await streamToFile(response, label, "Binary", (value) => {
+        if (!read.manifest) {
+            const next = new Uint8Array(read.head.length + value.length);
+            next.set(read.head);
+            next.set(value, read.head.length);
+            read.head = next;
+            read.manifest = tryReadManifest(read.head);
+            if (read.manifest) {
+                read.head = new Uint8Array(0);
+            }
+        }
+    });
+    return saved && read.manifest ? { manifest: read.manifest, discarded } : null;
+}
+
+/**
+ * Streams a download into a file `LocalWriter` saves as `<name>.bin`, with the written size in a wait
+ * alert, and hands each chunk to `onChunk` after it is written. False when the writer cannot open
+ * ("Failed" is shown). A failed or cancelled download cancels the response and drops the partial file,
+ * and throws.
+ */
+async function streamToFile(
+    response: Response,
+    label: string,
+    name: string,
+    onChunk: (value: Uint8Array) => void = () => {},
+): Promise<boolean> {
     const reader = response.body!.getReader();
     const writer = new LocalWriter();
     let finished = false;
     try {
-        if (!(await writer.init())) {
+        if (!(await writer.init(name))) {
             alertError("Failed");
-            return null;
+            return false;
         }
-        let head = new Uint8Array(0);
-        let manifest: BackupArchiveManifest | null = null;
         let total = 0;
         while (true) {
             const { value, done } = await reader.read();
@@ -137,21 +169,12 @@ async function downloadArchive(
             }
             await writer.write(value);
             total += value.byteLength;
-            if (!manifest) {
-                const next = new Uint8Array(head.length + value.length);
-                next.set(head);
-                next.set(value, head.length);
-                head = next;
-                manifest = tryReadManifest(head);
-                if (manifest) {
-                    head = new Uint8Array(0);
-                }
-            }
+            onChunk(value);
             alertWait(`${label}... (${formatSize(total)})`);
         }
         await writer.close();
         finished = true;
-        return manifest ? { manifest, discarded } : null;
+        return true;
     } finally {
         if (!finished) {
             // A cancelled or failed download: stop the server's export stream and drop the partial file.
@@ -270,6 +293,107 @@ export async function SavePartialLocalBackup() {
         console.error(error);
         alertError(`Backup failed: ${error}`);
     }
+}
+
+/** How many missing assets the RisuAI-compatible backup's report lists by name. */
+const UPSTREAM_EXPORT_MISSING_SHOWN = 20;
+
+/** The RisuAI-compatible backup's report (`shared/upstreamExportReport.ts`) as plain text, ending in the download question. */
+function upstreamExportReportText(report: UpstreamExportReport, discarded: string[]): string {
+    const text = language.upstreamExport;
+    const lines: string[] = [text.intro, ""];
+    for (const key of Object.keys(text.counts) as (keyof UpstreamExportCounts)[]) {
+        lines.push(`${text.counts[key]}: ${report.counts[key]}`);
+    }
+    const entries = (
+        title: string,
+        list: UpstreamExportReport["converted"] | UpstreamExportReport["excluded"],
+        labels: Record<string, string>,
+    ) => {
+        if (list.length === 0) {
+            return;
+        }
+        lines.push("", title);
+        for (const entry of list) {
+            const examples =
+                entry.examples.length > 0 ? ` (${language.upstreamImport.examples} ${entry.examples.join(", ")})` : "";
+            lines.push(`- ${labels[entry.code] ?? entry.code}: ${entry.count}${examples}`);
+        }
+    };
+    entries(text.convertedTitle, report.converted, text.converted);
+    entries(text.excludedTitle, report.excluded, text.excluded);
+    if (report.missing.length > 0) {
+        lines.push("", text.missingTitle);
+        for (const asset of report.missing.slice(0, UPSTREAM_EXPORT_MISSING_SHOWN)) {
+            const owner = asset.owner || language.upstreamImport.settingOwner;
+            lines.push(`- ${owner}: ${language.upstreamImport.roles[asset.role] ?? asset.role} (${asset.key})`);
+        }
+        if (report.missing.length > UPSTREAM_EXPORT_MISSING_SHOWN) {
+            lines.push(language.upstreamImport.missingMore(report.missing.length - UPSTREAM_EXPORT_MISSING_SHOWN));
+        }
+    }
+    if (discarded.length > 0) {
+        lines.push("", language.backupDiscardedChanges);
+    }
+    lines.push("", text.downloadQuestion);
+    return lines.join("\n");
+}
+
+/** The file name (without `.bin`) of a RisuAI-compatible backup made at `date`: `RisuAI-backup-YYYY-MM-DD`, local time. */
+export function upstreamBackupFileName(date: Date = new Date()): string {
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `RisuAI-backup-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * A RisuAI-compatible backup (`docs/plan/upstream-bin-compat.md` S7): a `.bin` upstream RisuAI's "Load
+ * Backup" restores. Asks whether to include the API keys (D7; every key, the auxiliary services',
+ * the characters' TTS keys, and the MCP OAuth secrets included), saves every change, has the server
+ * prepare the file from one copy of the store with this tab's selection and open chat, shows the
+ * report, and on a yes streams the download to `RisuAI-backup-<date>.bin`. A declined report cancels
+ * the prepared export. The file carries no manifest; nothing is read from the stream.
+ */
+export async function SaveUpstreamLocalBackup() {
+    const includeSecrets = await alertConfirm(language.upstreamExport.includeKeys);
+    alertWait(language.upstreamExport.preparing);
+    let discarded: string[];
+    try {
+        ({ discarded } = await flushResources());
+    } catch (error) {
+        alertError(`Could not save your latest changes before the backup: ${error}`);
+        return;
+    }
+    // Loaded only for this path, as the upstream import is.
+    const client = await import("./upstreamBackupClient");
+    /** The alert text for a refusal (the server's reason) or another failure. */
+    const failureText = (error: unknown) =>
+        error instanceof client.UpstreamExportRequestError
+            ? (error.serverError ?? language.upstreamExport.requestFailed(error.status))
+            : `Backup failed: ${error instanceof Error ? error.message : String(error)}`;
+    let prepared: Awaited<ReturnType<typeof client.prepareUpstreamExport>>;
+    try {
+        prepared = await client.prepareUpstreamExport(client.tabExportRequest(includeSecrets));
+    } catch (error) {
+        console.error(error);
+        alertError(failureText(error));
+        return;
+    }
+    if (!(await alertConfirm(upstreamExportReportText(prepared.report, discarded)))) {
+        void client.cancelUpstreamExport(prepared.token);
+        return;
+    }
+    try {
+        alertWait(`${language.upstreamExport.downloading}...`);
+        const response = await client.downloadUpstreamExport(prepared.token);
+        if (!(await streamToFile(response, language.upstreamExport.downloading, upstreamBackupFileName()))) {
+            return;
+        }
+    } catch (error) {
+        console.error(error);
+        alertError(failureText(error));
+        return;
+    }
+    alertNormal(language.upstreamExport.success);
 }
 
 /**

@@ -14,9 +14,18 @@ import {
     type UpstreamImportReport,
     type UpstreamImportSelection,
 } from "../../../shared/upstreamBackup.ts";
+import {
+    UPSTREAM_EXPORT_CANCEL_PATH,
+    UPSTREAM_EXPORT_DOWNLOAD_PATH,
+    UPSTREAM_EXPORT_PREPARE_PATH,
+    type UpstreamExportPrepared,
+    type UpstreamExportRequest,
+} from "../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { epochMismatch, getResourceEpoch, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { beforeRestoreReload } from "../storage/resourceSync.svelte";
+import { currentChatRef } from "../storage/chatStore.svelte";
+import { tabSelectionIds } from "../storage/settingsViews.svelte";
 import { persistSelection } from "../storage/selection.svelte";
 import { authFetch } from "../storage/serverAuth";
 import {
@@ -257,5 +266,105 @@ export async function restoreUpstreamBackup(file: Blob): Promise<void> {
         if (!consumed) {
             void cancelUpstreamImport(prepared.token);
         }
+    }
+}
+
+/** A refused export prepare or download: the status and the server's `error` text, if any. */
+export class UpstreamExportRequestError extends Error {
+    readonly status: number;
+    readonly serverError: string | null;
+    constructor(status: number, serverError: string | null) {
+        super(serverError ?? `The RisuAI-compatible backup failed (${status})`);
+        this.name = "UpstreamExportRequestError";
+        this.status = status;
+        this.serverError = serverError;
+    }
+}
+
+async function exportRefusal(res: Response): Promise<UpstreamExportRequestError> {
+    let body: unknown = null;
+    try {
+        body = await res.json();
+    } catch {}
+    const error = isPlainObject(body) && typeof body.error === "string" ? body.error : null;
+    return new UpstreamExportRequestError(res.status, error);
+}
+
+/**
+ * The export's request for this tab: its selection (`tabSelectionIds`, the records it resolves to,
+ * ignoring the open chat's binding), its open chat (`currentChatRef`, whose character's `chatPage`
+ * points at it), and the keys answer (D7).
+ */
+export function tabExportRequest(includeSecrets: boolean): UpstreamExportRequest {
+    const ids = tabSelectionIds();
+    const chat = currentChatRef();
+    return {
+        promptPresetId: ids.presetId,
+        modelPresetId: ids.modelPresetId,
+        personaId: ids.personaId,
+        includeSecrets,
+        ...(chat ? { selectedChat: { characterId: chat.chaId, chatId: chat.chatId } } : {}),
+    };
+}
+
+/**
+ * Asks the server to prepare a RisuAI-compatible `.bin` (`docs/plan/upstream-bin-compat.md` S7; routes in
+ * `server/src/routes/backupsUpstreamExport.ts`) of one consistent copy of the store, with `request`'s
+ * selection and keys choice. Resolves with the prepared export's token and report; throws
+ * `UpstreamExportRequestError` for a refusal and `ServerImportAnswerError` for a malformed answer.
+ */
+export async function prepareUpstreamExport(request: UpstreamExportRequest): Promise<UpstreamExportPrepared> {
+    const res = await authFetch(UPSTREAM_EXPORT_PREPARE_PATH, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+        cache: "no-store",
+    });
+    if (!res.ok) {
+        throw await exportRefusal(res);
+    }
+    let body: unknown = null;
+    try {
+        body = await res.json();
+    } catch {}
+    if (
+        !isPlainObject(body) ||
+        typeof body.token !== "string" ||
+        !isPlainObject(body.report) ||
+        !isPlainObject(body.report.counts) ||
+        !Array.isArray(body.report.converted) ||
+        !Array.isArray(body.report.excluded) ||
+        !Array.isArray(body.report.missing)
+    ) {
+        throw new ServerImportAnswerError("The answer is not a prepared RisuAI-compatible backup");
+    }
+    return body as UpstreamExportPrepared;
+}
+
+/**
+ * Starts the download of a prepared export (the token is used up): the archive's records, assets
+ * first and `database.risudat` last, as the response body. Throws `UpstreamExportRequestError` for a
+ * refusal (404 when the export expired).
+ */
+export async function downloadUpstreamExport(token: string): Promise<Response> {
+    const res = await authFetch(`${UPSTREAM_EXPORT_DOWNLOAD_PATH}?token=${encodeURIComponent(token)}`, {
+        cache: "no-store",
+    });
+    if (!res.ok || !res.body) {
+        throw await exportRefusal(res);
+    }
+    return res;
+}
+
+/** Removes a prepared export on the server; failures are ignored (it expires anyway). */
+export async function cancelUpstreamExport(token: string): Promise<void> {
+    try {
+        await authFetch(UPSTREAM_EXPORT_CANCEL_PATH, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token }),
+        });
+    } catch {
+        // The server removes it when it expires.
     }
 }

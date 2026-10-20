@@ -24,6 +24,34 @@ export const MAX_COLD_RECORD_BYTES = 64 * 1024 * 1024;
 export const UPSTREAM_ENCRYPTED_MESSAGE =
     "This backup was encrypted with a Risu Account. RisuAI can only decrypt it on risuai.xyz; export an unencrypted backup there and import that file";
 
+/**
+ * The record name an `assets/...` key is written under in an upstream backup (the key without
+ * `assets/`), or null when no record can hold it: an empty name or one with `/` or `\` (refused by
+ * `planUpstreamArchive`), a name upstream's restore reads as its database, its account marker, or
+ * cold storage, a version-2 record name (which makes `planUpstreamArchive` refuse the file), and a
+ * name that would not come back unchanged: upstream's restore decodes record names with a default
+ * `TextDecoder`, which drops a leading byte order mark, and a lone surrogate is written as U+FFFD.
+ */
+export function upstreamAssetRecordName(key: string): string | null {
+    if (!key.startsWith("assets/")) {
+        return null;
+    }
+    const name = key.slice("assets/".length);
+    if (
+        name === "" ||
+        new TextDecoder().decode(Buffer.from(name, "utf-8")) !== name ||
+        name.includes("/") ||
+        name.includes("\\") ||
+        name === UPSTREAM_DATABASE_RECORD ||
+        name === UPSTREAM_ENCRYPTION_RECORD ||
+        VERSION_2_RECORDS.has(name) ||
+        COLD_RECORD_NAME.test(name)
+    ) {
+        return null;
+    }
+    return name;
+}
+
 export type UpstreamIgnoredRecord = {
     name: string;
     /** The name has no storage location (`resolveStorageKey`), for example too long. */
