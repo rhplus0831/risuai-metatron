@@ -24,6 +24,7 @@ git show 46eeee597:docs/plan/settings-ui-reorg.md
 git show cfe072e4e:docs/plan/open-bug-fixes.md
 git show 723700902:docs/plan/boot-resource-cache.md
 git show 639ba5b2e:docs/plan/heap-memory.md
+git show 74f770e19:docs/plan/upstream-bin-compat.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -49,6 +50,7 @@ it is not a current architecture guide.
 | Open Bug Fixes                      | `cfe072e4e`: `docs/plan/open-bug-fixes.md`                                | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [browser notifications](../structure/global-api.md), [media](../structure/media-aux.md) |
 | Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                   |
 | Heap Memory Reduction               | `639ba5b2e`: `docs/plan/heap-memory.md`                                   | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [CBS/rendering](../structure/cbs-rendering.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
+| Upstream `.bin` Compatibility       | `74f770e19`: `docs/plan/upstream-bin-compat.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [backups](../structure/backup-sync-hub.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                       |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -94,6 +96,48 @@ in `639ba5b2e`). The driver's JS self size at boot went from 191.3 MB to 61.6 MB
 tuple proxies from 132,600 to 0; the archived file holds every slice's table. At the merge,
 B2's frozen-list `CharConfig` rows replaced open-bug-fixes slice C7's tuple-keyed rows (C7's
 regression tests kept and passing).
+Upstream `.bin` Compatibility (import an upstream RisuAI `.bin` as a full replace with a report,
+and export a `.bin` upstream restores) landed all eight slices on the `upstream-bin-compat` branch
+on 2026-10-20 and 2026-10-21; merging it into `metatron` is the user's decision. Commits: S1 codec
+`620fc6fc1` and the msgpackr 2.0.6 pin `48d5571af` (merged `ca2592b59`), S2 archive classification
+`3d5c8b747` (`d651f3b2a`), S3 settings/presets converter `cb4c9ca48` (`3eedde66f`), S4
+characters/chats/cold storage `0952e2113` (`767db8df3`), S6 exporter `adc90f97d` (`ac5c6fd05`), the
+S4/S6 round trips and one asset walker `d9532709e` (`0e6317f92`), S5 import worker, routes and
+dialog `070543198` (`0a6484846`), S7 export routes and button `5bf1f82b8` (`6513a4906`), S8 check
+script `77696af7f` and checks `74f770e19`. Decisions: the user's U1 (upstream formats get a
+one-way migration; formats from metatron's implementation phases do not), U2 (import and export),
+U3 (full replace with a safety snapshot), U4 (Risu Account backups refused); the defaults D1–D13
+were taken (worker decode with caps, groups imported, cold pointers kept and reported, selection
+applied, chats bound to the selection, one model preset per upstream preset, keys asked at export,
+inlays counted not exported, `\x07`/`\x08`/`\x09` accepted, the tab's model preset for every
+exported preset, en and ko strings, metatron-only chat fields stripped, the changed-since-review
+409 re-ask). S8 ran upstream's own decoder and boot defaults (`util/upstream/checkBinCompat.mjs`,
+pinned at `669b12ce`) on synthetic exports and on the user's real backup and its exports (counts
+only), and drove the import, a send, both exports and a re-import with a second tab in a browser.
+Still open:
+
+- A restore of an export in upstream RisuAI's own app (the user's step: the slice may not install
+  or start upstream); upstream's `LoadLocalBackup` reader and asset writes, `makeColdData`,
+  `cleanChunks`, plugin loading and UI are not run by the check script.
+- A completed send on imported data (S8 checked dispatch only, no key used); the real backup's
+  selected model is a plugin model whose plugin is not in the backup, so its chats cannot send
+  until the user picks another model or installs the plugin.
+- The export prepare's synchronous work was measured on a small store only (self-host-server
+  Known Hazards).
+- S7: the client sending `selectedChat` has no test (checked by hand in S8); a shutdown during a
+  prepare has no test.
+- S5: a worker that exits cleanly without a result and a generation job ended by the commit's
+  maintenance have no test; the Docker image was not rebuilt.
+- S6 accepted minors: without keys `authRefreshes` is written as `[]` even when the store had
+  none; a chosen slot whose credential no longer exists does not keep its field, so a later slot's
+  key can take it.
+- S3 accepted minors: a repaired model-preset reference is reported by its generated id;
+  `loreBook: null` is reported where upstream fills the default silently; `autoTranslate` and
+  `htmlTranslation` are reported as removed although metatron keeps them per chat; rethrowing
+  unexpected errors has no test.
+- S2's 11 tests were written after Sol's review and not reviewed by Sol.
+- S1: Docker image not rebuilt since the msgpackr pin (native `msgpackr-extract` in the image
+  unverified); Firefox, Safari and Vite's bundling of msgpackr 2.0.6 beyond `pnpm build` unchecked.
 
 ## Server-Owned Data Chronology
 
