@@ -2,7 +2,7 @@
     import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { changeChar, removeChar, restoreChar } from "../../ts/characters";
     import BarIcon from "../SideBars/BarIcon.svelte";
-    import { ArrowLeft, User, Users, SquareMousePointer, TrashIcon, Undo2Icon } from "@lucide/svelte";
+    import { ArrowLeft, User, Users, SquareMousePointer, TextSearchIcon, TrashIcon, Undo2Icon } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import { language } from "src/lang";
@@ -10,6 +10,7 @@
     import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
+    import { openMessageSearch } from "src/ts/messageSearch.svelte";
     interface Props {
         endGrid?: any;
     }
@@ -67,6 +68,15 @@
                 <div class="flex-1">
                     <TextInput placeholder="Search" bind:value={search} size="lg" autocomplete="off" fullwidth={true} />
                 </div>
+                <button
+                    class="flex items-center justify-center p-2 rounded-lg hover:bg-selected transition-colors shrink-0"
+                    onclick={() => openMessageSearch({ kind: "all" })}
+                    title={language.messageSearch.open}
+                    aria-label={language.messageSearch.open}
+                    data-message-search-open
+                >
+                    <TextSearchIcon size={20} />
+                </button>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
                 <Button

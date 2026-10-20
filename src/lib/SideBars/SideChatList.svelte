@@ -14,6 +14,7 @@
         FolderPlusIcon,
         BookmarkCheckIcon,
         CircleAlertIcon,
+        TextSearchIcon,
     } from "@lucide/svelte";
 
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
@@ -47,6 +48,7 @@
     } from "src/ts/storage/chatStore.svelte";
     import { chatFolderOf } from "./chatFolders";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
+    import { openMessageSearch } from "src/ts/messageSearch.svelte";
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
@@ -750,6 +752,17 @@
                 }}
             >
                 <BookmarkCheckIcon size={18} />
+            </button>
+            <button
+                class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
+                title={language.messageSearch.open}
+                aria-label={language.messageSearch.open}
+                data-message-search-open
+                onclick={() => {
+                    openMessageSearch({ kind: "character", chaId: chara.chaId });
+                }}
+            >
+                <TextSearchIcon size={18} />
             </button>
             <button
                 class="ml-auto text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
