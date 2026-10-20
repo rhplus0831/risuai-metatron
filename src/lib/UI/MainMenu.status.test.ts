@@ -7,7 +7,7 @@ vi.mock("./Realm/RealmMain.svelte", () => ({ default: () => {} }));
 vi.mock("./Title.svelte", () => ({ default: () => {} }));
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "/avatar.png"), changeChar: vi.fn() }));
 vi.mock("src/ts/globalApi.svelte", () => ({ getVersionString: () => "test", openPinnedChat: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertJobError: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ sleep: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => {
     const { writable } = await import("svelte/store");

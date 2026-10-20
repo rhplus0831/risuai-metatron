@@ -32,11 +32,12 @@ vi.mock("../storage/resourceSync.svelte", () => {
     }
     return { flushResources: () => hoisted.flush.run!(), GenerationBlockedError };
 });
-vi.mock("../alert", () => ({
-    alertError: hoisted.alerts.error,
-    alertNormal: hoisted.alerts.normal,
-    alertNormalWait: vi.fn(async () => undefined),
-}));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: hoisted.alerts.error,
+        alertNormal: hoisted.alerts.normal,
+    }),
+);
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

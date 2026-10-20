@@ -18,22 +18,7 @@ vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("../alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertReloadNotice: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-    alertClear: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertInput: vi.fn(),
-    alertMd: vi.fn(),
-    alertModuleSelect: vi.fn(),
-    alertSelect: vi.fn(),
-    alertSelectChar: vi.fn(),
-    alertToast: vi.fn(),
-    alertWait: vi.fn(),
-    waitAlert: vi.fn(async () => undefined),
-}));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
     changeLanguage: vi.fn(),

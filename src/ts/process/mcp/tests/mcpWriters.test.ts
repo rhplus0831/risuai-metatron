@@ -32,15 +32,15 @@ vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("src/ts/alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertNormalWait: alerts.normalWait,
-    alertConfirm: vi.fn(async () => true),
-    alertInput: vi.fn(async () => alerts.inputs.shift()),
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertNormalWait: alerts.normalWait,
+        alertConfirm: vi.fn(async () => true),
+        alertInput: vi.fn(async () => alerts.inputs.shift()),
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

@@ -64,7 +64,7 @@ vi.mock("../globalApi.svelte", () => ({
         async close() {}
     },
 }));
-vi.mock("../alert", () => mocks.alerts);
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(mocks.alerts));
 vi.mock("src/lang", () => ({
     language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },
 }));

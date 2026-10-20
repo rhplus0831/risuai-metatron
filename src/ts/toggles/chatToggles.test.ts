@@ -14,7 +14,7 @@ vi.mock("../process/modules", () => ({
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 const ref = { chaId: "c", chatId: "k" };
 const legacy = { toggle_flag: "0", toggle_title: "legacy title" };

@@ -11,13 +11,7 @@ vi.mock("localforage", () => ({
     default: { createInstance: () => ({ getItem: async () => null, setItem: async () => undefined }) },
 }));
 vi.mock("src/ts/process/request/request", () => ({ requestChatData: vi.fn() }));
-vi.mock("src/ts/alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertInput: vi.fn(),
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/index.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { doingChat: writable(false) };

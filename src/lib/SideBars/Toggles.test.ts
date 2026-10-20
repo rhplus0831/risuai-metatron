@@ -17,12 +17,7 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("src/ts/alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertInput: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import { language } from "src/lang";
 import { alertConfirm, alertInput } from "src/ts/alert";

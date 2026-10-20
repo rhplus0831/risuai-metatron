@@ -56,6 +56,24 @@ Verification:
   changes, and keep a test only when a plausible wrong implementation would fail
   it. Details and the inventory of current offenders:
   [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
+- V4. Before committing, `rg` each changed product export and file name across `src`,
+  `server`, `shared`, `util`, `e2e`, and `docs`, and update the consumers it finds
+  (scripts that read source as text and guides that name it included).
+- V5. A check that could not start, or was not run, is reported as unverified, never
+  as passed.
+- V6. A new regression test is shown to fail once with the line it guards broken.
+- V7. Mock only process and I/O boundaries (network, file system, clock, workers, the
+  server, dialogs). A module mocked in more than one file gets one shared, typed
+  factory in a `tests/` directory whose defaults `satisfies` the module's export type,
+  so a new export breaks `pnpm check` instead of a run under load. `src/ts/alert.ts`
+  has `createAlertMock` (`src/ts/tests/alertMock.ts`).
+- V8. Product code never imports test code (`tests/` directories, `*.test.*`,
+  test-only helpers); test-only helpers live in a `tests/` directory so the rule is
+  checkable. `pnpm check:tests` checks it, and that every test file belongs to exactly
+  one runner and the slow-test table matches the `slow` tags; run it after adding,
+  moving, or tagging a test.
+- V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which
+  pulls the file into the module graph and coverage as text).
 
 Data and persistence:
 

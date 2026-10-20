@@ -45,7 +45,11 @@ const key = (ref: { chaId: string; chatId: string }) => `${ref.chaId}/${ref.chat
 vi.mock("src/lang", () => ({
     language: { serverTransformFailed: "Render failed", chatBinding: { mismatch: "binding changed" } },
 }));
-vi.mock("../../alert", () => ({ alertToast: (text: string) => state.toasts.push(text) }));
+vi.mock("../../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertToast: (text: string) => state.toasts.push(text),
+    }),
+);
 vi.mock("../../network/generationJobs", () => ({ generationClientId: () => "client-1" }));
 vi.mock("../../plugins/apiV3/pluginContext", () => ({
     capturePluginContext: (ref: { chaId: string; chatId: string } | null) =>

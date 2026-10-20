@@ -17,13 +17,12 @@ const mocks = vi.hoisted(() => ({
     alertNormal: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertError: mocks.alertError,
-    alertNormal: mocks.alertNormal,
-    alertInput: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: mocks.alertError,
+        alertNormal: mocks.alertNormal,
+    }),
+);
 vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: mocks.downloadFile,
     saveAsset: vi.fn(),

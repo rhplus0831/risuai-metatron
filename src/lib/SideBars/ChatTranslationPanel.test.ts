@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // (back to the global selection); another translator hides the select; a chat that is not a member
 // shows nothing, and a write as the chat goes does not throw.
 
-vi.mock("src/ts/alert", () => ({ alertConfirm: vi.fn(), alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

@@ -9,18 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // closes, and with a forwarded preset field that is the selected preset (Astra challenge point 2).
 
 vi.mock("./globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("./alert", async () => ({
-    // No terminal notice is shown unless a test sets one (a writable here; read-only in `alert.ts`).
-    terminalNotice: (await import("svelte/store")).writable<string | null>(null),
-    alertMd: vi.fn(),
-    alertSelect: vi.fn(),
-    alertToast: vi.fn(),
-    alertWait: vi.fn(),
-    alertRequestLogs: vi.fn(),
-    alertNormal: vi.fn(),
-    alertError: vi.fn(),
-    doingAlert: vi.fn(() => false),
-}));
+vi.mock("./alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        // No terminal notice is shown unless a test sets one (a writable here; read-only in `alert.ts`).
+        terminalNotice: (await import("svelte/store")).writable<string | null>(null),
+    }),
+);
 vi.mock("./process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

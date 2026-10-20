@@ -33,11 +33,13 @@ vi.mock("src/ts/network/requestHistory", () => ({
     shareRequestHistory: (body: RequestHistoryShareBody) => deps.shareRequestHistory(body),
     listRequestHistoryShares: () => deps.listRequestHistoryShares(),
 }));
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: async () => false,
-    alertError: (text: string) => deps.alertError(text),
-    alertRequestLogs: () => {},
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: async () => false,
+        alertError: (text: string) => deps.alertError(text),
+        alertRequestLogs: () => {},
+    }),
+);
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
 vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatEntry: () => undefined, currentChatRef: () => null }));
 

@@ -22,7 +22,7 @@ await vi.hoisted(async () => {
 
 // `src/ts/util` reaches `database.svelte`, `stores.svelte`, and the parser; nothing here needs them.
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertNormal: vi.fn(), alertError: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

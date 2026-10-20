@@ -24,7 +24,11 @@ vi.mock("./storage/resourceSync.svelte", () => ({
     setRemoteResourceOwner: vi.fn(),
 }));
 vi.mock("./characterCards", () => ({ characterURLImport: mocks.importShare }));
-vi.mock("./alert", () => ({ alertError: mocks.alertError }));
+vi.mock("./alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: mocks.alertError,
+    }),
+);
 vi.mock("./plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
 vi.mock("./plugins/apiV3/permissionStore", () => ({ loadPluginPermissions: vi.fn() }));
 vi.mock("./router/router.svelte", () => ({ startRouter: mocks.startRouter }));

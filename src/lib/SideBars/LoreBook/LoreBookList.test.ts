@@ -17,13 +17,11 @@ vi.mock("sortablejs/modular/sortable.core.esm.js", () => ({
 }));
 vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn(async () => 0) }));
 const mocks = vi.hoisted(() => ({ alertConfirm: vi.fn(async () => true) }));
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: mocks.alertConfirm,
-    alertError: vi.fn(),
-    alertMd: vi.fn(),
-    alertNormal: vi.fn(),
-    alertToast: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: mocks.alertConfirm,
+    }),
+);
 
 import LoreBookList from "./LoreBookList.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";

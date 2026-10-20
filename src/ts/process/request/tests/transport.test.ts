@@ -46,7 +46,11 @@ const stubs = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("src/ts/alert", () => ({ alertError: stubs.alertError }));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: stubs.alertError,
+    }),
+);
 vi.mock("src/ts/globalApi.svelte", () => ({ appendFetchLog: stubs.appendFetchLog }));
 vi.mock("src/ts/model/modellist", async () => {
     // The mode's model id is resolved through the real slot routing (`resolveModelSlot`), so the

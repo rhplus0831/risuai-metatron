@@ -10,13 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // preset list under it too. The modal listens on the document in the capture phase; an alert or the
 // terminal notice above it keeps its Escape, and other keys pass through.
 
-vi.mock("src/ts/alert", async () => ({
-    terminalNotice: (await import("svelte/store")).writable<string | null>(null),
-    doingAlert: vi.fn(() => false),
-    alertConfirm: vi.fn(),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        terminalNotice: (await import("svelte/store")).writable<string | null>(null),
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

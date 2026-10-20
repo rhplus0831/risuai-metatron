@@ -12,9 +12,7 @@ import { ModuleHandler } from "../modules";
 // Suppress consoles
 vi.mock(import("katex"), () => ({}));
 
-vi.mock(import("src/ts/alert"), () => ({
-    alertConfirm: vi.fn(),
-}));
+vi.mock(import("src/ts/alert"), async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 // The chat module (reached through the fixture helper) imports the resource client, whose auth
 // module reaches the keypair store and the app stores: nothing here talks to a server.

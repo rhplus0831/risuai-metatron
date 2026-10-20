@@ -10,12 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `activePersona`'s setter would drop the write. The name and description inputs write the selected
 // persona through the view, and follow a selection change.
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(),
-    alertSelect: vi.fn(),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
 // `persona.ts` pulls the PNG and inlay code in; its `changeUserPersona` is one line over `pickBinding`,
 // which the slice 5 tests below reach through the page.

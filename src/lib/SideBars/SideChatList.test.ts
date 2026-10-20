@@ -30,13 +30,13 @@ vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
     return { default: Sortable };
 });
 
-vi.mock("src/ts/alert", () => ({
-    alertChatOptions: vi.fn(async () => alerts.chatOption),
-    alertConfirm: vi.fn(async () => true),
-    alertError: vi.fn(),
-    alertSelect: vi.fn(async () => "0"),
-    alertStore: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertChatOptions: vi.fn(async () => alerts.chatOption),
+        alertConfirm: vi.fn(async () => true),
+        alertSelect: vi.fn(async () => "0"),
+    }),
+);
 vi.mock("src/ts/characters", () => ({
     importChat: vi.fn(),
     exportChat: vi.fn(),

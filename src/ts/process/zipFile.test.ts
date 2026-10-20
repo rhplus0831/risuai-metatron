@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CharxFileError } from "../../../shared/charxImport.ts";
 import { readZipEntry, readZipIndex } from "./zipFile";
 
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn(), alertWait: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/globalApi.svelte", () => ({
     loadAsset: vi.fn(),
     saveAsset: vi.fn(),

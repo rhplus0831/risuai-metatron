@@ -34,13 +34,13 @@ vi.mock("src/ts/stores.svelte", async () => {
     store.alertStore = writable({ type: "none", msg: "" });
     return { alertStore: store.alertStore };
 });
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(),
-    alertNormal: vi.fn(),
-    alertError: alerts.error,
-    alertSelect: alerts.select,
-    alertClear: () => store.alertStore.set({ type: "none", msg: "" }),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertSelect: alerts.select,
+        alertClear: () => store.alertStore.set({ type: "none", msg: "" }),
+    }),
+);
 
 import ModuleSettings from "./ModuleSettings.svelte";
 import { language } from "src/lang";

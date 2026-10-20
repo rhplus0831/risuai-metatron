@@ -23,7 +23,11 @@ vi.mock("../globalApi.svelte", () => ({
 vi.mock("../network/auxFetch", () => ({ auxFetchJson: deps.auxFetchJson }));
 vi.mock("./request/request", () => ({ requestChatData: deps.request }));
 vi.mock("./processzip", () => ({ processZip: deps.zip }));
-vi.mock("../alert", () => ({ alertError: deps.alert }));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: deps.alert,
+    }),
+);
 vi.mock("./modules", () => ({ moduleUpdate: vi.fn() }));
 vi.mock("../parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
 vi.mock("../parser/parser.svelte", () => ({

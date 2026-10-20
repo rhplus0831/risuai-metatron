@@ -24,11 +24,7 @@ vi.mock("../process/modules", () => ({
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-}));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import { gridOpenStore, OpenRealmStore, PlaygroundStore, SettingsMenuIndex, settingsOpen } from "../stores.svelte";
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";

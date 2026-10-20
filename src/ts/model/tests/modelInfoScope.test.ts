@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
 vi.mock("src/ts/storage/llmSecrets.svelte", () => ({ isSecretSet: () => true }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import { getModelInfo, LLMFlags, LLMModels, registerModelDynamic } from "../modellist";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";

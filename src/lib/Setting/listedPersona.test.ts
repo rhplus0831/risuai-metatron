@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // given chat (`chatRef`) picks for that chat, selected or not, and closes when it is gone. At home the
 // list marks and picks the tab's selection.
 
-vi.mock("src/ts/alert", () => ({ alertConfirm: vi.fn(), alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

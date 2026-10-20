@@ -8,12 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // accordion with its badge, and nothing for a section whose items all hide by their conditions.
 
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("src/ts/alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

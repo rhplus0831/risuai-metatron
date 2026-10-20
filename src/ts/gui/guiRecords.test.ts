@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // reach them only through the views.
 
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

@@ -27,7 +27,7 @@ const { alerts, flush, writer, requests, exportResponse } = vi.hoisted(() => ({
     exportResponse: { current: null as (() => Response) | null },
 }));
 
-vi.mock("../alert", () => alerts);
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(alerts));
 vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: flush }));
 vi.mock("src/lang", () => ({
     language: {

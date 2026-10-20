@@ -110,7 +110,7 @@ describe("NanoGPTDashboard", () => {
 
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 import { normalizeModelProfile } from "../../../shared/presets.ts";
 import { maskLlmSecrets } from "../../../shared/llmSecrets.ts";
 import { setMaskedSecrets, secretVersion } from "src/ts/storage/llmSecrets.svelte";

@@ -60,7 +60,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({ settings: { authRefreshes: [] } }));
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
 vi.mock("src/ts/storage/chatStore.svelte", () => ({ findChat: vi.fn(), mergeChatMeta: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertInput: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 type Mcp = typeof import("../mcp");
 let mcp: Mcp;

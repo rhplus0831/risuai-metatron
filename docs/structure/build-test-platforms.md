@@ -17,6 +17,7 @@
   - `util/risuUserscript.user.js`
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack runner)
   - `util/agentTest.mjs`, `util/agentTestReporter.ts` (the `test:agent` wrapper and its reporter), `util/requireHuman.mjs` (the human gate)
+  - `util/testInventory.mjs` (the `check:tests` test inventory check)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
 - Not here:
@@ -32,6 +33,7 @@ Relevant `package.json` scripts:
 | `dev`          | `vite`                                                                   | dev server (needs `server`)                                            |
 | `build`        | `vite build --sourcemap`                                                 | production build (served by `server`)                                  |
 | `check`        | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)                                           |
+| `check:tests`  | `node util/testInventory.mjs`                                            | test inventory: runners, slow table, product imports (no test run)     |
 | `test`         | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate; people and CI)                 |
 | `test:agent`   | `node util/agentTest.mjs`                                                | `test` for agents: failures only, cached (`--all` for every test)      |
 | `test:slow`    | `vitest run --tags-filter=slow`                                          | only the `slow` tests                                                  |
@@ -121,6 +123,7 @@ Web:
   a fresh Node process. Tag a test with `{ tags: ["slow"] }` (the timeout goes in the same object)
   and a whole file with a `/** @module-tag slow */` comment, then update the slow-test selection table in
   `Tests`. The tag is defined in `vitest.config.ts`; an undefined tag fails the run.
+  Run `pnpm check:tests`: it fails while the table and the tags disagree.
 
 ## Tests
 
@@ -184,6 +187,31 @@ test's code, not from a guess about how likely the code is to regress.
   breaks on refactors; do not add it, and prune it when it starts costing time. Add
   tests only for code the task changes.
 
+A module mocked in more than one test file gets one shared, typed factory in a `tests/`
+directory (STRUCTURE V7): `src/ts/tests/alertMock.ts` `createAlertMock(overrides)` returns
+every export of `src/ts/alert.ts` (`vi.fn()`s whose awaited helpers resolve with a dismissed
+dialog's answer, empty stores), and its defaults `satisfies typeof import("src/ts/alert")`,
+so a new or reshaped export fails `pnpm check`. Load it inside the hoisted factory and pass
+the file's own handles: `vi.mock("src/ts/alert", async () => (await
+import("src/ts/tests/alertMock")).createAlertMock({ alertError: mocks.alertError }))`. A
+partial mock over `importOriginal` needs no factory. The client tests outside
+`src/ts/storage/` and `src/ts/plugins/` use it; the rest still list their helpers.
+
+`pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate) reads
+`vitest.config.ts` and `playwright.config.ts` as source and applies their patterns with each
+runner's own code (Vitest's tinyglobby file glob, Playwright's `createFileMatcher` on the
+absolute path). It fails when a test file under `src`, `server`, `shared`, `util`, `e2e`, or
+the root is collected by neither runner, by both, or only by the other one (Playwright owns
+`e2e/**/*.spec.ts`, Vitest every other test file); when a `slow` tag and the table below
+disagree (a row names its file, then "(the whole file)" for a `@module-tag slow` or each
+tagged test's title in double quotes, `...` standing for any text), or a test's `tags` is not
+a literal string or an array of literal strings in the options object; or when a non-test file under `src`,
+`server/src`, or `shared` imports a `tests/` path or a `*.test`/`*.spec` module (a `.svelte`
+file through Svelte's parser, template expressions included). A config shape it cannot read (a
+non-literal pattern, an object spread, an unsupported pattern-list spread, or a duplicate key,
+`projects`, `typecheck`, `respectGitIgnore`, no
+`testDir`) is an error; teach the script before using one.
+
 The static inventory of gated tests that still break the determinism gate, with a
 disposition per spot (keep, rewrite, move to `slow`, delete), is
 `docs/audit/timing-dependent-tests-2026-10-19.md`. Verify a timing fix under load with
@@ -195,6 +223,7 @@ the taskset recipe (one CPU, eight `node -e "while(true){}"` burners,
 | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `tokenPlainNode.test.ts` (the whole file)                                                                                                              | Every tokenizer family loaded cold and concurrently in a plain `node` process from a dist-only root, with the browser's ids; the `loadAll` entry's report and exit codes              | `server/src/prompt/tokenizers/`, `public/token/`, the Dockerfile's `dist/token` layout |
 | `tokenParity.test.ts` "counts the smoke strings for every family as the browser does"                                                                  | `loadAll` in process: a cold load of every family                                                                                                                                     | `server/src/prompt/tokenizers/`, `public/token/`                                       |
+| `importPngCaps.test.ts` (the whole file)                                                                                                               | The server PNG reader's asset-chunk cap (`planPngFile`) at `MAX_CHARX_ENTRIES` asset chunks and one more: 200,000 `tEXt` chunks, each key read with its own file read                 | `server/src/routes/importPng.ts`, `shared/charxImport.ts` (`MAX_CHARX_ENTRIES`)        |
 | `diagnosticsCrash.test.ts` (the whole file)                                                                                                            | The `uncaughtExceptionMonitor` of `main.ts` in a plain `node` process: an uncaught exception and an unhandled rejection each recorded with `state.json` written, exit 1               | `server/src/diagnostics/journal.ts`, `server/src/main.ts`                              |
 | `scriptWorker.test.ts` "caps sleep at 2 s per call and 6 s per run"                                                                                    | Lua `sleep` at the production caps (`MAX_SLEEP_MS`, `MAX_TOTAL_SLEEP_MS`); a fast version runs at `sleepCaps` of 200/600 ms                                                           | `server/src/lua/runtime.ts`, `server/src/scripts/`                                     |
 | `scriptWorker.test.ts` "charges a C-level runaway that follows the worker's own 10 s give-up"                                                          | The watchdog after a synchronous host call times out at the production `SYNC_HOST_TIMEOUT_MS`; a fast version runs at `syncHostTimeoutMs: 1000`                                       | `server/src/scripts/`                                                                  |

@@ -10,13 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // (`docs/plan/model-profiles.md`), the Model menu's Preset tab picks a profile per slot and its Connections tab
 // (`ModelProfilesSettings.svelte`) edits the profiles themselves.
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertInput: vi.fn(),
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
