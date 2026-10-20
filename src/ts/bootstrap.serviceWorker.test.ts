@@ -29,7 +29,11 @@ vi.mock("./alert", async () =>
         alertError: mocks.alertError,
     }),
 );
-vi.mock("./plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
+vi.mock("./plugins/plugins.svelte", () => ({
+    loadPlugins: vi.fn(),
+    // Safe boot's boot load: no plugin, every guest started (the counter is covered by bootstrap.safeBoot.test.ts).
+    loadPluginsForBoot: vi.fn(async () => ({ guestsStarted: Promise.resolve(true), stopFollowingGuests: vi.fn() })),
+}));
 vi.mock("./plugins/apiV3/permissionStore", () => ({ loadPluginPermissions: vi.fn() }));
 vi.mock("./router/router.svelte", () => ({ startRouter: mocks.startRouter }));
 vi.mock("./storage/browserLocalImport", () => ({ importBrowserLocalData: vi.fn() }));

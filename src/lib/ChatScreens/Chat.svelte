@@ -92,7 +92,7 @@
         selectedChat,
         selectedChatId,
     } from "../../ts/storage/chatStore.svelte";
-    import { HideIconStore, ReloadGUIPointer } from "../../ts/stores.svelte";
+    import { HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
     import ChatBody from "./ChatBody.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
@@ -1886,7 +1886,8 @@
                     {@render iconButtons({ applyTextColors: false })}
                 </div>
             </div>
-        {:else if settings.ui.theme === "customHTML" && !blankMessage}
+        {:else if settings.ui.theme === "customHTML" && !blankMessage && !$SafeModeStore}
+            <!-- Safe mode (the CSS hotkey or a safe boot) shows the classic row instead of the GUI HTML. -->
             {@render renderGuiHtmlPart(RenderGUIHtml(settings.ui.guiHTML))}
         {:else}
             {@render senderIcon({ rounded: settings.ui.roundIcons })}

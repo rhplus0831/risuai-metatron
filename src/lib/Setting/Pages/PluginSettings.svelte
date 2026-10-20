@@ -19,6 +19,7 @@
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { hotReloadPluginFiles } from "src/ts/plugins/apiV3/developMode";
+    import { safeBootOff } from "src/ts/safeBoot";
 
     let showParams = $state([]);
 </script>
@@ -26,6 +27,11 @@
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.plugin}</h2>
 
 <span class="text-draculared text-xs mb-4">{language.pluginWarn}</span>
+
+{#if safeBootOff("plugins")}
+    <!-- Safe boot: `loadPlugins` loads nothing in this page load, so the controls below only save. -->
+    <span class="text-textcolor2 text-sm mb-4">{language.safeBootPluginsOff}</span>
+{/if}
 
 <div class="border-solid border-darkborderc p-2 flex flex-col border-1">
     {#if !settings.plugins || settings.plugins?.length === 0}

@@ -4,11 +4,13 @@ import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
 import { hotReloading } from "../stores.svelte";
-import { loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./apiV3/v3.svelte";
+import { getV3PluginInstance, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { clearPluginHooks } from "./pluginHooks";
 import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { safeBootOff } from "../safeBoot";
+import type { GuestStartup } from "./apiV3/factory";
 import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
 
 export type { RisuPlugin } from "../../../shared/plugins.ts";
@@ -424,11 +426,61 @@ let appliedSignature: string | null = null;
 let pendingLocalLoads = 0;
 
 /** Clears and reloads the hooks with `plugins`; runs on the `pluginReload` chain only. */
-async function applyPluginLoad(plugins: RisuPlugin[]) {
+async function applyPluginLoad(plugins: RisuPlugin[], capture?: (plugins: RisuPlugin[]) => void) {
     appliedSignature = null;
     clearPluginHooks();
     await loadV3Plugins(plugins);
+    capture?.(plugins);
     appliedSignature = loadSignature(plugins);
+}
+
+/**
+ * Captures only the boot's guests, inside its serialized load. A stopped guest follows its replacement
+ * until it reports, is deliberately disabled/removed, or the boot's settle window ends.
+ */
+function captureBootGuests(plugins: RisuPlugin[]) {
+    let following = true;
+    async function started(name: string, startup: Promise<GuestStartup> | undefined): Promise<boolean> {
+        while (startup && following) {
+            const result = await startup;
+            if (!following || result === "failed") return false;
+            if (result === "ready") return true;
+            await pluginReload;
+            if (!following) return false;
+            const replacement = getV3PluginInstance(name)?.host.startup;
+            if (!replacement) return !loadablePlugins().some((plugin) => plugin.name === name);
+            // A stopped instance left in the registry cannot start; do not spin on its settled promise.
+            if (replacement === startup) return false;
+            startup = replacement;
+        }
+        return false;
+    }
+    const startups = plugins.map(({ name }) => started(name, getV3PluginInstance(name)?.host.startup));
+    const guestsStarted = new Promise<boolean>((resolve) => {
+        let waiting = startups.length;
+        const finish = (ok: boolean) => {
+            following = false;
+            resolve(ok);
+        };
+        if (waiting === 0) {
+            finish(true);
+        }
+        for (const startup of startups) {
+            void startup.then(
+                (ok) => {
+                    if (!ok) finish(false);
+                    else if (--waiting === 0) finish(true);
+                },
+                () => finish(false),
+            );
+        }
+    });
+    return {
+        guestsStarted,
+        stopFollowingGuests: () => {
+            following = false;
+        },
+    };
 }
 
 /*
@@ -486,7 +538,7 @@ function queueDeferredCheck() {
         deferredQueued = true;
         const generation = deferredGeneration;
         const reload = pluginReload.then(async () => {
-            if (generation !== deferredGeneration) {
+            if (generation !== deferredGeneration || safeBootOff("plugins")) {
                 return;
             }
             // Plugin work may have started while this waited behind another reload: wait again.
@@ -511,7 +563,31 @@ function queueDeferredCheck() {
     });
 }
 
-export async function loadPlugins() {
+export async function loadPlugins(): Promise<void> {
+    await reloadPlugins();
+}
+
+/** Only boot captures startup promises; other callers keep the public Promise<void> contract. */
+export async function loadPluginsForBoot() {
+    let guests = captureBootGuests([]);
+    try {
+        await reloadPlugins((plugins) => {
+            guests = captureBootGuests(plugins);
+        });
+        return guests;
+    } catch (error) {
+        guests.stopFollowingGuests();
+        throw error;
+    }
+}
+
+async function reloadPlugins(capture?: (plugins: RisuPlugin[]) => void) {
+    // Safe boot: nothing loads in this page load, so a toggle or an import only saves, and the remote
+    // listener of the deferred reload is never registered.
+    if (safeBootOff("plugins")) {
+        console.log("Plugins are off for this page load (safe boot).");
+        return;
+    }
     console.log("Loading plugins...");
     watchRemotePlugins();
     // This load reads the list as it is now, remote changes included: a waiting deferred reload is not needed.
@@ -527,7 +603,7 @@ export async function loadPlugins() {
     // Capture each caller's list now, but reset and reload only after the previous reload settles.
     pendingLocalLoads++;
     const reload = pluginReload
-        .then(() => applyPluginLoad(enabledPlugins))
+        .then(() => applyPluginLoad(enabledPlugins, capture))
         .finally(() => {
             pendingLocalLoads--;
             queueDeferredCheck();

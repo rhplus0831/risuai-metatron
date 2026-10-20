@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns: boot sequence, top-level screen selection, the URL routes and the history, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
-- Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/startApp.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+- Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/startApp.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,safeBoot,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop → [persistence](persistence.md); `globalFetch` → [global-api](global-api.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers → `settings-i18n.md`.
 
 ## Files
@@ -20,7 +20,9 @@
   - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built.
   - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen, and every other setting keeps the server's default until the settings pages change it.
   - `maintainCharacters`: the boot's maintenance (trash pruning, then `checkCharOrderAtBoot` against the complete inventory to drop dangling order ids); no character default.
+  - The boot's error alert (`loadData`'s catch) carries a line with the safe-boot address (`bootErrorWithSafeBootHint`, below).
   - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload, and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also records the sync event and flushes diagnostics.
+- `src/ts/safeBoot.ts` (RisuNest small wins S1): safe boot, plugins or custom CSS and GUI HTML off for this page load (Flows, Safe boot). `createSafeBoot(deps)` is the controller with its effects injected (the query, `localStorage`, the clock, the timer, `SafeModeStore`, the notice); the module's own instance does nothing until `beginSafeBoot()`. Exports: `parseSafeFlag`, `beginSafeBoot`, `safeBootOff(category)` (read by `plugins.svelte.ts` and `PluginSettings.svelte`), `markSafeBootContentStage`, `latchSafeBootFailure`, `startSafeBootSettleWindow`, `bootErrorWithSafeBootHint`, `safeBootUrl`; `SAFE_BOOT_KEY`, `SAFE_BOOT_THRESHOLD` (2), `SAFE_BOOT_SETTLE_MS` (10 s).
 - `src/ts/stores.svelte.ts`: all global UI stores (see State). `PlaygroundStore` is re-exported from `src/ts/storage/selection.svelte.ts`, so chat status can read the same writable without starting the UI stores' module effects.
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
@@ -48,14 +50,25 @@ Boot:
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
 2. `boot.ts:boot` starts the diagnostics collector, then `startApp.ts:startApp` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, then `registerSw`. Only a `ready` worker enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On `reloading`, boot returns immediately with the loading screen up, preserving import hashes until navigation. A failed read only alerts; there is no local fallback.
+3. `bootstrap.ts:loadData` first calls `beginSafeBoot()` (the `?safe` query, before anything navigates; Safe boot, below), then loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, then `registerSw`. Only a `ready` worker enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On `reloading`, boot returns immediately with the loading screen up, preserving import hashes until navigation. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
    1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrderAtBoot` against the complete inventory, before saving and the event feed start), and `initializeChats`.
-   2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
+   2. `markSafeBootContentStage()` (user content runs from here on: the attempt is counted, and a safe boot shows its notice), then the theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
    3. `startResourceSync()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`), and after another writer's `characterOrder` it queues the add-only order repair (`queueRemoteCharOrderRepair`, `persistence.md` Save step 9). Then `characterURLImport` (not awaited): after the start, so a link's or share's module import waits for its save's acknowledgement (`addImportedModule`, [characters and modules](characters-modules.md)); before the router, which writes URLs without a query or hash.
-   4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPlugins`. Plugins load after normalization and ID assignment (before Phase 1 they loaded first).
-   5. `loadedStore.set(true)` and `startRouter()`: the URL picks the screen, so a reload keeps it, the selected character included (URL routes, below).
+   4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPluginsForBoot` (nothing while safe boot turned plugins off). Plugins load after normalization and ID assignment (before Phase 1 they loaded first). A rejected plugin load is logged and fails the safe-boot attempt; the boot goes on.
+   5. `loadedStore.set(true)`, `startSafeBootSettleWindow` (with the startup promises captured inside this boot's serialized plugin load), and `startRouter()`: the URL picks the screen, so a reload keeps it, the selected character included (URL routes, below).
    6. Observers, `registerModelDynamic`, `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` files (including inlay blobs) are never purged automatically.
+
+Safe boot (`safeBoot.ts`; RisuNest small wins S1, decision D6). A plugin with main-document access or a broken custom CSS or GUI HTML can make every boot unusable; safe boot turns them off for one page load, client only: nothing is written to the server and no persisted field changes.
+
+- Categories: `plugins` and `css` (custom CSS and GUI HTML). `?safe` and `?safe=all` mean both; `?safe=plugins`, `?safe=css`, or a comma list (`?safe=plugins,css`) pick; unknown names are ignored. The query is read once, by `beginSafeBoot` at the start of `loadData`: the router's boot replace writes the path without it, so a reload after a settled boot can start normally.
+- The counter: one `localStorage` record, `risu.safeBoot.attempts` = `{ count, at }`, read and written in `try` (an unavailable or throwing store leaves a normal boot without the counter; `?safe` still works; a malformed record reads as none). `markSafeBootContentStage` reads it and writes `count + 1` just before the theme, so a boot that fails earlier (an unreachable server, the service worker's reload) does not count.
+- Failure latch: a rejected boot plugin load, the `loadData` catch, or a plugin this boot started whose script threw or did not run (`SandboxHost.startup` is `failed`, [plugins-mcp](plugins-mcp.md)) fails the attempt; nothing clears it in this page load. A guest unloaded before it reported (a toggle, a reload) follows its replacement after the `pluginReload` chain finishes, repeatedly until it reports or the settle window ends. No replacement counts as started only when that name is no longer an enabled API 3.0 plugin; otherwise it fails. Reloads of guests that already reported are not judged.
+- Settled: `SAFE_BOOT_SETTLE_MS` (10 s) after `loadedStore` turned true, with no failure latched and every plugin this boot started reported as started (a guest still silent then fails the attempt). The settled boot removes the record, but only the one it wrote itself (compared by value), so a newer attempt of another tab stays counted.
+- Trip: `markSafeBootContentStage` sees a previous `count >= SAFE_BOOT_THRESHOLD` (2) and successfully writes the increment: this boot turns both categories off before the theme runs. A failed write leaves only explicit `?safe` categories off, so a stale count cannot force later boots into safe mode while writes fail. Two boots that reached user content and did not settle (killed, failed, or reloaded within the window) make the third safe; a safe boot that settles clears the record, so the next reload is normal.
+- Effects, this page load only: `plugins` off → `loadPlugins` loads nothing and registers no remote listener, so P2's deferred reload never runs and the plugin settings save without loading ([plugins-mcp](plugins-mcp.md)); `css` off → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row instead of the `customHTML` theme's GUI HTML while it is set. The `toggleCSS` hotkey still flips `SafeModeStore` both ways.
+- Notice: one `alertNormal` dialog (the alert queue) at the content stage when anything is off, naming what is off, why when the counter tripped it, and how to leave (keep the page open another 10 s after the app finishes loading, then reload without `?safe` to try a normal start; a failed start may leave automatic safe boot on). A boot that fails before its content stage shows it from the catch. The boot's error alert always gains a line with the safe-boot address (`/?safe` on this origin, plain text).
+- Not covered: modules, global regex, and Lua run on the server per job; turning them off would need a flag in the job request.
 
 Screen selection. `App.svelte` checks these in order:
 
@@ -106,7 +119,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `ReloadChatPointer`.
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
-- Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
+- Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore` (custom CSS and GUI HTML off: the `toggleCSS` hotkey, or a safe boot's `css` category), `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
 - Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
 
 ## Coupling
@@ -117,6 +130,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Invariants
 
+- Safe boot is per page load: it writes nothing to the server and no persisted field, only the `risu.safeBoot.attempts` record. What it turns off stays off until the page reloads, in this tab only. Read `?safe` before anything navigates.
 - Do not flip `loadedStore` to true before `installBootRecords`, `maintainCharacters`, and theme setup finish. `App` assumes the records are installed after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
 - No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` and the list as `characterList()`, never by an index; a handler that awaits captures the `chaId` first and finds the character again after the await.
 - Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
@@ -160,6 +174,8 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Some tests mock `stores.svelte` and `platform` (the parser tests). They exercise consumers, not these modules.
 
 ## Known Hazards
+
+- Safe boot's counter is a heuristic shared by the tabs of a browser: a user who reloads twice within 10 s of loading trips it once (D6), two tabs booting at once can overwrite each other's count (the read and the write are not atomic), and a boot that settles only clears its own record. A plugin whose script throws at start fails every boot it runs in, so a normal start with it enabled is safe again every third boot until it is fixed or disabled.
 
 - `src/etc/patchNote.ts` has no importers; it does not drive the current release UI.
 

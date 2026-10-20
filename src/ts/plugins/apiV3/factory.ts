@@ -17,7 +17,15 @@ interface RpcMessage {
     result?: any;
     error?: string;
     abortId?: string;
+    // `SCRIPT_SETTLED`: the top-level script threw, or never ran.
+    failed?: boolean;
 }
+
+/**
+ * How a guest's start ended (safe boot, `src/ts/safeBoot.ts`): its top-level script settled (`ready`),
+ * threw or did not run (`failed`), or the host terminated before either (`stopped`).
+ */
+export type GuestStartup = "ready" | "failed" | "stopped";
 
 interface RemoteRef {
     __type: "REMOTE_REF";
@@ -454,6 +462,9 @@ export class SandboxHost {
     // The guest's top-level script has settled (`SCRIPT_SETTLED`).
     private scriptSettled = false;
     private activityListener: (() => void) | null = null;
+    private settleStartup!: (startup: GuestStartup) => void;
+    /** Resolves once the guest's start ended; a thrown script still counts as settled for `isIdle`. */
+    public readonly startup: Promise<GuestStartup> = new Promise((resolve) => (this.settleStartup = resolve));
 
     constructor(apiFactory: any) {
         this.apiFactory = apiFactory;
@@ -927,6 +938,7 @@ export class SandboxHost {
 
             if (data.type === "SCRIPT_SETTLED") {
                 this.scriptSettled = true;
+                this.settleStartup(data.failed ? "failed" : "ready");
                 this.activityChanged();
                 return;
             }
@@ -1056,15 +1068,22 @@ export class SandboxHost {
                 await (async () => {
                     ${userCode}
                 })();
-            })().finally(() => {
-                // The top-level script settled (or threw): the host counts this guest as started.
-                try { window.parent.postMessage({ type: "SCRIPT_SETTLED" }, "*"); } catch (_) {}
-            });
+            })().then(
+                () => {
+                    // The top-level script settled: the host counts this guest as started.
+                    try { window.parent.postMessage({ type: "SCRIPT_SETTLED" }, "*"); } catch (_) {}
+                },
+                (error) => {
+                    // It threw: started for the activity count, failed for safe boot.
+                    try { window.parent.postMessage({ type: "SCRIPT_SETTLED", failed: true }, "*"); } catch (_) {}
+                    throw error;
+                },
+            );
         </script>
         <script nonce="${this.nonce}">
             // The script above did not run at all (a syntax error): nothing will settle, so report it now.
             if (!window.__risuGuestStarted) {
-                try { window.parent.postMessage({ type: "SCRIPT_SETTLED" }, "*"); } catch (_) {}
+                try { window.parent.postMessage({ type: "SCRIPT_SETTLED", failed: true }, "*"); } catch (_) {}
             }
         </script>
       </body>
@@ -1080,6 +1099,8 @@ export class SandboxHost {
 
     public terminate() {
         this.terminated = true;
+        // A start still pending ends here (a no-op once the guest reported).
+        this.settleStartup("stopped");
         // An in-flight host call (a `nativeFetch` still waiting for headers) stops with its sandbox.
         for (const controller of this.abortControllers.values()) controller.abort();
         if (this.messageHandlerRef) {

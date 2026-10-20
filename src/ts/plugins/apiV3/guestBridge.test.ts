@@ -36,7 +36,29 @@ function guestScripts(userCode = ""): { main: string; fallback: string } {
 
 type HostMessage = { type: string; reqId: string; method?: string };
 
-async function startGuest(userCode = "") {
+/**
+ * Runs the main script. The srcdoc rethrows a failed plugin script on purpose (the iframe's console
+ * shows it); with `throws`, the promise that rethrow rejects gets a handler here, since Node would
+ * otherwise report it as an unhandled rejection. The script's own `.then` runs synchronously at
+ * evaluation, so the patch is in place only for that call.
+ */
+function evaluateMain(main: string, guestWindow: Record<string, any>, throws: boolean) {
+    const run = () => new Function("window", "document", main)(guestWindow, { querySelector: () => null });
+    if (!throws) return run();
+    const originalThen = Promise.prototype.then;
+    Promise.prototype.then = function (this: Promise<unknown>, onFulfilled?: any, onRejected?: any) {
+        const chained = originalThen.call(this, onFulfilled, onRejected);
+        originalThen.call(chained, undefined, () => {});
+        return chained;
+    } as typeof originalThen;
+    try {
+        run();
+    } finally {
+        Promise.prototype.then = originalThen;
+    }
+}
+
+async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
     const listeners: ((event: { data: unknown; ports: MessagePort[] }) => void)[] = [];
     const calls: HostMessage[] = [];
     const deliver = (data: unknown, ports: MessagePort[] = []) => {
@@ -62,7 +84,7 @@ async function startGuest(userCode = "") {
     const { main } = guestScripts(userCode);
     // Node has no ImageBitmap; the bridge's transferable scan checks for it.
     vi.stubGlobal("ImageBitmap", class {});
-    new Function("window", "document", main)(guestWindow, { querySelector: () => null });
+    evaluateMain(main, guestWindow, options.throws ?? false);
     await vi.waitFor(() => expect(calls.map((call) => call.method)).toContain("_getAliases"));
     return { risuai: guestWindow.risuai, calls, deliver, window: guestWindow };
 }
@@ -133,7 +155,14 @@ describe("the guest's start-up report", () => {
     it("posts SCRIPT_SETTLED once the bridge started and the plugin's top-level code settled", async () => {
         const guest = await startGuest("");
         await vi.waitFor(() => expect(settledReports(guest.calls)).toHaveLength(1));
+        expect(settledReports(guest.calls)).toEqual([{ type: "SCRIPT_SETTLED" }]);
         expect(guest.window.__risuGuestStarted).toBe(true);
+    });
+
+    it("posts SCRIPT_SETTLED with failed when the plugin's top-level code throws", async () => {
+        const guest = await startGuest("throw new Error('plugin broke');", { throws: true });
+        await vi.waitFor(() => expect(settledReports(guest.calls)).toHaveLength(1));
+        expect(settledReports(guest.calls)).toEqual([{ type: "SCRIPT_SETTLED", failed: true }]);
     });
 
     it("posts nothing while the plugin's top-level code is still pending", async () => {
@@ -149,7 +178,7 @@ describe("the guest's start-up report", () => {
         const reports: HostMessage[] = [];
         const parent = { postMessage: (message: HostMessage) => reports.push(message) };
         new Function("window", fallback)({ parent });
-        expect(reports).toEqual([{ type: "SCRIPT_SETTLED" }]);
+        expect(reports).toEqual([{ type: "SCRIPT_SETTLED", failed: true }]);
 
         new Function("window", fallback)({ parent, __risuGuestStarted: true });
         expect(reports).toHaveLength(1);

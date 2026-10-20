@@ -1932,6 +1932,17 @@ export const languageEnglish = {
     pluginApiVersionUnsupportedLoad:
         "These plugins use an unsupported plugin API version and did not run. Install versions updated to API 3.0.\n\n{plugins}",
     pluginApiVersionUnsupportedBadge: "Unsupported API",
+    safeBootNotice: "Safe boot: {off} are off for this page load. Nothing was changed in your data.",
+    safeBootAutoReason:
+        "The last {count} starts did not finish loading, so this start turned them off by itself. If a plugin, custom CSS, or GUI HTML broke the app, turn it off or fix it in the settings now.",
+    safeBootLeave:
+        "After the app finishes loading, keep it open for another 10 seconds, then reload without ?safe in the address to try a normal start. If this start fails, automatic safe boot may stay on.",
+    safeBootPlugins: "plugins",
+    safeBootCss: "custom CSS and GUI HTML",
+    safeBootErrorHint:
+        "If the app keeps failing to start, open it with plugins, custom CSS, and GUI HTML off (safe boot): {url}",
+    safeBootPluginsOff:
+        "Plugins are off for this page load (safe boot). Changes here are saved and take effect after a normal reload.",
     pluginUpdateFoundInstallIt: "Plugin update found. Do you want to install the update?",
     goToChat: "Go to Chat",
     bookmark: "Bookmark",
