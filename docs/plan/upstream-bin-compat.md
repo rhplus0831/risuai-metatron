@@ -486,6 +486,11 @@ Depends: S3.
   - missing assets are reported by character.
   - Then an end-to-end check: write the converted output into a fresh
     `createResourceStore({ file })`, `backupTo` a file, and `readSnapshot` accepts it.
+  - Before committing, the slice also runs the converter once on the real backup
+    `save/Binary.bin` in the main checkout (see S8; read only, never committed). Five of
+    its six characters are cold-storage stubs, so this is the cold-character path on real
+    data. Expect all six characters restored, with their chats and messages from the cold
+    records, and no `cold-missing` entry. Report counts only, never names or text.
 - Docs: `persistence.md` (the cold-storage fold on import; the cold-storage removal note at
   ~141 now says upstream payloads are read on import only).
 
@@ -750,9 +755,25 @@ Depends: S1–S7.
     browser, to check for throws.
   - Following RisuNest item 13, it never installs or starts the upstream app.
 - **Manual browser checks** (`util/playwright`, one dev stack at a time):
-  - a real upstream `.bin` the user provides (not committed; it holds private data): the
-    report matches its contents, Restore brings characters, chats and presets back, and a
-    send works on an imported chat;
+  - a real upstream `.bin`: `save/Binary.bin` in the main checkout, which the user
+    provided. It holds private data: read it in place, never copy it into a fixture,
+    commit or log, and report counts only. Checked 2026-10-20:
+    - **Container**: 3,399 records, ending exactly at the file's 332,626,296 bytes. They
+      are 3,393 `.png` assets, 5 `coldstorage_<uuid>.json` records and one
+      `database.risudat`.
+    - **Database**: `\0RISUSAVE\0\x08` + gzip, 353,691 bytes compressed and about 1 MB
+      decoded, with 292 root keys and `formatversion: 5`. It decodes with S1's settings
+      (`Unpackr({ useRecords: false, int64AsType: "number" })`).
+    - **Contents**: 6 characters, 5 of them cold stubs matching the 5 cold records; no
+      group and no cold chat. Messages have no `chatId`. There are 4 `botPresets`, 1
+      persona, 2 modules, no plugins, no `modelPresets` (made by upstream, not by
+      metatron after Phase 3) and no `_coldplugin`.
+
+    Check that the report matches these counts, that Restore brings the characters (cold
+    ones included), chats, presets and assets back, and that a send works on an imported
+    chat. Use a disposable save directory (`RISU_SAVE_DIR`), never the main checkout's
+    `save/`. Then export it with S7 and import that export again: the counts must match;
+
   - an exported `.bin` restored in a local upstream dev build (the user's step if a local
     upstream build is not available), whose characters and chats open there.
   - Record what could not be checked as unverified.
