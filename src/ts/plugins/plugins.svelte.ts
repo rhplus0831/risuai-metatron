@@ -4,9 +4,11 @@ import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
 import { hotReloading } from "../stores.svelte";
-import { loadV3Plugins } from "./apiV3/v3.svelte";
+import { loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { clearPluginHooks } from "./pluginHooks";
+import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
+import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
 
 export type { RisuPlugin } from "../../../shared/plugins.ts";
@@ -408,8 +410,113 @@ async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise
     for (const identity of unreported.keys()) reportedUnsupportedPlugins.add(identity);
 }
 
+/**
+ * What `loadV3Plugins` captures of each plugin it starts: its name and script, and the `allowedIPC`
+ * its own channel messages are checked against. Arguments (`realArg`) are read live, so another
+ * device's `setArgument` needs no reload.
+ */
+function loadSignature(plugins: readonly RisuPlugin[]): string {
+    return JSON.stringify(plugins.map((p) => [p.name, p.script, p.allowedIPC ?? []]));
+}
+
+/** The load signature of the plugins running now: null before the first load and while a reload replaces them. */
+let appliedSignature: string | null = null;
+let pendingLocalLoads = 0;
+
+/** Clears and reloads the hooks with `plugins`; runs on the `pluginReload` chain only. */
+async function applyPluginLoad(plugins: RisuPlugin[]) {
+    appliedSignature = null;
+    clearPluginHooks();
+    await loadV3Plugins(plugins);
+    appliedSignature = loadSignature(plugins);
+}
+
+/*
+ * The reload after a remote `plugins` change (RisuNest small wins P2, `plugins-mcp.md` Flows): another
+ * tab or device disabled, removed, or updated a plugin that runs here. It waits until no plugin work is
+ * in flight (`pluginWorkIdle`; decision D4: never interrupted), checks again on the `pluginReload` chain
+ * right before it clears anything, and loads the list as it is then. One at a time: changes while it
+ * waits only make it load the newest list. A local `loadPlugins` supersedes it.
+ */
+let watchingRemotePlugins = false;
+let deferredWanted = false;
+let deferredQueued = false;
+let deferredCheckQueued = false;
+let deferredGeneration = 0;
+let watchingPluginWork = false;
+
+function watchRemotePlugins() {
+    if (watchingRemotePlugins) {
+        return;
+    }
+    watchingRemotePlugins = true;
+    onRemoteRecordApplied((kind) => {
+        if (kind !== RESOURCE_KIND.plugins) {
+            return;
+        }
+        // A change to a disabled or a non-3.0 plugin, or to what is read live, changes nothing loaded.
+        if (pendingLocalLoads === 0 && loadSignature(loadablePlugins()) === appliedSignature) {
+            return;
+        }
+        deferredWanted = true;
+        if (!watchingPluginWork) {
+            watchingPluginWork = true;
+            onPluginWorkChange(queueDeferredCheck);
+        }
+        queueDeferredCheck();
+    });
+}
+
+function loadablePlugins(): RisuPlugin[] {
+    return safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled && p.version === "3.0");
+}
+
+/** Checks once per microtask whether the wanted reload can start (activity notifications come in bursts). */
+function queueDeferredCheck() {
+    if (!deferredWanted || deferredQueued || deferredCheckQueued) {
+        return;
+    }
+    deferredCheckQueued = true;
+    queueMicrotask(() => {
+        deferredCheckQueued = false;
+        if (!deferredWanted || deferredQueued || !pluginWorkIdle()) {
+            return;
+        }
+        deferredWanted = false;
+        deferredQueued = true;
+        const generation = deferredGeneration;
+        const reload = pluginReload.then(async () => {
+            if (generation !== deferredGeneration) {
+                return;
+            }
+            // Plugin work may have started while this waited behind another reload: wait again.
+            if (!pluginWorkIdle()) {
+                deferredWanted = true;
+                return;
+            }
+            const plugins = loadablePlugins();
+            if (loadSignature(plugins) === appliedSignature) {
+                return;
+            }
+            // Synchronous from the idle check to the hook reset.
+            await applyPluginLoad(plugins);
+        });
+        pluginReload = reload.catch(() => {});
+        void reload
+            .catch((error) => console.error(error))
+            .finally(() => {
+                deferredQueued = false;
+                queueDeferredCheck();
+            });
+    });
+}
+
 export async function loadPlugins() {
     console.log("Loading plugins...");
+    watchRemotePlugins();
+    // This load reads the list as it is now, remote changes included: a waiting deferred reload is not needed.
+    deferredWanted = false;
+    deferredGeneration++;
 
     const enabled = safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled);
     const enabledPlugins = enabled.filter((p: RisuPlugin) => p.version === "3.0");
@@ -418,10 +525,13 @@ export async function loadPlugins() {
     );
 
     // Capture each caller's list now, but reset and reload only after the previous reload settles.
-    const reload = pluginReload.then(async () => {
-        clearPluginHooks();
-        await loadV3Plugins(enabledPlugins);
-    });
+    pendingLocalLoads++;
+    const reload = pluginReload
+        .then(() => applyPluginLoad(enabledPlugins))
+        .finally(() => {
+            pendingLocalLoads--;
+            queueDeferredCheck();
+        });
     pluginReload = reload.catch(() => {});
     await report;
     await reload;

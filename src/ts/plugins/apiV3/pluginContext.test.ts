@@ -1162,8 +1162,9 @@ describe("unload and reload", () => {
     it("SandboxHost.terminate rejects a pending callback, so a runner awaiting the hook settles and its entry pops", async () => {
         const { SandboxHost } = await vi.importActual<typeof import("./factory")>("./factory");
         const host: any = new SandboxHost({});
-        // An iframe whose window is gone: the invocation is posted nowhere and stays pending.
-        host.iframe = { contentWindow: null, remove() {} };
+        // An iframe whose window swallows the invocation: it is posted but never answered, so it stays
+        // pending (a window that is gone rejects at once instead, `sandboxActivity.test.ts`).
+        host.iframe = { contentWindow: { postMessage() {} }, remove() {} };
         const [callback] = host.deserializeArgs([{ __type: "CALLBACK_REF", id: "cb-1" }]);
         const api = await makeApi();
         const listener = await listenerOf(api, callback);

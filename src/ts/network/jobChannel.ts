@@ -1,6 +1,7 @@
 import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
+import { noteChannelCallbacks } from "./generationJobs";
 import { get } from "svelte/store";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
@@ -889,13 +890,19 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     }
     const entry: Outstanding = { jobId, id: event.id, targets: event.targets, cancelled: false };
     outstanding.push(entry);
+    // A running callback is plugin work: a plugin reload waits for it (`generationJobs.ts`).
+    noteChannelCallbacks(outstanding.length);
+    const settle = () => {
+        const index = outstanding.indexOf(entry);
+        if (index !== -1) {
+            outstanding.splice(index, 1);
+        }
+        noteChannelCallbacks(outstanding.length);
+    };
     remember(event.id, { jobId, answer: null });
     void runCallback(event, entry)
         .then((message) => {
-            const index = outstanding.indexOf(entry);
-            if (index !== -1) {
-                outstanding.splice(index, 1);
-            }
+            settle();
             if (entry.cancelled) {
                 const state = requests.get(event.id);
                 if (state) {
@@ -905,7 +912,10 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
             }
             answer(jobId, message);
         })
-        .catch((error) => console.error("[Channel]", error));
+        .catch((error) => {
+            settle();
+            console.error("[Channel]", error);
+        });
 }
 
 /**

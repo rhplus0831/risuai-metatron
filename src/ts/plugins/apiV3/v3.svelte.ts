@@ -97,6 +97,7 @@ import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
+import { generationPluginWorkActive, onGenerationPluginWork } from "src/ts/network/generationJobs";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
@@ -637,7 +638,73 @@ const unloadV3Plugin = async (pluginName: string) => {
     } catch (error) {
         console.error(`Error terminating plugin ${pluginName}:`, error);
     }
+    notifyPluginWork();
 };
+
+// Plugin work (RisuNest small wins P2, `plugins-mcp.md`): a reload after a remote plugin change waits
+// until `pluginWorkIdle`, and listeners of `onPluginWorkChange` hear whenever it may have become true.
+const pluginWorkListeners = new Set<() => void>();
+// Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).
+let runningHostHooks = 0;
+
+function notifyPluginWork() {
+    for (const listener of [...pluginWorkListeners]) {
+        try {
+            listener();
+        } catch (error) {
+            console.error(error);
+        }
+    }
+}
+
+function hostHookSettled() {
+    runningHostHooks--;
+    notifyPluginWork();
+}
+
+/** Runs a hook invocation counted as plugin work until it returns or, for a promise, settles. */
+function trackHostHook<T>(run: () => T): T {
+    runningHostHooks++;
+    let result: T;
+    try {
+        result = run();
+    } catch (error) {
+        hostHookSettled();
+        throw error;
+    }
+    if (result && typeof (result as { then?: unknown }).then === "function") {
+        Promise.resolve(result).then(hostHookSettled, hostHookSettled);
+    } else {
+        hostHookSettled();
+    }
+    return result;
+}
+
+/**
+ * No plugin work of this tab is in flight (decision D4: a reload never interrupts it): no send
+ * (`doingChat`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
+ * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
+ */
+export function pluginWorkIdle(): boolean {
+    return (
+        !get(doingChat) &&
+        !generationPluginWorkActive() &&
+        runningHostHooks === 0 &&
+        v3PluginInstances.every(({ host }) => host.isIdle?.() ?? true)
+    );
+}
+
+/** Calls `listener` whenever `pluginWorkIdle` may have changed; returns the unsubscribe function. */
+export function onPluginWorkChange(listener: () => void): () => void {
+    pluginWorkListeners.add(listener);
+    const offChat = doingChat.subscribe(() => listener());
+    const offJobs = onGenerationPluginWork(listener);
+    return () => {
+        pluginWorkListeners.delete(listener);
+        offChat();
+        offJobs();
+    };
+}
 
 type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay";
 
@@ -1225,19 +1292,20 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         if (cached) {
             return cached as unknown as F;
         }
-        const wrapped = (...args: unknown[]) => {
-            const context = takeHandoff();
-            if (!context) {
-                return hook(...args);
-            }
-            const exit = enterContext(contextOwner, context);
-            try {
-                return Promise.resolve(hook(...args)).finally(exit);
-            } catch (error) {
-                exit();
-                throw error;
-            }
-        };
+        const wrapped = (...args: unknown[]) =>
+            trackHostHook(() => {
+                const context = takeHandoff();
+                if (!context) {
+                    return hook(...args);
+                }
+                const exit = enterContext(contextOwner, context);
+                try {
+                    return Promise.resolve(hook(...args)).finally(exit);
+                } catch (error) {
+                    exit();
+                    throw error;
+                }
+            });
         hookWrappers.set(hook, wrapped);
         return wrapped as unknown as F;
     };
@@ -1331,6 +1399,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 // The request's call context is taken before the first await (the permission prompt).
                 const context = takeHandoff();
                 const exit = context ? enterContext(contextOwner, context) : undefined;
+                // Plugin work from here, the permission prompt included (no guest callback is pending yet).
+                runningHostHooks++;
                 try {
                     const conf = await getPluginPermission(identity, "provider", "periodically");
                     if (!conf) {
@@ -1348,6 +1418,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     return await func(arg, abortSignal);
                 } finally {
                     exit?.();
+                    hostHookSettled();
                 }
             }),
                 pluginHooks.providerOptions.set(name, options ?? {}));
@@ -2298,6 +2369,7 @@ export async function executePluginV3(plugin: RisuPlugin) {
     iframe.style.display = "none";
     document.body.appendChild(iframe);
     const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin));
+    host.onActivityChanged?.(notifyPluginWork);
     v3PluginInstances.push({
         name: plugin.name,
         host,

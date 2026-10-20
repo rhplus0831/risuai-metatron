@@ -4,9 +4,11 @@ import { SandboxHost } from "./factory";
 
 // The guest half of the sandbox RPC (`GUEST_BRIDGE_SCRIPT`) as the iframe runs it: taken from the
 // srcdoc `SandboxHost.run` writes, then evaluated over a fake window. Node's own `ReadableStream`,
-// `Response`, and `MessageChannel` stand in for the iframe's.
+// `Response`, and `MessageChannel` stand in for the iframe's. The srcdoc carries two scripts: the
+// main one (the bridge, then the plugin's code, reporting `SCRIPT_SETTLED` once both settled) and a
+// fallback that reports it when the main one never ran (a syntax error).
 
-function guestScript(): string {
+function guestScripts(userCode = ""): { main: string; fallback: string } {
     let html = "";
     class FakeIframe {
         style = {};
@@ -22,19 +24,19 @@ function guestScript(): string {
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
     try {
         const host = new SandboxHost({});
-        host.run(new FakeIframe() as unknown as HTMLIFrameElement, "");
+        host.run(new FakeIframe() as unknown as HTMLIFrameElement, userCode);
         host.terminate();
     } finally {
         vi.unstubAllGlobals();
     }
-    const script = /<script nonce="[^"]+">([\s\S]*)<\/script>/.exec(html)?.[1];
-    if (!script) throw new Error("no guest script in the srcdoc");
-    return script;
+    const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    if (scripts.length !== 2) throw new Error(`expected two guest scripts in the srcdoc, found ${scripts.length}`);
+    return { main: scripts[0], fallback: scripts[1] };
 }
 
 type HostMessage = { type: string; reqId: string; method?: string };
 
-async function startGuest() {
+async function startGuest(userCode = "") {
     const listeners: ((event: { data: unknown; ports: MessagePort[] }) => void)[] = [];
     const calls: HostMessage[] = [];
     const deliver = (data: unknown, ports: MessagePort[] = []) => {
@@ -57,13 +59,16 @@ async function startGuest() {
         postMessage() {},
     };
     vi.spyOn(console, "log").mockImplementation(() => {});
-    const script = guestScript();
+    const { main } = guestScripts(userCode);
     // Node has no ImageBitmap; the bridge's transferable scan checks for it.
     vi.stubGlobal("ImageBitmap", class {});
-    new Function("window", "document", script)(guestWindow, { querySelector: () => null });
+    new Function("window", "document", main)(guestWindow, { querySelector: () => null });
     await vi.waitFor(() => expect(calls.map((call) => call.method)).toContain("_getAliases"));
-    return { risuai: guestWindow.risuai, calls, deliver };
+    return { risuai: guestWindow.risuai, calls, deliver, window: guestWindow };
 }
+
+const settledReports = (calls: HostMessage[]) => calls.filter((call) => call.type === "SCRIPT_SETTLED");
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
     vi.restoreAllMocks();
@@ -121,5 +126,32 @@ describe("the guest bridge's reconstructed streams", () => {
         host.postMessage({ done: true });
         expect((await end).done).toBe(true);
         host.close();
+    });
+});
+
+describe("the guest's start-up report", () => {
+    it("posts SCRIPT_SETTLED once the bridge started and the plugin's top-level code settled", async () => {
+        const guest = await startGuest("");
+        await vi.waitFor(() => expect(settledReports(guest.calls)).toHaveLength(1));
+        expect(guest.window.__risuGuestStarted).toBe(true);
+    });
+
+    it("posts nothing while the plugin's top-level code is still pending", async () => {
+        const guest = await startGuest("await new Promise(() => {});");
+        await flush();
+        expect(settledReports(guest.calls)).toEqual([]);
+    });
+
+    it("has the fallback script report a main script that never ran (a syntax error), and stay quiet otherwise", () => {
+        const { main, fallback } = guestScripts("this is not javascript");
+        expect(() => new Function("window", "document", main)).toThrow(SyntaxError);
+
+        const reports: HostMessage[] = [];
+        const parent = { postMessage: (message: HostMessage) => reports.push(message) };
+        new Function("window", fallback)({ parent });
+        expect(reports).toEqual([{ type: "SCRIPT_SETTLED" }]);
+
+        new Function("window", fallback)({ parent, __risuGuestStarted: true });
+        expect(reports).toHaveLength(1);
     });
 });
