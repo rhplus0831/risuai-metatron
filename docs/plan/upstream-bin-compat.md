@@ -2,9 +2,9 @@
 
 Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat`: S1, S2 and S3
 (merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`), then S4 and S6 (merged as `767db8df3`,
-`ac5c6fd05`; `pnpm check`, `test:agent` and `pnpm build` pass on the merge). In progress: S6's
-four round trips through S4's importer (`it.todo` until now) and one asset walker for both
-(S6 _Landed_). Next: S5. Each landed slice's section ends with a _Landed_ note on where it
+`ac5c6fd05`), then S6's four round trips through S4's importer and one asset walker for both
+(`d9532709e`, merged as `0e6317f92`; `pnpm check`, `test:agent` and `pnpm build` pass on the
+merge). Next: S5. Each landed slice's section ends with a _Landed_ note on where it
 departed from this plan; S4–S7 open with what the earlier slices handed over. `heap-memory-reduction` merged
 into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
 waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
@@ -888,13 +888,20 @@ _Landed_ (`adc90f97d`, merged as `ac5c6fd05`):
   `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`).
   `loadJobScope` calls them with unchanged behavior.
 - **Checks**: 27 tests in `upstreamExport.test.ts`. The four character, chat, module and
-  plugin round trips through S4's importer were left as `it.todo` until S4 merged; they are
-  being enabled now. A throwaway check (not committed) decoded a synthetic export with
-  upstream's own decoder (msgpackr 1.10.1 `index-no-eval` and fflate), and the result
-  matched exactly.
-- **Asset walker**: it has its own `collectUpstreamAssetReferences(db)` over the upstream
-  `Database`, beside S4's `collectAssetReferences(records)`. Merging the two (or pinning
-  identical coverage) is being done with the round trips.
+  plugin round trips through S4's importer were left as `it.todo` until S4 merged, then
+  enabled in `d9532709e`: each writes the converted result into a fresh staged store in S5's
+  write order. A throwaway check (not committed) decoded a synthetic export with upstream's
+  own decoder (msgpackr 1.10.1 `index-no-eval` and fflate), and the result matched exactly.
+- **Follow-up `d9532709e`**:
+  - The round trips found one exporter mismatch: a character or group without chats was
+    exported with `chats: []`, while upstream reads `chats[chatPage]` unguarded. It now gets
+    the empty first chat upstream's own creation makes (no id; upstream's boot assigns one).
+  - One asset walker: `collectUpstreamAssetReferences(db)` moved to `assetReferences.ts`
+    and walks an upstream `Database`. The importer's `collectAssetReferences(records)`
+    places the stored records where upstream keeps them and calls it. One role type,
+    `UpstreamAssetRole` in `shared/upstreamBackup.ts`. The merge fixed S4's missing
+    GPT-SoVITS reference audio and S6's throw on a `null` entry. A round-trip assertion pins
+    that import and export report the same keys, owners and roles.
 - **Departures from this plan** (each checked against upstream `669b12ce`):
   - `lastDate`: upstream's cold storage runs only when `coldstorage` is on, which
     `setDatabase` sets by default when there are no plugins. A chat goes cold when the
