@@ -31,6 +31,12 @@ Tooling:
   with runes; preserve established store boundaries.
 - T4. Format changed files with `pnpm exec prettier --write <files>` and honor
   `.prettierignore`; `pnpm format:check` is the repository formatting check.
+- T5. Code comments, test titles, identifiers, and file names describe current
+  behavior, not the work item that added it: no plan, phase, slice, stop, or audit
+  labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or `docs/plan/<plan>.md S2`.
+  Plans move to the archive when done, so these labels go stale. State the reason
+  itself ("since chats became their own records", not "since slice 9"); history
+  belongs in commits and [the archive](docs/archived-plan/README.md).
 
 Verification:
 
