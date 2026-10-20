@@ -55,8 +55,9 @@ export type UpstreamDatabase = { characters: unknown[]; [key: string]: unknown }
 // encoder writes an integer past 32 bits as a float64, so only a BigInt in the database (none in
 // upstream's `Database`) decodes differently, rounded to a number. `copyBuffers` keeps a binary
 // value from holding the whole inflated database in memory; the decoded values are the same. The
-// byte cap does not bound the decode's allocations (a 5-byte array header preallocates 16 Mi slots),
-// so a caller decoding untrusted data runs it under a heap limit (D1's worker `resourceLimits`).
+// byte cap alone does not bound the decode's allocations: msgpackr 2 refuses an array or map header
+// longer than the bytes left, but nested headers each preallocate up to that, so a caller decoding
+// untrusted data runs it under a heap limit (D1's worker `resourceLimits`).
 const packr = new Packr({ useRecords: false });
 const unpackr = new Unpackr({ useRecords: false, int64AsType: "number", copyBuffers: true });
 
@@ -177,7 +178,9 @@ export function decodeUpstreamDatabase(bytes: Uint8Array, options: { maxDecodedB
 }
 
 /**
- * Encodes a flat upstream `Database` as upstream's `encodeRisuSaveLegacy(db, "compression")` does:
+ * Encodes a flat upstream `Database` as upstream's `encodeRisuSaveLegacy(db, "compression")` does
+ * (upstream locks msgpackr 1.10.1, whose Node encoder throws on Node 23 and later for a string of 64
+ * characters or more; msgpackr 2.0.6 here writes the same bytes for the values a `Database` holds):
  * MessagePack with `useRecords: false`, `fflate.compressSync` (gzip, default level, the current
  * time as the header's mtime), and the version 8 header.
  */

@@ -44,8 +44,11 @@ describe("encodeUpstreamDatabase and decodeUpstreamDatabase", () => {
             characters: [
                 {
                     name: "캐릭터 ✓ 🌸",
-                    // 64 characters and more take msgpackr's Node `utf8Write` path (the patched length).
+                    // 64 characters and more take msgpackr's Node `Buffer.utf8Write` path, which
+                    // msgpackr before 1.11.1 calls with a length Node 23 and later refuse.
                     desc: "설명".repeat(40),
+                    ascii: "x".repeat(64),
+                    asciiLong: "a".repeat(300),
                     long: `${"가".repeat(70_000)}end`,
                     image: undefined,
                     nested: { list: [1, -1, 0.5, null, undefined, [true, false]], empty: {} },

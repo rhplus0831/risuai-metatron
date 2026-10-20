@@ -22,7 +22,8 @@ wrote it, with upstream's locked library versions and upstream's msgpackr entry
 node server/src/tests/fixtures/upstream/make-database-v8.mjs <msgpackr@1.10.1 package dir> <fflate@0.8.2 package dir> server/src/tests/fixtures/upstream/database-v8.risudat
 ```
 
-The packages came from a local pnpm install of another checkout (unpatched msgpackr). The script fixes
+The packages came from a local pnpm install of another checkout. metatron itself runs msgpackr 2.0.6,
+so the fixture is also the check that its encoder still writes upstream's 1.10.1 bytes. The script fixes
 `Date.now` to 2026-10-20T00:00:00Z while encoding, so the gzip header's mtime, and so the file, is
 reproducible; the test sets the same time to compare `encodeUpstreamDatabase`'s output byte for byte.
 Captured 2026-10-20 (SHA-256 `3a2afdfdbaedda101e34ba025a32c2d63b55b1133c0f9ff521be23f562f26097`).

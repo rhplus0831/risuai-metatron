@@ -7,8 +7,6 @@ ENV PATH="$PNPM_HOME:$PATH"
 # Copy dependency-related file
 COPY package.json .
 COPY pnpm-lock.yaml .
-# pnpm applies these while installing (`pnpm.patchedDependencies` in package.json)
-COPY patches ./patches
 
 RUN corepack enable
 RUN corepack install --global pnpm@10.34.1
