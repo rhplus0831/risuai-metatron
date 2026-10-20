@@ -7,6 +7,7 @@
     import Button from "../UI/GUI/Button.svelte";
     import { language } from "src/lang";
     import { parseMultilangString } from "src/ts/util";
+    import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     interface Props {
@@ -15,9 +16,10 @@
 
     let { endGrid = () => {} }: Props = $props();
     let search = $state("");
+    const query = $derived(prepareQuery(search));
     let selected = $state(3);
 
-    function formatChars(search: string, trash = false) {
+    function formatChars(query: PreparedQuery | null, trash = false) {
         let charas: {
             image: string;
             index: number;
@@ -36,7 +38,7 @@
             if (!c.trashTime && trash) {
                 continue;
             }
-            if (c.name.replace(/ /g, "").toLocaleLowerCase().includes(search.toLocaleLowerCase().replace(/ /g, ""))) {
+            if (!query || matchesAny([c.name], query)) {
                 charas.push({
                     image: c.image,
                     index: i,
@@ -105,7 +107,7 @@
                 </Button>
                 <div class="grow"></div>
                 <span class="text-textcolor2 text-sm">
-                    {formatChars(search).length}
+                    {formatChars(query).length}
                     {language.character}
                 </span>
             </div>
@@ -113,7 +115,7 @@
         {#if selected === 0}
             <div class="w-full flex justify-center">
                 <div class="flex flex-wrap gap-2 w-full justify-center">
-                    {#each formatChars(search) as char}
+                    {#each formatChars(query) as char}
                         <div class="flex items-center text-textcolor">
                             {#if char.image}
                                 <LazyCharImage path={char.image} type="css">
@@ -147,7 +149,7 @@
                 </div>
             </div>
         {:else if selected === 1}
-            {#each formatChars(search) as char}
+            {#each formatChars(query) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <LazyCharImage path={char.image} type="css" class="shrink-0">
                         {#snippet children(image)}
@@ -189,7 +191,7 @@
             {/each}
         {:else if selected === 2}
             <span class="text-textcolor2 text-sm mb-2">{language.trashDesc}</span>
-            {#each formatChars(search, true) as char}
+            {#each formatChars(query, true) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <LazyCharImage path={char.image} type="css" class="shrink-0">
                         {#snippet children(image)}
