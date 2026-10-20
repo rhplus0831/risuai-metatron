@@ -122,6 +122,9 @@
   "pnpm": {
     "neverBuiltDependencies": [
       "sharp"
-    ]
+    ],
+    "patchedDependencies": {
+      "msgpackr@1.10.1": "patches/msgpackr@1.10.1.patch"
+    }
   }
 }

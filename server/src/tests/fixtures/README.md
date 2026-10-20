@@ -1,7 +1,8 @@
 # Server test fixtures
 
 Each fixture here is either a hand-maintained record or a frozen capture. The subfolder READMEs
-(`baseline/`, `tokens/`, `memory/`) state which, and how a deliberate behavior change is reflected.
+(`baseline/`, `tokens/`, `memory/`, `upstream/`) state which, and how a deliberate behavior change
+is reflected.
 
 ## `cbs-parity.json`
 
