@@ -11,12 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ alertError: vi.fn() }));
 
-vi.mock("src/ts/alert", () => ({
-    alertError: mocks.alertError,
-    alertNormal: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertToast: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: mocks.alertError,
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

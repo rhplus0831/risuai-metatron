@@ -36,11 +36,7 @@ vi.mock("../../globalApi.svelte", () => ({
     saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
     AppendableBuffer: class {},
 }));
-vi.mock("../../alert", () => ({
-    alertNormal: vi.fn(),
-    alertError: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

@@ -196,8 +196,8 @@ dialog's answer, empty stores), and its defaults `satisfies typeof import("src/t
 so a new or reshaped export fails `pnpm check`. Load it inside the hoisted factory and pass
 the file's own handles: `vi.mock("src/ts/alert", async () => (await
 import("src/ts/tests/alertMock")).createAlertMock({ alertError: mocks.alertError }))`. A
-partial mock over `importOriginal` needs no factory. The client tests outside
-`src/ts/storage/` and `src/ts/plugins/` use it; the rest still list their helpers.
+partial mock over `importOriginal` needs no factory. Every other client test that mocks
+`alert` uses it.
 
 `pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate) reads
 `vitest.config.ts` and `playwright.config.ts` as source and applies their patterns with each

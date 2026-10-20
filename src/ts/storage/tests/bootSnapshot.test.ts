@@ -52,11 +52,7 @@ const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
-vi.mock("../../alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-}));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 // `installBootRecords` applies the stored language; the locale tables are not under test.
 vi.mock("src/lang", () => ({ language: {}, changeLanguage: vi.fn() }));
 vi.mock("../../process/modules", () => ({

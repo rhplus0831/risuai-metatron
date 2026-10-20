@@ -14,14 +14,16 @@ const { prompts, alerts, keypairs } = vi.hoisted(() => ({
     keypairs: new Map<string, CryptoKeyPair>(),
 }));
 
-vi.mock("../../alert", () => ({
-    alertInput: vi.fn(async (message: string) => {
-        prompts.asked.push(message);
-        return prompts.answers.shift() ?? "";
+vi.mock("../../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertInput: vi.fn(async (message: string) => {
+            prompts.asked.push(message);
+            return prompts.answers.shift() ?? "";
+        }),
+        alertError: alerts.alertError,
+        waitAlert: alerts.waitAlert,
     }),
-    alertError: alerts.alertError,
-    waitAlert: alerts.waitAlert,
-}));
+);
 vi.mock("src/lang", () => ({ language: { setNodePassword: "set password", inputNodePassword: "input password" } }));
 vi.mock("../../util", () => ({
     base64url: (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url"),

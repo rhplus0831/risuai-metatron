@@ -17,10 +17,12 @@ const mocks = vi.hoisted(() => ({
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: mocks.alertConfirm,
-    alertError: mocks.alertError,
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: mocks.alertConfirm,
+        alertError: mocks.alertError,
+    }),
+);
 
 vi.mock("src/ts/util", () => ({
     selectSingleFile: vi.fn(),

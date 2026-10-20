@@ -53,11 +53,7 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../../plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
 vi.mock("../../characterCards", () => ({ characterURLImport: vi.fn() }));
-vi.mock("../../alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-}));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 type ChatModule = typeof import("../chatStore.svelte");
 

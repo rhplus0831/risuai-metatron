@@ -16,10 +16,12 @@ const mocks = vi.hoisted(() => ({
     remoteListeners: new Set<(kind: string, id: string) => void>(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(async () => true),
-    alertError: mocks.alertError,
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: vi.fn(async () => true),
+        alertError: mocks.alertError,
+    }),
+);
 vi.mock("src/ts/util", () => ({ selectSingleFile: vi.fn() }));
 vi.mock("src/ts/stores.svelte", () => ({ hotReloading: [] as string[] }));
 vi.mock("./apiV3/transpiler", () => ({ pluginCodeTranspiler: vi.fn(async (code: string) => code) }));

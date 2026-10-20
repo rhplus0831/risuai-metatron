@@ -42,12 +42,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     AppendableBuffer: class {},
 }));
-vi.mock("src/ts/alert", () => ({
-    alertNormal: vi.fn(),
-    alertError: vi.fn(),
-    alertConfirm: vi.fn(async () => true),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: vi.fn(async () => true),
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

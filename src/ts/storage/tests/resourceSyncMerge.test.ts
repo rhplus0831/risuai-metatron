@@ -22,12 +22,14 @@ const { server, alerts } = vi.hoisted(() => ({
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
-vi.mock("../../alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertReloadNotice: alerts.normal,
-    alertNormalWait: alerts.normalWait,
-}));
+vi.mock("../../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertReloadNotice: alerts.normal,
+        alertNormalWait: alerts.normalWait,
+    }),
+);
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
     changeLanguage: vi.fn(),

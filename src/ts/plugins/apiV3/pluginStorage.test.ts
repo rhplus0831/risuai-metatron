@@ -43,13 +43,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(async () => true),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: vi.fn(async () => true),
+    }),
+);
 
 // The real parser module installs a module-level `$effect.root` over the selection, which is
 // still uninitialized here because the modules import each other. Nothing under test parses CBS.
