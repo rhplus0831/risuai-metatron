@@ -1739,7 +1739,8 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 /**
  * Opens the connection settings and creates the schema and epoch on first use. Returns the epoch. A
  * version-1 database (Phase 1, characters with embedded chats) and a version-2 one (settings in a
- * `root` record, before Phase 3) are refused: no migration is owed.
+ * `root` record, before Phase 3) are refused: no migration is owed (formats of the implementation phases, the
+ * compatibility rule in `docs/structure/persistence.md`).
  */
 function initialize(db: DatabaseSync, file: string): string {
     db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
