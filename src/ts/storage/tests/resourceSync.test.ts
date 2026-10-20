@@ -597,6 +597,42 @@ describe("a generating character (the generation deferral is gone)", () => {
 });
 
 describe("restore (412) and errors", () => {
+    it("runs the `beforeRestoreReload` hook synchronously once saving halted, before the notice, once", async () => {
+        const { fake, sync, client } = await boot();
+        const order: string[] = [];
+        alerts.terminal.mockImplementationOnce(async () => {
+            order.push("notice");
+        });
+        const unregister = sync.beforeRestoreReload(() => order.push("hook"));
+        fake.restore("epoch-2");
+        client.epochMismatch("epoch-2");
+        // No await in between: the hook and the notice both ran inside the listener call.
+        expect(order).toEqual(["hook", "notice"]);
+        client.epochMismatch("epoch-2");
+        unregister();
+        expect(order).toEqual(["hook", "notice"]);
+        expect(alerts.terminal).toHaveBeenCalledTimes(1);
+    });
+
+    it("replaces an earlier hook, forgets an unregistered one, and shows the notice when the hook throws", async () => {
+        const { fake, sync, client } = await boot();
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const first = vi.fn();
+        const unregisterFirst = sync.beforeRestoreReload(first);
+        const second = vi.fn(() => {
+            throw new Error("storage unavailable");
+        });
+        sync.beforeRestoreReload(second);
+        // Unregistering the replaced hook does not drop the current one.
+        unregisterFirst();
+        fake.restore("epoch-2");
+        client.epochMismatch("epoch-2");
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledTimes(1);
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
+        expect(errors).toHaveBeenCalledWith("[Save] Before restore reload:", expect.any(Error));
+    });
+
     it("halts, alerts, and reloads on a 412 from a batch", async () => {
         const { fake, sync, settings } = await boot();
         const themeBefore = fake.data("ui", "main").theme;

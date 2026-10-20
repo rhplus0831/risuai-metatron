@@ -15,7 +15,8 @@ import { makeStaging, spool } from "./spool.ts";
  *
  * 1. Refused before the body is read: authentication, a declared length over `maxImportBytes` (413
  *    `File too large`), another import holding the shared slot (409 `Another import is running`),
- *    maintenance (503 with `Retry-After: 5`), no body (400 with the route's text).
+ *    maintenance (503 with `Retry-After: 5`), the route's own `preflight` refusal, no body (400 with
+ *    the route's text).
  * 2. The lifetime is tracked (`snapshots.track`; 503 once shutdown stopped admissions), the slot
  *    taken, and the body spooled to `save/.tmp/<prefix>-<uuid>/<fileName>` under `maxImportBytes`
  *    (413 past it), then opened (`fs.open`, read-only) and validated by the route (`prepare`) before
@@ -34,7 +35,7 @@ import { makeStaging, spool } from "./spool.ts";
  * One memoized finalizer (the file closed, the staging folder removed, the slot released, the
  * lifetime released) runs when a step before the stream fails, before the last line (the generator
  * awaits it, so an import the client starts on reading that line is admitted), when the stream is
- * cancelled, or when the request signal aborts: the adapter attaches its own close listeners only
+ * cancelled, or when the request signal (or the route's `abort`) aborts: the adapter attaches its own close listeners only
  * once it writes the headers, so a request-signal listener returns the generator, whether it never
  * started, waits at a `yield`, or is inside a step (the step ends first; the route's per-step check of
  * the signal stops it).
@@ -109,6 +110,14 @@ export type FileImportRoute<Plan, Meta = undefined> = {
     /** The 400 `error` text for a request without a body (a route with a `source` never sends it). */
     missingBody: string;
     /**
+     * A last refusal before admission, after authentication and the slot and maintenance checks:
+     * synchronous, so nothing runs between it and the slot being taken. A `Response` refuses the
+     * request (the body unread); null admits it.
+     */
+    preflight?(c: Context<AppEnv>): Response | null;
+    /** Aborts the admitted import as the request's own abort does (the upstream import's shutdown). */
+    abort?: AbortSignal;
+    /**
      * The file's source when it is not the request body: called once the import holds the slot and
      * its lifetime is tracked, before anything is spooled. A `Response` is the answer (a refusal); a
      * throw goes to `refusal`. Without it the request body is the file, under `maxImportBytes` and
@@ -149,12 +158,16 @@ export async function serveFileImport<Plan, Meta = undefined>(
     if (snapshots.gate.active) {
         return refuse(c, new MaintenanceError(), route.refusal);
     }
+    const refused = route.preflight?.(c);
+    if (refused) {
+        return refused;
+    }
     const requestBody = c.req.raw.body;
     if (!route.source && !requestBody) {
         return c.json({ error: route.missingBody }, 400);
     }
 
-    const admitted = admit(c, deps, route.refusal);
+    const admitted = admit(c, deps, route.refusal, route.abort);
     if (admitted instanceof Response) {
         return admitted;
     }
@@ -181,7 +194,8 @@ export async function serveFileImport<Plan, Meta = undefined>(
             body = requestBody!;
         }
         const spooled = path.join(stagingFolder, route.fileName);
-        if (!(await spool(body, spooled, limit))) {
+        // The route's own `abort` (shutdown) also stops the upload; without one, the spool ends as the body does.
+        if (!(await spool(body, spooled, limit, route.abort ? signal : undefined))) {
             await lifetime.finalize();
             return c.json({ error: "File too large" }, 413);
         }
@@ -252,17 +266,18 @@ type Admitted = { signal: AbortSignal; cancelled: AbortController; lifetime: Imp
 /**
  * Admits an import whose refusals before admission were answered: its lifetime tracked (shutdown
  * waits for it; a `Response` once shutdown stopped admissions) and the slot taken. Its signal aborts
- * when the request does or when the answer is cancelled (before the generator is returned, so a step
- * in progress stops at its next check). Synchronous, so nothing runs between the caller's slot check
- * and the slot being taken.
+ * when the request does, when the answer is cancelled (before the generator is returned, so a step
+ * in progress stops at its next check), or when the route's `abort` does. Synchronous, so nothing runs
+ * between the caller's slot check and the slot being taken.
  */
 function admit(
     c: Context<AppEnv>,
     { snapshots, slot }: Pick<FileImportDeps, "snapshots" | "slot">,
     refusal: (c: Context<AppEnv>, error: unknown) => Response | null,
+    abort?: AbortSignal,
 ): Admitted | Response {
     const cancelled = new AbortController();
-    const signal = AbortSignal.any([c.req.raw.signal, cancelled.signal]);
+    const signal = AbortSignal.any([c.req.raw.signal, cancelled.signal, ...(abort ? [abort] : [])]);
     let release!: () => void;
     const tracked = new Promise<void>((resolve) => (release = resolve));
     try {

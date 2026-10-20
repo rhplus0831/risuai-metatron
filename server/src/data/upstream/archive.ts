@@ -50,10 +50,14 @@ export type UpstreamArchivePlan = {
  * `ArchiveRejectedError`: a malformed container, a Risu Account backup, a version-2 archive, a
  * duplicate name, a name with `/` or `\`, and no `database.risudat`.
  */
-export async function planUpstreamArchive(handle: FileHandle, savePath: string): Promise<UpstreamArchivePlan> {
+export async function planUpstreamArchive(
+    handle: FileHandle,
+    savePath: string,
+    signal?: AbortSignal,
+): Promise<UpstreamArchivePlan> {
     let records: ArchiveRecord[];
     try {
-        records = await indexArchive(handle);
+        records = await indexArchive(handle, signal);
     } catch (error) {
         if (error instanceof ArchiveFormatError) {
             throw new ArchiveRejectedError(error.message);

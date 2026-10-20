@@ -15,10 +15,16 @@ import {
     MAX_ARCHIVE_RECORDS,
     readRecord,
 } from "../data/archive.ts";
-import { ResourceEpochError, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
+import {
+    ResourceEpochError,
+    type ResourceStore,
+    ResourceValidationError,
+    type ValidatedSnapshot,
+} from "../data/resourceStore.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { readJsonBody } from "../http/body.ts";
+import { createImportSlot, type ImportSlot } from "../http/fileImport.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
 import { makeStaging, spool } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
@@ -42,7 +48,9 @@ const ASSET_PREFIX = "assets/";
  * - `POST /api/backups/import`: an archive as the raw body, spooled to disk (exempt from the global
  *   body limit, capped by `maxImportBytes`), validated completely, then its missing assets are added
  *   (existing files are never overwritten) and the resources restored like a snapshot.
- * Restore and import are mutations: they need the current epoch in `x-resource-epoch`.
+ * Restore and import are mutations: they need the current epoch in `x-resource-epoch`. The upstream
+ * RisuAI import (`routes/backupsUpstream.ts`) shares the import's slot and its restore steps
+ * (`restoreValidated`).
  */
 export function registerBackupRoutes(
     app: Hono<AppEnv>,
@@ -55,12 +63,14 @@ export function registerBackupRoutes(
         maxImportBytes: number;
         /** The diagnostics journal: a `lifecycle` event after a restore or an import replaced the data. */
         diagnostics?: DiagnosticsRecorder;
+        /** The backup import's slot, shared with the upstream import; a slot of its own without one. */
+        slot?: ImportSlot;
     },
 ) {
     const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics } = arg;
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
-    let importing = false;
+    const slot = arg.slot ?? createImportSlot();
 
     app.get("/api/backups", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -302,20 +312,20 @@ export function registerBackupRoutes(
         if (declared > maxImportBytes) {
             return c.json({ error: "Archive too large" }, 413);
         }
-        if (importing) {
+        if (slot.busy) {
             return c.json({ error: "Another import is running" }, 409);
         }
         const body = c.req.raw.body;
         if (!body) {
             return c.json({ error: "Archive body required" }, 400);
         }
-        importing = true;
+        slot.busy = true;
         try {
             return await snapshots.track(() => runImport(c, body, expectedEpoch));
         } catch (error) {
             return backupErrorResponse(c, error);
         } finally {
-            importing = false;
+            slot.busy = false;
         }
     });
 
@@ -345,33 +355,21 @@ export function registerBackupRoutes(
                 // an import queued behind a restore is stale (the final check beside `replaceAll`
                 // is the guarantee; this one avoids the side effects).
                 store.assertEpoch(expectedEpoch);
-                await snapshot();
-                await fs.mkdir(assetsPath, { recursive: true });
-                let written = 0;
-                let skipped = 0;
-                for (const [index, asset] of plan.assets.entries()) {
-                    const staged = path.join(importStaging, `asset-${index}`);
-                    if (await fs.lstat(asset.target).catch(() => null)) {
-                        skipped += 1;
-                        continue;
-                    }
-                    await copyRecordToFile(importHandle, asset.record, staged);
-                    try {
-                        // A hard link never replaces an existing file, unlike a rename.
-                        await fs.link(staged, asset.target);
-                        written += 1;
-                    } catch (error) {
-                        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-                            throw error;
-                        }
-                        skipped += 1;
-                    } finally {
-                        await fs.rm(staged, { force: true });
-                    }
-                }
-                store.assertEpoch(expectedEpoch);
-                const epoch = store.replaceAll(validated);
-                return { epoch, assetsWritten: written, assetsSkipped: skipped };
+                return restoreValidated({
+                    store,
+                    assetsPath,
+                    expectedEpoch,
+                    snapshot,
+                    validated,
+                    assets: plan.assets.map((asset, index) => ({
+                        target: asset.target,
+                        stage: async () => {
+                            const staged = path.join(importStaging, `asset-${index}`);
+                            await copyRecordToFile(importHandle, asset.record, staged);
+                            return staged;
+                        },
+                    })),
+                });
             });
             recordSafely(diagnostics, { kind: "lifecycle", phase: "import" });
             return c.json(result);
@@ -382,6 +380,52 @@ export function registerBackupRoutes(
             }
         }
     }
+}
+
+/** One asset of an import: its file under `save/assets`, and how to get its staged copy (removed after linking). */
+export type RestoreAsset = { target: string; stage(): Promise<string> };
+
+/**
+ * The steps every archive import runs inside `withMaintenance` once its snapshot is validated and
+ * the epoch checked under the lock: the safety snapshot, each asset whose file does not exist yet
+ * added by hard link (an existing file is never overwritten: a link fails instead of replacing), the
+ * epoch checked again, then `replaceAll`. Shared by the version-2 import and the upstream commit.
+ */
+export async function restoreValidated(arg: {
+    store: ResourceStore;
+    assetsPath: string;
+    expectedEpoch: string | undefined;
+    snapshot: () => Promise<unknown>;
+    validated: ValidatedSnapshot;
+    assets: readonly RestoreAsset[];
+}): Promise<{ epoch: string; assetsWritten: number; assetsSkipped: number }> {
+    const { store, expectedEpoch } = arg;
+    await arg.snapshot();
+    await fs.mkdir(arg.assetsPath, { recursive: true });
+    let written = 0;
+    let skipped = 0;
+    for (const asset of arg.assets) {
+        if (await fs.lstat(asset.target).catch(() => null)) {
+            skipped += 1;
+            continue;
+        }
+        const staged = await asset.stage();
+        try {
+            // A hard link never replaces an existing file, unlike a rename.
+            await fs.link(staged, asset.target);
+            written += 1;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+                throw error;
+            }
+            skipped += 1;
+        } finally {
+            await fs.rm(staged, { force: true });
+        }
+    }
+    store.assertEpoch(expectedEpoch);
+    const epoch = store.replaceAll(arg.validated);
+    return { epoch, assetsWritten: written, assetsSkipped: skipped };
 }
 
 /** Every logical key of the `assets` namespace, sorted. */
@@ -484,7 +528,8 @@ async function planImport(handle: FileHandle, savePath: string) {
     return { database, assets };
 }
 
-function backupErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+/** The answer to a backup route's error: maintenance 503, epoch 412, a refused archive or snapshot 400; anything else is thrown. */
+export function backupErrorResponse(c: Context<AppEnv>, error: unknown): Response {
     if (error instanceof MaintenanceError) {
         c.header("Retry-After", "5");
         return c.json({ error: error.message }, 503);

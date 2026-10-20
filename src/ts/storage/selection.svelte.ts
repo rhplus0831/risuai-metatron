@@ -50,12 +50,25 @@ export const selection: Selection = $state({
 export const PlaygroundStore = writable(0);
 
 function save() {
-    const text = JSON.stringify({
+    write({
         presetId: selection.presetId,
         modelPresetId: selection.modelPresetId,
         personaId: selection.personaId,
         loreBookPage: selection.loreBookPage,
     });
+}
+
+/**
+ * Stores a selection for this tab's next load (and a new tab's) without applying it here: the upstream
+ * RisuAI import's selection (D4 of `docs/plan/upstream-bin-compat.md`), written right before the reload
+ * that loads the imported data. The lorebook page starts at the first.
+ */
+export function persistSelection(next: { presetId: string; modelPresetId: string; personaId: string }) {
+    write({ ...next, loreBookPage: 0 });
+}
+
+function write(stored: Pick<Selection, "presetId" | "modelPresetId" | "personaId" | "loreBookPage">) {
+    const text = JSON.stringify(stored);
     for (const storage of [() => sessionStorage, () => localStorage]) {
         try {
             storage().setItem(STORAGE_KEY, text);

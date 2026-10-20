@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
     loadSelection,
+    persistSelection,
     selection,
     selectLoreBookPage,
     selectModelPreset,
@@ -236,5 +237,33 @@ describe("selectPreset, selectModelPreset, selectPersona, and selectLoreBookPage
                 Object.defineProperty(window, "sessionStorage", descriptor);
             }
         }
+    });
+});
+
+describe("persistSelection", () => {
+    it("stores a selection for the next load in both storages without applying it here", () => {
+        selectPreset("live");
+        selectPersona("live-p");
+        persistSelection({ presetId: "imported", modelPresetId: "imported-m", personaId: "imported-p" });
+        const expected = {
+            presetId: "imported",
+            modelPresetId: "imported-m",
+            personaId: "imported-p",
+            loreBookPage: 0,
+        };
+        expect(stored(sessionStorage)).toEqual(expected);
+        expect(stored(localStorage)).toEqual(expected);
+        // The live selection is untouched until the reload that follows reads the stored one.
+        expect(selection).toEqual({ ...empty, presetId: "live", personaId: "live-p" });
+        loadSelection();
+        expect(selection).toEqual({ ...empty, ...expected });
+    });
+
+    it("survives storages that throw", () => {
+        withThrowingStorages(() => {
+            expect(() =>
+                persistSelection({ presetId: "imported", modelPresetId: "imported-m", personaId: "imported-p" }),
+            ).not.toThrow();
+        });
     });
 });

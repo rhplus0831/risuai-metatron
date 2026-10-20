@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createServerContext } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
+import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
 
@@ -30,6 +31,8 @@ export type TestServerOptions = {
     rootDir?: string;
     /** The Realm download's origin, the `/hub-proxy` target (local upstreams in tests), and the staged import's expiry. */
     realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
+    /** The upstream RisuAI import's staged expiry and what runs a prepare (an in-process stage in tests). */
+    upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -54,6 +57,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         generationRandom: options.generationRandom,
         pushTransport: options.pushTransport,
         realm: options.realm,
+        upstreamImport: options.upstreamImport,
     });
     return {
         rootDir,

@@ -179,6 +179,50 @@ describe("planUpstreamArchive", () => {
             await handle.close();
         }
     });
+
+    it("stops the index at the next window read once its signal aborts, and never starts on an aborted one", async () => {
+        // Records over the index window, so every header costs a read of its own.
+        const big = new Uint8Array(70 * 1024);
+        const records: [string, Uint8Array | string][] = [
+            ["a.png", big],
+            ["b.png", big],
+            ["c.png", big],
+            ["database.risudat", "DB"],
+        ];
+        await withArchive(records, async (handle) => {
+            const controller = new AbortController();
+            let reads = 0;
+            const counting = {
+                stat: () => handle.stat(),
+                read: (...args: Parameters<fs.FileHandle["read"]>) => {
+                    reads++;
+                    if (reads === 2) {
+                        controller.abort(new Error("the import stopped"));
+                    }
+                    return handle.read(...args);
+                },
+            } as unknown as fs.FileHandle;
+            await expect(planUpstreamArchive(counting, savePath, controller.signal)).rejects.toThrow(
+                "the import stopped",
+            );
+            expect(reads).toBe(2);
+            // Without a signal the same archive is planned in full.
+            expect((await planUpstreamArchive(handle, savePath)).assets).toHaveLength(3);
+        });
+        await withArchive(records, async (handle) => {
+            let reads = 0;
+            const counting = {
+                stat: () => handle.stat(),
+                read: (...args: Parameters<fs.FileHandle["read"]>) => {
+                    reads++;
+                    return handle.read(...args);
+                },
+            } as unknown as fs.FileHandle;
+            const aborted = AbortSignal.abort(new Error("already gone"));
+            await expect(planUpstreamArchive(counting, savePath, aborted)).rejects.toThrow("already gone");
+            expect(reads).toBe(0);
+        });
+    });
 });
 
 describe("readColdRecord", () => {

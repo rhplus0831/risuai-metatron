@@ -4,7 +4,7 @@ Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat
 (merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`), then S4 and S6 (merged as `767db8df3`,
 `ac5c6fd05`), then S6's four round trips through S4's importer and one asset walker for both
 (`d9532709e`, merged as `0e6317f92`; `pnpm check`, `test:agent` and `pnpm build` pass on the
-merge). Next: S5. Each landed slice's section ends with a _Landed_ note on where it
+merge), then S5 (on its own branch, not yet merged into `upstream-bin-compat`). Next: S7 after S5's merge. Each landed slice's section ends with a _Landed_ note on where it
 departed from this plan; S4–S7 open with what the earlier slices handed over. `heap-memory-reduction` merged
 into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
 waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
@@ -793,6 +793,61 @@ changedSinceReview` with the count, and the store is unchanged and no job aborte
     versions are still refused.
   - `persistence.md` Invariants, compatibility rule: drop "not built yet" and the
     sentence that the server refuses `database.risudat` archives.
+
+_Landed_ (S5 branch, one commit; `opus-workflow`: Sol plan review and challenge, Fable review and tests, Astra fixes):
+
+- **Files**: `server/src/data/upstream/importStage.ts` (`stageUpstreamImport`, the worker's body without
+  worker APIs, so tests run it in process), `importWorker.ts` (entry; a `latch` test hook),
+  `importRunner.ts` (`runUpstreamImportWorker`, `UpstreamImportRunner`), `server/src/routes/backupsUpstream.ts`
+  (`createUpstreamImportStaging`, `registerUpstreamImportRoutes`), `src/ts/drive/upstreamBackupClient.ts`,
+  `src/lib/Setting/Pages/UpstreamImportReport.svelte`. Route paths, TTL, line and result types in
+  `shared/upstreamBackup.ts`.
+- **Departures from this plan**:
+  - Classification (`planUpstreamArchive`, now with an abort signal through `indexArchive`) runs on the
+    serving thread in `serveFileImport`'s `prepare`, so an archive refusal (U4 included) is a real 400
+    before anything streams. The worker does the decode, cold reads, conversion, staged store,
+    validation and asset extraction. The synchronous classification pass (at most 200,000 names) is a
+    Known Hazard in `self-host-server.md`.
+  - Worker failures (a damaged database, out of memory, any exit before a result) are the last NDJSON
+    line `{ error }` of a 200 answer, not a 400: the headers are sent once progress streams. The test
+    list's "400" for those cases reads as that line.
+  - The prepare's result line is `{ token, report, selection }`. The tab registers a synchronous
+    `beforeRestoreReload` hook (`resourceSync.svelte.ts`) before each commit, so when its own socket
+    reports the new epoch before the commit's answer, the selection is written before the restore
+    notice; the notice never waits on the network. The commit still answers `selection` (D4).
+  - The D13 re-ask is shown in the same report dialog (`changedWrites` notice), and only that dialog's
+    own Restore button authorizes a commit (`alertUpstreamImportReport` records its own answer; a plugin
+    dialog answered "yes" over it does not count).
+  - The version-2 import's `importing` flag became an `ImportSlot` that the upstream prepare and commit
+    share (the commit holds it). `serveFileImport` gained an optional `preflight(c)` (the prepare's epoch
+    and waiting-import checks, synchronous before admission) and `abort` signal (shutdown); `spool` takes
+    that signal only for a route that sets `abort` (passing it always changed the Realm route's 502 to a
+    500). `serverImportClient.importOverServer` gained optional `headers` (the prepare's epoch).
+  - Shutdown: `beginShutdown` calls `upstreamStaging.close()`, which aborts a running prepare at once
+    (worker terminated, folder removed after it ended), so `snapshots.stop()` does not wait out the 8 s
+    HTTP drain for a conversion; `dispose` awaits it.
+  - Every archive asset is extracted during prepare (two copies on disk until commit, cancel or expiry),
+    so the commit only links.
+  - Caps: decoded database `RISU_MAX_UPSTREAM_DB_BYTES` (1 GiB); a `database.risudat` record over
+    `maxEncodedDatabaseBytes(cap)` is refused before it is read; worker heap `RISU_UPSTREAM_IMPORT_HEAP_MB`,
+    default twice the cap in MiB within 256..4096 (2048). The heap limit covers the JavaScript heap only.
+  - New excluded code `asset-name-invalid` (S2's ignored records). The commit's diagnostics event reuses
+    lifecycle phase `import`. A lost commit answer says the restore may have happened (`commitInterrupted`).
+- **Real backup** (`save/Binary.bin` read in place, disposable save dir, counts only): prepare answered
+  3,409 NDJSON lines; report 6 characters (5 restored from cold storage), 8 chats, 2 messages, 4 prompt
+  presets, 4 model presets, 6 profiles, 1 persona, 2 modules, 0 missing assets; commit linked 3,393
+  assets, gave a new epoch and one safety snapshot, and left `save/.tmp` empty. A 10 ms interval kept
+  ticking during the prepare.
+- **For S7**: register the export routes in `shared/diagnostics.ts` `ROUTE_TEMPLATES` (a test checks every
+  registered route) and in `app.ts`'s body-limit list if the export body needs it; `createUpstreamImportStaging`
+  is the pattern to copy for the export's token; `backupErrorResponse` is exported from `backups.ts`.
+- **Tests**: `upstreamImportRoute.test.ts` (default suite, in-process runner), `upstreamImportWorker.test.ts`
+  (`slow`: the real worker, out of memory, the latch, shutdown), plus `upstreamArchive`, `backuplocal`,
+  `alertUpstreamImportReport`, `selection` and `resourceSync` cases. Not tested: a worker that exits
+  cleanly without a result (no seam to make one; the out-of-memory case covers the same path), and a
+  generation job ended by the commit's maintenance (unchanged `withMaintenance`, covered elsewhere).
+- **Not verified**: no browser check of the dialog, the reload, or other tabs (S8's manual checks);
+  Docker image not rebuilt.
 
 ## S6. Exporter: store copy → upstream `Database` (_hard_, `persistence.md`)
 

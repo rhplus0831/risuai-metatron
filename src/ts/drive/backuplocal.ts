@@ -10,8 +10,9 @@ import { flushResources } from "../storage/resourceSync.svelte";
 /**
  * Local backup archives, built and restored by the server (`/api/backups/export` and `/import`):
  * a `manifest.json` record, the resource database snapshot (`resources.sqlite`), and the assets under
- * their logical keys. Archives from before this format (holding `database.risudat`) are refused by
- * the server.
+ * their logical keys. Any other archive (an upstream RisuAI backup holding `database.risudat`, or one
+ * of this app's from before this format) is restored through the upstream import
+ * (`upstreamBackupClient.ts`).
  */
 
 type AssetInfo = { charName: string; assetName: string };
@@ -179,6 +180,34 @@ function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intr
     alertMd(message);
 }
 
+/** The longest record name an archive holds (`server/src/data/archive.ts`). */
+const MAX_RECORD_NAME_BYTES = 4096;
+
+/**
+ * The name of an archive's first record, or null when the file does not start with a readable record
+ * header (or cannot be read): `manifest.json` for this app's version-2 archives.
+ */
+export async function readFirstRecordName(file: Blob): Promise<string | null> {
+    let head: Uint8Array;
+    try {
+        head = new Uint8Array(await file.slice(0, 4 + MAX_RECORD_NAME_BYTES).arrayBuffer());
+    } catch {
+        return null;
+    }
+    if (head.length < 4) {
+        return null;
+    }
+    const length = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(0, true);
+    if (length === 0 || 4 + length > head.length) {
+        return null;
+    }
+    try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(head.subarray(4, 4 + length));
+    } catch {
+        return null;
+    }
+}
+
 /** A full backup: the resource database and every asset on the server. */
 export async function SaveLocalBackup() {
     try {
@@ -245,7 +274,8 @@ export async function SavePartialLocalBackup() {
 
 /**
  * Restores a local backup archive through the server: it replaces every resource, adds the archive's
- * assets that are missing (existing files are kept), then the app reloads.
+ * assets that are missing (existing files are kept), then the app reloads. An archive whose first
+ * record is not `manifest.json` goes to the upstream RisuAI import, which shows its report first.
  */
 export function LoadLocalBackup() {
     try {
@@ -260,6 +290,12 @@ export function LoadLocalBackup() {
             const file = input.files[0];
             input.remove();
 
+            if ((await readFirstRecordName(file)) !== "manifest.json") {
+                // Loaded only for this path (it brings the selection and report modules).
+                const { restoreUpstreamBackup } = await import("./upstreamBackupClient");
+                await restoreUpstreamBackup(file);
+                return;
+            }
             alertWait("Restoring local Backup...");
             try {
                 await importBackup(file);
