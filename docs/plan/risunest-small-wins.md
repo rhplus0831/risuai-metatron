@@ -2,7 +2,7 @@
 
 Status: planned 2026-10-20 at `c7628a0bb`; landed T1 (`86411442f`), P1 (`a293fc574`), K1
 (`90882b0cd`), E1 (`9e72646ac`), P2 (`ed9d207c5`), K2 (`f6ac36f7a`), A1 (`96a296e34`), E2
-(`58ebd1452`). Source: the RisuNest survey
+(`58ebd1452`), S1 (`dd9b50ce5`); every slice landed. Source: the RisuNest survey
 [docs/research/risunest-ideas.md](../research/risunest-ideas.md) §1 items 1 (alert queue),
 2 (safe boot), 3 (plugin quick wins), 4 (unit-test network guard), 5 (CI and image
 hygiene) and 17 (engineering rules). RisuNest is read at `/home/codex/RisuNest` (HEAD
@@ -575,4 +575,32 @@ Known before any slice runs:
 - T1 does not guard raw Node sockets.
 - `util/playwright/*.mjs` stays outside type checking (survey item 17).
 
-Each slice appends what it left here.
+Left by the slices (2026-10-20):
+
+- T1: an iframe's `contentWindow.parent.WebSocket` (the backing window) stays unguarded
+  (`populateGlobal` keeps the guard in an override map); `build-test-platforms.md` `Files`
+  does not list the three new root `vitest.testNetwork*` files; `chatMetadataCoalescingEvents.test.ts:450`
+  failed once under load (passes alone; in the project memory).
+- P1: no browser check of the badge or the real-iframe expiry; a `nativeFetch` without a
+  `signal` is not aborted by `terminate` (its late body is cancelled); a hash failure that
+  recovers reports the plugin once more.
+- E1: `util/` stays outside `pnpm check` (the inventory script and its test are not
+  type-checked).
+- P2: no browser check; the `onStart`-throw follow in `serverCommands.ts` is untested;
+  decision D4 means plugin work that never ends defers the reload until a local reload
+  (recorded as a `plugins-mcp.md` Known Hazard).
+- K2: not yet run on the real GitLab Runner; the Runner's Docker executor needs a tmpfs
+  `/tmp` (`server/src/tests/resourcePatchParts.test.ts` runs past 5 s on a disk-backed
+  `/tmp`) and must accept untagged jobs; "Auto-cancel redundant pipelines" must be on for
+  `interruptible`.
+- A1: `e2e/terminalNotice.spec.ts` not re-run (`test:e2e` is a human command); six
+  findings outside the slice in the project memory (stale status after a job ends, alert
+  keys with a focused text input, `alertClear` clearing another job's status, the
+  branches/HypaV2 dialogs' late selection read, a gated Escape still closing settings,
+  `makeGroupImage` leaving a wait).
+- S1: GUI HTML gating under `SafeModeStore` not checked in the browser or by a unit test;
+  `STRUCTURE.md` S1 and `ui-theming.md` still describe safe mode as custom CSS only;
+  `bootstrap.safeBoot.test.ts` duplicates the service-worker test's mock preamble; a plugin
+  whose script throws at start fails every boot it runs in (`app-shell.md` Known Hazard).
+- Known stale test: `server/src/tests/importPngCaps.test.ts` fails on a clean tree
+  (`--all` and the slow tier); not touched by this plan.
