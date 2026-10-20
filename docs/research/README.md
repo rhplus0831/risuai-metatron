@@ -22,13 +22,13 @@ from each survey are collected at the bottom.
 1. Branch model for persistent in-chat branches (A1): message tree inside one chat record, or linked chats with a parent pointer.
 2. Cross-device stop (A13): is dropping the `clientId` match safe for plugin-provider jobs, which stream through the owning tab.
 3. Server thumbnails (B1): native `sharp` in the Docker image (and Termux) or a WASM encoder; icon 128² and catalog 512×768 sizes.
-4. Upstream backup import (A14): how old an upstream backup must still be accepted.
+4. ~~Upstream backup import (A14): how old an upstream backup must still be accepted.~~ Planned 2026-10-20 in [docs/plan/upstream-bin-compat.md](../plan/upstream-bin-compat.md): every `\x07`/`\x08`/`\x09` `database.risudat` and both cold-storage record names (its D9).
 5. Product direction: chat tabs with split panes (A6) and BTW threads (A7) both need concurrent sends in one tab, against the current mid-send switch design.
 6. Whether to pursue Termux/Android hosting (E3), which hinges on `onnxruntime-node` running there.
 
 ### RisuNest ([§3](risunest-ideas.md#3-open-questions))
 
-1. Upstream `.bin` import/export (item 10): keep the "no migration owed" stance, or accept a one-way converter now that there are users.
+1. ~~Upstream `.bin` import/export (item 10): keep the "no migration owed" stance, or accept a one-way converter now that there are users.~~ Decided 2026-10-20: upstream formats get a migration path (the old stance applies only to formats made during implementation); import (full replace) and export; Risu Account backups refused with an error. Plan: [docs/plan/upstream-bin-compat.md](../plan/upstream-bin-compat.md).
 2. Reroll candidate shape (item 9): whether the persisted `responseVariants` field should match PocketRisu's for interchange.
 3. CI host: whether the self-hosted forge is Forgejo or Gitea with Actions runners, which decides whether item 5 is a workflow file or a server hook.
 4. Asset garbage collection (item 7): how far the mark phase must scan free text, plus grace period and pinned-snapshot semantics.

@@ -17,5 +17,9 @@ Active planning and implementation:
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
   planned, slice 6 waits for the `heap-memory-reduction` merge.
 
+- [Upstream `.bin` Compatibility](upstream-bin-compat.md): import an upstream RisuAI
+  `.bin` (staged, with a report, full replace) and export a `.bin` upstream restores;
+  planned, runs alongside `heap-memory-reduction` (no shared files).
+
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
