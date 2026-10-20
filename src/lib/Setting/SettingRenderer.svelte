@@ -31,10 +31,13 @@
 {#each items as item (item.id)}
     {#if checkCondition(item, ctx)}
         {@const Component = settingRegistry[item.type]}
-        {#if Component}
-            <Component {item} {ctx} />
-        {:else}
-            <div class="text-draculared text-xs mt-2">Unknown setting type: {item.type}</div>
-        {/if}
+        <!-- The search jump's anchor (`settingJump.svelte.ts`): no box of its own, so no layout change. -->
+        <div class="contents" data-setting-id={item.id}>
+            {#if Component}
+                <Component {item} {ctx} />
+            {:else}
+                <div class="text-draculared text-xs mt-2">Unknown setting type: {item.type}</div>
+            {/if}
+        </div>
     {/if}
 {/each}

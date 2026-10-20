@@ -6,6 +6,7 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import LazyCharImage from "src/lib/UI/GUI/LazyCharImage.svelte";
     import { alertConfirm, alertSelect } from "src/ts/alert";
     import { getCharImage } from "src/ts/characters";
@@ -44,10 +45,8 @@
         return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
     });
     const shownModules = $derived.by(() => {
-        const query = moduleSearch.trim().toLowerCase();
-        return query === ""
-            ? linkableModules
-            : linkableModules.filter((module) => module.name.toLowerCase().includes(query));
+        const query = prepareQuery(moduleSearch);
+        return query ? linkableModules.filter((module) => matchesAny([module.name], query)) : linkableModules;
     });
     const linkedModuleIds = $derived(new Set(normalizePersonaModules(currentPersonaRecord()?.modules)));
 

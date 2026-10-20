@@ -24,6 +24,7 @@ git show 46eeee597:docs/plan/settings-ui-reorg.md
 git show cfe072e4e:docs/plan/open-bug-fixes.md
 git show 723700902:docs/plan/boot-resource-cache.md
 git show 639ba5b2e:docs/plan/heap-memory.md
+git show d30735b05:docs/plan/search.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -49,6 +50,7 @@ it is not a current architecture guide.
 | Open Bug Fixes                      | `cfe072e4e`: `docs/plan/open-bug-fixes.md`                                | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [browser notifications](../structure/global-api.md), [media](../structure/media-aux.md) |
 | Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                   |
 | Heap Memory Reduction               | `639ba5b2e`: `docs/plan/heap-memory.md`                                   | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [CBS/rendering](../structure/cbs-rendering.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
+| Search                              | `d30735b05`: `docs/plan/search.md`                                        | [UI/theming](../structure/ui-theming.md), [characters/modules](../structure/characters-modules.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [matcher](../structure/global-api.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -94,6 +96,20 @@ in `639ba5b2e`). The driver's JS self size at boot went from 191.3 MB to 61.6 MB
 tuple proxies from 132,600 to 0; the archived file holds every slice's table. At the merge,
 B2's frozen-list `CharConfig` rows replaced open-bug-fixes slice C7's tuple-keyed rows (C7's
 regression tests kept and passing).
+Search (Haejeok survey items F1, F2, A3, A4 and the PocketRisu settings-search pick) landed all
+nine slices on 2026-10-20 through the plan runner from a worktree, one cherry-picked commit each,
+and `metatron` was fast-forwarded to `d30735b05`: `color-scheme` on the theme root (1
+`a6082b735`), the shared `es-hangul` matcher `src/ts/util/koreanSearch.ts` (2a `ceeb22d92`), the
+batched `LIKE` message search route `POST /api/chats/search` (4a `016028c47`), the catalog and
+sidebar chat list filters (2b `89bd9a57a`), the lorebook list filter (2c `fd2f81040`), the
+settings search index and locations (3a `faaeba64f`, which also fixed the matcher's throw on
+Latin queries `es-hangul` cannot assemble, such as `jinja`), the module and persona filters (2d
+`b9dcbbe20`), the settings search field and deep link (3b `c32a17f12`), and the message search
+panel with the jump to a message (4b `f99028fd0`). The archived Decisions section records the
+defaults every slice took (no FTS index; the `LIKE` scan measured at 516–674 ms over 145 MiB of
+seeded messages, under the 1 s threshold of Decision 7). The final checks on the target branch
+passed (`pnpm check`, `format:check`, `test:agent` 5738 passed). Slices 1, 3b and 4b were driven
+in headless Chrome; 2b, 2c, 2d and 3a were verified by tests and reviews only.
 
 ## Server-Owned Data Chronology
 
@@ -246,6 +262,29 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `measureHeap.mjs` and `measureFileSources.mjs` check `exitCode` only (a signal-killed
     server child is missed); no server-side egress accounting; the user's own style and
     real font files were not measured.
+- Search:
+  - Slice 1: the native `<select>` popup was not seen in a real desktop browser (headless
+    Chrome does not draw it); check Settings › Display on the `light` scheme with a dark OS
+    and on `dark` with a light OS.
+  - 2a: the matcher's case fold is `toLowerCase` plus a final-sigma fold, not full Unicode
+    case folding (ſ/S, ϐ/Β).
+  - 2b: no browser check of drag being off while filtered, folders shown open, and drag
+    returning after clearing; a row renamed under the filter hides once its name no longer
+    matches.
+  - 2c: an entry added while filtering is hidden at once (its fields are empty); no
+    "no results" line (needs an `en.ts` key); a detail open inside a folder closes when the
+    next query drops that folder; `onEnd` of a drag that started before the filter is untested.
+  - 3a: the navigation page and Model tab labels are repeated in `searchIndex.ts`
+    (`PAGES`, `MODEL_TABS`) because `Settings.svelte`'s `navGroups` cannot be imported.
+  - 3b: 390 px mobile, Firefox, Safari and the Korean UI were not browser-checked.
+  - 4a: an unauthenticated request answers 400 `No auth header` (the server's rule), not the
+    plan's 401; `shared/diagnostics.ts` `ROUTE_TEMPLATES` gained the path.
+  - 4b: `Chats.svelte`'s 700 ms latest-message auto-scroll ignores `suspendTrim` and can undo
+    a finished jump (the bookmark jump too); Escape with Settings open above the panel closes
+    the panel; the previous error line stays visible during the next debounce; a real large
+    database was not measured (the real saves on the machine were 352 KB).
+  - Not in the plan: `prose-invert={$ColorSchemeTypeStore}` in `AlertComp.svelte` and
+    `MultiLangDisplay.svelte` is always truthy; the persona list itself has no name filter.
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 

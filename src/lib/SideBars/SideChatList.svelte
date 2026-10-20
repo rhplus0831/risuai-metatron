@@ -1,6 +1,6 @@
 <script lang="ts">
     import { type AnyClientCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { onDestroy, onMount } from "svelte";
+    import { onDestroy, onMount, untrack } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import {
@@ -14,6 +14,7 @@
         FolderPlusIcon,
         BookmarkCheckIcon,
         CircleAlertIcon,
+        TextSearchIcon,
     } from "@lucide/svelte";
 
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
@@ -46,6 +47,8 @@
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
     import { chatFolderOf } from "./chatFolders";
+    import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
+    import { openMessageSearch } from "src/ts/messageSearch.svelte";
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
@@ -66,6 +69,24 @@
     /** The character's chats as list entries (the chat module's; never whole chats). */
     const chats = $derived(chatList(chara.chaId));
     const selectedId = $derived(selectedChatId(chara.chaId));
+
+    /** The filter field's text; it resets when the character changes. */
+    let filterText = $state("");
+    const filterQuery = $derived(prepareQuery(filterText));
+    // The id as its own derived value: a refresh of the same character replaces the record and
+    // would rerun an effect that read `chara.chaId` directly.
+    const filterOwner = $derived(chara.chaId);
+    $effect.pre(() => {
+        void filterOwner;
+        untrack(() => (filterText = ""));
+    });
+
+    /** Whether a chat shows under the filter: its name or its folder's name matches (all chats without a query). */
+    function chatShown(chat: ChatListEntry): boolean {
+        return (
+            filterQuery === null || matchesAny([chat.name, chatFolderOf(chat, chara.chatFolders)?.name], filterQuery)
+        );
+    }
 
     /** A detached copy of a chat for a copy action, loaded first and found again after the load (null when it is gone). */
     async function chatCopySource(ref: { chaId: string; chatId: string }): Promise<Chat | null> {
@@ -123,16 +144,30 @@
     let chatsStb: Sortable[] = [];
     let folderStb: Sortable = null;
 
+    function destroyStb() {
+        for (const stb of [...chatsStb, folderStb]) {
+            try {
+                stb?.destroy();
+            } catch (error) {}
+        }
+        chatsStb = [];
+        folderStb = null;
+    }
+
     let folderEles: HTMLDivElement = $state();
     let listEle: HTMLDivElement = $state();
     let sorted = $state(0);
     let opened = 0;
 
     const createStb = () => {
+        destroyStb();
+        // A filtered view hides rows, so no drag may reorder it (the effect below toggles it later).
+        const disabled = filterQuery !== null;
         for (let chat of listEle.querySelectorAll(".risu-chat")) {
             chatsStb.push(
                 new Sortable(chat, {
                     group: "chats",
+                    disabled,
                     onEnd: async (event) => {
                         // The list as rendered (the indexes in the DOM are into it), read once:
                         // a folder change below makes the derived list a new one.
@@ -180,6 +215,7 @@
         }
         folderStb = Sortable.create(folderEles, {
             group: "folders",
+            disabled,
             onEnd: async (event) => {
                 const listed = chats;
                 const newFolders: ChatFolder[] = [];
@@ -218,18 +254,14 @@
 
     onMount(createStb);
 
-    onDestroy(() => {
-        if (folderStb) {
-            try {
-                folderStb.destroy();
-            } catch (error) {}
+    $effect(() => {
+        const disabled = filterQuery !== null;
+        for (const stb of [...chatsStb, folderStb]) {
+            stb?.option("disabled", disabled);
         }
-        chatsStb.map((stb) => {
-            try {
-                stb.destroy();
-            } catch (error) {}
-        });
     });
+
+    onDestroy(destroyStb);
 </script>
 
 <div class="flex flex-col w-full h-[calc(100%-2rem)] max-h-[calc(100%-2rem)]">
@@ -264,6 +296,7 @@
             $ReloadGUIPointer += 1;
         }}>{language.newChat}</Button
     >
+    <TextInput placeholder={language.search} bind:value={filterText} size="sm" fullwidth={true} />
 
     {#key sorted}
         <!-- Stretched over the sidebar's side padding so the scrollbar sits at the sidebar's edge. -->
@@ -276,14 +309,18 @@
                 <!-- chat folder -->
                 {#each chara.chatFolders as folder, i}
                     {@const inFolder = chats.filter((chat) => chatFolderOf(chat, chara.chatFolders)?.id === folder.id)}
+                    <!-- Rows the filter hides stay in the DOM, so the drop handlers' indexes and the
+                         SortableJS containers survive filtering (drag is off while filtered). -->
                     <div
                         data-risu-chat-folder-idx={i}
                         class="flex flex-col mb-2 border-solid border-1 border-darkborderc cursor-pointer rounded-md"
+                        class:hidden={filterQuery !== null && !inFolder.some(chatShown)}
                     >
                         <!-- folder header -->
                         <button
                             onclick={() => {
-                                if (!editMode) {
+                                // A filtered view shows every folder open, so a toggle would only change hidden state.
+                                if (!editMode && filterQuery === null) {
                                     chara.chatFolders[i].folded = !folder.folded;
                                     $ReloadGUIPointer += 1;
                                 }
@@ -406,7 +443,8 @@
                         </button>
                         <!-- chats in folder -->
                         <div
-                            class="risu-chat flex flex-col w-full text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md {folder.folded
+                            class="risu-chat flex flex-col w-full text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md {folder.folded &&
+                            filterQuery === null
                                 ? 'hidden'
                                 : ''}"
                         >
@@ -425,6 +463,7 @@
                                         }}
                                         class="risu-chats flex items-center text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md"
                                         class:bg-selected={chat.id === selectedId}
+                                        class:hidden={!chatShown(chat)}
                                     >
                                         {#if editMode}
                                             <TextInput
@@ -555,6 +594,7 @@
                             }}
                             class="flex items-center text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md"
                             class:bg-selected={chat.id === selectedId}
+                            class:hidden={!chatShown(chat)}
                         >
                             {#if editMode}
                                 <TextInput
@@ -712,6 +752,17 @@
                 }}
             >
                 <BookmarkCheckIcon size={18} />
+            </button>
+            <button
+                class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
+                title={language.messageSearch.open}
+                aria-label={language.messageSearch.open}
+                data-message-search-open
+                onclick={() => {
+                    openMessageSearch({ kind: "character", chaId: chara.chaId });
+                }}
+            >
+                <TextSearchIcon size={18} />
             </button>
             <button
                 class="ml-auto text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"

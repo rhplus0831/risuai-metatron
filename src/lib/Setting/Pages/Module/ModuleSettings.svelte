@@ -20,6 +20,7 @@
     import { alertClear, alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
     import { alertStore } from "src/ts/stores.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
     import { addCharacter } from "src/ts/storage/characterStore.svelte";
@@ -31,6 +32,7 @@
     let mode = $state(0);
     let editModuleIndex = $state(-1);
     let moduleSearch = $state("");
+    const moduleQuery = $derived(prepareQuery(moduleSearch));
     let charConversionMode = $state(false);
 
     // The export is over: a wait or progress status still set is stale (a failure the exporter
@@ -42,12 +44,9 @@
         }
     }
 
-    function sortModules(modules: RisuModule[], search: string) {
+    function sortModules(modules: RisuModule[], query: PreparedQuery | null) {
         return modules
-            .filter((v) => {
-                if (search === "") return true;
-                return v.name.toLowerCase().includes(search.toLowerCase());
-            })
+            .filter((v) => !query || matchesAny([v.name], query))
             .sort((a, b) => {
                 let score = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
                 return score;
@@ -66,7 +65,7 @@
         {#if settings.modules.length === 0}
             <div class="text-textcolor2 p-3">{language.noModules}</div>
         {:else}
-            {#each sortModules(settings.modules, moduleSearch) as rmodule, i}
+            {#each sortModules(settings.modules, moduleQuery) as rmodule, i}
                 {#if i !== 0}
                     <div class="border-t-1 border-selected"></div>
                 {/if}

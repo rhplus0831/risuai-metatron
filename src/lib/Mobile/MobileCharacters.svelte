@@ -7,6 +7,7 @@
     import { addCharacter, changeChar } from "src/ts/characters";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
     import { makeCharacterAgoText } from "../UI/mainMenuProjection";
+    import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
 
     interface Props {
         endGrid?: () => void;
@@ -17,11 +18,7 @@
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
     let { endGrid = () => {}, search, hideTrash = false }: Props = $props();
-    let normalizedSearch = $derived(normalizeSearch(search ?? ""));
-
-    function normalizeSearch(value: string) {
-        return value.replace(/ /g, "").toLocaleLowerCase();
-    }
+    const query = $derived(prepareQuery(search ?? ""));
 
     function makeAgoText(time: number) {
         return makeCharacterAgoText(time, { agoFormatter, unknownText: "Unknown" });
@@ -54,7 +51,7 @@
 
 <div class="flex flex-col items-center w-full overflow-y-auto h-full">
     {#each sortChar(characterList()) as char, i}
-        {#if normalizeSearch(char.name).includes(normalizedSearch)}
+        {#if !query || matchesAny([char.name], query)}
             <button
                 class="flex p-2 border-t-darkborderc gap-2 w-full"
                 class:border-t={i !== 0}

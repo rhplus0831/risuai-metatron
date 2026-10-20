@@ -248,6 +248,9 @@ export function updateColorScheme() {
         document.documentElement.style.setProperty("--risu-theme-textcolor2", colorScheme.textcolor2);
         document.documentElement.style.setProperty("--risu-theme-darkborderc", colorScheme.darkBorderc);
         document.documentElement.style.setProperty("--risu-theme-darkbutton", colorScheme.darkbutton);
+        // Native controls (select popups, scrollbars) follow the type. A missing or unknown type
+        // reads as dark, the default scheme's type.
+        document.documentElement.style.colorScheme = colorScheme.type === "light" ? "light" : "dark";
         ColorSchemeTypeStore.set(colorScheme.type);
     } catch (error) {}
 }
