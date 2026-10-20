@@ -1,6 +1,6 @@
 # Heap Memory Reduction Plan
 
-Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found), D1 (record wrapper nodes and root lists after deletes) and C2 (one stylesheet per chat style) landed. Source: two Chrome heap snapshots of a production build
+Status: M0 (measurement tooling), A1 (one string per equal record text), B1 (frozen module asset lists), B2 (frozen character asset lists), C1 (fonts after a chat: no holder, per-row copies found), D1 (record wrapper nodes and root lists after deletes), C2 (one stylesheet per chat style) and D2 (one-shot decode URLs revoked; pinned sources measured and accepted) landed. Source: two Chrome heap snapshots of a production build
 (`localhost:6039`) taken by the user on 2026-10-19 with large modules and characters:
 `save/Heap-20261019T174051.heapsnapshot` after boot and
 `save/Heap-20261019T174926.heapsnapshot` after opening several chats (both gitignored
@@ -528,6 +528,66 @@ its sources, and the parser keeps an unbounded `fileSrcCache` (Phase D).
   The last three were found beyond the list above. Tests: `inlays.test.ts` ("one-shot
   decode URLs"): `postInlayAsset` drawn and failed, `reencodeImage` decoded and failed.
   The pinned sources (D2b measurement, then fix or accept) are still open.
+
+  **D2b measured** (`util/playwright/measureFileSources.mjs`). The fixture:
+  - 21 characters with random-pixel PNG avatars (9.6 MB);
+  - one chat with three replies of 8 inlay images each (24.7 MB), a reply with two audio
+    inlays (2.0 MB), and a reply showing 4 of the character's additional assets by name
+    (`{{img::…}}`, 4.1 MB, through the parser's `fileSrcCache`).
+
+  The run opens the chat, with every image scrolled into view and decoded (the parser
+  makes chat images lazy), then the home screen, then the chat again. Two modes, each in a
+  fresh browser: the worker allowed, and its registration blocked. After a forced GC (MB
+  as the driver prints them; browser Blobs are `chrome://blob-internals` entries and their
+  logical bytes):
+
+  | Mode      | Step            | Live object URLs     | Browser Blobs | JS heap |
+  | --------- | --------------- | -------------------- | ------------- | ------- |
+  | worker    | `boot`          | 0                    | 0             | 11.8    |
+  | worker    | `gallery`       | 2 (2.0, audio)       | 2 (2.0)       | 14.8    |
+  | worker    | `home`          | 2 (2.0)              | 2 (2.0)       | 13.7    |
+  | no worker | `boot`          | 11 (5.0, avatars)    | 11 (5.0)      | 11.5    |
+  | no worker | `gallery`       | 51 (40.5)            | 51 (40.5)     | 14.5    |
+  | no worker | `home`          | 51 (40.5)            | 51 (40.5)     | 13.4    |
+  | either    | `gallery-again` | as `home`, 0 created |               |         |
+
+  Findings:
+  - **Without the worker**, every distinct file shown keeps a Blob of its full bytes for
+    the page's life: 51 files, 40.5 MB, the bytes seeded. Leaving the chat frees nothing.
+    Showing it again creates nothing, since there is one source per path. So the growth is
+    the bytes of every distinct avatar, inlay image and chat asset shown in the session.
+  - **With a working worker**, no image Blob is kept. Only the inlay audio/video object
+    URLs (`mediaObjectUrls`) stay, as in both modes.
+  - In this fixture the Blob registry matches the live URLs: no other Blob stays.
+  - `fileSrcCache` holds a path → URL string per chat asset shown, and no Blob of its own.
+    But it is a second holder: a revoke design must drop its entry too, or it hands out a
+    revoked URL.
+  - Chrome keeps Blobs in browser-process memory up to its in-memory limit, then on disk.
+  - When the page runs without the worker:
+    - registration blocked or failing (`registerSw` "unavailable");
+    - `/sw/init` rejected, or still unsuccessful after its one reload.
+
+    Even with the worker, one file falls back to an object URL when its check or
+    registration request fails or times out (`loadFileSrc`). Plain http on another host is
+    not such a case: the login needs `crypto.subtle`, so the app does not run there at all.
+
+  - Two of the first four runs timed out with 8 of 24 images decoded (no worker). The wait
+    did not scroll, so the rows' lazy images never loaded. Their `src`, and so the pin,
+    was already set. The wait now scrolls each image into view: both runs since passed,
+    with the same numbers.
+
+  **Accepted** (the user's decision, 2026-10-20). With a working worker no image Blob
+  stays, and only the inlay audio/video URLs do. The growth without one is recorded here,
+  not fixed. This closes D2. The fixes left for later, if the no-worker case matters:
+  - Release the component-owned sources first. Avatars (`getCharImage` in
+    `LazyCharImage`, the sidebar and the chat rows) are not in retained HTML, so a
+    hold/release like `LazyFileSrc` can revoke them. A `{{source::char}}` in parser output
+    still pins the same avatar's path.
+  - The URL-free placeholder for parser output (inlay images, chat assets, inlay media),
+    as above. Its post-pass is needed in every renderer, and `fileSrcCache` goes with it.
+
+  Driver leftovers, shared with `measureHeap.mjs`'s bootstrap: no server-side egress
+  accounting, and the cleanup can wait on an exit event already emitted after a signal.
 
 ## Out of scope
 
