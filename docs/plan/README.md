@@ -9,7 +9,7 @@ Active planning and implementation:
 - [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
   are listed in its Status; deferred work and Phase 5 verification remain separate.
 - [RisuNest Small Wins](risunest-small-wins.md): alert queue, safe boot, plugin quick
-  wins, test network guard, CI and image hygiene, engineering rules; T1, P1 and K1
+  wins, test network guard, CI and image hygiene, engineering rules; T1, P1, K1 and E1
   landed, the rest in progress; Phase 2's wait on the `heap-memory-reduction` merge is over.
 - [Search](search.md): `color-scheme`, a Korean-aware list matcher, settings search with
   deep links, and server-side message search across chats; planned.
