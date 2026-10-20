@@ -1,13 +1,15 @@
 # Upstream `.bin` Compatibility Plan
 
-Status: planned 2026-10-20 at `437bcdfe9`. Landed on branch `upstream-bin-compat`: S1, S2 and S3
-(merged as `ca2592b59`, `d651f3b2a`, `3eedde66f`), then S4 and S6 (merged as `767db8df3`,
-`ac5c6fd05`), then S6's four round trips through S4's importer and one asset walker for both
-(`d9532709e`, merged as `0e6317f92`; `pnpm check`, `test:agent` and `pnpm build` pass on the
-merge), then S5 (merged as `0a6484846`), then S7 (on its own branch, not yet merged into `upstream-bin-compat`). Next: S8 after S7's merge. Each landed slice's section ends with a _Landed_ note on where it
-departed from this plan; S4–S7 open with what the earlier slices handed over. `heap-memory-reduction` merged
-into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first slice, so no slice
-waits on it. Work branch: `upstream-bin-compat`. Source: the open decisions in
+Status: done 2026-10-21. Planned 2026-10-20 at `437bcdfe9`; every slice landed on branch
+`upstream-bin-compat`: S1 (`620fc6fc1`, `48d5571af`, merged as `ca2592b59`), S2 (`3d5c8b747`, merged as
+`d651f3b2a`), S3 (`cb4c9ca48`, merged as `3eedde66f`), S4 (`0952e2113`, merged as `767db8df3`), S6
+(`adc90f97d`, merged as `ac5c6fd05`), the S4/S6 round trips and one asset walker (`d9532709e`, merged as
+`0e6317f92`), S5 (`070543198`, merged as `0a6484846`), S7 (`5bf1f82b8`, merged as `6513a4906`), and S8 on
+its own branch (the check script and this final state; the next commit archives the plan). Merging
+`upstream-bin-compat` into `metatron` is the user's decision. Each landed slice's section ends with a
+_Landed_ note on where it departed from this plan; S4–S7 open with what the earlier slices handed over.
+`heap-memory-reduction` merged into `metatron` (`b122ae132`, plan archived `fd13d5381`) before the first
+slice, so no slice waited on it. Source: the open decisions in
 [docs/research/README.md](../research/README.md) (RisuNest item 10, Haejeok A14), answered
 by the user on 2026-10-20 (U1–U4 below). Upstream RisuAI is read at `/home/codex/Risuai`
 (HEAD `669b12ce`); reference ports at `/home/codex/HaejeokRisuai`
@@ -1101,6 +1103,58 @@ Depends: S1–S7.
   - Archive this plan as `docs/archived-plan/README.md` describes, with each slice's
     commit, the decisions taken and the leftovers.
 
+_Landed_ (S8 branch; `opus-workflow`: Sol plan review and challenge, Fable review, Astra fixes):
+
+- **Check script**: `util/upstream/checkBinCompat.mjs` with `util/upstream/upstreamHarness.mjs`
+  (`build-test-platforms.md`). It reads upstream's sources from the pinned commit with `git show`
+  (`UPSTREAM_COMMIT` `669b12ce…`), checks the supplied msgpackr 1.10.1 and fflate 0.8.2 package
+  directories against `UPSTREAM_PACKAGES`, and loads 17 upstream modules as written into plain Node
+  (`module.registerHooks`, `typescript` transpile). `checkCharOrder` and `safeStructuredClone` are cut out
+  of browser-heavy modules; the platform flags (web build), `DBState`, and `uuid` are overridden; every
+  other import is a recording stub, and an unapproved stub use fails the check. It never installs or
+  starts upstream.
+  - Checks: S1's encoder output (the codec fixture and an edge-case object) decoded by upstream's
+    `decodeRisuSave`; a synthetic upstream library imported through the S5 routes and exported through
+    the S7 routes without and with keys, upstream's decoder against this server's and the result against
+    the input library; upstream's boot (`setDatabase`, `checkNewFormat` with `checkCharOrder`,
+    `assignIds`) on each export. `--bin` runs the decoder comparison and the boot pass on an existing
+    file and prints ordinals, counts and fixed categories only.
+  - Departures: `-0` is not in the edge cases (msgpackr 1.10.1 and 2.0.6 both write it as integer 0).
+    The synthetic scenario uses one flat key; named keys, auxiliary-secret clearing and native-field
+    stripping stay with `upstreamExport.test.ts` and `upstreamExportRoute.test.ts`. The exporter's
+    id-less empty chat is accepted by the boot rule (upstream's `assignIds` gives it an id).
+- **Results** (counts only for the private backup): the synthetic run passes; a throwaway mutation copy
+  showed each compared field fails when changed. `--bin` passes on the real backup (3,399 records, 5 cold
+  records) and on both real RisuAI-compatible exports (3,394 records; 6 characters, 8 chats, 4 presets,
+  1 persona, 2 modules).
+- **Measurement**: recorded in `self-host-server.md` Known Hazards (prepare response 506–520 ms, maximum
+  observed event-loop delay 162–166 ms, RSS 148–150 → 174–175 MiB on a 1.9 MB store with 3,393 assets).
+- **Browser checks** (scratch driver over `util/playwright/stack.mjs` inside `offline.sh`, a server egress
+  preload recording only host and path, streamSaver's helper page served locally; nothing committed):
+  - Real backup import: the report and the dialog show 6 characters, 8 chats, 2 messages, 4 prompt
+    presets, 1 persona, 2 modules, 5 characters restored from cold storage, 0 missing assets. Restore:
+    commit 200 with 3,393 assets written, a new document and a new epoch; the store holds 6 characters
+    (all with chats, no cold-storage fields), 8 chats, 2 messages, 4 prompt presets, 4 model presets,
+    7 profiles (6 converted and the materialized default), 1 persona, 2 modules, 3,393 assets; the 5
+    character portraits read back; the tab's selection is the commit's.
+  - Send: the imported selection uses a plugin model and the backup holds no plugin, so the send stops
+    with "Unknown Plugin" before any provider call. Bound to an imported catalogue-model preset whose
+    profile's max context was raised in the disposable store (the imported value was below this
+    library's prompt), the server sent its request to the provider's messages endpoint, refused at the
+    egress guard. A completed reply was not checked (no key used).
+  - Export with the button, keys No and Yes, a non-first chat open: `selectedChat` sent and `chatPage`
+    names it; both downloads completed through streamSaver; 3,394 records with `database.risudat` last;
+    counts equal the store's.
+  - Re-import of the keyless export: the report's counts equal the export's. A character created in a
+    second tab made the first Restore answer 409 `changedSinceReview` with 1 write; the dialog asked again
+    with the full notice, the epoch was unchanged and the write present; the second Restore committed with
+    `acceptWrites: 1`, both tabs loaded a new document on the new epoch, and the counts matched the
+    store before the export (model profiles 7 → 3: the export flattens model presets, D10).
+- **Not verified**: a restore in upstream RisuAI's own app (needs an upstream install, which this slice
+  must not do; the user's step); upstream's `LoadLocalBackup` reader and asset writes, `makeColdData`,
+  `cleanChunks`, plugin loading and UI (not run by the script); a completed send on imported data;
+  Firefox and Safari; Docker image.
+
 ## Verification
 
 - Every slice: its tests, `pnpm check`, `pnpm --silent test:agent`, and the guide's focused
@@ -1197,6 +1251,13 @@ The runner takes each default unless the user overrides it.
 
 ## Leftovers
 
+- S8: everything under its _Not verified_; imported chats bound to a plugin model whose plugin is not
+  in the backup cannot send until the user picks another model or installs the plugin (upstream behaves
+  the same without the plugin); the measurement covers a small store only.
+- S7: not tested: the client sending `selectedChat` (checked by hand in S8) and a shutdown during a
+  prepare.
+- S5: not tested: a worker that exits cleanly without a result, and a generation job ended by the
+  commit's maintenance; Docker image not rebuilt.
 - S6, accepted minor issues (found by the Fable review):
   - Without keys, `authRefreshes` is written as `[]` even when the store had none.
   - A chosen slot whose credential no longer exists does not keep its field, so a later
