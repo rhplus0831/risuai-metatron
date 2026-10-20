@@ -33,7 +33,7 @@ import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { watchFirstByte } from "../llm/transport.ts";
 import { createTokenCounter } from "../prompt/tokens.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
-import { sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 7a: the live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`)
 // over a fake store and a recording upstream, with the real ported adapters. The SSE grammar and
@@ -897,6 +897,7 @@ describe("OobaLegacy over a real Node WebSocket", () => {
     async function socketServer(onMessage: (socket: import("ws").WebSocket) => void) {
         const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
         await new Promise<void>((resolve) => server.once("listening", resolve));
+        allowListenerOrigin(server);
         server.on("connection", (socket) => socket.on("message", () => onMessage(socket)));
         const { port } = server.address() as { port: number };
         return { url: `ws://127.0.0.1:${port}/api/v1/stream`, close: () => server.close() };

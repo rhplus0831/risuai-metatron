@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // an IME composition write nothing; a chat deleted while it is edited takes no write. Export passes
 // the chat's id to `exportChat`.
 
-vi.mock("src/ts/alert", () => ({ alertConfirm: vi.fn(), alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

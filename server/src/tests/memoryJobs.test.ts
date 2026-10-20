@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { createSigner, createTestServer, json, sleep } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
 
 // Phase 5 slice 10: memory on the server, end to end. A send (and a preview) as a server job on a
 // real listening server with the default runner, the production memory services, the vector cache
@@ -462,7 +462,9 @@ beforeAll(async () => {
     vi.spyOn(console, "error").mockImplementation(record);
     vi.spyOn(console, "warn").mockImplementation(record);
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
     await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
     const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     const embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
     rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-jobs-"));
@@ -475,6 +477,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir, generationRandom: () => 0.5 });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

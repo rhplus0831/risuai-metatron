@@ -1,23 +1,21 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpstreamImportReport } from "../../shared/upstreamBackup.ts";
+import { createAlertQueue, type AlertQueue } from "./alertQueue";
 
 // The upstream import's report dialog (`alert.ts` `alertUpstreamImportReport`, rendered by
 // `UpstreamImportReport.svelte`): the full replace is authorized only by that dialog's own Restore
-// answer. Any other way the alert store leaves the dialog (another alert replacing it, a plain
-// confirmation answered "yes" meanwhile) resolves false. The real module, with the shared alert
-// store as a plain writable and fake timers for `waitAlert`'s polling.
+// answer. Closing it any other way (a generic "yes" close, a clear) resolves false, and another
+// confirmation opened meanwhile waits its turn instead of answering it. The real module over the real
+// alert queue, a fresh one per test so a dialog one test leaves open never reaches the next.
 
-const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as any } }));
+const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as unknown as AlertQueue } }));
 
-vi.mock("./stores.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    alertStore.current = writable({ type: "none", msg: "" });
-    return { alertStore: alertStore.current };
-});
+vi.mock("./stores.svelte", () => ({
+    alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(alertStore.current, key) }),
+}));
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../lang", () => ({ language: { errors: {} } }));
-vi.mock("./util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
 
 import { alertConfirm, alertUpstreamImportReport, upstreamImportReportStore } from "./alert";
 
@@ -41,20 +39,16 @@ const report: UpstreamImportReport = {
     missingAssets: [],
 };
 
-/** Whether `promise` settled, after the alert poll ran. */
-async function answered(promise: Promise<boolean>): Promise<boolean | null> {
-    let value: boolean | null = null;
+/** What `promise` resolved with once the pending tasks ran, or null while it is pending. */
+async function answered<T>(promise: Promise<T>): Promise<T | null> {
+    let value: T | null = null;
     void promise.then((result) => (value = result));
-    await vi.advanceTimersByTimeAsync(50);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     return value;
 }
 
 beforeEach(() => {
-    vi.useFakeTimers();
-    alertStore.current.set({ type: "none", msg: "" });
-});
-afterEach(() => {
-    vi.useRealTimers();
+    alertStore.current = createAlertQueue({ type: "none", msg: "" }, { gapMs: 0 });
 });
 
 describe("alertUpstreamImportReport", () => {
@@ -65,7 +59,7 @@ describe("alertUpstreamImportReport", () => {
         expect(dialog.report).toBe(report);
         expect(dialog.changedWrites).toBeNull();
         expect(await answered(pending)).toBeNull();
-        // The component: the dialog's answer, then the alert cleared.
+        // The component: the dialog's answer, then its close.
         dialog.answer(true);
         alertStore.current.set({ type: "none", msg: "" });
         expect(await answered(pending)).toBe(true);
@@ -81,20 +75,25 @@ describe("alertUpstreamImportReport", () => {
         expect(await answered(pending)).toBe(false);
     });
 
-    it("resolves false when another confirmation replaces the dialog and is answered yes", async () => {
+    it("keeps another confirmation queued behind it, and a generic yes close never restores", async () => {
         const pending = alertUpstreamImportReport(report);
-        // A plugin's or any other confirmation shown meanwhile, answered with the generic "yes".
+        // A plugin's or any other confirmation opened meanwhile waits behind the report.
         const other = alertConfirm("something else?");
-        expect(get(alertStore.current)).toEqual({ type: "ask", msg: "something else?" });
+        expect(get(alertStore.current)).toEqual({ type: "upstreamImportReport", msg: "" });
         alertStore.current.set({ type: "none", msg: "yes" });
-        expect(await answered(other)).toBe(true);
         expect(await answered(pending)).toBe(false);
         expect(get(upstreamImportReportStore)).toBeNull();
+        // The confirmation shows next and answers only itself.
+        expect(get(alertStore.current)).toEqual({ type: "ask", msg: "something else?" });
+        expect(await answered(other)).toBeNull();
+        alertStore.current.set({ type: "none", msg: "yes" });
+        expect(await answered(other)).toBe(true);
     });
 
-    it("resolves false when the alert is simply cleared", async () => {
+    it("resolves false when the dialog is cancelled before it is answered", async () => {
         const pending = alertUpstreamImportReport(report);
-        alertStore.current.set({ type: "none", msg: "yes" });
+        alertStore.current.answer("");
         expect(await answered(pending)).toBe(false);
+        expect(get(upstreamImportReportStore)).toBeNull();
     });
 });

@@ -48,7 +48,7 @@ const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExpor
     }),
 );
 
-vi.mock("../alert", () => alerts);
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(alerts));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: flush,
     beforeRestoreReload: (fn: () => void) => {

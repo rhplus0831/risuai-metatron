@@ -30,11 +30,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(),
     checkCharOrder: vi.fn(),
 }));
-vi.mock("src/ts/alert", () => ({
-    alertNormal: vi.fn(),
-    alertError: vi.fn(),
-    alertConfirm: vi.fn(() => new Promise<boolean>((resolve) => captured.confirm.push(resolve))),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: vi.fn(() => new Promise<boolean>((resolve) => captured.confirm.push(resolve))),
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

@@ -8,7 +8,7 @@ import type { character, customscript } from "../../../shared/database.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 import { createScriptProcessor, runScriptTail } from "../prompt/scripts.ts";
 import type { RunSetup } from "../jobs/runSetup.ts";
-import { createResourceTestClient } from "./testSupport.ts";
+import { allowListenerOrigin, createResourceTestClient } from "./testSupport.ts";
 
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const workers = createScriptWorkerPool({ rootDir, size: 1, maxSize: 1 });
@@ -162,6 +162,7 @@ describe("dynamic assets through /api/transform", () => {
     }
     beforeAll(async () => {
         await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", resolve));
+        allowListenerOrigin(embedder);
         client = await createResourceTestClient();
         symlinkSync(path.join(rootDir, "public"), path.join(client.rootDir, "public"), "dir");
         ids = {

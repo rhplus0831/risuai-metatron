@@ -48,7 +48,12 @@
     let loadError: string | null = $state(null);
     let thisChat = $state(false);
     /** The job filter, owned by the popup (it opens filtered to a failed job, and keeps it across tabs). */
-    let { jobId = $bindable(null) }: { jobId?: string | null } = $props();
+    /**
+     * `closePopup` closes the popup's own dialog (nothing once another shows): an alert opened from here
+     * would otherwise queue behind the popup, unseen until it closes.
+     */
+    let { jobId = $bindable(null), closePopup = () => {} }: { jobId?: string | null; closePopup?: () => void } =
+        $props();
     let expanded: Set<string> = $state(new Set());
     /**
      * The detail of each expanded row only: a row's detail is read again each time it is expanded
@@ -112,6 +117,8 @@
             sharedRows = next;
         } catch (error) {
             const message = errorText(error);
+            // The error replaces the popup (when it is still the one shown), as it did before alerts queued.
+            closePopup();
             alertError(
                 message === languageEnglish.requestHistoryShareOlderCopiesRemain
                     ? language.requestHistoryShareOlderCopiesRemain
@@ -214,7 +221,9 @@
     }
 
     async function deleteAll() {
-        // The confirmation replaces this popup; it opens again afterwards.
+        // The confirmation replaces this popup; it opens again afterwards (with the filter read now).
+        const reopenJobId = jobId;
+        closePopup();
         if (await alertConfirm(language.requestHistoryDeleteConfirm)) {
             try {
                 await deleteRequestHistory();
@@ -223,7 +232,7 @@
                 return;
             }
         }
-        alertRequestLogs({ jobId });
+        alertRequestLogs({ jobId: reopenJobId });
     }
 
     function chatLabel(item: RequestHistorySummary): string {

@@ -35,6 +35,7 @@ import {
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
 import type { ChatStreaming } from "../../../shared/events.ts";
+import type { MessageSearchHit } from "../../../shared/messageSearch.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
 import { diffRecordText } from "./recordPatchText.ts";
 import {
@@ -43,6 +44,12 @@ import {
     type ChatSnapshotRows,
     countChatOperations,
     createChatTables,
+    type MessageSearchChat,
+    type MessageSearchPosition,
+    type MessageSearchResume,
+    type MessageSearchRow,
+    type MessageSearchScope,
+    messageSearchSnippet,
     prepareChatGroups,
     prepareChatOrders,
     readChatSnapshotRows,
@@ -148,6 +155,34 @@ export class ResourceEpochError extends Error {
         this.epoch = epoch;
     }
 }
+
+/** The database was replaced (a restore or an import) while a message search ran: search again. */
+export class MessageSearchEpochError extends Error {
+    constructor() {
+        super("The data was replaced during the search");
+        this.name = "MessageSearchEpochError";
+    }
+}
+
+/**
+ * A message search's bounds (`searchMessages`): `budgetBytes` of message JSON per request, at most
+ * `batchRows` units (message rows and chats looked at) and `batchBytes` per synchronous batch, and
+ * `yieldTurn` between batches (`setImmediate` in production; tests inject a latch).
+ */
+export type MessageSearchLimits = {
+    budgetBytes: number;
+    batchRows: number;
+    batchBytes: number;
+    yieldTurn: () => Promise<void>;
+};
+
+/** One page of a message search, or the named character or chat that does not exist. */
+export type MessageSearchOutcome =
+    | { notFound: "character" | "chat" }
+    | { hits: MessageSearchHit[]; next: MessageSearchPosition | null; scannedBytes: number };
+
+/** The playground's character (`PlaygroundMenu.svelte`): an ordinary persisted character the all-characters search skips. */
+const PLAYGROUND_CHARACTER_ID = "§playground";
 
 /**
  * A write the store refuses: an invalid id, a normalizer rejection, or normalized data `serialize`
@@ -302,6 +337,11 @@ export function createResourceStore(options: {
     const selectRevisions = db.prepare("SELECT kind, id, seq, revision FROM resources ORDER BY seq");
     const selectKindRevisions = db.prepare("SELECT id, seq, revision FROM resources WHERE kind = ? ORDER BY seq");
     const selectRevision = db.prepare("SELECT seq, revision FROM resources WHERE kind = ? AND id = ?");
+    // A character's name and trash state for the message search, without parsing the record in JavaScript.
+    const selectSearchCharacter = db.prepare(
+        "SELECT json_extract(data, '$.name') AS name, json_extract(data, '$.trashTime') AS trashTime, " +
+            "octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?",
+    );
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -1094,6 +1134,146 @@ export function createResourceStore(options: {
         chatMeta(characterId: string, id: string): ChatRecord | null {
             assertOpen();
             return chatTables.readChatMeta(characterId, id);
+        },
+
+        /**
+         * One page of a message search (archived `docs/plan/search.md` slice 4a, `shared/messageSearch.ts`):
+         * `LIKE` over each message's text (`$.data`), chats by `seq` descending and messages by
+         * position descending, in synchronous batches (`chatTables.searchBatch`) with `yieldTurn`
+         * between them, on this store's one connection. Without ids it scans every character except
+         * trashed ones (`trashTime`) and the playground; a named character or chat is scanned even
+         * when trashed (`notFound` when it does not exist). The page ends after the row that reaches
+         * `limit` hits or `budgetBytes` (its `next` is that row) or at the end (`next` null). Before
+         * the first batch and after every yield it checks, in order: `signal` (throws its reason), the
+         * store being open (`ResourceStoreClosedError`), the epoch (`MessageSearchEpochError` once a
+         * restore replaced the data), and `between` (the route's maintenance gate). A character's
+         * eligibility and name are read once per page, so trashing one mid-page takes effect on the
+         * next page. Refuses to start inside a store transaction.
+         */
+        async searchMessages(
+            request: {
+                query: string;
+                characterId?: string;
+                chatId?: string;
+                cursor: MessageSearchPosition | null;
+                limit: number;
+            },
+            options: MessageSearchLimits & { signal?: AbortSignal; between?: () => void },
+        ): Promise<MessageSearchOutcome> {
+            if (db.isTransaction) {
+                throw new Error("A message search cannot run inside a transaction");
+            }
+            const check = () => {
+                options.signal?.throwIfAborted();
+                assertOpen();
+            };
+            check();
+            options.between?.();
+            const startEpoch = epoch;
+            const characters = new Map<string, { name: string; trashed: boolean } | null>();
+            /** The character's search fields and what reading them cost (0 once cached). */
+            const character = (id: string) => {
+                const cached = characters.get(id);
+                if (cached !== undefined) {
+                    return { info: cached, bytes: 0 };
+                }
+                const row = selectSearchCharacter.get(RESOURCE_KIND.characters, id) as
+                    { name: unknown; trashTime: unknown; bytes: number } | undefined;
+                const info = row
+                    ? { name: typeof row.name === "string" ? row.name : "", trashed: !!row.trashTime }
+                    : null;
+                characters.set(id, info);
+                return { info, bytes: row?.bytes ?? 0 };
+            };
+            let scope: MessageSearchScope;
+            if (request.characterId === undefined) {
+                scope = {
+                    kind: "all",
+                    eligible: (id) => {
+                        if (id === PLAYGROUND_CHARACTER_ID) {
+                            return { eligible: false, bytes: 0 };
+                        }
+                        const { info, bytes } = character(id);
+                        return { eligible: !!info && !info.trashed, bytes };
+                    },
+                };
+            } else {
+                if (!character(request.characterId).info) {
+                    return { notFound: "character" };
+                }
+                if (request.chatId === undefined) {
+                    scope = { kind: "character", characterId: request.characterId };
+                } else {
+                    const seq = chatTables.chatSeq(request.characterId, request.chatId);
+                    if (seq === null) {
+                        return { notFound: "chat" };
+                    }
+                    scope = { kind: "chat", seq };
+                }
+            }
+            // Escaped, so `\`, `%` and `_` in the query match themselves.
+            const pattern = `%${request.query.replace(/[\\%_]/g, "\\$&")}%`;
+            const hits: MessageSearchHit[] = [];
+            const chatNames = new Map<number, string>();
+            let scannedBytes = 0;
+            const visit = (chat: MessageSearchChat, row: MessageSearchRow) => {
+                scannedBytes += row.bytes;
+                if (row.hit !== null) {
+                    const message = JSON.parse(row.hit) as { role?: unknown; data?: unknown; time?: unknown };
+                    const match = messageSearchSnippet(
+                        typeof message.data === "string" ? message.data : "",
+                        request.query,
+                    );
+                    if (!match) {
+                        return scannedBytes >= options.budgetBytes;
+                    }
+                    let chatName = chatNames.get(chat.seq);
+                    if (chatName === undefined) {
+                        chatName = chatTables.searchChatName(chat.seq);
+                        chatNames.set(chat.seq, chatName);
+                    }
+                    const { snippet, matchStart, matchLength } = match;
+                    hits.push({
+                        characterId: chat.characterId,
+                        chatId: chat.id,
+                        messageId: row.id,
+                        chatName,
+                        characterName: character(chat.characterId).info?.name ?? "",
+                        role: message.role === "user" ? "user" : "char",
+                        ...(typeof message.time === "number" && Number.isFinite(message.time)
+                            ? { time: message.time }
+                            : {}),
+                        snippet,
+                        matchStart,
+                        matchLength,
+                    });
+                }
+                return hits.length >= request.limit || scannedBytes >= options.budgetBytes;
+            };
+            let resume: MessageSearchResume = request.cursor ? { message: request.cursor } : null;
+            for (;;) {
+                const batch = chatTables.searchBatch({
+                    scope,
+                    pattern,
+                    from: resume,
+                    maxRows: options.batchRows,
+                    maxBytes: options.batchBytes,
+                    visit,
+                });
+                resume = batch.resume;
+                if (batch.stopped && resume && "message" in resume) {
+                    return { hits, next: resume.message, scannedBytes };
+                }
+                if (batch.end) {
+                    return { hits, next: null, scannedBytes };
+                }
+                await options.yieldTurn();
+                check();
+                if (epoch !== startEpoch) {
+                    throw new MessageSearchEpochError();
+                }
+                options.between?.();
+            }
         },
 
         /**

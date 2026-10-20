@@ -31,7 +31,7 @@ await vi.hoisted(async () => {
 });
 
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../../alert", () => ({ alertNormal: vi.fn(), alertError: vi.fn() }));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

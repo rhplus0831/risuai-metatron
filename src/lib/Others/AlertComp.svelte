@@ -3,7 +3,7 @@
     import { untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
-    import { alertGenerationInfoStore, alertRequestLogs } from "../../ts/alert";
+    import { alertRequestLogs } from "../../ts/alert";
     import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
 
     import { getCharImage } from "../../ts/characters";
@@ -34,6 +34,11 @@
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+    /** A `requestdata` dialog's own generation info and message, captured when it was opened. */
+    const requestInfo = $derived($alertStore.type === "requestdata" ? $alertStore.generationInfo : undefined);
+    const requestMessage = $derived(requestInfo?.message);
+    /** The alert shown now, for closes that must close only this one (a later write after an await). */
+    const shown = $derived($alertStore);
     let showDetails = $state(false);
     let translatedStackTrace = $state("");
     let stackTraceTranslationFailed = $state(false);
@@ -218,6 +223,7 @@
 
 {#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs" && $alertStore.type !== "upstreamImportReport"}
     <div
+        data-alert-dialog
         class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center"
         class:vis={$alertStore.type === "wait2"}
     >
@@ -310,7 +316,17 @@
                             {/if}
                             {language.copyDebugInfo}
                         </Button>
-                        <Button styled="outlined" size="sm" onclick={() => alertRequestLogs({ jobId: failure.jobId })}>
+                        <Button
+                            styled="outlined"
+                            size="sm"
+                            onclick={() => {
+                                // The history replaces this error: close it first (the viewer queues behind it otherwise).
+                                const jobId = failure.jobId;
+                                const own = shown;
+                                alertStore.answer("", own);
+                                alertRequestLogs({ jobId });
+                            }}
+                        >
                             {language.openInRequestHistory}
                         </Button>
                     </div>
@@ -333,19 +349,13 @@
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "yes",
-                            });
+                            alertStore.answer("yes");
                         }}>YES</Button
                     >
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "no",
-                            });
+                            alertStore.answer("no");
                         }}>NO</Button
                     >
                 </div>
@@ -358,10 +368,7 @@
                         <Button
                             className="mt-4"
                             onclick={() => {
-                                alertStore.set({
-                                    type: "none",
-                                    msg: i.toString(),
-                                });
+                                alertStore.answer(i.toString());
                             }}>{n}</Button
                         >
                     {/each}
@@ -371,10 +378,7 @@
                         <Button
                             className="mt-4"
                             onclick={() => {
-                                alertStore.set({
-                                    type: "none",
-                                    msg: i.toString(),
-                                });
+                                alertStore.answer(i.toString());
                             }}>{n}</Button
                         >
                     {/each}
@@ -383,10 +387,7 @@
                 <Button
                     className="mt-4"
                     onclick={() => {
-                        alertStore.set({
-                            type: "none",
-                            msg: "",
-                        });
+                        alertStore.answer("");
                     }}>OK</Button
                 >
             {:else if $alertStore.type === "input"}
@@ -400,11 +401,9 @@
                 <Button
                     className="mt-4"
                     onclick={() => {
-                        alertStore.set({
-                            type: "none",
-                            //@ts-expect-error 'value' doesn't exist on Element, but target is HTMLInputElement here
-                            msg: document.querySelector("#alert-input")?.value,
-                        });
+                        alertStore.answer(
+                            (document.querySelector("#alert-input") as HTMLInputElement | null)?.value ?? "",
+                        );
                     }}>OK</Button
                 >
                 {#if $alertStore.datalist}
@@ -424,7 +423,7 @@
                                 {#await getCharImage(char.image, "css")}
                                     <BarIcon
                                         onClick={() => {
-                                            alertStore.set({ type: "none", msg: char.chaId });
+                                            alertStore.answer(char.chaId);
                                         }}
                                     >
                                         <User />
@@ -432,7 +431,7 @@
                                 {:then im}
                                     <BarIcon
                                         onClick={() => {
-                                            alertStore.set({ type: "none", msg: char.chaId });
+                                            alertStore.answer(char.chaId);
                                         }}
                                         additionalStyle={im}
                                     />
@@ -440,7 +439,7 @@
                             {:else}
                                 <BarIcon
                                     onClick={() => {
-                                        alertStore.set({ type: "none", msg: char.chaId });
+                                        alertStore.answer(char.chaId);
                                     }}
                                 >
                                     <User />
@@ -449,7 +448,7 @@
                         {/if}
                     {/each}
                 </div>
-            {:else if $alertStore.type === "requestdata" && currentChat}
+            {:else if $alertStore.type === "requestdata" && requestInfo}
                 {#if aiLawApplies()}
                     <div>
                         {language.generatedByAIDisclaimer}
@@ -495,10 +494,7 @@
                     <button
                         class="ml-auto"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "",
-                            });
+                            alertStore.answer("");
                         }}>✖</button
                     >
                 </div>
@@ -508,25 +504,25 @@
                             class="w-32 h-32 border-darkborderc border-4 rounded-lg"
                             style:background={`linear-gradient(0deg,
                             rgb(59,130,246) 0%,
-                            rgb(59,130,246) ${($alertGenerationInfoStore.genInfo.inputTokens / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(34 197 94) ${($alertGenerationInfoStore.genInfo.inputTokens / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(34 197 94) ${(($alertGenerationInfoStore.genInfo.outputTokens + $alertGenerationInfoStore.genInfo.inputTokens) / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(156 163 175) ${(($alertGenerationInfoStore.genInfo.outputTokens + $alertGenerationInfoStore.genInfo.inputTokens) / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
+                            rgb(59,130,246) ${(requestInfo.genInfo.inputTokens / requestInfo.genInfo.maxContext) * 100}%,
+                            rgb(34 197 94) ${(requestInfo.genInfo.inputTokens / requestInfo.genInfo.maxContext) * 100}%,
+                            rgb(34 197 94) ${((requestInfo.genInfo.outputTokens + requestInfo.genInfo.inputTokens) / requestInfo.genInfo.maxContext) * 100}%,
+                            rgb(156 163 175) ${((requestInfo.genInfo.outputTokens + requestInfo.genInfo.inputTokens) / requestInfo.genInfo.maxContext) * 100}%,
                             rgb(156 163 175) 100%)`}
                         ></div>
                     </div>
                     <div class="grid grid-cols-2 gap-y-2 gap-x-4 mt-4">
                         <span class="text-blue-500">{language.inputTokens}</span>
                         <span class="text-blue-500 justify-self-end"
-                            >{$alertGenerationInfoStore.genInfo.inputTokens ?? "?"} {language.tokens}</span
+                            >{requestInfo.genInfo.inputTokens ?? "?"} {language.tokens}</span
                         >
                         <span class="text-green-500">{language.outputTokens}</span>
                         <span class="text-green-500 justify-self-end"
-                            >{$alertGenerationInfoStore.genInfo.outputTokens ?? "?"} {language.tokens}</span
+                            >{requestInfo.genInfo.outputTokens ?? "?"} {language.tokens}</span
                         >
                         <span class="text-gray-400">{language.maxContextSize}</span>
                         <span class="text-gray-400 justify-self-end"
-                            >{$alertGenerationInfoStore.genInfo.maxContext ?? "?"} {language.tokens}</span
+                            >{requestInfo.genInfo.maxContext ?? "?"} {language.tokens}</span
                         >
                     </div>
                     <span class="text-textcolor2 text-sm">{language.tokenWarning}</span>
@@ -534,43 +530,35 @@
                 {#if generationInfoMenuIndex === 1}
                     <div class="grid grid-cols-2 gap-y-2 gap-x-4 mt-4">
                         <span class="text-blue-500">Index</span>
-                        <span class="text-blue-500 justify-self-end">{$alertGenerationInfoStore.idx}</span>
+                        <span class="text-blue-500 justify-self-end">{requestInfo.idx}</span>
                         <span class="text-amber-500">Model</span>
-                        <span class="text-amber-500 justify-self-end">{$alertGenerationInfoStore.genInfo.model}</span>
+                        <span class="text-amber-500 justify-self-end">{requestInfo.genInfo.model}</span>
                         <span class="text-green-500">ID</span>
-                        <span class="text-green-500 justify-self-end"
-                            >{currentChat.message[$alertGenerationInfoStore.idx].chatId ?? "None"}</span
-                        >
+                        <span class="text-green-500 justify-self-end">{requestMessage?.chatId ?? "None"}</span>
                         <span class="text-red-500">GenID</span>
-                        <span class="text-red-500 justify-self-end"
-                            >{$alertGenerationInfoStore.genInfo.generationId}</span
-                        >
+                        <span class="text-red-500 justify-self-end">{requestInfo.genInfo.generationId}</span>
                         <span class="text-cyan-500">Saying</span>
-                        <span class="text-cyan-500 justify-self-end"
-                            >{currentChat.message[$alertGenerationInfoStore.idx].saying}</span
-                        >
+                        <span class="text-cyan-500 justify-self-end">{requestMessage?.saying ?? ""}</span>
                         <span class="text-purple-500">Size</span>
                         <span class="text-purple-500 justify-self-end"
-                            >{JSON.stringify(currentChat.message[$alertGenerationInfoStore.idx]).length} Bytes</span
+                            >{requestMessage ? JSON.stringify(requestMessage).length : 0} Bytes</span
                         >
                         <span class="text-yellow-500">Time</span>
                         <span class="text-yellow-500 justify-self-end"
-                            >{new Date(
-                                currentChat.message[$alertGenerationInfoStore.idx].time ?? 0,
-                            ).toLocaleString()}</span
+                            >{new Date(requestMessage?.time ?? 0).toLocaleString()}</span
                         >
-                        {#if $alertGenerationInfoStore.genInfo.stageTiming}
+                        {#if requestInfo.genInfo.stageTiming}
                             {@const stage1 = parseFloat(
-                                (($alertGenerationInfoStore.genInfo.stageTiming.stage1 ?? 0) / 1000).toFixed(1),
+                                ((requestInfo.genInfo.stageTiming.stage1 ?? 0) / 1000).toFixed(1),
                             )}
                             {@const stage2 = parseFloat(
-                                (($alertGenerationInfoStore.genInfo.stageTiming.stage2 ?? 0) / 1000).toFixed(1),
+                                ((requestInfo.genInfo.stageTiming.stage2 ?? 0) / 1000).toFixed(1),
                             )}
                             {@const stage3 = parseFloat(
-                                (($alertGenerationInfoStore.genInfo.stageTiming.stage3 ?? 0) / 1000).toFixed(1),
+                                ((requestInfo.genInfo.stageTiming.stage3 ?? 0) / 1000).toFixed(1),
                             )}
                             {@const stage4 = parseFloat(
-                                (($alertGenerationInfoStore.genInfo.stageTiming.stage4 ?? 0) / 1000).toFixed(1),
+                                ((requestInfo.genInfo.stageTiming.stage4 ?? 0) / 1000).toFixed(1),
                             )}
                             {@const totalRounded = (stage1 + stage2 + stage3 + stage4).toFixed(1)}
                             <span class="text-gray-400">Timing</span>
@@ -584,7 +572,7 @@
                         {/if}
 
                         <span class="text-green-500">Tokens</span>
-                        {#await tokenize(currentChat.message[$alertGenerationInfoStore.idx].data)}
+                        {#await tokenize(requestMessage?.data ?? "")}
                             <span class="text-green-500 justify-self-end">Loading</span>
                         {:then tokens}
                             <span class="text-green-500 justify-self-end">{tokens}</span>
@@ -613,25 +601,24 @@
                     {/await}
                 {/if}
                 {#if generationInfoMenuIndex === 3}
-                    {#if Object.keys(currentChat.message[$alertGenerationInfoStore.idx].promptInfo || {}).length === 0}
+                    {@const promptInfo = requestMessage?.promptInfo}
+                    {#if !promptInfo || Object.keys(promptInfo).length === 0}
                         <div class="text-gray-300 text-lg mt-2">{language.promptInfoEmptyMessage}</div>
                     {:else}
                         <div class="grid grid-cols-2 gap-y-2 gap-x-4 mt-4">
                             <span class="text-blue-500">Preset Name</span>
-                            <span class="text-blue-500 justify-self-end"
-                                >{currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptName}</span
-                            >
+                            <span class="text-blue-500 justify-self-end">{promptInfo.promptName}</span>
                             <span class="text-purple-500">Toggles</span>
                             <div
                                 class="col-span-2 max-h-32 overflow-y-auto border border-stone-500 rounded-sm p-2 bg-gray-900"
                             >
-                                {#if currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptToggles.length === 0}
+                                {#if (promptInfo.promptToggles ?? []).length === 0}
                                     <div class="text-gray-500 italic text-center py-4">
                                         {language.promptInfoEmptyToggle}
                                     </div>
                                 {:else}
                                     <div class="grid grid-cols-2 gap-y-2 gap-x-4">
-                                        {#each currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptToggles as toggle}
+                                        {#each promptInfo.promptToggles ?? [] as toggle}
                                             <span class="text-gray-200 truncate">{toggle.key}</span>
                                             <span class="text-gray-200 justify-self-end truncate">{toggle.value}</span>
                                         {/each}
@@ -642,12 +629,12 @@
                             <div
                                 class="col-span-2 max-h-80 overflow-y-auto border border-stone-500 rounded-sm p-4 bg-gray-900"
                             >
-                                {#if !currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptText}
+                                {#if !promptInfo.promptText}
                                     <div class="text-gray-500 italic text-center py-4">
                                         {language.promptInfoEmptyText}
                                     </div>
                                 {:else}
-                                    {#each currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptText as block}
+                                    {#each promptInfo.promptText as block}
                                         <div class="mb-2">
                                             <div class="font-bold text-gray-600">{block.role}</div>
                                             <pre
@@ -682,10 +669,7 @@
                     <button
                         class="ml-auto"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "",
-                            });
+                            alertStore.answer("");
                         }}>✖</button
                     >
                 </div>
@@ -721,10 +705,7 @@
                         onclick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            alertStore.set({
-                                type: "none",
-                                msg: "importFromRealm",
-                            });
+                            alertStore.answer("importFromRealm");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -740,10 +721,7 @@
                         onclick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            alertStore.set({
-                                type: "none",
-                                msg: "importCharacter",
-                            });
+                            alertStore.answer("importCharacter");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -758,10 +736,7 @@
                         onclick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            alertStore.set({
-                                type: "none",
-                                msg: "createfromScratch",
-                            });
+                            alertStore.answer("createfromScratch");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -776,10 +751,7 @@
                         onclick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            alertStore.set({
-                                type: "none",
-                                msg: "cancel",
-                            });
+                            alertStore.answer("cancel");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -795,10 +767,7 @@
                     <button
                         class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "0",
-                            });
+                            alertStore.answer("0");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -811,10 +780,7 @@
                     <button
                         class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "1",
-                            });
+                            alertStore.answer("1");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -827,10 +793,7 @@
                     <button
                         class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
                         onclick={() => {
-                            alertStore.set({
-                                type: "none",
-                                msg: "cancel",
-                            });
+                            alertStore.answer("cancel");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -844,6 +807,7 @@
 {:else if $alertStore.type === "cardexport"}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
+        data-alert-dialog
         class="fixed top-0 left-0 h-full w-full bg-black/50 flex flex-col z-50 items-center justify-center"
         role="button"
         tabindex="0"
@@ -864,13 +828,12 @@
                 <button
                     class="float-right text-textcolor2 hover:text-green-500"
                     onclick={() => {
-                        alertStore.set({
-                            type: "none",
-                            msg: JSON.stringify({
+                        alertStore.answer(
+                            JSON.stringify({
                                 type: "cancel",
                                 type2: cardExportType2,
                             }),
-                        });
+                        );
                     }}
                 >
                     <XIcon />
@@ -915,50 +878,49 @@
             <Button
                 className="mt-4"
                 onclick={() => {
-                    alertStore.set({
-                        type: "none",
-                        msg: JSON.stringify({
+                    alertStore.answer(
+                        JSON.stringify({
                             type: cardExportType,
                             type2: cardExportType2,
                         }),
-                    });
+                    );
                 }}>{language.export}</Button
             >
         </div>
     </div>
 {:else if $alertStore.type === "toast"}
-    <div
-        class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-50 text-textcolor"
-        onanimationend={() => {
-            alertStore.set({
-                type: "none",
-                msg: "",
-            });
-        }}
-    >
-        {$alertStore.msg}
-    </div>
+    <!-- Keyed: each toast runs its own animation, and its end clears the status only while it is still that toast. -->
+    {#each [$alertStore] as toast (toast)}
+        <div
+            class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-50 text-textcolor"
+            onanimationend={() => {
+                alertStore.clearStatus(toast);
+            }}
+        >
+            {toast.msg}
+        </div>
+    {/each}
 {:else if $alertStore.type === "selectModule"}
-    <ModuleChatMenu
-        alertMode
-        close={(d) => {
-            alertStore.set({
-                type: "none",
-                msg: d,
-            });
-        }}
-    />
+    <div data-alert-dialog class="contents">
+        <ModuleChatMenu
+            alertMode
+            close={(d) => {
+                alertStore.answer(d);
+            }}
+        />
+    </div>
 {:else if $alertStore.type === "pukmakkurit"}
     <!-- Log Generator by dootaang, GPL3 -->
     <!-- Svelte, Typescript version by Kwaroran -->
 
-    <div class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center">
+    <div data-alert-dialog class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center">
         <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-full overflow-y-auto">
             <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">{language.preview}</h2>
         </div>
     </div>
 {:else if $alertStore.type === "branches"}
     <div
+        data-alert-dialog
         class="absolute w-full h-full z-50 bg-black/80 flex justify-center items-center overflow-x-auto overflow-y-auto"
     >
         {#if branchHover !== null}
@@ -974,10 +936,7 @@
             <button
                 class="bg-darkbg border-darkborderc border p-2 rounded-md"
                 onclick={() => {
-                    alertStore.set({
-                        type: "none",
-                        msg: "",
-                    });
+                    alertStore.answer("");
                 }}
             >
                 <XIcon />
@@ -1039,9 +998,13 @@
         {/each}
     </div>
 {:else if $alertStore.type === "requestlogs"}
-    <RequestLogsPopup />
+    <div data-alert-dialog class="contents">
+        <RequestLogsPopup />
+    </div>
 {:else if $alertStore.type === "upstreamImportReport"}
-    <UpstreamImportReport />
+    <div data-alert-dialog class="contents">
+        <UpstreamImportReport />
+    </div>
 {/if}
 
 <style>

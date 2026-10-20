@@ -446,7 +446,14 @@ async function runPinnedServerJob(
     }
     try {
         if (outcome === "started") {
-            options.onStart?.();
+            try {
+                options.onStart?.();
+            } catch (error) {
+                // The job runs anyway: it is still followed to its end, which releases what this tab
+                // holds for it (a plugin reload waits for a job that is never released).
+                void followJobToEnd(jobId, ref).catch((followError) => console.error("[Generation]", followError));
+                throw error;
+            }
         }
         const terminal = await followJobToEnd(jobId, ref);
         return { outcome, terminal };

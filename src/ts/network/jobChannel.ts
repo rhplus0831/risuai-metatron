@@ -1,6 +1,7 @@
 import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
+import { noteChannelCallbacks } from "./generationJobs";
 import { get } from "svelte/store";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
@@ -35,8 +36,9 @@ import {
     alertSelectChar,
     alertToast,
     alertWait,
-    waitAlert,
+    openAlertDialog,
 } from "../alert";
+import type { AlertDialog } from "../alertQueue";
 import { language } from "../../lang";
 import type { MCPClientLike } from "../process/mcp/internalmcp";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
@@ -61,7 +63,6 @@ import {
     type HydrationRecord,
 } from "../storage/resourceSync.svelte";
 import {
-    alertStore as alertState,
     bodyIntercepterStore,
     CharEmotion,
     hypaV3ProgressStore,
@@ -76,10 +77,12 @@ import {
  *
  * - Events are taken in socket order without waiting for a callback to finish, so an aux request's
  *   child callback can run while its parent waits.
- * - The UI is one queue: notices and questions are shown one at a time while a question or a modal
- *   notice is open (toasts too: a toast would replace the question in the shared alert store); a
- *   modal notice is awaited before the next. A `cancel` closes a question that is showing and drops
- *   its answer.
+ * - The UI is one queue across jobs, so every job's notices and questions keep their order: while a
+ *   question or a modal notice is open, later notices (toasts too) and questions wait behind it, and
+ *   each modal notice's own dialog is awaited before the next item. The alert store queues dialogs
+ *   itself (a local alert never replaces a job's question, nor a job's question a local one), so a
+ *   job's dialog may wait behind local ones. A `cancel` removes the question's dialog, shown or
+ *   still queued, and drops its answer.
  * - A callback runs behind the barrier: pending local work is flushed, the newest hydration of every
  *   record the server listed is applied again, and each must be held at least as new as listed;
  *   otherwise the answer is `failed`/`barrier`. The hook set runs under the job's targets
@@ -132,8 +135,14 @@ const requests = new Map<string, { jobId: string; answer: ChannelAnswer | null; 
 const outstanding: Outstanding[] = [];
 const uiQueue: UiItem[] = [];
 let uiBusy = false;
-/** The question showing now: its job, the alert it opened (to close only its own), and its cancellation. */
-let showing: { id: string; jobId: string; alert: unknown; cancelled: boolean; release: () => void } | null = null;
+/** The question asked now (its dialog shown or queued): its job, its dialog (to cancel only its own), and its cancellation. */
+let showing: {
+    id: string;
+    jobId: string;
+    dialog: AlertDialog | null;
+    cancelled: boolean;
+    release: () => void;
+} | null = null;
 /** Each live job's newest hydration per record, retained only for its callback barriers. */
 const hydrations = new Map<string, Map<string, HydrationRecord>>();
 
@@ -339,8 +348,10 @@ async function drainUi() {
         while (uiQueue.length > 0) {
             const item = uiQueue.shift()!;
             if (item.type === "notice") {
-                if (showNotice(item.notice)) {
-                    await waitAlert();
+                // A modal notice: its own dialog is awaited (not every local dialog queued with it).
+                const { dialog } = openAlertDialog(() => showNotice(item.notice));
+                if (dialog) {
+                    await dialog.closed;
                 }
                 continue;
             }
@@ -351,20 +362,22 @@ async function drainUi() {
             let value: unknown;
             let failed = false;
             let failure: unknown;
-            const result = ask(item.event).then(
-                (resolved) => {
-                    value = resolved;
-                },
-                (error) => {
-                    failed = true;
-                    failure = error;
-                },
+            // The alert functions queue their dialog synchronously: this is the dialog this question owns.
+            const { value: result, dialog } = openAlertDialog(() =>
+                ask(item.event).then(
+                    (resolved) => {
+                        value = resolved;
+                    },
+                    (error) => {
+                        failed = true;
+                        failure = error;
+                    },
+                ),
             );
-            // The alert functions set the store synchronously: this is the alert this question owns.
-            const current = { id: item.event.id, jobId: item.jobId, alert: get(alertState), cancelled: false, release };
+            const current = { id: item.event.id, jobId: item.jobId, dialog, cancelled: false, release };
             showing = current;
-            // A cancel (or the job's end) releases the queue at once; the alert's own poller then
-            // resolves later and is ignored.
+            // A cancel (or the job's end) removes the dialog and releases the queue at once; the helper's
+            // own result (the cancelled dialog closes with "") is ignored.
             await Promise.race([result, released]);
             showing = null;
             if (current.cancelled) {
@@ -382,8 +395,8 @@ async function drainUi() {
 }
 
 /**
- * Cancels the question showing: closes its alert only while that alert is still the one showing
- * (local UI may have replaced it), and releases the queue either way.
+ * Cancels the question asked now: removes its own dialog, whether shown or still queued behind
+ * another, and releases the queue.
  */
 function cancelShowing() {
     const current = showing;
@@ -391,9 +404,7 @@ function cancelShowing() {
         return;
     }
     current.cancelled = true;
-    if (get(alertState) === current.alert) {
-        alertClear();
-    }
+    current.dialog?.cancel();
     current.release();
 }
 
@@ -889,13 +900,19 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     }
     const entry: Outstanding = { jobId, id: event.id, targets: event.targets, cancelled: false };
     outstanding.push(entry);
+    // A running callback is plugin work: a plugin reload waits for it (`generationJobs.ts`).
+    noteChannelCallbacks(outstanding.length);
+    const settle = () => {
+        const index = outstanding.indexOf(entry);
+        if (index !== -1) {
+            outstanding.splice(index, 1);
+        }
+        noteChannelCallbacks(outstanding.length);
+    };
     remember(event.id, { jobId, answer: null });
     void runCallback(event, entry)
         .then((message) => {
-            const index = outstanding.indexOf(entry);
-            if (index !== -1) {
-                outstanding.splice(index, 1);
-            }
+            settle();
             if (entry.cancelled) {
                 const state = requests.get(event.id);
                 if (state) {
@@ -905,7 +922,10 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
             }
             answer(jobId, message);
         })
-        .catch((error) => console.error("[Channel]", error));
+        .catch((error) => {
+            settle();
+            console.error("[Channel]", error);
+        });
 }
 
 /**

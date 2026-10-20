@@ -18,6 +18,7 @@ import {
     MAX_REGEX_PATTERN_CHARS,
     type ScriptWorkerPool,
 } from "../scripts/workerPool.ts";
+import { allowListenerOrigin } from "./testSupport.ts";
 
 /**
  * The script worker pool (Phase 5 slice 2) under the real `worker.ts` workers. Timing bounds are
@@ -799,6 +800,7 @@ describe("the shared pool", () => {
         it("terminates a ReDoS regex at its deadline while HTTP stays responsive, and recovers", async () => {
             const server = http.createServer((_req, res) => res.end("ok"));
             await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+            allowListenerOrigin(server);
             const port = (server.address() as AddressInfo).port;
             try {
                 const [runaway, ms] = await timed(async () => {

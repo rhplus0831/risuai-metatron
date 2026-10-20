@@ -10,12 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `activePersona`'s setter would drop the write. The name and description inputs write the selected
 // persona through the view, and follow a selection change.
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(),
-    alertSelect: vi.fn(),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
 // `persona.ts` pulls the PNG and inlay code in; its `changeUserPersona` is one line over `pickBinding`,
 // which the slice 5 tests below reach through the page.
@@ -384,6 +379,24 @@ describe("PersonaSettings module links", () => {
         expect(page.names()).toEqual(["Dup A"]);
         page.search("");
         expect(page.names()).toEqual(["Dup A", "unnamed", "Zeta"]);
+    });
+
+    it("the search matches Korean names by initial consonants and by a half-composed last syllable, keeping the list's order", () => {
+        install([
+            { id: "zeta", name: "Zeta", description: "" },
+            { id: "captain", name: "해적 선장", description: "" },
+            { id: "beach", name: "해변", description: "" },
+            { id: "ship", name: "해적선", description: "" },
+        ]);
+        const page = renderLinks();
+        const pirates = page.names().filter((name) => name?.startsWith("해적"));
+        expect(pirates).toHaveLength(2);
+        page.search("ㅎㅈ");
+        expect(page.names()).toEqual(pirates);
+        page.search("해저");
+        expect(page.names()).toEqual(pirates);
+        page.search("ㅎㅂ");
+        expect(page.names()).toEqual(["해변"]);
     });
 
     it("a row toggles the id on the open chat's bound persona in canonical form, keeping unknown ids and dropping blank ones; the tab's persona is untouched", () => {

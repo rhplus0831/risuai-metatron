@@ -47,18 +47,15 @@ vi.mock("src/ts/globalApi.svelte", () => ({
 
 vi.mock("src/ts/alert", async (importOriginal) => {
     // The terminal notice is the real one: the plugin key listeners read its flag.
-    const { alertTerminal, acknowledgeTerminalNotice, terminalNoticeShown } =
+    const { terminalNotice, alertTerminal, acknowledgeTerminalNotice, terminalNoticeShown } =
         await importOriginal<typeof import("src/ts/alert")>();
-    return {
+    return (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(async () => true),
-        alertError: vi.fn(),
-        alertNormal: vi.fn(),
-        alertMd: vi.fn(),
-        alertStore: { set: vi.fn(), subscribe: vi.fn() },
+        terminalNotice,
         alertTerminal,
         acknowledgeTerminalNotice,
         terminalNoticeShown,
-    };
+    });
 });
 
 // Permissions are granted (`getRootDocument` asks for `mainDom`): no prompt and no grant record.

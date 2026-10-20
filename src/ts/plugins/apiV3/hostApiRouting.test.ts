@@ -52,13 +52,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: alerts.confirm,
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: alerts.confirm,
+    }),
+);
 
 // The module-update effect of `stores.svelte.ts` tracks `enabledModules`; nothing here needs modules.
 vi.mock("src/ts/process/modules", () => ({

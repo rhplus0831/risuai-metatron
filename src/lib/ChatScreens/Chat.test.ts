@@ -21,16 +21,13 @@ const hoisted = vi.hoisted(() => ({
     edittrans: vi.fn((text: string) => text),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertError: hoisted.alerts.error,
-    alertConfirm: hoisted.alerts.confirm,
-    alertNormal: hoisted.alerts.normal,
-    alertInput: vi.fn(),
-    alertClear: vi.fn(),
-    alertRequestData: vi.fn(),
-    alertWait: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: hoisted.alerts.error,
+        alertConfirm: hoisted.alerts.confirm,
+        alertNormal: hoisted.alerts.normal,
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

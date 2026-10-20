@@ -24,6 +24,8 @@ git show 46eeee597:docs/plan/settings-ui-reorg.md
 git show cfe072e4e:docs/plan/open-bug-fixes.md
 git show 723700902:docs/plan/boot-resource-cache.md
 git show 639ba5b2e:docs/plan/heap-memory.md
+git show d30735b05:docs/plan/search.md
+git show f4c26f27d:docs/plan/risunest-small-wins.md
 git show 74f770e19:docs/plan/upstream-bin-compat.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
@@ -50,6 +52,8 @@ it is not a current architecture guide.
 | Open Bug Fixes                      | `cfe072e4e`: `docs/plan/open-bug-fixes.md`                                | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [chat pipeline](../structure/chat-pipeline.md), [memory](../structure/memory.md), [plugins/MCP](../structure/plugins-mcp.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [browser notifications](../structure/global-api.md), [media](../structure/media-aux.md) |
 | Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                   |
 | Heap Memory Reduction               | `639ba5b2e`: `docs/plan/heap-memory.md`                                   | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [CBS/rendering](../structure/cbs-rendering.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
+| Search                              | `d30735b05`: `docs/plan/search.md`                                        | [UI/theming](../structure/ui-theming.md), [characters/modules](../structure/characters-modules.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [matcher](../structure/global-api.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                     |
+| RisuNest Small Wins                 | `f4c26f27d`: `docs/plan/risunest-small-wins.md`                           | [build/test](../structure/build-test-platforms.md), [plugins/MCP](../structure/plugins-mcp.md), [alerts](../structure/global-api.md), [app shell](../structure/app-shell.md), [server/Docker](../structure/self-host-server.md), `STRUCTURE.md` V4–V9                                                                                                                                                                                                        |
 | Upstream `.bin` Compatibility       | `74f770e19`: `docs/plan/upstream-bin-compat.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [backups](../structure/backup-sync-hub.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                       |
 
 The archived Web Push file still says “planned”; the implementation shipped in
@@ -96,9 +100,40 @@ in `639ba5b2e`). The driver's JS self size at boot went from 191.3 MB to 61.6 MB
 tuple proxies from 132,600 to 0; the archived file holds every slice's table. At the merge,
 B2's frozen-list `CharConfig` rows replaced open-bug-fixes slice C7's tuple-keyed rows (C7's
 regression tests kept and passing).
+Search (Haejeok survey items F1, F2, A3, A4 and the PocketRisu settings-search pick) landed all
+nine slices on 2026-10-20 through the plan runner from a worktree, one cherry-picked commit each,
+and `metatron` was fast-forwarded to `d30735b05`: `color-scheme` on the theme root (1
+`a6082b735`), the shared `es-hangul` matcher `src/ts/util/koreanSearch.ts` (2a `ceeb22d92`), the
+batched `LIKE` message search route `POST /api/chats/search` (4a `016028c47`), the catalog and
+sidebar chat list filters (2b `89bd9a57a`), the lorebook list filter (2c `fd2f81040`), the
+settings search index and locations (3a `faaeba64f`, which also fixed the matcher's throw on
+Latin queries `es-hangul` cannot assemble, such as `jinja`), the module and persona filters (2d
+`b9dcbbe20`), the settings search field and deep link (3b `c32a17f12`), and the message search
+panel with the jump to a message (4b `f99028fd0`). The archived Decisions section records the
+defaults every slice took (no FTS index; the `LIKE` scan measured at 516–674 ms over 145 MiB of
+seeded messages, under the 1 s threshold of Decision 7). The final checks on the target branch
+passed (`pnpm check`, `format:check`, `test:agent` 5738 passed). Slices 1, 3b and 4b were driven
+in headless Chrome; 2b, 2c, 2d and 3a were verified by tests and reviews only.
+RisuNest Small Wins (RisuNest survey items 1–5 and 17) landed all nine slices on 2026-10-20
+through the plan runner from a worktree, one cherry-picked commit each, then merged `metatron`
+(the Search plan) into the branch as `abde78c57` and fast-forwarded `metatron` to it: the
+unit-test network guard `vitest.testNetwork.ts` (T1 `86411442f`), the plugin fixes (unread
+`nativeFetch` body expiry at 60 s, `terminate` aborting host calls, the non-3.0 plugin report; P1
+`a293fc574`), the `.dockerignore` (K1 `90882b0cd`), `STRUCTURE.md` V4–V9 with `pnpm check:tests`
+and the shared `createAlertMock` (E1 `9e72646ac`), the deferred plugin reload after a remote
+`plugins` change (P2 `ed9d207c5`), the GitLab CI pipeline and `util/ci/check.sh` (K2
+`f6ac36f7a`), the alert queue `alertQueue.ts` (A1 `96a296e34`), the remaining alert mocks
+through the factory (E2 `58ebd1452`), and safe boot `safeBoot.ts` (S1 `dd9b50ce5`). Decisions:
+D1 GitLab CI with a Runner for `metatron` and `main` only (the plan's Forgejo/Gitea options did
+not apply; the forge is GitLab); D2, D4 (never interrupt), D5 (once per page load), D6 (two
+boots, 10 s), D7 (exact origins) at their defaults; D3 moot (the heap branch had merged). The
+final checks on the merged branch passed (`pnpm check`, `check:tests`, `format:check`, `build`;
+`test:agent --all` 5929 passed with only the known stale `importPngCaps` failure). A1 and S1 were
+driven in headless Chrome; K1 was checked with a real `docker build`; K2 with a clean-clone run on
+the host and in a `node:24` container.
 Upstream `.bin` Compatibility (import an upstream RisuAI `.bin` as a full replace with a report,
 and export a `.bin` upstream restores) landed all eight slices on the `upstream-bin-compat` branch
-on 2026-10-20 and 2026-10-21; merging it into `metatron` is the user's decision. Commits: S1 codec
+on 2026-10-20 and 2026-10-21, and the branch was merged into `metatron` on 2026-10-21. Commits: S1 codec
 `620fc6fc1` and the msgpackr 2.0.6 pin `48d5571af` (merged `ca2592b59`), S2 archive classification
 `3d5c8b747` (`d651f3b2a`), S3 settings/presets converter `cb4c9ca48` (`3eedde66f`), S4
 characters/chats/cold storage `0952e2113` (`767db8df3`), S6 exporter `adc90f97d` (`ac5c6fd05`), the
@@ -290,6 +325,59 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `measureHeap.mjs` and `measureFileSources.mjs` check `exitCode` only (a signal-killed
     server child is missed); no server-side egress accounting; the user's own style and
     real font files were not measured.
+- Search:
+  - Slice 1: the native `<select>` popup was not seen in a real desktop browser (headless
+    Chrome does not draw it); check Settings › Display on the `light` scheme with a dark OS
+    and on `dark` with a light OS.
+  - 2a: the matcher's case fold is `toLowerCase` plus a final-sigma fold, not full Unicode
+    case folding (ſ/S, ϐ/Β).
+  - 2b: no browser check of drag being off while filtered, folders shown open, and drag
+    returning after clearing; a row renamed under the filter hides once its name no longer
+    matches.
+  - 2c: an entry added while filtering is hidden at once (its fields are empty); no
+    "no results" line (needs an `en.ts` key); a detail open inside a folder closes when the
+    next query drops that folder; `onEnd` of a drag that started before the filter is untested.
+  - 3a: the navigation page and Model tab labels are repeated in `searchIndex.ts`
+    (`PAGES`, `MODEL_TABS`) because `Settings.svelte`'s `navGroups` cannot be imported.
+  - 3b: 390 px mobile, Firefox, Safari and the Korean UI were not browser-checked.
+  - 4a: an unauthenticated request answers 400 `No auth header` (the server's rule), not the
+    plan's 401; `shared/diagnostics.ts` `ROUTE_TEMPLATES` gained the path.
+  - 4b: `Chats.svelte`'s 700 ms latest-message auto-scroll ignores `suspendTrim` and can undo
+    a finished jump (the bookmark jump too); Escape with Settings open above the panel closes
+    the panel; the previous error line stays visible during the next debounce; a real large
+    database was not measured (the real saves on the machine were 352 KB).
+  - Not in the plan: `prose-invert={$ColorSchemeTypeStore}` in `AlertComp.svelte` and
+    `MultiLangDisplay.svelte` is always truthy; the persona list itself has no name filter.
+- RisuNest small wins:
+  - T1: an iframe's `contentWindow.parent.WebSocket` (the backing window) stays unguarded;
+    `build-test-platforms.md` `Files` does not list the three root `vitest.testNetwork*`
+    files; raw `node:http`/`net`/`tls` sockets, worker threads and child processes are not
+    guarded.
+  - P1: no browser check of the "Unsupported API" badge or the real-iframe expiry; a
+    `nativeFetch` without a `signal` is not aborted by `terminate` (its late body is
+    cancelled); a hash failure that recovers reports the plugin once more.
+  - E1: `util/` stays outside `pnpm check`, so `testInventory.mjs` and its test are not
+    type-checked.
+  - P2: no browser check (two tabs or devices, a reload deferred during a generation); the
+    `onStart`-throw follow in `serverCommands.ts` is untested; with D4 plugin work that never
+    ends defers the reload until a local reload (`plugins-mcp.md` Known Hazard).
+  - K2: not yet run on the real GitLab Runner (`$CI_PROJECT_DIR` expansion and the cache upload
+    unverified); the Runner's Docker executor needs a tmpfs `/tmp`
+    (`server/src/tests/resourcePatchParts.test.ts` runs past 5 s on a disk-backed `/tmp`) and
+    must accept untagged jobs; "Auto-cancel redundant pipelines" must be on for
+    `interruptible`.
+  - A1: `e2e/terminalNotice.spec.ts` not re-run; found outside the slice (project memory): a
+    job's status alert left after the job ends, alert keys ignored while a text input has
+    focus, `alertClear` clearing another job's status, the branches/HypaV2 dialogs reading
+    the selection late, a gated Escape still closing the settings, `makeGroupImage` leaving
+    its wait.
+  - S1: GUI HTML gating under `SafeModeStore` not checked in the browser or by a unit test;
+    `STRUCTURE.md` S1 and `ui-theming.md` still describe safe mode as custom CSS only;
+    `bootstrap.safeBoot.test.ts` duplicates the service-worker test's mock preamble; a
+    plugin whose script throws at start fails every boot it runs in (`app-shell.md` Known
+    Hazard); modules, global regex and Lua (server-side per job) cannot be turned off.
+  - Known stale test untouched by the plan: `server/src/tests/importPngCaps.test.ts` fails
+    on a clean tree (`{ total }` expected, `card` also returned).
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 

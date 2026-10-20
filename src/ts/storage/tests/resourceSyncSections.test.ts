@@ -34,12 +34,14 @@ vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 
-vi.mock("../../alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertReloadNotice: alerts.normal,
-    alertNormalWait: alerts.normalWait,
-}));
+vi.mock("../../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertReloadNotice: alerts.normal,
+        alertNormalWait: alerts.normalWait,
+    }),
+);
 
 // `installBootRecords` applies the stored language; the locale tables are not under test.
 vi.mock("src/lang", () => ({

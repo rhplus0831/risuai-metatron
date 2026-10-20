@@ -22,7 +22,7 @@ vi.mock("./storage/settingsViews.svelte", () => ({
 }));
 vi.mock("./process/modules", () => ({ moduleUpdate: vi.fn() }));
 vi.mock("./parser/parser.svelte", () => ({}));
-vi.mock("./alert", () => ({ alertToast: vi.fn() }));
+vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lang", () => ({ language: {} }));
 vi.mock("./network/generationJobs", () => ({ generationClientId: () => "client" }));
 vi.mock("./plugins/apiV3/pluginContext", () => ({ capturePluginContext: () => undefined, invokeHook: vi.fn() }));

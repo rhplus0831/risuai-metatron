@@ -6,13 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 // `autoTranslateCachedOnly` only for the LLM translator on `"rendered"`. The conditions read
 // `ctx.settings.memoryTranslateMedia` alone, so a minimal context stands in for the real one.
 
-vi.mock("../alert", () => ({
-    alertNormal: vi.fn(),
-    alertSelect: vi.fn(),
-    alertConfirm: vi.fn(),
-    alertError: vi.fn(),
-    alertWait: vi.fn(),
-}));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 // `./utils` (the wrapper's write) reaches the settings views and the stores, whose module effect is
 // not under test.

@@ -20,7 +20,7 @@ import {
     QUESTION_TIMEOUT_MS,
 } from "../jobs/channel.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 6, the server side of the job channel. First the hub in isolation
 // (`server/src/jobs/channel.ts`) over a recording transport with an injected clock: the hook
@@ -687,6 +687,7 @@ describe("the registry over a real socket", () => {
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
+        allowListenerOrigin(started);
         server.context.attachWebSocket(started);
         base = `http://127.0.0.1:${(started.address() as { port: number }).port}`;
         signer = await createSigner();

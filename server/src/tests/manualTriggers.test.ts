@@ -6,7 +6,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { createSigner, createTestServer, json } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
 // Phase 5 slice 8b: a manual trigger as a server `command` job end to end on a real listening
 // server with the default runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the
@@ -68,6 +68,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

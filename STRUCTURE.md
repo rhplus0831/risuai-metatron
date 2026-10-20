@@ -31,6 +31,12 @@ Tooling:
   with runes; preserve established store boundaries.
 - T4. Format changed files with `pnpm exec prettier --write <files>` and honor
   `.prettierignore`; `pnpm format:check` is the repository formatting check.
+- T5. Code comments, test titles, identifiers, and file names describe current
+  behavior, not the work item that added it: no plan, phase, slice, stop, or audit
+  labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or `docs/plan/<plan>.md S2`.
+  Plans move to the archive when done, so these labels go stale. State the reason
+  itself ("since chats became their own records", not "since slice 9"); history
+  belongs in commits and [the archive](docs/archived-plan/README.md).
 
 Verification:
 
@@ -43,7 +49,9 @@ Verification:
   [build-test-platforms](docs/structure/build-test-platforms.md).
 - V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories.
   Vitest defaults to happy-dom; server tests select Node. The setup mocks KaTeX,
-  replaces `safeStructuredClone` with a JSON clone, and patches happy-dom for DOMPurify.
+  replaces `safeStructuredClone` with a JSON clone, patches happy-dom for DOMPurify,
+  and refuses network requests except `data:`/`blob:` and loopback origins a test
+  registered (`vitest.testNetwork.ts`).
   Domain guides own focused test paths and coverage gaps.
 - V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real
   wall-clock time, CPU time, or the scheduler: no elapsed-time or throughput
@@ -54,6 +62,24 @@ Verification:
   changes, and keep a test only when a plausible wrong implementation would fail
   it. Details and the inventory of current offenders:
   [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
+- V4. Before committing, `rg` each changed product export and file name across `src`,
+  `server`, `shared`, `util`, `e2e`, and `docs`, and update the consumers it finds
+  (scripts that read source as text and guides that name it included).
+- V5. A check that could not start, or was not run, is reported as unverified, never
+  as passed.
+- V6. A new regression test is shown to fail once with the line it guards broken.
+- V7. Mock only process and I/O boundaries (network, file system, clock, workers, the
+  server, dialogs). A module mocked in more than one file gets one shared, typed
+  factory in a `tests/` directory whose defaults `satisfies` the module's export type,
+  so a new export breaks `pnpm check` instead of a run under load. `src/ts/alert.ts`
+  has `createAlertMock` (`src/ts/tests/alertMock.ts`).
+- V8. Product code never imports test code (`tests/` directories, `*.test.*`,
+  test-only helpers); test-only helpers live in a `tests/` directory so the rule is
+  checkable. `pnpm check:tests` checks it, and that every test file belongs to exactly
+  one runner and the slow-test table matches the `slow` tags; run it after adding,
+  moving, or tagging a test.
+- V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which
+  pulls the file into the module graph and coverage as text).
 
 Data and persistence:
 

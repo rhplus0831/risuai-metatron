@@ -87,6 +87,16 @@
     import Button from "../UI/GUI/Button.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { getAdditionalChatLoadPages, getInitialChatLoadPages } from "src/ts/chatLoadPages";
+    import {
+        cancelMessageJump,
+        claimMessageJump,
+        completeMessageJump,
+        isMessageJumpCurrent,
+        type MessageJump,
+        messageJumpStopped,
+        pendingMessageJump,
+    } from "src/ts/messageSearch.svelte";
+    import { runMessageJump } from "./messageJump";
 
     const subModel = $derived(getModelInfoForMode("submodel").id);
 
@@ -112,7 +122,11 @@
     let chatsInstance: any = $state();
     let revealing = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
-    let isScrollingToMessage = $state(false);
+    // Running jumps to a message (the bookmark's by index, a search hit's by id): trimming waits for them.
+    let scrollingToMessage = $state(0);
+    const isScrollingToMessage = $derived(scrollingToMessage > 0);
+    /** The chat scroller (`.default-chat-screen`): a search jump looks its row and images up under it. */
+    let chatScroller: HTMLElement | undefined = $state();
     let takingScreenshot = $state(false);
     // The chat rows' shared stylesheets (heap plan C2): one per distinct CSS, after the rows.
     const chatStyles = new ChatStyleRegistry();
@@ -173,7 +187,7 @@
 
     async function scrollToMessage(index: number) {
         // Forces the loading of past messages not rendered on the screen
-        isScrollingToMessage = true;
+        scrollingToMessage += 1;
         try {
             const totalMessages = messages.length;
             const neededLoadPages = totalMessages - index + 5;
@@ -228,7 +242,148 @@
                 }, 2000);
             }
         } finally {
-            isScrollingToMessage = false;
+            scrollingToMessage -= 1;
+        }
+    }
+
+    // A search hit's jump (`src/ts/messageSearch.svelte.ts`): claimed once its chat is selected,
+    // loaded and shown, before any await, so it runs once.
+    $effect(() => {
+        const pending = pendingMessageJump();
+        if (!pending) return;
+        const ref = currentChatRef();
+        if (
+            ref === null ||
+            ref.chaId !== pending.ref.chaId ||
+            ref.chatId !== pending.ref.chatId ||
+            selectedLoad !== null ||
+            !chatShown ||
+            !currentChat ||
+            !chatsInstance ||
+            !chatScroller
+        ) {
+            return;
+        }
+        untrack(() => {
+            const claimed = claimMessageJump(ref);
+            if (claimed) {
+                void scrollToMessageId(claimed);
+            }
+        });
+    });
+
+    let destroyed = false;
+    /** The token of the jump this screen runs, cancelled when the screen goes away. */
+    let ownedJump: number | null = null;
+    onDestroy(() => {
+        destroyed = true;
+        if (ownedJump !== null) {
+            cancelMessageJump(ownedJump);
+        }
+    });
+
+    /** Waits until the scroller's images loaded or failed, at most 4 s or until `stopped`. */
+    function settleImages(scroller: HTMLElement, stopped: Promise<void>): Promise<void> {
+        const images = Array.from(scroller.querySelectorAll("img")).filter((img) => !img.complete);
+        if (images.length === 0) return Promise.resolve();
+        return new Promise((resolve) => {
+            let left = images.length;
+            const finish = () => {
+                clearTimeout(timer);
+                for (const img of images) {
+                    img.removeEventListener("load", settled);
+                    img.removeEventListener("error", settled);
+                }
+                resolve();
+            };
+            const seen = new Set<EventTarget>();
+            function settled(event: Event) {
+                if (event.target && !seen.has(event.target)) {
+                    seen.add(event.target);
+                    left -= 1;
+                    if (left === 0) finish();
+                }
+            }
+            const timer = setTimeout(finish, 4000);
+            for (const img of images) {
+                img.addEventListener("load", settled);
+                img.addEventListener("error", settled);
+            }
+            void stopped.then(finish);
+        });
+    }
+
+    /**
+     * Runs a claimed search jump (`messageJump.ts`): it owns the screen by its token and stops once the
+     * token is replaced, its chat is no longer the selected and shown one, or the transcript was
+     * replaced; the message is found by id in the selected chat after every await (D1).
+     */
+    async function scrollToMessageId(jump: MessageJump) {
+        const { token, ref, messageId } = jump;
+        const chats = chatsInstance;
+        const scroller = chatScroller;
+        if (!chats || !scroller) {
+            cancelMessageJump(token);
+            return;
+        }
+        ownedJump = token;
+        scrollingToMessage += 1;
+        const stopped = messageJumpStopped(token);
+        const isCurrent = () => {
+            const now = untrack(() => currentChatRef());
+            return (
+                !destroyed &&
+                isMessageJumpCurrent(token) &&
+                now?.chaId === ref.chaId &&
+                now.chatId === ref.chatId &&
+                untrack(() => chatShown && chatsInstance === chats && chatScroller === scroller) &&
+                scroller.isConnected
+            );
+        };
+        try {
+            const outcome = await runMessageJump(messageId, {
+                isCurrent,
+                stopped,
+                messages: () => untrack(() => selectedChat()?.message ?? null),
+                foldedIndex: () => untrack(() => chatFoldedStateMessageIndex.index),
+                clearFold: () => {
+                    chatFoldedState.data = null;
+                },
+                loadPages: () => untrack(() => loadPages),
+                setLoadPages: (value) => {
+                    loadPages = value;
+                },
+                tick,
+                whenRendered: () => chats.whenRendered(),
+                findRow: (index) => {
+                    const row = scroller.querySelector<HTMLElement>(`[data-chat-index="${index}"]`);
+                    return row?.isConnected ? row : null;
+                },
+                scrollTo: (row) => row.scrollIntoView({ behavior: "instant", block: "start" }),
+                settleImages: () => settleImages(scroller, stopped),
+                ring: (row) => {
+                    row.classList.add("ring-2", "ring-primary-500");
+                    setTimeout(() => {
+                        row.classList.remove("ring-2", "ring-primary-500");
+                    }, 2000);
+                },
+            });
+            if (outcome === "stopped" || !isCurrent()) {
+                cancelMessageJump(token);
+            } else {
+                completeMessageJump(token);
+                if (outcome === "gone") {
+                    alertNormal(language.messageSearch.messageGone);
+                }
+            }
+        } catch (error) {
+            cancelMessageJump(token);
+            console.error("[MessageSearch] The jump to the message failed", error);
+        } finally {
+            if (ownedJump === token) {
+                ownedJump = null;
+            }
+            scrollingToMessage -= 1;
         }
     }
 
@@ -756,6 +911,7 @@
     {:else if currentChat}
         <div
             class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
+            bind:this={chatScroller}
             class:metatron-chat-theme={settings.ui.theme === "metatron"}
             style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px"
             onscroll={(e) => {

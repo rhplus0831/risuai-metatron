@@ -15,12 +15,12 @@ const hooks = vi.hoisted(() => ({
     serverRuns: [] as { char: any; name: string; ref: any }[],
 }));
 
-vi.mock("../alert", () => ({
-    alertInput: vi.fn((prompt: string) => hooks.input?.(prompt) ?? Promise.resolve("typed")),
-    alertMd: vi.fn(),
-    alertNormal: vi.fn(),
-    alertSelect: vi.fn(async (labels: string[]) => labels[0]),
-}));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertInput: vi.fn((prompt: string) => hooks.input?.(prompt) ?? Promise.resolve("typed")),
+        alertSelect: vi.fn(async (labels: string[]) => labels[0]),
+    }),
+);
 vi.mock("./tts", () => ({ sayTTS: vi.fn() }));
 // The parser stand-in shows which chat a parse was given: `{{chat}}` becomes that chat's id.
 vi.mock("../parser/parser.svelte", () => ({

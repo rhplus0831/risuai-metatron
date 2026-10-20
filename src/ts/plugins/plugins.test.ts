@@ -17,10 +17,12 @@ const mocks = vi.hoisted(() => ({
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: mocks.alertConfirm,
-    alertError: mocks.alertError,
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: mocks.alertConfirm,
+        alertError: mocks.alertError,
+    }),
+);
 
 vi.mock("src/ts/util", () => ({
     selectSingleFile: vi.fn(),
@@ -39,6 +41,7 @@ vi.mock("./apiV3/transpiler", () => ({
 }));
 
 import { language } from "src/lang";
+import { hotReloading } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importPlugin, loadPlugins } from "./plugins.svelte";
@@ -124,5 +127,69 @@ describe("loadPlugins", () => {
         const loaded = mocks.loadV3Plugins.mock.calls[0][0];
         expect(loaded.map((p: any) => p.name)).toEqual(["v3-enabled"]);
         expect(sizesWhenLoading).toEqual([0, 0, 0, 0, 0, 0]);
+    });
+});
+
+// A stored plugin that is not API 3.0 (an upstream backup's `2`, `"2.1"`, or no version) never loads;
+// while enabled it is reported once per page load per identity (name, version, script hash).
+// Each test uses its own names: the reported identities live for the module's lifetime.
+describe("loadPlugins reports enabled non-3.0 plugins", () => {
+    const stored = (name: string, version: unknown, script = "old script", enabled = true) =>
+        ({ name, version, script, enabled }) as any;
+    const reported = (...lines: string[]) =>
+        language.pluginApiVersionUnsupportedLoad.replace("{plugins}", lines.join("\n"));
+
+    it("reports a plugin once over two loads, and again after its script changes", async () => {
+        settings.plugins = [
+            stored("once-legacy", "2.1"),
+            stored("once-v3", "3.0"),
+            stored("once-disabled", "2.1", "old script", false),
+        ];
+        await loadPlugins();
+        await loadPlugins();
+        expect(mocks.alertError.mock.calls).toEqual([[reported("once-legacy (API 2.1)")]]);
+        expect(mocks.loadV3Plugins.mock.calls.map(([plugins]) => plugins.map((p: any) => p.name))).toEqual([
+            ["once-v3"],
+            ["once-v3"],
+        ]);
+
+        settings.plugins = [stored("once-legacy", "2.1", "new script"), stored("once-v3", "3.0")];
+        await loadPlugins();
+        expect(mocks.alertError).toHaveBeenCalledTimes(2);
+        expect(mocks.alertError).toHaveBeenLastCalledWith(reported("once-legacy (API 2.1)"));
+    });
+
+    it("lists a load's plugins in one alert, whatever their version field", async () => {
+        settings.plugins = [stored("list-number", 2), stored("list-none", undefined)];
+        await loadPlugins();
+        expect(mocks.alertError.mock.calls).toEqual([[reported("list-number (API 2)", "list-none (API ?)")]]);
+    });
+
+    it("reports overlapping loads of the same plugins in one alert", async () => {
+        settings.plugins = [stored("overlap-a", "2.1"), stored("overlap-b", "2.1")];
+        const first = loadPlugins();
+        settings.plugins = [stored("overlap-b", "2.1"), stored("overlap-a", "2.1")];
+        await Promise.all([first, loadPlugins()]);
+        expect(mocks.alertError.mock.calls).toEqual([[reported("overlap-a (API 2.1)", "overlap-b (API 2.1)")]]);
+    });
+
+    it("never reports when only 3.0 plugins are enabled", async () => {
+        settings.plugins = [stored("only-v3", "3.0"), stored("only-off", "2.1", "old script", false)];
+        await loadPlugins();
+        expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+
+    it("only logs while a plugin hot-reloads", async () => {
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        hotReloading.push("someone");
+        try {
+            settings.plugins = [stored("hot-legacy", "2.1")];
+            await loadPlugins();
+        } finally {
+            hotReloading.length = 0;
+        }
+        expect(mocks.alertError).not.toHaveBeenCalled();
+        expect(logged).toHaveBeenCalledWith(reported("hot-legacy (API 2.1)"));
+        logged.mockRestore();
     });
 });

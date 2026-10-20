@@ -1,1 +1,32 @@
-node_modules
+# The builder stage runs `COPY . .`, and the runtime stage copies all of `server/` and `shared/`.
+# Keep out what neither `pnpm build` nor the server reads.
+
+# Dependencies and build output, rebuilt in the image.
+**/node_modules
+dist
+
+# Local data and tool output: the server's storage (`save/`, the `pnpm dev:agent` copies), test
+# reports, handovers.
+save
+save-agent
+save-agent.lock
+.save-agent.*
+save-agent.previous-*
+test-results
+playwright-report
+handover
+
+# Repository, editor, and agent state (agent worktrees hold their own `node_modules` and `dist`).
+.git
+.claude
+.idea
+.vscode
+
+# Documentation and browser tests.
+docs
+e2e
+
+# Unit tests and their support. No product file imports from a `tests/` directory or a test file.
+server/src/tests
+shared/**/tests
+**/*.test.ts

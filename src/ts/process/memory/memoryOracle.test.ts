@@ -82,7 +82,11 @@ vi.mock("src/ts/util", () => ({
     appendLastPath: (url: string, lastPath: string) => url.replace(/\/$/, "") + "/" + lastPath.replace(/^\//, ""),
 }));
 vi.mock("src/ts/platform", () => ({ isMobile: false }));
-vi.mock("src/ts/alert", () => ({ alertError: (text: string) => current.alert(text) }));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: (text: string) => current.alert(text),
+    }),
+);
 // The fixture helper reaches `src/lang` while the test file's imports still load (`installFlatDatabase`
 // imports the chat module), so the factory loads the constant itself instead of reading the import.
 vi.mock("src/lang", async () => {

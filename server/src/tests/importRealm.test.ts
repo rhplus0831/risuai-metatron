@@ -9,7 +9,7 @@ import { gzipSync } from "node:zlib";
 import { Buffer as TabBuffer } from "buffer/index.js";
 import crc32 from "crc/crc32";
 import { zipSync } from "fflate";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     MAX_REALM_STAGED,
     REALM_CANCEL_PATH,
@@ -17,7 +17,13 @@ import {
     REALM_IMPORT_PATH,
 } from "../../../shared/realmImport.ts";
 import { MAX_PNG_CHUNKS, MAX_PNG_TEXT_CHUNK_BYTES, PngFileError, planPngFile } from "../routes/importPng.ts";
-import { createResourceTestClient, type ResourceTestClient, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    allowTestLoopbackOrigin,
+    createResourceTestClient,
+    type ResourceTestClient,
+    waitFor,
+} from "./testSupport.ts";
 
 /**
  * The Realm import's prepare (`POST /api/import/realm`), commit, and cancel over a local stand-in for Realm (`startRealm`: one HTTP server answering
@@ -100,6 +106,7 @@ async function startRealm(): Promise<Realm> {
         answer(req, res);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    allowListenerOrigin(server);
     const address = server.address() as { port: number };
     const realm: Realm = {
         url: `http://127.0.0.1:${address.port}`,
@@ -531,6 +538,8 @@ describe("POST /api/import/realm", () => {
     });
 
     it("answers 502 when Realm cannot be reached", async () => {
+        // Nothing listens on port 1: the test wants the refused connection.
+        onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"));
         const realm = await startRealm();
         const s = await server(realm, { realm: { downloadOrigin: "http://127.0.0.1:1" } });
         vi.spyOn(console, "warn").mockImplementation(() => {});

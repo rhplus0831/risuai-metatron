@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the chat went does not throw. The dialog (`ChatBindingDialog.svelte`) wraps the panel, names the
 // chat, focuses its close button, and closes itself when the chat is gone.
 
-vi.mock("src/ts/alert", () => ({ alertConfirm: vi.fn(), alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

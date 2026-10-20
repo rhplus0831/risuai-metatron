@@ -37,7 +37,7 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("src/lang", () => ({ language: { serverJob: { lost: "job lost" } } }));
-vi.mock("../alert", () => ({ alertError: vi.fn(), alertJobError: vi.fn() }));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../network/generationJobs", () => ({
     abortGenerationJob: vi.fn(),
     applyGenerationEvent: vi.fn(),

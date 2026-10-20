@@ -7,7 +7,7 @@ import type { EventFeedFrame } from "../../../shared/events.ts";
 import type { ResourceRevisionListing } from "../../../shared/resources.ts";
 import { createChangeFeed } from "../data/changeFeed.ts";
 import { createEventSockets } from "../routes/events.ts";
-import { createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
 // server: JWT-only authentication, `hello` with the epoch, every committed change delivered to every
@@ -76,6 +76,7 @@ describe("the live-update socket on the server", () => {
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
+        allowListenerOrigin(started);
         server.context.attachWebSocket(started);
         const { port } = started.address() as { port: number };
         base = `http://127.0.0.1:${port}`;
@@ -252,6 +253,7 @@ describe("createEventSockets", () => {
         });
         servers.push(node);
         await new Promise<void>((resolve) => node.listen(0, "127.0.0.1", resolve));
+        allowListenerOrigin(node);
         const { port } = node.address() as { port: number };
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }

@@ -33,10 +33,7 @@ vi.mock("../../globalApi.svelte", () => ({
     saveAsset: vi.fn(),
 }));
 
-vi.mock("../../alert", () => ({
-    alertNormal: vi.fn(),
-    alertError: vi.fn(),
-}));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 // `stores.svelte` wires module updates into a module-level effect, and the real parser module
 // reaches the request pipeline. Neither is exercised.

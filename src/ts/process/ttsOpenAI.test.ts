@@ -22,7 +22,11 @@ vi.mock("../globalApi.svelte", () => ({
     loadAsset: vi.fn(),
 }));
 vi.mock("../storage/llmSecrets.svelte", () => ({ isSecretSet: (path: unknown) => deps.isSecretSet(path) }));
-vi.mock("../alert", () => ({ alertError: (message: string) => deps.alertError(message) }));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: (message: string) => deps.alertError(message),
+    }),
+);
 vi.mock("../storage/database.svelte", () => ({
     getDatabase: () => deps.db,
     getCurrentCharacter: () => null,

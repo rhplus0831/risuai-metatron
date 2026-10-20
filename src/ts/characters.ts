@@ -2,7 +2,16 @@ import { selectCharacter } from "./storage/selection.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
-import { alertAddCharacter, alertConfirm, alertError, alertNormal, alertSelect, alertStore, alertWait } from "./alert";
+import {
+    alertAddCharacter,
+    alertClear,
+    alertConfirm,
+    alertError,
+    alertNormal,
+    alertSelect,
+    alertStore,
+    alertWait,
+} from "./alert";
 import { language } from "../lang";
 import {
     checkNullish,
@@ -762,10 +771,8 @@ export async function makeGroupImage() {
         if (target) {
             target.image = image;
         }
-        alertStore.set({
-            type: "none",
-            msg: "",
-        });
+        // The loading status only: a dialog that opened meanwhile stays.
+        alertClear();
     } catch (error) {
         alertError(error);
     }

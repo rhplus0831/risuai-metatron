@@ -1,6 +1,15 @@
 import { settings } from "./storage/settingsViews.svelte";
 import { writable, type Writable } from "svelte/store";
-import { alertCardExport, alertConfirm, alertError, alertInput, alertNormal, alertStore, alertWait } from "./alert";
+import {
+    alertCardExport,
+    alertClear,
+    alertConfirm,
+    alertError,
+    alertInput,
+    alertNormal,
+    alertStore,
+    alertWait,
+} from "./alert";
 import {
     defaultSdDataFunc,
     type character,
@@ -1991,10 +2000,9 @@ export async function downloadRisuHub(
         checkCharOrder();
         if (imported && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
             changeChar(imported);
-            alertStore.set({
-                type: "none",
-                msg: "",
-            });
+            // The download's status only. The import's own success dialog stays, as on the staged
+            // (PNG, CharX) path; a dialog of anything else is never closed from here.
+            alertClear();
         }
     } catch (error) {
         console.error(error);

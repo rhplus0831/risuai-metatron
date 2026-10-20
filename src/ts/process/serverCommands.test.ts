@@ -109,7 +109,12 @@ vi.mock("src/lang", () => ({
         },
     },
 }));
-vi.mock("../alert", () => ({ alertError: stubs.alertError, alertJobError: stubs.alertJobError }));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: stubs.alertError,
+        alertJobError: stubs.alertJobError,
+    }),
+);
 vi.mock("../network/generationJobs", () => ({
     abortGenerationJob: (jobId: string) => stubs.abort(jobId),
     applyGenerationEvent: stubs.apply,

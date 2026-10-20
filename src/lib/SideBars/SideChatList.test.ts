@@ -13,16 +13,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const alerts = vi.hoisted(() => ({ chatOption: 0 }));
 /** The SortableJS instances the list created, so a test can run a drop's `onEnd` (happy-dom cannot drag). */
-const sortables = vi.hoisted(() => [] as { options: { group: string; onEnd: (event: unknown) => Promise<void> } }[]);
+const sortables = vi.hoisted(
+    () =>
+        [] as {
+            destroyed: boolean;
+            options: { group: string; disabled?: boolean; onEnd: (event: unknown) => Promise<void> };
+        }[],
+);
 
 vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
     class Sortable {
         options: any;
+        destroyed = false;
         constructor(_el: HTMLElement, options: any) {
             this.options = options;
             sortables.push(this);
         }
-        destroy() {}
+        destroy() {
+            this.destroyed = true;
+        }
+        option(name: string, value: unknown) {
+            this.options[name] = value;
+        }
         static create(el: HTMLElement, options: any) {
             return new Sortable(el, options);
         }
@@ -30,13 +42,13 @@ vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
     return { default: Sortable };
 });
 
-vi.mock("src/ts/alert", () => ({
-    alertChatOptions: vi.fn(async () => alerts.chatOption),
-    alertConfirm: vi.fn(async () => true),
-    alertError: vi.fn(),
-    alertSelect: vi.fn(async () => "0"),
-    alertStore: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertChatOptions: vi.fn(async () => alerts.chatOption),
+        alertConfirm: vi.fn(async () => true),
+        alertSelect: vi.fn(async () => "0"),
+    }),
+);
 vi.mock("src/ts/characters", () => ({
     importChat: vi.fn(),
     exportChat: vi.fn(),
@@ -63,6 +75,7 @@ import { language } from "src/lang";
 import { alertConfirm, alertSelect } from "src/ts/alert";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
+import { applyRawCharacter } from "src/ts/storage/records.svelte";
 import {
     chatEntry,
     chatList,
@@ -591,5 +604,111 @@ describe("the chat list modal's new chat button", () => {
         expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
             { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
         ]);
+    });
+});
+
+// Slice 2b of the archived `docs/plan/search.md`: the filter field matches a chat's name and its folder's name
+// (Decision 4) through the Korean-aware matcher; a filtered view opens its folders without writing
+// `folded`, and every SortableJS instance is disabled while the field is non-empty.
+describe("the chat list filter", () => {
+    beforeEach(() => {
+        byChaId("c").chatFolders = [{ id: "f", name: "Harbor", folded: true }];
+        setChatMeta({ chaId: "c", chatId: "k" }, { name: "해적 이야기", folderId: "f" });
+        setChatMeta({ chaId: "c", chatId: "j" }, { name: "Boat Trip", folderId: "f" });
+        setChatMeta({ chaId: "c", chatId: "n" }, { name: "Root Chat" });
+    });
+
+    const field = (target: HTMLElement) =>
+        target.querySelector<HTMLInputElement>(`input[placeholder="${language.search}"]`)!;
+    const type = (target: HTMLElement, text: string) => {
+        field(target).value = text;
+        field(target).dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+    /** The names of the chat rows the user can see (not under a `hidden` element). */
+    const shown = (target: HTMLElement) =>
+        [...target.querySelectorAll<HTMLElement>("[data-risu-chat-idx]")]
+            .filter((row) => !row.closest(".hidden"))
+            .map((row) => row.textContent!.trim());
+    const folderShown = (target: HTMLElement) =>
+        !target.querySelector('[data-risu-chat-folder-idx="0"]')!.classList.contains("hidden");
+    const live = () => sortables.filter((entry) => !entry.destroyed);
+    const dragDisabled = () => live().map((entry) => entry.options.disabled === true);
+
+    it("a foldered chat's name shows that chat in its opened folder and hides the rest, without unfolding it", () => {
+        const { target } = renderSide("c");
+        expect(shown(target)).toEqual(["Root Chat"]);
+        type(target, "boat");
+        expect(shown(target)).toEqual(["Boat Trip"]);
+        expect(folderShown(target)).toBe(true);
+        expect(byChaId("c").chatFolders[0].folded).toBe(true);
+    });
+
+    it("an initial-consonant query matches a Korean chat name", () => {
+        const { target } = renderSide("c");
+        type(target, "ㅎㅈ");
+        expect(shown(target)).toEqual(["해적 이야기"]);
+    });
+
+    it("a folder's name shows all of its chats, and an unmatched folder is hidden", () => {
+        const { target } = renderSide("c");
+        type(target, "harb");
+        expect(shown(target)).toEqual(["해적 이야기", "Boat Trip"]);
+        type(target, "root");
+        expect(shown(target)).toEqual(["Root Chat"]);
+        expect(folderShown(target)).toBe(false);
+    });
+
+    it("drag is off while filtered, also for instances created then, and clearing restores rows and drag", async () => {
+        const { target } = renderSide("c");
+        expect(dragDisabled()).toEqual([false, false, false]);
+        type(target, "boat");
+        expect(dragDisabled()).toEqual([true, true, true]);
+
+        // The list's instances are created again (as after a drop) while the field is non-empty.
+        const chatsSortable = live().find((entry) => entry.options.group === "chats")!;
+        await chatsSortable.options.onEnd.call(chatsSortable, {});
+        flushSync();
+        expect(sortables.filter((entry) => entry.destroyed)).toHaveLength(3);
+        expect(dragDisabled()).toEqual([true, true, true]);
+
+        type(target, "");
+        expect(dragDisabled()).toEqual([false, false, false]);
+        // The folder is folded again: its rows are hidden as before the filter.
+        expect(shown(target)).toEqual(["Root Chat"]);
+        byChaId("c").chatFolders[0].folded = false;
+        flushSync();
+        expect(shown(target)).toEqual(["해적 이야기", "Boat Trip", "Root Chat"]);
+    });
+
+    it("resets when the character changes, not when the server replaces the same character's record", () => {
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        const selected = writable(byChaId("c"));
+        const chara = fromStore(selected);
+        mounted.push(
+            mount(SideChatList, {
+                target,
+                props: {
+                    get chara() {
+                        return chara.current;
+                    },
+                },
+            }),
+        );
+        flushSync();
+        type(target, "boat");
+        applyRawCharacter("c", { ...JSON.parse(JSON.stringify(byChaId("c"))), name: "C refreshed" });
+        selected.set(byChaId("c"));
+        flushSync();
+        expect(byChaId("c").name).toBe("C refreshed");
+        expect(field(target).value).toBe("boat");
+        expect(shown(target)).toEqual(["Boat Trip"]);
+
+        selected.set(byChaId("g"));
+        flushSync();
+        expect(field(target).value).toBe("");
+        expect(shown(target)).toEqual(["Chat GK"]);
+        expect(dragDisabled().every((disabled) => !disabled)).toBe(true);
     });
 });

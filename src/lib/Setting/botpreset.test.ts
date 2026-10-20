@@ -14,13 +14,12 @@ const mocks = vi.hoisted(() => ({
     error: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: mocks.confirm,
-    alertError: mocks.error,
-    alertNormal: vi.fn(),
-    alertInput: vi.fn(),
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: mocks.confirm,
+        alertError: mocks.error,
+    }),
+);
 // Reached through `stores.svelte.ts` and the preset functions' import path; nothing under test needs them.
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),

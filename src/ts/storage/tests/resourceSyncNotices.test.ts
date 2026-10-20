@@ -28,7 +28,7 @@ vi.mock("../serverAuth", () => ({
 vi.mock("../../alert", async (importOriginal) => {
     // The real reload notice store (its latch until dismissed), each request also recorded on `alerts.normal`.
     const actual = await importOriginal<typeof import("../../alert")>();
-    return {
+    return (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
         alertNormal: alerts.normal,
         alertReloadNotice: (msg: string) => {
@@ -38,7 +38,7 @@ vi.mock("../../alert", async (importOriginal) => {
         reloadNotice: actual.reloadNotice,
         dismissReloadNotice: actual.dismissReloadNotice,
         alertNormalWait: alerts.normalWait,
-    };
+    });
 });
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },

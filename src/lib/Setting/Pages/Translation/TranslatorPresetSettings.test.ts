@@ -16,13 +16,14 @@ const alerts = vi.hoisted(() => ({
     normal: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertInput: alerts.input,
-    alertConfirm: alerts.confirm,
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertMd: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertInput: alerts.input,
+        alertConfirm: alerts.confirm,
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+    }),
+);
 
 // `stores.svelte.ts` wires module updates into a module-level effect, `database.svelte.ts` (reached
 // through `process/scripts`) re-exports asset helpers, and the page's file helpers and codec reach

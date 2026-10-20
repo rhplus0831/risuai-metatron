@@ -17,6 +17,8 @@
   - `util/risuUserscript.user.js`
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack runner)
   - `util/agentTest.mjs`, `util/agentTestReporter.ts` (the `test:agent` wrapper and its reporter), `util/requireHuman.mjs` (the human gate)
+  - `util/testInventory.mjs` (the `check:tests` test inventory check)
+  - `util/ci/check.sh` and `.gitlab-ci.yml` (the CI gate and its GitLab pipeline)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
@@ -33,6 +35,7 @@ Relevant `package.json` scripts:
 | `dev`          | `vite`                                                                   | dev server (needs `server`)                                            |
 | `build`        | `vite build --sourcemap`                                                 | production build (served by `server`)                                  |
 | `check`        | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)                                           |
+| `check:tests`  | `node util/testInventory.mjs`                                            | test inventory: runners, slow table, product imports (no test run)     |
 | `test`         | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate; people and CI)                 |
 | `test:agent`   | `node util/agentTest.mjs`                                                | `test` for agents: failures only, cached (`--all` for every test)      |
 | `test:slow`    | `vitest run --tags-filter=slow`                                          | only the `slow` tests                                                  |
@@ -99,6 +102,7 @@ Web:
 
 - Production: `pnpm build` produces `dist/`, which only the Hono self-host server (`pnpm run server`, `server/src/`) or Docker serves. Served any other way (static hosting), the client shows the `NodeServerRequired` notice.
 - Development: `pnpm run server` plus `pnpm dev`.
+- CI: the forge is a self-hosted GitLab, and `.gitlab-ci.yml` runs one job, `check`, for pushes to `metatron` and `main` and for merge requests that target them (`workflow: rules`; nothing else starts a pipeline). The job runs on the `node:24` image with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm` is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI. The pnpm store is cached at `node_modules/.pnpm-store` (`PNPM_STORE_DIR`, which the script passes to `pnpm install`), keyed on `pnpm-lock.yaml`; inside `node_modules` the formatting check, Vitest, and the test inventory skip it. The job uses no secrets and no `save/` data. The Runner's Docker executor should mount `/tmp` as tmpfs (`[runners.docker] tmpfs`): on a disk-backed `/tmp` the SQLite fsyncs of `server/src/tests/resourcePatchParts.test.ts` "stores what the whole-record path stores, for field patches of a character" took 3.8 s alone in a `node:24` container (0.4 s on tmpfs) and ran past Vitest's 5 s default in a full run. A person can run the same script locally (it checks the Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1).
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python llama.cpp sidecar were removed.
 
 ## State
@@ -125,6 +129,7 @@ Web:
   a fresh Node process. Tag a test with `{ tags: ["slow"] }` (the timeout goes in the same object)
   and a whole file with a `/** @module-tag slow */` comment, then update the slow-test selection table in
   `Tests`. The tag is defined in `vitest.config.ts`; an undefined tag fails the run.
+  Run `pnpm check:tests`: it fails while the table and the tags disagree.
 
 ## Tests
 
@@ -138,6 +143,31 @@ Slow tests cover real wall-clock/production limits, cold tokenizers, or fresh No
 processes. Select them when touching the last column below. Discover current tags
 with `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather than relying
 on a count or timing estimate.
+
+Unit tests run behind a network guard. `vitest.setup.ts` routes the global `fetch`,
+`WebSocket`, Node's undici global dispatcher (every hop of a Node `fetch`, redirects included),
+and, under happy-dom, the start of every happy-dom `Fetch`/`SyncFetch` (its fetch, XHR, and
+script, link, and iframe loads, each redirect hop) and the `WebSocket` of every window it builds
+later (an iframe's) through `vitest.testNetwork.ts`. happy-dom's `settings.fetch.interceptor` is
+not used: 20.14.5 leaves an async task pending when `beforeAsyncRequest` throws. The policy
+allows `data:` and `blob:` URLs and the exact loopback origins
+(`http(s)://127.0.0.1|[::1]|localhost:<port>`) a test registered; `ws:`/`wss:` follow their
+HTTP origin. Everything else is refused, relative URLs included: the call throws or rejects as a
+failed request would (an XHR fires `error`), and the setup's `afterEach` fails the test even when
+its code caught the error. The globals are assigned directly, so `vi.stubGlobal("fetch", ...)`
+replaces the guard and `vi.unstubAllGlobals()` restores it. A test that needs the network stubs
+`fetch` (or the module that fetches) or starts a loopback server and registers it:
+`allowTestLoopbackOrigin(origin)` returns the unregister function; server tests call
+`server/src/tests/testSupport.ts` `allowListenerOrigin(server)` once the server listens (a
+`node:http`/`node:net` server or a `ws` `WebSocketServer`), which unregisters on `close()`, and
+`startUpstream` does it itself. A registration outlives `afterEach`, so a `beforeAll` upstream
+serves the whole file; the setup's `afterAll` fails the file when an origin is still registered
+or a refusal came after the last `afterEach`. A test that wants a refused connection registers
+the dead port (`onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"))`). Not guarded:
+`node:http`/`https`/`net`/`tls` sockets opened directly (the Lua egress transport
+`server/src/lua/egress.ts`, `ws` package clients), and worker threads and child processes, which
+have their own globals. `vitest.testNetwork.test.ts` (happy-dom) and
+`vitest.testNetwork.node.test.ts` (node) cover the policy and the installed guards.
 
 ### Test rules
 
@@ -163,6 +193,31 @@ test's code, not from a guess about how likely the code is to regress.
   breaks on refactors; do not add it, and prune it when it starts costing time. Add
   tests only for code the task changes.
 
+A module mocked in more than one test file gets one shared, typed factory in a `tests/`
+directory (STRUCTURE V7): `src/ts/tests/alertMock.ts` `createAlertMock(overrides)` returns
+every export of `src/ts/alert.ts` (`vi.fn()`s whose awaited helpers resolve with a dismissed
+dialog's answer, empty stores), and its defaults `satisfies typeof import("src/ts/alert")`,
+so a new or reshaped export fails `pnpm check`. Load it inside the hoisted factory and pass
+the file's own handles: `vi.mock("src/ts/alert", async () => (await
+import("src/ts/tests/alertMock")).createAlertMock({ alertError: mocks.alertError }))`. A
+partial mock over `importOriginal` needs no factory. Every other client test that mocks
+`alert` uses it.
+
+`pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate) reads
+`vitest.config.ts` and `playwright.config.ts` as source and applies their patterns with each
+runner's own code (Vitest's tinyglobby file glob, Playwright's `createFileMatcher` on the
+absolute path). It fails when a test file under `src`, `server`, `shared`, `util`, `e2e`, or
+the root is collected by neither runner, by both, or only by the other one (Playwright owns
+`e2e/**/*.spec.ts`, Vitest every other test file); when a `slow` tag and the table below
+disagree (a row names its file, then "(the whole file)" for a `@module-tag slow` or each
+tagged test's title in double quotes, `...` standing for any text), or a test's `tags` is not
+a literal string or an array of literal strings in the options object; or when a non-test file under `src`,
+`server/src`, or `shared` imports a `tests/` path or a `*.test`/`*.spec` module (a `.svelte`
+file through Svelte's parser, template expressions included). A config shape it cannot read (a
+non-literal pattern, an object spread, an unsupported pattern-list spread, or a duplicate key,
+`projects`, `typecheck`, `respectGitIgnore`, no
+`testDir`) is an error; teach the script before using one.
+
 The static inventory of gated tests that still break the determinism gate, with a
 disposition per spot (keep, rewrite, move to `slow`, delete), is
 `docs/audit/timing-dependent-tests-2026-10-19.md`. Verify a timing fix under load with
@@ -174,6 +229,7 @@ the taskset recipe (one CPU, eight `node -e "while(true){}"` burners,
 | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `tokenPlainNode.test.ts` (the whole file)                                                                                                              | Every tokenizer family loaded cold and concurrently in a plain `node` process from a dist-only root, with the browser's ids; the `loadAll` entry's report and exit codes              | `server/src/prompt/tokenizers/`, `public/token/`, the Dockerfile's `dist/token` layout |
 | `tokenParity.test.ts` "counts the smoke strings for every family as the browser does"                                                                  | `loadAll` in process: a cold load of every family                                                                                                                                     | `server/src/prompt/tokenizers/`, `public/token/`                                       |
+| `importPngCaps.test.ts` (the whole file)                                                                                                               | The server PNG reader's asset-chunk cap (`planPngFile`) at `MAX_CHARX_ENTRIES` asset chunks and one more: 200,000 `tEXt` chunks, each key read with its own file read                 | `server/src/routes/importPng.ts`, `shared/charxImport.ts` (`MAX_CHARX_ENTRIES`)        |
 | `upstreamImportWorker.test.ts` (the whole file)                                                                                                        | The upstream `.bin` import's real worker (converter and `node:sqlite`) booted cold per prepare, its heap limit ending a decode with the `{ error }` line, the latch, and shutdown     | `server/src/data/upstream/import*.ts`, `server/src/routes/backupsUpstream.ts`          |
 | `diagnosticsCrash.test.ts` (the whole file)                                                                                                            | The `uncaughtExceptionMonitor` of `main.ts` in a plain `node` process: an uncaught exception and an unhandled rejection each recorded with `state.json` written, exit 1               | `server/src/diagnostics/journal.ts`, `server/src/main.ts`                              |
 | `scriptWorker.test.ts` "caps sleep at 2 s per call and 6 s per run"                                                                                    | Lua `sleep` at the production caps (`MAX_SLEEP_MS`, `MAX_TOTAL_SLEEP_MS`); a fast version runs at `sleepCaps` of 200/600 ms                                                           | `server/src/lua/runtime.ts`, `server/src/scripts/`                                     |

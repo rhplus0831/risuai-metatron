@@ -2,6 +2,7 @@
 import { webcrypto } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServerContext } from "../app.ts";
@@ -9,6 +10,9 @@ import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
+import { allowTestLoopbackOrigin } from "../../../vitest.testNetwork.ts";
+
+export { allowTestLoopbackOrigin };
 
 export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body></body></html>';
 
@@ -296,9 +300,8 @@ export async function startUpstream() {
         res.end(JSON.stringify({ method: record.method, url: record.url, headers: record.headers, body: record.body }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address() as { port: number };
     return {
-        url: `http://127.0.0.1:${address.port}`,
+        url: allowListenerOrigin(server),
         requests,
         /** Waits until the upstream has received `count` requests. */
         async received(count: number, timeoutMs = 2000) {
@@ -310,6 +313,32 @@ export async function startUpstream() {
             server.close();
         },
     };
+}
+
+/** A listening server: a `node:http`/`node:net` server, or a `ws` `WebSocketServer`. */
+type LoopbackListener = {
+    address(): AddressInfo | string | null;
+    close(...args: never[]): unknown;
+    once(event: "close", listener: () => void): unknown;
+};
+
+/**
+ * Lets the test reach a server it started: registers the listening loopback server's `http:`
+ * origin (which also admits `ws:`) with the unit-test network guard (`vitest.testNetwork.ts`,
+ * installed by `vitest.setup.ts`) until `server.close()` is called or the server closes. Call it
+ * after the server listens. Returns the origin.
+ */
+export function allowListenerOrigin(server: LoopbackListener): string {
+    const { address, family, port } = server.address() as AddressInfo;
+    const origin = `http://${family === "IPv6" ? `[${address}]` : address}:${port}`;
+    const unregister = allowTestLoopbackOrigin(origin);
+    const close = server.close;
+    server.close = function (this: LoopbackListener, ...args: never[]) {
+        unregister();
+        return close.apply(this, args);
+    };
+    server.once("close", unregister);
+    return origin;
 }
 
 export async function waitFor(condition: () => boolean, timeoutMs = 2000, stepMs = 10) {

@@ -20,7 +20,7 @@ vi.mock("src/ts/storage/settingsViews.svelte", () => ({
     activePreset: {},
     tabPersonaRecord: vi.fn(),
 }));
-vi.mock("src/ts/alert", () => ({ alertNormal: vi.fn(), alertError: vi.fn(), alertMd: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/globalApi.svelte", () => ({
     saveAsset: vi.fn(),
     downloadFile: vi.fn(),

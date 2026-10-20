@@ -31,13 +31,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFileSrc: vi.fn(),
     downloadFile: vi.fn(),
 }));
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: vi.fn(async () => true),
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertMd: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: vi.fn(async () => true),
+    }),
+);
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => "hash"),
     risuChatParser: (s: string) => s,

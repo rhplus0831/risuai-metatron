@@ -26,6 +26,7 @@
     import RealmPopUp from "./lib/UI/Realm/RealmPopUp.svelte";
     import GridChars from "./lib/Others/GridCatalog.svelte";
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
+    import MessageSearch from "./lib/Others/MessageSearch.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
     import { importPreset } from "./ts/storage/presets.svelte";
@@ -309,6 +310,10 @@
     {/if}
     {#if $bookmarkListOpen}
         <BookmarkList />
+    {/if}
+    <!-- Always mounted: it keeps its query and results across a close (it renders only while open). -->
+    {#if $loadedStore}
+        <MessageSearch />
     {/if}
     <!-- It edits the selected chat's memory: shown once that chat is loaded. -->
     {#if $hypaV3ModalOpen && selectedChat()}

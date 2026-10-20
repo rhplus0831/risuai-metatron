@@ -7,7 +7,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeRPack } from "../../../shared/rpack.ts";
-import { createResourceTestClient, type ResourceTestClient, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createResourceTestClient, type ResourceTestClient, waitFor } from "./testSupport.ts";
 
 const route = "/api/import/module";
 const servers: ResourceTestClient[] = [];
@@ -457,6 +457,7 @@ describe("POST /api/import/module", () => {
                 hostname: "127.0.0.1",
             }) as http.Server;
             await new Promise<void>((resolve) => node.once("listening", resolve));
+            allowListenerOrigin(node);
             const { port } = node.address() as { port: number };
             const req = http.request({
                 hostname: "127.0.0.1",

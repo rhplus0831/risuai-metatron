@@ -34,12 +34,14 @@ vi.mock("../serverAuth", () => ({
     },
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("../../alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertNormalWait: alerts.normalWait,
-    alertTerminal: alerts.terminal,
-}));
+vi.mock("../../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertNormalWait: alerts.normalWait,
+        alertTerminal: alerts.terminal,
+    }),
+);
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

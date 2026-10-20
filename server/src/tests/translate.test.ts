@@ -4,7 +4,7 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -24,7 +24,14 @@ import {
     type TranslateMessageRequest,
     type TranslationRunner,
 } from "../translation/runner.ts";
-import { createResourceTestClient, type ResourceTestClient, sleep, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    allowTestLoopbackOrigin,
+    createResourceTestClient,
+    type ResourceTestClient,
+    sleep,
+    waitFor,
+} from "./testSupport.ts";
 
 // `docs/plan/translation.md` slice 1.3: the server translation runner (`server/src/translation/runner.ts`)
 // and its route (`POST /api/translate/message`, `server/src/routes/translate.ts`).
@@ -439,6 +446,8 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("answers 502 with the request layer's failure text when the provider request fails", async () => {
+        // Nothing listens on port 9: the test wants the refused connection.
+        onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:9"));
         await seed();
         // A reverse proxy at a port nothing listens on: the request fails without a retry.
         const profiles = await single("modelProfiles");
@@ -460,6 +469,8 @@ describe("POST /api/translate/message with the Echo model", () => {
 
     // `docs/plan/translation.md` slice 3.1: a step on a profile runs on that profile, not the slot.
     it("runs a step on a profile on that profile: a dead connection fails the run (502) where the slot's Echo answers, a deleted profile fails it by name, and nothing is stored", async () => {
+        // Nothing listens on port 9: the test wants the refused connection.
+        onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:9"));
         await seed();
         const profiles = await single("modelProfiles");
         await write("modelProfiles", [
@@ -509,6 +520,7 @@ describe("POST /api/translate/message with the Echo model", () => {
         await seed({ echoDelay: 0.3 });
         const node = serve({ fetch: client.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+        allowListenerOrigin(node);
         try {
             const { port } = node.address() as { port: number };
             const controller = new AbortController();

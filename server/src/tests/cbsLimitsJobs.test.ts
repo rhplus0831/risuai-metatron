@@ -6,7 +6,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { createSigner, createTestServer, json } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
 // Phase 5 slice 9b: a reached CBS limit ends the job, whatever evaluated the text, on a real
 // listening server with the default runner, the real worker pool (Lua, the regex scripts task), the
@@ -298,6 +298,7 @@ beforeAll(async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
     const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-cbs-limits-jobs-"));
     mkdirSync(path.join(rootDir, "dist"));
@@ -309,6 +310,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir, generationRandom: () => 0 });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

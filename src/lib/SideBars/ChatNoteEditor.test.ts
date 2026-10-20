@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertMd: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 // Keep the real input, but exclude highlighting, hotkeys and unrelated application effects.
 vi.mock("src/ts/util", () => ({ getAuthorNoteDefaultText: () => "", sleep: () => Promise.resolve() }));
 vi.mock("src/ts/hotkey", () => ({ hotkeyMatches: vi.fn(() => false) }));

@@ -5,7 +5,8 @@ type MsgType =
     | "CALLBACK_RETURN"
     | "RESPONSE"
     | "RELEASE_INSTANCE"
-    | "ABORT_SIGNAL";
+    | "ABORT_SIGNAL"
+    | "SCRIPT_SETTLED";
 
 interface RpcMessage {
     type: MsgType;
@@ -16,7 +17,15 @@ interface RpcMessage {
     result?: any;
     error?: string;
     abortId?: string;
+    // `SCRIPT_SETTLED`: the top-level script threw, or never ran.
+    failed?: boolean;
 }
+
+/**
+ * How a guest's start ended (safe boot, `src/ts/safeBoot.ts`): its top-level script settled (`ready`),
+ * threw or did not run (`failed`), or the host terminated before either (`stopped`).
+ */
+export type GuestStartup = "ready" | "failed" | "stopped";
 
 interface RemoteRef {
     __type: "REMOTE_REF";
@@ -212,6 +221,8 @@ await (async function() {
             const port = ports[val.portIndex];
             if (!port) throw new Error('Stream port at index ' + val.portIndex + ' not received');
 
+            // A zero high-water mark pulls only for a pending read, so a pull tells the host the plugin reads
+            // (the host cancels a body nobody pulled from).
             return new ReadableStream({
                 start(controller) {
                     port.onmessage = (e) => {
@@ -233,7 +244,7 @@ await (async function() {
                     port.onmessage = null;
                     port.close();
                 }
-            });
+            }, { highWaterMark: 0 });
         }
 
         if (obj.__type === 'STREAM_PORT') return reconstruct(obj);
@@ -423,6 +434,9 @@ await (async function() {
 })();
 `;
 
+/** A bridged host stream the plugin has not pulled from within this time is cancelled (its fetch and upstream end). */
+export const UNREAD_PLUGIN_STREAM_TIMEOUT_MS = 60_000;
+
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
@@ -440,9 +454,47 @@ export class SandboxHost {
     // 'close' event in stable browsers, so without these the other side of an
     // active stream would wait forever once the iframe is gone.
     private activeStreamCleanups = new Set<() => void>();
+    private terminated = false;
+
+    // Plugin activity (RisuNest small wins P2): a plugin reload waits until every host is idle.
+    // Guest-to-host calls still running (a `nativeFetch` awaiting headers included).
+    private pendingHostCalls = 0;
+    // The guest's top-level script has settled (`SCRIPT_SETTLED`).
+    private scriptSettled = false;
+    private activityListener: (() => void) | null = null;
+    private settleStartup!: (startup: GuestStartup) => void;
+    /** Resolves once the guest's start ended; a thrown script still counts as settled for `isIdle`. */
+    public readonly startup: Promise<GuestStartup> = new Promise((resolve) => (this.settleStartup = resolve));
 
     constructor(apiFactory: any) {
         this.apiFactory = apiFactory;
+    }
+
+    /** Called whenever this host may have become idle. */
+    public onActivityChanged(listener: () => void) {
+        this.activityListener = listener;
+    }
+
+    /**
+     * No plugin work in flight: the guest finished starting, and no guest-to-host call, host-to-guest
+     * callback, or bridged stream (either way) is open. A terminated host is idle.
+     */
+    public isIdle(): boolean {
+        return (
+            this.terminated ||
+            (this.scriptSettled &&
+                this.pendingHostCalls === 0 &&
+                this.pendingCallbacks.size === 0 &&
+                this.activeStreamCleanups.size === 0)
+        );
+    }
+
+    private activityChanged() {
+        try {
+            this.activityListener?.();
+        } catch (error) {
+            console.error(error);
+        }
     }
 
     public executeInIframe(code: string): Promise<any> {
@@ -542,52 +594,67 @@ export class SandboxHost {
 
                 const wrapper = async (...innerArgs: any[]) => {
                     return new Promise((resolve, reject) => {
+                        if (this.terminated) {
+                            reject(new Error("The plugin was unloaded"));
+                            return;
+                        }
                         const reqId = "cb_req_" + Math.random().toString(36).substring(2);
                         this.pendingCallbacks.set(reqId, { resolve, reject });
 
-                        // AbortSignal cannot be structured-cloned for postMessage.
-                        // Convert to a serializable ref and forward abort events
-                        // via a separate ABORT_SIGNAL message.
-                        const sanitizedArgs = innerArgs.map((arg) => {
-                            if (arg instanceof AbortSignal) {
-                                const abortId = "abort_" + Math.random().toString(36).substring(2);
-                                const ref: AbortSignalRef = {
-                                    __type: "ABORT_SIGNAL_REF",
-                                    abortId,
-                                    aborted: arg.aborted,
-                                };
-                                if (!arg.aborted) {
-                                    arg.addEventListener(
-                                        "abort",
-                                        () => {
-                                            try {
-                                                this.iframe.contentWindow?.postMessage(
-                                                    {
-                                                        type: "ABORT_SIGNAL",
-                                                        abortId,
-                                                    } as RpcMessage,
-                                                    "*",
-                                                );
-                                            } catch (_) {
-                                                /* iframe already removed */
-                                            }
-                                        },
-                                        { once: true },
-                                    );
-                                }
-                                return ref;
+                        try {
+                            const receiver = this.iframe?.contentWindow;
+                            if (!receiver) {
+                                throw new Error("The plugin was unloaded");
                             }
-                            return arg;
-                        });
+                            // AbortSignal cannot be structured-cloned for postMessage.
+                            // Convert to a serializable ref and forward abort events
+                            // via a separate ABORT_SIGNAL message.
+                            const sanitizedArgs = innerArgs.map((arg) => {
+                                if (arg instanceof AbortSignal) {
+                                    const abortId = "abort_" + Math.random().toString(36).substring(2);
+                                    const ref: AbortSignalRef = {
+                                        __type: "ABORT_SIGNAL_REF",
+                                        abortId,
+                                        aborted: arg.aborted,
+                                    };
+                                    if (!arg.aborted) {
+                                        arg.addEventListener(
+                                            "abort",
+                                            () => {
+                                                try {
+                                                    this.iframe.contentWindow?.postMessage(
+                                                        {
+                                                            type: "ABORT_SIGNAL",
+                                                            abortId,
+                                                        } as RpcMessage,
+                                                        "*",
+                                                    );
+                                                } catch (_) {
+                                                    /* iframe already removed */
+                                                }
+                                            },
+                                            { once: true },
+                                        );
+                                    }
+                                    return ref;
+                                }
+                                return arg;
+                            });
 
-                        const message = {
-                            type: "INVOKE_CALLBACK",
-                            id: cbRef.id,
-                            reqId,
-                            args: sanitizedArgs,
-                        };
-                        const transferables = this.collectTransferables(message);
-                        this.iframe.contentWindow?.postMessage(message, "*", transferables);
+                            const message = {
+                                type: "INVOKE_CALLBACK",
+                                id: cbRef.id,
+                                reqId,
+                                args: sanitizedArgs,
+                            };
+                            const transferables = this.collectTransferables(message);
+                            receiver.postMessage(message, "*", transferables);
+                        } catch (error) {
+                            // Never delivered: no answer will come, so it is not pending.
+                            this.pendingCallbacks.delete(reqId);
+                            this.activityChanged();
+                            reject(error);
+                        }
                     });
                 };
                 this.callbackWrapperCache.set(cbRef.id, wrapper);
@@ -640,14 +707,17 @@ export class SandboxHost {
             let credits = 0;
             let reading = false;
             let finished = false;
+            let unreadTimeout: ReturnType<typeof setTimeout> | undefined;
 
             const finish = () => {
                 if (finished) return;
                 finished = true;
+                clearTimeout(unreadTimeout);
                 ch.port1.onmessage = null;
                 ch.port1.close();
                 this.activeStreamCleanups.delete(cleanup);
                 if (--remainingStreams === 0) onStreamsFinished?.();
+                this.activityChanged();
             };
 
             const cleanup = () => {
@@ -657,6 +727,13 @@ export class SandboxHost {
             this.activeStreamCleanups.add(cleanup);
             cleanups.push(cleanup);
             remainingStreams++;
+            // An unread body would otherwise hold the host fetch (and a `/proxy` upstream) until the plugin unloads.
+            unreadTimeout = setTimeout(() => {
+                try {
+                    ch.port1.postMessage({ done: true, error: "Unread plugin response expired" });
+                } catch (_) {}
+                cleanup();
+            }, UNREAD_PLUGIN_STREAM_TIMEOUT_MS);
 
             const pump = async () => {
                 if (reading || finished) return;
@@ -688,6 +765,7 @@ export class SandboxHost {
                     reader.cancel();
                     finish();
                 } else if (e.data?.pull) {
+                    clearTimeout(unreadTimeout);
                     credits++;
                     pump();
                 }
@@ -714,6 +792,8 @@ export class SandboxHost {
     private reconstructStreamsFromPorts(obj: any, ports: readonly MessagePort[]): any {
         if (!obj || typeof obj !== "object") return obj;
 
+        // The streams built so far, ended if a later one fails (the result is never delivered).
+        const rollbacks: (() => void)[] = [];
         const reconstruct = (val: any): any => {
             if (val?.__type !== "STREAM_PORT" || typeof val.portIndex !== "number") return val;
 
@@ -721,13 +801,24 @@ export class SandboxHost {
             if (!port) throw new Error(`Stream port at index ${val.portIndex} not received`);
 
             const cleanups = this.activeStreamCleanups;
+            const activityChanged = () => this.activityChanged();
             let cleanup: (() => void) | null = null;
             const unregister = () => {
                 if (cleanup) {
                     cleanups.delete(cleanup);
                     cleanup = null;
+                    activityChanged();
                 }
             };
+            rollbacks.push(() => {
+                const registered = cleanup;
+                try {
+                    if (registered) port.postMessage({ cancel: true });
+                } finally {
+                    unregister();
+                    registered?.();
+                }
+            });
 
             return new ReadableStream({
                 start(controller) {
@@ -761,14 +852,37 @@ export class SandboxHost {
             });
         };
 
-        if (obj.__type === "STREAM_PORT") return reconstruct(obj);
-        if (obj.constructor === Object) {
-            const out: any = {};
-            for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
-            return out;
+        try {
+            if (obj.__type === "STREAM_PORT") return reconstruct(obj);
+            if (obj.constructor === Object) {
+                const out: any = {};
+                for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
+                return out;
+            }
+        } catch (error) {
+            for (const rollback of rollbacks) {
+                try {
+                    rollback();
+                } catch (_) {}
+            }
+            throw error;
         }
 
         return obj;
+    }
+
+    private disposeUndeliveredResult(result: any) {
+        const dispose = (value: any) => {
+            if (value instanceof Response) value = value.body;
+            if (value instanceof ReadableStream) void value.cancel().catch(() => {});
+            else if (value instanceof WritableStream) void value.abort().catch(() => {});
+            else if (value instanceof TransformStream) {
+                void value.readable.cancel().catch(() => {});
+                void value.writable.abort().catch(() => {});
+            }
+        };
+        dispose(result);
+        if (result && result.constructor === Object) Object.values(result).forEach(dispose);
     }
 
     private closeActiveStreams() {
@@ -817,7 +931,15 @@ export class SandboxHost {
                         }
                     }
                     this.pendingCallbacks.delete(data.reqId!);
+                    this.activityChanged();
                 }
+                return;
+            }
+
+            if (data.type === "SCRIPT_SETTLED") {
+                this.scriptSettled = true;
+                this.settleStartup(data.failed ? "failed" : "ready");
+                this.activityChanged();
                 return;
             }
 
@@ -854,6 +976,7 @@ export class SandboxHost {
                     streamCleanups = [];
                 };
 
+                this.pendingHostCalls++;
                 try {
                     const args = this.deserializeArgs(data.args || [], usedAbortIds);
                     let result: any;
@@ -870,6 +993,11 @@ export class SandboxHost {
                         result = await instance[data.method!](...args);
                     }
 
+                    // Unloaded while the call ran: bridge nothing, and end the streams nobody will read.
+                    if (this.terminated) {
+                        this.disposeUndeliveredResult(result);
+                        return;
+                    }
                     response.result = this.serialize(result);
                     const {
                         result: streamResult,
@@ -886,8 +1014,12 @@ export class SandboxHost {
                 } finally {
                     // Streaming responses keep their signals until every stream finishes or is cleaned up.
                     if (streamCleanups.length === 0) releaseAbortControllers();
+                    // Its streams, if any, are open now and keep the host busy until they finish.
+                    this.pendingHostCalls--;
+                    this.activityChanged();
                 }
 
+                if (this.terminated) return;
                 console.log("Original request:", data);
                 console.log("Original response:", response, transferables);
                 try {
@@ -928,14 +1060,31 @@ export class SandboxHost {
             }
         </style>
         <script nonce="${this.nonce}">
+            window.__risuGuestStarted = true;
             document.querySelector('meta#csp-meta')?.remove();
             (async () => {
                 ${GUEST_BRIDGE_SCRIPT}
                     
-                (async () => {
+                await (async () => {
                     ${userCode}
-                })()
-            })();
+                })();
+            })().then(
+                () => {
+                    // The top-level script settled: the host counts this guest as started.
+                    try { window.parent.postMessage({ type: "SCRIPT_SETTLED" }, "*"); } catch (_) {}
+                },
+                (error) => {
+                    // It threw: started for the activity count, failed for safe boot.
+                    try { window.parent.postMessage({ type: "SCRIPT_SETTLED", failed: true }, "*"); } catch (_) {}
+                    throw error;
+                },
+            );
+        </script>
+        <script nonce="${this.nonce}">
+            // The script above did not run at all (a syntax error): nothing will settle, so report it now.
+            if (!window.__risuGuestStarted) {
+                try { window.parent.postMessage({ type: "SCRIPT_SETTLED", failed: true }, "*"); } catch (_) {}
+            }
         </script>
       </body>
       </html>
@@ -949,6 +1098,11 @@ export class SandboxHost {
     }
 
     public terminate() {
+        this.terminated = true;
+        // A start still pending ends here (a no-op once the guest reported).
+        this.settleStartup("stopped");
+        // An in-flight host call (a `nativeFetch` still waiting for headers) stops with its sandbox.
+        for (const controller of this.abortControllers.values()) controller.abort();
         if (this.messageHandlerRef) {
             window.removeEventListener("message", this.messageHandlerRef);
             this.messageHandlerRef = null;
@@ -965,5 +1119,7 @@ export class SandboxHost {
         this.pendingCallbacks.clear();
         this.abortControllers.clear();
         this.callbackWrapperCache.clear();
+        this.activityChanged();
+        this.activityListener = null;
     }
 }

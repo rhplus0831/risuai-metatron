@@ -75,14 +75,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: vi.fn(),
 }));
 
-vi.mock("src/ts/alert", () => ({
-    alertConfirm: alerts.confirm,
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertMd: vi.fn(),
-    alertToast: vi.fn(),
-    alertStore: { set: vi.fn(), subscribe: vi.fn() },
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: alerts.confirm,
+    }),
+);
 
 // The module-update effect of `stores.svelte.ts` tracks `enabledModules`; nothing here needs modules.
 vi.mock("src/ts/process/modules", () => ({
@@ -1162,8 +1159,9 @@ describe("unload and reload", () => {
     it("SandboxHost.terminate rejects a pending callback, so a runner awaiting the hook settles and its entry pops", async () => {
         const { SandboxHost } = await vi.importActual<typeof import("./factory")>("./factory");
         const host: any = new SandboxHost({});
-        // An iframe whose window is gone: the invocation is posted nowhere and stays pending.
-        host.iframe = { contentWindow: null, remove() {} };
+        // An iframe whose window swallows the invocation: it is posted but never answered, so it stays
+        // pending (a window that is gone rejects at once instead, `sandboxActivity.test.ts`).
+        host.iframe = { contentWindow: { postMessage() {} }, remove() {} };
         const [callback] = host.deserializeArgs([{ __type: "CALLBACK_REF", id: "cb-1" }]);
         const api = await makeApi();
         const listener = await listenerOf(api, callback);

@@ -18,7 +18,7 @@ vi.mock("src/ts/globalApi.svelte", async () => ({
     openPinnedChat: vi.fn(),
     saveAsset: vi.fn(),
 }));
-vi.mock("src/ts/alert", () => ({ alertInput: vi.fn(), alertSelect: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn() }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/process/chatStatus.svelte", async () => {

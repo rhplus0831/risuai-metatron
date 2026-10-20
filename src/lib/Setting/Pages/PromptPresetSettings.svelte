@@ -25,6 +25,7 @@
     import BindingScopeNote from "../BindingScopeNote.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { promptSettingsSections } from "src/ts/setting/promptSettingsData";
+    import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     /**
      * The prompt preset's page (`docs/plan/split-preset.md`, slice 4): the selected prompt preset's
@@ -50,7 +51,10 @@
         tokens.globalNote = await tokenizeAccurate(activePreset.globalNote, true);
     }
 
-    let submenu = $state(settings.ui.useLegacyGUI ? -1 : 1);
+    // A search jump opens its tab (1 parameters, 3 others), also for a hidden item; the legacy GUI shows
+    // every tab.
+    const jumpTab = currentJump()?.tab;
+    let submenu = $state(settings.ui.useLegacyGUI ? -1 : typeof jumpTab === "number" ? jumpTab : 1);
     let modelInfo = $derived(getModelInfoForMode("model"));
     let subModelInfo = $derived(getModelInfoForMode("submodel"));
 </script>

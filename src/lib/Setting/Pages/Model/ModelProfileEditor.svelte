@@ -35,6 +35,7 @@
     import { getModelInfo, LLMFlags, LLMFormat } from "src/ts/model/modellist";
     import SettingRenderer from "../../SettingRenderer.svelte";
     import { modelParameterItems } from "src/ts/setting/botSettingsParamsData";
+    import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     interface Props {
         profileId: string;
@@ -83,6 +84,9 @@
         profile.nanogptRequestModelName = "";
         profile.nanogptProvider = "";
     }
+    // A search jump to a chat format item opens Chat Formatting (read at mount).
+    const jump = currentJump();
+    const openChatFormat = jump?.available === true && jump.opener === "profile.chatFormat";
 </script>
 
 <span class="text-textcolor mt-4">{language.model} <Help key="model" /></span>
@@ -328,7 +332,7 @@
     <span class="text-textcolor mt-2">Ooba {language.providerURL}</span>
     <TextInput marginBottom={true} bind:value={profile.textgenWebUIBlockingURL} placeholder="https://..." />
 {/if}
-<Accordion styled name={language.chatFormating}>
+<Accordion styled name={language.chatFormating} startOpen={openChatFormat}>
     <ChatFormatSettings {profile} />
 </Accordion>
 

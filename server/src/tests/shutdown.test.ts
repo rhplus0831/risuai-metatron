@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
+    allowTestLoopbackOrigin,
     buildArchive,
     createResourceTestClient,
     createSigner,
@@ -31,7 +32,10 @@ function deferred<T>() {
 
 let child: ChildProcess | undefined;
 let rootDir: string | undefined;
+let unregisterMain: (() => void) | undefined;
 afterEach(async () => {
+    unregisterMain?.();
+    unregisterMain = undefined;
     if (child && child.exitCode === null) {
         child.kill("SIGKILL");
         await new Promise((resolve) => child?.once("exit", resolve));
@@ -70,6 +74,7 @@ async function startMain() {
     const exited = new Promise<number | null>((resolve) => child!.once("exit", (code) => resolve(code)));
 
     const base = `http://127.0.0.1:${port}`;
+    unregisterMain = allowTestLoopbackOrigin(base);
     await waitFor(() => output.includes("server is running"), 10_000, 25);
     const signer = await createSigner();
     const login = await fetch(`${base}/api/login`, {

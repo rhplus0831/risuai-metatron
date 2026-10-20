@@ -20,7 +20,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     saveAsset: vi.fn(),
 }));
 vi.mock("src/ts/process/request/request", () => ({ requestChatData: deps.request }));
-vi.mock("src/ts/alert", () => ({ alertError: deps.alert }));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: deps.alert,
+    }),
+);
 vi.mock("src/ts/process/index.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { doingChat: writable(false) };

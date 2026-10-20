@@ -41,23 +41,17 @@ vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("./alert", () => ({
-    alertError: alerts.error,
-    alertNormal: alerts.normal,
-    alertWait: alerts.wait,
-    alertNormalWait: vi.fn(async () => undefined),
-    alertConfirm: alerts.confirm,
-    alertReloadNotice: vi.fn(),
-    alertStore: alerts.store,
-    alertInput: alerts.input,
-    alertSelect: vi.fn(async () => ""),
-    alertAddCharacter: vi.fn(),
-    alertCardExport: vi.fn(),
-    alertClear: alerts.clear,
-    alertModuleSelect: vi.fn(),
-    alertMd: vi.fn(),
-    waitAlert: vi.fn(),
-}));
+vi.mock("./alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+        alertNormal: alerts.normal,
+        alertWait: alerts.wait,
+        alertConfirm: alerts.confirm,
+        alertStore: alerts.store,
+        alertInput: alerts.input,
+        alertClear: alerts.clear,
+    }),
+);
 vi.mock("./parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),

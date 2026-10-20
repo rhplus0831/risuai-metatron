@@ -15,7 +15,11 @@ vi.mock("../storage/characterStore.svelte", () => ({ selectedCharacter: () => nu
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../network/auxFetch", () => ({ auxFetch: vi.fn() }));
 vi.mock("../storage/llmSecrets.svelte", () => ({ isSecretSet: () => false }));
-vi.mock("../alert", () => ({ alertError: deps.alert }));
+vi.mock("../alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: deps.alert,
+    }),
+);
 vi.mock("../translator/translator", () => ({ runTranslator: vi.fn(), translateVox: deps.translateVox }));
 vi.mock("../globalApi.svelte", () => ({ globalFetch: deps.globalFetch, loadAsset: async () => new Uint8Array([1]) }));
 vi.mock("../util", () => ({ sleep: vi.fn() }));

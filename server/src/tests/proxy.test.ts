@@ -1,6 +1,13 @@
 // @vitest-environment node
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createSigner, createTestServer, json, startUpstream, waitFor } from "./testSupport.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+    allowTestLoopbackOrigin,
+    createSigner,
+    createTestServer,
+    json,
+    startUpstream,
+    waitFor,
+} from "./testSupport.ts";
 
 let upstream: Awaited<ReturnType<typeof startUpstream>>;
 let server: ReturnType<typeof createTestServer>;
@@ -186,6 +193,8 @@ describe("/hub-proxy", () => {
     });
 
     it("answers 502 when the hub cannot be reached", async () => {
+        // Nothing listens on port 1: the test wants the refused connection.
+        onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"));
         server = createTestServer({ password: "pw", realm: { hubURL: "http://127.0.0.1:1" } });
         const failed = await server.app.request("/hub-proxy/r");
         expect(failed.status).toBe(502);

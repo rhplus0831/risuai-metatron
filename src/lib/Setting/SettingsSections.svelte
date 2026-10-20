@@ -4,6 +4,7 @@
     import { languageText, sectionHasVisibleItems, settingContext } from "src/ts/setting/utils";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import SettingRenderer from "./SettingRenderer.svelte";
+    import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     interface Props {
         sections: SettingSection[];
@@ -16,6 +17,10 @@
     let modelInfo = $derived(getModelInfoForMode("model"));
     let subModelInfo = $derived(getModelInfoForMode("submodel"));
     let ctx: SettingContext = $derived(settingContext({ modelInfo, subModelInfo }));
+    // Capture the jump at mount; an Accordion starts open only while that jump is still pending,
+    // so a later tab round trip cannot reopen its section after the jump finishes.
+    const jump = currentJump();
+    const openSectionId = jump?.available ? jump.sectionId : undefined;
 </script>
 
 {#each sections as section (section.id)}
@@ -25,7 +30,12 @@
         {@const badge = languageText(section.badgeKey)}
         {#if section.collapsible}
             <div class="mt-4 flex flex-col" data-settings-section={section.id}>
-                <Accordion styled name={label} {badge}>
+                <Accordion
+                    styled
+                    name={label}
+                    {badge}
+                    startOpen={section.id === openSectionId && currentJump()?.version === jump?.version}
+                >
                     {#if description}
                         <p class="mt-1 text-sm text-textcolor2">{description}</p>
                     {/if}

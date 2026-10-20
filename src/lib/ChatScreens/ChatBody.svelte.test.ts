@@ -30,7 +30,7 @@ vi.mock("src/ts/translator/translator", () => ({
 vi.mock("src/ts/parser/transformClient", () => ({ captureTransform: vi.fn(() => null) }));
 vi.mock("src/ts/process/modules", () => ({ getModuleAssets: vi.fn(() => []) }));
 vi.mock("src/ts/globalApi.svelte", () => ({ getFileSrc: vi.fn(async (path: string) => path) }));
-vi.mock("src/ts/alert", () => ({ alertError: vi.fn() }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ sleep: async () => undefined }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ selectedCharacter: vi.fn() }));
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({

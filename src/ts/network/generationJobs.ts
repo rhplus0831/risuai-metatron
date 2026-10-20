@@ -32,10 +32,70 @@ let channelWork: Promise<unknown> = Promise.resolve();
 function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
     dispatcher ??= import("./jobChannel");
     const loaded = dispatcher;
+    // A callback queued here is plugin work until it reaches the channel's `outstanding` (in `work`).
+    queuedChannelWork++;
     channelWork = channelWork
         .then(() => loaded)
         .then(work)
-        .catch((error) => console.error("[Channel]", error));
+        .catch((error) => console.error("[Channel]", error))
+        .finally(() => {
+            queuedChannelWork--;
+            notifyPluginWork();
+        });
+}
+
+/*
+ * Plugin work of this tab's jobs (RisuNest small wins P2, `plugins-mcp.md`): a job calls the hooks it
+ * listed at its creation until it ends, so a plugin reload waits while any of these is held. A job is
+ * held from before its hooks are listed (`createGenerationJob`) or from its follow
+ * (`followGenerationJob`), and while it is saved for this tab (a reload resumes it), until
+ * `releaseGenerationJob`; a busy job this tab may own, until its status read answers; queued channel
+ * work; and the channel's running callbacks.
+ */
+let creatingJobs = 0;
+const liveJobs = new Set<string>();
+const busyJobs = new Map<string, Set<{ reading: boolean }>>();
+let queuedChannelWork = 0;
+let channelCallbacks = 0;
+const pluginWorkListeners = new Set<() => void>();
+
+function notifyPluginWork() {
+    for (const listener of [...pluginWorkListeners]) {
+        try {
+            listener();
+        } catch (error) {
+            console.error("[Generation]", error);
+        }
+    }
+}
+
+/** Whether a job of this tab may still call a plugin hook (see above). */
+export function generationPluginWorkActive(): boolean {
+    return (
+        creatingJobs > 0 ||
+        liveJobs.size > 0 ||
+        busyJobs.size > 0 ||
+        queuedChannelWork > 0 ||
+        channelCallbacks > 0 ||
+        savedGenerationJobIds().length > 0
+    );
+}
+
+/** Called after any of the above may have ended; returns the unsubscribe function. */
+export function onGenerationPluginWork(listener: () => void): () => void {
+    pluginWorkListeners.add(listener);
+    return () => {
+        pluginWorkListeners.delete(listener);
+    };
+}
+
+/** The job channel's count of running callbacks (`jobChannel.ts` `outstanding`). */
+export function noteChannelCallbacks(count: number) {
+    if (count === channelCallbacks) {
+        return;
+    }
+    channelCallbacks = count;
+    notifyPluginWork();
 }
 
 /**
@@ -183,6 +243,29 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
 type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
 
 export async function createGenerationJob(body: CreateInput): Promise<string> {
+    creatingJobs++;
+    try {
+        const jobId = await createJob(body);
+        liveJobs.add(jobId);
+        return jobId;
+    } catch (error) {
+        if (error instanceof GenerationBusyError) {
+            // Maybe this tab's own job (the caller reads its status, then follows it).
+            let reservations = busyJobs.get(error.jobId);
+            if (!reservations) {
+                reservations = new Set();
+                busyJobs.set(error.jobId, reservations);
+            }
+            reservations.add({ reading: false });
+        }
+        throw error;
+    } finally {
+        creatingJobs--;
+        notifyPluginWork();
+    }
+}
+
+async function createJob(body: CreateInput): Promise<string> {
     let hooks = body.hooks;
     let context = body.context;
     if (!hooks) {
@@ -216,13 +299,31 @@ const jobPath = (jobId: string) =>
 
 /** This tab's job, or null when the server does not know it (ended long ago, or another tab's). */
 export async function readGenerationJob(jobId: string): Promise<GenerationStatus | null> {
+    const reservations = busyJobs.get(jobId);
+    const reservation = reservations && [...reservations].find((entry) => !entry.reading);
+    if (reservation) {
+        reservation.reading = true;
+    }
+    let status: GenerationStatus | null = null;
     try {
-        return (await (await request(jobPath(jobId))).json()) as GenerationStatus;
+        status = (await (await request(jobPath(jobId))).json()) as GenerationStatus;
+        return status;
     } catch (error) {
         if (error instanceof ResourceRequestError && error.status === 404) {
             return null;
         }
         throw error;
+    } finally {
+        // Each read decides only its reservation. Release invalidates the whole set, including late reads.
+        if (reservation && reservations && busyJobs.get(jobId) === reservations && reservations.delete(reservation)) {
+            if (status?.state === "running" && status.epoch === getResourceEpoch()) {
+                liveJobs.add(jobId);
+            }
+            if (reservations.size === 0) {
+                busyJobs.delete(jobId);
+            }
+            notifyPluginWork();
+        }
     }
 }
 
@@ -262,6 +363,7 @@ function attachStamp(): number {
 }
 
 export function followGenerationJob(jobId: string, onEvent: (event: GenerationEvent) => void): GenerationFollow {
+    liveJobs.add(jobId);
     let ws: WebSocket | null = null;
     let cancelled = false;
     let terminal: GenerationTerminalEvent | null = null;
@@ -597,6 +699,9 @@ export function releaseGenerationJob(jobId: string) {
     }
     endServerJob(jobId);
     forgetGenerationJob(jobId);
+    liveJobs.delete(jobId);
+    busyJobs.delete(jobId);
+    notifyPluginWork();
 }
 
 /**

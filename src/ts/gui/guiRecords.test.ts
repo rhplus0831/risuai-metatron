@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // reach them only through the views.
 
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -120,6 +120,22 @@ describe("updateColorScheme", () => {
         updateColorScheme();
         expect(css("--risu-theme-bgcolor")).toBe("#444444");
         expect(written).toEqual(["ui"]);
+    });
+
+    it("declares the scheme's type as the root color-scheme, dark for a scheme without one", () => {
+        updateColorScheme();
+        expect(document.documentElement.style.colorScheme).toBe("dark");
+
+        settings.ui.colorScheme = scheme("light", "#333333");
+        updateColorScheme();
+        expect(document.documentElement.style.colorScheme).toBe("light");
+
+        // After a light scheme, so a missing type must write dark rather than keep the previous value.
+        const { type: _type, ...untyped } = scheme("light", "#666666");
+        settings.ui.colorScheme = untyped as ReturnType<typeof scheme>;
+        updateColorScheme();
+        expect(document.documentElement.style.colorScheme).toBe("dark");
+        expect(css("--risu-theme-bgcolor")).toBe("#666666");
     });
 });
 

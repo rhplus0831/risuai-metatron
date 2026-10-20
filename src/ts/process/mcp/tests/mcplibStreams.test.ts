@@ -46,7 +46,7 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     ),
     openURL: vi.fn(),
 }));
-vi.mock("src/ts/alert", () => ({ alertInput: vi.fn(async () => "") }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 const enc = new TextEncoder();
 

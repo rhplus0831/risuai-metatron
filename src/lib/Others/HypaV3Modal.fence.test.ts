@@ -14,14 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ alertError: vi.fn(), alertNormalWait: vi.fn(async () => undefined) }));
 
-vi.mock("src/ts/alert", () => ({
-    alertError: mocks.alertError,
-    alertNormalWait: mocks.alertNormalWait,
-    alertConfirm: vi.fn(async () => false),
-    alertMd: vi.fn(),
-    alertNormal: vi.fn(),
-    alertToast: vi.fn(),
-}));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: mocks.alertError,
+        alertNormalWait: mocks.alertNormalWait,
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

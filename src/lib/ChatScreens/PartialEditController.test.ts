@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the callback it dispatches `save` as before, and an original edit still dispatches.
 
 const alerts = vi.hoisted(() => ({ error: vi.fn() }));
-vi.mock("src/ts/alert", () => ({ alertError: alerts.error, alertNormal: vi.fn() }));
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertError: alerts.error,
+    }),
+);
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

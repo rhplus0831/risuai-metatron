@@ -19,12 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // that profile, and a model preset switch shows the other main profile's value.
 
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../../alert", () => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertNormalWait: vi.fn(async () => undefined),
-    alertMd: vi.fn(),
-}));
+vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),

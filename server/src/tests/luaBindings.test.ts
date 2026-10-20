@@ -6,7 +6,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { createSigner, createTestServer, json, sleep } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
 
 // Phase 5 slice 8a: a Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
@@ -88,6 +88,7 @@ beforeAll(async () => {
         res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: `mock:${last}` } }] }));
     });
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
     providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     // The mock embedding server (`hypaModel: "custom"`): deterministic vectors per input text, in the
     // OpenAI-compatible `{ data: [{ embedding }] }` shape; no local model, nothing on the network.
@@ -103,6 +104,7 @@ beforeAll(async () => {
         res.end(JSON.stringify({ data: inputs.map((text) => ({ embedding: MOCK_VECTORS[text] ?? [0, 0] })) }));
     });
     await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
     embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
 
     // The server's root: `public/` (json.lua, the tokenizer payloads) and `version.json` as the
@@ -117,6 +119,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

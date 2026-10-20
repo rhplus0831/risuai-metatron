@@ -9,7 +9,7 @@ import webPush from "web-push";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
-import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 11a: the tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker`
 // and `runSend`, `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`),
@@ -427,7 +427,9 @@ beforeAll(async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
     await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
     const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1/embeddings`;
     rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-prompt-tail-"));
@@ -443,6 +445,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

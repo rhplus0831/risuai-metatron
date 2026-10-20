@@ -2,22 +2,25 @@
     import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { changeChar, removeChar, restoreChar } from "../../ts/characters";
     import BarIcon from "../SideBars/BarIcon.svelte";
-    import { ArrowLeft, User, Users, SquareMousePointer, TrashIcon, Undo2Icon } from "@lucide/svelte";
+    import { ArrowLeft, User, Users, SquareMousePointer, TextSearchIcon, TrashIcon, Undo2Icon } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import { language } from "src/lang";
     import { parseMultilangString } from "src/ts/util";
+    import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
+    import { openMessageSearch } from "src/ts/messageSearch.svelte";
     interface Props {
         endGrid?: any;
     }
 
     let { endGrid = () => {} }: Props = $props();
     let search = $state("");
+    const query = $derived(prepareQuery(search));
     let selected = $state(3);
 
-    function formatChars(search: string, trash = false) {
+    function formatChars(query: PreparedQuery | null, trash = false) {
         let charas: {
             image: string;
             index: number;
@@ -36,7 +39,7 @@
             if (!c.trashTime && trash) {
                 continue;
             }
-            if (c.name.replace(/ /g, "").toLocaleLowerCase().includes(search.toLocaleLowerCase().replace(/ /g, ""))) {
+            if (!query || matchesAny([c.name], query)) {
                 charas.push({
                     image: c.image,
                     index: i,
@@ -65,6 +68,15 @@
                 <div class="flex-1">
                     <TextInput placeholder="Search" bind:value={search} size="lg" autocomplete="off" fullwidth={true} />
                 </div>
+                <button
+                    class="flex items-center justify-center p-2 rounded-lg hover:bg-selected transition-colors shrink-0"
+                    onclick={() => openMessageSearch({ kind: "all" })}
+                    title={language.messageSearch.open}
+                    aria-label={language.messageSearch.open}
+                    data-message-search-open
+                >
+                    <TextSearchIcon size={20} />
+                </button>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
                 <Button
@@ -105,7 +117,7 @@
                 </Button>
                 <div class="grow"></div>
                 <span class="text-textcolor2 text-sm">
-                    {formatChars(search).length}
+                    {formatChars(query).length}
                     {language.character}
                 </span>
             </div>
@@ -113,7 +125,7 @@
         {#if selected === 0}
             <div class="w-full flex justify-center">
                 <div class="flex flex-wrap gap-2 w-full justify-center">
-                    {#each formatChars(search) as char}
+                    {#each formatChars(query) as char}
                         <div class="flex items-center text-textcolor">
                             {#if char.image}
                                 <LazyCharImage path={char.image} type="css">
@@ -147,7 +159,7 @@
                 </div>
             </div>
         {:else if selected === 1}
-            {#each formatChars(search) as char}
+            {#each formatChars(query) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <LazyCharImage path={char.image} type="css" class="shrink-0">
                         {#snippet children(image)}
@@ -189,7 +201,7 @@
             {/each}
         {:else if selected === 2}
             <span class="text-textcolor2 text-sm mb-2">{language.trashDesc}</span>
-            {#each formatChars(search, true) as char}
+            {#each formatChars(query, true) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <LazyCharImage path={char.image} type="css" class="shrink-0">
                         {#snippet children(image)}

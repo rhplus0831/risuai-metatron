@@ -1,15 +1,75 @@
+<script module lang="ts">
+    import { type loreBook } from "src/ts/storage/database.svelte";
+    import { type PreparedQuery, matchesAny } from "src/ts/util/koreanSearch";
+
+    /**
+     * The one filter of a recursive list: the outermost `LoreBookList` owns the query and the
+     * matches; each nested (folder) list reads them and adds its folder to `chain`.
+     */
+    interface LoreFilter {
+        readonly query: PreparedQuery | null;
+        readonly matches: Set<loreBook> | null;
+        /** The folder keys shown by this list and the lists above it. */
+        readonly chain: readonly string[];
+    }
+    const LORE_FILTER = Symbol("loreFilter");
+
+    /**
+     * The entries a query shows (Decision 5): an entry on its `comment`, `key` and `secondkey` (a
+     * chat's `child` link also on the entry it links, whose name it shows), a folder on its name.
+     * A folder whose name matches shows all of its entries; a shown entry shows its folders.
+     */
+    function filterMatches(
+        list: readonly loreBook[],
+        query: PreparedQuery,
+        linked: (id: string) => loreBook | undefined,
+    ): Set<loreBook> {
+        const fields = (book: loreBook) => [book.comment, book.key, book.secondkey];
+        const ownMatch = (book: loreBook) => {
+            if (book.mode === "folder") return matchesAny([book.comment], query);
+            if (matchesAny(fields(book), query)) return true;
+            const parent = book.mode === "child" && book.id ? linked(book.id) : undefined;
+            return !!parent && matchesAny(fields(parent), query);
+        };
+        const folders = new Map<string, loreBook>();
+        for (const book of list) {
+            if (book.mode === "folder" && !folders.has(book.key)) folders.set(book.key, book);
+        }
+        const shown = new Set<loreBook>();
+        for (const book of list) {
+            const chain: loreBook[] = [];
+            let named = false;
+            for (let key = book.folder; key;) {
+                const parent = folders.get(key);
+                // A folder inside itself (an imported list can hold one) ends the walk.
+                if (!parent || parent === book || chain.includes(parent)) break;
+                chain.push(parent);
+                named ||= matchesAny([parent.comment], query);
+                key = parent.folder;
+            }
+            if (named || ownMatch(book)) {
+                shown.add(book);
+                for (const parent of chain) shown.add(parent);
+            }
+        }
+        return shown;
+    }
+</script>
+
 <script lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, selectedLoreBookPage } from "src/ts/storage/settingsViews.svelte";
-    import { type loreBook } from "src/ts/storage/database.svelte";
     import LoreBookData from "./LoreBookData.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import { DetachedWrapperError, replaceRecordList } from "src/ts/storage/records.svelte";
-    import { onDestroy, onMount, tick } from "svelte";
+    import { getContext, onDestroy, onMount, setContext, tick, untrack } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { v4 } from "uuid";
     import { alertError } from "src/ts/alert";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
+    import { language } from "src/lang";
+    import { prepareQuery } from "src/ts/util/koreanSearch";
+    import TextInput from "src/lib/UI/GUI/TextInput.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     // The selected chat's local lorebook is edited on a copy that is saved through the chat module.
@@ -33,9 +93,89 @@
         showFolder = "",
     }: Props = $props();
     let stb: Sortable = null;
+    // The `disabled` option `stb` has now (set while the filter is non-empty).
+    let stbDisabled = false;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
     let idgroup = "a" + v4(); //make should it starts with alphabetic character
+
+    // Filter. Only the outermost list renders the field; a folder's nested list (mounted by
+    // `LoreBookData`) reads the root's query and matches through context.
+    const parentFilter = getContext<LoreFilter | undefined>(LORE_FILTER);
+    const isRootList = !parentFilter;
+    // The query resets when the shown list's owner changes: the character, the chat, or the tab
+    // between them. A module's list is remounted by `ModuleSettings` for another module.
+    const filterOwner = $derived(
+        externalLoreBooks
+            ? "module"
+            : submenu === 1
+              ? `chat\u0000${localLore.key}`
+              : `character\u0000${currentCharacter?.chaId ?? ""}`,
+    );
+    let query = $derived.by(() => {
+        filterOwner;
+        return "";
+    });
+    const preparedQuery = $derived(isRootList ? prepareQuery(query) : null);
+    // Matched once for the whole list (nested lists show the same array). The entries are read as a
+    // tracked copy, so any membership change matches again; their fields are read untracked, so a
+    // row renamed under the filter stays shown while it is edited.
+    const rootMatches = $derived.by(() => {
+        const prepared = preparedQuery;
+        if (!prepared) return null;
+        try {
+            const list = shownList();
+            const books = list ? [...list] : [];
+            return untrack(() =>
+                filterMatches(books, prepared, (id) => selectedCharacter()?.globalLore.find((e) => e.id === id)),
+            );
+        } catch (error) {
+            // The list can belong to a removed record (for example a deleted module).
+            if (error instanceof DetachedWrapperError) return new Set<loreBook>();
+            throw error;
+        }
+    });
+    const folderChain = $derived([...(parentFilter?.chain ?? []), showFolder || ""]);
+    setContext<LoreFilter>(
+        LORE_FILTER,
+        parentFilter
+            ? {
+                  get query() {
+                      return parentFilter.query;
+                  },
+                  get matches() {
+                      return parentFilter.matches;
+                  },
+                  get chain() {
+                      return folderChain;
+                  },
+              }
+            : {
+                  get query() {
+                      return preparedQuery;
+                  },
+                  get matches() {
+                      return rootMatches;
+                  },
+                  get chain() {
+                      return folderChain;
+                  },
+              },
+    );
+    const filtering = () => (parentFilter ? parentFilter.query : preparedQuery) !== null;
+    const matches = $derived(parentFilter ? parentFilter.matches : rootMatches);
+    /** Whether the filter hides `book` (a row the shown list holds). */
+    const filteredOut = (book: loreBook) => !!matches && !matches.has(book);
+    /**
+     * A shown folder is expanded while filtering, without writing `openedRefs`. A folder whose key
+     * this list or one above it already shows is not (an imported list can repeat a key).
+     */
+    const filterOpens = (book: loreBook, index: number) =>
+        !!matches &&
+        matches.has(book) &&
+        !!listHolding(book, index) &&
+        book.mode === "folder" &&
+        !folderChain.includes(book.key);
 
     // DOM stabilization waiting function
     const waitForDOMReady = async () => {
@@ -52,6 +192,9 @@
                 throw new Error("Container element is not ready");
             }
         }
+
+        // Drag is off while filtering: no instance is created to wait for.
+        if (untrack(filtering)) return;
 
         // 4. Calculate expected number of child elements
         let expectedElements = 0;
@@ -124,8 +267,12 @@
     };
 
     const createStb = () => {
+        // No drag reorders a filtered view: every instance starts disabled while filtering.
+        const disabled = untrack(filtering);
+        stbDisabled = disabled;
         stb = Sortable.create(ele, {
             ...sortableOptions,
+            disabled,
             group: "lorebook", // Enable cross-container drag
             swapThreshold: 0.9, // More sensitive drag response
             preventOnFilter: false, // Allow click events on filtered elements
@@ -147,8 +294,12 @@
                     return;
                 }
 
-                // Cancel movement
-                if (evt.oldIndex === evt.newIndex && evt.from === evt.to) {
+                // Cancel movement; a drag that ends after the filter started writes nothing either
+                if ((evt.oldIndex === evt.newIndex && evt.from === evt.to) || untrack(filtering)) {
+                    // The re-render below rebuilds this list only: take the row back from another one.
+                    if (evt.item.parentNode !== evt.from) {
+                        evt.from.insertBefore(evt.item, evt.from.children[evt.oldIndex] ?? null);
+                    }
                     await recreateStb();
                     return;
                 }
@@ -308,6 +459,18 @@
 
     onMount(createStb);
 
+    // Turn drag off while filtering and back on after clearing (an instance created meanwhile
+    // already has the current state).
+    $effect(() => {
+        const disabled = filtering();
+        untrack(() => {
+            if (stb && stbDisabled !== disabled) {
+                stb.option("disabled", disabled);
+                stbDisabled = disabled;
+            }
+        });
+    });
+
     // Rows are keyed by their entry and bind to the entry they were mounted for (D1). A row whose
     // entry the shown list no longer holds (deleted, or the list now belongs to another character,
     // chat, or module) gets a throwaway entry: a write it still makes while it unmounts (a focused
@@ -427,6 +590,15 @@
     });
 </script>
 
+{#if isRootList && !globalMode}
+    <TextInput
+        size="sm"
+        fullwidth
+        className="mb-2"
+        placeholder={language.search}
+        bind:value={() => query, (next) => (query = next)}
+    />
+{/if}
 {#key sorted}
     <div
         class="border-solid border-selected p-2 flex flex-col border-1 rounded-md"
@@ -439,7 +611,7 @@
             -->
         {:else if externalLoreBooks}
             {@const visibleItems = externalLoreBooks.filter(
-                (book) => (!showFolder && !book.folder) || showFolder === book.folder,
+                (book) => ((!showFolder && !book.folder) || showFolder === book.folder) && !filteredOut(book),
             )}
             {@const lastVisibleItem = visibleItems[visibleItems.length - 1]}
             {#if externalLoreBooks.length === 0}
@@ -452,6 +624,8 @@
                             bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
                             isOpen={!!listHolding(book, i) && openedRefs.has(book)}
+                            forceOpen={filterOpens(book, i)}
+                            hidden={filteredOut(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}
@@ -467,7 +641,7 @@
             {/if}
         {:else if submenu === 0}
             {@const visibleItems = currentCharacter.globalLore.filter(
-                (book) => (!showFolder && !book.folder) || showFolder === book.folder,
+                (book) => ((!showFolder && !book.folder) || showFolder === book.folder) && !filteredOut(book),
             )}
             {@const lastVisibleItem = visibleItems[visibleItems.length - 1]}
             {#if currentCharacter.globalLore.length === 0}
@@ -480,6 +654,8 @@
                             bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
                             isOpen={!!listHolding(book, i) && openedRefs.has(book)}
+                            forceOpen={filterOpens(book, i)}
+                            hidden={filteredOut(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}
@@ -496,7 +672,7 @@
             {/if}
         {:else if submenu === 1}
             {@const visibleItems = localLore.value.filter(
-                (book) => (!showFolder && !book.folder) || showFolder === book.folder,
+                (book) => ((!showFolder && !book.folder) || showFolder === book.folder) && !filteredOut(book),
             )}
             {@const lastVisibleItem = visibleItems[visibleItems.length - 1]}
             {#if localLore.value.length === 0}
@@ -509,6 +685,8 @@
                             bind:value={() => liveEntry(book, i), (next) => replaceEntry(book, next)}
                             idx={i}
                             isOpen={!!listHolding(book, i) && openedRefs.has(book)}
+                            forceOpen={filterOpens(book, i)}
+                            hidden={filteredOut(book)}
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}

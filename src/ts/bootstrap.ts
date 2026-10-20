@@ -7,7 +7,7 @@ import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
 import { loadSelection } from "./storage/selection.svelte";
 import { startRouter } from "./router/router.svelte";
 import { botMakerMode, loadedStore, LoadingStatusState } from "./stores.svelte";
-import { loadPlugins } from "./plugins/plugins.svelte";
+import { loadPluginsForBoot } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { updateAnimationSpeed } from "./gui/animation";
@@ -38,6 +38,13 @@ import { startEventFeed } from "./network/eventFeed";
 import { registerModelDynamic } from "./model/modellist";
 import { initializeRecords, type RecordFields, type RecordKind } from "./storage/records.svelte";
 import { flushClientDiagnostics, recordClientEvent } from "./diagnostics/collector";
+import {
+    beginSafeBoot,
+    bootErrorWithSafeBootHint,
+    latchSafeBootFailure,
+    markSafeBootContentStage,
+    startSafeBootSettleWindow,
+} from "./safeBoot";
 
 /**
  * Loads the application data.
@@ -46,6 +53,9 @@ export async function loadData() {
     const loaded = get(loadedStore);
     if (!loaded) {
         try {
+            // Safe boot (`safeBoot.ts`): `?safe` is read before anything navigates (the router drops the
+            // query), and the categories turned off here stay off for this page load.
+            beginSafeBoot();
             LoadingStatusState.text = "Loading Save Data...";
             // Chat summaries, not chats (Phase 6 slice 9b): no message row is read here; a chat is
             // loaded when it is selected or a consumer needs it. The read skips what the boot cache
@@ -94,6 +104,9 @@ export async function loadData() {
             // chat gets one; queued work waits until saving starts below.
             initializeChats();
 
+            // User content runs from here on (the theme's custom CSS, then the plugins): this boot counts
+            // as an attempt until it settles, and a safe boot says what is off.
+            markSafeBootContentStage();
             LoadingStatusState.text = "Updating States...";
             updateColorScheme();
             updateTextThemeAndCSS();
@@ -101,10 +114,12 @@ export async function loadData() {
             updateHeightMode();
             updateErrorHandling();
             updateGuisize();
-            if (!localStorage.getItem("nightlyWarned") && import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
+            if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE" && !readLocalFlag("nightlyWarned")) {
                 alertMd(language.nightlyWarning);
                 await waitAlert();
-                localStorage.setItem("nightlyWarned", "true");
+                try {
+                    localStorage.setItem("nightlyWarned", "true");
+                } catch {}
             }
 
             // Saving starts before plugins load, so the browser-local import below can save.
@@ -123,14 +138,24 @@ export async function loadData() {
             });
             startEventFeed();
             LoadingStatusState.text = "Loading Plugins...";
+            let bootPlugins: Awaited<ReturnType<typeof loadPluginsForBoot>> | undefined;
             try {
-                await loadPlugins();
-            } catch (error) {}
+                bootPlugins = await loadPluginsForBoot();
+            } catch (error) {
+                console.error(error);
+                latchSafeBootFailure("the plugins did not load");
+            }
 
             if (settings.ui.botSettingAtStart) {
                 botMakerMode.set(true);
             }
             loadedStore.set(true);
+            // The boot settles once the page stayed up with every plugin it started started.
+            startSafeBootSettleWindow({
+                loaded: () => get(loadedStore),
+                guests: bootPlugins?.guestsStarted ?? Promise.resolve(false),
+                stopFollowingGuests: bootPlugins?.stopFollowingGuests,
+            });
             // The URL picks the screen (a reload keeps it); from here on the history follows the stores.
             startRouter();
             // What the boot read gave goes into the boot cache when the tab is idle.
@@ -154,8 +179,18 @@ export async function loadData() {
             moduleUpdate();
             cleanLegacyAccountData();
         } catch (error) {
-            alertError(error);
+            latchSafeBootFailure("the boot failed");
+            alertError(bootErrorWithSafeBootHint(error));
         }
+    }
+}
+
+/** A `localStorage` flag, false when the storage is unavailable (a blocked store must not stop the boot). */
+function readLocalFlag(key: string): boolean {
+    try {
+        return localStorage.getItem(key) !== null;
+    } catch {
+        return false;
     }
 }
 

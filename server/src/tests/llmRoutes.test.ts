@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { LlmRequestEvent } from "../../../shared/llm/request.ts";
 import { encodeSecretPath, type SecretPath } from "../../../shared/llmSecrets.ts";
 import {
+    allowListenerOrigin,
     createResourceTestClient,
     createSigner,
     json,
@@ -98,6 +99,7 @@ async function startProvider() {
         );
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    allowListenerOrigin(server);
     const { port } = server.address() as { port: number };
     return {
         url: `http://127.0.0.1:${port}`,
@@ -466,6 +468,7 @@ describe("POST /api/llm/request", () => {
         upstreamMode = "stall";
         const node = serve({ fetch: client.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+        allowListenerOrigin(node);
         const { port } = node.address() as { port: number };
         try {
             const signer = await createSigner();
