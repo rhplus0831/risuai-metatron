@@ -1,6 +1,6 @@
 # RisuNest Small Wins Plan
 
-Status: planned 2026-10-20 at `c7628a0bb`; no slice landed. Source: the RisuNest survey
+Status: planned 2026-10-20 at `c7628a0bb`; landed T1 (`86411442f`). Source: the RisuNest survey
 [docs/research/risunest-ideas.md](../research/risunest-ideas.md) §1 items 1 (alert queue),
 2 (safe boot), 3 (plugin quick wins), 4 (unit-test network guard), 5 (CI and image
 hygiene) and 17 (engineering rules). RisuNest is read at `/home/codex/RisuNest` (HEAD
