@@ -22,26 +22,29 @@ vi.mock("src/ts/process/modules", () => ({ getModuleAssets: vi.fn(() => []), get
 vi.mock("src/ts/globalApi.svelte", () => ({ getFileSrc: async (path: string) => path }));
 vi.mock("src/ts/alert", () => ({ alertError: vi.fn() }));
 vi.mock("src/ts/util", () => ({ sleep: async () => undefined }));
-vi.mock("src/ts/storage/characterStore.svelte", () => ({ selectedCharacter: vi.fn() }));
-vi.mock("src/ts/storage/settingsViews.svelte", () => ({
-    settings: { ui: {}, memoryTranslateMedia: { newImageHandlingBeta: true } },
-}));
 
 import ChatBody from "./ChatBody.svelte";
-import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+import { characterList } from "src/ts/storage/characterStore.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { isRecordWrapper, resetRecords } from "src/ts/storage/records.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { getModuleAssets } from "src/ts/process/modules";
 import { findAssetPrefix } from "src/ts/parser/assetSearch";
 
+// `imageAssets` (the module-level `$derived` over the selected character's `additionalAssets`) on
+// the real records: the character's list is a frozen leaf (heap plan B2), read without a wrapper,
+// and an edit replaces it whole.
 type Asset = [string, string, string];
-const character = $state({ additionalAssets: [] as Asset[], prebuiltAssetStyle: "" });
 const modules = $state({ assets: [] as Asset[] });
 const mounted: ReturnType<typeof mount>[] = [];
+const character = () =>
+    characterList().find((entry) => entry?.chaId === "c")! as unknown as { additionalAssets: Asset[] };
 
 afterEach(async () => {
     for (const instance of mounted.splice(0)) await unmount(instance);
-    character.additionalAssets = [];
     modules.assets = [];
     document.body.innerHTML = "";
+    resetRecords();
     vi.clearAllMocks();
 });
 
@@ -51,8 +54,14 @@ async function settle() {
     flushSync();
 }
 
-function render() {
-    vi.mocked(selectedCharacter).mockImplementation(() => character as ReturnType<typeof selectedCharacter>);
+function render(additionalAssets: Asset[]) {
+    installFlatDatabase({
+        newImageHandlingBeta: true,
+        characters: [
+            { chaId: "c", type: "character", name: "C", additionalAssets, emotionImages: [], customscript: [] },
+        ],
+    });
+    selectCharacter("c");
     vi.mocked(getModuleAssets).mockImplementation(() => modules.assets);
     const target = document.createElement("div");
     document.body.append(target);
@@ -72,11 +81,12 @@ function render() {
 describe("ChatBody image asset fallback", () => {
     it("renders the first prefix minimum from module and character assets, retaining an empty-path winner", async () => {
         modules.assets = [["pose.jpg", "blob:first", "jpg"]];
-        character.additionalAssets = [
+        const { target, props } = render([
             ["pose.gif", "blob:tie", "gif"],
             ["posf.png", "blob:wrong-prefix", "png"],
-        ];
-        const { target, props } = render();
+        ]);
+        expect(isRecordWrapper(character().additionalAssets)).toBe(false);
+        expect(Object.isFrozen(character().additionalAssets)).toBe(true);
         await settle();
         expect(target.querySelector("img")?.getAttribute("src")).toBe("blob:first");
         // A still closer non-prefix candidate must never win.
@@ -87,8 +97,8 @@ describe("ChatBody image asset fallback", () => {
         expect(target.querySelector("img")?.getAttribute("src")).toBe("pose.png");
     });
 
-    it("memoizes unresolved names across renders and rescans when the image asset value changes", async () => {
-        const { target, props } = render();
+    it("memoizes unresolved names across renders and rescans when the character's list is replaced", async () => {
+        const { target, props } = render([]);
         props.msgDisplay = '<p>first</p><img src="missing.png">';
         await settle();
         expect(target.querySelector("img")?.getAttribute("noimage")).toBe("true");
@@ -97,7 +107,9 @@ describe("ChatBody image asset fallback", () => {
         await settle();
         expect(target.querySelector("img")?.getAttribute("noimage")).toBe("true");
         expect(findAssetPrefix).toHaveBeenCalledTimes(1);
-        character.additionalAssets = [["missing.jpg", "blob:found", "jpg"]];
+        // The list is immutable: an in-place write is refused, a replacement is seen.
+        expect(() => character().additionalAssets.push(["missing.jpg", "blob:found", "jpg"])).toThrow(TypeError);
+        character().additionalAssets = [["missing.jpg", "blob:found", "jpg"]];
         props.msgDisplay = '<p>third</p><img src="missing.png">';
         await settle();
         expect(target.querySelector("img")?.getAttribute("src")).toBe("blob:found");
@@ -106,5 +118,11 @@ describe("ChatBody image asset fallback", () => {
         await settle();
         expect(target.querySelector("img")?.getAttribute("src")).toBe("blob:found");
         expect(findAssetPrefix).toHaveBeenCalledTimes(2);
+        // A rename built from the old list (its other tuples shared) rescans too.
+        character().additionalAssets = character().additionalAssets.map((asset) => ["renamed.jpg", asset[1], asset[2]]);
+        props.msgDisplay = '<p>fifth</p><img src="missing.png">';
+        await settle();
+        expect(target.querySelector("img")?.getAttribute("noimage")).toBe("true");
+        expect(findAssetPrefix).toHaveBeenCalledTimes(3);
     });
 });

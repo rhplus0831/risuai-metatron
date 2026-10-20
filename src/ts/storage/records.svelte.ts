@@ -1,4 +1,4 @@
-import { untrack } from "svelte";
+import { tick, untrack } from "svelte";
 import {
     FLAT_SECRET_FIELDS,
     NESTED_SECRET_FIELDS,
@@ -56,6 +56,15 @@ import { writeEntries } from "./mutationValidation";
  *   Plain JSON written under a character or `modules` is copied. Their field-text caches are
  *   disabled by non-JSON data or state shared across cached fields; modules may move whole elements
  *   between root list slots without disabling the cache, which follows element identity, not id.
+ * - A module's `assets` list is immutable (heap plan B1): every install (`applyRaw`) and adoption
+ *   freezes a list of plain JSON tuples, and a read returns the frozen list and tuples themselves,
+ *   never a wrapper. An edit replaces the whole list (`module.assets = next`; unchanged frozen
+ *   tuples are reused). A write into a frozen value through any path is refused with a TypeError
+ *   before anything changes. A list of another shape stays mutable and wrapped.
+ * - A character's `additionalAssets`, `emotionImages` (tuples) and `ccAssets` (flat records) follow
+ *   the same rule (heap plan B2): frozen at `initializeRecords`, `applyRawCharacter` and
+ *   `patchRawCharacter` (handed-over data) and, for a whole field written or stored, in a wholly owned
+ *   copy (`freshAssetList`: live descriptors validated before copying, only verified entries shared).
  * - An own `__proto__` (or other inherited-name) key is rebuilt through `writeEntries`.
  * - Writes and replacements run untracked; comparisons use `Object.is` (in dev, Svelte compiles `===`
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
@@ -307,7 +316,8 @@ const characterPlainFields = new WeakMap<object, Map<string, { stamp: number; va
  * A detached, read-only-by-contract field copy, shared by all readers of this live element/stamp.
  * Resolve the wrapper to its $state proxy: stamps belong to that proxy, not its raw target.
  * Svelte never updates the raw target after a write, so it is usable only for an untouched field.
- * Never return the raw target or freeze it. Uncacheable data must be copied on every read.
+ * Never return the raw target or freeze it, except a verified frozen asset list (`frozenAssetOf`),
+ * which is immutable and returned as itself. Uncacheable data must be copied on every read.
  */
 export function moduleFieldPlain<T extends object, K extends keyof T & string>(wrapper: T, field: K): T[K] {
     return untrack(() => {
@@ -326,15 +336,19 @@ export function moduleFieldPlain<T extends object, K extends keyof T & string>(w
         const raw = stamp === node.meta.lifetime ? element[STATE]?.[field] : undefined;
         const untouched = stamp === node.meta.lifetime && !(isObject(raw) && STATE in raw);
         const value = untouched ? raw : element[field];
-        // Detached JSON on the fast path: no Svelte property sources are created for its tuples.
+        // A verified frozen asset list is shared as itself. Otherwise detached JSON on the fast
+        // path: no Svelte property sources are created for its tuples.
+        const frozen = isObject(value) ? frozenAssetOf(value) : null;
         const copy =
-            stamp !== null
-                ? value === undefined
-                    ? undefined
-                    : JSON.parse(JSON.stringify(value))
-                : isObject(value)
-                  ? detachedCopy(value)
-                  : value;
+            frozen !== null
+                ? frozen
+                : stamp !== null
+                  ? value === undefined
+                      ? undefined
+                      : JSON.parse(JSON.stringify(value))
+                  : isObject(value)
+                    ? detachedCopy(value)
+                    : value;
         if (stamp !== null) {
             const memo = fields ?? new Map();
             memo.set(field, { stamp, value: copy });
@@ -428,7 +442,8 @@ export function characterFieldStamp(chaId: string, field: string): number | null
 /**
  * A detached, read-only-by-contract character field copy, shared by live element and field stamp.
  * Like moduleFieldPlain, reads the raw target only while the field is untouched; changed fields
- * copy the live $state value, without walking the record wrappers. Never mutate the returned copy.
+ * copy the live $state value, without walking the record wrappers. A verified frozen asset list is
+ * returned as itself (immutable). Never mutate the returned copy.
  */
 export function characterFieldPlain<T = unknown>(chaId: string, field: string): T | undefined {
     return untrack(() => {
@@ -443,14 +458,18 @@ export function characterFieldPlain<T = unknown>(chaId: string, field: string): 
         const raw = stamp === meta.lifetime ? Reflect.get(element, STATE)?.[field] : undefined;
         const untouched = stamp === meta.lifetime && !(isObject(raw) && STATE in raw);
         const value = untouched ? raw : element[field];
+        // A verified frozen asset list is shared as itself (as in `moduleFieldPlain`).
+        const frozen = isObject(value) ? frozenAssetOf(value) : null;
         const copy =
-            stamp !== null
-                ? value === undefined
-                    ? undefined
-                    : JSON.parse(JSON.stringify(value))
-                : isObject(value)
-                  ? detachedCopy(value)
-                  : value;
+            frozen !== null
+                ? frozen
+                : stamp !== null
+                  ? value === undefined
+                      ? undefined
+                      : JSON.parse(JSON.stringify(value))
+                  : isObject(value)
+                    ? detachedCopy(value)
+                    : value;
         if (stamp !== null) {
             const memo = fields ?? new Map();
             memo.set(field, { stamp, value: copy });
@@ -626,12 +645,19 @@ export function recordData<T = unknown>(kind: RecordKind): T | undefined {
  * The application path of a server copy (a conflict reload, a live update, a job hydration):
  * replaces the record and never queues a write; `undefined` removes it. `llmSecrets` takes the
  * mirror form (`mirrorFields`). The caller keeps its admission rules (revision, in-flight, local
- * change).
+ * change). `data` is handed over: detached JSON nobody edits afterwards (a `modules` record's asset
+ * lists are frozen in place, `freezeAssetList`).
  */
 export function applyRaw(kind: RecordKind, data: unknown) {
     bumpEpoch(metaOf(kind));
     if (kind === "modules") {
         renewStamps(metaOf(kind));
+        // The data is detached JSON this layer now owns: its asset lists are frozen in place.
+        if (Array.isArray(data) && !(STATE in data) && !nodeOf.has(data)) {
+            for (const element of data) {
+                freezeModuleAssets(element);
+            }
+        }
     }
     untrack(() => {
         if (kind === "modules") {
@@ -643,6 +669,11 @@ export function applyRaw(kind: RecordKind, data: unknown) {
         } else {
             records[kind] = data;
         }
+        const root = rootNodes.get(kind);
+        if (root) {
+            unpinBelow(root);
+        }
+        refreshRoot(kind);
     });
 }
 
@@ -654,7 +685,9 @@ export type RecordFields = Partial<Record<RecordKind, unknown>> & { characters?:
  * lacks is removed; the character list is `[]` then) and never queues a write. The characters get
  * valid, unique ids before any wrapper exists: an entry that is not an object is dropped, and one
  * without a string `chaId`, or with one an earlier entry has, gets a new id (the server's ids are
- * the record ids, so a boot never needs this; a fixture or an old export may).
+ * the record ids, so a boot never needs this; a fixture or an old export may). `fields` is handed
+ * over: detached JSON nobody edits afterwards (a module's and a character's asset lists are frozen in
+ * place, `freezeAssetList`); a caller that keeps editing its input passes a copy.
  */
 export function initializeRecords(fields: RecordFields) {
     const list = (Array.isArray(fields.characters) ? fields.characters : []).filter(
@@ -675,11 +708,20 @@ export function initializeRecords(fields: RecordFields) {
         seen.add(character.chaId as string);
         stripChatFields(character);
         // An installation holds detached JSON data (a server read, a fixture).
+        freezeCharacterAssets(character);
         renewStamps(characterOwner(character.chaId as string));
     }
     bumpEpoch(metaOf(CHARACTERS));
     untrack(() => {
         records[CHARACTERS] = list;
+        // A reinstallation without a reset: the characters it lacks lose their nodes, and the nodes
+        // of the others (they follow their paths) let go of the old data.
+        const root = rootNodes.get(CHARACTERS);
+        if (root) {
+            forgetCharacterNodes([...root.idChildren.keys()].filter((chaId) => !seen.has(chaId)));
+            unpinBelow(root);
+        }
+        refreshRoot(CHARACTERS);
     });
     runMembershipHook();
 }
@@ -705,6 +747,8 @@ export function resetRecords() {
     batchDepth = 0;
     batched.clear();
     mutatorDepth = 0;
+    runningMutators.clear();
+    pendingTrims.clear();
     mutatorWriteback = null;
     runMembershipHook();
 }
@@ -724,6 +768,7 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
                 ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
                 : unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
+        refreshRoot(kind);
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -1177,6 +1222,8 @@ const isIndex = (key: string) => /^(0|[1-9]\d*)$/.test(key);
  */
 const MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"]);
 let mutatorDepth = 0;
+/** The nodes whose own mutator is running (it cleans up their shrink when it returns), by depth. */
+const runningMutators = new Map<TrackedNode, number>();
 /** Only this call's prepared values may skip adoption when written back into its array. */
 let mutatorWriteback: { node: TrackedNode; values: Set<unknown> } | null = null;
 
@@ -1202,6 +1249,10 @@ function displace(meta: RecordMeta, old: unknown) {
 }
 
 function adopt(node: TrackedNode, target: object, epoch: number) {
+    if (!Object.is(node.target, target) && Array.isArray(target) && node.indexChildren.size > 0) {
+        // Another list now stands here (a raw replacement, a reassigned field): its tail is empty.
+        pruneIndexTail(node, target.length);
+    }
     node.target = target;
     node.epoch = epoch;
     node.meta.owned.add(target);
@@ -1252,7 +1303,8 @@ function resolve(node: TrackedNode): any {
         throw new Error("unreachable");
     }
     const current = parent[step.key];
-    if (Object.is(current, node.target)) {
+    // A node a raw change unpinned holds no target (`unpinBelow`): it follows its path below.
+    if (node.target !== undefined && Object.is(current, node.target)) {
         return current;
     }
     if (node.epoch !== epoch || !Array.isArray(parent) || !isIndex(step.key)) {
@@ -1408,7 +1460,309 @@ function unwrapInto(
     return meta.chaId === null ? unwrap(value, meta) : adoptCharacterValue(value, meta, field, taint);
 }
 
-type ModulePlace = { type: "list" } | { type: "item" } | { type: "field"; element: object; field: string } | null;
+// ---------------------------------------------------------------------------------------------
+// Frozen asset lists (heap plan B1: module `assets`; B2: a character's asset fields).
+
+/**
+ * The asset lists and their entries this layer verified and froze: a list is replaced whole, never
+ * edited in place, so Svelte proxies only the list, not each entry (its `get` trap creates no source
+ * for a non-writable property). Verified values are leaves for the wrappers. Provenance is kept per
+ * shape: tuples (module `assets`, `additionalAssets`, `emotionImages`) and flat records
+ * (`ccAssets`); an empty list is verified for both. In DEV a Svelte array proxy's target is its
+ * `inspectable_array` wrapper; one over a verified list joins its set when first checked
+ * (`frozenAssetOf`).
+ */
+const frozenLists = new WeakSet<object>();
+const frozenTuples = new WeakSet<object>();
+const frozenRecordLists = new WeakSet<object>();
+const frozenRecords = new WeakSet<object>();
+
+/** An asset entry's shape: a tuple of JSON primitives, or a flat record of them (`ccAssets`). */
+type AssetShape = "tuple" | "record";
+
+const verifiedLists = (shape: AssetShape) => (shape === "tuple" ? frozenLists : frozenRecordLists);
+const verifiedEntries = (shape: AssetShape) => (shape === "tuple" ? frozenTuples : frozenRecords);
+const isVerifiedList = (value: object) => frozenLists.has(value) || frozenRecordLists.has(value);
+
+/** A character's asset fields and their entry shapes (`shared/database.ts`). */
+const CHARACTER_ASSET_FIELDS: ReadonlyMap<string, AssetShape> = new Map([
+    ["additionalAssets", "tuple"],
+    ["emotionImages", "tuple"],
+    ["ccAssets", "record"],
+]);
+
+/** Whether `value`'s own keys are its indices and `length` only (no hole), each a data property. */
+function denseDataElements(value: unknown[]): unknown[] | null {
+    const length = Reflect.getOwnPropertyDescriptor(value, "length")?.value;
+    const keys = Reflect.ownKeys(value);
+    if (!Number.isInteger(length) || length < 0 || keys.length !== length + 1) {
+        return null;
+    }
+    const elements: unknown[] = [];
+    for (let index = 0; index < length; index++) {
+        // Read through the descriptor: a getter is never called, and makes the value not JSON data.
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+            return null;
+        }
+        elements.push(descriptor.value);
+    }
+    return elements;
+}
+
+/** A flat record's values: string keys (no `__proto__` or `toJSON`), each an enumerable data property. */
+function recordDataValues(value: object): unknown[] | null {
+    const values: unknown[] = [];
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== "string" || key === "__proto__" || key === "toJSON") {
+            return null;
+        }
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, key)!;
+        if (!("value" in descriptor) || !descriptor.enumerable) {
+            return null;
+        }
+        values.push(descriptor.value);
+    }
+    return values;
+}
+
+const isPlainArray = (value: unknown): value is unknown[] =>
+    Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && !nodeOf.has(value) && !(STATE in value);
+
+const isPlainRecord = (value: unknown): value is object =>
+    isObject(value) &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    !nodeOf.has(value) &&
+    !(STATE in value);
+
+const isJsonPrimitive = (value: unknown) =>
+    value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+
+/** An asset entry of `shape`: a plain dense array, or a plain flat record, of JSON primitives. */
+function isAssetEntry(value: unknown, shape: AssetShape): boolean {
+    if (isObject(value) && verifiedEntries(shape).has(value)) {
+        return true;
+    }
+    const values =
+        shape === "tuple"
+            ? isPlainArray(value)
+                ? denseDataElements(value)
+                : null
+            : isPlainRecord(value)
+              ? recordDataValues(value)
+              : null;
+    return values !== null && values.every(isJsonPrimitive);
+}
+
+/** Remembers a frozen list as verified for `shape`, or for both shapes when it is empty. */
+function verifyList(list: object, shape: AssetShape, empty: boolean) {
+    if (empty || shape === "tuple") {
+        frozenLists.add(list);
+    }
+    if (empty || shape === "record") {
+        frozenRecordLists.add(list);
+    }
+}
+
+/**
+ * Freezes a plain asset list in place (its entries, then the list) when all of it is plain JSON
+ * entries of `shape`, checked before anything is frozen; any other shape stays mutable and keeps
+ * working through the wrappers. The caller owns `list` and its entries (detached JSON or this
+ * layer's own copy).
+ */
+function freezeAssetList(list: unknown, shape: AssetShape = "tuple"): boolean {
+    if (isObject(list) && verifiedLists(shape).has(list)) {
+        return true;
+    }
+    if (!isPlainArray(list)) {
+        return false;
+    }
+    const entries = denseDataElements(list);
+    if (entries === null || !entries.every((entry) => isAssetEntry(entry, shape))) {
+        return false;
+    }
+    for (const entry of entries as object[]) {
+        Object.freeze(entry);
+        verifiedEntries(shape).add(entry);
+    }
+    Object.freeze(list);
+    verifyList(list, shape, entries.length === 0);
+    return true;
+}
+
+/** Freezes the `assets` of a plain module object this layer owns (`freezeAssetList`). */
+function freezeModuleAssets(element: unknown) {
+    if (!isObject(element) || Array.isArray(element) || nodeOf.has(element) || STATE in element) {
+        return;
+    }
+    const descriptor = Reflect.getOwnPropertyDescriptor(element, "assets");
+    if (descriptor && "value" in descriptor) {
+        freezeAssetList(descriptor.value);
+    }
+}
+
+/** Freezes the asset fields of a plain character object this layer owns (`freezeAssetList`). */
+function freezeCharacterAssets(character: unknown) {
+    if (!isObject(character) || Array.isArray(character) || nodeOf.has(character) || STATE in character) {
+        return;
+    }
+    for (const [field, shape] of CHARACTER_ASSET_FIELDS) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(character, field);
+        if (descriptor && "value" in descriptor) {
+            freezeAssetList(descriptor.value, shape);
+        }
+    }
+}
+
+/**
+ * The verified frozen asset list or entry `value` is (or its Svelte proxy stands for), or null.
+ * O(1) in production; a DEV `inspectable_array` target is checked once (O(n)), then remembered.
+ */
+function frozenAssetOf(value: object): object | null {
+    if (isVerifiedList(value) || frozenTuples.has(value) || frozenRecords.has(value)) {
+        return value;
+    }
+    if (!(STATE in value)) {
+        return null;
+    }
+    const target = (value as Record<symbol, object>)[STATE];
+    if (isVerifiedList(target)) {
+        return target;
+    }
+    if (!Array.isArray(target) || Object.isExtensible(target) || !Object.isFrozen(target)) {
+        return null;
+    }
+    const elements = denseDataElements(target);
+    if (elements === null) {
+        return null;
+    }
+    const shape: AssetShape | null = elements.every((entry) => isObject(entry) && frozenTuples.has(entry))
+        ? "tuple"
+        : elements.every((entry) => isObject(entry) && frozenRecords.has(entry))
+          ? "record"
+          : null;
+    if (shape === null) {
+        return null;
+    }
+    verifyList(target, shape, elements.length === 0);
+    return target;
+}
+
+/** A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget. */
+export function isFrozenAssetList(value: unknown): boolean {
+    if (!isObject(value) || nodeOf.has(value)) {
+        return false;
+    }
+    const frozen = untrack(() => frozenAssetOf(value));
+    return frozen !== null && isVerifiedList(frozen);
+}
+
+/**
+ * A wholly owned, frozen copy of `value` as an asset list of `shape`, or null when it is not one (a
+ * hole, an accessor, a nested object, another shape). Validate the live descriptors before copying:
+ * wrappers resolve as assignment sources, and `$state` descriptors include edits absent from its
+ * raw target. Only verified entries of `shape` are shared; no live object of any record is frozen.
+ */
+function freshAssetList(value: object, shape: AssetShape): unknown[] | null {
+    const node = nodeOf.get(value);
+    const source = node ? assignedTarget(node) : value;
+    if (!Array.isArray(source) || Object.getPrototypeOf(source) !== Array.prototype) {
+        return null;
+    }
+    const entries = denseDataElements(source);
+    if (entries === null) {
+        return null;
+    }
+    const prepared: { entry: object; keys: string[] | null; values: unknown[] | null }[] = [];
+    for (const value of entries) {
+        if (!isObject(value)) {
+            return null;
+        }
+        const node = nodeOf.get(value);
+        const entry = node ? assignedTarget(node) : value;
+        if (verifiedEntries(shape).has(entry)) {
+            prepared.push({ entry, keys: null, values: null });
+            continue;
+        }
+        const values =
+            shape === "tuple"
+                ? Array.isArray(entry) && Object.getPrototypeOf(entry) === Array.prototype
+                    ? denseDataElements(entry)
+                    : null
+                : !Array.isArray(entry) && Object.getPrototypeOf(entry) === Object.prototype
+                  ? recordDataValues(entry)
+                  : null;
+        if (values === null || !values.every(isJsonPrimitive)) {
+            return null;
+        }
+        prepared.push({ entry, keys: shape === "record" ? Object.keys(entry) : null, values });
+    }
+    const out = prepared.map(({ entry, keys, values }) =>
+        values === null ? entry : keys === null ? values : Object.fromEntries(keys.map((key, i) => [key, values[i]])),
+    );
+    return freezeAssetList(out, shape) ? out : null;
+}
+
+/**
+ * A whole character asset field written (a wrapper write of the field, a stored character's key): a
+ * verified frozen list of the field's shape is stored as itself, a list of that shape as a fresh
+ * frozen copy (`freshAssetList`; nothing to taint); anything else goes through `adoptCharacterValue`
+ * and stays mutable.
+ */
+function adoptCharacterAssetField(
+    value: unknown,
+    meta: RecordMeta,
+    field: string,
+    shape: AssetShape,
+    taint: Pick<RecordMeta, "uncacheable">,
+): unknown {
+    if (isObject(value)) {
+        const frozen = frozenAssetOf(value);
+        if (frozen !== null && verifiedLists(shape).has(frozen)) {
+            return frozen;
+        }
+        const fresh = freshAssetList(value, shape);
+        if (fresh !== null) {
+            return fresh;
+        }
+    }
+    return adoptCharacterValue(value, meta, field, taint);
+}
+
+/** Refuses a write into a frozen value (Svelte's traps would change their sources, then throw). */
+function refuseFrozen(node: TrackedNode, resolved: object) {
+    if (!Object.isExtensible(resolved)) {
+        throw new TypeError(`${node.kind}: a frozen value is replaced whole, not edited in place`);
+    }
+}
+
+/**
+ * Freezes the asset lists in a module value `adoptModuleValue` copied for `place`: each element of a
+ * root list, one element, or an element's whole `assets` field. Own `$state` kept as itself is not
+ * touched.
+ */
+function freezeAdopted(copy: unknown, place: ModulePlace) {
+    if (isObject(copy) && STATE in copy) {
+        return;
+    }
+    if (place?.type === "list" && Array.isArray(copy)) {
+        for (const element of copy) {
+            freezeModuleAssets(element);
+        }
+    } else if (place?.type === "item") {
+        freezeModuleAssets(copy);
+    } else if (place?.type === "field" && place.whole && place.field === "assets") {
+        freezeAssetList(copy);
+    }
+}
+
+/**
+ * `whole`: the place is the element's top-level field itself (a write of `module.assets`), not a
+ * value under it.
+ */
+type ModulePlace =
+    { type: "list" } | { type: "item" } | { type: "field"; element: object; field: string; whole: boolean } | null;
 
 /**
  * Where an already resolved node (or a property written on it) stands in modules. Use its current
@@ -1425,12 +1779,14 @@ function modulePlace(node: TrackedNode, prop?: string | symbol): ModulePlace {
     }
     let element = node;
     let field = prop;
+    let whole = true;
     while (element.parent!.parent !== null) {
         if (element.step.type !== "key") {
             return null;
         }
         field = element.step.key;
         element = element.parent!;
+        whole = false;
     }
     if (element.step.type !== "key" || !isIndex(element.step.key)) {
         return null;
@@ -1438,7 +1794,7 @@ function modulePlace(node: TrackedNode, prop?: string | symbol): ModulePlace {
     return field === undefined
         ? { type: "item" }
         : typeof field === "string" && element.target !== undefined
-          ? { type: "field", element: element.target, field }
+          ? { type: "field", element: element.target, field, whole }
           : null;
 }
 
@@ -1455,6 +1811,10 @@ function unwrapNodeValue(
         }
         return adoptModuleValue(value, node.meta, modulePlace(node, prop), taint);
     }
+    const shape = isCharacterElement(node) && typeof prop === "string" ? CHARACTER_ASSET_FIELDS.get(prop) : undefined;
+    if (shape !== undefined) {
+        return adoptCharacterAssetField(value, node.meta, prop as string, shape, taint);
+    }
     return unwrapInto(value, node.meta, node.field ?? (typeof prop === "string" ? prop : null), taint);
 }
 
@@ -1469,6 +1829,27 @@ function adoptModuleValue(
     meta: RecordMeta,
     place: ModulePlace,
     taint: Pick<RecordMeta, "uncacheable"> = meta,
+): unknown {
+    if (isObject(value) && place?.type === "field" && place.whole && place.field === "assets") {
+        // A verified frozen list is immutable: stored as itself, nothing to copy or taint.
+        const frozen = frozenAssetOf(value);
+        if (frozen !== null && frozenLists.has(frozen)) {
+            return frozen;
+        }
+    }
+    const adopted = adoptModuleCopy(value, meta, place, taint);
+    if (!Object.is(adopted, value)) {
+        freezeAdopted(adopted, place);
+    }
+    return adopted;
+}
+
+/** `adoptModuleValue` before its asset lists are frozen. */
+function adoptModuleCopy(
+    value: unknown,
+    meta: RecordMeta,
+    place: ModulePlace,
+    taint: Pick<RecordMeta, "uncacheable">,
 ): unknown {
     if (typeof value === "function") {
         taint.uncacheable = true;
@@ -1533,13 +1914,24 @@ function moduleInertCopy(
             return NOT_INERT;
         }
         let entry: unknown = descriptor.value;
-        if (isObject(entry)) {
-            const destination =
+        // A verified frozen tuple in an asset list, or a verified list as an element's `assets`, is
+        // immutable: reused as itself (an edit built from the old list copies only what it changed).
+        const reusable =
+            isObject(entry) &&
+            ((place?.type === "field" && place.field === "assets" && frozenTuples.has(entry)) ||
+                (place?.type === "item" && key === "assets" && frozenLists.has(entry)));
+        if (isObject(entry) && !reusable) {
+            const destination: ModulePlace =
                 place?.type === "field"
-                    ? place
+                    ? place.whole
+                        ? { ...place, whole: false }
+                        : place
                     : place?.type === "list" && isIndex(key)
-                      ? ({ type: "item" } as const)
-                      : null;
+                      ? { type: "item" }
+                      : place?.type === "item" && key === "assets"
+                        ? // Under the new element's `assets`: its tuples may be reused; own state still taints.
+                          { type: "field", element: out, field: "assets", whole: false }
+                        : null;
             entry =
                 nodeOf.has(entry) || STATE in entry
                     ? adoptModuleValue(entry, meta, destination, taint)
@@ -1656,6 +2048,131 @@ function inertCopy(
     }
     path.delete(value);
     return out;
+}
+
+/**
+ * Drops `node`'s index child entries at `length` or past it (heap plan D1): its list shrank or now is
+ * another, shorter list, so no element stands there and the entry would only keep its old object.
+ * A surviving element that moved down keeps its node through `meta.children` and is rebound at its
+ * next read; entries below `length` are kept (after a raw replacement they stand for the element
+ * now there).
+ */
+function pruneIndexTail(node: TrackedNode, length: number) {
+    for (const key of node.indexChildren.keys()) {
+        if (isIndex(key) && Number(key) >= length) {
+            node.indexChildren.delete(key);
+        }
+    }
+}
+
+/**
+ * Points the cached root node of `kind` at the record's current data at once (an installation, a
+ * server copy, a whole replacement, a rebuilt list), so it keeps no old copy until its next read.
+ * A record that is gone or changed shape leaves the node holding nothing of the old data at its own
+ * level (the node itself is kept: a retained root wrapper resolves by kind, and `trackedRoot` decides
+ * as before whether a returning record reuses it).
+ */
+function refreshRoot(kind: string) {
+    const node = rootNodes.get(kind);
+    if (!node) {
+        return;
+    }
+    const data = untrack(() => records[kind]);
+    if (!isObject(data) || node.isArray !== Array.isArray(data)) {
+        node.target = undefined;
+        pruneIndexTail(node, 0);
+        return;
+    }
+    adopt(node, data, nodeEpoch(node.meta, null));
+}
+
+/** Root lists whose original array waits for `trimRootList` (after the pending Svelte flush). */
+const pendingTrims = new Set<string>();
+
+/**
+ * After a removal from a root list (heap plan D1): Svelte never writes a proxy's original array, which
+ * keeps every element it was installed with, so a removed one would stay reachable through it until
+ * the record is replaced. Every index is read once (so each has its Svelte source and `get` never
+ * falls back to the original), then the original array is overwritten with the live elements and cut
+ * to the live length. The `$state` list stays the same object: nothing re-runs, and no reaction is
+ * left holding the sources of an abandoned list. Done after the pending flush (`tick`): an effect's
+ * teardown in it reads the list as it was, and Svelte's `has` still consults the original array.
+ */
+function trimRootList(kind: string) {
+    if (pendingTrims.size === 0) {
+        // Also when that flush threw: the pending set must empty, or no later trim is scheduled.
+        void tick().then(trimPendingLists, trimPendingLists);
+    }
+    pendingTrims.add(kind);
+}
+
+function trimPendingLists() {
+    const kinds = [...pendingTrims];
+    pendingTrims.clear();
+    for (const kind of kinds) {
+        trimOriginal(kind);
+    }
+}
+
+function trimOriginal(kind: string) {
+    untrack(() => {
+        const list = records[kind];
+        if (!Array.isArray(list)) {
+            return;
+        }
+        const original = (list as unknown as Record<symbol, unknown>)[STATE];
+        if (!Array.isArray(original)) {
+            return;
+        }
+        const length = list.length;
+        for (let index = 0; index < length; index += 1) {
+            original[index] = list[index];
+        }
+        original.length = length;
+    });
+}
+
+/**
+ * After a raw change of the data under `node` (a server copy or an installation: its epoch moved, so
+ * every node below follows its path at its next read), drops the old objects the nodes below hold
+ * (heap plan D1). The nodes stay, so a retained wrapper and a fresh one remain one object; until
+ * then they would keep the replaced data alive. Never after a local change, where a moved element
+ * is followed by identity.
+ */
+function unpinBelow(node: TrackedNode, self = false) {
+    if (mutatorDepth > 0) {
+        // A mutator writes back the objects it read through its nodes' targets (`assignedTarget`):
+        // during one (a raw change from a comparator), the targets stay until their next read.
+        return;
+    }
+    const release = (current: TrackedNode) => {
+        // An object displaced in this task keeps its node's target: a same-task re-insertion of its
+        // wrapper finds it through it (`assignedTarget`).
+        if (current.target !== undefined && !current.meta.displaced.has(current.target)) {
+            current.target = undefined;
+        }
+    };
+    if (self) {
+        release(node);
+    }
+    const pending: TrackedNode[] = [node];
+    while (pending.length > 0) {
+        const current = pending.pop()!;
+        for (const children of [current.keyChildren, current.idChildren, current.indexChildren]) {
+            for (const child of children.values()) {
+                release(child);
+                pending.push(child);
+            }
+        }
+    }
+}
+
+/** After `node`'s list shrank locally to `length`: a root list's original array is trimmed, any list pruned. */
+function afterShrink(node: TrackedNode, length: number) {
+    if (node.parent === null) {
+        trimRootList(node.kind);
+    }
+    pruneIndexTail(node, length);
 }
 
 function moveIndexChild(node: TrackedNode, index: string) {
@@ -1904,6 +2421,8 @@ const isEntryElement = (node: TrackedNode) => node.parent !== null && isEntryLis
 function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean {
     assertUniqueIds(node);
     const target = resolve(node);
+    refuseFrozen(node, target);
+    const lengthBefore = Array.isArray(target) ? target.length : 0;
     if (isCharacterList(node)) {
         // Only the no-ops a Svelte 3 self-assignment makes; membership changes go through characterStore.
         if (
@@ -1980,6 +2499,10 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
     }
     route();
     queueNodeWrite(node, prop);
+    if (prop === "length" && !runningMutators.has(node) && Array.isArray(target) && target.length < lengthBefore) {
+        // A direct truncation (this list's own mutator handles its `length` writes when it returns).
+        afterShrink(node, target.length);
+    }
     return true;
 }
 
@@ -2115,9 +2638,14 @@ function createNode(
                         // unwrapped before the method runs, so a retained wrapper resolves its current
                         // identity (or throws) and nothing changes on a refusal. Its writes are queued
                         // once, when it ends (also when it throws).
-                        const plan = untrack(() => planMutator(node, resolve(node), prop, args));
+                        const { plan, list, before } = untrack(() => {
+                            const list = resolve(node);
+                            refuseFrozen(node, list);
+                            return { plan: planMutator(node, list, prop, args), list, before: list.length };
+                        });
                         return batchRecordWrites(() => {
                             mutatorDepth += 1;
+                            runningMutators.set(node, (runningMutators.get(node) ?? 0) + 1);
                             const previous = mutatorWriteback;
                             mutatorWriteback = { node, values: plan.values };
                             let result: unknown;
@@ -2126,8 +2654,21 @@ function createNode(
                             } finally {
                                 mutatorWriteback = previous;
                                 mutatorDepth -= 1;
+                                const running = runningMutators.get(node)! - 1;
+                                if (running === 0) {
+                                    runningMutators.delete(node);
+                                } else {
+                                    runningMutators.set(node, running);
+                                }
                             }
                             plan.route();
+                            // Only after a call that returned (a throwing one is cleaned up by the
+                            // next shrink or replacement), and only while the list is still this one.
+                            untrack(() => {
+                                if (Object.is(node.target, list) && list.length < before) {
+                                    afterShrink(node, list.length);
+                                }
+                            });
                             return result;
                         });
                     };
@@ -2140,7 +2681,8 @@ function createNode(
             }
             // An inherited `__proto__` read returns the prototype, which is never wrapped.
             if (isObject(value) && (prop !== "__proto__" || Object.hasOwn(resolved, prop))) {
-                return childWrapper(node, resolved, prop, value);
+                // A verified frozen asset list or tuple is a leaf: immutable, replaced whole.
+                return frozenAssetOf(value) ?? childWrapper(node, resolved, prop, value);
             }
             return value;
         },
@@ -2148,6 +2690,7 @@ function createNode(
             if (typeof prop === "symbol") {
                 return untrack(() => {
                     const resolved = resolve(node);
+                    refuseFrozen(node, resolved);
                     if (node.kind === "modules") {
                         const done = Reflect.set(resolved, prop, unwrapNodeValue(value, node, prop));
                         queueNodeWrite(node, prop);
@@ -2171,6 +2714,7 @@ function createNode(
                 }
                 assertUniqueIds(node);
                 const resolved = resolve(node);
+                refuseFrozen(node, resolved);
                 if (typeof prop === "string" && CHARACTER_CHAT_FIELDS.has(prop) && isCharacterElement(node)) {
                     refuseChatFieldWrite(prop);
                 }
@@ -2210,6 +2754,7 @@ function createNode(
                 }
                 assertUniqueIds(node);
                 const resolved = resolve(node);
+                refuseFrozen(node, resolved);
                 if (isCharacterElement(node) && typeof prop === "string") {
                     if (CHARACTER_CHAT_FIELDS.has(prop)) {
                         refuseChatFieldWrite(prop);
@@ -2248,7 +2793,7 @@ function createNode(
         ownKeys() {
             return Reflect.ownKeys(resolve(node));
         },
-        getOwnPropertyDescriptor(_, prop) {
+        getOwnPropertyDescriptor(standIn, prop) {
             const resolved = resolve(node);
             const descriptor = Reflect.getOwnPropertyDescriptor(resolved, prop);
             if (
@@ -2259,11 +2804,22 @@ function createNode(
                 !isCharacterLocal(node, prop)
             ) {
                 // Svelte's `getOwnPropertyDescriptor` may return the raw target's value; it is read
-                // through the proxy instead, so the wrapper stands for the `$state` object. A
-                // character's local fields stay raw.
-                descriptor.value = childWrapper(node, resolved, prop, resolved[prop]);
+                // through the proxy instead, so the wrapper stands for the `$state` object (a
+                // verified frozen asset value is a leaf). A character's local fields stay raw.
+                const value = resolved[prop];
+                descriptor.value = frozenAssetOf(value) ?? childWrapper(node, resolved, prop, value);
             } else if (descriptor && "value" in descriptor && isCharacterLocal(node, prop)) {
                 descriptor.value = resolved[prop];
+            }
+            if (descriptor?.configurable === false) {
+                // A retained wrapper whose node now resolves to a frozen value: report what the
+                // stand-in target allows (the Proxy invariants would throw on `Object.keys`, spread).
+                const own = Reflect.getOwnPropertyDescriptor(standIn, prop);
+                if (own === undefined || own.configurable !== false) {
+                    descriptor.configurable = true;
+                } else if ("writable" in own && own.writable) {
+                    descriptor.writable = true;
+                }
             }
             return descriptor;
         },
@@ -2323,6 +2879,7 @@ function wrappedList(list: unknown): { node: TrackedNode; target: unknown[] } | 
     if (!Array.isArray(target)) {
         throw new TypeError(`${node.kind}: not a list`);
     }
+    refuseFrozen(node, target);
     return { node, target };
 }
 
@@ -2380,8 +2937,12 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
                 displace(node.meta, old);
             }
         }
+        const before = target.length;
         target.splice(0, target.length, ...plain);
         prepared.route();
+        if (target.length < before) {
+            afterShrink(node, target.length);
+        }
     });
     queueNodeWrite(node);
 }
@@ -2477,11 +3038,32 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
                       ? detachedCopy(entry)
                       : entry;
         } else {
-            stored = unwrapInto(entry, meta, key);
+            const shape = CHARACTER_ASSET_FIELDS.get(key);
+            stored =
+                shape === undefined
+                    ? unwrapInto(entry, meta, key)
+                    : adoptCharacterAssetField(entry, meta, key, shape, meta);
         }
         Object.defineProperty(out, key, { value: stored, enumerable: true, writable: true, configurable: true });
     }
     return out;
+}
+
+/**
+ * Drops the canonical nodes of characters that left the list (heap plan D1), so the list's node no
+ * longer keeps a removed character's data. Their per-character metas stay: a retained wrapper keeps
+ * its node's meta, and a same-id re-add must stamp that same one (`characterOwner`). A retained
+ * wrapper of a removed character is an orphan: it throws while the id is absent and follows a
+ * same-id re-add by id, as a different object from the re-added character's fresh wrapper.
+ */
+function forgetCharacterNodes(ids: Iterable<string>) {
+    const root = rootNodes.get(CHARACTERS);
+    if (!root) {
+        return;
+    }
+    for (const chaId of ids) {
+        root.idChildren.delete(chaId);
+    }
 }
 
 /** Runs a membership change of the list and what follows it: the queue and the selection's hook. */
@@ -2534,6 +3116,7 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
             renewStamps(characterOwner(chaId));
         }
         const stored = storedCharacter(value, chaId, current?.chaId === chaId ? current : undefined);
+        const leaving = current !== undefined && current.chaId !== chaId ? (current.chaId as string) : null;
         if (!Object.is(stored, current)) {
             if (current !== undefined && current.chaId === chaId) {
                 // A whole replacement of the character: what was under it follows the new object by path.
@@ -2548,6 +3131,11 @@ export function replaceCharacterRecordAt(index: number, value: CharacterObject) 
                 }
             }
             list[index] = stored;
+        }
+        if (leaving !== null) {
+            // The character that was here left the list.
+            forgetCharacterNodes([leaving]);
+            trimRootList(CHARACTERS);
         }
         return [chaId];
     });
@@ -2568,6 +3156,10 @@ export function removeCharacterRecords(ids: readonly string[]): string[] {
                 bumpEpoch(characterOwner(chaId));
             }
         }
+        if (removed.length > 0) {
+            forgetCharacterNodes(removed);
+            trimRootList(CHARACTERS);
+        }
         return [];
     });
     return removed;
@@ -2577,6 +3169,8 @@ export function removeCharacterRecords(ids: readonly string[]): string[] {
  * The raw path of a server copy of one character (a conflict reload, a live update, a job
  * hydration): its own fields replaced (its render key kept), a new one appended (its chats come from
  * the chat module's collection read), or removed (`null`). Queues nothing; retained wrappers of that character follow it by path.
+ * `data` is handed over: detached JSON nobody edits afterwards (its asset lists are frozen in place,
+ * `freezeAssetList`).
  */
 export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
     untrack(() => {
@@ -2585,9 +3179,12 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
         bumpEpoch(characterOwner(chaId));
         // The server's copy: detached JSON data.
         renewStamps(characterOwner(chaId));
+        freezeCharacterAssets(data);
         if (data === null) {
             if (index !== -1) {
                 list.splice(index, 1);
+                forgetCharacterNodes([chaId]);
+                trimRootList(CHARACTERS);
             }
         } else if (index === -1) {
             const added: CharacterObject = { ...data, chaId };
@@ -2598,6 +3195,11 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
             const replaced: CharacterObject = { ...data, chaId, reloadKeys: local.reloadKeys };
             stripChatFields(replaced);
             list[index] = replaced;
+            // Its wrappers follow by path; until their next read they would keep the old copy.
+            const node = rootNodes.get(CHARACTERS)?.idChildren.get(chaId);
+            if (node) {
+                unpinBelow(node, true);
+            }
         }
     });
     runMembershipHook();
@@ -2607,7 +3209,8 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
  * The raw path of a merged server change (`mergeConcurrentChange`): sets (or, with `REMOVE_FIELD`,
  * deletes) own fields of a character in place. Queues nothing; retained wrappers under the changed
  * fields follow them by path, all others keep their identity. Returns `false` when no character has
- * `chaId`.
+ * `chaId`. The values are handed over: detached JSON nobody edits afterwards (an asset field's list is
+ * frozen in place, `freezeAssetList`).
  */
 export function patchRawCharacter(chaId: string, changes: readonly (readonly [string, unknown])[]): boolean {
     return untrack(() => {
@@ -2618,16 +3221,26 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
         // Only the changed fields' subtrees follow their paths; every other wrapper of the character
         // keeps its identity (a retained lore entry moved locally stays that entry).
         const owner = characterOwner(chaId);
+        const node = rootNodes.get(CHARACTERS)?.idChildren.get(chaId);
         for (const [field] of changes) {
             epochCounter += 1;
             owner.fieldEpochs.set(field, epochCounter);
             // Stamped even when the value is the one held: it may have changed in place.
             stampField(owner, field);
+            // The field's wrappers follow by path; until their next read they would keep the old value.
+            const fieldNode = node?.keyChildren.get(field);
+            if (fieldNode) {
+                unpinBelow(fieldNode, true);
+            }
         }
         for (const [field, value] of changes) {
             if (value === REMOVE_FIELD) {
                 delete target[field];
             } else {
+                const shape = CHARACTER_ASSET_FIELDS.get(field);
+                if (shape !== undefined) {
+                    freezeAssetList(value, shape);
+                }
                 target[field] = value;
             }
         }

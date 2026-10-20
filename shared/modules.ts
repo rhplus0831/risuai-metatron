@@ -18,7 +18,7 @@ export interface RisuModule {
     lowLevelAccess?: boolean;
     hideIcon?: boolean;
     backgroundEmbedding?: string;
-    assets?: [string, string, string][];
+    assets?: readonly (readonly [string, string, string])[];
     namespace?: string;
     customModuleToggle?: string;
     mcp?: MCPModule;

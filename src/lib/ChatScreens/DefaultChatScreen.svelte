@@ -35,7 +35,7 @@
         chatBindingDialog,
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
-    import { tick, untrack } from "svelte";
+    import { onDestroy, tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import {
         greetingIndex,
@@ -43,6 +43,7 @@
         nextGreetingIndex,
         previousGreetingIndex,
     } from "../../../shared/greetings.ts";
+    import { ChatStyleRegistry, setChatStyleRegistry } from "../../ts/parser/chatStyles";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
@@ -113,6 +114,10 @@
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
     let isScrollingToMessage = $state(false);
     let takingScreenshot = $state(false);
+    // The chat rows' shared stylesheets (heap plan C2): one per distinct CSS, after the rows.
+    const chatStyles = new ChatStyleRegistry();
+    setChatStyleRegistry(chatStyles);
+    onDestroy(() => chatStyles.destroy());
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(selectedChat());
@@ -1326,6 +1331,9 @@
                     {/if}
                 </div>
             {/if}
+
+            <!-- The rows' shared stylesheets, after the rows (and the greeting) as their own copies were. -->
+            <div hidden {@attach chatStyles.attach}></div>
         </div>
     {:else}
         <!-- The selected chat loads (Phase 6 slice 9b): nothing chat-dependent renders until it is here. -->

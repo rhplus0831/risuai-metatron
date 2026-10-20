@@ -171,13 +171,16 @@ export function dumpCharImage(chaId: string) {
     if (!char || !char.image || char.image === "") {
         return;
     }
-    char.ccAssets ??= [];
-    char.ccAssets.push({
-        type: "icon",
-        name: "iconx",
-        uri: char.image,
-        ext: "png",
-    });
+    // The asset list is immutable: an edit replaces it.
+    char.ccAssets = [
+        ...(char.ccAssets ?? []),
+        {
+            type: "icon",
+            name: "iconx",
+            uri: char.image,
+            ext: "png",
+        },
+    ];
     char.image = "";
 }
 
@@ -187,7 +190,7 @@ export function changeCharImage(chaId: string, changeIndex: number) {
         return;
     }
     const image = char.ccAssets[changeIndex].uri;
-    char.ccAssets.splice(changeIndex, 1);
+    char.ccAssets = char.ccAssets.filter((_, index) => index !== changeIndex);
     dumpCharImage(chaId);
     char.image = image;
 }
@@ -205,9 +208,11 @@ export async function addCharEmotion(chaId: string) {
         // Found again after the saves: the character can be deleted meanwhile.
         const dbChar = characterRecord(chaId);
         if (dbChar && dbChar.type !== "group") {
-            dbChar.emotionImages.push(
+            // The list is immutable: appended to the latest one, replaced whole.
+            dbChar.emotionImages = [
+                ...(dbChar.emotionImages ?? []),
                 ...selected.map((f, i): [string, string] => [f.name.replace(".png", "").replace(".webp", ""), keys[i]]),
-            );
+            ];
         }
     } catch (error) {
         alertError(error);
@@ -219,7 +224,7 @@ export async function addCharEmotion(chaId: string) {
 export function rmCharEmotion(chaId: string, emotionId: number) {
     const dbChar = characterRecord(chaId);
     if (dbChar && dbChar.type !== "group") {
-        dbChar.emotionImages.splice(emotionId, 1);
+        dbChar.emotionImages = dbChar.emotionImages.filter((_, index) => index !== emotionId);
     }
 }
 

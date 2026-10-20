@@ -424,6 +424,81 @@ describe("postInlayAsset", () => {
     });
 });
 
+describe("one-shot decode URLs (heap plan D2a)", () => {
+    // The image the code under test creates with `new Image()`.
+    function stubImage(img: HTMLImageElement) {
+        vi.stubGlobal("Image", function () {
+            return img;
+        } as unknown as typeof Image);
+    }
+
+    let create: ReturnType<typeof vi.spyOn>;
+    let revoke: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+        create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:decode-1");
+        revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+        fakeCtx.drawImage.mockClear();
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        create.mockRestore();
+        revoke.mockRestore();
+    });
+
+    test("postInlayAsset revokes an image's URL once it is drawn and stored", async () => {
+        const img = makeImage(30, 20, true);
+        stubImage(img);
+        revoke.mockImplementation(() => {
+            // Released only after the draw and the write.
+            expect(fakeCtx.drawImage).toHaveBeenCalledTimes(1);
+            expect(fake.data("inlays", "test-uuid-1234")).toMatchObject({ type: "image", name: "pic.png" });
+        });
+        expect(await I.postInlayAsset({ name: "pic.png", data: new Uint8Array([1, 2, 3]) })).toBe("test-uuid-1234");
+        expect(img.src).toBe("blob:decode-1");
+        expect(revoke).toHaveBeenCalledTimes(1);
+        expect(revoke).toHaveBeenCalledWith("blob:decode-1");
+    });
+
+    test("postInlayAsset revokes the URL of an image that fails to load", async () => {
+        const img = makeImage(0, 0, true);
+        stubImage(img);
+        await expect(I.postInlayAsset({ name: "broken.webp", data: new Uint8Array([0]) })).rejects.toThrow(
+            "could not be loaded",
+        );
+        expect(revoke).toHaveBeenCalledWith("blob:decode-1");
+        expect(fake.data("inlays", "test-uuid-1234")).toBeNull();
+    });
+
+    test("reencodeImage revokes its URL after the decode, before drawing, and also when the decode fails", async () => {
+        const toDataURL = vi
+            .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+            .mockReturnValue(`data:image/png;base64,${Buffer.from("png").toString("base64")}`);
+        try {
+            // Both made before the stub replaces `Image`.
+            const img = makeImage(8, 4, true);
+            const failing = makeImage(8, 4, false);
+            img.decode = vi.fn(async () => {
+                expect(revoke).not.toHaveBeenCalled();
+            });
+            stubImage(img);
+            const out = await I.reencodeImage(new Uint8Array([0xff, 0xd8]));
+            expect(Buffer.from(out).toString()).toBe("png");
+            expect(revoke).toHaveBeenCalledWith("blob:decode-1");
+            expect(revoke.mock.invocationCallOrder[0]).toBeLessThan(fakeCtx.drawImage.mock.invocationCallOrder[0]);
+
+            revoke.mockClear();
+            failing.decode = vi.fn(async () => {
+                throw new Error("EncodingError");
+            });
+            stubImage(failing);
+            await expect(I.reencodeImage(new Uint8Array([0xff, 0xd8]))).rejects.toThrow("EncodingError");
+            expect(revoke).toHaveBeenCalledWith("blob:decode-1");
+        } finally {
+            toDataURL.mockRestore();
+        }
+    });
+});
+
 describe("writeInlayImage", () => {
     test("stores a PNG with the drawn size under the given id (or a new uuid) and waits for a loading image", async () => {
         expect(await I.writeInlayImage(makeImage(200, 100), { name: "photo.jpg", ext: "jpg", id: "custom-id" })).toBe(

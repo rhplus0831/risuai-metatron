@@ -595,18 +595,25 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             const { writeInlayImage } = await import("../process/files/inlays");
             const image = new Image();
             let options: { id: string; name?: string; ext?: string; check: () => void } = { id, check: stillWanted };
-            if (typeof payload.asset === "string") {
-                const asset = payload.asset;
-                const { readImage } = await import("../globalApi.svelte");
-                const bytes = await readImage(asset);
-                const ext = asset.split(".").at(-1);
-                image.src = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: `image/${ext}` }));
-                stillWanted();
-                options = { id, name: asset, ext, check: stillWanted };
-            } else {
-                image.src = `data:${String(payload.mimeType)};base64,${String(payload.data)}`;
+            // An asset's object URL is read only by the draw; released once the write is done or failed.
+            let objectUrl: string | null = null;
+            try {
+                if (typeof payload.asset === "string") {
+                    const asset = payload.asset;
+                    const { readImage } = await import("../globalApi.svelte");
+                    const bytes = await readImage(asset);
+                    const ext = asset.split(".").at(-1);
+                    objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: `image/${ext}` }));
+                    image.src = objectUrl;
+                    stillWanted();
+                    options = { id, name: asset, ext, check: stillWanted };
+                } else {
+                    image.src = `data:${String(payload.mimeType)};base64,${String(payload.data)}`;
+                }
+                return { id: await writeInlayImage(image, options) };
+            } finally {
+                if (objectUrl) URL.revokeObjectURL(objectUrl);
             }
-            return { id: await writeInlayImage(image, options) };
         }
         case "chatOutput": {
             // The `chatOutput` listeners of a server send's reply (Phase 5 slice 11a), in order. Each

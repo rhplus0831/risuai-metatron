@@ -119,7 +119,13 @@ export function pruneEmptyBilingualPairs(html: string): string {
     // script restored) into its head, and the body alone would drop it.
     const template = document.createElement("template");
     template.innerHTML = html;
-    const pairs = template.content.querySelectorAll(`.${BILINGUAL_PAIR_CLASS}`);
+    pruneEmptyBilingualPairsIn(template.content);
+    return template.innerHTML;
+}
+
+/** `pruneEmptyBilingualPairs` on a parsed tree, in place (a chat row's before its styles are taken out). */
+export function pruneEmptyBilingualPairsIn(root: ParentNode): void {
+    const pairs = root.querySelectorAll(`.${BILINGUAL_PAIR_CLASS}`);
 
     for (const pair of pairs) {
         for (const side of pair.querySelectorAll(BILINGUAL_SIDE_SELECTOR)) {
@@ -133,8 +139,6 @@ export function pruneEmptyBilingualPairs(html: string): string {
 
         collapseVisualOnlyPair(pair);
     }
-
-    return template.innerHTML;
 }
 
 /**

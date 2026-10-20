@@ -792,6 +792,26 @@ function rememberCharacterText(id: string, cache: FieldTextCache) {
     }
 }
 
+/**
+ * After a projection whose text equals the saved one (`collectOperations`): the field-text cache
+ * that projection filled keeps the saved string instead, so the projection's equal copy (a large
+ * record's whole text) can be freed. The spans stay valid: the texts are equal. A cache whose source
+ * differs from `projected` (a whole serialization filled none) is left alone.
+ */
+function shareSavedText(kind: string, id: string, projected: string, saved: string) {
+    // A whole serialization can answer undefined (a `toJSON` hook) and fills no cache.
+    if (kind === RESOURCE_KIND.modules) {
+        if (moduleTexts !== null && moduleTexts.source === projected) {
+            moduleTexts.source = saved;
+        }
+        return;
+    }
+    const cache = kind === RESOURCE_KIND.characters ? characterTexts.get(id) : undefined;
+    if (cache !== undefined && cache.source === projected) {
+        cache.source = saved;
+    }
+}
+
 /** A field's value in `canonicalShape`: present and not `null`, its value not read. */
 const PRESENT: unknown = Object.freeze({});
 
@@ -878,8 +898,14 @@ function recordQuarantine(key: string): ResourceRequestError | null {
         return null;
     }
     const separator = key.indexOf("\u0000");
-    const text = projectRecord(key.slice(0, separator), key.slice(separator + 1)) ?? null;
+    const kind = key.slice(0, separator);
+    const id = key.slice(separator + 1);
+    const text = projectRecord(kind, id) ?? null;
     if (text === refused.text) {
+        if (text !== null) {
+            // The refused text stays held: the cache keeps that string, not an equal copy.
+            shareSavedText(kind, id, text, refused.text!);
+        }
         return refused.error;
     }
     quarantinedRecords.delete(key);
@@ -1190,6 +1216,9 @@ function collectOperations(): {
         addOperation(op);
         if (localText !== doubt.text) {
             heldBack.add(key);
+        } else {
+            // Its acknowledgement saves `doubt.text`: the cache keeps that string, not an equal copy.
+            shareSavedText(kind, id, localText, doubt.text);
         }
         return true;
     }
@@ -1214,7 +1243,15 @@ function collectOperations(): {
         }
         const current = persisted.get(key);
         // An absent collection (e.g. no plugin storage yet) has no record to write.
-        if (projection !== undefined && projection.text !== current?.text) {
+        if (projection === undefined) {
+            continue;
+        }
+        if (projection.text === current?.text) {
+            // A whole serialization can answer undefined (a `toJSON` hook): equal to an absent record.
+            if (current !== undefined) {
+                shareSavedText(collection, SINGLETON_RESOURCE_ID, projection.text, current.text);
+            }
+        } else {
             const op = current
                 ? updateOperation(key, collection, SINGLETON_RESOURCE_ID, current, projection)
                 : pendingOp({ key, kind: collection, id: SINGLETON_RESOURCE_ID, baseRevision: null, ...projection });
@@ -1241,10 +1278,16 @@ function collectOperations(): {
             continue;
         }
         let projection = characterProjection(character);
-        if (projection.text !== current?.text) {
+        let saved = projection.text === current?.text;
+        if (!saved) {
             projection = canonicalCharacter(id, projection);
+            saved = projection.text === current?.text;
         }
-        if (projection.text !== current?.text) {
+        if (saved) {
+            if (current !== undefined) {
+                shareSavedText(RESOURCE_KIND.characters, id, projection.text, current.text);
+            }
+        } else {
             const op = current
                 ? updateOperation(key, RESOURCE_KIND.characters, id, current, projection)
                 : pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: null, ...projection });

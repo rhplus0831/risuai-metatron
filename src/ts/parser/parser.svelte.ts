@@ -1,9 +1,10 @@
 import { boundedDistance } from "./assetSearch";
+import type { ChatStyle } from "./chatStyles";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
-import { isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
+import { isFrozenAssetList, isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
 import {
     isForwardedPresetRoot,
     scopedPresetRoot,
@@ -420,7 +421,7 @@ async function renderHighlightableMarkdown(data: string) {
 
 export const assetRegex = /{{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)}}/gms;
 
-function getAssetSrc(assetArr: string[][], assetPaths: AssetPaths) {
+function getAssetSrc(assetArr: readonly (readonly string[])[], assetPaths: AssetPaths) {
     for (const asset of assetArr) {
         const key = asset[0].toLocaleLowerCase();
         assetPaths[key] ??= {
@@ -433,7 +434,7 @@ function getAssetSrc(assetArr: string[][], assetPaths: AssetPaths) {
     }
 }
 
-function getEmoSrc(emoArr: string[][], emoPaths: AssetPaths) {
+function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths) {
     for (const emo of emoArr) {
         emoPaths[emo[0].toLocaleLowerCase()] = {
             srcPaths: [emo[1]],
@@ -477,12 +478,14 @@ type FuzzyIndex = {
     results: Map<string, { match: FuzzyMatch; cutoff: number }>;
 };
 
+type AssetTuples = readonly (readonly [string, string, string])[];
+
 /** `getClosestMatch`'s index of one asset list, built again when the list or an asset in it changes. */
 class FuzzyIndexSource {
-    #assets: [string, string, string][];
+    #assets: AssetTuples;
     readonly index: FuzzyIndex = $derived.by(() => buildFuzzyIndex(this.#assets));
 
-    constructor(assets: [string, string, string][]) {
+    constructor(assets: AssetTuples) {
         this.#assets = assets;
     }
 }
@@ -493,6 +496,8 @@ class FuzzyIndexSource {
  * and it keeps the component context it was created in, so a rendering message must not own it.
  */
 const fuzzyIndexes = new WeakMap<object, FuzzyIndexSource>();
+/** The index of a record's frozen asset list (`isFrozenAssetList`): immutable, so built once per list. */
+const frozenFuzzyIndexes = new WeakMap<object, FuzzyIndex>();
 /**
  * Lists a lookup found without a source, with the index it built meanwhile (untracked) and the list's
  * `wrapperFieldStamp` then: the index is reused only while the stamp is unchanged and not null.
@@ -513,7 +518,7 @@ $effect.root(() => {
             }
             for (const assets of pendingFuzzyLists.keys()) {
                 if (!fuzzyIndexes.has(assets)) {
-                    fuzzyIndexes.set(assets, new FuzzyIndexSource(assets as [string, string, string][]));
+                    fuzzyIndexes.set(assets, new FuzzyIndexSource(assets as AssetTuples));
                 }
             }
             pendingFuzzyLists = new Map();
@@ -536,7 +541,11 @@ const parserCharacterAssets = $derived.by(() => {
 const parserAssetInputs = $derived.by(() => ({ character: parserCharacterAssets, modules: parserModuleAssets }));
 let lastAssetInputs: typeof parserAssetInputs | undefined;
 
-export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+export function resetAssetsCache(
+    charAssets: readonly (readonly string[])[],
+    emoAssets: readonly (readonly string[])[],
+    moduleAssets: readonly (readonly string[])[],
+) {
     // An explicit reset (including moduleAssets = []) wins until the live inputs actually change.
     lastAssetInputs = untrack(() => parserAssetInputs);
     const assetPaths: AssetPaths = {};
@@ -735,12 +744,22 @@ function getClosestMatch(
 }
 
 /**
- * A record list's index: its source's, else (until the module root creates the source) one built
- * untracked, with a dependency that reruns the render once the source exists; that one is reused
- * only while the list's write stamp is unchanged, so a lookup after an edit in that window builds it
- * again. Any other list is built per lookup, tracked (a `$state` array's edit reruns the render).
+ * A record's frozen list's index is built once per list (an edit replaces the list). A record list's
+ * wrapper (a list of another shape) gets its source's, else (until the module root creates the
+ * source) one built untracked, with a dependency that reruns the render once the source exists; that
+ * one is reused only while the list's write stamp is unchanged, so a lookup after an edit in that
+ * window builds it again. Any other list is built per lookup, tracked (a `$state` array's edit reruns
+ * the render).
  */
-function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
+function fuzzyIndexOf(assets: AssetTuples): FuzzyIndex {
+    if (isFrozenAssetList(assets)) {
+        let index = frozenFuzzyIndexes.get(assets);
+        if (!index) {
+            index = buildFuzzyIndex(assets);
+            frozenFuzzyIndexes.set(assets, index);
+        }
+        return index;
+    }
     if (!isRecordWrapper(assets)) {
         return buildFuzzyIndex(assets);
     }
@@ -763,7 +782,7 @@ function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
     return index;
 }
 
-function buildFuzzyIndex(assets: [string, string, string][]): FuzzyIndex {
+function buildFuzzyIndex(assets: AssetTuples): FuzzyIndex {
     const index: FuzzyIndex = { assets: [], exact: new Map(), results: new Map(), hasLegacyOverflow: false };
     for (const asset of assets) {
         const entry: FuzzyAsset = { trimmed: trimmer(asset[0].toLocaleLowerCase()), path: asset[1], ext: asset[2] };
@@ -878,10 +897,10 @@ async function parseInlayAssets(data: string) {
 
 export interface simpleCharacterArgument {
     type: "simple";
-    additionalAssets?: [string, string, string][];
+    additionalAssets?: readonly (readonly [string, string, string])[];
     customscript: customscript[];
     chaId: string;
-    emotionImages?: [string, string][];
+    emotionImages?: readonly (readonly [string, string])[];
     triggerscript?: triggerscript[];
 }
 
@@ -1032,6 +1051,12 @@ export function trimMarkdown(data: string) {
         return "";
     }
 
+    restoreStyles(root);
+    return root.innerHTML;
+}
+
+/** Turns each `<risu-style>` element of `trimMarkdown`'s sanitized tree into its `<style>`. */
+function restoreStyles(root: HTMLElement) {
     // Only real <risu-style> elements are decoded. A <risu-style> that survived
     // inside an attribute value is not an element, so it is left as inert text
     // and a <style> tag can never be restored into an attribute context.
@@ -1048,8 +1073,40 @@ export function trimMarkdown(data: string) {
         style.textContent = decoded.css.replaceAll(/<\/(?=style)/gi, "<\\/");
         el.replaceWith(style);
     }
+}
 
-    return root.innerHTML;
+/**
+ * `trimMarkdown` for a chat row whose styles its chat screen shares (`chatStyles.ts`, heap plan C2):
+ * the same sanitized tree with its `<risu-style>`s restored, `prepare` run on it, then shareable
+ * styles replaced by an inert CSS comment in place, their CSS and sanitized attributes returned
+ * in document order. Placeholders keep their attributes and structure (including `:empty`).
+ * Layer/scope sheets stay untouched at their row positions; layers inside imports are not detected.
+ */
+export function trimMarkdownSharingStyles(
+    data: string,
+    prepare?: (root: HTMLElement) => void,
+): { html: string; styles: ChatStyle[] } {
+    if (!data) {
+        return { html: "", styles: [] };
+    }
+    const root = DOMPurify.sanitize(data, {
+        ...trimPurifyConfig,
+        RETURN_DOM: true,
+    }) as HTMLElement | null;
+    if (!root) {
+        return { html: "", styles: [] };
+    }
+    if (data.includes("<risu-style")) restoreStyles(root);
+    prepare?.(root);
+    const styles: ChatStyle[] = [];
+    for (const style of Array.from(root.querySelectorAll("style"))) {
+        const css = style.textContent ?? "";
+        if (css === "" || /@layer\b|\blayer\(|@scope\b/i.test(css)) continue;
+        const attributes: [string, string][] = Array.from(style.attributes, ({ name, value }) => [name, value]);
+        styles.push({ css, attributes });
+        style.textContent = "/**/";
+    }
+    return { html: root.innerHTML, styles };
 }
 
 const metaCodes = [

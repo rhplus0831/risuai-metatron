@@ -171,6 +171,103 @@ describe("cache reuse", { timeout: INTEGRATION_TIMEOUT }, () => {
         agree("a");
     });
 
+    it("an asset list (heap plan B2): its frozen text is reused by identity and stamp, a replacement patches its field, raw paths freeze without an echo, and the canonical default is installed frozen", async () => {
+        const tuples = (count: number, prefix = "Asset") =>
+            Array.from({ length: count }, (_, i) => [`${prefix} ${i}`, `assets/${prefix}-${i}.png`, "png"]);
+        const { fake, c, rawOf, records, flush, ops, serialized, agree } = await boot((fake) => {
+            fake.set("characters", "a", character("a", "Alice", { additionalAssets: tuples(2000) }));
+        });
+        // Installed frozen from the server's copy, whose text the boot projection cached before the
+        // spy existed: the projection serializes the mirror's value (the `$state` proxy of the frozen
+        // list) and never again while its identity and stamp hold.
+        const installed = rawOf("a").additionalAssets;
+        expect(records.isFrozenAssetList(installed)).toBe(true);
+        expect(records.isFrozenAssetList(c("a").additionalAssets)).toBe(true);
+        expect(records.isFrozenAssetList(records.characterFieldPlain("a", "additionalAssets"))).toBe(true);
+        // The first write also carries the canonical defaults the fixture lacks; settle them first.
+        c("a").creator = "settled";
+        await flush();
+        expect(serialized(installed)).toBe(0);
+        agree("a");
+        fake.requests.length = 0;
+        c("a").name = "edited";
+        await flush();
+        expect(serialized(installed)).toBe(0);
+        expect(ops()[0].patch).toEqual({ set: { name: "edited" }, remove: [] });
+        agree("a");
+        fake.requests.length = 0;
+
+        // A second unrelated edit: the list's text is reused (same identity, same stamp).
+        c("a").desc = "a description";
+        await flush();
+        expect(serialized(installed)).toBe(0);
+        expect(Object.keys(ops()[0].patch.set)).toEqual(["desc"]);
+        agree("a");
+        fake.requests.length = 0;
+
+        // A replacement (a rename copying its tuple) sends exactly the field; the new list is frozen.
+        c("a").additionalAssets = c("a").additionalAssets.map((asset: string[], i: number) =>
+            i === 7 ? ["Renamed", asset[1], asset[2]] : asset,
+        );
+        await flush();
+        expect(Object.keys(ops()[0].patch.set)).toEqual(["additionalAssets"]);
+        expect(fake.data("characters", "a").additionalAssets[7]).toEqual(["Renamed", "assets/Asset-7.png", "png"]);
+        expect(fake.data("characters", "a").additionalAssets).toHaveLength(2000);
+        expect(records.isFrozenAssetList(c("a").additionalAssets)).toBe(true);
+        agree("a");
+        fake.requests.length = 0;
+        const renamed = rawOf("a").additionalAssets;
+        expect(renamed).not.toBe(installed);
+        expect(serialized(renamed)).toBe(1);
+        c("a").name = "edited again";
+        await flush();
+        expect(serialized(renamed)).toBe(1);
+        expect(ops()[0].patch).toEqual({ set: { name: "edited again" }, remove: [] });
+        agree("a");
+        fake.requests.length = 0;
+
+        // A remote field patch (a merged concurrent change) freezes in place and queues nothing; the
+        // next local edit carries it.
+        const remote = tuples(3, "Remote");
+        records.patchRawCharacter("a", [["additionalAssets", remote]]);
+        await flush();
+        expect(ops()).toHaveLength(0);
+        expect(Object.isFrozen(remote)).toBe(true);
+        expect(records.isFrozenAssetList(c("a").additionalAssets)).toBe(true);
+        c("a").name = "after the remote patch";
+        await flush();
+        expect(fake.data("characters", "a").additionalAssets).toEqual(tuples(3, "Remote"));
+        agree("a");
+        fake.requests.length = 0;
+
+        // A hydration (a server copy applied raw): the same, with every stamp renewed.
+        const hydrated = tuples(2, "Hydrated");
+        records.applyRawCharacter("a", { ...plain(fake.data("characters", "a")), additionalAssets: hydrated });
+        await flush();
+        expect(ops()).toHaveLength(0);
+        expect(Object.isFrozen(hydrated)).toBe(true);
+        expect(records.isFrozenAssetList(c("a").additionalAssets)).toBe(true);
+        c("a").additionalAssets = [...c("a").additionalAssets, ["Added", "assets/added.png", "png"]];
+        await flush();
+        expect(fake.data("characters", "a").additionalAssets).toEqual([
+            ...tuples(2, "Hydrated"),
+            ["Added", "assets/added.png", "png"],
+        ]);
+        agree("a");
+
+        // A character created without `emotionImages`: the canonical default is written into the
+        // mirror raw before the send, as a frozen list that later edits replace.
+        records.insertCharacterRecord({ chaId: "n", name: "New", type: "character" });
+        await flush();
+        expect(fake.data("characters", "n").emotionImages).toEqual([]);
+        expect(records.isFrozenAssetList(c("n").emotionImages)).toBe(true);
+        expect(() => c("n").emotionImages.push(["joy", "emotions/joy.png"])).toThrow(TypeError);
+        c("n").emotionImages = [["joy", "emotions/joy.png"]];
+        await flush();
+        expect(fake.data("characters", "n").emotionImages).toEqual([["joy", "emotions/joy.png"]]);
+        agree("n");
+    });
+
     it("serializes the oldest of nine cached characters again (the cache holds eight)", async () => {
         const ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
         const { c, rawOf, flush, serialized, agree } = await boot((fake) => {

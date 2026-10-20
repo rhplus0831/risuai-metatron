@@ -1013,6 +1013,110 @@ describe("server module file imports", () => {
         },
     );
 
+    it("readModule fills keys into copies of the file's tuples: a pair and an extended tuple keep their shape, metadata past the records keeps its key", async () => {
+        const { modules } = await boot();
+        const { encodeRPack } = await import("../rpack/rpack_js");
+        const main = await encodeRPack(
+            encode({
+                type: "risuModule",
+                module: {
+                    name: "Shapes",
+                    id: "file-id",
+                    lorebook: [],
+                    assets: [
+                        ["Pair", ""],
+                        ["Quad", "", "png", "extra"],
+                        ["Tail", "kept-key", "png"],
+                    ],
+                },
+            }),
+        );
+        const record = await encodeRPack(new Uint8Array([137, 80, 78, 71]));
+        const length = (n: number) => {
+            const bytes = Buffer.alloc(4);
+            bytes.writeUInt32LE(n);
+            return bytes;
+        };
+        const bytes = Buffer.concat([
+            Buffer.from([111, 0]),
+            length(main.length),
+            main,
+            Buffer.from([1]),
+            length(record.length),
+            record,
+            Buffer.from([1]),
+            length(record.length),
+            record,
+            Buffer.from([0]),
+        ]);
+        const globalApi = await import("../globalApi.svelte");
+        let saved = 0;
+        vi.spyOn(globalApi, "assetKey").mockImplementation(async () => `key-${saved++}`);
+        vi.spyOn(globalApi, "saveAssetBatch").mockResolvedValue(undefined);
+        const read = await modules.readModule(bytes);
+        expect(read.assets).toEqual([
+            ["Pair", "key-0"],
+            ["Quad", "key-1", "png", "extra"],
+            ["Tail", "kept-key", "png"],
+        ]);
+        expect(read.id).toMatch(UUID_V4);
+    });
+
+    it("importModuleFile takes the server's keys into copies of the file's tuples, keeping a pair's and an extended tuple's shape; the stored list is frozen", async () => {
+        const { modules, list, sync, record, settings } = await boot();
+        const source = {
+            id: "file-id",
+            name: "Shapes",
+            description: "",
+            lorebook: [],
+            assets: [
+                ["Pair", "", "png"],
+                ["Quad", "", "png", "extra"],
+                ["Short", ""],
+            ],
+        };
+        const bytes = await packedMain(JSON.stringify({ type: "risuModule", module: source }));
+        const realFetch = server.current.fetch.bind(server.current);
+        const fetch = vi.spyOn(server.current, "fetch").mockImplementation((url, init) =>
+            url !== "/api/import/module"
+                ? realFetch(url, init)
+                : Promise.resolve(
+                      new Response(
+                          ndjson({
+                              module: {
+                                  ...source,
+                                  id: "server-id",
+                                  assets: [
+                                      ["Pair", "assets/pair.png", "png"],
+                                      ["Quad", "assets/quad.png", "png", "extra"],
+                                      ["Short", "assets/short.png"],
+                                  ],
+                              },
+                              assetsWritten: 3,
+                              assetsSkipped: 0,
+                          }),
+                      ),
+                  ),
+        );
+        const before = list();
+        picker.file = { name: "shapes.risum", data: bytes };
+        await modules.importModule();
+        expect(fetch.mock.calls.filter(([url]) => url === "/api/import/module")).toHaveLength(1);
+        const added = list().filter((module) => !before.some((old) => old.id === module.id));
+        expect(added).toHaveLength(1);
+        expect(added[0].assets).toEqual([
+            ["Pair", "assets/pair.png", "png"],
+            ["Quad", "assets/quad.png", "png", "extra"],
+            ["Short", "assets/short.png"],
+        ]);
+        const stored = settings.modules.find((module) => module.id === added[0].id)!;
+        expect(Object.isFrozen(stored.assets)).toBe(true);
+        expect(stored.assets!.every((tuple) => Object.isFrozen(tuple))).toBe(true);
+        expect(alerts.error).not.toHaveBeenCalled();
+        await sync.flushResources();
+        expect(record("modules")).toEqual(list());
+    });
+
     it("CharX still reads its embedded module.risum locally", async () => {
         const { modules, cards, characterList } = await boot();
         const embedded = {

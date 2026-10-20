@@ -1006,7 +1006,7 @@ async function runSpeaker(arg: {
                 readInlay: (id) => bindings.readInlay(id),
                 readAsset: (path) => readStorageFile(deps.savePath, path),
                 moduleAssets: () => {
-                    let assets: [string, string, string][] = [];
+                    let assets: readonly (readonly [string, string, string])[] = [];
                     for (const module of jobModules(scope)) {
                         if (module?.assets) {
                             assets = assets.concat(module.assets);

@@ -34,6 +34,8 @@ import type { RisuModule } from "src/ts/process/modules";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     initializeRecords,
+    isRecordWrapper,
+    recordData,
     resetRecords,
     setCharacterWriteListener,
     setRecordWriteListener,
@@ -191,7 +193,8 @@ describe("paged asset lists", () => {
         expect(rowNames("module")).toEqual(["Target B"]);
         input(nameInputs()[0], "Also renamed");
         expect(rowNames("module")).toEqual(["Also renamed"]);
-        module.assets.push(["Target C", "path-c", "png"]);
+        // The list is immutable: an addition replaces it whole (`ModuleMenu`'s add button).
+        module.assets = [...module.assets!, ["Target C", "path-c", "png"]];
         flushSync();
         expect(rowNames("module")).toEqual(["Target C"]);
 
@@ -215,21 +218,27 @@ describe("paged asset lists", () => {
         expect(rowNames("module")).toEqual(["Target remote"]);
     });
 
-    it("sticker selection receives the live source tuple after edits and list replacement", () => {
+    it("sticker selection receives the live source tuple after a rename and a list replacement", () => {
         const prefix: Asset[] = Array.from({ length: 103 }, (_, i) => [`Other ${i}`, `p${i}`, "mp3"]);
         const view = render("sticker", [...prefix, ["Target", "old-path", "mp3"]]);
+        // A character's asset list is immutable (heap plan B2): a frozen leaf, never a wrapper.
+        expect(isRecordWrapper(view.character.additionalAssets)).toBe(false);
+        expect(Object.isFrozen(view.character.additionalAssets)).toBe(true);
         input(search(), "target");
         expect(rowNames("sticker")).toEqual(["Target"]);
-        const tuple = view.character.additionalAssets[103];
-        tuple[0] = "Renamed";
-        tuple[1] = "live-path";
+        expect(() => ((view.character.additionalAssets![103] as unknown as string[])[0] = "x")).toThrow(TypeError);
+        const kept = view.character.additionalAssets![0];
+        // A rename replaces the list whole: the matches are computed again under the current query.
+        view.character.additionalAssets = [...prefix, ["Renamed", "live-path", "mp3"]];
         flushSync();
+        expect(rowNames("sticker")).toEqual([]);
+        expect(target.textContent).toContain(language.noMatchingAssets);
+        input(search(), "renamed");
         expect(rowNames("sticker")).toEqual(["Renamed"]);
         click(stickerButtons()[0]);
         expect(view.onSelect).toHaveBeenLastCalledWith(["Renamed", "live-path", "mp3"]);
-        expect(view.onSelect.mock.calls[0][0]).toBe(tuple);
-        input(search(), "renamed");
-        expect(rowNames("sticker")).toEqual(["Renamed"]);
+        expect(view.onSelect.mock.calls[0][0]).toBe(view.character.additionalAssets![103]);
+        expect(Object.isFrozen(view.onSelect.mock.calls[0][0])).toBe(true);
         input(search(), "target");
         expect(rowNames("sticker")).toEqual([]);
         view.character.additionalAssets = [...prefix, ["Target replacement", "new-path", "mp3"]];
@@ -237,6 +246,127 @@ describe("paged asset lists", () => {
         expect(rowNames("sticker")).toEqual(["Target replacement"]);
         click(stickerButtons()[0]);
         expect(view.onSelect).toHaveBeenLastCalledWith(["Target replacement", "new-path", "mp3"]);
-        expect(view.onSelect.mock.calls[1][0]).toBe(view.character.additionalAssets[103]);
+        expect(view.onSelect.mock.calls[1][0]).toBe(view.character.additionalAssets![103]);
+        // The unchanged tuples are shared between the old and the new lists.
+        expect(view.character.additionalAssets![0]).toBe(kept);
+    });
+
+    describe("the immutable module list (heap plan B1)", () => {
+        const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+        const rawAssets = () => recordData<RisuModule[]>("modules")![0].assets as unknown as string[][];
+        const names = () => rowNames("module");
+
+        it("a rename keeps a legacy pair's and an extended tuple's shape, the list frozen, the other tuples shared", () => {
+            const original = [
+                ["Legacy", "assets/legacy.png"],
+                ["Four", "assets/four.png", "png", "extra"],
+                ["Target", "p", "png"],
+            ] as unknown as Asset[];
+            const { module } = render("module", original);
+            expect(Object.isFrozen(rawAssets())).toBe(true);
+            expect(isRecordWrapper(module.assets)).toBe(false);
+            const kept = module.assets![2];
+            input(nameInputs()[0], "Legacy pair");
+            expect(names()).toEqual(["Legacy pair", "Four", "Target"]);
+            expect(Object.isFrozen(rawAssets())).toBe(true);
+            expect(rawAssets().every((tuple) => Object.isFrozen(tuple))).toBe(true);
+            expect(plain(rawAssets())).toEqual([
+                ["Legacy pair", "assets/legacy.png"],
+                ["Four", "assets/four.png", "png", "extra"],
+                ["Target", "p", "png"],
+            ]);
+            expect(module.assets![2]).toBe(kept);
+            input(nameInputs()[1], "Four fields");
+            expect(plain(rawAssets())[1]).toEqual(["Four fields", "assets/four.png", "png", "extra"]);
+            expect(Object.isFrozen(rawAssets())).toBe(true);
+            expect(module.assets![2]).toBe(kept);
+            // A delete replaces the list too; the remaining tuples keep their shape.
+            click(nameInputs()[0].closest("tr")!.querySelector("button")!);
+            expect(names()).toEqual(["Four fields", "Target"]);
+            expect(plain(rawAssets())).toEqual([
+                ["Four fields", "assets/four.png", "png", "extra"],
+                ["Target", "p", "png"],
+            ]);
+            expect(Object.isFrozen(rawAssets())).toBe(true);
+            expect(module.assets![1]).toBe(kept);
+        });
+
+        it("a cleared or changed query, a whitespace query, and an owner round trip drop the rename hold and match again", () => {
+            const view = render(
+                "module",
+                [
+                    ["Other", "p0", "png"],
+                    ["Target", "p1", "png"],
+                ],
+                [["Second owner", "q", "png"]],
+            );
+            input(search(), "target");
+            expect(names()).toEqual(["Target"]);
+            input(nameInputs()[0], "Renamed");
+            expect(names()).toEqual(["Renamed"]);
+            input(search(), "");
+            expect(names()).toEqual(["Other", "Renamed"]);
+            input(search(), "target");
+            expect(names()).toEqual([]);
+            expect(target.textContent).toContain(language.noMatchingAssets);
+            input(search(), "renamed");
+            expect(names()).toEqual(["Renamed"]);
+            input(nameInputs()[0], "Target again");
+            expect(names()).toEqual(["Target again"]);
+            input(search(), "   ");
+            expect(names()).toEqual(["Other", "Target again"]);
+            input(search(), "renamed");
+            expect(names()).toEqual([]);
+            input(search(), "target");
+            expect(names()).toEqual(["Target again"]);
+            input(nameInputs()[0], "Moved on");
+            expect(names()).toEqual(["Moved on"]);
+            view.switchOwner(1);
+            expect(search().value).toBe("");
+            expect(names()).toEqual(["Second owner"]);
+            view.switchOwner(0);
+            expect(names()).toEqual(["Other", "Moved on"]);
+            input(search(), "target");
+            expect(names()).toEqual([]);
+            input(search(), "moved");
+            expect(names()).toEqual(["Moved on"]);
+            expect(plain(rawAssets())).toEqual([
+                ["Other", "p0", "png"],
+                ["Moved on", "p1", "png"],
+            ]);
+        });
+
+        it("a list the rename did not make (a names-only reorder with duplicate paths) matches again and edits the right row", () => {
+            const { module } = render("module", [
+                ["Target", "shared", "png"],
+                ["Other", "shared", "png"],
+            ]);
+            input(search(), "target");
+            expect(names()).toEqual(["Target"]);
+            input(nameInputs()[0], "Target x");
+            expect(names()).toEqual(["Target x"]);
+            // Another writer's copy: same length, same paths and extensions, the names reordered. The
+            // row follows the name to its new index; typing in it edits that entry, not index 0.
+            module.assets = [
+                ["Other", "shared", "png"],
+                ["Target x", "shared", "png"],
+            ];
+            flushSync();
+            expect(names()).toEqual(["Target x"]);
+            input(nameInputs()[0], "Target xy");
+            expect(names()).toEqual(["Target xy"]);
+            expect(plain(module.assets)).toEqual([
+                ["Other", "shared", "png"],
+                ["Target xy", "shared", "png"],
+            ]);
+            // A names-only replacement while a rename is held: matched again, not held.
+            module.assets = [
+                ["Other", "shared", "png"],
+                ["Gone", "shared", "png"],
+            ];
+            flushSync();
+            expect(names()).toEqual([]);
+            expect(target.textContent).toContain(language.noMatchingAssets);
+        });
     });
 });

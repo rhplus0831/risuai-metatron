@@ -118,6 +118,7 @@
     const assetsOwnerId = $derived(currentCharacter.chaId);
     let assetQuery = $derived.by(() => {
         assetsOwnerId;
+        clearRenameHold();
         return "";
     });
     let shownAssets = $derived.by(() => {
@@ -125,15 +126,61 @@
         assetQuery;
         return ASSET_LIST_PAGE;
     });
+    // The asset list is immutable: every edit replaces it. The list this component's own rename made
+    // keeps the matches, so a row stays visible while its name is being edited; any other new list
+    // (an addition, a deletion, another tab's copy) matches again.
+    let renamedList: unknown = null;
+    let previousMatches: { owner: unknown; query: string; indices: number[] } | null = null;
+
+    function clearRenameHold() {
+        previousMatches = null;
+        renamedList = null;
+    }
+
+    function setAssetQuery(query: string) {
+        if (query !== assetQuery) clearRenameHold();
+        assetQuery = query;
+    }
+
     const matchedAssets = $derived.by(() => {
         const ownerId = assetsOwnerId;
         const query = assetQuery.trim().toLowerCase();
         const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
         const length = list?.length ?? 0;
         if (!query) return null;
-        // Track only the owner, query, field and length: a row stays visible throughout a rename.
-        return length ? untrack(() => matchingAssetIndices(characterAssetNames(ownerId, list), query)) : [];
+        const previous = previousMatches;
+        if (previous && list === renamedList && previous.owner === ownerId && previous.query === query) {
+            return previous.indices;
+        }
+        const indices = length ? untrack(() => matchingAssetIndices(characterAssetNames(ownerId, list), query)) : [];
+        previousMatches = { owner: ownerId, query, indices };
+        return indices;
     });
+
+    function renameAsset(index: number, name: string) {
+        if (currentCharacter.type !== "character") return;
+        const list = currentCharacter.additionalAssets;
+        if (!list?.[index]) return;
+        currentCharacter.additionalAssets = list.map((asset, i) => {
+            if (i !== index) return asset;
+            const renamed: [string, string, string] = [...asset];
+            renamed[0] = name;
+            return renamed;
+        });
+        // The stored list (adoption may store another array than the one assigned).
+        renamedList = untrack(() => (currentCharacter as character).additionalAssets);
+    }
+
+    function renameEmotion(index: number, name: string) {
+        const list = currentCharacter.emotionImages;
+        if (!list?.[index]) return;
+        currentCharacter.emotionImages = list.map((emotion, i) => {
+            if (i !== index) return emotion;
+            const renamed: [string, string] = [...emotion];
+            renamed[0] = name;
+            return renamed;
+        });
+    }
     const assetCount = $derived(
         matchedAssets?.length ??
             (currentCharacter.type === "character" ? (currentCharacter.additionalAssets?.length ?? 0) : 0),
@@ -142,26 +189,13 @@
         matchedAssets?.slice(0, shownAssets) ??
             Array.from({ length: Math.min(shownAssets, assetCount) }, (_, index) => index),
     );
-    // Rows are keyed by their tuple and bind to the tuple they were mounted for (D1); a row whose
-    // tuple the table no longer shows (deleted, another character) reads "" and writes nothing.
-    const assetRows = $derived.by(() => {
-        const list = currentCharacter.type === "character" ? currentCharacter.additionalAssets : undefined;
-        return list ? assetIndices.map((index) => list[index]) : [];
-    });
-    const assetRowSet = $derived(new Set(assetRows));
-    // The emotion list pages the same way, reset per character; a page is a prefix, so a row's index
-    // is its source index.
+    // The emotion list pages the same way, reset per character; rows read the live list by index.
     let shownEmotions = $derived.by(() => {
         assetsOwnerId;
         return ASSET_LIST_PAGE;
     });
     const emotionCount = $derived(currentCharacter.emotionImages?.length ?? 0);
-    const emotionRows = $derived(currentCharacter.emotionImages?.slice(0, Math.min(shownEmotions, emotionCount)) ?? []);
-    const emotionRowSet = $derived(new Set(emotionRows));
-    const shownName = (rows: Set<unknown>, tuple: string[]) => (rows.has(tuple) ? tuple[0] : "");
-    const renameShown = (rows: Set<unknown>, tuple: string[], name: string) => {
-        if (rows.has(tuple)) tuple[0] = name;
-    };
+    const emotionIndices = $derived(Array.from({ length: Math.min(shownEmotions, emotionCount) }, (_, index) => index));
     let licensed = $state(selectedCharacter().type === "character" ? (selectedCharacter() as character).license : "");
 
     $effect.pre(() => {
@@ -551,7 +585,8 @@
                                 if (!iconRemoveMode) {
                                     changeCharImage(currentCharacter.chaId, i);
                                 } else if (currentCharacter.type === "character") {
-                                    (currentCharacter as character).ccAssets.splice(i, 1);
+                                    const character = currentCharacter as character;
+                                    character.ccAssets = character.ccAssets.filter((_, index) => index !== i);
                                     iconRemoveMode = false;
                                 }
                             }}
@@ -652,13 +687,13 @@
                                 <td colspan="3">{language.noImages}</td>
                             </tr>
                         {:else}
-                            {#each emotionRows as emotion, index (emotion)}
+                            {#each emotionIndices as index}
                                 <tr>
                                     <td class="font-medium truncate w-1/3">
                                         {#if settings.ui.hideAllImages}
                                             <img src="/none.webp" alt="img" class="w-full" />
                                         {:else}
-                                            <LazyFileSrc path={emotion[1]}>
+                                            <LazyFileSrc path={currentCharacter.emotionImages[index][1]}>
                                                 {#snippet children(src)}
                                                     <img {src} alt="img" class="w-full" />
                                                 {/snippet}
@@ -669,19 +704,15 @@
                                         <TextInput
                                             marginBottom
                                             size="lg"
-                                            bind:value={
-                                                () => shownName(emotionRowSet, emotion),
-                                                (name) => renameShown(emotionRowSet, emotion, name)
-                                            }
+                                            value={currentCharacter.emotionImages[index][0]}
+                                            oninput={(event) => renameEmotion(index, event.currentTarget.value)}
                                         />
                                     </td>
                                     <td>
                                         <button
                                             class="font-medium cursor-pointer hover:text-green-500"
                                             onclick={() => {
-                                                if (emotionRowSet.has(emotion)) {
-                                                    rmCharEmotion(currentCharacter.chaId, index);
-                                                }
+                                                rmCharEmotion(currentCharacter.chaId, index);
                                             }}><TrashIcon /></button
                                         >
                                     </td>
@@ -831,14 +862,15 @@
                                         if (!char) {
                                             return;
                                         }
-                                        char.additionalAssets.push(
+                                        // The list is immutable: appended to the latest one, replaced whole.
+                                        char.additionalAssets = [
+                                            ...(char.additionalAssets ?? []),
                                             ...da.map((f, i): [string, string, string] => [
                                                 f.name,
                                                 keys[i],
                                                 extensions[i],
                                             ]),
-                                        );
-                                        char.additionalAssets = char.additionalAssets;
+                                        ];
                                     }
                                 }}
                             >
@@ -848,7 +880,11 @@
                     </tr>
                     <tr>
                         <td colspan="2">
-                            <TextInput fullwidth placeholder={language.search} bind:value={assetQuery} />
+                            <TextInput
+                                fullwidth
+                                placeholder={language.search}
+                                bind:value={() => assetQuery, setAssetQuery}
+                            />
                         </td>
                     </tr>
                     {#if matchedAssets?.length === 0}
@@ -860,7 +896,8 @@
                             <td class="text-textcolor2"> No Assets</td>
                         </tr>
                     {:else}
-                        {#each assetRows as assets (assets)}
+                        {#each assetIndices as index}
+                            {@const assets = currentCharacter.additionalAssets[index]}
                             {@const extension = assetExtension(assets)}
                             <tr>
                                 <td class="font-medium truncate">
@@ -885,10 +922,8 @@
                                     <TextInput
                                         size="sm"
                                         marginBottom
-                                        bind:value={
-                                            () => shownName(assetRowSet, assets),
-                                            (name) => renameShown(assetRowSet, assets, name)
-                                        }
+                                        value={assets[0]}
+                                        oninput={(event) => renameAsset(index, event.currentTarget.value)}
                                         placeholder="..."
                                     />
                                 </td>
@@ -897,13 +932,10 @@
                                     <button
                                         class="hover:text-blue-500"
                                         onclick={() => {
-                                            if (currentCharacter.type === "character" && assetRowSet.has(assets)) {
-                                                let additionalAssets = currentCharacter.additionalAssets;
-                                                const index = additionalAssets.indexOf(assets);
-                                                if (index === -1) return;
+                                            if (currentCharacter.type === "character") {
                                                 setCurrentChatMeta({ fmIndex: -1 });
-                                                additionalAssets.splice(index, 1);
-                                                currentCharacter.additionalAssets = additionalAssets;
+                                                currentCharacter.additionalAssets =
+                                                    currentCharacter.additionalAssets.filter((_, i) => i !== index);
                                             }
                                         }}
                                     >

@@ -45,8 +45,14 @@
         const img = new Image();
         inputImage = img;
         //@ts-expect-error Uint8Array buffer type (ArrayBufferLike) is incompatible with BlobPart's ArrayBuffer
-        img.src = URL.createObjectURL(new Blob([file.data]));
-        await img.decode();
+        const url = URL.createObjectURL(new Blob([file.data]));
+        img.src = url;
+        try {
+            // Later draws use the decoded image, not its URL.
+            await img.decode();
+        } finally {
+            URL.revokeObjectURL(url);
+        }
         aspectRatio = img.width / img.height;
         canvas.width = img.width;
         canvas.height = img.height;

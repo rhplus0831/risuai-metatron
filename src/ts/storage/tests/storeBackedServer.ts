@@ -395,10 +395,15 @@ export class StoreBackedServer {
             }
             throw error;
         }
+        // As the route: the keys fill a writable copy of the readonly list, assigned once.
+        const filled = (module.assets ?? []).map((asset) => [...asset] as [string, string, string]);
         const lines: ModuleImportLine[] = keys.map((key, index) => {
-            module.assets![index][1] = key;
+            filled[index][1] = key;
             return { done: index + 1, total: keys.length };
         });
+        if (Array.isArray(module.assets)) {
+            module.assets = filled;
+        }
         lines.push({ module, assetsWritten: keys.length, assetsSkipped: 0 });
         return ndjsonResponse(lines);
     }

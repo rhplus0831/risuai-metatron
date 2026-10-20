@@ -1756,7 +1756,7 @@ export function createBaseV3(char: ClientCharacter) {
         uri: string;
         name: string;
         ext: string;
-    }> = safeStructuredClone(char.ccAssets ?? []);
+    }> = safeStructuredClone(char.ccAssets ?? []).map((asset) => ({ ...asset }));
 
     if (char.additionalAssets) {
         for (const asset of char.additionalAssets) {

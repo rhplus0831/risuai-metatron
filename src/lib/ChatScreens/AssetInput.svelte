@@ -1,7 +1,7 @@
 <script lang="ts">
     import { untrack } from "svelte";
     import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
-    import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
+    import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { FileMusicIcon, PlusIcon } from "@lucide/svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import { alertError } from "src/ts/alert";
@@ -13,7 +13,7 @@
     import { language } from "../../lang";
     interface Props {
         currentCharacter: AnyClientCharacter;
-        onSelect: (additionalAsset: [string, string, string]) => void;
+        onSelect: (additionalAsset: readonly [string, string, string]) => void;
     }
 
     const { currentCharacter, onSelect }: Props = $props();
@@ -52,8 +52,17 @@
             class="hover:text-green-500 bg-textcolor2 flex justify-center items-center w-16 h-16 m-1 rounded-md"
             onclick={async () => {
                 if (currentCharacter.type === "character") {
+                    // The character this was opened for, found again after each await.
+                    const chaId = currentCharacter.chaId;
+                    const target = () => {
+                        const found = characterList().find((entry) => entry?.chaId === chaId);
+                        return found?.type === "character" ? found : undefined;
+                    };
                     const da = await selectMultipleFileHandles(["png", "webp", "mp4", "mp3", "gif"]);
-                    currentCharacter.additionalAssets = currentCharacter.additionalAssets ?? [];
+                    if (!target()) {
+                        return;
+                    }
+                    target().additionalAssets = target().additionalAssets ?? [];
                     if (da.length === 0) {
                         return;
                     }
@@ -65,10 +74,13 @@
                         alertError(error);
                         return;
                     }
-                    if (currentCharacter.type === "character") {
-                        currentCharacter.additionalAssets.push(
+                    const char = target();
+                    if (char) {
+                        // The list is immutable: appended to the latest one, replaced whole.
+                        char.additionalAssets = [
+                            ...(char.additionalAssets ?? []),
                             ...da.map((f, i): [string, string, string] => [f.name, keys[i], extension(f)]),
-                        );
+                        ];
                     }
                 }
             }}

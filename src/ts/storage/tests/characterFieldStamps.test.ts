@@ -388,20 +388,22 @@ describe("the challenge's other reproductions", () => {
 
 // `wrapperFieldStamp`: the parser's fuzzy asset lookup reuses an interim index of a character's asset
 // list only while the list wrapper's stamp is unchanged (`fuzzyIndexOf`), so every change the wrapper
-// can read must change it, a same-id whole replacement included (Sol, 2026-10-15).
+// can read must change it, a same-id whole replacement included (Sol, 2026-10-15). A valid asset
+// field is a frozen leaf since heap plan B2 (no wrapper, `characterAssetLists.test.ts`), so the
+// generic wrapper behavior is checked on a mutable field of tuples (`rows`) here.
 describe("wrapperFieldStamp", () => {
-    const assetsOf = (chaId: string) => byId(chaId).additionalAssets;
+    const assetsOf = (chaId: string) => byId(chaId).rows;
 
     beforeEach(() => {
         initializeRecords({
-            characters: [{ chaId: "a", name: "A", additionalAssets: [["old", "old.png", "png"]], other: { n: 1 } }],
+            characters: [{ chaId: "a", name: "A", rows: [["old", "old.png", "png"]], other: { n: 1 } }],
         });
     });
 
     it("is the character field's stamp for a wrapper under the field", () => {
         const assets = assetsOf("a");
-        expect(wrapperFieldStamp(assets)).toBe(stamp("a", "additionalAssets"));
-        expect(wrapperFieldStamp(assets[0])).toBe(stamp("a", "additionalAssets"));
+        expect(wrapperFieldStamp(assets)).toBe(stamp("a", "rows"));
+        expect(wrapperFieldStamp(assets[0])).toBe(stamp("a", "rows"));
     });
 
     it("changes at every write the list can read and not at a write elsewhere", () => {
@@ -414,7 +416,7 @@ describe("wrapperFieldStamp", () => {
             () => assets.push(["more", "more.png", "png"]),
             () => assets.reverse(),
             () => assets.splice(0, 1),
-            () => patchRawCharacter("a", [["additionalAssets", [["raw", "raw.png", "png"]]]]),
+            () => patchRawCharacter("a", [["rows", [["raw", "raw.png", "png"]]]]),
         ];
         for (const write of writes) {
             write();
@@ -435,31 +437,33 @@ describe("wrapperFieldStamp", () => {
         const otherBefore = stamp("a", "other");
         // Its own state (read through the wrapper) is kept, not copied; a plain object would be.
         const other = byId("a").other;
-        replaceCharacterRecordAt(0, { chaId: "a", additionalAssets: [["new", "new.webm", "webm"]], other } as any);
+        replaceCharacterRecordAt(0, { chaId: "a", rows: [["new", "new.webm", "webm"]], other } as any);
         expect(JSON.parse(JSON.stringify(assets))).toEqual([["new", "new.webm", "webm"]]);
         expect(wrapperFieldStamp(assets)).not.toBe(before);
         expect(wrapperFieldStamp(assets)).not.toBeNull();
         // A field whose value keeps its identity keeps its stamp; a removed one changes.
         expect(stamp("a", "other")).toBe(otherBefore);
-        expect(changed("a", () => replaceCharacterRecordAt(0, { chaId: "a", other } as any))).toContain(
-            "additionalAssets",
-        );
+        expect(changed("a", () => replaceCharacterRecordAt(0, { chaId: "a", other } as any))).toContain("rows");
     });
 
     it("changes when the character's data is fresh from the server", () => {
         const assets = assetsOf("a");
         const before = wrapperFieldStamp(assets);
-        applyRawCharacter("a", { chaId: "a", name: "A", additionalAssets: [["old", "old.png", "png"]] });
+        applyRawCharacter("a", { chaId: "a", name: "A", rows: [["old", "old.png", "png"]] });
         expect(wrapperFieldStamp(assetsOf("a"))).not.toBe(before);
     });
 
-    it("is null for anything but a live character field wrapper, and for an uncacheable character", () => {
+    it("is null for anything but a live character field wrapper, a frozen asset list, and for an uncacheable character", () => {
         expect(wrapperFieldStamp([["old", "old.png", "png"]])).toBeNull();
         expect(wrapperFieldStamp(null)).toBeNull();
         expect(wrapperFieldStamp(byId("a"))).toBeNull();
+        // A valid asset field reads as the frozen list itself: no wrapper, no stamp (heap plan B2).
+        byId("a").additionalAssets = [["frozen", "frozen.png", "png"]];
+        expect(wrapperFieldStamp(byId("a").additionalAssets)).toBeNull();
+        expect(wrapperFieldStamp(byId("a").additionalAssets[0])).toBeNull();
         const assets = assetsOf("a");
-        byId("a").copy = raw("a").additionalAssets;
-        expect(stamp("a", "additionalAssets")).toBeNull();
+        byId("a").copy = raw("a").rows;
+        expect(stamp("a", "rows")).toBeNull();
         expect(wrapperFieldStamp(assets)).toBeNull();
         resetRecords();
         expect(wrapperFieldStamp(assets)).toBeNull();
