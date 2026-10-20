@@ -428,8 +428,8 @@ export async function restoreValidated(arg: {
     return { epoch, assetsWritten: written, assetsSkipped: skipped };
 }
 
-/** Every logical key of the `assets` namespace, sorted. */
-async function listAssetKeys(assetsPath: string): Promise<string[]> {
+/** Every logical key of the `assets` namespace, sorted (also the upstream export's inventory). */
+export async function listAssetKeys(assetsPath: string): Promise<string[]> {
     let entries: Dirent[];
     try {
         entries = await fs.readdir(assetsPath, { withFileTypes: true });

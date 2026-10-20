@@ -6,36 +6,47 @@ import type { BackupArchiveManifest } from "../../../shared/resources.ts";
 // missing-asset report names what the database referenced, a failed or cancelled download cancels
 // the response and aborts the writer, and a restore posts the file and reloads.
 
-const { alerts, flush, writer, requests, exportResponse, upstream, hooks, persisted } = vi.hoisted(() => ({
-    alerts: {
-        alertError: vi.fn(),
-        alertNormal: vi.fn(),
-        alertWait: vi.fn(),
-        alertMd: vi.fn(),
-        alertConfirm: vi.fn(async () => true),
-        alertUpstreamImportReport: vi.fn(async () => true),
-        alertStore: { set: vi.fn() },
-    },
-    flush: vi.fn(async () => ({ discarded: [] as string[] })),
-    /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
-    upstream: {
-        prepare: null as (() => Response | Promise<Response>) | null,
-        commit: null as ((body: Record<string, unknown>, epoch: string | null) => Response | Promise<Response>) | null,
-        cancel: vi.fn(() => new Response(null, { status: 204 })),
-    },
-    /** The restore-reload hook the upstream import registers (`beforeRestoreReload`). */
-    hooks: { current: null as (() => void) | null, unregistered: 0 },
-    persisted: vi.fn(),
-    writer: {
-        initResult: true as boolean | Error,
-        chunks: [] as Uint8Array[],
-        failWriteAt: -1,
-        abort: vi.fn(async () => undefined),
-        close: vi.fn(async () => undefined),
-    },
-    requests: [] as { path: string; init: RequestInit }[],
-    exportResponse: { current: null as (() => Response) | null },
-}));
+const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExport, hooks, persisted } = vi.hoisted(
+    () => ({
+        alerts: {
+            alertError: vi.fn(),
+            alertNormal: vi.fn(),
+            alertWait: vi.fn(),
+            alertMd: vi.fn(),
+            alertConfirm: vi.fn(async (_msg: string) => true),
+            alertUpstreamImportReport: vi.fn(async () => true),
+            alertStore: { set: vi.fn() },
+        },
+        flush: vi.fn(async () => ({ discarded: [] as string[] })),
+        /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
+        upstream: {
+            prepare: null as (() => Response | Promise<Response>) | null,
+            commit: null as
+                ((body: Record<string, unknown>, epoch: string | null) => Response | Promise<Response>) | null,
+            cancel: vi.fn(() => new Response(null, { status: 204 })),
+        },
+        /** The upstream export routes' answers (`upstreamBackupClient.ts`), set per test. */
+        upstreamExport: {
+            prepare: null as ((body: Record<string, unknown>) => Response) | null,
+            download: null as ((token: string | null) => Response) | null,
+            cancel: vi.fn((_token: unknown) => new Response(null, { status: 204 })),
+        },
+        /** The restore-reload hook the upstream import registers (`beforeRestoreReload`). */
+        hooks: { current: null as (() => void) | null, unregistered: 0 },
+        persisted: vi.fn(),
+        writer: {
+            initResult: true as boolean | Error,
+            /** The file names `init` was called with. */
+            names: [] as string[],
+            chunks: [] as Uint8Array[],
+            failWriteAt: -1,
+            abort: vi.fn(async () => undefined),
+            close: vi.fn(async () => undefined),
+        },
+        requests: [] as { path: string; init: RequestInit }[],
+        exportResponse: { current: null as (() => Response) | null },
+    }),
+);
 
 vi.mock("../alert", () => alerts);
 vi.mock("../storage/resourceSync.svelte", () => ({
@@ -59,7 +70,26 @@ vi.mock("src/lang", () => ({
         partialBackupFirstConfirm: "first?",
         partialBackupSecondConfirm: "second?",
         backupDiscardedChanges: "changes replaced",
+        upstreamExport: {
+            includeKeys: "Include API keys?",
+            preparing: "Preparing...",
+            intro: "Ready.",
+            counts: { characters: "Characters", chats: "Chats", assets: "Images" },
+            convertedTitle: "Converted",
+            excludedTitle: "Left out",
+            converted: { "model-presets-flattened": "Model presets flattened" },
+            excluded: { "api-keys": "API keys" },
+            missingTitle: "Missing",
+            downloadQuestion: "Download it now?",
+            downloading: "Saving",
+            success: "Saved.",
+            requestFailed: (status: number) => `export failed (${status})`,
+        },
         upstreamImport: {
+            examples: "e.g.",
+            settingOwner: "Settings",
+            roles: { profile: "Profile image" },
+            missingMore: (count: number) => `and ${count} more`,
             phases: {
                 decode: "Reading the database",
                 cold: "Reading cold storage",
@@ -82,7 +112,8 @@ vi.mock("src/lang", () => ({
 vi.mock("../globalApi.svelte", () => ({
     LocalWriter: class {
         writer = { abort: writer.abort };
-        async init() {
+        async init(name = "Binary") {
+            writer.names.push(name);
             if (writer.initResult instanceof Error) {
                 throw writer.initResult;
             }
@@ -124,13 +155,29 @@ vi.mock("../storage/serverAuth", () => ({
         if (path === "/api/backups/import-upstream/cancel") {
             return upstream.cancel();
         }
+        if (path === "/api/backups/export-upstream/prepare") {
+            return upstreamExport.prepare!(JSON.parse(init.body as string));
+        }
+        if (path.startsWith("/api/backups/export-upstream/download?")) {
+            return upstreamExport.download!(new URL(path, "http://test").searchParams.get("token"));
+        }
+        if (path === "/api/backups/export-upstream/cancel") {
+            return upstreamExport.cancel(JSON.parse(init.body as string).token);
+        }
         return Response.json({ error: "unexpected" }, { status: 500 });
     },
 }));
 
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
-import { LoadLocalBackup, readFirstRecordName, SaveLocalBackup, SavePartialLocalBackup } from "./backuplocal";
+import {
+    LoadLocalBackup,
+    readFirstRecordName,
+    SaveLocalBackup,
+    SavePartialLocalBackup,
+    SaveUpstreamLocalBackup,
+    upstreamBackupFileName,
+} from "./backuplocal";
 
 const encoder = new TextEncoder();
 
@@ -234,13 +281,17 @@ const written = () => {
 beforeEach(() => {
     requests.length = 0;
     writer.chunks.length = 0;
+    writer.names.length = 0;
     writer.initResult = true;
     writer.failWriteAt = -1;
     upstream.prepare = null;
     upstream.commit = null;
+    upstreamExport.prepare = null;
+    upstreamExport.download = null;
     hooks.current = null;
     hooks.unregistered = 0;
     alerts.alertUpstreamImportReport.mockReset().mockResolvedValue(true);
+    alerts.alertConfirm.mockReset().mockResolvedValue(true);
     installInventory();
     setResourceEpoch("epoch-1");
     vi.stubGlobal("location", { reload: vi.fn() });
@@ -347,6 +398,165 @@ describe("SaveLocalBackup", () => {
         await SaveLocalBackup();
         expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("Too many assets"));
         expect(writer.chunks).toEqual([]);
+    });
+});
+
+describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
+    const TOKEN = "0b9c4f1e-2d3a-4b5c-8d6e-7f8091a2b3c4";
+    const exportReport = {
+        counts: { characters: 2, chats: 3, assets: 1 },
+        converted: [{ code: "model-presets-flattened", count: 1, examples: ["Other"] }],
+        excluded: [{ code: "api-keys", count: 2, examples: ["openAIKey", "proxyKey"] }],
+        missing: [{ key: "assets/gone.png", owner: "Alice", role: "profile" }],
+    };
+    /** The download: one asset record, then `database.risudat`, in small chunks. */
+    const download = () => {
+        const parts = [
+            record("alice.png", encoder.encode("PNG")),
+            record("database.risudat", new Uint8Array(40).fill(9)),
+        ];
+        const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+        bytes.set(parts[0]);
+        bytes.set(parts[1], parts[0].byteLength);
+        return { bytes, ...streamed(bytes, 5) };
+    };
+    /** Answers: the keys question, then the report's download question. */
+    const answer = (keys: boolean, downloadIt: boolean) =>
+        alerts.alertConfirm.mockResolvedValueOnce(keys).mockResolvedValueOnce(downloadIt);
+
+    it("asks about the keys, flushes, prepares with the tab's selection and the answer, shows the report, and streams the download to RisuAI-backup-<date>.bin", async () => {
+        const order: string[] = [];
+        flush.mockImplementationOnce(async () => {
+            order.push("flush");
+            return { discarded: [] };
+        });
+        const file = download();
+        let prepareBody: Record<string, unknown> | null = null;
+        upstreamExport.prepare = (body) => {
+            order.push("prepare");
+            prepareBody = body;
+            return Response.json({ token: TOKEN, report: exportReport });
+        };
+        upstreamExport.download = (token) => {
+            expect(token).toBe(TOKEN);
+            return file.response();
+        };
+        answer(false, true);
+        await SaveUpstreamLocalBackup();
+        expect(order).toEqual(["flush", "prepare"]);
+        expect(alerts.alertConfirm.mock.calls[0][0]).toBe("Include API keys?");
+        // The tab's selection as `tabSelectionIds` resolves it (the first preset, the model preset the
+        // flat install made for it, the first persona); no open chat at home, so no `selectedChat`.
+        expect(prepareBody).toEqual({
+            promptPresetId: "p",
+            modelPresetId: "p",
+            personaId: "self",
+            includeSecrets: false,
+        });
+        const report = alerts.alertConfirm.mock.calls[1][0] as string;
+        expect(report.split("\n")).toEqual([
+            "Ready.",
+            "",
+            "Characters: 2",
+            "Chats: 3",
+            "Images: 1",
+            "",
+            "Converted",
+            "- Model presets flattened: 1 (e.g. Other)",
+            "",
+            "Left out",
+            "- API keys: 2 (e.g. openAIKey, proxyKey)",
+            "",
+            "Missing",
+            "- Alice: Profile image (assets/gone.png)",
+            "",
+            "Download it now?",
+        ]);
+        expect(paths()).toEqual([
+            "/api/backups/export-upstream/prepare",
+            `/api/backups/export-upstream/download?token=${TOKEN}`,
+        ]);
+        expect(writer.names).toEqual([upstreamBackupFileName()]);
+        expect(written()).toEqual(file.bytes);
+        expect(writer.close).toHaveBeenCalledTimes(1);
+        expect(alerts.alertNormal).toHaveBeenCalledWith("Saved.");
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(upstreamExport.cancel).not.toHaveBeenCalled();
+    });
+
+    it("sends a yes to the keys question as includeSecrets, and names the flush's discarded changes in the report", async () => {
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        let prepareBody: Record<string, unknown> | null = null;
+        upstreamExport.prepare = (body) => {
+            prepareBody = body;
+            return Response.json({ token: TOKEN, report: { ...exportReport, missing: [] } });
+        };
+        upstreamExport.download = () => download().response();
+        answer(true, true);
+        await SaveUpstreamLocalBackup();
+        expect(prepareBody).toMatchObject({ includeSecrets: true });
+        expect(alerts.alertConfirm.mock.calls[1][0]).toContain("changes replaced\n\nDownload it now?");
+        expect(alerts.alertNormal).toHaveBeenCalledWith("Saved.");
+    });
+
+    it("cancels the prepared export when the report is declined, without downloading", async () => {
+        upstreamExport.prepare = () => Response.json({ token: TOKEN, report: exportReport });
+        upstreamExport.download = () => {
+            throw new Error("not downloaded");
+        };
+        answer(false, false);
+        await SaveUpstreamLocalBackup();
+        await vi.waitFor(() => expect(upstreamExport.cancel).toHaveBeenCalledWith(TOKEN));
+        expect(paths()).toEqual(["/api/backups/export-upstream/prepare", "/api/backups/export-upstream/cancel"]);
+        expect(writer.names).toEqual([]);
+        expect(alerts.alertNormal).not.toHaveBeenCalled();
+    });
+
+    it("prepares nothing when the flush fails", async () => {
+        flush.mockRejectedValueOnce(new Error("A character is still being generated"));
+        alerts.alertConfirm.mockResolvedValueOnce(false);
+        await SaveUpstreamLocalBackup();
+        expect(requests).toEqual([]);
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("still being generated"));
+    });
+
+    it("shows the server's refusal of the prepare or the download, and writes nothing", async () => {
+        upstreamExport.prepare = () =>
+            Response.json({ error: "Other RisuAI-compatible backups are waiting for their download" }, { status: 409 });
+        alerts.alertConfirm.mockResolvedValueOnce(false);
+        await SaveUpstreamLocalBackup();
+        expect(alerts.alertError).toHaveBeenLastCalledWith(
+            "Other RisuAI-compatible backups are waiting for their download",
+        );
+        expect(alerts.alertConfirm).toHaveBeenCalledTimes(1);
+
+        upstreamExport.prepare = () => Response.json({ token: TOKEN, report: exportReport });
+        upstreamExport.download = () => Response.json({ error: "Export expired" }, { status: 404 });
+        answer(false, true);
+        await SaveUpstreamLocalBackup();
+        expect(alerts.alertError).toHaveBeenLastCalledWith("Export expired");
+
+        upstreamExport.prepare = () => new Response("oops", { status: 502 });
+        alerts.alertConfirm.mockResolvedValueOnce(false);
+        await SaveUpstreamLocalBackup();
+        expect(alerts.alertError).toHaveBeenLastCalledWith("export failed (502)");
+        expect(writer.names).toEqual([]);
+        expect(alerts.alertNormal).not.toHaveBeenCalled();
+    });
+
+    it("aborts the writer when the download breaks", async () => {
+        upstreamExport.prepare = () => Response.json({ token: TOKEN, report: exportReport });
+        upstreamExport.download = () => streamed(download().bytes, 5, { failAfter: 2 }).response();
+        answer(false, true);
+        await SaveUpstreamLocalBackup();
+        expect(writer.abort).toHaveBeenCalledTimes(1);
+        expect(writer.close).not.toHaveBeenCalled();
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("connection reset"));
+        expect(alerts.alertNormal).not.toHaveBeenCalled();
+    });
+
+    it("names the file by the local date", () => {
+        expect(upstreamBackupFileName(new Date(2026, 0, 5, 23, 59))).toBe("RisuAI-backup-2026-01-05");
     });
 });
 

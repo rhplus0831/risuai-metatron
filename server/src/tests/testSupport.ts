@@ -33,6 +33,8 @@ export type TestServerOptions = {
     realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
     /** The upstream RisuAI import's staged expiry and what runs a prepare (an in-process stage in tests). */
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
+    /** The upstream RisuAI-compatible export's staged expiry. */
+    upstreamExport?: { stagedTtlMs?: number };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -58,6 +60,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         pushTransport: options.pushTransport,
         realm: options.realm,
         upstreamImport: options.upstreamImport,
+        upstreamExport: options.upstreamExport,
     });
     return {
         rootDir,

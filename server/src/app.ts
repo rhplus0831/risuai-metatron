@@ -41,6 +41,7 @@ import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
+import { createUpstreamExportStaging, registerUpstreamExportRoutes } from "./routes/backupsUpstreamExport.ts";
 import { UPSTREAM_IMPORT_PREPARE_PATH } from "../../shared/upstreamBackup.ts";
 import {
     DEFAULT_MAX_UPSTREAM_DB_BYTES,
@@ -122,6 +123,8 @@ export function createServerContext(options: {
      * commit, and what runs a prepare (tests replace them; the default is a worker per import).
      */
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
+    /** The upstream RisuAI-compatible export (`routes/backupsUpstreamExport.ts`): how long a prepared export waits for its download. */
+    upstreamExport?: { stagedTtlMs?: number };
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -185,6 +188,8 @@ export function createServerContext(options: {
     const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs });
     // The upstream imports prepared and waiting for their commit (`routes/backupsUpstream.ts`).
     const upstreamStaging = createUpstreamImportStaging({ ttlMs: options.upstreamImport?.stagedTtlMs });
+    // The upstream exports prepared and waiting for their download (`routes/backupsUpstreamExport.ts`).
+    const upstreamExportStaging = createUpstreamExportStaging({ ttlMs: options.upstreamExport?.stagedTtlMs });
     // Before every other maintenance listener, so its start is the first thing recorded; it never
     // throws. Its end says whether the data was replaced (a new epoch).
     snapshots.onMaintenance(async () => {
@@ -361,6 +366,8 @@ export function createServerContext(options: {
         // A running upstream prepare ends now (its worker is terminated), not after the HTTP drain, and
         // the prepared imports are removed (a running commit is tracked).
         void upstreamStaging.close();
+        // The prepared exports waiting for their download are removed (a running download is tracked).
+        void upstreamExportStaging.close();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
         }
@@ -647,6 +654,15 @@ export function createServerContext(options: {
         ),
         runner: options.upstreamImport?.runner,
     });
+    // Reads one copy of the store and writes nothing live, so it takes no import slot.
+    registerUpstreamExportRoutes(app, {
+        savePath,
+        store: resources,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        staging: upstreamExportStaging,
+    });
     // One module, CharX, or Realm import at a time: each holds a spooled file and a write loop. A
     // staged Realm import waiting for its commit is in `realmStaging`, not in the slot.
     const importSlot = createImportSlot();
@@ -697,6 +713,7 @@ export function createServerContext(options: {
         diagnostics,
         realmStaging,
         upstreamStaging,
+        upstreamExportStaging,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -743,6 +760,7 @@ export function createServerContext(options: {
                 .then(() => snapshots.stop())
                 .then(() => realmStaging.close())
                 .then(() => upstreamStaging.close())
+                .then(() => upstreamExportStaging.close())
                 .then(() => {
                     diagnostics.close();
                     diagnostics.writeState();

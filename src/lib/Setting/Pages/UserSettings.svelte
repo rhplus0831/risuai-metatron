@@ -2,7 +2,12 @@
     import { language } from "src/lang";
     import { alertConfirm } from "src/ts/alert";
     import { loadInternalBackup } from "src/ts/globalApi.svelte";
-    import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "src/ts/drive/backuplocal";
+    import {
+        LoadLocalBackup,
+        SaveLocalBackup,
+        SavePartialLocalBackup,
+        SaveUpstreamLocalBackup,
+    } from "src/ts/drive/backuplocal";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
 </script>
@@ -29,6 +34,17 @@
     className="mt-2"
 >
     {language.savePartialLocalBackup}
+</Button>
+
+<Button
+    onclick={async () => {
+        if (await alertConfirm(language.backupConfirm)) {
+            SaveUpstreamLocalBackup();
+        }
+    }}
+    className="mt-2"
+>
+    {language.upstreamExport.button}
 </Button>
 
 <Button
