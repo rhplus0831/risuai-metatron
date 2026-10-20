@@ -25,6 +25,7 @@ git show cfe072e4e:docs/plan/open-bug-fixes.md
 git show 723700902:docs/plan/boot-resource-cache.md
 git show 639ba5b2e:docs/plan/heap-memory.md
 git show d30735b05:docs/plan/search.md
+git show f4c26f27d:docs/plan/risunest-small-wins.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -51,6 +52,7 @@ it is not a current architecture guide.
 | Boot Resource Cache                 | `723700902`: `docs/plan/boot-resource-cache.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                   |
 | Heap Memory Reduction               | `639ba5b2e`: `docs/plan/heap-memory.md`                                   | [persistence](../structure/persistence.md), [characters/modules](../structure/characters-modules.md), [CBS/rendering](../structure/cbs-rendering.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
 | Search                              | `d30735b05`: `docs/plan/search.md`                                        | [UI/theming](../structure/ui-theming.md), [characters/modules](../structure/characters-modules.md), [settings](../structure/settings-i18n.md), [server](../structure/self-host-server.md), [matcher](../structure/global-api.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                     |
+| RisuNest Small Wins                 | `f4c26f27d`: `docs/plan/risunest-small-wins.md`                           | [build/test](../structure/build-test-platforms.md), [plugins/MCP](../structure/plugins-mcp.md), [alerts](../structure/global-api.md), [app shell](../structure/app-shell.md), [server/Docker](../structure/self-host-server.md), `STRUCTURE.md` V4–V9                                                                                                                                                                                                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -110,6 +112,23 @@ defaults every slice took (no FTS index; the `LIKE` scan measured at 516–674 m
 seeded messages, under the 1 s threshold of Decision 7). The final checks on the target branch
 passed (`pnpm check`, `format:check`, `test:agent` 5738 passed). Slices 1, 3b and 4b were driven
 in headless Chrome; 2b, 2c, 2d and 3a were verified by tests and reviews only.
+RisuNest Small Wins (RisuNest survey items 1–5 and 17) landed all nine slices on 2026-10-20
+through the plan runner from a worktree, one cherry-picked commit each, then merged `metatron`
+(the Search plan) into the branch as `abde78c57` and fast-forwarded `metatron` to it: the
+unit-test network guard `vitest.testNetwork.ts` (T1 `86411442f`), the plugin fixes (unread
+`nativeFetch` body expiry at 60 s, `terminate` aborting host calls, the non-3.0 plugin report; P1
+`a293fc574`), the `.dockerignore` (K1 `90882b0cd`), `STRUCTURE.md` V4–V9 with `pnpm check:tests`
+and the shared `createAlertMock` (E1 `9e72646ac`), the deferred plugin reload after a remote
+`plugins` change (P2 `ed9d207c5`), the GitLab CI pipeline and `util/ci/check.sh` (K2
+`f6ac36f7a`), the alert queue `alertQueue.ts` (A1 `96a296e34`), the remaining alert mocks
+through the factory (E2 `58ebd1452`), and safe boot `safeBoot.ts` (S1 `dd9b50ce5`). Decisions:
+D1 GitLab CI with a Runner for `metatron` and `main` only (the plan's Forgejo/Gitea options did
+not apply; the forge is GitLab); D2, D4 (never interrupt), D5 (once per page load), D6 (two
+boots, 10 s), D7 (exact origins) at their defaults; D3 moot (the heap branch had merged). The
+final checks on the merged branch passed (`pnpm check`, `check:tests`, `format:check`, `build`;
+`test:agent --all` 5929 passed with only the known stale `importPngCaps` failure). A1 and S1 were
+driven in headless Chrome; K1 was checked with a real `docker build`; K2 with a clean-clone run on
+the host and in a `node:24` container.
 
 ## Server-Owned Data Chronology
 
@@ -285,6 +304,36 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     database was not measured (the real saves on the machine were 352 KB).
   - Not in the plan: `prose-invert={$ColorSchemeTypeStore}` in `AlertComp.svelte` and
     `MultiLangDisplay.svelte` is always truthy; the persona list itself has no name filter.
+- RisuNest small wins:
+  - T1: an iframe's `contentWindow.parent.WebSocket` (the backing window) stays unguarded;
+    `build-test-platforms.md` `Files` does not list the three root `vitest.testNetwork*`
+    files; raw `node:http`/`net`/`tls` sockets, worker threads and child processes are not
+    guarded.
+  - P1: no browser check of the "Unsupported API" badge or the real-iframe expiry; a
+    `nativeFetch` without a `signal` is not aborted by `terminate` (its late body is
+    cancelled); a hash failure that recovers reports the plugin once more.
+  - E1: `util/` stays outside `pnpm check`, so `testInventory.mjs` and its test are not
+    type-checked.
+  - P2: no browser check (two tabs or devices, a reload deferred during a generation); the
+    `onStart`-throw follow in `serverCommands.ts` is untested; with D4 plugin work that never
+    ends defers the reload until a local reload (`plugins-mcp.md` Known Hazard).
+  - K2: not yet run on the real GitLab Runner (`$CI_PROJECT_DIR` expansion and the cache upload
+    unverified); the Runner's Docker executor needs a tmpfs `/tmp`
+    (`server/src/tests/resourcePatchParts.test.ts` runs past 5 s on a disk-backed `/tmp`) and
+    must accept untagged jobs; "Auto-cancel redundant pipelines" must be on for
+    `interruptible`.
+  - A1: `e2e/terminalNotice.spec.ts` not re-run; found outside the slice (project memory): a
+    job's status alert left after the job ends, alert keys ignored while a text input has
+    focus, `alertClear` clearing another job's status, the branches/HypaV2 dialogs reading
+    the selection late, a gated Escape still closing the settings, `makeGroupImage` leaving
+    its wait.
+  - S1: GUI HTML gating under `SafeModeStore` not checked in the browser or by a unit test;
+    `STRUCTURE.md` S1 and `ui-theming.md` still describe safe mode as custom CSS only;
+    `bootstrap.safeBoot.test.ts` duplicates the service-worker test's mock preamble; a
+    plugin whose script throws at start fails every boot it runs in (`app-shell.md` Known
+    Hazard); modules, global regex and Lua (server-side per job) cannot be turned off.
+  - Known stale test untouched by the plan: `server/src/tests/importPngCaps.test.ts` fails
+    on a clean tree (`{ total }` expected, `card` also returned).
 - Consolidated browser/production verification debt remains tracked in the active
   [audit/performance plan](../plan/audit-findings-perf.md), especially Phase 5.
 
