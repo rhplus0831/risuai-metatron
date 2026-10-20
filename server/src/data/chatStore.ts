@@ -703,6 +703,21 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             "generationHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const insertRestoredOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
+    // Message search (`searchBatch`).
+    const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ?");
+    const searchNextChat = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq < ? ORDER BY seq DESC LIMIT 1");
+    // Unary + keeps SQLite on the descending rowid scan instead of sorting the character/id index.
+    const searchNextCharacterChat = db.prepare(
+        "SELECT seq, characterId, id FROM chats WHERE +characterId = ? AND seq < ? ORDER BY seq DESC LIMIT 1",
+    );
+    const searchChatName = db.prepare("SELECT json_extract(meta, '$.name') AS name FROM chats WHERE seq = ?");
+    const searchAnchor = db.prepare("SELECT position FROM messages WHERE chatSeq = ? AND id = ?");
+    // `octet_length` is the stored text's UTF-8 size (`length` on TEXT counts characters).
+    const searchMessages = db.prepare(
+        "SELECT id, position, octet_length(data) AS bytes, " +
+            "CASE WHEN json_extract(data, '$.data') LIKE ? ESCAPE '\\' THEN data END AS hit " +
+            "FROM messages WHERE chatSeq = ? AND position < ? ORDER BY position DESC LIMIT ?",
+    );
 
     function chatRecord(
         characterId: string,
@@ -1416,6 +1431,152 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? chatRecord(characterId, { ...row, id }, []) : null;
         },
 
+        /** A chat's incarnation (`chats.seq`), or null when it does not exist. */
+        chatSeq(characterId: string, id: string): number | null {
+            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq"> | undefined;
+            return row ? row.seq : null;
+        },
+
+        /** A chat's metadata `name` for a search hit ("" when it has none or the chat is gone). */
+        searchChatName(seq: number): string {
+            const row = searchChatName.get(seq) as { name: unknown } | undefined;
+            return typeof row?.name === "string" ? row.name : "";
+        },
+
+        /**
+         * One synchronous batch of a message search (`docs/plan/search.md` slice 4a): the scope's chats
+         * by `seq` descending, each chat's messages by `position` descending, every message charged
+         * and handed to `visit` (with its JSON only when its text matches the `LIKE` pattern), until
+         * `visit` ends the request (`stopped`), the batch is full, or the scope is exhausted (`end`).
+         * A batch is full at `maxRows` units (one per message row and one per chat looked at, so
+         * empty or skipped chats cannot keep it running) or `maxBytes` (the messages' UTF-8 bytes
+         * plus what `scope.eligible` charged); the limits are checked after each unit, so a batch
+         * always advances. `resume` is where the next batch starts: a resumed message's chat
+         * continues below that message's current position (found again by id, so inserts before it
+         * neither repeat nor skip rows; its stored position when it is gone), and a chat that is gone
+         * or out of scope continues with the next lower `seq`. Rows are read lazily and the scan
+         * statement is reset before returning, so nothing stays open across the caller's yield.
+         */
+        searchBatch(args: {
+            scope: MessageSearchScope;
+            pattern: string;
+            from: MessageSearchResume;
+            maxRows: number;
+            maxBytes: number;
+            visit: (chat: MessageSearchChat, row: MessageSearchRow) => boolean;
+        }): { resume: MessageSearchResume; stopped: boolean; end: boolean } {
+            const { scope, pattern, maxRows, maxBytes, visit } = args;
+            let rows = 0;
+            let bytes = 0;
+            let scanned = 0;
+            const full = () => rows >= maxRows || bytes >= maxBytes;
+            const inScope = (chat: MessageSearchChat) => {
+                if (scope.kind === "chat") {
+                    return chat.seq === scope.seq;
+                }
+                if (scope.kind === "character") {
+                    return chat.characterId === scope.characterId;
+                }
+                const verdict = scope.eligible(chat.characterId);
+                bytes += verdict.bytes;
+                return verdict.eligible;
+            };
+            /** The next in-scope chat below `belowSeq`, or where the batch filled up while skipping. */
+            const nextChat = (belowSeq: number): { chat: MessageSearchChat } | { end: true } | { full: number } => {
+                for (;;) {
+                    if (full()) {
+                        return { full: belowSeq };
+                    }
+                    rows += 1;
+                    const row = (
+                        scope.kind === "chat"
+                            ? scope.seq < belowSeq
+                                ? searchChatBySeq.get(scope.seq)
+                                : undefined
+                            : scope.kind === "character"
+                              ? searchNextCharacterChat.get(scope.characterId, belowSeq)
+                              : searchNextChat.get(belowSeq)
+                    ) as MessageSearchChat | undefined;
+                    if (!row) {
+                        return { end: true };
+                    }
+                    if (scope.kind !== "all" || inScope(row)) {
+                        return { chat: row };
+                    }
+                    belowSeq = row.seq;
+                }
+            };
+
+            let resume = args.from;
+            let chat: MessageSearchChat | null = null;
+            let below = Number.MAX_SAFE_INTEGER;
+            if (resume && "message" in resume) {
+                const anchor = resume.message;
+                const head = searchChatBySeq.get(anchor.chatSeq) as MessageSearchChat | undefined;
+                if (head && inScope(head)) {
+                    chat = head;
+                    const found = searchAnchor.get(anchor.chatSeq, anchor.messageId) as
+                        { position: number } | undefined;
+                    below = found ? found.position : anchor.position;
+                } else {
+                    resume = { belowSeq: anchor.chatSeq };
+                }
+            }
+            for (;;) {
+                if (!chat) {
+                    const next = nextChat(resume && "belowSeq" in resume ? resume.belowSeq : Number.MAX_SAFE_INTEGER);
+                    if ("end" in next) {
+                        return { resume, stopped: false, end: true };
+                    }
+                    if ("full" in next) {
+                        return { resume: { belowSeq: next.full }, stopped: false, end: false };
+                    }
+                    chat = next.chat;
+                    below = Number.MAX_SAFE_INTEGER;
+                    // Nothing of it scanned yet: a batch that ends here starts the next one at it.
+                    resume = { belowSeq: chat.seq + 1 };
+                }
+                // A batch scans at least one row of the chat it reached (or finds it empty), so it
+                // always advances even when skipping chats or a character's eligibility filled it.
+                if (scanned > 0 && full()) {
+                    return { resume, stopped: false, end: false };
+                }
+                let stopped = false;
+                let filled = false;
+                const rowLimit = Math.max(1, maxRows - rows);
+                for (const row of searchMessages.iterate(
+                    pattern,
+                    chat.seq,
+                    below,
+                    rowLimit,
+                ) as Iterable<MessageSearchRow>) {
+                    rows += 1;
+                    scanned += 1;
+                    bytes += row.bytes;
+                    resume = { message: { chatSeq: chat.seq, messageId: row.id, position: row.position } };
+                    if (visit(chat, row)) {
+                        stopped = true;
+                        break;
+                    }
+                    if (full()) {
+                        filled = true;
+                        break;
+                    }
+                }
+                if (stopped) {
+                    return { resume, stopped: true, end: false };
+                }
+                if (filled) {
+                    // The chat may hold more rows below the last one.
+                    return { resume, stopped: false, end: false };
+                }
+                // The rows ran out before the limit (the full check above ends a batch at the limit):
+                // every row of this chat is scanned.
+                resume = { belowSeq: chat.seq };
+                chat = null;
+            }
+        },
+
         /**
          * Deletes a character's chats, their messages, and its order (inside the character's delete).
          * Returns the ids of the chats it deleted and whether an order existed.
@@ -1673,6 +1834,73 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 }
 
 export type ChatTables = ReturnType<typeof createChatTables>;
+
+/**
+ * Which chats a message search scans: one chat incarnation, one character's chats, or every chat
+ * whose character `eligible` admits (`bytes`: what deciding cost, charged to the batch).
+ */
+export type MessageSearchScope =
+    | { kind: "chat"; seq: number }
+    | { kind: "character"; characterId: string }
+    | { kind: "all"; eligible(characterId: string): { eligible: boolean; bytes: number } };
+
+/** The last message a search scanned: its chat incarnation (`chats.seq`), `Message.chatId`, and position then. */
+export type MessageSearchPosition = { chatSeq: number; messageId: string; position: number };
+
+/**
+ * Where a search batch starts: below a scanned message (in its chat, then the lower chats), with the
+ * chats below `belowSeq`, or (null) at the newest chat.
+ */
+export type MessageSearchResume = { message: MessageSearchPosition } | { belowSeq: number } | null;
+
+export type MessageSearchChat = { seq: number; characterId: string; id: string };
+/** A scanned message row: `bytes` is its stored JSON's UTF-8 size; `hit` that JSON when its text matched. */
+export type MessageSearchRow = { id: string; position: number; bytes: number; hit: string | null };
+
+/** Context kept around a search hit's match, in UTF-16 code units. */
+const SNIPPET_BEFORE = 60;
+const SNIPPET_AFTER = 120;
+
+/** ASCII-only case folding, as SQLite's `LIKE` compares; keeps every index in place. */
+function foldAscii(text: string): string {
+    return text.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+}
+
+const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code: number) => code >= 0xdc00 && code <= 0xdfff;
+
+/** `text.slice(start, end)` widened or narrowed so neither edge splits a surrogate pair. */
+function sliceWhole(text: string, start: number, end: number): { text: string; start: number } {
+    if (start > 0 && isLowSurrogate(text.charCodeAt(start)) && isHighSurrogate(text.charCodeAt(start - 1))) {
+        start += 1;
+    }
+    if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))) {
+        end -= 1;
+    }
+    return { text: text.slice(start, Math.max(start, end)), start };
+}
+
+/**
+ * A search hit's snippet: up to 60 code units before the first match of `query` in `text` and 120
+ * after it, found with the ASCII-only case folding `LIKE` used (not `toLowerCase`, which folds more
+ * than `LIKE` matched). `matchStart` and `matchLength` are UTF-16 offsets into the snippet. When the
+ * match cannot be found again (the text changed meaning between SQLite and JavaScript), returns null.
+ */
+export function messageSearchSnippet(
+    text: string,
+    query: string,
+): { snippet: string; matchStart: number; matchLength: number } | null {
+    const index = foldAscii(text).indexOf(foldAscii(query));
+    if (index < 0) {
+        return null;
+    }
+    const cut = sliceWhole(
+        text,
+        Math.max(0, index - SNIPPET_BEFORE),
+        Math.min(text.length, index + query.length + SNIPPET_AFTER),
+    );
+    return { snippet: cut.text, matchStart: index - cut.start, matchLength: query.length };
+}
 
 /**
  * Reads and checks the chat tables of a snapshot file for `readSnapshot`: every chat belongs to a

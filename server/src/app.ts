@@ -44,6 +44,11 @@ import { registerGenerationRoutes } from "./routes/generations.ts";
 import { CHARX_IMPORT_PATH, registerCharxImportRoutes } from "./routes/importCharx.ts";
 import { MODULE_IMPORT_PATH, registerModuleImportRoutes } from "./routes/importModule.ts";
 import {
+    MESSAGE_SEARCH_PATH,
+    type MessageSearchRouteOptions,
+    registerMessageSearchRoutes,
+} from "./routes/messageSearch.ts";
+import {
     createRealmStaging,
     REALM_CANCEL_PATH,
     REALM_COMMIT_PATH,
@@ -90,7 +95,8 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * uploaded backup archive or module file (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB).
  * `generationRunner` runs the generation jobs (tests inject one; the default runs `command` jobs
  * and the sends and previews of prompt assembly), and `generationRandom` is the default runner's
- * random source.
+ * random source. `messageSearch` replaces the message search's limits and its yield between batches
+ * (tests inject a latch).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -110,6 +116,7 @@ export function createServerContext(options: {
      * for its commit (tests replace them).
      */
     realm?: { downloadOrigin?: string; hubURL?: string; stagedTtlMs?: number };
+    messageSearch?: MessageSearchRouteOptions;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -401,8 +408,11 @@ export function createServerContext(options: {
     // Admit resource handlers before their first await (including body parsing and auth). Tracking
     // them also makes in-process dispose safe; maintenance only waits for storage-gate admissions.
     app.use(async (c, next) => {
-        // The credential writes (`/api/llm-secrets`) are resource writes too.
-        const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
+        // The credential writes (`/api/llm-secrets`) are resource writes too, and the message search
+        // reads the resource store between yields (shutdown waits for it before closing the store).
+        const resource =
+            /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
+            c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
@@ -450,8 +460,9 @@ export function createServerContext(options: {
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
-    // request history share's, the Realm import's routes (prepare, commit, cancel), and the boot read's
-    // cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB).
+    // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, and
+    // the message search's cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB,
+    // 2 MiB, 4 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -464,6 +475,7 @@ export function createServerContext(options: {
                     route === REALM_CANCEL_PATH ||
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
+                    route === MESSAGE_SEARCH_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
@@ -586,6 +598,13 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
+    });
+    registerMessageSearchRoutes(app, {
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+        limits: options.messageSearch,
     });
     registerLlmSecretRoutes(app, {
         store: resources,
