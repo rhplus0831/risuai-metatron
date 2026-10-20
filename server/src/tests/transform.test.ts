@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createSigner, createTestServer, json } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
 // Phase 5 slice 13a: the script transform (`POST /api/transform`, `POST /api/transform/continue`;
 // `server/src/routes/transform.ts`, `server/src/prompt/transform.ts`) end to end in process, with the
@@ -195,6 +195,7 @@ beforeAll(async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
     const embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1/embeddings`;
     rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-transform-"));
     mkdirSync(path.join(rootDir, "dist"));

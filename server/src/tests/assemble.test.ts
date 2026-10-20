@@ -16,7 +16,7 @@ import {
     PRESET_ROOT_ALIASES,
 } from "../../../shared/presets.ts";
 import { FORWARDED_MODEL_PRESET_KEYS, FORWARDED_PRESET_KEYS, SECTION_FIELDS } from "../../../shared/sections.ts";
-import { createSigner, createTestServer, json } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
 // Phase 5 slice 9: the prompt golden. The server `preview` job (`server/src/prompt/runner.ts`
 // `runPromptJob`, `server/src/prompt/assemble.ts` `assemblePrompt`) on a real listening server with
@@ -86,6 +86,7 @@ async function startServer(): Promise<Server> {
     const server = createTestServer({ rootDir, generationRandom: () => random() });
     const node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     const base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     const signer = await createSigner();

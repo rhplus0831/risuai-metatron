@@ -135,6 +135,31 @@ processes. Select them when touching the last column below. Discover current tag
 with `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather than relying
 on a count or timing estimate.
 
+Unit tests run behind a network guard. `vitest.setup.ts` routes the global `fetch`,
+`WebSocket`, Node's undici global dispatcher (every hop of a Node `fetch`, redirects included),
+and, under happy-dom, the start of every happy-dom `Fetch`/`SyncFetch` (its fetch, XHR, and
+script, link, and iframe loads, each redirect hop) and the `WebSocket` of every window it builds
+later (an iframe's) through `vitest.testNetwork.ts`. happy-dom's `settings.fetch.interceptor` is
+not used: 20.14.5 leaves an async task pending when `beforeAsyncRequest` throws. The policy
+allows `data:` and `blob:` URLs and the exact loopback origins
+(`http(s)://127.0.0.1|[::1]|localhost:<port>`) a test registered; `ws:`/`wss:` follow their
+HTTP origin. Everything else is refused, relative URLs included: the call throws or rejects as a
+failed request would (an XHR fires `error`), and the setup's `afterEach` fails the test even when
+its code caught the error. The globals are assigned directly, so `vi.stubGlobal("fetch", ...)`
+replaces the guard and `vi.unstubAllGlobals()` restores it. A test that needs the network stubs
+`fetch` (or the module that fetches) or starts a loopback server and registers it:
+`allowTestLoopbackOrigin(origin)` returns the unregister function; server tests call
+`server/src/tests/testSupport.ts` `allowListenerOrigin(server)` once the server listens (a
+`node:http`/`node:net` server or a `ws` `WebSocketServer`), which unregisters on `close()`, and
+`startUpstream` does it itself. A registration outlives `afterEach`, so a `beforeAll` upstream
+serves the whole file; the setup's `afterAll` fails the file when an origin is still registered
+or a refusal came after the last `afterEach`. A test that wants a refused connection registers
+the dead port (`onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"))`). Not guarded:
+`node:http`/`https`/`net`/`tls` sockets opened directly (the Lua egress transport
+`server/src/lua/egress.ts`, `ws` package clients), and worker threads and child processes, which
+have their own globals. `vitest.testNetwork.test.ts` (happy-dom) and
+`vitest.testNetwork.node.test.ts` (node) cover the policy and the installed guards.
+
 ### Test rules
 
 Two gates decide whether a test belongs in the default suite. Both are checked from the

@@ -13,7 +13,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
 import { createGenerationJobs, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
-import { waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, waitFor } from "./testSupport.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -126,6 +126,7 @@ async function setup() {
     if (!created.ok) throw new Error(JSON.stringify(created));
     const job = await started;
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    allowListenerOrigin(server);
     const port = (server.address() as { port: number }).port;
     const attach = async () => {
         const events: GenerationEvent[] = [];

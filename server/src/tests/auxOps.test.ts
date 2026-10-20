@@ -3,7 +3,7 @@ import http from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeSecretPath, type SecretPath } from "../../../shared/llmSecrets.ts";
 import { AUX_OPS, planAuxOp, type AuxOpName } from "../llm/auxOps.ts";
-import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
+import { allowListenerOrigin, createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 // Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the twelve auxiliary operations added for
 // the browser's model discovery, account, and count calls (`server/src/llm/auxOps.ts`, the
@@ -131,6 +131,7 @@ async function startUpstream() {
         }
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    allowListenerOrigin(server);
     const { port } = server.address() as { port: number };
     return {
         url: `http://127.0.0.1:${port}`,

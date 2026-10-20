@@ -7,7 +7,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
-import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 9: a send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
 // `server/src/prompt/scripts.ts`, `server/src/jobs/runSetup.ts`) on a real listening server with
@@ -407,6 +407,7 @@ beforeAll(async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
     const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-prompt-runner-"));
     mkdirSync(path.join(rootDir, "dist"));
@@ -418,6 +419,7 @@ beforeAll(async () => {
     server = createTestServer({ rootDir, generationRandom: () => 0 });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
     server.context.attachWebSocket(node);
     base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
     signer = await createSigner();

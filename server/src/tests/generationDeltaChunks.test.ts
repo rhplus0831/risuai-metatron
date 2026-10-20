@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 
 // The generation job routes and the owner socket (`server/src/routes/generations.ts`,
 // `generationJobs.handleUpgrade`) on a real listening server, with a fake runner driven by the test,
@@ -90,6 +90,7 @@ describe("generation delta chunks on the owner socket", () => {
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
+        allowListenerOrigin(started);
         server.context.attachWebSocket(started);
         const { port } = started.address() as { port: number };
         base = `http://127.0.0.1:${port}`;

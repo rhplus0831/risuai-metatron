@@ -43,7 +43,9 @@ Verification:
   [build-test-platforms](docs/structure/build-test-platforms.md).
 - V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories.
   Vitest defaults to happy-dom; server tests select Node. The setup mocks KaTeX,
-  replaces `safeStructuredClone` with a JSON clone, and patches happy-dom for DOMPurify.
+  replaces `safeStructuredClone` with a JSON clone, patches happy-dom for DOMPurify,
+  and refuses network requests except `data:`/`blob:` and loopback origins a test
+  registered (`vitest.testNetwork.ts`).
   Domain guides own focused test paths and coverage gaps.
 - V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real
   wall-clock time, CPU time, or the scheduler: no elapsed-time or throughput

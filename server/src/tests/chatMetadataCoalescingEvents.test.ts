@@ -13,7 +13,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
 import { createGenerationJobs, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
-import { createResourceTestClient, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createResourceTestClient, waitFor } from "./testSupport.ts";
 import { loadJobScope } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 
@@ -128,6 +128,7 @@ async function setup() {
     if (!created.ok) throw new Error(JSON.stringify(created));
     const job = await started;
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    allowListenerOrigin(server);
     const port = (server.address() as { port: number }).port;
     const attach = async () => {
         const events: GenerationEvent[] = [];
@@ -316,6 +317,7 @@ describe("coalescing through generation routes", () => {
                 await new Promise<void>((resolve) => server.close(() => resolve()));
             });
             await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+            allowListenerOrigin(server);
             const first = async (name: string) =>
                 ((await (await client.get(name, "main")).json()) as { data: { id: string }[] }).data[0].id;
             const bound = {
