@@ -7,6 +7,7 @@ import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import {
     ArchiveFormatError,
+    ArchiveRejectedError,
     copyRecordToFile,
     encodeRecordHeader,
     indexArchive,
@@ -30,9 +31,6 @@ export const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_PARTIAL_ASSETS = 100_000;
 const ASSET_PREFIX = "assets/";
-
-/** A refused archive; the route answers 400 with the message. */
-class ArchiveRejectedError extends Error {}
 
 /**
  * Server snapshots and local backup archives:
@@ -409,8 +407,8 @@ async function listAssetKeys(assetsPath: string): Promise<string[]> {
 
 /**
  * Checks a whole archive before anything is written: `manifest.json` (version 2) first, exactly one
- * `resources.sqlite`, and otherwise only unique `assets/` keys. A Risu Account archive and an archive
- * made before format version 2 are refused with their own message; cold-storage records of old
+ * `resources.sqlite`, and otherwise only unique `assets/` keys. A Risu Account archive and an upstream
+ * RisuAI backup (`database.risudat`) are refused with their own message; cold-storage records of old
  * archives are ignored.
  */
 async function planImport(handle: FileHandle, savePath: string) {
@@ -434,9 +432,9 @@ async function planImport(handle: FileHandle, savePath: string) {
         names.add(record.name);
     }
     if (names.has("database.risudat")) {
-        throw new ArchiveRejectedError(
-            "This backup was made by an older version, which saved the database in a format this version no longer reads",
-        );
+        // An upstream RisuAI backup (or one of this fork's from before Phase 1): the client sends it to
+        // the upstream import (`data/upstream/archive.ts`); only a client older than that posts it here.
+        throw new ArchiveRejectedError("This is a RisuAI backup; choose it again and it will be imported as one");
     }
     const [first] = records;
     if (!first || first.name !== "manifest.json" || first.length > MAX_MANIFEST_BYTES) {

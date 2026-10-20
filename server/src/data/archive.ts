@@ -26,6 +26,17 @@ export class ArchiveFormatError extends Error {
     }
 }
 
+/**
+ * An archive refused for its content (a foreign format, a missing or doubled record, an unexpected
+ * name); the import routes answer 400 with the message.
+ */
+export class ArchiveRejectedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "ArchiveRejectedError";
+    }
+}
+
 export type ArchiveRecord = { name: string; offset: number; length: number };
 
 /** A record header (`encodeAssetRecordHeader`), refused with `ArchiveFormatError` past the archive's caps. */
