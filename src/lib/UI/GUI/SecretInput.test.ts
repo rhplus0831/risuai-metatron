@@ -5,11 +5,10 @@ import { maskLlmSecrets, type SecretPath } from "../../../../shared/llmSecrets.t
 import { llmSecretState, setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
 import { reactiveProps } from "../tests/reactiveProps.svelte";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the credential input. It shows the stored
-// key's status (set, with its hint; not set; saving) and never its value; a draft replaces the key
-// once, on Enter or the button (no blur submit), and is emptied when queued; an empty draft submits
-// nothing; the draft belongs to its path and is dropped when the input is moved to another target;
-// clearing queues a clear and never the draft.
+// The credential input. It shows the stored key's status (set, with its hint; not set; saving) and
+// never its value; a draft replaces the key once, on Enter or the button (no blur submit), and is
+// emptied when queued; an empty draft submits nothing; the draft belongs to its path and is dropped
+// when the input is moved to another target; clearing queues a clear and never the draft.
 
 vi.mock("src/lang", () => ({
     language: {
@@ -23,7 +22,7 @@ vi.mock("src/lang", () => ({
 
 import SecretInput from "./SecretInput.svelte";
 
-// A named key's entry (`credentials`, the one entry map since `docs/plan/model-profiles.md` O2).
+// A named key's entry (`credentials`, the one entry map).
 const entryPath = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 const queued = () => llmSecretState.queue.map((op) => op.request);
 

@@ -2,9 +2,9 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The character catalog's default list view (large-asset-import slice 4b, audit finding U2): with
-// many characters, only the rows near the viewport call `getCharImage`; an off-screen row keeps its
-// placeholder icon and makes no request. The wrapper itself: `src/lib/UI/GUI/LazyCharImage.test.ts`.
+// The character catalog's default list view: with many characters, only the rows near the viewport call
+// `getCharImage`; an off-screen row keeps its placeholder icon and makes no request. The wrapper itself:
+// `src/lib/UI/GUI/LazyCharImage.test.ts`.
 
 const getCharImage = vi.fn(async (path: string, _type: string) => `background: url("/img/${path}");`);
 const changeChar = vi.fn();

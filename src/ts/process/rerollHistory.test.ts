@@ -9,16 +9,16 @@ import type { Message } from "../storage/database.svelte";
 import { createRerollHistory } from "./rerollHistory";
 import { addRerolls, PreUnreroll, Prereroll } from "./prereroll";
 
-// The chat screen's swipe history (`rerollHistory.ts`) over the real chat module and the real server
-// store: audit GEN-01 (`docs/plan/audit-findings-perf.md` slice 2a). The history is keyed by chat,
-// and a bundle is swapped in only while its anchor message exists and the chat's tail still holds
-// exactly the bundle the cursor points at; otherwise the chat's history is dropped and nothing is
-// written. Before the fix, one component array held every chat's bundles and Undo Reroll wrote the
-// previous bundle over whatever chat was selected, by tail position.
+// The chat screen's swipe history (`rerollHistory.ts`) over the real chat module and the real
+// server store. The history is keyed by chat, and a bundle is swapped in only while its anchor
+// message exists and the chat's tail still holds exactly the bundle the cursor points at; otherwise
+// the chat's history is dropped and nothing is written. Before the fix, one component array held
+// every chat's bundles and Undo Reroll wrote the previous bundle over whatever chat was selected,
+// by tail position.
 //
-// Audit C1 (`docs/plan/data-loss-concurrency.md` slice 3): the bundle at the cursor and the prereroll
-// candidate on display are refreshed from the chat before they are kept or swapped away, so an edit
-// made since they were recorded is what a later back or forward brings.
+// The bundle at the cursor and the prereroll candidate on display are refreshed from the chat
+// before they are kept or swapped away, so an edit made since they were recorded is what a later
+// back or forward brings.
 
 const m = (id: string, data: string, role: "user" | "char" = "char") => ({ role, data, chatId: id }) as Message;
 const edit = (ref: chat.ChatRef, id: string, text: string) => chat.setMessageText(ref, id, text);

@@ -128,7 +128,7 @@
     /** The chat scroller (`.default-chat-screen`): a search jump looks its row and images up under it. */
     let chatScroller: HTMLElement | undefined = $state();
     let takingScreenshot = $state(false);
-    // The chat rows' shared stylesheets (heap plan C2): one per distinct CSS, after the rows.
+    // The chat rows' shared stylesheets: one per distinct CSS, after the rows.
     const chatStyles = new ChatStyleRegistry();
     setChatStyleRegistry(chatStyles);
     onDestroy(() => chatStyles.destroy());
@@ -316,7 +316,7 @@
     /**
      * Runs a claimed search jump (`messageJump.ts`): it owns the screen by its token and stops once the
      * token is replaced, its chat is no longer the selected and shown one, or the transcript was
-     * replaced; the message is found by id in the selected chat after every await (D1).
+     * replaced; the message is found by id in the selected chat after every await.
      */
     async function scrollToMessageId(jump: MessageJump) {
         const { token, ref, messageId } = jump;
@@ -437,7 +437,7 @@
             fileInput = [];
         }
 
-        // The job runs the input stage and appends the user message (Phase 5 slice 9).
+        // The job runs the input stage and appends the user message.
         let serverInput: SendDraft | null = null;
         if (messageInput === "") {
             if (char.type !== "group") {
@@ -668,7 +668,7 @@
     }
 
     // The selected chat's bound persona when it exists, else the tab's: the persona view resolves
-    // that order itself (`docs/plan/chat-binding.md`, slice 4).
+    // that order itself.
     let { userIconPortrait, currentUsername, userIcon } = $derived.by(() => {
         const persona = currentPersonaRecord();
         return {
@@ -1492,7 +1492,7 @@
             <div hidden {@attach chatStyles.attach}></div>
         </div>
     {:else}
-        <!-- The selected chat loads (Phase 6 slice 9b): nothing chat-dependent renders until it is here. -->
+        <!-- The selected chat loads: nothing chat-dependent renders until it is here. -->
         <div class="h-full w-full flex flex-col items-center justify-center gap-2 text-textcolor2">
             {#if selectedLoad?.error}
                 <span>{language.chatLoadFailed.replace("{0}", selectedLoad.error)}</span>

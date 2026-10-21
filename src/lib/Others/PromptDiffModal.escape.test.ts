@@ -4,11 +4,11 @@ import { flushSync, mount, unmount } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/chat-binding.md`, slice 5 (Astra challenge point 2): the prompt comparison is the
-// topmost layer over the preset list, so Escape closes it through its own close (which saves the
-// preferences) and never reaches the global hotkey listener (`hotkey.ts`), which would close the
-// preset list under it too. The modal listens on the document in the capture phase; an alert or the
-// terminal notice above it keeps its Escape, and other keys pass through.
+// The prompt comparison is the topmost layer over the preset list, so Escape closes it through its
+// own close (which saves the preferences) and never reaches the global hotkey listener
+// (`hotkey.ts`), which would close the preset list under it too. The modal listens on the document
+// in the capture phase; an alert or the terminal notice above it keeps its Escape, and other keys
+// pass through.
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({

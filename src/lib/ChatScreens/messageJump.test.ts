@@ -2,12 +2,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-// Search plan slice 4b: the chat screen's jump to a message by id, through the pure helper
-// `messageJump.ts` (`DefaultChatScreen.svelte`'s `scrollToMessageId` injects its state and DOM).
-// The window arithmetic is checked against the row range `Chats.svelte`'s `updateChatBody`
-// renders (`length - 1` down to `length - window`, or `folded` down to `folded - window`), and the
+// The chat screen's jump to a message by id, through the pure helper `messageJump.ts`
+// (`DefaultChatScreen.svelte`'s `scrollToMessageId` injects its state and DOM). The window
+// arithmetic is checked against the row range `Chats.svelte`'s `updateChatBody` renders
+// (`length - 1` down to `length - window`, or `folded` down to `folded - window`), and the
 // decisions are driven through hooks that change the chat at each await boundary: the index is
-// found again by id after every await (D1), never kept across one.
+// found again by id after every await, never kept across one.
 
 import { MESSAGE_JUMP_ROUNDS, messageJumpWindow, runMessageJump, type MessageJumpDeps } from "./messageJump";
 
@@ -53,7 +53,7 @@ describe("messageJumpWindow", () => {
     });
 
     it("clears a fold below the target and keeps every row shown so far, as the show-all button does", () => {
-        // The plan review's example: `length - index + 5` alone (804) would drop rows 100..196.
+        // `length - index + 5` alone (804) would drop rows 100..196.
         const before = renderedRange(1000, 100, 200);
         const window = messageJumpWindow({ length: 1000, index: 201, loadPages: 100, folded: 200 });
         expect(window).toEqual({ clearFold: true, loadPages: 900 });
@@ -223,7 +223,7 @@ describe("runMessageJump", () => {
         expect(above.state.rung).toEqual(["30:m30"]);
     });
 
-    it("follows the message when an older message is inserted while the rows mount (D1)", async () => {
+    it("follows the message when an older message is inserted while the rows mount", async () => {
         const { state, deps, hooks } = screen(ids(50));
         hooks.tick = () => {
             state.messages = [{ chatId: "older" }, ...state.messages];

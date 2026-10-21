@@ -456,7 +456,7 @@ export class SandboxHost {
     private activeStreamCleanups = new Set<() => void>();
     private terminated = false;
 
-    // Plugin activity (RisuNest small wins P2): a plugin reload waits until every host is idle.
+    // Plugin activity: a plugin reload waits until every host is idle.
     // Guest-to-host calls still running (a `nativeFetch` awaiting headers included).
     private pendingHostCalls = 0;
     // The guest's top-level script has settled (`SCRIPT_SETTLED`).

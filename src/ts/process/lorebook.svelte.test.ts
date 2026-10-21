@@ -3,14 +3,14 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations } from "../storage/tests/mutationStoresHarness";
 
-// Phase 5 slice 4 (`lore-templates-and-tokens`): `loadLoreBookV3Prompt` is the client wrapper of
-// the shared activation (`shared/lore/activation.ts`), over the real store (`storeBackedServer.ts`),
-// the real chat module, and the real module resolution (`getModuleLorebooks`). Covered here: the
-// scheduling the challenge found (a plain-key search never yields; the first yield is the first
-// active's token count, after its CBS and chat-variable reads), the regex keys through the
-// wrapper, the scanned user name (the bound persona's), the module sources (global, chat,
-// character, integration, and the persona's embedded module as it resolves today), a group chat's
-// speaker names, and the keep flag written through the chat module.
+// `loadLoreBookV3Prompt` is the client wrapper of the shared activation
+// (`shared/lore/activation.ts`), over the real store (`storeBackedServer.ts`), the real chat
+// module, and the real module resolution (`getModuleLorebooks`). Covered here: the scheduling (a
+// plain-key search never yields; the first yield is the first active's token count, after its CBS
+// and chat-variable reads), the regex keys through the wrapper, the scanned user name (the bound
+// persona's), the module sources (global, chat, character, integration, and the persona's embedded
+// module as it resolves today), a group chat's speaker names, and the keep flag written through the
+// chat module.
 
 const { server, alerts, hooks } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -207,8 +207,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
         const personaId = collectionStore.addPersona({ name: "Mina", personaPrompt: "", icon: "" });
         chat.setChatMeta(ref, { bindedPersona: personaId });
-        // The persona view follows the selected chat's binding (`docs/plan/chat-binding.md`, slice 4);
-        // the tab's own persona is unchanged.
+        // The persona view follows the selected chat's binding; the tab's own persona is unchanged.
         expect(activePersona.name).toBe("Mina");
         expect(settingsViews.tabPersonaRecord()?.name).toBe("User");
         expect(await prompt()).toBe("\x01{{Mina}}:a dragon\x01");
@@ -294,10 +293,10 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
     }, 30_000);
 });
 
-// Slice C1 of `docs/plan/open-bug-fixes.md`: adding a chat lorebook entry or folder sends the chat's
-// whole `localLore`, so while a send of this tab (`sendingChatRef`) or a job this tab follows
-// (`followedJobs`) runs in that chat it is refused with the `chatGenerating` notice and nothing is
-// written, as the lore draft's fence does (`localLoreDraft.fence.test.ts`).
+// Adding a chat lorebook entry or folder sends the chat's whole `localLore`, so while a send of
+// this tab (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in that chat it is
+// refused with the `chatGenerating` notice and nothing is written, as the lore draft's fence does
+// (`localLoreDraft.fence.test.ts`).
 describe("adding chat lorebook entries during a job in the chat", () => {
     async function fenced() {
         const booted = await boot();
@@ -355,7 +354,7 @@ describe("adding chat lorebook entries during a job in the chat", () => {
     }, 30_000);
 });
 
-// Slice C1: the export of the Global Lore Book page (`"sglobal"`, the list `LoreBookList` shows in
+// The export of the Global Lore Book page (`"sglobal"`, the list `LoreBookList` shows in
 // `globalMode`) and of the chat lorebook while the selected chat is still loading.
 describe("exportLoreBook", () => {
     const pages = [

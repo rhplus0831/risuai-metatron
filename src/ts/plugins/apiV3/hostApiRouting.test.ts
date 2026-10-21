@@ -1,23 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 4, slice 2 (`plugin-host-setters`): the v3 `setDatabase` and `setDatabaseLite` host setters
-// route every `allowedDbKeys` key to the mutation that owns it, on the live settings records as the
-// app runs them (read through the settings views, two presets, the real character, collection, and
-// plugin storage mutations). Pinned here:
+// The v3 `setDatabase` and `setDatabaseLite` host setters route every `allowedDbKeys` key to the
+// mutation that owns it, on the live settings records as the app runs them (read through the
+// settings views, two presets, the real character, collection, and plugin storage mutations).
+// Pinned here:
 // - the routing table: each of the 23 keys lands in its owner through both setters (a forwarded key
 //   in the selected preset by id, a section key at the root and in no preset, the collections
 //   through their mutations), and every other key at the top level of `pluginCustomStorage`;
 // - the key order: `characterOrder` is applied after `characters` and `selectedPersona` last,
 //   whatever the object's key order, so an explicit order survives the additions of the same call
-//   (Astra challenge point 1) and a persona index names a persona of the list the same call sets;
-// - the per-key contract (A14): a refused value (`MutationValidationError`) is warned about and keeps
+//   and a persona index names a persona of the list the same call sets;
+// - the per-key contract: a refused value (`MutationValidationError`) is warned about and keeps
 //   the previous mirror value while the other keys land; a `characters` or `plugins` list is
 //   preflighted whole; a gone preset (`MutationTargetGoneError`) and an unexpected error propagate;
 // - the full setter's `plugins`: the installed plugins stay, the user is asked once per new plugin,
 //   a denial installs nothing, and a malformed list asks nothing;
 // - a reserved storage namespace a plugin replaced with a list stays readable, enumerable, and
-//   writable without losing an entry (Astra challenge point 2), own `constructor`/`__proto__` keys
-//   included;
+//   writable without losing an entry, own `constructor`/`__proto__` keys included;
 // - `setArg`/`setArgument` and the theme APIs go through the mutations; an unknown color scheme name
 //   changes nothing.
 
@@ -144,10 +143,10 @@ const character = (chaId: string, name: string, chats = [chat(`k${chaId}`)]) => 
 const incoming = (chaId: string, name: string) => ({ chaId, name, chats: [] });
 
 /**
- * The live records, installed as boot installs them (the whole-database aggregate is gone since
- * Phase 6 slice 10): two presets (`a` selected), two personas (`p` selected), and the fields the
- * routed keys write, so an unchanged value is told apart from a missing one. The characters' chats
- * are held in the chat module, as boot assembles them (Phase 6 slice 9a).
+ * The live records, installed as boot installs them (there is no whole-database aggregate): two
+ * presets (`a` selected), two personas (`p` selected), and the fields the routed keys write, so an
+ * unchanged value is told apart from a missing one. The characters' chats are held in the chat
+ * module, as boot assembles them.
  */
 function liveDatabase(fields: Record<string, unknown> = {}) {
     selectPreset("a");
@@ -158,8 +157,8 @@ function liveDatabase(fields: Record<string, unknown> = {}) {
             { id: "a", name: "A" },
             { id: "b", name: "B" },
         ],
-        // The model presets of the same ids (`docs/plan/split-preset.md`), each with its own main
-        // profile (`docs/plan/model-profiles.md`), which the routed profile keys write.
+        // The model presets of the same ids, each with its own main profile, which the routed
+        // profile keys write.
         modelPresets: [
             normalizeModelPreset({ name: "A", mainSlot: { profileId: "m-a" } }, { id: "a" }),
             normalizeModelPreset({ name: "B", mainSlot: { profileId: "m-b" } }, { id: "b" }),
@@ -235,9 +234,9 @@ describe("the routing table: settings keys", () => {
         expect(console.warn).not.toHaveBeenCalled();
     });
 
-    // The model roots plugins may write (Model Profiles O8, through `writeModelRoot`): `maxContext`
-    // lands in the main slot's profile, `seperateModels.<mode>` with no profile of that model id
-    // becomes a bare slot, and `seperateModelsForAxModels` sets the preset toggle.
+    // The model roots plugins may write (through `writeModelRoot`): `maxContext` lands in the main
+    // slot's profile, `seperateModels.<mode>` with no profile of that model id becomes a bare slot,
+    // and `seperateModelsForAxModels` sets the preset toggle.
     const auxRoot = (memory: string) => ({ memory, translate: "", emotion: "", otherAx: "" });
     it.each([
         ["maxContext", 1001, 1002, (id: string) => modelProfile(`m-${id}`).maxContext, (value: any) => value],
@@ -256,7 +255,7 @@ describe("the routing table: settings keys", () => {
             (value: any) => value,
         ],
     ] as const)(
-        "%s lands in the selected model preset (or its main profile) by id, through both setters (docs/plan/model-profiles.md O8)",
+        "%s lands in the selected model preset (or its main profile) by id, through both setters",
         async (key, lite, full, stored, storedOf) => {
             const rootOf = (value: any) => (key === "seperateModels" ? auxRoot(value.memory) : value);
             const api = await makeApi();
@@ -452,7 +451,7 @@ describe("characters through the character mutations", () => {
         );
     });
 
-    it("refuses the whole list when a new entry fails its creation (Phase 6 slice 5b: prepared before the list changes)", async () => {
+    it("refuses the whole list when a new entry fails its creation (prepared before the list changes)", async () => {
         const api = await makeApi();
         const before = plain(characterList());
         // The first new entry is valid; the second passes the shape check but not its creation (a
@@ -490,7 +489,7 @@ describe("characters through the character mutations", () => {
     });
 });
 
-describe("characterOrder is applied after characters (Astra challenge point 1)", () => {
+describe("characterOrder is applied after characters", () => {
     const folder = (data: string[]) => ({ id: "f", name: "F", color: "", data });
 
     it("an explicit order of ids the same call adds survives, with the order key first or last (both setters)", async () => {
@@ -577,7 +576,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
     });
 });
 
-describe("the per-key contract (A14)", () => {
+describe("the per-key contract", () => {
     it("a refused key between two valid keys keeps its previous value while both valid keys land (both setters)", async () => {
         const api = await makeApi();
         await api.setDatabaseLite({ theme: "lite", temperature: "hot", customCSS: "lite css" });
@@ -607,8 +606,8 @@ describe("the per-key contract (A14)", () => {
             MutationTargetGoneError,
         );
         expect(ui().theme).toBe("first");
-        // The setters are async since Phase 6 slice 9a: the selection's repair ran during the first
-        // call's awaits, so the preset is gone again for the second.
+        // The setters are async (they load the chats first): the selection's repair ran during the
+        // first call's awaits, so the preset is gone again for the second.
         selectPreset("gone");
         await expect(api.setDatabase({ temperature: 2 })).rejects.toBeInstanceOf(MutationTargetGoneError);
         expect(preset("a").temperature).toBeUndefined();
@@ -631,9 +630,9 @@ describe("the per-key contract (A14)", () => {
     });
 });
 
-// `docs/plan/model-profiles.md` O8: plugins see model ids, never profile ids, and a write of a
-// model root changes a slot only when the rules name exactly one target.
-describe("the model roots under the O8 write rules", () => {
+// Plugins see model ids, never profile ids, and a write of a model root changes a slot only when
+// the rules name exactly one target.
+describe("the model roots under the plugin write rules", () => {
     const settingsWarnings = () =>
         vi
             .mocked(console.warn)
@@ -784,7 +783,7 @@ describe("the full setter's plugins key", () => {
     });
 });
 
-describe("reserved storage namespaces a plugin replaced (Astra challenge point 2)", () => {
+describe("reserved storage namespaces a plugin replaced", () => {
     it("a list in _pluginStorage is read by index, listed, removed from, and written to without losing an entry", async () => {
         const api = await makeApi();
         await api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });

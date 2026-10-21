@@ -145,7 +145,7 @@ afterEach(() => {
     server.current?.close();
 });
 
-describe("PNG streaming entry points (large-asset-import slice 2e)", () => {
+describe("PNG streaming entry points", () => {
     it("imports a stream once, pulls only as asset batch writes allow, and reports running asset counts", async () => {
         const b = await boot();
         const { bytes, values } = fixture(32);

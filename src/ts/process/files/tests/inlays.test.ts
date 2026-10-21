@@ -424,7 +424,7 @@ describe("postInlayAsset", () => {
     });
 });
 
-describe("one-shot decode URLs (heap plan D2a)", () => {
+describe("one-shot decode URLs", () => {
     // The image the code under test creates with `new Image()`.
     function stubImage(img: HTMLImageElement) {
         vi.stubGlobal("Image", function () {
@@ -523,9 +523,9 @@ describe("writeInlayImage", () => {
     });
 
     test("stops where `check` throws: before anything, after hashing (no upload), or after the upload (no metadata)", async () => {
-        // A server job's callback that was cancelled meanwhile (slice 8a): `check` runs at the
-        // start, after the image loaded, before the media write (after hashing), and before the
-        // metadata write; a throw there leaves nothing newer behind.
+        // A server job's callback that was cancelled meanwhile: `check` runs at the start, after the
+        // image loaded, before the media write (after hashing), and before the metadata write; a
+        // throw there leaves nothing newer behind.
         const { writeAsset } = await import("../../../storage/assetClient");
         const setItem = writeAsset as unknown as { mock: { calls: unknown[][] } };
         const stopAt = (n: number) => {
@@ -577,7 +577,7 @@ describe("writeInlayImage", () => {
     });
 });
 
-// Phase 6 live updates: another writer's inlay change reaches this tab as a feed notice
+// Live updates: another writer's inlay change reaches this tab as a feed notice
 // (`noteRemoteInlay`) or a reconnect's listing (`reconcileInlays`); a read, a listing, or this tab's
 // own write that overlaps one must not put an older copy back into the metadata cache. The fake's
 // revisions are made real tokens here, since the cache compares them.

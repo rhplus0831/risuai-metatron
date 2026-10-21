@@ -6,7 +6,7 @@ import { type customscript } from "../storage/database.svelte";
 import { selectSingleFile } from "../util";
 
 // The regex script file export and import of the editors (character, module, global regex). The
-// regex scripts themselves run on the server (`/api/transform` and the generation job, Phase 5).
+// regex scripts themselves run on the server (`/api/transform` and the generation job).
 
 export function exportRegex(s?: customscript[]) {
     const script = s ?? settings.globalscript;

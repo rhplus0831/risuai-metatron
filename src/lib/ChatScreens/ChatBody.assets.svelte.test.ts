@@ -32,7 +32,7 @@ import { getModuleAssets } from "src/ts/process/modules";
 import { findAssetPrefix } from "src/ts/parser/assetSearch";
 
 // `imageAssets` (the module-level `$derived` over the selected character's `additionalAssets`) on
-// the real records: the character's list is a frozen leaf (heap plan B2), read without a wrapper,
+// the real records: the character's list is a frozen leaf, read without a wrapper,
 // and an edit replaces it whole.
 type Asset = [string, string, string];
 const modules = $state({ assets: [] as Asset[] });

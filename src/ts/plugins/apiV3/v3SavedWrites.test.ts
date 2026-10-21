@@ -1,20 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 2 (`plugin-host-setters`): the plugin host API against the real save adapter and
-// the real server store (`storeBackedServer.ts`), with the deep `pluginCustomStorage` watcher deleted
-// (`PLAN.md` Invariant 2: `pluginStorage` is written through explicit mutations only). Every
-// storage write of the API reaches the `pluginStorage` record because its mutation marks the
-// record: v3 `pluginStorage` set, remove, and clear, `getLocalPluginStorage()` set, remove, and
-// clear, a custom key and its deletion, and a whole-root replacement. Detached reads mark nothing,
-// and a record reloaded after a conflict (server data) is not echoed back. Data-loss plan slice 5a:
-// two tabs writing different keys are merged (both kept, no notice, no event); the same key written
-// to two values discards this tab's unsaved values with the notice, and `onStorageDiscarded` tells
-// every listening plugin the lost keys (a rejecting listener is logged, an unloaded plugin's is
-// removed). The other setters land
-// in their owners' records: an argument in `plugins`, a color scheme in `ui`, a forwarded key in
-// the selected preset of `presets`, and an explicit `characterOrder` sent before the `characters`
-// it names in `characterOrder`.
+// The plugin host API against the real save adapter and the real server store
+// (`storeBackedServer.ts`), with no deep `pluginCustomStorage` watcher (`pluginStorage` is written
+// through explicit mutations only). Every storage write of the API reaches the `pluginStorage`
+// record because its mutation marks the record: v3 `pluginStorage` set, remove, and clear,
+// `getLocalPluginStorage()` set, remove, and clear, a custom key and its deletion, and a whole-root
+// replacement. Detached reads mark nothing, and a record reloaded after a conflict (server data) is
+// not echoed back. Two tabs writing different keys are merged (both kept, no notice, no event); the
+// same key written to two values discards this tab's unsaved values with the notice, and
+// `onStorageDiscarded` tells every listening plugin the lost keys (a rejecting listener is logged,
+// an unloaded plugin's is removed). The other setters land in their owners' records: an argument in
+// `plugins`, a color scheme in `ui`, a forwarded key in the selected preset of `presets`, and an
+// explicit `characterOrder` sent before the `characters` it names in `characterOrder`.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
@@ -318,9 +316,9 @@ describe("the other setters land in their owners' records", () => {
 
     it("a forwarded key reaches the selected preset of its owner's record and no other", async () => {
         const { api, sync, record, selection, collectionStore } = await boot();
-        // `temperature` is the prompt preset's, `maxContext` the selected model preset's main profile's
-        // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md` O8). The other model preset gets
-        // a main profile of its own, so the two do not share the written record.
+        // `temperature` is the prompt preset's, `maxContext` the selected model preset's main
+        // profile's. The other model preset gets a main profile of its own, so the two do not share
+        // the written record.
         const otherModelId = record("modelPresets").find((preset: any) => preset.id !== selection.modelPresetId).id;
         const otherProfileId = collectionStore.addModelProfile({ name: "Other" });
         collectionStore.setMainModelSlot(otherModelId, otherProfileId);

@@ -2,8 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { language } from "src/lang";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 7 (`docs/plan/phases/slices/phase-4-external-contracts/imports-through-the-module.md`,
-// amendment A23): `importChat` writes the character selected when the dialog opened, captured by id,
+// `importChat` writes the character selected when the dialog opened, captured by id,
 // over the real save adapter and the real server store (`storeBackedServer.ts`). A `jsonl` chat and a
 // `risuChat` v2 file with folders land in that character after the selection moved, after the list
 // was reordered, and after the record was replaced under the same id (the name substitution and the
@@ -237,9 +236,9 @@ describe("importChat writes the character selected when the dialog opened", () =
         const { run, alpha, beta, characterStore, chatsOf, characterList, index } = await boot();
         const opened = index(alpha);
         await run(jsonl(), () => {
-            // The list is in creation order and changes only through the character module (Phase 6
-            // slice 5): the harness's `c`, before Alpha, is removed, so the index Alpha had when the
-            // dialog opened now names Beta.
+            // The list is in creation order and changes only through the character module: the
+            // harness's `c`, before Alpha, is removed, so the index Alpha had when the dialog opened
+            // now names Beta.
             characterStore.removeCharacter("c");
         });
         expect(index(alpha)).toBe(opened - 1);
@@ -306,11 +305,11 @@ describe("importChat writes the character selected when the dialog opened", () =
     });
 });
 
-// `docs/plan/chat-binding.md`, slice 6: every import format passes `importChat`'s `addChats`, which
-// prepares each chat's binding (`importedChatBinding`) before `createChat`: the ids that name a
-// prompt preset, model preset, or persona here are kept, the others (gone, padded, blank, not a
-// string) dropped, and `bindingReview: true` set (an imported `false` overwritten), so the chat is
-// blocked until the user confirms it. The saved chat on the server carries the same fields.
+// Every import format passes `importChat`'s `addChats`, which prepares each chat's binding
+// (`importedChatBinding`) before `createChat`: the ids that name a prompt preset, model preset, or
+// persona here are kept, the others (gone, padded, blank, not a string) dropped, and
+// `bindingReview: true` set (an imported `false` overwritten), so the chat is blocked until the
+// user confirms it. The saved chat on the server carries the same fields.
 describe("importChat prepares each imported chat's binding", () => {
     it("saves imported toggle preset links only when they exist locally, preserving each chat's toggle values", async () => {
         const { run, alpha, chatsOf, settings, sync, fake } = await boot();

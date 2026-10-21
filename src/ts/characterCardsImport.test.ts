@@ -5,7 +5,6 @@ import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 7 (`docs/plan/phases/slices/phase-4-external-contracts/imports-through-the-module.md`):
 // `importCharacterProcess` creates its records through `addCharacter` over the real save adapter and
 // the real server store (`storeBackedServer.ts`). A JSON V2 card, an off-spec JSON card, a PNG
 // (`chara` chunk, through the real chunk reader), and a CharX (`card.json`, through the real zip
@@ -13,8 +12,8 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 // the character, its chat, and the order are on the server after one cycle. The `statics.imports`
 // stamp goes through `incrementStatic`. A card `addCharacter` refuses (JSON nested past the check's
 // limit) leaves the character list, the chats, and the order unchanged; the stamp and a saved image
-// stay (the importer is not transactional, Astra challenge point 3), and the UI entry
-// (`importCharacter`) reports the refusal. A card the reader rejects earlier reports `noData`.
+// stay (the importer is not transactional), and the UI entry (`importCharacter`) reports the
+// refusal. A card the reader rejects earlier reports `noData`.
 
 const { server, alerts, picker, assets } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -108,7 +107,7 @@ async function boot() {
         expect(record.chaId).toBe(chaId);
         expect(fake.chat(chaId, character.chats[0].id)).not.toBeNull();
         expect(booted.record("characterOrder")).toContain(chaId);
-        // A plain copy carries no chats (Phase 6 slice 9a): the legacy shape is built with `withChatsCopy`.
+        // A plain copy carries no chats: the legacy shape is built with `withChatsCopy`.
         return { chaId, character: plain(booted.chat.withChatsCopy(plain(character))), record };
     };
     return { ...booted, cards, ids, order, imports, added };
@@ -163,13 +162,13 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(record.globalLore).toEqual(character.globalLore);
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
         expect(alerts.error).not.toHaveBeenCalled();
-        // The JSON paths return before the stamp, as before the slice.
+        // The JSON paths return before the stamp.
         expect(imports()).toBe(0);
         expect(selectionModule.selectedIndex()).toBe(-1);
     });
 
-    // `docs/plan/web-push.md` decision 4: the custom notification message is local, so a card that
-    // carries one (at the top level or in the risuai extension) does not set it on the import.
+    // The custom notification message is local, so a card that carries one (at the top level or in
+    // the risuai extension) does not set it on the import.
     it("a V3 card's customNotificationMessage is not read from the card or its risuai extension", async () => {
         const { cards, ids, added } = await boot();
         const before = ids();
@@ -187,7 +186,7 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(JSON.stringify(record)).not.toContain("from the extension");
     });
 
-    it("a card is prepared as a creation (Phase 6 slice 5b): the defaults, the time, the lore conversion; the record is the server's normalized text", async () => {
+    it("a card is prepared as a creation: the defaults, the time, the lore conversion; the record is the server's normalized text", async () => {
         const { cards, ids, added, fake, sync } = await boot();
         const before = ids();
         const started = Date.now();
@@ -341,10 +340,10 @@ describe("a refused or rejected card", () => {
     });
 });
 
-// Phase 6 slice 8: the import result is the id of the character the import added (from
-// `addCharacter`), on every branch, and no id when the import added none; `importCharacter` (the
-// add dialog's entry, whose result `addCharacter()` selects) returns the last id it imported, also
-// when a later file of the same selection throws (Astra challenge point 3).
+// The import result is the id of the character the import added (from `addCharacter`), on every
+// branch, and no id when the import added none; `importCharacter` (the add dialog's entry, whose
+// result `addCharacter()` selects) returns the last id it imported, also when a later file of the
+// same selection throws.
 describe("the import result is the new character's id", () => {
     const deep = () => cardV2("Deep", { extensions: { risuai: {}, deep: nested(300) } });
 

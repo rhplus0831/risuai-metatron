@@ -4,13 +4,13 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/chat-binding.md`, slice 5: the binding panel (`ChatBindingPanel.svelte`) shows a chat's
-// model preset, prompt preset, and persona by name, or as not set or deleted, from the chat's list
-// entry; it follows a binding patch, a record's deletion and return, and a rename; a pending review
-// shows its note and a confirm button that clears it; the bound persona's non-blank note shows as written; a row opens its picker for this chat (the
-// picker store holds `{ chatRef }`); a chat that is not a member shows nothing, and a confirm after
-// the chat went does not throw. The dialog (`ChatBindingDialog.svelte`) wraps the panel, names the
-// chat, focuses its close button, and closes itself when the chat is gone.
+// The binding panel (`ChatBindingPanel.svelte`) shows a chat's model preset, prompt preset, and persona by
+// name, or as not set or deleted, from the chat's list entry; it follows a binding patch, a record's deletion
+// and return, and a rename; a pending review shows its note and a confirm button that clears it; the bound
+// persona's non-blank note shows as written; a row opens its picker for this chat (the picker store holds
+// `{ chatRef }`); a chat that is not a member shows nothing, and a confirm after the chat went does not
+// throw. The dialog (`ChatBindingDialog.svelte`) wraps the panel, names the chat, focuses its close button,
+// and closes itself when the chat is gone.
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({

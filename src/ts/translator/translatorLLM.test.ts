@@ -5,12 +5,12 @@ import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { translatorPipelineSignature } from "../../../shared/translation/pipeline.ts";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 
-// Translation slice 1.2 (`docs/plan/translation.md`): the tab's LLM translator runs the selected
-// preset's steps through the shared pipeline, each step one `requestChatData(..., "translate")`,
-// and caches the result in `LLMTranslateCache` under `llm:<hash>:<source>`, the hash of the
-// pipeline signature, the languages, and the translator note. Another prompt, preset, language, or
-// note reads and writes other entries; the in-memory `translate` cache is skipped for the LLM
-// translator; a failed step alerts and gives the source back without caching.
+// The tab's LLM translator runs the selected preset's steps through the shared pipeline, each step
+// one `requestChatData(..., "translate")`, and caches the result in `LLMTranslateCache` under
+// `llm:<hash>:<source>`, the hash of the pipeline signature, the languages, and the translator
+// note. Another prompt, preset, language, or note reads and writes other entries; the in-memory
+// `translate` cache is skipped for the LLM translator; a failed step alerts and gives the source
+// back without caching.
 
 const request = vi.hoisted(() => ({ requestChatData: vi.fn() }));
 const alerts = vi.hoisted(() => ({ alertError: vi.fn() }));
@@ -127,7 +127,7 @@ const requests = () =>
         maxTokens: arg.maxTokens,
         messages: arg.formated,
     }));
-/** Each request's captured ids and named profile (translation slice 3.1), in call order. */
+/** Each request's captured ids and named profile, in call order. */
 const routing = () =>
     request.requestChatData.mock.calls.map(([arg]) => ({
         requestIds: arg.requestIds,
@@ -209,7 +209,7 @@ describe("llmTranslationCacheKey", () => {
         changed("maxResponse", () => (settings.translatorPresets.items[0].steps[0].maxResponse = 12));
         changed("outputKey", () => (settings.translatorPresets.items[0].steps[0].outputKey = "other"));
         changed(
-            "a step's model (slice 3.1)",
+            "a step's model",
             () => (settings.translatorPresets.items[0].steps[0].model = { mode: "profile", profileId: "pr-1" }),
         );
         changed(
@@ -336,11 +336,11 @@ describe("the LLM translation", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 2.2: the tab translates with the selected chat's translator preset
-// (its list entry), else the global selection; `runTranslator` reads it once for every chunk of a
-// call as a plain copy, so a preset deleted while a chunk runs neither changes the later chunks nor
-// throws (the record view resolves by id on each read), and the next call falls back; the
-// playground's `globalPreset` ignores the chat's preset.
+// The tab translates with the selected chat's translator preset (its list entry), else the global
+// selection; `runTranslator` reads it once for every chunk of a call as a plain copy, so a preset
+// deleted while a chunk runs neither changes the later chunks nor throws (the record view resolves
+// by id on each read), and the next call falls back; the playground's `globalPreset` ignores the
+// chat's preset.
 describe("the preset per call", () => {
     const ref = { chaId: "c", chatId: "k" };
 
@@ -469,10 +469,10 @@ describe("the preset per call", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.1: every step's request carries the ids a chatless request would
-// read when the run began (`requestIds`: the prompt preset, model preset, and persona), captured once
-// for every chunk of a `runTranslator` call and once per `translateHTML` context, and a step on a
-// profile names it (`profileId`); a step on the translate slot names none.
+// Every step's request carries the ids a chatless request would read when the run began
+// (`requestIds`: the prompt preset, model preset, and persona), captured once for every chunk of a
+// `runTranslator` call and once per `translateHTML` context, and a step on a profile names it
+// (`profileId`); a step on the translate slot names none.
 describe("the request ids and the step's profile", () => {
     const mixed = () =>
         createTranslatorPreset("Mixed", {
@@ -554,11 +554,11 @@ describe("the request ids and the step's profile", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.2: a preset on Send Text As-Is sends the whole text of a
-// `runTranslator` call in one pipeline run (no line chunking), and `translateLLM` keeps the text and
-// the reply as they are (no `<risu-style>` placeholders, no `ERR::` check, no trim). The cache key
-// carries the flag only when it is on, so the keys of every preset without it are those from before
-// the option; the mode is captured with the context when a call starts.
+// A preset on Send Text As-Is sends the whole text of a `runTranslator` call in one pipeline run
+// (no line chunking), and `translateLLM` keeps the text and the reply as they are (no
+// `<risu-style>` placeholders, no `ERR::` check, no trim). The cache key carries the flag only when
+// it is on, so the keys of every preset without it are those from before the option; the mode is
+// captured with the context when a call starts.
 describe("Send Text As-Is", () => {
     const SOURCE = "first <risu-style>.a{color:red}</risu-style>\n\n{{img::x}}\nsecond ";
     const turnOn = () => {
@@ -705,10 +705,10 @@ describe("Send Text As-Is", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.3: the tab passes no history, so a prompt's history slots are
-// empty in its requests while the current input is kept; its cache key is deliberately unchanged (the
-// pre-3.3 formula over the pipeline, the languages, and the note), so an entry cached under a prompt
-// with a literal history slot is still served, and `regenerate` replaces it.
+// The tab passes no history, so a prompt's history slots are empty in its requests while the
+// current input is kept; its cache key is deliberately unchanged (the formula from before history
+// slots, over the pipeline, the languages, and the note), so an entry cached under a prompt with a
+// literal history slot is still served, and `regenerate` replaces it.
 describe("the history slots in the tab", () => {
     const historyPreset = () =>
         createTranslatorPreset("History", {
@@ -763,15 +763,15 @@ describe("the history slots in the tab", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.4: a preset on Exclude Chain-of-Thought strips the `<Thoughts>`
-// and `<think>` blocks of the text once before it is sent (`translateLLM` for an As-Is `runTranslator`
-// call and for `translateHTML`; the protected `runTranslator` strips the whole text before its line
-// cut and passes the chunks as prepared), a text left blank is an empty translation, a failure
-// returns the text as given, and the cache key carries `excludeThoughts: true` only when on, after
-// the existing fields, plus `inputPrepared: true` for the prepared chunks, so a prepared text and
-// the same raw text (which would be stripped again: the strip is not idempotent) never share an entry.
+// A preset on Exclude Chain-of-Thought strips the `<Thoughts>` and `<think>` blocks of the text
+// once before it is sent (`translateLLM` for an As-Is `runTranslator` call and for `translateHTML`;
+// the protected `runTranslator` strips the whole text before its line cut and passes the chunks as
+// prepared), a text left blank is an empty translation, a failure returns the text as given, and
+// the cache key carries `excludeThoughts: true` only when on, after the existing fields, plus
+// `inputPrepared: true` for the prepared chunks, so a prepared text and the same raw text (which
+// would be stripped again: the strip is not idempotent) never share an entry.
 describe("Exclude Chain-of-Thought", () => {
-    /** The challenge's non-idempotent text: one strip leaves `ONCE`, a second would leave `visible`. */
+    /** A non-idempotent text: one strip leaves `ONCE`, a second would leave `visible`. */
     const NONIDEM = "<thi<think>x</think>nk>secret</think>visible";
     const ONCE = "<think>secret</think>visible";
     const one = () => settings.translatorPresets.items.find((entry) => entry.id === "one")!;

@@ -15,7 +15,7 @@
     const LORE_FILTER = Symbol("loreFilter");
 
     /**
-     * The entries a query shows (Decision 5): an entry on its `comment`, `key` and `secondkey` (a
+     * The entries a query shows: an entry on its `comment`, `key` and `secondkey` (a
      * chat's `child` link also on the entry it links, whose name it shows), a folder on its name.
      * A folder whose name matches shows all of its entries; a shown entry shows its folders.
      */
@@ -440,7 +440,7 @@
                 // 4-4. Apply final changed array to appropriate data store
                 if (externalLoreBooks) {
                     // Arrays passed as props must be modified internally to reflect in parent
-                    // One write when it is a record's list (a module's lorebook, Phase 6 slice 4).
+                    // One write when it is a record's list (a module's lorebook).
                     replaceRecordList(externalLoreBooks, newArray);
                 } else if (submenu === 1) {
                     localLore.value = newArray;
@@ -471,7 +471,7 @@
         });
     });
 
-    // Rows are keyed by their entry and bind to the entry they were mounted for (D1). A row whose
+    // Rows are keyed by their entry and bind to the entry they were mounted for. A row whose
     // entry the shown list no longer holds (deleted, or the list now belongs to another character,
     // chat, or module) gets a throwaway entry: a write it still makes while it unmounts (a focused
     // prompt's `change` as Chrome removes it) lands nowhere, and reading it never throws.

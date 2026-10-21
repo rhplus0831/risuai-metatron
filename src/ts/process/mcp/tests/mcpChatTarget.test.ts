@@ -4,22 +4,21 @@ import { selectCharacter, selectModelPreset, selectPreset, selection } from "src
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
 
-// Open bug fixes G3 (`docs/plan/open-bug-fixes.md`): `callMCPTool` (`src/ts/process/mcp/mcp.ts`)
-// hands the request's chat to the internal clients whose tools act on a chat (`callToolForChat`):
-// the real registry over the real records and chat module, with the real `GraphMemClient`
-// (`internal:graphmem`, enabled by a module) and `RisuAccessClient` (`internal:risuai`, call-only),
-// while another chat is selected. Graph memory: a call for chat A reads and writes A's
-// `graphmem_graph` while B is selected and while A's other chat is selected; the preset default is
-// the context's preset when the context is for that chat, else the chat's display preset; null
-// answers an error and writes nowhere, an absent chat too; no chat argument (the Playground) keeps
-// the selected chat; a selection change during the registry's awaits and a concurrent call for
-// another chat do not move a call. RisuAccess: an empty character id names the request chat's
-// character and its history is the request's chat (not the character's selected chat), the same
-// character named explicitly too; another character's history is its selected chat; null names no
-// character for an empty id; a group-owned request keeps the group rejection. The embedding server
-// is faked as in `graphmemHost.test.ts`. The argument contract of the other internal clients
-// (`internal:fs`, `internal:googlesearch`: exactly `(name, args)`) is pinned by
-// `src/ts/plugins/apiV3/mcpContext.test.ts`.
+// `callMCPTool` (`src/ts/process/mcp/mcp.ts`) hands the request's chat to the internal clients
+// whose tools act on a chat (`callToolForChat`): the real registry over the real records and chat
+// module, with the real `GraphMemClient` (`internal:graphmem`, enabled by a module) and
+// `RisuAccessClient` (`internal:risuai`, call-only), while another chat is selected. Graph memory:
+// a call for chat A reads and writes A's `graphmem_graph` while B is selected and while A's other
+// chat is selected; the preset default is the context's preset when the context is for that chat,
+// else the chat's display preset; null answers an error and writes nowhere, an absent chat too; no
+// chat argument (the Playground) keeps the selected chat; a selection change during the registry's
+// awaits and a concurrent call for another chat do not move a call. RisuAccess: an empty character
+// id names the request chat's character and its history is the request's chat (not the character's
+// selected chat), the same character named explicitly too; another character's history is its
+// selected chat; null names no character for an empty id; a group-owned request keeps the group
+// rejection. The embedding server is faked as in `graphmemHost.test.ts`. The argument contract of
+// the other internal clients (`internal:fs`, `internal:googlesearch`: exactly `(name, args)`) is
+// pinned by `src/ts/plugins/apiV3/mcpContext.test.ts`.
 
 vi.mock(import("src/ts/storage/database.svelte"), () => ({ appVer: "1234.5.67" }) as never);
 vi.mock("src/ts/globalApi.svelte", () => ({

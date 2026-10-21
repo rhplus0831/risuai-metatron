@@ -3,12 +3,12 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/chat-binding.md`, slice 5 (decision 8): the persona list picks for the chat the screen
-// shows through `changeUserPersona` (`pickBinding("personaId", ...)`): with an open chat a pick binds
-// that chat and the tab's selection stays; the highlight is the chat's bound persona that exists (none
-// when unset or gone, never the view's tab fallback); the list names the chat. A list opened for a
-// given chat (`chatRef`) picks for that chat, selected or not, and closes when it is gone. At home the
-// list marks and picks the tab's selection.
+// The persona list picks for the chat the screen shows through `changeUserPersona`
+// (`pickBinding("personaId", ...)`): with an open chat a pick binds that chat and the tab's selection
+// stays; the highlight is the chat's bound persona that exists (none when unset or gone, never the
+// view's tab fallback); the list names the chat. A list opened for a given chat (`chatRef`) picks for
+// that chat, selected or not, and closes when it is gone. At home the list marks and picks the tab's
+// selection.
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({

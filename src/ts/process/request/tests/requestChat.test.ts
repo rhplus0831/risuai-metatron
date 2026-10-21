@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "After the challenge, 9b"): the request boundary `withRequestChat` (`request.ts`), over the real
-// chat module. The request's chat is pinned and loaded from the start until the request ends: a
-// chat that is not listed, could not be loaded, or was replaced under the same ids meanwhile fails
-// the request (a streamed reply's source is cancelled); an accepted stream is wrapped
-// (`guardStream`): it checks the chat on every chunk and at its end, errors after a replacement, and
-// keeps the chat pinned until it ends, fails, or is cancelled. The pin is observed through the LRU:
-// a pinned chat survives a trim that evicts the least recently used idle chats; a released one does not.
+// The request boundary `withRequestChat` (`request.ts`), over the real chat module. The request's
+// chat is pinned and loaded from the start until the request ends: a chat that is not listed, could
+// not be loaded, or was replaced under the same ids meanwhile fails the request (a streamed reply's
+// source is cancelled); an accepted stream is wrapped (`guardStream`): it checks the chat on every
+// chunk and at its end, errors after a replacement, and keeps the chat pinned until it ends, fails,
+// or is cancelled. The pin is observed through the LRU: a pinned chat survives a trim that evicts
+// the least recently used idle chats; a released one does not.
 
 const stubs = vi.hoisted(() => ({
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),

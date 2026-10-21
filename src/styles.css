@@ -253,7 +253,7 @@ body {
     color: var(--FontColorStandard);
 }
 
-/* The bilingual display (`docs/plan/translation.md` slice 2.4): a source unit and its translation as one pair. */
+/* The bilingual display: a source unit and its translation as one pair. */
 .chattext .x-risu-bilingual-pair {
     display: flex;
     flex-direction: column;

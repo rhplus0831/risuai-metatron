@@ -954,7 +954,7 @@ export async function ParseMarkdown(
         firstParsed = data;
     }
 
-    // Without a context the script stage is skipped (Phase 5 cutover): the text stays as it is.
+    // Without a context the script stage is skipped: the text stays as it is.
     if (char && transform) {
         data = (
             await serverProcessScript(
@@ -1292,8 +1292,8 @@ export async function hasher(data: Uint8Array) {
 
 export type { CbsConditions };
 
-// The evaluator and the registry moved to `shared/cbs/` (Phase 5), so the server runs the same
-// code; the client supplies its host here.
+// The evaluator and the registry live in `shared/cbs/`, so the server runs the same code; the
+// client supplies its host here.
 let cbsEvaluator: CbsEvaluator | null = null;
 
 function clientCbsEvaluator(): CbsEvaluator {
@@ -1315,13 +1315,13 @@ const CBS_SETTING_KEYS = [
 ] as const satisfies readonly (keyof CbsDatabase)[];
 
 /**
- * The tab's CBS database (Phase 6 slice 10): getters over the records, read when the evaluator reads
- * them. Each setting reads its view by root name (`readSettingsRoot`: a preset field from the selected
- * preset, else its section), or, with `presetField`, a preset field from that function. `characters`
- * is the character list, whose wrappers carry the chat module's compatibility `chats`/`chatPage`
- * view (`setCharacterChatView`), the shape shared CBS reads; the client type has no chats, hence
- * the cast. `maxContext` is the main model's effective size, the prompt preset's override applied
- * as the server's job database has it (`forwardPresetRoots`); the settings root stays the profile's.
+ * The tab's CBS database: getters over the records, read when the evaluator reads them. Each setting
+ * reads its view by root name (`readSettingsRoot`: a preset field from the selected preset, else its
+ * section), or, with `presetField`, a preset field from that function. `characters` is the character
+ * list, whose wrappers carry the chat module's compatibility `chats`/`chatPage` view
+ * (`setCharacterChatView`), the shape shared CBS reads; the client type has no chats, hence the cast.
+ * `maxContext` is the main model's effective size, the prompt preset's override applied as the
+ * server's job database has it (`forwardPresetRoots`); the settings root stays the profile's.
  */
 function cbsDatabase(presetField?: (rootKey: string) => unknown): CbsDatabase {
     const read = (key: SettingsRootKey) =>
@@ -1390,7 +1390,7 @@ function clientCbsHost(): CbsHost {
     };
 }
 
-/** `CbsParseArg` as the client passes it: `chara` may be a chat-free client character (Phase 6 slice 9a). */
+/** `CbsParseArg` as the client passes it: `chara` may be a chat-free client character. */
 export type ClientCbsParseArg = Omit<CbsParseArg, "chara"> & {
     chara?: CbsParseArg["chara"] | AnyClientCharacter | null;
 };
@@ -1406,8 +1406,8 @@ function sharedParseArg(arg: ClientCbsParseArg): CbsParseArg {
 /**
  * Parses CBS for the tab. A parse for a chat (`arg.chatRef`) reads that chat's display ids
  * (`chatDisplayIds`: each bound record that exists, else the tab's selection) for its preset fields
- * and persona, not the settings views, which follow the selected chat (`docs/plan/chat-binding.md`,
- * slice 4): a caller that captured its chat before an await parses for that chat.
+ * and persona, not the settings views, which follow the selected chat: a caller that captured its
+ * chat before an await parses for that chat.
  */
 export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string {
     if (arg.chatRef) {
@@ -1435,12 +1435,12 @@ export function risuChatParserForDisplay(da: string, arg: ClientCbsParseArg = {}
 const scopedEvaluators = new Map<string, CbsEvaluator>();
 
 /**
- * `risuChatParser` for a frozen plugin call context (Phase 4's hook context; Phase 5 slice 7a): the
- * preset fields read the context's prompt or model preset (whichever owns the field), as do the
- * preset-owned variable defaults and module integration, and `{{user}}` and the persona prompt read
- * the context's persona (the effective one when the context was taken: the chat's bound persona,
- * else the selected one), instead of the settings views at parse time. Everything else is the
- * tab's, as `risuChatParser` reads it. A context preset, model preset, or persona that no longer exists fails the parse
+ * `risuChatParser` for a frozen plugin call context (a hook's context): the preset fields read the
+ * context's prompt or model preset (whichever owns the field), as do the preset-owned variable
+ * defaults and module integration, and `{{user}}` and the persona prompt read the context's persona
+ * (the effective one when the context was taken: the chat's bound persona, else the selected one),
+ * instead of the settings views at parse time. Everything else is the tab's, as `risuChatParser`
+ * reads it. A context preset, model preset, or persona that no longer exists fails the parse
  * (`PluginTargetGoneError`), as a hook's other target-bound calls do.
  */
 export function risuChatParserScoped(

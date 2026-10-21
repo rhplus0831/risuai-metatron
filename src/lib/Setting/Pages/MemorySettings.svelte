@@ -29,10 +29,9 @@
 
     const currentCharacter = $derived(selectedCharacter());
 
-    // Settings UI plan slice 8 (decision 9): summarization (HypaV2's and SupaMemory's OpenAI 3.5
-    // Instruct, `supaMemory.ts`/`hypav2.ts`) and the OpenAI embedding models share `supaMemoryKey`, so
-    // it has one input, below the embedding model, while either uses it. The Playground's embedding
-    // tool links here and shows it regardless.
+    // Summarization (HypaV2's and SupaMemory's OpenAI 3.5 Instruct, `supaMemory.ts`/`hypav2.ts`) and
+    // the OpenAI embedding models share `supaMemoryKey`, so it has one input, below the embedding
+    // model, while either uses it. The Playground's embedding tool links here and shows it regardless.
     const summaryUsesOpenAI = $derived(
         !settings.memoryTranslateMedia.hanuraiEnable &&
             (settings.memoryTranslateMedia.hypav2 || !settings.memoryTranslateMedia.hypaV3) &&

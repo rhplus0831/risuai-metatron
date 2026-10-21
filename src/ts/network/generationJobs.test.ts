@@ -31,7 +31,7 @@ const stubs = vi.hoisted(() => ({
     rememberHydration: vi.fn(),
     endJobChannel: vi.fn(),
     changeToPreset: vi.fn(),
-    /** `recordClientEvent`: the job link's diagnostics (request history slice 8). */
+    /** `recordClientEvent`: the job link's diagnostics. */
     record: vi.fn<(input: unknown) => void>(),
 }));
 
@@ -60,7 +60,7 @@ vi.mock("./jobChannel", () => ({
     rememberHydration: stubs.rememberHydration,
     endJobChannel: stubs.endJobChannel,
 }));
-// A job's `preset` event applies the preset through the preset actions module (Phase 6 slice 10).
+// A job's `preset` event applies the preset through the preset actions module.
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
 vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
 
@@ -810,7 +810,7 @@ describe("the event dispatcher and the resume", () => {
         });
     });
 
-    it("leaves the selection alone on a job's `preset` event: a presetChain pick is the job's own (`docs/plan/chat-binding.md`, decision 9)", async () => {
+    it("leaves the selection alone on a job's `preset` event: a presetChain pick is the job's own", async () => {
         await flush();
         stubs.changeToPreset.mockClear();
         const preset = { type: "preset" as const, epoch: EPOCH, presetId: "pa" };
@@ -941,7 +941,7 @@ describe("the event dispatcher and the resume", () => {
     });
 });
 
-describe("the job link's diagnostics (request history slice 8)", () => {
+describe("the job link's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
     it("records `attach` once when the socket opens, and `detach` with the close code when it closes before the job's end", async () => {

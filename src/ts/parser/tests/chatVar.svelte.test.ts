@@ -33,12 +33,12 @@ vi.mock(import("../../globalApi.svelte"), () => ({
 //#endregion
 
 // The fixture lives in the records (installed as the removed `setDatabaseLite` installed a
-// database; there is no whole-database object since Phase 6 slice 10), which `chatVar.svelte`
-// reads through the settings views (Phase 6 slice 7: the global variables, and the template's
-// default variables in the selected preset), the character store (slice 8: the selected character,
-// by `selection.characterId`) and the chat module (slice 9a: its selected chat). The character and
-// its chat are selected as `selectedCharID` 0 and the chat page selected them. Chat `q` is never
-// reset below: the queued-op test reads its queue, which no fixture reset is folded into.
+// database; there is no whole-database object), which `chatVar.svelte` reads through the settings
+// views (the global variables, and the template's default variables in the selected preset), the
+// character store (the selected character, by `selection.characterId`) and the chat module (its
+// selected chat). The character and its chat are selected as `selectedCharID` 0 and the chat page
+// selected them. Chat `q` is never reset below: the queued-op test reads its queue, which no fixture
+// reset is folded into.
 installFlatDatabaseWithChats({
     globalChatVariables: {},
     botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
@@ -167,7 +167,7 @@ test('returns "null" for undefined variables', () => {
     );
 });
 
-test("setChatVar and setChatVarOf queue the one entry as a `meta` merge of `scriptstate`, never the whole map (data-loss slice 1b)", () => {
+test("setChatVar and setChatVarOf queue the one entry as a `meta` merge of `scriptstate`, never the whole map", () => {
     const refQ = { chaId: "c", chatId: "q" };
     /** The ops queued for `q` since the last take (the fixture's resets of `k` are taken too). */
     const opsOfQ = () => {

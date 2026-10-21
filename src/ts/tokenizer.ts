@@ -92,7 +92,7 @@ export async function encodeWithTokenizer(
 
 /**
  * Encodes with the main model's tokenizer: of `scope`'s model preset (a caller that captured its
- * chat, `docs/plan/chat-binding.md`), else of the settings views' (the selected chat's or the tab's).
+ * chat), else of the settings views' (the selected chat's or the tab's).
  */
 export async function encode(data: string, scope?: PresetScope): Promise<number[] | Uint32Array | Int32Array> {
     const modelInfo = getModelInfoForMode("model", scope);
@@ -192,7 +192,7 @@ async function tokenizeGoogleCloud(text: string, model: LLMModel) {
         return new Uint32Array(count);
     }
 
-    // With the stored Google key, on the server (`auxFetch`, Phase 5 slice 7b); loaded on first use,
+    // With the stored Google key, on the server (`auxFetch`); loaded on first use,
     // as this module is imported nearly everywhere.
     const { auxFetch } = await import("./network/auxFetch");
     const res = await auxFetch(

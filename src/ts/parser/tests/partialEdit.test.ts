@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import { findAllOriginalRangesFromHtml, findAllOriginalRangesFromText, replaceRange } from "../partialEdit";
 
 /*
- * The partial-edit matcher's source targeting (audit UI-02 and UI-03, `docs/plan/audit-findings-perf.md`
- * slice 2c): every distinct occurrence of the selection comes back, on one source line too, so the
- * controller can ask which one; a selection ending in a typographic ellipsis maps to the ellipsis
- * character only, never to the character after it.
+ * The partial-edit matcher's source targeting: every distinct occurrence of the selection comes
+ * back, on one source line too, so the controller can ask which one; a selection ending in a
+ * typographic ellipsis maps to the ellipsis character only, never to the character after it.
  */
 const spans = (original: string, matches: { start: number; end: number }[]) =>
     matches.map((match) => [match.start, match.end, original.slice(match.start, match.end)]);

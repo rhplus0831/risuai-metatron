@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Search plan slice 3b: the settings deep link's state (`openSetting`, `currentJump`, `finishJump`,
-// `jumpVersion`) and its DOM step (`scrollToSetting`, `scrollToSection`) over a hand-built row.
+// The settings deep link's state (`openSetting`, `currentJump`, `finishJump`, `jumpVersion`) and
+// its DOM step (`scrollToSetting`, `scrollToSection`) over a hand-built row.
 
 vi.mock("../process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [] }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: (text: string) => text }));

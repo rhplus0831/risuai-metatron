@@ -59,8 +59,7 @@ export function getChatVarOf(ref: ChatRef | null, key: string, scope?: PresetSco
     }
     const state = findChat(ref)?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
-        // The scope's preset, else the chat's display preset (`docs/plan/chat-binding.md`), never
-        // the selected chat's.
+        // The scope's preset, else the chat's display preset, never the selected chat's.
         const presetDefaults = readPresetFieldOf(scope ?? chatDisplayIds(ref), "templateDefaultVariables") as
             string | undefined;
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(parseKeyValue(presetDefaults ?? ""));

@@ -24,7 +24,7 @@ type OllamaTagModel = {
 
 /**
  * The models of an Ollama host. The cloud list uses the stored Ollama key on the server
- * (`auxFetch`, Phase 5 slice 7b); a local host is read as before.
+ * (`auxFetch`); a local host is read as before.
  */
 export async function getOllamaModels(
     host: string,

@@ -3,13 +3,12 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/translation.md` slices 2.1–2.4: the chat panel's translation section
-// (`ChatTranslationPanel.svelte`) shows a chat's auto-translate flag and, for the LLM translator, its
-// translator preset from the chat's list entry: "Global (<name>)" for a chat without its own, the
-// preset by name, or "Deleted, using global" for one that is gone (shown until it is back). The
-// checkbox writes `true` or unsets the field (never `false`); the select writes the id or unsets it
-// (back to the global selection); another translator hides the select; a chat that is not a member
-// shows nothing, and a write as the chat goes does not throw.
+// The chat panel's translation section (`ChatTranslationPanel.svelte`) shows a chat's auto-translate
+// flag and, for the LLM translator, its translator preset from the chat's list entry: "Global
+// (<name>)" for a chat without its own, the preset by name, or "Deleted, using global" for one that
+// is gone (shown until it is back). The checkbox writes `true` or unsets the field (never `false`);
+// the select writes the id or unsets it (back to the global selection); another translator hides the
+// select; a chat that is not a member shows nothing, and a write as the chat goes does not throw.
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
@@ -184,9 +183,9 @@ describe("ChatTranslationPanel", () => {
         expect(panel.options().map(([value]) => value)).toEqual(["", "tp1", "tp2"]);
     });
 
-    it("the bot-only row (slice 2.3) shows with the stored translation and auto-translate on, writes true or unsets, and hides for the rendered target or another translator", () => {
+    it("the bot-only row shows with the stored translation and auto-translate on, writes true or unsets, and hides for the rendered target or another translator", () => {
         const panel = renderPanel(refK);
-        // Auto-translate, bot-only, and the bilingual display (slice 2.4) on the stored path.
+        // Auto-translate, bot-only, and the bilingual display on the stored path.
         expect(panel.checkboxes()).toHaveLength(3);
         expect(panel.target.textContent).toContain(strings.botOnly);
         expect(panel.checkboxes()[1].checked).toBe(false);
@@ -256,7 +255,7 @@ describe("ChatTranslationPanel", () => {
         expect(never.panel()).toBeNull();
     });
 
-    it("the bilingual rows (slice 2.4): the check writes true or unsets; while on, the emphasis and pairing selects write or unset; hidden off the stored path", () => {
+    it("the bilingual rows: the check writes true or unsets; while on, the emphasis and pairing selects write or unset; hidden off the stored path", () => {
         const panel = renderPanel(refP);
         const selects = () => [...panel.target.querySelectorAll<HTMLSelectElement>("select")];
         const pick = (element: HTMLSelectElement, value: string) => {

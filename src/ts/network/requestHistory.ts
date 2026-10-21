@@ -12,9 +12,9 @@ import {
 import { authFetch } from "../storage/serverAuth";
 
 /**
- * The server's LLM request history (`docs/plan/request-history-diagnostics.md` slices 5 and 10): the
- * viewer's reads, its "Delete all", and sharing for support. Each call throws `RequestHistoryError` for an answer that is
- * not a success, with the server's message when it sent one.
+ * The server's LLM request history: the viewer's reads, its "Delete all", and sharing for support.
+ * Each call throws `RequestHistoryError` for an answer that is not a success, with the server's
+ * message when it sent one.
  */
 
 export type RequestHistoryQuery = {

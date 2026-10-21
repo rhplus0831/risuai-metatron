@@ -3,17 +3,17 @@ import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations } from "../storage/tests/mutationStoresHarness";
 
-// Phase 5 baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"):
-// the lore regex key defect of `loadLoreBookV3Prompt` (now `shared/lore/activation.ts`
-// `searchMatch`, the `arg.regex` branch), pinned against the client code over the real store,
-// scenario by scenario. The browser capture `lore-regex.json` is the "before" evidence (the key
-// `/dragon/i` was rewritten to `/dragon` and stored back into `arg.keys[0]`, so it matched only a
-// literal `/dragon`, a key with empty flags matched nothing, and a second scanned message made the
-// rewritten key's "flags" the pattern text, which threw and ended the search). Slice 4
-// (`lore-templates-and-tokens`) fixed the parse (the last `/` separates the pattern from the flags,
-// empty flags allowed, no rewrite); the reviewed expected delta `deltas/lore-regex-fix.json` holds
-// the scenarios the fix changes, each with its reason, and this file pins the fixed behavior: the
-// delta where it has an entry, the capture everywhere else.
+// Baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"): the
+// lore regex key defect of `loadLoreBookV3Prompt` (now `shared/lore/activation.ts` `searchMatch`,
+// the `arg.regex` branch), pinned against the client code over the real store, scenario by
+// scenario. The browser capture `lore-regex.json` is the "before" evidence (the key `/dragon/i` was
+// rewritten to `/dragon` and stored back into `arg.keys[0]`, so it matched only a literal
+// `/dragon`, a key with empty flags matched nothing, and a second scanned message made the
+// rewritten key's "flags" the pattern text, which threw and ended the search). The fix changed the
+// parse (the last `/` separates the pattern from the flags, empty flags allowed, no rewrite); the
+// reviewed expected delta `deltas/lore-regex-fix.json` holds the scenarios the fix changes, each
+// with its reason, and this file pins the fixed behavior: the delta where it has an entry, the
+// capture everywhere else.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -114,7 +114,7 @@ afterEach(() => {
     server.current?.close();
 });
 
-describe("Phase 5 baseline: lore regex keys (fixed in slice 4)", () => {
+describe("baseline: lore regex keys (fixed)", () => {
     it("the capture covers the expected scenarios", () => {
         expect(scenarios.map((s) => s.name)).toEqual([
             "i-flag-plain-text",

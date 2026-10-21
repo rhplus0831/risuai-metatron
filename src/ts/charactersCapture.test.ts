@@ -2,11 +2,9 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-// Phase 6 slice 8 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-characters.md`,
-// "Implementation notes"): the handlers that await a dialog or a save capture their character (and
-// chat) by id before the first await and find it again after each one, so a selection change, a
-// reorder, or a deletion meanwhile neither redirects the write nor throws. Before the slice they
-// read the selected index after the awaits. Also the selection by id (`changeChar(chaId)`) and the
+// The handlers that await a dialog or a save capture their character (and chat) by id before the
+// first await and find it again after each one, so a selection change, a reorder, or a deletion
+// meanwhile neither redirects the write nor throws. Also the selection by id (`changeChar(chaId)`) and the
 // add dialog selecting the character it created, not the last one in the list. Against the real
 // save adapter and server store (`storeBackedServer.ts`): character `c` with chats `k` (messages
 // A, B, C) and `j`.

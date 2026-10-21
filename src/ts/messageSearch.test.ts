@@ -4,10 +4,10 @@ import { flushSync } from "svelte";
 import { get, type Writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Search plan slice 4b: the message search request (`searchMessages` over `authFetch`: the body per
-// scope, the cursor, the answers) and the jump lifecycle (`requestMessageJump` replaces, `claim`
-// answers once, stale tokens change nothing, a selection change cancels: the chat module and the
-// selection are mocked as reactive stores so the module's effect and its character listener run).
+// The message search request (`searchMessages` over `authFetch`: the body per scope, the cursor,
+// the answers) and the jump lifecycle (`requestMessageJump` replaces, `claim` answers once, stale
+// tokens change nothing, a selection change cancels: the chat module and the selection are mocked
+// as reactive stores so the module's effect and its character listener run).
 
 type ChatRef = { chaId: string; chatId: string };
 

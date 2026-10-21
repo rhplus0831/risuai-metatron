@@ -5,14 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat as ChatRecord, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 
-// A chat row on the stored-translation path (`docs/plan/translation.md` slice 1.4, `media-aux.md`):
-// the LLM translator on `llmTranslationTarget: "message"` shows the held message's fresh stored
-// translation through the normal display path, re-deriving it when the chat's refresh brings one (no
-// remount), keeps the row's show/hide choice across a remount, requests a translation only when none
-// is fresh, and edits through a captured session. The rendered path (`"rendered"`, or a row without a
-// message id) is unchanged: `translateHTML` runs and the stored translation is never shown. Auto-show
-// is the chat's own `autoTranslate` (`docs/plan/translation.md` slice 2.1), counted only while a target
-// language is set; on the rendered path a change of it on a mounted row starts or stops the translation.
+// A chat row on the stored-translation path (`media-aux.md`): the LLM translator on
+// `llmTranslationTarget: "message"` shows the held message's fresh stored translation through the
+// normal display path, re-deriving it when the chat's refresh brings one (no remount), keeps the
+// row's show/hide choice across a remount, requests a translation only when none is fresh, and edits
+// through a captured session. The rendered path (`"rendered"`, or a row without a message id) is
+// unchanged: `translateHTML` runs and the stored translation is never shown. Auto-show is the chat's
+// own `autoTranslate`, counted only while a target language is set; on the rendered path a change of
+// it on a mounted row starts or stops the translation.
 
 const hoisted = vi.hoisted(() => ({
     alerts: { error: vi.fn(), confirm: vi.fn(), normal: vi.fn() },
@@ -144,7 +144,7 @@ let revision = 1;
 
 /**
  * Installs the records and holds chat `chatId` of character `c` (messages a "A", b "B"), selected.
- * `autoTranslate` is the chat's own field (slice 2.1); `translator` the target language (`ko`).
+ * `autoTranslate` is the chat's own field; `translator` the target language (`ko`).
  */
 function boot(
     chatId: string,
@@ -338,8 +338,8 @@ describe("branching a pinned chat", () => {
     });
 });
 
-// Slice C3 of `docs/plan/open-bug-fixes.md`: "Create Folder on Branch" reads the source chat's folder
-// through `chatFolderOf`, so a `folderId` naming no folder of the character counts as no folder.
+// "Create Folder on Branch" reads the source chat's folder through `chatFolderOf`, so a `folderId`
+// naming no folder of the character counts as no folder.
 describe("branching with Create Folder on Branch", () => {
     async function branch() {
         const ui = render();
@@ -381,7 +381,7 @@ describe("branching with Create Folder on Branch", () => {
     });
 });
 
-describe("the Disable toggles (data-loss slice 1b)", () => {
+describe("the Disable toggles", () => {
     it("Disable Message and Cut Messages for AI queue a patch of the one `disabled` field, never the row", async () => {
         const { ref, held } = boot("toggles");
         const ui = render();

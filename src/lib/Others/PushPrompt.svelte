@@ -11,8 +11,8 @@
         reconcilePush,
     } from "src/ts/network/pushNotifications";
 
-    // The one-time question per browser (`docs/plan/web-push.md`): while the synced switch is on and
-    // this browser was never asked. Either button answers it for good.
+    // The one-time question per browser: while the synced switch is on and this browser was never
+    // asked. Either button answers it for good.
     const open = $derived(
         settings.ui.notification &&
             $pushBrowserState.availability === "ok" &&

@@ -21,13 +21,13 @@ import {
 } from "../../../shared/charxImport.ts";
 
 /**
- * A zip archive read from a `Blob` (historical `docs/plan/large-asset-import.md` slice 3c, the ONNX/VITS model
- * import): the entries come from the central directory with the CharX server reader's parsers
- * (`shared/charxImport.ts`), and an entry's bytes are read with `Blob.slice` only when asked for, so
- * the tab never holds the archive. Unlike fflate's streaming `Unzip`, this never scans an entry's
- * bytes for signatures, so a data-descriptor entry whose bytes hold one is read whole. A zip whose
- * offsets wrap past 4 GiB without zip64 is not supported (its entries fail the local header check).
- * A file that is not such a zip throws `CharxFileError`.
+ * A zip archive read from a `Blob` (for the ONNX/VITS model import): the entries come from the
+ * central directory with the CharX server reader's parsers (`shared/charxImport.ts`), and an
+ * entry's bytes are read with `Blob.slice` only when asked for, so the tab never holds the archive.
+ * Unlike fflate's streaming `Unzip`, this never scans an entry's bytes for signatures, so a
+ * data-descriptor entry whose bytes hold one is read whole. A zip whose offsets wrap past 4 GiB
+ * without zip64 is not supported (its entries fail the local header check). A file that is not such
+ * a zip throws `CharxFileError`.
  */
 
 /** One entry of the central directory. */

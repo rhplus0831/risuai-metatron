@@ -6,20 +6,19 @@ import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 7 (`docs/plan/phases/slices/phase-4-external-contracts/imports-through-the-module.md`):
 // `importModule` creates its record through `addModule` for every file kind, over the real save
 // adapter and the real server store (`storeBackedServer.ts`): a `.risum` (written by
-// `exportModuleLegacy`, read by the real reader with the RPack map from disk), a CharX (the real zip
-// importer, converted by `convertCharacterToModule`; no character is created), a native module JSON
-// (its `lowLevelAccess` confirmation kept), a native lore file, an external lore file, and a regex
-// file. The collection holds the module with a fresh id and is on the server after one cycle. A CharX
-// whose converted module `addModule` refuses reports `noData` only, never success, and inserts nothing
-// (Astra challenge point 1).
+// `exportModuleLegacy`, read by the real reader with the RPack map from disk), a CharX (the real
+// zip importer, converted by `convertCharacterToModule`; no character is created), a native module
+// JSON (its `lowLevelAccess` confirmation kept), a native lore file, an external lore file, and a
+// regex file. The collection holds the module with a fresh id and is on the server after one cycle.
+// A CharX whose converted module `addModule` refuses reports `noData` only, never success, and
+// inserts nothing.
 
 const { server, alerts, picker } = vi.hoisted(() => {
     // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
     // (`boot` installs it in `current`): `addImportedModule` reads it back to replace only its own
-    // wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls for the assertions.
+    // wait alert. The `vi.fn` wrappers keep the calls for the assertions.
     const alerts = {
         current: null as null | { set: (data: { type: string; msg: string }) => void },
         show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),
@@ -113,7 +112,7 @@ async function boot() {
     vi.spyOn(globalApi, "saveAsset").mockResolvedValue("asset");
     const util = await import("../util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
-    // The dialog answers the picked `File` itself (large-asset-import slice 2c), built from `picker.file`.
+    // The dialog answers the picked `File` itself, built from `picker.file`.
     vi.spyOn(util, "selectSingleFileHandle").mockImplementation(async () =>
         picker.file ? new File([new Uint8Array(picker.file.data)], picker.file.name) : null,
     );
@@ -226,8 +225,8 @@ describe("importModule adds the module through addModule", () => {
             },
         });
         expect(fetch.mock.calls.filter(([url]) => url === "/api/assets/write")).toHaveLength(8);
-        // The dialog's `.risum` goes to the import route as the file itself (large-asset-import slice
-        // 2c): one request, never retried, no asset write; a 503 is the maintenance alert.
+        // The dialog's `.risum` goes to the import route as the file itself: one request, never
+        // retried, no asset write; a 503 is the maintenance alert.
         server.current.failNext = { status: 503, times: 1, match: (p: string) => p === "/api/import/module" };
         picker.file = { name: "failed.risum", data: bytes };
         const importing = modules.importModule();
@@ -374,7 +373,7 @@ describe("importModule adds the module through addModule", () => {
 });
 
 describe("a CharX whose converted module is refused", () => {
-    it("reports noData only, never success, and inserts nothing (Astra challenge point 1)", async () => {
+    it("reports noData only, never success, and inserts nothing", async () => {
         const { modules, cards, list, sync, record, mirrorText } = await boot();
         const before = list();
         const mirror = mirrorText();
@@ -398,12 +397,12 @@ describe("a CharX whose converted module is refused", () => {
     });
 });
 
-// Data-loss plan slice 5b: `importModule` adds through `addImportedModule`, which flushes the save
-// in a mutation scope and alerts only after the acknowledgement: `successImport` (`.risum`, CharX) or
-// a cleared wait alert (the JSON kinds) while its own `moduleImportSaving` wait alert is still on
-// screen; `moduleImportDiscarded` when a conflict replaced this tab's modules (also when the flush
-// fails afterwards); `moduleImportUnconfirmed` when the flush fails with the module still listed.
-describe("the import alert waits for the acknowledgement (data-loss plan slice 5b)", () => {
+// `importModule` adds through `addImportedModule`, which flushes the save in a mutation scope and
+// alerts only after the acknowledgement: `successImport` (`.risum`, CharX) or a cleared wait alert
+// (the JSON kinds) while its own `moduleImportSaving` wait alert is still on screen;
+// `moduleImportDiscarded` when a conflict replaced this tab's modules (also when the flush fails
+// afterwards); `moduleImportUnconfirmed` when the flush fails with the module still listed.
+describe("the import alert waits for the acknowledgement", () => {
     const names = (list: any[]) => list.map((entry) => entry.name);
     /**
      * Whether `alertClear` ran after the last `moduleImportSaving` wait alert (the `.risum` upload
@@ -605,8 +604,8 @@ describe("the import alert waits for the acknowledgement (data-loss plan slice 5
         expect(fake.batchCount()).toBe(2);
     });
 
-    // Open-bug-fixes slice C5: the link and file entry points in `characterCards.ts` add through
-    // `addImportedModule` too, and open the module settings only once the save is acknowledged.
+    // The link and file entry points in `characterCards.ts` add through `addImportedModule` too,
+    // and open the module settings only once the save is acknowledged.
     const ENTRIES = ["#import_module=", "#import=", "launch queue"] as const;
     /**
      * Starts `entry`'s import of a module named `name`. `importing` is the hash import's own promise;
@@ -709,7 +708,7 @@ describe("the import alert waits for the acknowledgement (data-loss plan slice 5
     );
 });
 
-// Slice 2c: drive the file boundary and its callers, keeping the module/save stores real.
+// Drive the file boundary and its callers, keeping the module/save stores real.
 async function packedMain(text: string) {
     const { encodeRPack } = await import("../rpack/rpack_js");
     const main = await encodeRPack(new TextEncoder().encode(text));

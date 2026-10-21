@@ -1,7 +1,7 @@
 import type { CallbackTargets } from "../../../shared/jobs.ts";
 
-// Which job callback is running in this tab, for an aux request made inside it (Phase 5 slice 7a:
-// `POST /api/llm/request` carries it as `channelCall`). The job channel's dispatcher is loaded on
+// Which job callback is running in this tab, for an aux request made inside it
+// (`POST /api/llm/request` carries it as `channelCall`). The job channel's dispatcher is loaded on
 // first use (`generationJobs.ts`) and registers its `currentChannelCall` here when it loads; before
 // that no callback can be running.
 type ChannelCall = { jobId: string; callbackId: string; targets: CallbackTargets };
@@ -19,7 +19,7 @@ export function activeChannelCall(): { jobId: string; callbackId: string } | nul
 
 /**
  * What the running callback acts on (its job's chat and ids, a `presetChain` pick included), or
- * null: a request for that chat inside it runs on these ids (`docs/plan/chat-binding.md`).
+ * null: a request for that chat inside it runs on these ids.
  */
 export function activeChannelCallTargets(): CallbackTargets | null {
     const call = source?.() ?? null;

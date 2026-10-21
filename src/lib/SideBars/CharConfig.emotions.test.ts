@@ -2,12 +2,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The emotion image table on `CharConfig`'s view screen tab (large-asset-import slice 4a), mounted
-// over the real records, selection, paging constant, `LazyFileSrc`, and `rmCharEmotion`. It pages
-// like the additional-asset list, reads each preview only once its row nears the viewport, and
-// renames and deletes by source index, replacing the frozen list whole (heap plan B2); a pending
-// input never writes another row or character (open-bug-fixes slice C7). Unrelated panels, dialogs
-// and file loading are doubled.
+// The emotion image table on `CharConfig`'s view screen tab, mounted over the real records,
+// selection, paging constant, `LazyFileSrc`, and `rmCharEmotion`. It pages like the additional-asset
+// list, reads each preview only once its row nears the viewport, and renames and deletes by source
+// index, replacing the frozen list whole; a pending input never writes another row or character.
+// Unrelated panels, dialogs and file loading are doubled.
 
 const holdFileSrc = vi.fn((path: string) => ({ src: Promise.resolve(`/file/${path}`), release: () => {} }));
 vi.mock("src/ts/globalApi.svelte", () => ({
@@ -239,8 +238,8 @@ describe("CharConfig emotion images", () => {
     });
 
     it("deletes while another row's input is pending, or the typed-into row itself, without a throw", async () => {
-        // Open-bug-fixes slice C7: a row's input must not be read again past the shrunken list's
-        // end, or write another row, once a delete in the same task moved or unmounted it.
+        // A row's input must not be read again past the shrunken list's end, or write another row,
+        // once a delete in the same task moved or unmounted it.
         const first = emotions("joy", 5);
         installCharacters(first, []);
         selectCharacter("c1");
@@ -310,7 +309,7 @@ describe("CharConfig emotion images", () => {
         installCharacters(first, []);
         selectCharacter("c1");
         render();
-        // The list is immutable (heap plan B2): a rename replaces it, copying only its pair; the
+        // The list is immutable: a rename replaces it, copying only its pair; the
         // other pairs are shared.
         const list = record("c1").emotionImages;
         expect(Object.isFrozen(list)).toBe(true);
@@ -343,10 +342,10 @@ describe("CharConfig emotion images", () => {
     });
 });
 
-// The additional-asset table of the same tab (heap plan B2): the list is immutable, so a rename
-// replaces it per keystroke, a delete filters it, and an add appends to the latest list of the
-// character the picker was opened for, found again by `chaId` after the awaits. The search hold
-// keeps a renamed row visible under its query only for the list the rename made.
+// The additional-asset table of the same tab: the list is immutable, so a rename replaces it per
+// keystroke, a delete filters it, and an add appends to the latest list of the character the picker
+// was opened for, found again by `chaId` after the awaits. The search hold keeps a renamed row
+// visible under its query only for the list the rename made.
 describe("CharConfig additional assets", () => {
     const assets = (count: number): Asset[] =>
         Array.from({ length: count }, (_, i) => [`Asset ${i}`, `assets/${i}.png`, "png"]);

@@ -267,7 +267,7 @@ export async function exportChat(chatId: string) {
         // A copy: the chat can change while the export translates.
         const chat = JSON.parse(JSON.stringify(found)) as Chat;
         // The exported chat's persona name and render context, read now: it need not be the selected
-        // chat, and the selection can change during the awaits below (`docs/plan/chat-binding.md`).
+        // chat, and the selection can change during the awaits below.
         const ref = { chaId: char.chaId, chatId };
         const userName = getUserName(ref);
         const transform = doTranslate ? captureTransform(-1, { chatRef: ref }) : null;
@@ -870,8 +870,8 @@ export async function changeChar(
 ) {
     const reseter = arg.reseter ?? (() => {});
     reseter();
-    // A selection only makes sure the character has a chat and shows its chat (owner decision 2: it
-    // no longer stamps `lastInteraction`; a send does). The defaults come from creation and the server.
+    // A selection only makes sure the character has a chat and shows its chat (it no longer stamps
+    // `lastInteraction`; a send does). The defaults come from creation and the server.
     if (characterRecord(chaId)) {
         ensureChat(chaId);
     }

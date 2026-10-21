@@ -101,14 +101,13 @@ export async function importCharacter() {
 /**
  * Imports one card file, dispatched by its name (`.json`, `.charx`/`.jpg`/`.jpeg`, `.png`). A CharX
  * (or a `charxJpeg`) given as a `File` or `Blob` is uploaded as it is to the server's CharX import
- * (`importCharxOverServer`, large-asset-import slice 2d), so the tab never holds the file; one given
- * as bytes or a stream is read by the in-tab `CharXImporter`. Every input is told apart without
- * `instanceof Blob`: a `Uint8Array` or a `ReadableStream` is read in the tab, anything else is a
- * `Blob` (a test's `Response.blob()` is not the environment's `Blob`). The PNG reader
- * (`PngChunk.readGenerator`) takes bytes, a stream, or a `Blob`, which it streams: a stream is read
- * once (a running asset count), bytes or a `Blob` are counted in a first pass. Returns the new
- * character's id (with `returnCharacter`, the character), or null/undefined once the failure is
- * alerted.
+ * (`importCharxOverServer`), so the tab never holds the file; one given as bytes or a stream is
+ * read by the in-tab `CharXImporter`. Every input is told apart without `instanceof Blob`: a
+ * `Uint8Array` or a `ReadableStream` is read in the tab, anything else is a `Blob` (a test's
+ * `Response.blob()` is not the environment's `Blob`). The PNG reader (`PngChunk.readGenerator`)
+ * takes bytes, a stream, or a `Blob`, which it streams: a stream is read once (a running asset
+ * count), bytes or a `Blob` are counted in a first pass. Returns the new character's id (with
+ * `returnCharacter`, the character), or null/undefined once the failure is alerted.
  */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
@@ -466,7 +465,7 @@ async function confirmCardLowLevelAccess(card: CharacterCardV2Risu | CharacterCa
     return await alertConfirm(language.lowLevelAccessConfirm);
 }
 
-/** The alert for a CharX upload that failed (slice 2d); `Invalid character file` is `noData`. */
+/** The alert for a CharX upload that failed; `Invalid character file` is `noData`. */
 function charxImportErrorMessage(error: unknown): string {
     return serverImportErrorMessage(error, {
         invalidFile: INVALID_CHARX_FILE,
@@ -508,7 +507,7 @@ function realmImportErrorMessage(error: unknown): string {
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
-    // Replaced, not pushed: a consumed link parameter is no history entry (`docs/plan/url-routes.md` R5).
+    // Replaced, not pushed: a consumed link parameter is no history entry.
     window.history.replaceState(window.history.state, "", url.toString());
 
     const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
@@ -523,8 +522,8 @@ export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
 /**
  * A pending share survives a failed or cancelled import, even without a controlling worker. The
- * importer reads the cached answer itself: a module as its `Blob`, uploaded as it is (large-asset-import
- * slice 2c), a card or a preset as bytes.
+ * importer reads the cached answer itself: a module as its `Blob`, uploaded as it is, a card or a
+ * preset as bytes.
  */
 async function importPendingShare(
     kind: "character" | "preset" | "module",
@@ -626,7 +625,7 @@ export async function characterURLImport() {
         return;
     }
     if (hash.startsWith("#share_character")) {
-        // The cached answer's `Blob`, uploaded as it is (large-asset-import slice 2d).
+        // The cached answer's `Blob`, uploaded as it is.
         await importPendingShare("character", async (pending) =>
             importCharacterProcess({ name: "shared.charx", data: await pending.blob() }),
         );
@@ -673,9 +672,9 @@ export async function characterURLImport() {
     }
 
     /**
-     * A `.risum` (slice 2c) and a CharX (`.charx`, a `charxJpeg`'s `.jpg`/`.jpeg`; slice 2d) go to the
-     * server as the `Blob` itself, and a `.png` card goes to the PNG reader as the `Blob` itself, which
-     * streams it (slice 2e). Only a preset is read into bytes: `importPreset` decompresses it in memory.
+     * A `.risum` and a CharX (`.charx`, a `charxJpeg`'s `.jpg`/`.jpeg`) go to the server as the `Blob`
+     * itself, and a `.png` card goes to the PNG reader as the `Blob` itself, which streams it. Only a
+     * preset is read into bytes: `importPreset` decompresses it in memory.
      */
     async function importFile(name: string, data: Blob) {
         if (name.endsWith(".charx") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")) {
@@ -1399,9 +1398,8 @@ function createBaseV2(char: ClientCharacter) {
 }
 
 /**
- * The most asset bytes a JSON card export embeds (large-asset-import slice 3b): past this, the
- * base64 data URIs make a card `JSON.stringify` cannot produce, so the export refuses and points
- * to CharX instead.
+ * The most asset bytes a JSON card export embeds: past this, the base64 data URIs make a card
+ * `JSON.stringify` cannot produce, so the export refuses and points to CharX instead.
  */
 export const JSON_EXPORT_ASSET_LIMIT = 64 * 1024 * 1024;
 

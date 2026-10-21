@@ -67,7 +67,7 @@
             !isPrompt || (preset.archived === true) === showArchived ? [{ preset, index }] : [],
         ),
     );
-    /** The chat the list picks for (decision 8): the given chat, else the open chat; null at home. */
+    /** The chat the list picks for: the given chat, else the open chat; null at home. */
     const shownRef = $derived(chatRef ?? currentChatRef());
     const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
     // Read once per render, not once per row (the selected index searched the list for every row).
@@ -180,8 +180,8 @@
 
         const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
         if (adjustedToIndex === fromIndex) return;
-        // One write of the presets record (Phase 6 slice 4: a reorder past a frame budget through the
-        // record's wrappers). The selection is by id, so a reorder leaves it on the same preset.
+        // One write of the presets record (a reorder through the record's wrappers ran past a frame
+        // budget). The selection is by id, so a reorder leaves it on the same preset.
         moveRecordListItem(isPrompt ? settings.presets : settings.modelPresets, fromIndex, adjustedToIndex);
     }
 

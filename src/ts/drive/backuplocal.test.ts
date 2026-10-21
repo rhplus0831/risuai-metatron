@@ -182,10 +182,10 @@ import {
 const encoder = new TextEncoder();
 
 /**
- * The records the backup inventory (`buildBackupInventory`, Phase 6 slice 10) reads: Alice (a main
- * image and an emotion image), a group (a main image), the personas (`userIcon` is the selected
- * persona's icon: the first one, `assets/icon.png`; `Me` is another persona), a preset with an
- * image, and a folder with an image.
+ * The records the backup inventory (`buildBackupInventory`) reads: Alice (a main image and an
+ * emotion image), a group (a main image), the personas (`userIcon` is the selected persona's icon:
+ * the first one, `assets/icon.png`; `Me` is another persona), a preset with an image, and a folder
+ * with an image.
  */
 function installInventory() {
     installFlatDatabase({
@@ -579,7 +579,7 @@ describe("SavePartialLocalBackup", () => {
         exportResponse.current = stream.response;
         await SavePartialLocalBackup();
         expect(alerts.alertConfirm).toHaveBeenCalledTimes(2);
-        // The server selects the profile images from the snapshot it archives (audit IO-04): the
+        // The server selects the profile images from the snapshot it archives: the
         // request carries no key list, so an image replaced after the inventory is still archived.
         expect(JSON.parse(requests[0].init.body as string)).toEqual({ partial: true });
         const report = alerts.alertMd.mock.calls[0][0] as string;
@@ -754,7 +754,7 @@ describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
         expect(alerts.alertError).not.toHaveBeenCalled();
     });
 
-    it("asks again in the report dialog with the count of changes since the preview and resends with that count (D13)", async () => {
+    it("asks again in the report dialog with the count of changes since the preview and resends with that count", async () => {
         upstream.prepare = () => ndjson([prepared]);
         const answers = [
             Response.json({ error: "changedSinceReview", writes: 2 }, { status: 409 }),

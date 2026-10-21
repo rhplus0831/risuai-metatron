@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/shared-api-keys.md`, "Client": what the tab shows next to a model (the shared binding
-// decision over the records and the masked key status), the select options, and the bindings a
-// delete confirmation names.
+// What the tab shows next to a model (the shared binding decision over the records and the masked
+// key status), the select options, and the bindings a delete confirmation names.
 
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));

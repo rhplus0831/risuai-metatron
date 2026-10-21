@@ -77,7 +77,7 @@ async function makeApi(): Promise<CapturedApi> {
 describe("v3 pluginStorage without cold storage", () => {
     beforeEach(() => {
         // The records installed as the app installs them (no `pluginStorage` record yet), since the
-        // storage functions write the records through the settings views (Phase 6 slice 7).
+        // storage functions write the records through the settings views.
         installFlatDatabase({ pluginCustomStorage: undefined });
     });
 

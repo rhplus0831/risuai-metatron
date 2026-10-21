@@ -256,7 +256,7 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     }
 }
 
-/** Attaches again to this tab's saved server jobs after a reload (Phase 5 slice 8a), each through its one lifecycle. */
+/** Attaches again to this tab's saved server jobs after a reload, each through its one lifecycle. */
 export async function resumeServerJobs(): Promise<void> {
     await Promise.all(
         savedGenerationJobIds().map((jobId) => {
@@ -286,17 +286,17 @@ export type ServerJobRequest = {
 };
 
 /**
- * A server job of this tab (Phase 5 slices 8a, 8b, 9): the target and the settings ids are taken
- * before the first await, from the chat's binding (`docs/plan/chat-binding.md`; `identity` gives a
- * plugin call's own captured ids). A chat whose binding is not complete runs nothing (the problems
- * are shown), never the tab's selection; the server refuses it too (409, shown the same way). Every
- * pending write is saved first (a refused or a discarding flush runs nothing), then the job runs and
- * its events are applied until it ends. Its chat and record changes arrive as the server's records;
- * its alerts and questions through the job's channel. An error ends with `alertError`. `onStart`
- * runs once the job exists, before it is followed. `signal` aborts the job (`DELETE`), also when it
- * fires while the job is being created, and the busy job of this tab followed instead; an abort
- * before the flush ends runs nothing. The target chat is pinned from the start until the follow ends
- * and is loaded before the job is created (a failed load runs nothing).
+ * A server job of this tab: the target and the settings ids are taken before the first await, from
+ * the chat's binding (`identity` gives a plugin call's own captured ids). A chat whose binding is
+ * not complete runs nothing (the problems are shown), never the tab's selection; the server refuses
+ * it too (409, shown the same way). Every pending write is saved first (a refused or a discarding
+ * flush runs nothing), then the job runs and its events are applied until it ends. Its chat and
+ * record changes arrive as the server's records; its alerts and questions through the job's
+ * channel. An error ends with `alertError`. `onStart` runs once the job exists, before it is
+ * followed. `signal` aborts the job (`DELETE`), also when it fires while the job is being created,
+ * and the busy job of this tab followed instead; an abort before the flush ends runs nothing. The
+ * target chat is pinned from the start until the follow ends and is loaded before the job is
+ * created (a failed load runs nothing).
  */
 export async function runServerJob(
     char: AnyClientCharacter,
@@ -463,8 +463,7 @@ async function runPinnedServerJob(
 }
 
 /**
- * A command job (Phase 5 slices 8a and 8b): `runServerJob` with the
- * command; a group chat refuses it.
+ * A command job: `runServerJob` with the command; a group chat refuses it.
  */
 async function runServerCommand(
     char: AnyClientCharacter,
@@ -496,14 +495,14 @@ function commandLabel(command: GenerationCommand): ServerJobLabel {
     return command.type === "button" ? "button" : "trigger";
 }
 
-/** A Lua button (`risu-btn`) run by the server (Phase 5 slice 8a). */
+/** A Lua button (`risu-btn`) run by the server. */
 export async function runServerButton(char: AnyClientCharacter, data: string, ref: ChatRef | null): Promise<void> {
     await runServerCommand(char, { type: "button", data }, ref);
 }
 
 /**
- * A manual trigger (`risu-trigger`, `/trigger`) run by the server (Phase 5 slice 8b): its `risu-id`
- * is the job's `triggerId` (`{{trigger_id}}`). `onStart` runs once the job exists.
+ * A manual trigger (`risu-trigger`, `/trigger`) run by the server: its `risu-id` is the job's
+ * `triggerId` (`{{trigger_id}}`). `onStart` runs once the job exists.
  */
 export async function runServerManualTrigger(
     char: AnyClientCharacter,

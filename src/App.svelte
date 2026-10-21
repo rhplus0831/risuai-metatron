@@ -98,9 +98,9 @@
             await importPreset({ name: file.name, data });
             alertNormal(language.successImport);
         } else if (name.endsWith(".risum")) {
-            // The dropped `File` itself goes to the server (large-asset-import slice 2c); the module
-            // comes back prepared, or null when declined or failed (alerted). Success is alerted only
-            // once the save is acknowledged (`addImportedModule`).
+            // The dropped `File` itself goes to the server; the module comes back prepared, or null
+            // when declined or failed (alerted). Success is alerted only once the save is acknowledged
+            // (`addImportedModule`).
             const module = await importModuleFile(file);
             if (module) {
                 await addImportedModule(module, { announce: true });

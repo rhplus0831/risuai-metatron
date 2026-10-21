@@ -1,5 +1,5 @@
 <!-- Test-only: provides a `ChatStyleRegistry` to its `ChatBody` rows and hosts its container after them,
-     as `DefaultChatScreen` does for the chat rows (heap plan C2). Rows are laid out in the order given. -->
+     as `DefaultChatScreen` does for the chat rows. Rows are laid out in the order given. -->
 <script lang="ts">
     import { ChatStyleRegistry, setChatStyleRegistry } from "src/ts/parser/chatStyles";
     import ChatBody from "../ChatBody.svelte";

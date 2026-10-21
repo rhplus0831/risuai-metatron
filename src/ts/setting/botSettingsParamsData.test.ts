@@ -5,11 +5,10 @@ import { allBasicParameterItems, modelParameterItems } from "./botSettingsParams
 import { getFullSettingsData } from "./utils";
 import type { SettingContext, SettingItem } from "./types";
 
-// Slice 4 of `docs/plan/split-preset.md`: the Model page renders `modelParameterItems` and the Prompt
-// page's Parameters tab renders `allBasicParameterItems`, so each list binds only fields its page's
-// preset owns (a section field, such as a global provider setting, may sit on either). Since
-// `docs/plan/model-profiles.md` the context size is the model profile's, read and written through
-// the page's profile (`ctx.modelProfile`).
+// The Model page renders `modelParameterItems` and the Prompt page's Parameters tab renders
+// `allBasicParameterItems`, so each list binds only fields its page's preset owns (a section field,
+// such as a global provider setting, may sit on either). The context size is the model profile's,
+// read and written through the page's profile (`ctx.modelProfile`).
 
 function ownerOf(item: SettingItem): "model" | "profile" | "prompt" | "section" {
     const root = (item.bindPath ?? item.bindKey)!.split(".")[0];

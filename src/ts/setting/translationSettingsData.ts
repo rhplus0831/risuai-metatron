@@ -1,8 +1,8 @@
 /**
  * Translation Settings Data
  *
- * Data-driven definition for the TranslationSettings page (settings UI plan slice 6): the translator,
- * its options, and the LLM translator's cache. The UI language stays on the Language page
+ * Data-driven definition for the TranslationSettings page: the translator, its options, and the LLM
+ * translator's cache. The UI language stays on the Language page
  * (`languageSettingsData.svelte.ts`).
  */
 
@@ -146,9 +146,9 @@ export const translationSettingsItems: SettingItem[] = [
         },
     },
 
-    // The history slots' budget (`docs/plan/translation.md` slice 3.3): only the server runner builds
-    // them, so it is shown for the stored path. Only a value the normalizer keeps is written (a finite
-    // number above 0); a cleared field writes nothing.
+    // The history slots' budget: only the server runner builds them, so it is shown for the stored
+    // path. Only a value the normalizer keeps is written (a finite number above 0); a cleared field
+    // writes nothing.
     {
         id: "lang.translatorHistoryMaxTokens",
         type: "number",
@@ -243,7 +243,7 @@ export const translationSettingsItems: SettingItem[] = [
             ctx.settings.memoryTranslateMedia.llmTranslationTarget === "rendered",
     },
 
-    // Moved from Advanced (settings UI plan slice 6), keeping its id.
+    // Moved from Advanced, keeping its id.
     {
         id: "adv.noWaitTrans",
         type: "check",
@@ -252,7 +252,7 @@ export const translationSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
 
-    // Moved from Accessibility (settings UI plan slice 6), keeping its id.
+    // Moved from Accessibility, keeping its id.
     {
         id: "acc.showTranslationLoading",
         type: "check",
@@ -262,8 +262,7 @@ export const translationSettingsItems: SettingItem[] = [
         keywords: ["translation", "loading", "indicator"],
     },
 
-    // Moved from Advanced's experimental items (settings UI plan slice 6), keeping its id and its
-    // `useExperimental` condition.
+    // Moved from Advanced's experimental items, keeping its id and its `useExperimental` condition.
     {
         id: "adv.exp.googleTrans",
         type: "check",
@@ -381,9 +380,9 @@ export const translationSettingsItems: SettingItem[] = [
 export const translationSettingsHeader: SettingItem[] = itemsById(translationSettingsItems, ["translation.header"]);
 
 /**
- * The Translation page's sections (archived, `docs/archived-plan/README.md`, slice 6), over
- * `translationSettingsItems`. `lang.translatorLang` has no condition: it turns translation on, so the
- * Translator section always shows; most other items read `translator`/`translatorType` and hide with it.
+ * The Translation page's sections, over `translationSettingsItems`. `lang.translatorLang` has no
+ * condition: it turns translation on, so the Translator section always shows; most other items read
+ * `translator`/`translatorType` and hide with it.
  */
 export const translationSettingsSections: SettingSection[] = [
     {

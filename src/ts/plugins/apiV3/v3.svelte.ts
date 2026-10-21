@@ -641,7 +641,7 @@ const unloadV3Plugin = async (pluginName: string) => {
     notifyPluginWork();
 };
 
-// Plugin work (RisuNest small wins P2, `plugins-mcp.md`): a reload after a remote plugin change waits
+// Plugin work (`plugins-mcp.md`): a reload after a remote plugin change waits
 // until `pluginWorkIdle`, and listeners of `onPluginWorkChange` hear whenever it may have become true.
 const pluginWorkListeners = new Set<() => void>();
 // Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).
@@ -681,7 +681,7 @@ function trackHostHook<T>(run: () => T): T {
 }
 
 /**
- * No plugin work of this tab is in flight (decision D4: a reload never interrupts it): no send
+ * No plugin work of this tab is in flight (a reload never interrupts it): no send
  * (`doingChat`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
  * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
  */
@@ -1723,7 +1723,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 tokenizeAccurate: options?.tokenizeAccurate,
                 cbsConditions,
             };
-            // Inside a hook, the hook's preset and persona (Phase 5 slice 7a), not the tab's selection.
+            // Inside a hook, the hook's preset and persona, not the tab's selection.
             const parsed = context
                 ? risuChatParserScoped(text ?? "", parseArg, {
                       presetId: context.presetId,

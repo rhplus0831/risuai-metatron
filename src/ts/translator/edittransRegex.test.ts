@@ -21,8 +21,8 @@ import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import { applyEdittransRegex, applyEdittransToStoredTranslation } from "./translator";
 
 // A fixture installed into the records, since the translator reads the preset's scripts through the
-// record views (Phase 6 slice 7): its root `presetRegex` becomes the one preset's `regex`, which a
-// case sets through `activePreset`.
+// record views: its root `presetRegex` becomes the one preset's `regex`, which a case sets through
+// `activePreset`.
 installFlatDatabase({ presetRegex: [] }, "translator-preset");
 
 const script = (v: Partial<customscript>): customscript =>
@@ -142,9 +142,9 @@ describe("applyEdittransRegex", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 1.4: a shown stored translation takes the `edittrans` scripts
-// before Markdown, as the `translateBeforeHTMLFormatting` rendered path applies them to its translated
-// text, with the same character resolution (`translateHTML`'s `alwaysExistChar`).
+// A shown stored translation takes the `edittrans` scripts before Markdown, as the
+// `translateBeforeHTMLFormatting` rendered path applies them to its translated text, with the same
+// character resolution (`translateHTML`'s `alwaysExistChar`).
 describe("applyEdittransToStoredTranslation", () => {
     it("applies the preset's edittrans scripts to the stored translation with the character argument as the always-existing character", () => {
         activePreset.regex = [

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Request history slice 8 (`docs/plan/request-history-diagnostics.md`): the app's entry on the
-// self-host server (`src/boot.ts`) starts the diagnostics collector before any app module is even
-// evaluated (`src/startApp.ts` is imported dynamically, after the start), so a failure while the
-// app's modules load is already watched. Both modules are stubbed: what matters is the order.
+// The app's entry on the self-host server (`src/boot.ts`) starts the diagnostics collector before
+// any app module is even evaluated (`src/startApp.ts` is imported dynamically, after the start), so
+// a failure while the app's modules load is already watched. Both modules are stubbed: what matters
+// is the order.
 
 const order = vi.hoisted(() => [] as string[]);
 

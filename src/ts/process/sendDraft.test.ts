@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createSendDrafts } from "./sendDraft";
 
-// The chat screen's send drafts (`sendDraft.ts`): audit JOB-01 (`docs/plan/audit-findings-perf.md`
-// slice 2a). A send whose user message did not land and whose job did not end `done` keeps its text
-// and `userMessageId`: the text goes back into the composer when the chat is still selected and the
-// composer is empty, otherwise when the user returns to the chat; the id stays with the text so a
-// retry is skipped by a job that already appended it. Before the fix only a refusal before the job
-// put the text back, and an accepted job that failed before the append lost it.
+// The chat screen's send drafts (`sendDraft.ts`). A send whose user message did not land and whose
+// job did not end `done` keeps its text and `userMessageId`: the text goes back into the composer
+// when the chat is still selected and the composer is empty, otherwise when the user returns to the
+// chat; the id stays with the text so a retry is skipped by a job that already appended it. Before
+// the fix only a refusal before the job put the text back, and an accepted job that failed before
+// the append lost it.
 
 const a = { chaId: "c", chatId: "a" };
 const b = { chaId: "c", chatId: "b" };

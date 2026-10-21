@@ -33,7 +33,7 @@ export type OpenRouterModelInfo = {
 
 export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ name: string; slug: string }[]> {
     try {
-        // With the stored OpenRouter key, on the server (`auxFetch`, Phase 5 slice 7b).
+        // With the stored OpenRouter key, on the server (`auxFetch`).
         const providers: { data: { name: string; slug: string }[] } = await auxFetch(
             "openrouter-providers",
             "https://openrouter.ai/api/v1/providers",

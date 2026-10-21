@@ -25,11 +25,10 @@ import type { SettingItem, SettingSection } from "./types";
 import { getFullSettingsData } from "./utils";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
-// Settings UI plan (archived, `docs/archived-plan/README.md`) slice 2: a sectioned page builds its sections by
-// id from its leaf arrays, so every leaf item is placed exactly once and the catalog
-// (`getFullSettingsData`) still lists it once. Later slices add their pages to `PAGES`. An item moved
-// to another page moves its definition into that page's leaf array (slice 6), so the placement check
-// runs over every sectioned page at once.
+// A sectioned page builds its sections by id from its leaf arrays, so every leaf item is placed
+// exactly once and the catalog (`getFullSettingsData`) still lists it once. Every sectioned page is
+// listed in `PAGES`. An item moved to another page moves its definition into that page's leaf array,
+// so the placement check runs over every sectioned page at once.
 
 interface SectionedPage {
     name: string;
@@ -37,7 +36,7 @@ interface SectionedPage {
     leaves: SettingItem[][];
     /**
      * Items rendered outside any section: the page heading, or the items a handwritten page places
-     * among its own controls (slice 4).
+     * among its own controls.
      */
     header: SettingItem[];
     sections: SettingSection[];
@@ -57,13 +56,13 @@ const PAGES: SectionedPage[] = [
         sections: translationSettingsSections,
     },
     {
-        // Sectioned per tab (slice 7); its heading is handwritten, so it has no header items.
+        // Sectioned per tab; its heading is handwritten, so it has no header items.
         name: "display",
         leaves: [displaySettingsItems],
         header: [],
         sections: displaySettingsSections,
     },
-    // Slice 4: the pages that received items from Advanced. Their headings are handwritten.
+    // The pages that received items from Advanced. Their headings are handwritten.
     {
         name: "model",
         leaves: [modelSettingsItems],
@@ -88,7 +87,7 @@ const PAGES: SectionedPage[] = [
         header: voiceSettingsItems,
         sections: [],
     },
-    // Slice 5: Accessibility split into the Interaction page and what stays.
+    // Accessibility split into the Interaction page and what stays.
     {
         name: "interaction",
         leaves: [interactionSettingsItems],
@@ -107,7 +106,7 @@ const PAGES: SectionedPage[] = [
 const DEPENDENT_PAIRS: [string, string][] = [
     ["adv.dynAssets", "adv.dynAssetsEdit"],
     ["adv.promptInfo", "adv.promptTextInfo"],
-    // Not a condition, but the minimum only means something with auto-continue on (slice 4).
+    // Not a condition, but the minimum only means something with auto-continue on.
     ["adv.autoCont", "adv.autoContinueMin"],
     ["acc.autoScrollToNewMessage", "acc.alwaysScrollToNewMessage"],
     ["acc.autoScrollToNewMessage", "acc.newMessageButtonStyle"],
@@ -207,7 +206,7 @@ describe("settings page sections", () => {
         ]);
     });
 
-    it("takes Advanced apart (slices 4 and 5): only its own sections' items stay, and the local network controls left the catalog", () => {
+    it("takes Advanced apart: only its own sections' items stay, and the local network controls left the catalog", () => {
         const advancedIds = advancedSettingsSections.flatMap((section) => section.items.map((item) => item.id));
         for (const moved of [
             "adv.retries",

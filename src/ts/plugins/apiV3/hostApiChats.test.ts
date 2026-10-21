@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 9a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "Plugins" under "Implementation notes, 9a" and "After the challenge"): the character records hold
-// no chats, so the v3 host builds the legacy shape at the boundary and the setters load first.
+// The character records hold no chats, so the v3 host builds the legacy shape at the boundary and
+// the setters load first.
 // - `getChar`/`getCharacterFromIndex`/`getDatabase` answer a detached character with its chats and
 //   `chatPage`; `getChatFromIndex` finds its chat again after the load (null once it is deleted).
 // - `setChar` reconciles the chats through the chat module: an omitted chat is deleted (never the
@@ -18,9 +17,9 @@ type CapturedApi = Record<string, (...args: any[]) => any>;
 const { captured, reads } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
     /**
-     * The chat module's reads (`readRefs`, Phase 6 slice 9b) for the chats a fixture installs as
-     * summaries (`installDatabase`'s `unloaded`): each read answers `chats` by key, after `gate`
-     * resolves while one is set (the test releases it to end the load).
+     * The chat module's reads (`readRefs`) for the chats a fixture installs as summaries
+     * (`installDatabase`'s `unloaded`): each read answers `chats` by key, after `gate` resolves
+     * while one is set (the test releases it to end the load).
      */
     reads: {
         chats: new Map<string, { characterId: string; id: string; revision: string; data: unknown }>(),
@@ -121,11 +120,10 @@ function liveCharacters() {
 }
 
 /**
- * The records and the chat module installed as boot installs them (the whole-database aggregate is
- * gone since Phase 6 slice 10): the record fields into the records, the selection resolved, and the
- * characters' chats into the chat module. The chats of the characters in `unloaded` are held as
- * their summaries, as boot holds every chat (Phase 6 slice 9b); a load reads them through the
- * mocked `readRefs` (`reads`).
+ * The records and the chat module installed as boot installs them (there is no whole-database
+ * aggregate): the record fields into the records, the selection resolved, and the characters' chats
+ * into the chat module. The chats of the characters in `unloaded` are held as their summaries, as
+ * boot holds every chat; a load reads them through the mocked `readRefs` (`reads`).
  */
 function installDatabase(fields: Record<string, unknown>, unloaded: readonly string[] = []) {
     selectPreset("preset");
@@ -297,8 +295,8 @@ describe("the setters", () => {
         expect(settings.ui.theme).toBe("sync");
         await atOnce;
 
-        // `d`'s chat is held as its summary (Phase 6 slice 9b): the list names `d`, so its chats load
-        // first; the read is held until the test releases it.
+        // `d`'s chat is held as its summary: the list names `d`, so its chats load first; the read
+        // is held until the test releases it.
         unloadD();
         const { release } = holdReads();
         const later = api.setDatabaseLite({
@@ -317,7 +315,7 @@ describe("the setters", () => {
 
     it("a character deleted while the list's chats load is skipped with a warning, never recreated; the rest of the list lands", async () => {
         const api = await makeApi();
-        // `d`'s chat is held as its summary (Phase 6 slice 9b): its load is in flight when `d` is deleted.
+        // `d`'s chat is held as its summary: its load is in flight when `d` is deleted.
         unloadD();
         const { release } = holdReads();
         const [c, d] = liveCharacters();
@@ -344,10 +342,10 @@ describe("the setters", () => {
     });
 });
 
-// Phase 6 slice 9b: boot holds summaries, chats load on demand, and idle loaded chats are evicted
-// beyond eight. The plugin boundary loads what it copies or reconciles, pins it meanwhile, and refuses
-// a character whose chats were replaced (even under the same ids) while they loaded.
-describe("lazy loading (Phase 6 slice 9b)", () => {
+// Boot holds summaries, chats load on demand, and idle loaded chats are evicted beyond eight. The
+// plugin boundary loads what it copies or reconciles, pins it meanwhile, and refuses a character
+// whose chats were replaced (even under the same ids) while they loaded.
+describe("lazy loading", () => {
     /** `c` with twelve chats (`k` with messages a, b; `j`; `x0`..`x9`), `d` with `kd`. */
     function manyCharacters() {
         const [c, d] = liveCharacters();

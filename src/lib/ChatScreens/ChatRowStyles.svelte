@@ -1,5 +1,5 @@
 <script lang="ts">
-    // A chat row's uses of its chat screen's shared stylesheets (heap plan C2, `chatStyles.ts`).
+    // A chat row's uses of its chat screen's shared stylesheets (`chatStyles.ts`).
     // Renders nothing; `ChatBody` mounts it only under a registry.
     import { untrack } from "svelte";
     import { type ChatStyle, getChatStyleRegistry } from "../../ts/parser/chatStyles";

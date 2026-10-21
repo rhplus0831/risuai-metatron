@@ -4,12 +4,12 @@ import { flushSync, mount, unmount } from "svelte";
 import { fromStore, writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/chat-binding.md`, slice 6: the two new-chat buttons (`SideChatList.svelte`'s and the
-// chat list modal's, `src/lib/Others/ChatList.svelte`) start the chat from `initialChatBinding`:
-// with `newChatBinding` unset or `inherit` the character's selected chat's bound ids that exist,
-// never its `bindingReview`, read before the new chat takes the selection; with `empty` nothing; a
-// group chat the same, with its members' first messages. A copy from the chat row's options spreads
-// its loaded source and keeps all four fields, a gone id and a pending review included.
+// The two new-chat buttons (`SideChatList.svelte`'s and the chat list modal's,
+// `src/lib/Others/ChatList.svelte`) start the chat from `initialChatBinding`: with `newChatBinding`
+// unset or `inherit` the character's selected chat's bound ids that exist, never its
+// `bindingReview`, read before the new chat takes the selection; with `empty` nothing; a group chat
+// the same, with its members' first messages. A copy from the chat row's options spreads its loaded
+// source and keeps all four fields, a gone id and a pending review included.
 
 const alerts = vi.hoisted(() => ({ chatOption: 0 }));
 /** The SortableJS instances the list created, so a test can run a drop's `onEnd` (happy-dom cannot drag). */
@@ -238,10 +238,10 @@ describe("chat pins in the sidebar", () => {
     });
 });
 
-// `docs/plan/data-loss-concurrency.md`, slice 7a: a chat whose `folderId` names no folder of its
-// character (a two-tab move/delete race, a refused folder write) lists at the root (`chatFolderOf`)
-// and keeps its id; a drop always passes `reorderChats` a permutation; a folder delete resolves its
-// folder and character by id after the confirm.
+// A chat whose `folderId` names no folder of its character (a two-tab move/delete race, a refused
+// folder write) lists at the root (`chatFolderOf`) and keeps its id; a drop always passes
+// `reorderChats` a permutation; a folder delete resolves its folder and character by id after the
+// confirm.
 describe("a chat whose folder does not exist", () => {
     const rowOf = (target: HTMLElement, name: string) =>
         [...target.querySelectorAll<HTMLElement>("[data-risu-chat-idx]")].find((row) =>
@@ -357,8 +357,8 @@ describe("a chat whose folder does not exist", () => {
     });
 });
 
-// Slice C3 of `docs/plan/open-bug-fixes.md`: the folder color dialogs resolve the character and the
-// folder by the ids captured before the first dialog, never by the row's `#each` item or `chara`.
+// The folder color dialogs resolve the character and the folder by the ids captured before the
+// first dialog, never by the row's `#each` item or `chara`.
 describe("a folder color chosen while the folders change", () => {
     /** The first dialog answers "change color" at once; the color list waits for `pick`. */
     function holdColorDialog() {
@@ -607,9 +607,9 @@ describe("the chat list modal's new chat button", () => {
     });
 });
 
-// Slice 2b of the archived `docs/plan/search.md`: the filter field matches a chat's name and its folder's name
-// (Decision 4) through the Korean-aware matcher; a filtered view opens its folders without writing
-// `folded`, and every SortableJS instance is disabled while the field is non-empty.
+// The filter field matches a chat's name and its folder's name through the Korean-aware matcher; a
+// filtered view opens its folders without writing `folded`, and every SortableJS instance is disabled
+// while the field is non-empty.
 describe("the chat list filter", () => {
     beforeEach(() => {
         byChaId("c").chatFolders = [{ id: "f", name: "Harbor", folded: true }];

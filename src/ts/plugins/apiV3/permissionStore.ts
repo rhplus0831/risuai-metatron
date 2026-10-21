@@ -109,8 +109,8 @@ export function recordPermissionGrants(added: {
 }
 
 /**
- * A live update: another tab or device committed the grants at `revision` (Phase 6). Read again
- * unless this tab already holds that revision or a newer one; the read runs in the same queue as
+ * A live update: another tab or device committed the grants at `revision`. Read again unless this
+ * tab already holds that revision or a newer one; the read runs in the same queue as
  * `recordPermissionGrants`, and an answer older than what this tab holds by then is not taken.
  */
 export function refreshPluginPermissions(revision: string | null): Promise<void> {

@@ -4,10 +4,10 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTranslatorPreset } from "../../../../../shared/translatorPresets.ts";
 
-// Phase 3, slice 4 (Astra challenge point 4): the rename and delete buttons await a dialog, and a
-// conflict reload can replace `translatorPresets` (and the selection) meanwhile. The handlers
-// capture only the target's id and name before the await and resolve it again afterwards, so they
-// edit the live list, never a detached copy. The page selects by id (`translatorPresetId`).
+// The rename and delete buttons await a dialog, and a conflict reload can replace
+// `translatorPresets` (and the selection) meanwhile. The handlers capture only the target's id and
+// name before the await and resolve it again afterwards, so they edit the live list, never a
+// detached copy. The page selects by id (`translatorPresetId`).
 
 const alerts = vi.hoisted(() => ({
     input: vi.fn(),
@@ -96,12 +96,12 @@ function reloadFromServer(items: ReturnType<typeof preset>[], selectedId: string
 
 beforeEach(() => {
     // Installed into the records the way the app installs a boot (its fields moved into the
-    // records), since the page reads the records through the settings views (Phase 6 slice 6).
+    // records), since the page reads the records through the settings views.
     installFlatDatabase({
         characters: [],
         translatorPresets: [preset("a", "A"), preset("b", "B")],
         translatorPresetId: "a",
-        // The connections a step can pick (translation slice 3.1), beside the default one.
+        // The connections a step can pick, beside the default one.
         modelProfiles: [
             normalizeModelProfile({}, { id: DEFAULT_MODEL_PROFILE_ID }),
             normalizeModelProfile({ id: "echo", name: "Echo", modelId: "echo_model" }),
@@ -253,7 +253,7 @@ describe("the first step's editor", () => {
         page.target.querySelector<HTMLInputElement>("input[type=number]")!;
     const firstStep = (id: string) => settings.translatorPresets.items.find((entry) => entry.id === id)!.steps[0];
 
-    it("shows and edits the selected preset's first step through the preset (translation slice 1.2)", async () => {
+    it("shows and edits the selected preset's first step through the preset", async () => {
         const page = render();
         expect(textarea(page).value).toBe("prompt a");
         expect(size(page).value).toBe("10");
@@ -301,11 +301,11 @@ describe("the first step's editor", () => {
     });
 });
 
-// Translation slice 3.1: the step editor (`TranslatorStepEditor.svelte`, one per step) finds its step
-// by the preset's and the step's ids at every access, writes only what the server's normalizer keeps
-// as it is (a blank name, an invalid or taken output key, and a cleared response size are not written;
-// a draft is shown with a hint and dropped once what it was typed over changes), and adds, moves,
-// and removes steps on the live list.
+// The step editor (`TranslatorStepEditor.svelte`, one per step) finds its step by the preset's and the
+// step's ids at every access, writes only what the server's normalizer keeps as it is (a blank name,
+// an invalid or taken output key, and a cleared response size are not written; a draft is shown with a
+// hint and dropped once what it was typed over changes), and adds, moves, and removes steps on the
+// live list.
 describe("the step editor", () => {
     type Page = ReturnType<typeof render>;
     const box = (page: Page, id: string) => page.target.querySelector<HTMLElement>(`[data-translator-step="${id}"]`)!;
@@ -493,7 +493,7 @@ describe("the step editor", () => {
         // The other steps' editors show nothing of it.
         expect(hints(box(page, "s2"))).toEqual([]);
 
-        // A reload that changes the stored name discards the draft for good (Astra's challenge, point 3).
+        // A reload that changes the stored name discards the draft for good.
         const named = (name: string) =>
             reloadFromServer(
                 [
@@ -583,7 +583,7 @@ describe("the step editor", () => {
         expect(hints(s2())).toEqual([STEPS.outputKeyTaken]);
         expect(plain(stepsOf()[1])).not.toHaveProperty("outputKey");
 
-        // The owner clears its key: the draft is not committed (Astra's challenge, point 2).
+        // The owner clears its key: the draft is not committed.
         type(keyInput(s1()), "");
         await tick();
         expect(plain(stepsOf()[0])).not.toHaveProperty("outputKey");
@@ -728,9 +728,9 @@ describe("the step editor", () => {
     });
 });
 
-// Translation slice 3.2: the Send Text As-Is check writes `true` to the selected preset, found by id
-// at each write, or deletes the field (never `false`), so the tab's text stays the server's; it
-// follows the selection and a reload that replaced the objects.
+// The Send Text As-Is check writes `true` to the selected preset, found by id at each write, or
+// deletes the field (never `false`), so the tab's text stays the server's; it follows the selection
+// and a reload that replaced the objects.
 describe("Send Text As-Is", () => {
     type Page = ReturnType<typeof render>;
     const checkbox = (page: Page) => {
@@ -789,9 +789,9 @@ describe("Send Text As-Is", () => {
     });
 });
 
-// Translation slice 3.4: the Exclude Chain-of-Thought check writes `true` to the selected preset,
-// found by id at each write, or deletes the field (never `false`), independent of Send Text As-Is;
-// it follows the selection and a reload that replaced the objects.
+// The Exclude Chain-of-Thought check writes `true` to the selected preset, found by id at each
+// write, or deletes the field (never `false`), independent of Send Text As-Is; it follows the
+// selection and a reload that replaced the objects.
 describe("Exclude Chain-of-Thought", () => {
     type Page = ReturnType<typeof render>;
     const checkbox = (page: Page, name: string) => {

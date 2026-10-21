@@ -60,9 +60,9 @@
         renderRawStreaming?: boolean;
         rawStreamingText?: string;
         /**
-         * The row is on the stored-translation path (`docs/plan/translation.md` slice 1.4): `msgDisplay`
-         * is rendered as it is (the original, or the stored translation `Chat` chose), never through
-         * the rendered translation, and `translated`/`retranslate` are not read.
+         * The row is on the stored-translation path: `msgDisplay` is rendered as it is (the
+         * original, or the stored translation `Chat` chose), never through the rendered translation,
+         * and `translated`/`retranslate` are not read.
          */
         storedPath?: boolean;
         /** On the stored path: `msgDisplay` is the stored translation (the `edittrans` scripts apply). */
@@ -70,14 +70,14 @@
         /** On the stored path: a translation the row shows is being requested (the loading state). */
         storedPending?: boolean;
         /**
-         * On the stored path, with the stored translation shown: the chat's bilingual display
-         * (`docs/plan/translation.md` slice 2.4). The translation (after its `edittrans` scripts) is
-         * interleaved with `source` before the display transform. Null: the translation alone.
+         * On the stored path, with the stored translation shown: the chat's bilingual display. The
+         * translation (after its `edittrans` scripts) is interleaved with `source` before the display
+         * transform. Null: the translation alone.
          */
         bilingual?: { source: string; options: BilingualInterleaveOptions } | null;
         /**
-         * The row's chat's `autoTranslate` (`docs/plan/translation.md` slice 2.1): on the rendered path,
-         * the row starts translated (or with the cached translation only, `autoTranslateCachedOnly`).
+         * The row's chat's `autoTranslate`: on the rendered path, the row starts translated (or with
+         * the cached translation only, `autoTranslateCachedOnly`).
          */
         autoTranslate?: boolean;
     }
@@ -173,7 +173,7 @@
                 // The normal display path; a stored translation takes the `edittrans` scripts first.
                 let text = shownStored ? applyEdittransToStoredTranslation(data, charArg, chatID, transform) : data;
                 if (shownStored && pairing) {
-                    // The display scripts see the pairs' wrappers between the lines (slice 2.4).
+                    // The display scripts see the pairs' wrappers between the lines.
                     text = bilingualInterleave(pairing.source, text, pairing.options);
                 }
                 const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
@@ -385,7 +385,7 @@
         }
     };
 
-    // Under a chat screen, shareable `<style>`s use its registry (heap plan C2): the body keeps inert
+    // Under a chat screen, shareable `<style>`s use its registry: the body keeps inert
     // comment placeholders, and `ChatRowStyles` holds their CSS and attributes. Elsewhere they stay inline.
     const chatStyles = getChatStyleRegistry();
     const NO_STYLES: readonly ChatStyle[] = [];

@@ -3,17 +3,16 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 6 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-pages.md`,
-// "After the challenge"): the persona page binds the selected persona through `activePersona`. The
-// large-portrait checkbox is the one control that keeps its old index binding's rule: it writes the
-// persona the selection resolves to (the first one when the selection names none), where
-// `activePersona`'s setter would drop the write. The name and description inputs write the selected
-// persona through the view, and follow a selection change.
+// The persona page binds the selected persona through `activePersona`. The large-portrait checkbox
+// is the one control that keeps its old index binding's rule: it writes the persona the selection
+// resolves to (the first one when the selection names none), where `activePersona`'s setter would
+// drop the write. The name and description inputs write the selected persona through the view, and
+// follow a selection change.
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
 // `persona.ts` pulls the PNG and inlay code in; its `changeUserPersona` is one line over `pickBinding`,
-// which the slice 5 tests below reach through the page.
+// which the open-chat tests below reach through the page.
 vi.mock("src/ts/persona", async () => {
     const { pickBinding } = await import("src/ts/storage/chatBindingPick");
     return {
@@ -53,7 +52,7 @@ function render() {
     document.body.appendChild(target);
     mounted.push(mount(PersonaSettings, { target }));
     flushSync();
-    // The checkbox in the large-portrait label (the persona note toggle above it is one too, slice 4).
+    // The checkbox in the large-portrait label (the persona note toggle above it is one too).
     const largePortrait = () =>
         [...target.querySelectorAll("label")]
             .find((label) => label.textContent?.includes(language.largePortrait))!
@@ -106,7 +105,7 @@ describe("PersonaSettings", () => {
         expect(largePortrait().checked).toBe(false);
     });
 
-    it("the large-portrait checkbox writes the persona the selection resolves to when the selected one is gone (challenge point 1)", () => {
+    it("the large-portrait checkbox writes the persona the selection resolves to when the selected one is gone", () => {
         const { largePortrait } = render();
         // The selected persona disappears and the checkbox changes before anything reads the selection again.
         selectPersona("gone");
@@ -117,13 +116,13 @@ describe("PersonaSettings", () => {
     });
 });
 
-// `docs/plan/chat-binding.md`, slice 5: with a chat open the icon grid's ring marks the chat's bound
-// persona that exists (none when unset or gone; at home the tab's), a grid click binds the open chat
-// through `changeUserPersona` (the tab's selection stays), "create persona" picks the new persona for
-// the chat captured before its dialog (or the tab's selection captured at home), a deletion names how
-// many chats bind the persona, leaves them bound, and moves only a tab selection that named it, and
-// the header note says whose persona the editor shows. The editor itself stays on `activePersona`.
-describe("PersonaSettings with a chat open (slice 5)", () => {
+// With a chat open the icon grid's ring marks the chat's bound persona that exists (none when unset
+// or gone; at home the tab's), a grid click binds the open chat through `changeUserPersona` (the
+// tab's selection stays), "create persona" picks the new persona for the chat captured before its
+// dialog (or the tab's selection captured at home), a deletion names how many chats bind the persona,
+// leaves them bound, and moves only a tab selection that named it, and the header note says whose
+// persona the editor shows. The editor itself stays on `activePersona`.
+describe("PersonaSettings with a chat open", () => {
     const refK = { chaId: "c", chatId: "k" };
     const refJ = { chaId: "c", chatId: "j" };
     const chat = (id: string, fields: Record<string, unknown> = {}) => ({
@@ -295,10 +294,10 @@ describe("PersonaSettings with a chat open (slice 5)", () => {
 // The Module Link section: the linkable list is the catalog's non-MCP modules with a non-blank id,
 // each id once (the first, as the resolvers pick), named by `name` or by the id when the name is
 // blank, sorted by that name and filtered by the search; a duplicate id or a nameless module does not
-// break the render (Astra's challenge points 1 and 2). A row toggles the id on the persona the editor
-// shows (the open chat's bound persona, else the tab's), written in canonical form so the mirror
-// equals what the server stores (D2; point 3): unknown ids stay, blank ones go. An unmatched search
-// says so; a catalog without a linkable module says that instead (point 4).
+// break the render. A row toggles the id on the persona the editor shows (the open chat's bound
+// persona, else the tab's), written in canonical form so the mirror equals what the server stores:
+// unknown ids stay, blank ones go. An unmatched search says so; a catalog without a linkable module
+// says that instead.
 describe("PersonaSettings module links", () => {
     const chat = (id: string, fields: Record<string, unknown> = {}) => ({
         id,

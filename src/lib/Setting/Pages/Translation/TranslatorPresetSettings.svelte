@@ -36,7 +36,7 @@
     }
 
     /**
-     * Turns Send Text As-Is (slice 3.2) on or off for the preset `presetId` (found again by id). Off
+     * Turns Send Text As-Is on or off for the preset `presetId` (found again by id). Off
      * deletes the field: the normalizer stores only `true`, and the tab holds the server's text.
      */
     function setSendTextAsIs(presetId: string, value: boolean) {
@@ -49,7 +49,7 @@
         }
     }
 
-    /** Turns Exclude Chain-of-Thought (slice 3.4) on or off for the preset `presetId`, as `setSendTextAsIs`. */
+    /** Turns Exclude Chain-of-Thought on or off for the preset `presetId`, as `setSendTextAsIs`. */
     function setExcludeThoughts(presetId: string, value: boolean) {
         const preset = settings.translatorPresets.items.find((entry) => entry.id === presetId);
         if (!preset) return;
@@ -189,7 +189,7 @@
 </div>
 
 {#if settings.translatorPresets.items?.some((entry) => entry.id === current.id)}
-    <!-- The steps of the selected preset (translation slice 3.1). Each editor finds its step by the
+    <!-- The steps of the selected preset. Each editor finds its step by the
          preset's id and its own, so a conflict reload that replaces the steps is followed. -->
     {@const preset = current}
     <div class="flex items-center mt-2">

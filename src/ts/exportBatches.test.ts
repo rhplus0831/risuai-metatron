@@ -9,8 +9,8 @@ import { decodeModuleMain, readModuleFileHeader } from "../../shared/moduleImpor
 import { pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations } from "./storage/tests/mutationStoresHarness";
 
-// Slice 3a: real exporters, batch client, writers, and importers. Only authentication,
-// UI, image conversion, and the download sink are replaced at their external boundaries.
+// Real exporters, batch client, writers, and importers. Only authentication, UI, image conversion,
+// and the download sink are replaced at their external boundaries.
 const { server, alerts, assets } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: {
@@ -722,7 +722,7 @@ describe("export writer completion", () => {
     );
 });
 
-// Slice 3b: a JSON card embeds every asset as a data URI, so past the cap it refuses before
+// A JSON card embeds every asset as a data URI, so past the cap it refuses before
 // `JSON.stringify`. Reads go through a `loadAssets` spy to avoid encoding 64 MiB batch bodies.
 describe("JSON export asset cap", () => {
     async function capped(sizes: (Uint8Array | "pending")[], compressed?: Uint8Array) {

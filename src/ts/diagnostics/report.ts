@@ -5,9 +5,8 @@ import { authFetch } from "../storage/serverAuth";
 import { clientDiagnosticEvents } from "./collector";
 
 /**
- * The Diagnostics panel's report (`docs/plan/request-history-diagnostics.md` slice 9, decision 6):
- * built here from this tab's ring and the server's `GET /api/diagnostics`, through
- * `shared/diagnosticsReport.ts` (which checks every value). Building only reads; the report leaves
+ * The Diagnostics panel's report: built here from this tab's ring and the server's `GET /api/diagnostics`,
+ * through `shared/diagnosticsReport.ts` (which checks every value). Building only reads; the report leaves
  * the tab only by the user's Copy, Download, or Save to server (`saveDiagnosticReport`).
  */
 

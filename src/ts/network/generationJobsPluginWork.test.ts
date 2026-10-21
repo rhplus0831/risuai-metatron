@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 
-// The jobs' plugin-work lease (RisuNest small wins P2, `plugins-mcp.md` Flows step 6): a reload after
-// a remote plugin change waits while `generationPluginWorkActive()` and hears each change through
-// `onGenerationPluginWork`. A job is held from its creation request (before the hooks are listed) or
-// its follow until `releaseGenerationJob`; a saved job counts; each busy attempt holds its own
-// reservation until its own status read answers, and a late read promotes nothing after the release;
-// a queued channel event is held until the dispatcher ran it; the channel's running callbacks are
-// reported through `noteChannelCallbacks`. The same stubs as `generationJobs.test.ts`.
+// The jobs' plugin-work lease (`plugins-mcp.md` Flows step 6): a reload after a remote plugin
+// change waits while `generationPluginWorkActive()` and hears each change through
+// `onGenerationPluginWork`. A job is held from its creation request (before the hooks are listed)
+// or its follow until `releaseGenerationJob`; a saved job counts; each busy attempt holds its own
+// reservation until its own status read answers, and a late read promotes nothing after the
+// release; a queued channel event is held until the dispatcher ran it; the channel's running
+// callbacks are reported through `noteChannelCallbacks`. The same stubs as
+// `generationJobs.test.ts`.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 

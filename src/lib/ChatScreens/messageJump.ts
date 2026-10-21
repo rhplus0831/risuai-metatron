@@ -1,8 +1,8 @@
 /**
- * The chat screen's jump to a message by id (archived `docs/plan/search.md` slice 4b): the decisions of
- * `DefaultChatScreen.svelte`'s `scrollToMessageId`, with the component's state and DOM injected so
- * they can be tested without mounting the screen. Every await is followed by an ownership check and a
- * fresh lookup of the message by its id (D1): the index is never kept across an await.
+ * The chat screen's jump to a message by id: the decisions of `DefaultChatScreen.svelte`'s
+ * `scrollToMessageId`, with the component's state and DOM injected so they can be tested without
+ * mounting the screen. Every await is followed by an ownership check and a fresh lookup of the
+ * message by its id: the index is never kept across an await.
  */
 
 /** Rows rendered past the target, as `scrollToMessage` loads them (the context above it). */

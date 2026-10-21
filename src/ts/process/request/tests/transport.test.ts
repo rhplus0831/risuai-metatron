@@ -1,16 +1,16 @@
 // The default (happy-dom) environment, not `node`: the transport reads the settings through the
-// record views (Phase 6 slice 7), whose records need Svelte's client `$state` (the node environment
-// compiles `.svelte.ts` modules for the server, where `$state` is not a proxy).
+// record views, whose records need Svelte's client `$state` (the node environment compiles
+// `.svelte.ts` modules for the server, where `$state` is not a proxy).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestBody, LlmRequestEvent, StreamResponseChunk } from "../../../../../shared/llm/request.ts";
 
-// Phase 5 slice 7a, the client half of `POST /api/llm/request` (`src/ts/process/request/transport.ts`):
-// the context and the arguments are taken before the first await; the pending saves are flushed
-// (a refused flush fails, an abort anywhere before the POST sends nothing); the body's shape; the
-// SSE events in order (frames split across reads, the chunk grammar, inlays and tool records
-// written before any later event, callbacks answered without holding up the stream, one answer per
-// callback id, nothing started after the request ended); the terminals (EOF without one is a
-// failure); the HTTP refusals (412 through the epoch handler). The server side is in
+// The client half of `POST /api/llm/request` (`src/ts/process/request/transport.ts`): the context
+// and the arguments are taken before the first await; the pending saves are flushed (a refused
+// flush fails, an abort anywhere before the POST sends nothing); the body's shape; the SSE events in
+// order (frames split across reads, the chunk grammar, inlays and tool records written before any
+// later event, callbacks answered without holding up the stream, one answer per callback id,
+// nothing started after the request ended); the terminals (EOF without one is a failure); the HTTP
+// refusals (412 through the epoch handler). The server side is in
 // `server/src/tests/llmRequests.test.ts`.
 
 const stubs = vi.hoisted(() => ({
@@ -77,7 +77,7 @@ vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
     // The capture is the real display rule over the real records and selection: the chat's bound ids
-    // where they exist, else the selected ones (`docs/plan/chat-binding.md`).
+    // where they exist, else the selected ones.
     const { chatDisplayIds } = await import("src/ts/storage/chatBinding.svelte");
     return {
         capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
@@ -93,7 +93,7 @@ vi.mock("src/ts/storage/serverAuth", () => ({
 vi.mock("src/ts/storage/resourceClient", () => ({
     epochMismatch: stubs.epochMismatch,
     getResourceEpoch: () => "epoch-1",
-    // The chat module's own reads (a load of a chat the transport needs; Phase 6 slice 9b).
+    // The chat module's own reads (a load of a chat the transport needs).
     readRefs: (...args: unknown[]) => stubs.readRefs(...args),
 }));
 vi.mock("src/ts/storage/resourceSync.svelte", () => ({ flushResources: () => stubs.flush() }));
@@ -130,7 +130,7 @@ const BOUND = { modelPresetId: "preset-1", promptPresetId: "preset-1", bindedPer
 const fixtureCharacters = () => [
     { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
     { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
-    // `chat-9` (the request chat the cases name) is bound to the selected records (`docs/plan/chat-binding.md`).
+    // `chat-9` (the request chat the cases name) is bound to the selected records.
     {
         chaId: "char-9",
         type: "character",
@@ -142,9 +142,9 @@ const fixtureCharacters = () => [
 ];
 
 /**
- * Holds the fixture's chats in the chat module, as boot assembles them (the records hold no chats,
- * Phase 6 slice 9a): loaded, except the chats of the characters in `unloaded`, held as their
- * summaries (slice 9b) and read through `stubs.readRefs` when the transport loads them.
+ * Holds the fixture's chats in the chat module, as boot assembles them (the records hold no chats):
+ * loaded, except the chats of the characters in `unloaded`, held as their summaries and read through
+ * `stubs.readRefs` when the transport loads them.
  */
 function assembleFixture(unloaded: readonly string[]) {
     const characters = fixtureCharacters();
@@ -165,12 +165,11 @@ function assembleFixture(unloaded: readonly string[]) {
 
 /**
  * The settings installed in the records (as the removed `setDatabaseLite` installed a database;
- * there is no whole-database object since Phase 6 slice 10), since the transport reads them
- * through the record views (Phase 6 slice 7): `stubs.db`'s model fields (`aiModel` as the model id)
- * in the main profile of each model preset (`profile-<model preset id>`; the model presets share the
- * prompt presets' ids, `docs/plan/split-preset.md`, `docs/plan/model-profiles.md`), its section fields in their sections,
- * two personas, two characters (the transport reads the selected one, Phase 6 slice 8); preset-1 (both
- * kinds), persona-1, and char-1 selected. `preset-ctx` and the model preset `model-ctx` are the pair a
+ * there is no whole-database object any more), since the transport reads them through the record
+ * views: `stubs.db`'s model fields (`aiModel` as the model id) in the main profile of each model
+ * preset (`profile-<model preset id>`; the model presets share the prompt presets' ids), its section
+ * fields in their sections, two personas, two characters (the transport reads the selected one);
+ * preset-1 (both kinds), persona-1, and char-1 selected. `preset-ctx` and the model preset `model-ctx` are the pair a
  * plugin context captures in the cases below: never selected, so a request that carries them proves
  * the capture (a captured preset that does not exist is refused).
  */
@@ -199,8 +198,8 @@ function installSettings() {
         { id: "persona-2", name: "Persona 2" },
     ];
     // `char-9`/`chat-9` is the request chat the cases name, `other`/`k` the chat a `cbs` callback names
-    // instead: since Phase 6 slice 9b the transport loads both before it works for them (refusing a
-    // chat the store does not list), so they are held here, loaded.
+    // instead: the transport loads both before it works for them (refusing a chat the store does not
+    // list), so they are held here, loaded.
     const characters = fixtureCharacters();
     raw.characters = characters;
     initializeRecords(takeRecordFields(raw));
@@ -341,7 +340,7 @@ describe("the request body", () => {
             clientId: "tab-1",
             mode: "submodel",
             // The captured context's ids, the request chat's character, and its one persona as the selected
-            // one too (`docs/plan/chat-binding.md`), not the tab's selection.
+            // one too, not the tab's selection.
             context: {
                 presetId: "preset-ctx",
                 modelPresetId: "model-ctx",
@@ -416,8 +415,7 @@ describe("the request body", () => {
         expect(postedBody().context).toMatchObject({ presetId: "preset-1", modelPresetId: "preset-1" });
     });
 
-    // `docs/plan/translation.md` slice 3.1: a chatless caller's captured ids (`requestIds`) and the
-    // request's named profile (`profileId`).
+    // A chatless caller's captured ids (`requestIds`) and the request's named profile (`profileId`).
     it("names a chatless caller's captured ids in the context, tokenizes with that model preset, forwards profileId but not the ids, and refuses a captured preset that is gone before the flush", async () => {
         const requestIds = { presetId: "preset-ctx", modelPresetId: "model-ctx", personaId: "persona-2" };
         const arg = { ...baseArg(), requestIds, profileId: "step-profile" };
@@ -521,7 +519,7 @@ describe("the request body", () => {
         activeMainProfile.currentPluginProvider = "";
     });
 
-    it("runs a request without a chat on the views (decision 10): the selected chat's bound ids where they exist, else the tab's; no chatRef, never refused", async () => {
+    it("runs a request without a chat on the views: the selected chat's bound ids where they exist, else the tab's; no chatRef, never refused", async () => {
         // The selected chat `chat-1` binds the `2` records while the tab selects the `1`s.
         const ref = { chaId: "char-1", chatId: "chat-1" };
         chatBindingPatch(ref, { promptPresetId: "preset-2", modelPresetId: "preset-2", personaId: "persona-2" });
@@ -582,7 +580,7 @@ describe("the request body", () => {
 
     it("tokenizes and names the main model of the request's captured model preset, not the selected one", async () => {
         // A hook captured model preset `preset-2` while `preset-1` is selected (the pair the server
-        // receives is the pair the tab decided with, `docs/plan/split-preset.md`).
+        // receives is the pair the tab decided with).
         activeMainProfile.modelId = "reverse_proxy";
         selectModelPreset("preset-2");
         activeMainProfile.modelId = "with-images";
@@ -651,8 +649,8 @@ describe("the request body", () => {
         expect(stubs.fetch).not.toHaveBeenCalled();
     });
 
-    // `docs/plan/chat-binding.md`, slice 3: a chat's request names the chat's own binding and runs only
-    // while that binding is complete; the server's 409s map to the same localized text and are not retried.
+    // A chat's request names the chat's own binding and runs only while that binding is complete; the
+    // server's 409s map to the same localized text and are not retried.
     it("names the chat's binding for a chat request without a context, and refuses an incomplete binding before the flush", async () => {
         createChat("char-9", {
             id: "chat-bound",
@@ -962,7 +960,7 @@ describe("the events", () => {
             width: 0,
             ext: "wav",
         });
-        // The record is remembered with the request's chat (slice 11b); this request has none.
+        // The record is remembered with the request's chat; this request has none.
         expect(stubs.encodeToolCall).toHaveBeenCalledWith(
             {
                 call: { id: "c1", name: "n", arg: "{}" },
@@ -1033,8 +1031,8 @@ describe("the callbacks", () => {
             ["{{char}}", { chatRef: { chaId: "other", chatId: "k" } }, scope],
         ]);
         expect(stubs.callTool).toHaveBeenCalledTimes(1);
-        // The tool call names the request's chat (Phase 6 slice 9b: its module MCP servers, not the selection's)
-        // and carries the request's plugin context, so a plugin MCP tool acts on that chat (slice 4d, SP-I1).
+        // The tool call names the request's chat (its module MCP servers, not the selection's) and
+        // carries the request's plugin context, so a plugin MCP tool acts on that chat.
         expect(stubs.callTool).toHaveBeenCalledWith(
             "roll",
             { sides: 6 },
@@ -1122,11 +1120,11 @@ describe("the callbacks", () => {
     });
 });
 
-// Phase 6 slice 9b: the request's chat (and its parse chat) are pinned and loaded after the flush,
+// The request's chat (and its parse chat) are pinned and loaded after the flush,
 // before the POST, and every later event checks that they are still the chats the request began
 // with (listed, same owner lifetime): a chat deleted or replaced under the same ids meanwhile is
 // another chat's request. A `cbs` callback naming another chat loads it for its parse.
-describe("the request's chats (Phase 6 slice 9b)", () => {
+describe("the request's chats", () => {
     const chat9 = { chaId: "char-9", chatId: "chat-9" };
     const gone = "The chat this request is for no longer exists";
     /** A re-import of `char-9` under the same ids: its chats are installed again (a new owner lifetime). */

@@ -3,12 +3,11 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The partial editor's translation writes (`docs/plan/translation.md` slice 1.4; Astra challenge
-// point 1): with a `saveTranslation` callback the controller awaits the write, keeps the draft when
-// it is refused or throws, closes only when the edit session that saved is still the open one (a
-// cancel or a newer edit started meanwhile leaves the newer editor alone), refuses overlapping saves,
-// and never edits the original from a translated view whose translation context is missing. Without
-// the callback it dispatches `save` as before, and an original edit still dispatches.
+// The partial editor's translation writes: with a `saveTranslation` callback the controller awaits the
+// write, keeps the draft when it is refused or throws, closes only when the edit session that saved is
+// still the open one (a cancel or a newer edit started meanwhile leaves the newer editor alone), refuses
+// overlapping saves, and never edits the original from a translated view whose translation context is
+// missing. Without the callback it dispatches `save` as before, and an original edit still dispatches.
 
 const alerts = vi.hoisted(() => ({ error: vi.fn() }));
 vi.mock("src/ts/alert", async () =>
@@ -366,9 +365,9 @@ describe("PartialEditController translation writes", () => {
     });
 });
 
-// Occurrence targeting (audit UI-02 and UI-03, `docs/plan/audit-findings-perf.md` slice 2c): two
-// identical rendered blocks on one source line are offered as a choice and the chosen one is the one
-// edited or deleted; a drag selection ending in a typographic ellipsis edits exactly the selection.
+// Occurrence targeting: two identical rendered blocks on one source line are offered as a choice and
+// the chosen one is the one edited or deleted; a drag selection ending in a typographic ellipsis
+// edits exactly the selection.
 describe("PartialEditController occurrence targeting", () => {
     const TWO_BLOCKS = "<p>Hello</p><p>Hello</p>";
     const second = (bodyRoot: HTMLElement) => bodyRoot.querySelectorAll("p")[1] as HTMLElement;

@@ -4,7 +4,7 @@ import { settings } from "../../../storage/settingsViews.svelte";
 import { compressImage } from "../compressImage";
 
 // The setting is installed in the records (as `setDatabaseLite` installs a database) and changed
-// through the settings views, which `compressImage` reads (Phase 6 slice 7).
+// through the settings views, which `compressImage` reads.
 initializeRecords(takeRecordFields({ imageCompression: false }));
 
 const doLossyCompressionMock = vi.fn();

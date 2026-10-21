@@ -61,9 +61,9 @@ vi.mock("src/etc/o200k_base.json", () => ({
 }));
 
 // The fixture installed into the records, since the tokenizer reads the settings through the record
-// views (Phase 6 slice 7): its model fields (`modelId`, `currentPluginProvider`) are the main profile
-// of the one model preset (`docs/plan/model-profiles.md`), the tokenizer toggles the `providers`
-// section's. A case changes them through the views.
+// views: its model fields (`modelId`, `currentPluginProvider`) are the main profile of the one
+// model preset, the tokenizer toggles the `providers` section's. A case changes them through the
+// views.
 installFlatDatabase(
     {
         modelProfiles: [normalizeModelProfile({ ...mocks.fixture }, { id: DEFAULT_MODEL_PROFILE_ID })],
@@ -84,7 +84,7 @@ describe("encode", () => {
     });
 });
 
-describe("the routing shared with the server (Phase 5 slice 4)", () => {
+describe("the routing shared with the server", () => {
     const base = { ...mocks.fixture };
     const restore = () => {
         activeMainProfile.modelId = base.modelId;

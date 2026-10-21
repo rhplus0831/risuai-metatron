@@ -2,14 +2,14 @@ import { flushSync } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The client of the server script transform (Phase 5 slice 13b, `src/ts/parser/transformClient.ts`):
-// context capture, batching and splitting, exactly-once settlement with one toast per batch, the
-// two-call protocol with the tab's plugin handlers and its deadlines, the Re-render cache bypass, and
-// the emotion effects. Everything the module talks to is mocked: the server is a function of the
-// request (`state.handler`), the chat module a few maps. The module is imported once (its state is
-// per document), so every test uses its own chat or message ids. Timers are fake: a batch goes out on
-// the 16 ms timer (the animation frame is withheld unless a test runs it), and the deadlines are the
-// real 28 s / 23 s.
+// The client of the server script transform (`src/ts/parser/transformClient.ts`): context capture,
+// batching and splitting, exactly-once settlement with one toast per batch, the two-call protocol
+// with the tab's plugin handlers and its deadlines, the Re-render cache bypass, and the emotion
+// effects. Everything the module talks to is mocked: the server is a function of the request
+// (`state.handler`), the chat module a few maps. The module is imported once (its state is per
+// document), so every test uses its own chat or message ids. Timers are fake: a batch goes out on the
+// 16 ms timer (the animation frame is withheld unless a test runs it), and the deadlines are the real
+// 28 s / 23 s.
 
 type Reply = { status?: number; body: unknown };
 type Handler = (path: string, body: any) => Reply | Promise<Reply>;
@@ -71,7 +71,7 @@ vi.mock("../../storage/chatStore.svelte", async () => {
     const { lockSource } = await import("./transformReactive.svelte");
     return {
         currentChatRef: () => state.current,
-        // The list entry: the binding fields the display rule reads (`docs/plan/chat-binding.md`).
+        // The list entry: the binding fields the display rule reads.
         chatEntry: (ref: { chaId: string; chatId: string }) =>
             state.chats.has(key(ref))
                 ? { bindedPersona: state.bound, promptPresetId: state.boundPreset, modelPresetId: state.boundModel }
@@ -89,7 +89,7 @@ vi.mock("../../stores.svelte", async () => {
     return { CharEmotion: writable({}) };
 });
 // The tab's selected prompt preset, model preset, and persona ids, the display rule's fallback
-// (`tabSelectionIds`: `""` when there is none; `docs/plan/chat-binding.md`, slice 4).
+// (`tabSelectionIds`: `""` when there is none).
 vi.mock("../../storage/settingsViews.svelte", () => ({
     tabSelectionIds: () => ({
         presetId: state.preset ?? "",
@@ -237,7 +237,7 @@ describe("captureTransform", () => {
         state.bound = "persona-bound";
         state.locked.add(`${key(ref)}/m1`);
         const captured = captureTransform(1)!;
-        // A chat's render has one persona: `selectedPersonaId` carries it too (`docs/plan/chat-binding.md`).
+        // A chat's render has one persona: `selectedPersonaId` carries it too.
         expect(captured.context).toEqual({
             characterId: ref.chaId,
             chatId: ref.chatId,
@@ -265,7 +265,7 @@ describe("captureTransform", () => {
         const other = newChat();
         state.current = selected;
         // A job callback's context carries the job's ids (a `presetChain` pick): the render is the chat's
-        // (`docs/plan/chat-binding.md`, the display rule), here the tab's for a chat without a binding.
+        // (the display rule), here the tab's for a chat without a binding.
         const pluginContext = {
             chatRef: other,
             presetId: "preset-hook",
@@ -872,10 +872,9 @@ describe("emotion effects", () => {
     });
 });
 
-// A restore during a send (the restore-notice fix after Phase 6 slice 2): a transform the server
-// refuses with a 412 EpochMismatch answers its targets raw and shows no failure toast, on either
-// call and across a batch's chunks, since the terminal restore notice tells the user. Any other
-// failure still toasts.
+// A restore during a send: a transform the server refuses with a 412 EpochMismatch answers its
+// targets raw and shows no failure toast, on either call and across a batch's chunks, since the
+// terminal restore notice tells the user. Any other failure still toasts.
 describe("a request a restore refused (412 EpochMismatch)", () => {
     const refused: Reply = { status: 412, body: { error: "EpochMismatch", epoch: "epoch-2" } };
 

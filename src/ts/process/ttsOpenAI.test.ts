@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the OpenAI TTS routing of `sayTTS`. The
-// stored OpenAI key is write-only and only reaches `api.openai.com`, through the server's
-// `openai-tts` operation (`auxFetch`); a character's own key goes with the character's request as
-// before, to any base URL; a custom base URL with the stored key but no key of its own is refused
-// with `ttsCustomUrlNeedsKey` (recorded in the slice); a keyless custom endpoint is called as before.
+// The OpenAI TTS routing of `sayTTS`. The stored OpenAI key is write-only and only reaches
+// `api.openai.com`, through the server's `openai-tts` operation (`auxFetch`); a character's own key
+// goes with the character's request as before, to any base URL; a custom base URL with the stored
+// key but no key of its own is refused with `ttsCustomUrlNeedsKey`; a keyless custom endpoint is
+// called as before.
 
 const { deps } = vi.hoisted(() => ({
     deps: {

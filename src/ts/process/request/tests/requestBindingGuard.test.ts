@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/chat-binding.md`, slice 3: the send guard of a chat's request (`chatRequestRefusal` in
-// `request.ts`). A request for a chat (its `chatRef`, else its plugin context's chat) runs only while
-// that chat's binding is complete, never on the tab's selection: refused up front in `requestChatData`
-// (before the tools, the hooks, and the chat pin) and again where `requestChatDataMain` is entered
-// (the plugin LLM API's direct call), so a tab-run model (a plugin provider here) never sees it. The
-// refusal is the localized problem list and is not retried. A request without a chat is not checked.
+// The send guard of a chat's request (`chatRequestRefusal` in `request.ts`). A request for a chat
+// (its `chatRef`, else its plugin context's chat) runs only while that chat's binding is complete,
+// never on the tab's selection: refused up front in `requestChatData` (before the tools, the hooks,
+// and the chat pin) and again where `requestChatDataMain` is entered (the plugin LLM API's direct
+// call), so a tab-run model (a plugin provider here) never sees it. The refusal is the localized
+// problem list and is not retried. A request without a chat is not checked.
 // The request that runs captures the chat's binding as its context, whatever is selected.
 
 const stubs = vi.hoisted(() => ({
@@ -221,12 +221,12 @@ describe("the send guard of a chat's request", () => {
             expect.objectContaining({ chatRef: refBound, presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" }),
             expect.objectContaining({ id: "prof-1" }),
         );
-        // No chat, none selected: the selection (decision 10).
+        // No chat, none selected: the selection.
         expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
         expect(provider2).toHaveBeenCalledTimes(1);
     });
 
-    it("runs a request without a chat on the views (decision 10): the selected chat's bound presets where they exist, else the selection, with a bare scope its parameters read too, never refused by that chat's binding", async () => {
+    it("runs a request without a chat on the views: the selected chat's bound presets where they exist, else the selection, with a bare scope its parameters read too, never refused by that chat's binding", async () => {
         const bare = (presetId: string, modelPresetId: string) => ({ presetId, modelPresetId });
         // The selected chat `bound` binds the `1` records while the tab selects the `2`s.
         selectCharacter("a");

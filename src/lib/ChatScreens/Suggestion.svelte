@@ -39,7 +39,7 @@
     let { send, messageInput }: Props = $props();
     let suggestMessages: readonly string[] = $state(selectedChat()?.suggestMessages);
     let suggestMessagesTranslated: string[] = $state();
-    /** Whether the suggestions show translated: the chat's `autoTranslate` until clicked (slice 2.1). */
+    /** Whether the suggestions show translated: the chat's `autoTranslate` until clicked. */
     let toggleTranslate: boolean = $state(false);
     /** The chat and flag `toggleTranslate` was last started from: a change of either starts it again. */
     let toggleSource: string | null = null;

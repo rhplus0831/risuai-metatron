@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 slice 11b: where a remembered tool call lives (`mcp.ts` `encodeToolCall`/`decodeToolCall`).
-// With the request's chat it is stored with that chat (`mergeChatMeta` onto `chat.toolCalls`) and
-// read from it; without a chat, or with one that is gone, nothing is remembered (the browser's
-// LocalForage store was removed at the Phase 5 cutover, so a call remembered only there no longer
-// resolves). Both marker forms (the whole `<tool_call>` marker, its inner text) decode. The
-// `decodeToolCall` defect itself is pinned in `baselineDefects.test.ts`.
+// Where a remembered tool call lives (`mcp.ts` `encodeToolCall`/`decodeToolCall`). With the
+// request's chat it is stored with that chat (`mergeChatMeta` onto `chat.toolCalls`) and read from
+// it; without a chat, or with one that is gone, nothing is remembered (the browser's LocalForage
+// store was removed, so a call remembered only there no longer resolves). Both marker forms (the
+// whole `<tool_call>` marker, its inner text) decode. The `decodeToolCall` defect itself is pinned
+// in `baselineDefects.test.ts`.
 
 const chatStore = vi.hoisted(() => ({
     chats: new Map<string, { toolCalls?: Record<string, unknown> }>(),

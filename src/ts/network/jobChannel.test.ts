@@ -11,15 +11,14 @@ import type {
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import { createAlertQueue, type AlertQueue } from "../alertQueue";
 
-// Phase 5 slice 6, the client dispatcher of the job channel (`jobChannel.ts`) with controlled
-// persistence and plugin dependencies and the real alert module over the real alert queue (RisuNest
-// small wins slice A1; a fresh queue per test, with no gap): the one UI queue (questions answered
-// with the alert's raw value, toasts and modal notices queued behind an open question, cancellation
-// and the job's end removing only the dialog they own, shown or queued behind a local one, stale
-// results dropped, bounded memory), and the callbacks (the barrier before and after the hook with its
-// failure taxonomy, cancellation stopping unstarted work, results that cannot cross the wire,
-// duplicates and replays, the nesting rules, cache pressure, the hook list). The real stores are
-// behind the barrier in `jobChannelBarrier.test.ts`.
+// The client dispatcher of the job channel (`jobChannel.ts`) with controlled persistence and plugin
+// dependencies and the real alert module over the real alert queue (a fresh queue per test, with no
+// gap): the one UI queue (questions answered with the alert's raw value, toasts and modal notices
+// queued behind an open question, cancellation and the job's end removing only the dialog they own,
+// shown or queued behind a local one, stale results dropped, bounded memory), and the callbacks
+// (the barrier before and after the hook with its failure taxonomy, cancellation stopping unstarted
+// work, results that cannot cross the wire, duplicates and replays, the nesting rules, cache
+// pressure, the hook list). The real stores are behind the barrier in `jobChannelBarrier.test.ts`.
 
 /** A chat the mocked chat module holds for a character of the fixture. */
 type FixtureChat = { id: string; message?: { chatId: string }[] };
@@ -58,10 +57,10 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     applyHydration: (record: unknown) => deps.applyHydration(record),
     heldRecordRevision: (kind: string, id: string) => deps.heldRecord(kind, id),
 }));
-// The chat module's readers the dispatcher calls (Phase 6 slice 9a), over the fixture's chats
-// (`deps.chats`, by character, the selected chat at `chatPage`); the characters themselves are in
-// the real records (`characterList()`, installed in `beforeEach`). The selected character is the
-// real selection's (`deps.selection`, set in `beforeEach`).
+// The chat module's readers the dispatcher calls, over the fixture's chats (`deps.chats`, by
+// character, the selected chat at `chatPage`); the characters themselves are in the real records
+// (`characterList()`, installed in `beforeEach`). The selected character is the real selection's
+// (`deps.selection`, set in `beforeEach`).
 vi.mock("../storage/chatStore.svelte", () => {
     const owner = (chaId: string) => deps.chats[chaId];
     const selectedChatId = (chaId: string) => {
@@ -78,8 +77,8 @@ vi.mock("../storage/chatStore.svelte", () => {
         },
         findChat: (ref: { chaId: string; chatId: string }) =>
             owner(ref.chaId)?.chats?.find((chat) => chat.id === ref.chatId),
-        // The speaker's pin and load before each output listener (Phase 6 slice 9b): the fixture's
-        // chats are all held here, so a load answers them at once.
+        // The speaker's pin and load before each output listener: the fixture's chats are all held
+        // here, so a load answers them at once.
         pinChats: () => () => {},
         loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
@@ -400,7 +399,7 @@ describe("notices and questions", () => {
         expect(deps.sayTTS.mock.calls[0][1]).toBe("hello");
     });
 
-    it("a notification notice (docs/plan/web-push.md) shows the server's completion text through pushNotifications while the setting is on, and nothing asks for the permission here", async () => {
+    it("a notification notice shows the server's completion text through pushNotifications while the setting is on, and nothing asks for the permission here", async () => {
         const { settings } = await import("../storage/settingsViews.svelte");
         const payload = {
             chaId: "c",
@@ -422,7 +421,7 @@ describe("notices and questions", () => {
         expect(typeof Notification).toBe("undefined");
     });
 
-    it("a translating notice (slice 2.3) starts following the named messages, with a reporter whose failures queue behind a question like an alertError notice; a malformed payload is dropped", async () => {
+    it("a translating notice starts following the named messages, with a reporter whose failures queue behind a question like an alertError notice; a malformed payload is dropped", async () => {
         send(notice("translating", { chaId: "c", chatId: "k", messageIds: ["m1", "m2"] }));
         await pump();
         expect(deps.followTranslations).toHaveBeenCalledTimes(1);
@@ -430,7 +429,7 @@ describe("notices and questions", () => {
         expect(ref).toEqual({ chaId: "c", chatId: "k" });
         expect(ids).toEqual(["m1", "m2"]);
         // The next send asks a question; the translation fails meanwhile: the question stays, and the
-        // failure shows after its answer, which is the user's (Astra's challenge of the plan).
+        // failure shows after its answer, which is the user's.
         send(question("q1", "alertConfirm", { message: "sure?" }), "J2");
         expect(alert()).toMatchObject({ type: "ask", msg: "sure?" });
         follow.report("translation broke");
@@ -794,10 +793,10 @@ describe("callbacks", () => {
         }
         expect(tx.answers[0]).toEqual(failed("protocol", "The editoutput hook is not registered any more"));
         expect(tx.answers[1]).toEqual(failed("protocol", "The mcpTool hook is not registered any more"));
-        // `chatOutput` (slice 11a) runs the registered listeners in order; with none it answers `true`.
+        // `chatOutput` runs the registered listeners in order; with none it answers `true`.
         expect(tx.answers[2]).toEqual({ type: "answer", id: "u3", outcome: "answered", value: true });
-        // `provider` (slice 11b) runs the registered plugin provider; one that is not loaded fails
-        // the callback as a hook failure (the job's request fails), not a protocol one.
+        // `provider` runs the registered plugin provider; one that is not loaded fails the callback
+        // as a hook failure (the job's request fails), not a protocol one.
         expect(tx.answers[3]).toEqual(failed("hook", "The plugin provider p is not loaded any more"));
         const second = vi.fn((messages: unknown) => messages);
         hooks.replacerbeforeRequest.add(() => {
@@ -988,7 +987,7 @@ describe("callbacks", () => {
     });
 });
 
-describe("the reply tail's callbacks (slice 11a)", () => {
+describe("the reply tail's callbacks", () => {
     // `chatOutput` walks the live listener set as the tab's own send does (a listener an earlier one
     // removed does not run, one it added does), gives each listener a plain copy of the speaker and
     // the chat as they are then with indices looked up again, logs a throw, and answers `true`.
@@ -1100,7 +1099,7 @@ describe("the reply tail's callbacks (slice 11a)", () => {
     });
 });
 
-describe("the selectedChat callback (slice 12b)", () => {
+describe("the selectedChat callback", () => {
     it("answers the chat this tab has selected for a character (its chatPage), or null for a character or chat it does not have", async () => {
         await withCharacter(
             { chaId: "o", type: "character" },
@@ -1127,10 +1126,10 @@ describe("the selectedChat callback (slice 12b)", () => {
 });
 
 describe("the HypaV3 progress overlay", () => {
-    // Phase 5 slice 10: the overlay is owned by the job whose `progress` notice opened it. Another
-    // job's closing notice does not close it; the owner's does, and so does the owner's end (an abort
-    // closes the channel before the server's closing notice can arrive). A job that ends while
-    // another owns the overlay leaves it open.
+    // The overlay is owned by the job whose `progress` notice opened it. Another job's closing notice
+    // does not close it; the owner's does, and so does the owner's end (an abort closes the channel
+    // before the server's closing notice can arrive). A job that ends while another owns the overlay
+    // leaves it open.
     const progress = (open: boolean, msg: string) => notice("progress", { open, miniMsg: "", msg, subMsg: "" });
     const overlay = () => get(stores.hypaV3ProgressStore);
     const closed = { open: false, miniMsg: "", msg: "", subMsg: "" };
@@ -1168,7 +1167,7 @@ describe("the HypaV3 progress overlay", () => {
     });
 });
 
-describe("the provider callback (slice 11b)", () => {
+describe("the provider callback", () => {
     beforeEach(() => {
         // The 50 ms chunk interval reads the clock: faked with the timers here.
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });

@@ -1,8 +1,8 @@
-// The settings deep link (search plan slice 3b): opening a search hit records a jump and remounts the
-// target page, so the mount-time consumers (Display's `takeRequestedDisplayTab`, `Accordion`'s
-// `startOpen`, the Prompt page's tab, the Connections selection) apply on every jump, also to the page
-// already shown. `Settings.svelte` keys its page by the menu and `jumpVersion()`, and runs the jump
-// (scroll or the unavailable note) once the page mounted.
+// The settings deep link: opening a search hit records a jump and remounts the target page, so the
+// mount-time consumers (Display's `takeRequestedDisplayTab`, `Accordion`'s `startOpen`, the Prompt
+// page's tab, the Connections selection) apply on every jump, also to the page already shown.
+// `Settings.svelte` keys its page by the menu and `jumpVersion()`, and runs the jump (scroll or the
+// unavailable note) once the page mounted.
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import { SettingsMenuIndex, settingsOpen } from "../stores.svelte";
@@ -24,7 +24,7 @@ export interface SettingJump {
     reason?: SettingUnavailableReason;
 }
 
-/** How long the row's highlight ring stays (Decision 10, as the chat's `scrollToMessage`). */
+/** How long the row's highlight ring stays (as the chat's `scrollToMessage`). */
 export const SETTING_HIGHLIGHT_MS = 2000;
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-primary-500"];
 
@@ -42,7 +42,7 @@ export function jumpVersion(): number {
  * Open the settings at a search hit: a new jump version, the jump recorded for the page's next mount,
  * Display's tab requested, then the settings opened on the hit's menu. Returns the jump's version.
  * Takes the hit, not an id: section and page hits have no item location, and the hit's availability
- * and target profile were computed by `searchSettings` for the main slot's profile (Decision 16).
+ * and target profile were computed by `searchSettings` for the main slot's profile.
  */
 export function openSetting(hit: SettingHit): number {
     version += 1;

@@ -60,7 +60,7 @@ function isTranslatorPresetFilePayload(value: unknown): value is TranslatorPrese
     );
 }
 
-/** A step as a `.risutl` version 2 file holds it: no id (D5). */
+/** A step as a `.risutl` version 2 file holds it: no id. */
 interface TranslatorStepFilePayload {
     name: string;
     enabled: boolean;
@@ -114,8 +114,8 @@ function isStepFilePayload(value: unknown): value is TranslatorStepFilePayload {
 
 /**
  * A version 2 payload, checked at every level: exactly `name`, `steps`, and the optional booleans
- * `sendTextAsIs` and `excludeThoughts` (a payload of another shape, such as the Fastify fork's, is refused, decision 8), 1
- * to 5 steps of exactly the step fields, and no output key used twice (a file whose
+ * `sendTextAsIs` and `excludeThoughts` (a payload of another shape, such as the Fastify fork's, is
+ * refused), 1 to 5 steps of exactly the step fields, and no output key used twice (a file whose
  * `{{slot::out::KEY}}` would break is refused, not repaired).
  */
 function isTranslatorPresetFilePayloadV2(value: unknown): value is TranslatorPresetFilePayloadV2 {
@@ -275,7 +275,7 @@ function fitsVersion1(preset: TranslatorPreset): boolean {
 /**
  * The preset as a `.risutl` file: version 1 when it holds the preset without loss (`fitsVersion1`), so
  * builds before steps can read it, else version 2 with every step. The file carries no preset or step
- * id (D5); a step on a profile carries the profile's id, never its settings or key.
+ * id; a step on a profile carries the profile's id, never its settings or key.
  */
 export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Promise<Uint8Array> {
     const normalizedPreset = createTranslatorPreset(preset.name.trim().length > 0 ? preset.name : "Preset", preset);

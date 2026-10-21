@@ -3,8 +3,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { scrollToCredential } from "./credentialLinks";
 
-// Open bug fixes plan slice C8: a credential link opens the owning page, which scrolls to the field it
-// revealed (`scrollToCredential`); the keyboard focus moves into that field.
+// A credential link opens the owning page, which scrolls to the field it revealed
+// (`scrollToCredential`); the keyboard focus moves into that field.
 
 afterEach(() => {
     document.body.replaceChildren();

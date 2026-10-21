@@ -71,10 +71,10 @@
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
     /**
-     * The sidebar, in groups (settings UI plan slice 9). An entry opens its first menu index and is
-     * highlighted on any of them: Model covers its three tabs (`Model/ModelMenuTabs.svelte`), Prompt its
-     * template editor (13). Labels are read at render, so a language switch shows in the next render.
-     * Plugin-added menus follow the last group.
+     * The sidebar, in groups. An entry opens its first menu index and is highlighted on any of them:
+     * Model covers its three tabs (`Model/ModelMenuTabs.svelte`), Prompt its template editor (13).
+     * Labels are read at render, so a language switch shows in the next render. Plugin-added menus
+     * follow the last group.
      */
     interface NavEntry {
         menus: number[];
@@ -141,7 +141,7 @@
         },
     ];
     /**
-     * The settings search (search plan slice 3b). The query lives as long as the settings stay open (this
+     * The settings search. The query lives as long as the settings stay open (this
      * component; a phone's page round trip keeps it); while it is non-empty the navigation lists the hits
      * instead of the groups. The context is the one the pages render with (`SettingsSections`).
      */
@@ -178,7 +178,7 @@
             : language.settingsSearch.hiddenHit;
     }
 
-    /** The unavailable hit's note on the page its jump mounted (Decision 9); any remount resets it. */
+    /** The unavailable hit's note on the page its jump mounted; any remount resets it. */
     let jumpNotice = $state<SettingUnavailableReason | null>(null);
 
     /**

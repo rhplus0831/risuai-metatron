@@ -11,10 +11,10 @@ import {
 } from "../settingsMenu";
 
 /*
- * The client's route table (`docs/plan/url-routes.md`): the paths of the screens, and the slugs of
- * the settings pages (`SettingsMenuIndex`) and playground tools (`PlaygroundStore`). These tables
- * are the only place that maps the magic numbers to names. The first segments are
- * `CLIENT_ROUTE_SEGMENTS` (`shared/routes.ts`), which the server serves the client for.
+ * The client's route table: the paths of the screens, and the slugs of the settings pages
+ * (`SettingsMenuIndex`) and playground tools (`PlaygroundStore`). These tables are the only place
+ * that maps the magic numbers to names. The first segments are `CLIENT_ROUTE_SEGMENTS`
+ * (`shared/routes.ts`), which the server serves the client for.
  */
 
 /** The settings page slugs (`/settings/:page`) and their `SettingsMenuIndex`. */

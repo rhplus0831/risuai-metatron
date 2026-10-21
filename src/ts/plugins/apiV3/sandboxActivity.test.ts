@@ -2,7 +2,7 @@ import { MessageChannel as NodeMessageChannel, MessagePort as NodeMessagePort } 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxHost } from "./factory";
 
-// `SandboxHost` activity (RisuNest small wins P2, `plugins-mcp.md`): `isIdle()` once the guest's
+// `SandboxHost` activity (`plugins-mcp.md`): `isIdle()` once the guest's
 // script settled while no guest-to-host call, host-to-guest callback, or bridged stream is open, or
 // once terminated; `onActivityChanged` hears each change toward idle. A callback that cannot be
 // delivered, or whose result's streams cannot all be rebuilt, rejects and leaves nothing pending. The

@@ -78,8 +78,8 @@ interface requestDataArgument {
     profileId?: string;
     /**
      * The ids a request without a chat runs with, captured by a caller that sends several requests as
-     * one run (the tab's translator pipeline, `docs/plan/translation.md` slice 3.1), so a selection
-     * change between them does not move the later ones. A captured preset that is gone refuses the
+     * one run (the tab's translator pipeline), so a selection change between them does not move the
+     * later ones. A captured preset that is gone refuses the
      * request, as a plugin context's does. Without it a request without a chat reads the settings
      * views at its start; a request with a chat (its `chatRef` or plugin context) never reads it.
      */
@@ -104,7 +104,7 @@ export interface RequestDataArgumentExtended extends requestDataArgument {
     saveSignatures?: boolean;
     /**
      * The presets the request runs with (set by `requestChatDataMain`): its plugin context's, else
-     * the settings views' (a request without a chat, decision 10 of `docs/plan/chat-binding.md`).
+     * the settings views' (a request without a chat).
      */
     presetScope?: PresetScope;
 }
@@ -176,8 +176,8 @@ const sameIds = (a: ChatContextIds, b: ChatContextIds) =>
     a.presetId === b.presetId && a.modelPresetId === b.modelPresetId && a.personaId === b.personaId;
 
 /**
- * The send guard of a chat's request (`docs/plan/chat-binding.md`): a request for a chat (its
- * `chatRef`, else its plugin context's) runs on that chat's ids, never on the tab's selection.
+ * The send guard of a chat's request: a request for a chat (its `chatRef`, else its plugin
+ * context's) runs on that chat's ids, never on the tab's selection.
  *
  * - Inside a callback of that chat's job, the ids are the job's (its `presetChain` pick included):
  *   a captured context must name them.
@@ -185,10 +185,9 @@ const sameIds = (a: ChatContextIds, b: ChatContextIds) =>
  *   it is now (a chat rebound since the capture is refused, not run on the old ids).
  * - A `chatRef` and a plugin context naming two chats are refused.
  *
- * A chat that is not listed is refused as gone; a request without a chat is not checked
- * (decision 10). Checked at `requestChatData`'s start and again where a request enters
- * `requestChatDataMain` (a plugin's direct call, the tab-run models, after the hooks); the server
- * checks the requests it runs too.
+ * A chat that is not listed is refused as gone; a request without a chat is not checked. Checked at
+ * `requestChatData`'s start and again where a request enters `requestChatDataMain` (a plugin's
+ * direct call, the tab-run models, after the hooks); the server checks the requests it runs too.
  */
 function chatRequestRefusal(arg: requestDataArgument): requestDataResponse | undefined {
     const context = arg.pluginContext;
@@ -397,7 +396,7 @@ async function requestPinnedChatData(
             }
         }
 
-        // The character's `request` trigger runs only in server jobs (Phase 5 cutover): the tab's own
+        // The character's `request` trigger runs only in server jobs: the tab's own
         // requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
         da = await requestChatDataMain(
             {
@@ -578,8 +577,8 @@ export async function requestChatDataMain(
     const targ: RequestDataArgumentExtended = arg;
 
     // Model decisions follow the request's captured presets (its plugin context), else the settings
-    // views (a request without a chat, decision 10 of `docs/plan/chat-binding.md`: what the screen
-    // shows, the selected chat's bound presets where they exist, else the tab's selection), read once
+    // views (a request without a chat: what the screen shows, the selected chat's bound presets where
+    // they exist, else the tab's selection), read once
     // now, so the tab routes and tokenizes with the model preset whose id the server receives
     // (`requestServer` reads the same ids). A bare scope: a chatless request carries no `chatRef`.
     const scope: PresetScope = capturedPresetScope(arg) ?? {
@@ -621,7 +620,7 @@ export async function requestChatDataMain(
         };
     }
 
-    // Phase 5: every format but the two that run in this tab goes to the server
+    // Every format but the two that run in this tab goes to the server
     // (`POST /api/llm/request`), which reads the settings and credentials itself.
     if (targ.modelInfo.format !== LLMFormat.Plugin && targ.modelInfo.format !== LLMFormat.WebLLM) {
         return requestServer(original, model, abortSignal, targ.modelInfo);

@@ -2,11 +2,11 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAlertQueue, type AlertQueue } from "./alertQueue";
 
-// The terminal notice (`alert.ts` `alertTerminal`, the restore notice since the restore-notice fix
-// after Phase 6 slice 2): it lives outside `alertStore`, so no ordinary alert (normal, error,
-// markdown, toast, wait, or a clear) can replace or resolve it; only `acknowledgeTerminalNotice`
-// (its own OK) resolves it, once. The real module over the real alert queue (slice A1), a fresh one
-// per test so the dialogs one test leaves open never reach the next.
+// The terminal notice (`alert.ts` `alertTerminal`, the restore notice): it lives outside
+// `alertStore`, so no ordinary alert (normal, error, markdown, toast, wait, or a clear) can replace
+// or resolve it; only `acknowledgeTerminalNotice` (its own OK) resolves it, once. The real module
+// over the real alert queue, a fresh one per test so the dialogs one test leaves open never reach
+// the next.
 
 const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as unknown as AlertQueue } }));
 

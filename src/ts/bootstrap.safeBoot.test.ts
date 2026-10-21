@@ -3,12 +3,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
 import { SAFE_BOOT_KEY, SAFE_BOOT_SETTLE_MS } from "./safeBoot";
 
-// Safe boot through the real `loadData` (RisuNest small wins S1, `app-shell.md` Boot and Safe boot):
-// the attempt is counted at the content stage (before the theme) and not by a boot the service
-// worker reloads, a settled boot clears it 10 s after loading, a rejected or silent plugin load and
-// a failure after loading keep it, `?safe` and the tripped counter set `SafeModeStore` before the
-// theme and show one notice, the boot's error alert carries the safe-boot address, and a throwing
-// `localStorage` still boots. The boot services this does not drive are the same mocks as
+// Safe boot through the real `loadData` (`app-shell.md` Boot and Safe boot): the attempt is counted
+// at the content stage (before the theme) and not by a boot the service worker reloads, a settled
+// boot clears it 10 s after loading, a rejected or silent plugin load and a failure after loading
+// keep it, `?safe` and the tripped counter set `SafeModeStore` before the theme and show one
+// notice, the boot's error alert carries the safe-boot address, and a throwing `localStorage` still
+// boots. The boot services this does not drive are the same mocks as
 // `bootstrap.serviceWorker.test.ts`; the plugin load is controlled here.
 const mocks = vi.hoisted(() => ({
     server: null as StoreBackedServer | null,

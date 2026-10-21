@@ -717,8 +717,8 @@ export class MCPClient {
                         client_secret: refreshTokenData.clientSecret,
                     }).toString(),
                 });
-                // A successful refresh gives the token (the check used to be inverted: Phase 5 slice
-                // 12); anything else goes on to a full login.
+                // A successful refresh gives the token (the check used to be inverted); anything else
+                // goes on to a full login.
                 if (tokenResponse.status === 200) {
                     const tokenData = await tokenResponse.json().catch((): null => null);
                     if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {

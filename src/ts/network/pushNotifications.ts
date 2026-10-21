@@ -11,7 +11,7 @@ import { authFetch } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
 
 /**
- * This browser's Web Push (`docs/plan/web-push.md`). `settings.ui.notification` (synced) decides
+ * This browser's Web Push. `settings.ui.notification` (synced) decides
  * whether the server sends; this browser receives when it holds a subscription the server knows.
  *
  * - The permission is requested only from a click (`enablePushOnThisBrowser`): the one-time banner

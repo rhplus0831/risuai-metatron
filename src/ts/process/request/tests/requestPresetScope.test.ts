@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Astra's challenge points 1 and 2 on the split-preset implementation (`docs/plan/split-preset.md`):
-// a request that runs in the tab (a plugin provider model, `requestChatDataMain` → `requestPlugin`;
+// A request that runs in the tab (a plugin provider model, `requestChatDataMain` → `requestPlugin`;
 // WebLLM alike) never reaches the server's id check, so the tab refuses it itself once a captured
-// preset (the plugin context's pair) is gone: up front (`requestChatData`, `requestChatDataMain`,
-// which the plugin LLM API calls directly), before every attempt, and after the
-// `replacerbeforeRequest` hooks, without calling the provider. While both exist, the provider and
-// the model flags come from the captured model preset's main profile (`docs/plan/model-profiles.md`),
-// whatever is selected.
+// preset (the plugin context's prompt and model preset pair) is gone: up front (`requestChatData`,
+// `requestChatDataMain`, which the plugin LLM API calls directly), before every attempt, and after
+// the `replacerbeforeRequest` hooks, without calling the provider. While both exist, the provider
+// and the model flags come from the captured model preset's main profile, whatever is selected.
 
 const stubs = vi.hoisted(() => ({
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
@@ -206,9 +204,9 @@ describe("a tab-run request's captured presets", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.1: a chatless caller that sends several requests as one run (the
-// tab's translator pipeline) captures the ids a chatless request would read (`requestIds`), and a
-// request may name the profile it runs on (`profileId`) instead of its mode's slot.
+// A chatless caller that sends several requests as one run (the tab's translator pipeline) captures
+// the ids a chatless request would read (`requestIds`), and a request may name the profile it runs
+// on (`profileId`) instead of its mode's slot.
 describe("a chatless request's captured ids and named profile", () => {
     const requestIds = () => ({ presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" });
     const chatless = (extra: Record<string, unknown> = {}) =>

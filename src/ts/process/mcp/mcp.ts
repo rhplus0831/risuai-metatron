@@ -436,9 +436,9 @@ export type toolCallData = {
 let droppedLogged = false;
 
 /**
- * Remembers a tool call and gives its marker. It is stored with the request's chat (`chat.toolCalls`,
- * Phase 5 slice 11b), where the server reads it too; a request without a chat, or whose chat is
- * gone, remembers nothing (the browser's own LocalForage store was removed at the cutover).
+ * Remembers a tool call and gives its marker. It is stored with the request's chat (`chat.toolCalls`),
+ * where the server reads it too; a request without a chat, or whose chat is gone, remembers nothing
+ * (the browser's own LocalForage store was removed).
  */
 export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | null) {
     call.call.id = call.call.id || v4();
@@ -453,8 +453,8 @@ export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | nul
 
 /**
  * The remembered call a marker (whole, or its inner text) stands for, from the chat's own record
- * (`chatRef`). A marker remembered in the browser's former LocalForage store (before slice 11b, or
- * without a chat) no longer resolves.
+ * (`chatRef`). A marker remembered in the browser's former LocalForage store (before tool calls were
+ * stored with the chat, or without a chat) no longer resolves.
  */
 export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Promise<toolCallData | undefined> {
     text = text.trim();

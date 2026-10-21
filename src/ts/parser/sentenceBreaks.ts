@@ -1,8 +1,8 @@
 import { MAX_BILINGUAL_SENTENCES } from "../../../shared/translation/chatSettings.ts";
 
 /*
- * Paragraph breaks every N sentences (`docs/plan/translation.md` slice 2.4, ported from the Fastify
- * fork): the bilingual display pairs the source and its translation by these paragraphs. Pure.
+ * Paragraph breaks every N sentences (ported from the Fastify fork): the bilingual display pairs the
+ * source and its translation by these paragraphs. Pure.
  */
 
 interface QuoteState {

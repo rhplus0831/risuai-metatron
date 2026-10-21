@@ -15,13 +15,13 @@
     import { TRANSLATOR_OUTPUT_KEY_PATTERN } from "../../../../../shared/translatorPresets.ts";
 
     /**
-     * One step of a translator preset (`docs/plan/translation.md` slice 3.1). The step is found by
-     * its preset's id and its own id on every read and write, so a conflict reload that replaces the
-     * list is followed and a step removed meanwhile is not written. Only values the server's
-     * normalizer keeps as they are (`normalizeTranslatorSteps`) are written, so the tab holds the
-     * server's text: a blank name and an invalid or taken output key stay drafts here, shown with a
-     * hint and dropped once what they were typed over changes; a cleared or invalid response size is
-     * not written, and the field shows the stored size again when it is committed.
+     * One step of a translator preset. The step is found by its preset's id and its own id on every
+     * read and write, so a conflict reload that replaces the list is followed and a step removed
+     * meanwhile is not written. Only values the server's normalizer keeps as they are
+     * (`normalizeTranslatorSteps`) are written, so the tab holds the server's text: a blank name and
+     * an invalid or taken output key stay drafts here, shown with a hint and dropped once what they
+     * were typed over changes; a cleared or invalid response size is not written, and the field
+     * shows the stored size again when it is committed.
      */
     interface Props {
         presetId: string;

@@ -25,14 +25,13 @@ vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import
 
 //#endregion
 
-// Audit UI-01 (`docs/plan/audit-findings-perf.md`, slice 1d): the tab's CBS host carries a budget
-// (`CLIENT_CBS_LIMITS` in `parser.svelte.ts`, the server's work limit and 2 s per top-level parse),
-// so a template that never ends throws `CbsLimitError` instead of holding the UI thread, and the
-// display call sites (`risuChatParserForDisplay`: the chat row's pre-pass, the background, the popup
-// preview) show a localized text for that parse. Every other caller keeps the throw (the server's
-// `cbs` callback fails its request on purpose). A non-advancing range is refused before the loop.
-// Before the fix `{{range::[0,1e18]}}` ran until the heap was exhausted and `{{range::[0,1,0]}}`
-// forever.
+// The tab's CBS host carries a budget (`CLIENT_CBS_LIMITS` in `parser.svelte.ts`, the server's work
+// limit and 2 s per top-level parse), so a template that never ends throws `CbsLimitError` instead
+// of holding the UI thread, and the display call sites (`risuChatParserForDisplay`: the chat row's
+// pre-pass, the background, the popup preview) show a localized text for that parse. Every other
+// caller keeps the throw (the server's `cbs` callback fails its request on purpose). A non-advancing
+// range is refused before the loop. Without the budget `{{range::[0,1e18]}}` ran until the heap was
+// exhausted and `{{range::[0,1,0]}}` forever.
 
 const characters: MockedCharacter[] = [
     { chaId: "c", chatPage: 0, chats: [{ id: "k", scriptstate: {} } as any], defaultVariables: "" },

@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
 import type { RPCToolCallContent } from "../../mcplib";
 
-// Phase 4, slice 4 (`mcp-risuaccess-writers`): the RisuAccess module write tools (`modules.ts`)
-// against the real save adapter and the real server store (`storeBackedServer.ts`); the read tools
-// are `modules.test.ts`. Every write tool patches one field of a fixture module through
-// `updateModule` (and `enabled` through `setModuleEnabled`) and is saved by the next cycle; an MCP
-// module, a denied consent, a missing entry, a value of the wrong type (`enabled: "false"` is
-// refused, not read as true), and a non-data value change nothing and send nothing. The consent
-// gate: the patch is built from the module as it is after consent, and a module removed or turned
-// into an MCP module while the prompt was open answers "not found" without a write.
+// The RisuAccess module write tools (`modules.ts`) against the real save adapter and the real
+// server store (`storeBackedServer.ts`); the read tools are `modules.test.ts`. Every write tool
+// patches one field of a fixture module through `updateModule` (and `enabled` through
+// `setModuleEnabled`) and is saved by the next cycle; an MCP module, a denied consent, a missing
+// entry, a value of the wrong type (`enabled: "false"` is refused, not read as true), and a
+// non-data value change nothing and send nothing. The consent gate: the patch is built from the
+// module as it is after consent, and a module removed or turned into an MCP module while the prompt
+// was open answers "not found" without a write.
 
 const { server, alerts, consent } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -366,12 +366,12 @@ describe("the consent gate", () => {
         expect(savedModule().lorebook).toEqual([lore("Fresh", "f"), lore("Added", "a")]);
     });
 
-    it("leaves no gap between the lookup after consent and the write (Astra challenge 1)", async () => {
+    it("leaves no gap between the lookup after consent and the write", async () => {
         const { call, hold, collectionStore, module, sync, savedModule, record } = await boot();
         const release = hold();
         const pending = call("risu-set-module-lorebook", { id: "m", name: "Added", content: "a" });
         let seenAtReplacement: unknown = null;
-        // Astra's probe: consent resolves, and the module becomes an MCP module in the very next
+        // The probe: consent resolves, and the module becomes an MCP module in the very next
         // microtask. With an await between the post-consent lookup and the write, the lore was written
         // into the MCP module.
         release(true);

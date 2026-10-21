@@ -11,7 +11,7 @@ const hooks = vi.hoisted(() => ({
     sends: [] as { index: number; arg: any }[],
     sendResult: [] as boolean[],
     input: null as null | ((prompt: string) => Promise<string>),
-    /** The manual triggers handed to the server (slice 8b; since the Phase 5 cutover, every `/trigger`). */
+    /** The manual triggers handed to the server (every `/trigger`). */
     serverRuns: [] as { char: any; name: string; ref: any }[],
 }));
 
@@ -130,8 +130,7 @@ beforeAll(async () => {
         ],
     });
     const read = server.store.readKinds([characters], { chats: true });
-    // The characters are records since Phase 6 slice 5: installed into the records, so the selection
-    // (by id) sees them.
+    // The characters are records: installed into the records, so the selection (by id) sees them.
     const raw = { characters: read.kinds.characters.map((record) => record.data) } as any;
     initializeRecords(takeRecordFields(raw));
     chat.seedChats(read.chats!, read.chatOrders!);
@@ -297,7 +296,7 @@ describe("the chat a line started in", () => {
     });
 });
 
-describe("/trigger on the server (Phase 5 slice 8b)", () => {
+describe("/trigger on the server", () => {
     it("runs on the server with the CBS'd name, and answers undefined", async () => {
         const ref = freshChat();
         expect(await processMultiCommand("/trigger {{chat}} greet")).toBeUndefined();

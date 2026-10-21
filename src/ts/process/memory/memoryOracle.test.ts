@@ -15,8 +15,8 @@ import {
     USER_NAME,
 } from "../../../../server/src/tests/fixtures/memory/scenarios.ts";
 
-// Phase 5 slice 10: the browser oracle of the memory algorithms. The client code that remains after
-// the Phase 5 cutover (`hypav3.ts`, with `hypamemory.ts`, `hypamemoryv2.ts`,
+// The browser oracle of the memory algorithms. The client code that remains since the memory
+// algorithms moved to the server (`hypav3.ts`, with `hypamemory.ts`, `hypamemoryv2.ts`,
 // `contextualEmbedding.ts`, and the rate limiter as they are) runs each HypaV3 scenario (`v3`,
 // `v3exp`) of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies (deterministic
 // tokens, vectors, canned summaries and completions, a fixed random sequence, an in-memory vector
@@ -27,16 +27,16 @@ import {
 // `server/src/tests/memoryAlgorithms.test.ts`: the fixture is the client's behavior, never derived
 // from server code.
 //
-// The fixture was recorded from the flag-off client algorithms before the cutover deleted the
-// browser SupaMemory, HypaV2, and Hanurai copies; its `supa`, `hyper`, `v2`, and `hanurai` cases now
-// have no client runner here, and the fixture is not recorded again from this file (a re-recording
-// would lose those cases).
+// The fixture was recorded from the flag-off client algorithms before the move to the server
+// deleted the browser SupaMemory, HypaV2, and Hanurai copies; its `supa`, `hyper`, `v2`, and
+// `hanurai` cases now have no client runner here, and the fixture is not recorded again from this
+// file (a re-recording would lose those cases).
 
 const FIXTURE = path.resolve(import.meta.dirname, "../../../../server/src/tests/fixtures/memory/algorithms.json");
 
 type World = ReturnType<typeof createWorld>;
 let current: World;
-/** Every `requestChatData` argument, for the P10 context check. */
+/** Every `requestChatData` argument, for the summary request context check. */
 const requestArgs: Record<string, unknown>[] = [];
 
 // `hypav3.ts` keeps a runtime import of `database.svelte` for its types (inline `type` modifiers);
@@ -112,8 +112,8 @@ function settingsOf(scenario: Scenario): Record<string, unknown> {
 
 /**
  * The world's settings installed into the records (`installFlatDatabase`), since the memory
- * algorithms read the settings through the record views (Phase 6 slice 7). They are the flat shape
- * the server ports read: the root preset fields become the one preset's.
+ * algorithms read the settings through the record views. They are the flat shape the server ports
+ * read: the root preset fields become the one preset's.
  */
 function installWorld(world: World) {
     installFlatDatabase(world.db, "oracle-preset");
@@ -277,7 +277,7 @@ describe("GEN-03: the modal's contextual summary vectors", () => {
     }
 });
 
-describe("P10: the summary requests carry the send's or the action's context", () => {
+describe("the summary requests carry the send's or the action's context", () => {
     const byName = (name: string) => scenarios.find((scenario) => scenario.name === name)!;
     const context = {
         chatRef: { chaId: "c-1", chatId: "k-1" },
@@ -323,7 +323,7 @@ describe("P10: the summary requests carry the send's or the action's context", (
         });
     }
 
-    it("sends neither key without a context (the modal's callers before P10, and `summarize` on its own); a chat alone gets its context captured", async () => {
+    it("sends neither key without a context (a caller that passes none, and `summarize` on its own); a chat alone gets its context captured", async () => {
         await runV3(byName("v3-cold-overflow"));
         expect(requestArgs.length).toBeGreaterThan(0);
         for (const arg of requestArgs) {
@@ -335,9 +335,8 @@ describe("P10: the summary requests carry the send's or the action's context", (
         await summarize([{ role: "user", content: "x" }], false, { chatRef: null });
         expect("chatRef" in requestArgs[0]).toBe(false);
         expect("pluginContext" in requestArgs[0]).toBe(false);
-        // A context with the chat alone: `summarize` captures the chat's plugin context once
-        // (`docs/plan/chat-binding.md`, slice 4) and the request carries it. The chat is not held
-        // here, so its display ids are the tab's.
+        // A context with the chat alone: `summarize` captures the chat's plugin context once and the
+        // request carries it. The chat is not held here, so its display ids are the tab's.
         const { tabSelectionIds } = await import("src/ts/storage/settingsViews.svelte");
         await summarize([{ role: "user", content: "x" }], true, { chatRef: { chaId: "c", chatId: "k" } } as never);
         expect(requestArgs[1]).toMatchObject({

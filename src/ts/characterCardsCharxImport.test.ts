@@ -7,7 +7,7 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 const { server, alerts } = vi.hoisted(() => {
     // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
     // (`boot` installs it in `current`): the module dialog's `addImportedModule` reads it back to
-    // replace only its own wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls.
+    // replace only its own wait alert. The `vi.fn` wrappers keep the calls.
     const alerts = {
         current: null as null | { set: (data: { type: string; msg: string }) => void },
         show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),

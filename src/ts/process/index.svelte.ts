@@ -6,10 +6,10 @@ import { sendChatOnServer, type ServerSendArg } from "./serverGeneration";
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
 /**
- * The tab's side of a send (Phase 5 cutover): the generation runs as a server job
- * (`sendChatOnServer`; `server/src/prompt/runner.ts` assembles and requests). `doingChat` is the
- * tab's busy flag and `sendingChatRef` its target; a preview's result lands in
- * `previewFormated`/`previewBody` (DevTool, hotkeys).
+ * The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
+ * `server/src/prompt/runner.ts` assembles and requests). `doingChat` is the tab's busy flag and
+ * `sendingChatRef` its target; a preview's result lands in `previewFormated`/`previewBody`
+ * (DevTool, hotkeys).
  */
 export const doingChat = writable(false);
 export const sendingChatRef: Writable<ChatRef | null> = writable(null);

@@ -11,10 +11,10 @@
     }
 
     /*
-     * A chat's binding panel as a dialog (`docs/plan/chat-binding.md`, slice 5), for any chat: the chat
-     * list's "Chat settings" and the send area's "Set up this chat" open it. An ordinary overlay like the
-     * picker lists: `App.svelte` mounts it before them, so a picker opened from a row paints on top, and
-     * alerts (`z-50`) stay above both. It closes when its chat stops being a member.
+     * A chat's binding panel as a dialog, for any chat: the chat list's "Chat settings" and the send
+     * area's "Set up this chat" open it. An ordinary overlay like the picker lists: `App.svelte` mounts
+     * it before them, so a picker opened from a row paints on top, and alerts (`z-50`) stay above both.
+     * It closes when its chat stops being a member.
      */
     let { chatRef, close }: Props = $props();
     const entry = $derived(chatEntry(chatRef));

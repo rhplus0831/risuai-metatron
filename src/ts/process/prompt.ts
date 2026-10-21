@@ -353,7 +353,7 @@ export function promptConvertion(files: { name: string; content: string; type: s
     }
 
     if (type === "STCHAT") {
-        // A prompt preset only (`docs/plan/split-preset.md`): the model is the model preset's choice.
+        // A prompt preset only: the model is the model preset's choice.
         settings.presets.push(normalizePreset(preset, { id: newPresetId() }));
 
         alertNormal("Preset converted successfully. You can find it in bot setting presets");
@@ -430,8 +430,8 @@ export function promptConvertion(files: { name: string; content: string; type: s
     preset.name ||= "Converted from JSON";
 
     settings.presets.push(normalizePreset(preset, { id: newPresetId() }));
-    // The instruct chat format belongs to the model preset (`docs/plan/split-preset.md`): it is kept
-    // as a model preset of its own, which is not selected.
+    // The instruct chat format belongs to the model preset: it is kept as a model preset of its
+    // own, which is not selected.
     addModelPreset({
         name: preset.name,
         aiModel: "openrouter",

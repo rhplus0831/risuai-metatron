@@ -173,7 +173,7 @@ export async function exportModuleLegacy(
 
 /**
  * The in-tab `.risum` reader: the CharX-embedded `module.risum` (small) and tests. A `.risum` file
- * goes through `importModuleFile` instead, which never holds the file (large-asset-import slice 2c).
+ * goes through `importModuleFile` instead, which never holds the file.
  */
 export async function readModule(buf: Buffer): Promise<RisuModule> {
     let pos = 0;
@@ -302,15 +302,15 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
 }
 
 /**
- * Imports a `.risum` file through the server (historical `docs/plan/large-asset-import.md` slice 2c); every
- * `.risum` file entry point (the module dialog, the drop, `#share_module`, `#import=`, the launch
- * queue) calls it, then adds the module through `addImportedModule`. Only the file's header and main record are read
- * here (`file.slice`, decoded with the reader the server uses, `shared/moduleImport.ts`), and on that
- * module, before anything is sent, the low-level access question is asked and `prepareModuleImport`
- * runs. Then the file itself is uploaded (`importModuleOverServer`, its progress in the wait alert),
- * and only the stored assets' keys are taken from the server's result. Returns the prepared module
- * under a fresh id, or null when nothing is to be added: a question was declined, or the failure is
- * already alerted.
+ * Imports a `.risum` file through the server; every `.risum` file entry point (the module dialog,
+ * the drop, `#share_module`, `#import=`, the launch queue) calls it, then adds the module through
+ * `addImportedModule`. Only the file's header and main record are read here (`file.slice`, decoded
+ * with the reader the server uses, `shared/moduleImport.ts`), and on that module, before anything
+ * is sent, the low-level access question is asked and `prepareModuleImport` runs. Then the file
+ * itself is uploaded (`importModuleOverServer`, its progress in the wait alert), and only the
+ * stored assets' keys are taken from the server's result. Returns the prepared module under a fresh
+ * id, or null when nothing is to be added: a question was declined, or the failure is already
+ * alerted.
  */
 export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
     alertWait("Loading... (Reading)");
@@ -407,11 +407,11 @@ export type ServerImportTexts = {
 };
 
 /**
- * The alert for a file upload to a server import route that failed (slices 2c and 2d): by the
- * answer's status and its `error` text where the server's texts tell refusals apart (every
- * authentication failure is a 400 with its own text, shown as it is). Busy, maintenance, a timeout,
- * and an interrupted upload share the module import's texts. A network failure may be a refusal the
- * browser did not see (see `serverImportClient.ts`).
+ * The alert for a file upload to a server import route that failed: by the answer's status and its
+ * `error` text where the server's texts tell refusals apart (every authentication failure is a 400
+ * with its own text, shown as it is). Busy, maintenance, a timeout, and an interrupted upload share
+ * the module import's texts. A network failure may be a refusal the browser did not see (see
+ * `serverImportClient.ts`).
  */
 export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
     if (error instanceof ServerImportRequestError) {
@@ -452,7 +452,7 @@ export function serverImportErrorMessage(error: unknown, texts: ServerImportText
     return language.errors.noData;
 }
 
-/** The alert for a `.risum` upload that failed (slice 2c). */
+/** The alert for a `.risum` upload that failed. */
 function moduleImportErrorMessage(error: unknown): string {
     return serverImportErrorMessage(error, {
         invalidFile: "Invalid module file",
@@ -520,8 +520,7 @@ export async function importModule() {
     }
     if (file.name.endsWith(".charx")) {
         try {
-            // The picked `File` itself, which goes to the server's CharX import (large-asset-import
-            // slice 2d).
+            // The picked `File` itself, which goes to the server's CharX import.
             const char = await importCharacterProcess({
                 name: file.name,
                 data: file,
@@ -676,7 +675,7 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  * prompt preset's integration list, all matched by id or namespace, plus the bound persona's linked
  * modules, matched apart (by id only, MCP modules excepted: `personaLinksModule`). The integration
  * list is `scope`'s preset's (a parse for a captured context, a `presetChain` pick included), else
- * `chatRef`'s display preset's (`docs/plan/chat-binding.md`), else the settings view's, which
+ * `chatRef`'s display preset's (the chat's binding), else the settings view's, which
  * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {

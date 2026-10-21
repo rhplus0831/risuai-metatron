@@ -21,9 +21,8 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
 
 /**
  * Returns accessed key as the value. It reports no prototype and answers no symbol key, so the chat
- * module's `$state` holds it as it is (Phase 6 slice 9a: the selected chat is read from the chat
- * module, and `$state` would wrap a plain object in its own proxy, which answers only the keys the
- * storage has).
+ * module's `$state` holds it as it is (the selected chat is read from the chat module, and `$state`
+ * would wrap a plain object in its own proxy, which answers only the keys the storage has).
  */
 const varStorage = vi.hoisted(
     () =>
@@ -43,7 +42,7 @@ const varStorage = vi.hoisted(
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
 vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import("../../../stores.svelte"));
 
-// The parser reads the global variables through the settings views (Phase 6 slice 7). The
+// The parser reads the global variables through the settings views. The
 // variable storage answers any key, which record data cannot hold, so the view serves it there;
 // every other view is the real one.
 vi.mock(import("../../../storage/settingsViews.svelte"), async (importOriginal) => {
@@ -57,19 +56,18 @@ vi.mock(import("../../../storage/settingsViews.svelte"), async (importOriginal) 
 
 //#endregion
 
-// The fixture character in the legacy shape (its chat holds the variable storage); until Phase 6
-// slice 10 it sat on the removed aggregate's mocked holder.
+// The fixture character in the legacy shape (its chat holds the variable storage).
 const characters: MockedCharacter[] = [
     { chaId: "c", chatPage: 0, chats: [{ id: "k", scriptstate: varStorage } as any], defaultVariables: "" },
 ];
 
 // The template's default variables live in the selected preset's record; a copy of the character
-// is in the records (Phase 6 slice 9a), and its chat in the chat module.
+// is in the records, and its chat in the chat module.
 holdMockedChats(characters, {
     botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
 });
 
-// The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
+// The readers resolve the selected character by `selection.characterId`, over
 // the character list (`characterList()`, the records): the fixture's character is the selected one.
 selection.characterId = "c";
 

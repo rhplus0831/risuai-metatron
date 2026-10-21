@@ -2,17 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
 import type { RPCToolCallContent } from "../../mcplib";
 
-// Phase 4, slice 4 (`mcp-risuaccess-writers`): the RisuAccess character tools (`characters.ts`)
-// against the real save adapter and the real server store (`storeBackedServer.ts`). Every write
-// tool on a character that is not selected lands by `chaId` through `updateCharacter` and is sent
-// by the next cycle; a refused consent, a missing entry, a refused patch, and a request with one
-// bad field change nothing and mark nothing (no batch after a flush). The consent gate: the write
-// is built from the record as it is after consent (a list replaced while the prompt was open), the
-// captured id stays the target through a rename and a selection change, and a character removed
-// or turned into a group while the prompt was open answers an error without a write. The read
-// tools' output is pinned, including an empty `globalLore`. Since Phase 6 slice 5b every character
-// carries the shared defaults (the server normalizes the seeded `c`, `addCharacter` prepares the
-// others): `globalLore` is `[]`, `desc` is `""`, and `type` is `"character"` unless set.
+// The RisuAccess character tools (`characters.ts`) against the real save adapter and the real
+// server store (`storeBackedServer.ts`). Every write tool on a character that is not selected lands
+// by `chaId` through `updateCharacter` and is sent by the next cycle; a refused consent, a missing
+// entry, a refused patch, and a request with one bad field change nothing and mark nothing (no
+// batch after a flush). The consent gate: the write is built from the record as it is after consent
+// (a list replaced while the prompt was open), the captured id stays the target through a rename
+// and a selection change, and a character removed or turned into a group while the prompt was open
+// answers an error without a write. The read tools' output is pinned, including an empty
+// `globalLore`. Every character carries the shared defaults (the server normalizes the seeded `c`,
+// `addCharacter` prepares the others): `globalLore` is `[]`, `desc` is `""`, and `type` is
+// `"character"` unless set.
 
 const { server, alerts, consent } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -394,13 +394,13 @@ describe("the consent gate", () => {
         expect(saved().globalLore).toEqual([lore("Fresh", "f"), lore("Added", "a")]);
     });
 
-    it("leaves no gap between the lookup after consent and the write (Astra challenge 1)", async () => {
+    it("leaves no gap between the lookup after consent and the write", async () => {
         const { call, hold, characterStore, character, sync, saved } = await boot();
         characterStore.updateCharacter("c", { globalLore: [lore("Old", "o")] });
         const release = hold();
         const pending = call("risu-set-character-lorebook", { id: "c", name: "Added", content: "a" });
         let seenAtReplacement: unknown = null;
-        // Astra's probe: consent resolves, and a replacement is queued as the very next microtask. With
+        // The probe: consent resolves, and a replacement is queued as the very next microtask. With
         // an await between the post-consent lookup and the write, the replacement ran in that gap and
         // the write carried the old list over it.
         release(true);
@@ -457,8 +457,8 @@ describe("the consent gate", () => {
         const release = hold();
         const pending = call("risu-set-character-info", { id: "c", data: { name: "x" } });
         character("c").type = "group";
-        // Every write of a character's own fields is saved, selected or not (Phase 6 slice 5): the
-        // test's own change reaches the server first, so the check below sees only the refusal.
+        // Every write of a character's own fields is saved, selected or not: the test's own change
+        // reaches the server first, so the check below sees only the refusal.
         await sync.flushResources();
         expect(saved().type).toBe("group");
         expect(

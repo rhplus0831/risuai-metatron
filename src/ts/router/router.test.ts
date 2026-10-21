@@ -3,18 +3,17 @@ import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
-// The router (`docs/plan/url-routes.md`, slices 3 and 4, decision 8) against a fake `HistoryPort`:
-// boot with and without state, every `popstate` applied, the sync effect's R1 steps (push, the
-// chat-switch replace, a back only to the confirmed entry beneath and never without the Navigation
-// API), the R4 corrections, G2 (a back that does nothing is not retried) and G4 (the URL catches up
-// at the next change), the store corrections through the real effect rerun, and stop/restart. Slice
-// 4: the layers (settings, the grid) with `layerDepth` and `base`, the close by depth and its replace
-// fallback, the mobile list/page entries, R3, R6 and `rebased`, and the root insertion deferred to
-// the first user activation (`rootPending`; the activation events are dispatched on happy-dom's
-// window with `isTrusted` defined on the instance). The module graph is imported once (a reset
-// graph would get its own Svelte runtime, and the effect would not see the stores), so each test
-// starts the router on a fresh fake and stops it after. The browser adapter is checked at the end
-// against happy-dom's history and a fake Navigation API.
+// The router against a fake `HistoryPort`: boot with and without state, every `popstate` applied, the sync
+// effect's R1 steps (push, the chat-switch replace, a back only to the confirmed entry beneath and never
+// without the Navigation API), the R4 corrections, G2 (a back that does nothing is not retried) and G4 (the
+// URL catches up at the next change), the store corrections through the real effect rerun, and
+// stop/restart. The layers (settings, the grid) with `layerDepth` and `base`, the close by depth and its
+// replace fallback, the mobile list/page entries, R3, R6 and `rebased`, and the root insertion deferred to
+// the first user activation (`rootPending`; the activation events are dispatched on happy-dom's window with
+// `isTrusted` defined on the instance). The module graph is imported once (a reset graph would get its own
+// Svelte runtime, and the effect would not see the stores), so each test starts the router on a fresh fake
+// and stops it after. The browser adapter is checked at the end against happy-dom's history and a fake
+// Navigation API.
 
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -784,7 +783,7 @@ describe("boot (layers)", () => {
         expect(history.paths()).toEqual(["/", "[/settings/prompt]"]);
     });
 
-    it("replaces the old /settings/bot URL with /settings/memory and opens the Memory page (settings UI plan slice 3)", () => {
+    it("replaces the old /settings/bot URL with /settings/memory and opens the Memory page", () => {
         const history = start(new FakeHistory([{ path: "/settings/bot", state: layer(1, "/chat/a/a1") }]));
         expect(screen()).toBe(CHAT_A);
         expect(layers()).toBe(`settings=true:${SETTINGS_PAGES.memory} grid=false`);
@@ -805,7 +804,7 @@ describe("boot (layers)", () => {
         expect(history.log).toEqual(["replace /settings"]);
     });
 
-    it("applies a layer entry stamped without a base (slice 3) over home, without a root insertion", () => {
+    it("applies a layer entry stamped without a base (an older entry state) over home, without a root insertion", () => {
         const history = start(
             new FakeHistory([
                 { path: "/chat/a/a1", state: STATE },
@@ -1273,7 +1272,7 @@ describe("the sync effect (layers)", () => {
     });
 });
 
-describe("the root insertion (decision 5, H1)", () => {
+describe("the root insertion (H1)", () => {
     it("inserts the base entry under a direct layer link at the first activation, before the app's handlers", () => {
         const history = start(new FakeHistory([{ path: "/settings/model" }]));
         // Not an activation: an untrusted click, Escape, a touch pointerdown, a mouse pointerup.
@@ -1438,7 +1437,7 @@ describe("the root insertion (decision 5, H1)", () => {
     });
 });
 
-describe("openRoute (a notification's chat, docs/plan/web-push.md)", () => {
+describe("openRoute (a notification's chat)", () => {
     it("applies a chat route to the stores and the effect pushes its URL", () => {
         const history = start(new FakeHistory([{ path: "/" }]));
         expect(openRoute("/chat/b/b1")).toBe(true);
@@ -1476,10 +1475,10 @@ describe("openRoute (a notification's chat, docs/plan/web-push.md)", () => {
     });
 });
 
-describe("defects found at the slice 4 review", () => {
-    // Astra's challenge, point 1. The list beneath was rebased while this page was a forward entry;
-    // its state cannot be read, so a page reached by a landing is marked `rebased` and its close
-    // replaces instead of going back to the list (whose landing would apply home and lose A).
+describe("layer edge cases: rebased entries and removed characters", () => {
+    // The list beneath was rebased while this page was a forward entry; its state cannot be read,
+    // so a page reached by a landing is marked `rebased` and its close replaces instead of going
+    // back to the list (whose landing would apply home and lose A).
     it("a move inside the layer does not go back from an entry reached by a landing above depth 1", () => {
         window.innerWidth = NARROW;
         const history = start(
@@ -1510,8 +1509,8 @@ describe("defects found at the slice 4 review", () => {
         expect(history.log.slice(4)).toEqual(["replace /settings"]);
     });
 
-    // Astra's challenge, point 3. Under a layer, a removed selected character goes home as it does
-    // without a layer (R4): the stale playground value is cleared, not kept as the layer's base.
+    // Under a layer, a removed selected character goes home as it does without a layer (R4): the
+    // stale playground value is cleared, not kept as the layer's base.
     it("a removed character under a layer goes home (R4), not to the stale playground menu", () => {
         const history = start(new FakeHistory([{ path: "/playground", state: STATE }]));
         // The sidebar from the playground menu: `changeChar` leaves the playground value at 1.

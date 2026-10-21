@@ -11,9 +11,9 @@ import {
 } from "../../../shared/diagnostics.ts";
 
 /**
- * The browser's diagnostics (`docs/plan/request-history-diagnostics.md` slice 8): a ring of the last
- * 300 content-free events of this tab (`projectClientEvent`), mirrored to `sessionStorage` so a
- * reload keeps them. Nothing is sent anywhere: the Diagnostics panel's report reads it (decision 6).
+ * The browser's diagnostics: a ring of the last 300 content-free events of this tab
+ * (`projectClientEvent`), mirrored to `sessionStorage` so a reload keeps them. Nothing is sent
+ * anywhere: the Diagnostics panel's report reads it.
  *
  * - `recordClientEvent` works before `startDiagnosticsCollector` (a hook that runs early, tests). An
  *   event identical to one of the last 16 (but for its time and duration), whose last occurrence is

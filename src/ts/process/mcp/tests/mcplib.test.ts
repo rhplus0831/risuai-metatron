@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 Stop D fixes (slice 13d, D2): the tab's remote MCP client (`src/ts/process/mcp/mcplib.ts`
-// `MCPClient`) over a fake `fetchNative` (no network). Its event stream framed by
-// `shared/mcp/sse.ts` (CRLF, CR, and space-less events, an endpoint, a ping answered, several answers
-// in one chunk, an answer split inside its CRLF and inside a UTF-8 character, comments and an
-// unfinished tail ignored); the session id of an `initialize` answer sent as an event stream or as
-// JSON, carried by the later requests and not replaced by a later answer; refresh rotation (the new
-// token registered with the stored client data, used by a recreated client that registers the
-// next; nothing registered for a missing, empty, or non-string token, or for an answer without a
-// usable access token); and retirement (`destroy()`: no request, refresh, discovery, or stream
-// reader started afterwards, late answers refused, a cached list refused) against the session reset
-// after a 401 that keeps the client usable. Not asserted: the cleanup of a stream that ends without
-// its answer (a recorded hazard, `plugins-mcp.md`). The framer alone: `server/src/tests/mcpSse.test.ts`.
+// The tab's remote MCP client (`src/ts/process/mcp/mcplib.ts` `MCPClient`) over a fake
+// `fetchNative` (no network). Its event stream framed by `shared/mcp/sse.ts` (CRLF, CR, and
+// space-less events, an endpoint, a ping answered, several answers in one chunk, an answer split
+// inside its CRLF and inside a UTF-8 character, comments and an unfinished tail ignored); the
+// session id of an `initialize` answer sent as an event stream or as JSON, carried by the later
+// requests and not replaced by a later answer; refresh rotation (the new token registered with the
+// stored client data, used by a recreated client that registers the next; nothing registered for a
+// missing, empty, or non-string token, or for an answer without a usable access token); and
+// retirement (`destroy()`: no request, refresh, discovery, or stream reader started afterwards,
+// late answers refused, a cached list refused) against the session reset after a 401 that keeps the
+// client usable. Not asserted: the cleanup of a stream that ends without its answer (a recorded
+// hazard, `plugins-mcp.md`). The framer alone: `server/src/tests/mcpSse.test.ts`.
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: any };
 type Reply = {
@@ -139,7 +139,7 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-describe("MCPClient event streams (Stop D fixes)", () => {
+describe("MCPClient event streams", () => {
     it("frames CRLF, CR, and space-less events and dispatches them in order: an endpoint, a ping answered, two answers of one chunk, an answer split inside its CRLF and its UTF-8; comments and an unfinished tail are ignored", async () => {
         const client = await newClient();
         server.handle = () => reply({ status: 202 });
@@ -220,7 +220,7 @@ describe("MCPClient event streams (Stop D fixes)", () => {
     });
 });
 
-describe("MCPClient refresh rotation (Stop D fixes)", () => {
+describe("MCPClient refresh rotation", () => {
     type Stored = { clientId: string; clientSecret: string; refreshToken: string; tokenUrl: string };
     const first: Stored = { clientId: "c1", clientSecret: "s1", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
 
@@ -324,7 +324,7 @@ describe("MCPClient refresh rotation (Stop D fixes)", () => {
     });
 });
 
-describe("MCPClient retirement (destroy) against the session reset (Stop D fixes)", () => {
+describe("MCPClient retirement (destroy) against the session reset", () => {
     const stored = { clientId: "c1", clientSecret: "s1", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
 
     it("refuses a refresh answer that arrives after destroy(): nothing registered, no access token; across a session reset the same answer is taken", async () => {

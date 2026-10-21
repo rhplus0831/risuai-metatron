@@ -4,8 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
-// Phase 3, slice 7 (`docs/plan/phases/slices/phase-3-settings-sections/credentials-and-closeout.md`,
-// "`.risup` round trip": the HypaV3 JSON export is checked for no `id`). The export lives inline in
+// The HypaV3 JSON export carries no `id` (the `.risup` round trip). The export lives inline in
 // the page's download button, so the page is mounted on the HypaV3 memory section and the button
 // clicked: the file handed to `downloadFile` is exactly `{ type: "risu", ver: 1, data: { name,
 // settings } }`, and the import button beside it gives the same file a fresh id and selects it.
@@ -77,7 +76,7 @@ beforeEach(() => {
     const exported = createHypaV3Preset("Exported", { memoryTokensRatio: 0.35, queryChatCount: 7 });
     const other = createHypaV3Preset("Other");
     // Installed into the records the way the app installs a boot (its fields moved into the
-    // records), since the page reads the records through the settings views (Phase 6 slice 6).
+    // records), since the page reads the records through the settings views.
     installFlatDatabase({
         characters: [],
         hypaV3: true,

@@ -1,4 +1,4 @@
-// The rate limiter is shared with the server's memory code (Phase 5 slice 10).
+// The rate limiter is shared with the server's memory code.
 export {
     TaskRateLimiter,
     TaskCanceledError,

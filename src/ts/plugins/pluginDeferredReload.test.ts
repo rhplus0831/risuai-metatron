@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The reload after a remote `plugins` change (RisuNest small wins P2, `plugins-mcp.md` Flows step
-// 6): `loadPlugins` registers the remote listener once; a change to the load signature of the
-// enabled 3.0 plugins requests one reload, which waits until `pluginWorkIdle` (decision D4: never
-// interrupted), checks idleness again on the `pluginReload` chain, loads the newest list, and skips a
+// The reload after a remote `plugins` change (`plugins-mcp.md` Flows step 6): `loadPlugins`
+// registers the remote listener once; a change to the load signature of the enabled 3.0 plugins
+// requests one reload, which waits until `pluginWorkIdle` (running work is never interrupted),
+// checks idleness again on the `pluginReload` chain, loads the newest list, and skips a
 // list equal to what runs. A local `loadPlugins` cancels it; a remote change while a local load is
 // queued is reconciled after that load. The v3 loader, the idle predicate, and the storage listener
 // are controlled here.

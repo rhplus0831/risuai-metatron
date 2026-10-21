@@ -52,7 +52,7 @@ export async function registerModelDynamic() {
     }
     //google
     try {
-        // The three lists use the stored keys on the server (`auxFetch`, Phase 5 slice 7b).
+        // The three lists use the stored keys on the server (`auxFetch`).
         if (isSecretSet({ kind: "nested", field: "google" })) {
             const res = await auxFetch("google-models", "https://generativelanguage.googleapis.com/v1beta/models", {
                 method: "GET",

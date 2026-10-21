@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `pluginWorkIdle` / `onPluginWorkChange` (RisuNest small wins P2, `plugins-mcp.md` Flows step 6):
-// the idle definition a deferred reload waits for, collected over the tab's send (`doingChat`), the
-// jobs' plugin work (`generationJobs.ts`), the host-side hook invocations still running (a wrapped
-// hook; a provider from before its permission prompt, Sol's plan-review point 4), and each loaded
-// sandbox's `isIdle`. The sandbox is mocked with a controllable idle flag; the job channel is real.
+// `pluginWorkIdle` / `onPluginWorkChange` (`plugins-mcp.md` Flows step 6): the idle definition a
+// deferred reload waits for, collected over the tab's send (`doingChat`), the jobs' plugin work
+// (`generationJobs.ts`), the host-side hook invocations still running (a wrapped hook; a provider
+// from before its permission prompt), and each loaded sandbox's `isIdle`. The sandbox is mocked
+// with a controllable idle flag; the job channel is real.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 

@@ -14,8 +14,8 @@ import { type ChatRef, chatEntry, currentChatRef, selectedChatId, setChatMeta } 
 import { settings } from "../storage/settingsViews.svelte";
 
 /*
- * A chat's translation settings on the tab (`docs/plan/translation.md` slices 2.1 and 2.2), read from
- * the chat's list entry, so they resolve for a chat that is not loaded (or still loading) too.
+ * A chat's translation settings on the tab, read from the chat's list entry, so they resolve for a
+ * chat that is not loaded (or still loading) too.
  */
 
 /** The chat's translation settings (defaults when it is not a member). Tracked. */
@@ -71,10 +71,10 @@ export function setChatTranslationSettings(ref: ChatRef, patch: ChatTranslationP
 }
 
 /**
- * How a fresh chat of `chaId` starts its translation settings (decision 3), read before the chat is
- * created: with `newChatBinding` `inherit` (anything but `empty`) the settings of the character's
- * selected chat as stored (a preset that was deleted is kept: it falls back as it did there); with
- * `empty`, or a character without chats, none (translation off). Never a global value. Untracked.
+ * How a fresh chat of `chaId` starts its translation settings, read before the chat is created: with
+ * `newChatBinding` `inherit` (anything but `empty`) the settings of the character's selected chat
+ * as stored (a preset that was deleted is kept: it falls back as it did there); with `empty`, or a
+ * character without chats, none (translation off). Never a global value. Untracked.
  */
 export function initialChatTranslation(chaId: string): ChatTranslationFields {
     return untrack(() => {
@@ -88,9 +88,9 @@ export function initialChatTranslation(chaId: string): ChatTranslationFields {
 }
 
 /**
- * Prepares an imported chat's translation settings before it is created (slice 2.1): a
- * `translatorPresetId` that names no preset here is dropped (the chat uses the global selection); the
- * other fields are kept as imported (a malformed one reads as unset). Mutates `chat`. Untracked.
+ * Prepares an imported chat's translation settings before it is created: a `translatorPresetId` that
+ * names no preset here is dropped (the chat uses the global selection); the other fields are kept as
+ * imported (a malformed one reads as unset). Mutates `chat`. Untracked.
  */
 export function importedChatTranslation(chat: Chat) {
     untrack(() => {

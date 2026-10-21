@@ -14,7 +14,7 @@
     }
 
     let { close = () => {}, chatRef }: Props = $props();
-    /** The chat the list picks for (decision 8): the given chat, else the open chat; null at home. */
+    /** The chat the list picks for: the given chat, else the open chat; null at home. */
     const shownRef = $derived(chatRef ?? currentChatRef());
     const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
     // Read once per render, not once per row.

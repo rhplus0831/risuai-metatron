@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
-// `docs/plan/translation.md` slices 2.1 and 2.2: a chat's translation settings on the tab
-// (`src/ts/translator/chatTranslation.svelte.ts`), over the chat module booted from summaries against
-// the real server store (nothing loaded, as `chatBindingNewChat.test.ts` boots it). Covered:
+// A chat's translation settings on the tab (`src/ts/translator/chatTranslation.svelte.ts`), over
+// the chat module booted from summaries against the real server store (nothing loaded, as
+// `chatBindingNewChat.test.ts` boots it). Covered:
 // - the readers resolve from the list entry: `chatTranslationSettings` (defaults for a chat without
 //   the fields and for a non-member), `chatAutoTranslate` (the flag only while a target language is
 //   set), `chatTranslatorPreset` (the chat's own, the global one, a deleted one as `missing`),

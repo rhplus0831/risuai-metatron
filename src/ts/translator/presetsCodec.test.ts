@@ -4,14 +4,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 7 (`docs/plan/phases/slices/phase-3-settings-sections/credentials-and-closeout.md`,
-// "`.risup` round trip": `.risutl` gets the same decoded round trip). `presets.test.ts` mocks the
-// encryption and RPack to identity; this file runs the real codecs (WebCrypto `encryptBuffer` and
+// `.risutl` gets the same decoded round trip as `.risup`. `presets.test.ts` mocks the encryption
+// and RPack to identity; this file runs the real codecs (WebCrypto `encryptBuffer` and
 // `decryptBuffer`, the RPack byte map from disk, `fflate`, msgpack) and decodes the file the way
 // `decodeTranslatorPresetFile` does, to pin the on-disk contract: the container
 // `{ translatorPresetVersion: 1 | 2, type: "translator-preset", preset }` and a preset payload of
-// exactly `name`, `prompt`, and `maxResponse` (version 1, the pre-phase container) or exactly `name`
-// and `steps` (version 2, translation slice 3.1), never an `id` (D5).
+// exactly `name`, `prompt`, and `maxResponse` (version 1, the container from before steps) or
+// exactly `name` and `steps` (version 2), never an `id`.
 
 // As in the browser, the `buffer` polyfill is the global `Buffer` before msgpackr loads (see
 // `src/ts/storage/tests/presetIds.test.ts`).
@@ -171,7 +170,7 @@ describe(".risutl round trip through the real codecs", () => {
         });
     });
 
-    // Translation slice 3.2: Send Text As-Is rides in version 2 as `sendTextAsIs: true`, written only when on.
+    // Send Text As-Is rides in version 2 as `sendTextAsIs: true`, written only when on.
     it("carries Send Text As-Is in version 2 as exactly sendTextAsIs: true beside name and steps, and decodes it back, over two cycles", async () => {
         const preset = createTranslatorPreset("As-Is ✓", {
             prompt: "T {{slot::content}}",
@@ -208,8 +207,8 @@ describe(".risutl round trip through the real codecs", () => {
         });
     });
 
-    // Translation slice 3.4: Exclude Chain-of-Thought rides in version 2 as `excludeThoughts: true`,
-    // written only when on, after `sendTextAsIs`.
+    // Exclude Chain-of-Thought rides in version 2 as `excludeThoughts: true`, written only when on,
+    // after `sendTextAsIs`.
     it("carries Exclude Chain-of-Thought in version 2 as exactly excludeThoughts: true, alone or after sendTextAsIs, and decodes it back, over two cycles", async () => {
         const preset = createTranslatorPreset("Thoughts ✓", {
             prompt: "T {{slot::content}}",
@@ -254,8 +253,8 @@ describe(".risutl round trip through the real codecs", () => {
         expect(withoutIds(await decodeTranslatorPresetFile(bothBytes))).toStrictEqual(withoutIds(both));
     });
 
-    // Translation slice 3.3: the history slots are prompt text; the budget is a global setting, so a
-    // file carries no budget field and the version rules do not change.
+    // The history slots are prompt text; the budget is a global setting, so a file carries no
+    // budget field and the version rules do not change.
     it("round-trips prompts with history slots through both versions as prompt text alone, without a budget field", async () => {
         const historyPrompt =
             "Context:\n{{slot::history::5}}\n{{slot::historytrans::05}}\n{{slot::history::0}}\n{{slot::content}}";

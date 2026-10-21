@@ -1,9 +1,8 @@
 /**
  * Display Settings Data
  *
- * Data-driven definition for the DisplaySettings page (settings UI plan slice 7): one leaf array,
- * `displaySettingsItems`, and `displaySettingsTabs`, the page's four tabs, each a list of sections built
- * over it by id.
+ * Data-driven definition for the DisplaySettings page: one leaf array, `displaySettingsItems`, and
+ * `displaySettingsTabs`, the page's four tabs, each a list of sections built over it by id.
  */
 
 import type { SettingItem, SettingSection } from "./types";
@@ -244,7 +243,7 @@ export const displaySettingsItems: SettingItem[] = [
         keywords: ["settings", "close", "button", "size"],
     },
 
-    // Layout & sizing tab: Window & sidebar (`adv.heightMode` from Advanced, settings UI plan slice 7)
+    // Layout & sizing tab: Window & sidebar (`adv.heightMode` from Advanced)
     {
         id: "adv.heightMode",
         type: "select",
@@ -475,7 +474,7 @@ export const displaySettingsItems: SettingItem[] = [
         keywords: ["additional", "assets", "preview"],
     },
 
-    // Sound & notifications tab: Sound (`adv.keepSessionAlive` from Advanced, slice 7)
+    // Sound & notifications tab: Sound (`adv.keepSessionAlive` from Advanced)
     {
         id: "display.playMessage",
         type: "check",
@@ -517,8 +516,8 @@ export interface DisplaySettingsTab {
 }
 
 /**
- * The Display page's tabs (archived, `docs/archived-plan/README.md`, slice 7), over `displaySettingsItems`. The
- * legacy GUI (`settings.ui.useLegacyGUI`) stacks them in this order with no tab bar.
+ * The Display page's tabs, over `displaySettingsItems`. The legacy GUI (`settings.ui.useLegacyGUI`)
+ * stacks them in this order with no tab bar.
  */
 export const displaySettingsTabs: DisplaySettingsTab[] = [
     {

@@ -3,9 +3,8 @@ import { GENERATION_ERROR_REASONS, GENERATION_ERROR_STAGES } from "../../../shar
 import type { JobFailureInfo } from "../alert";
 import { jobDebugInfo } from "./jobDebugInfo";
 
-// Request history slice 6 (`docs/plan/request-history-diagnostics.md`): the job error alert's
-// "Copy debug info" block. Built only from the named fields, each checked; the job's message never
-// reaches it (decision 9).
+// The job error alert's "Copy debug info" block. Built only from the named fields, each checked; the
+// job's message never reaches it.
 
 const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";

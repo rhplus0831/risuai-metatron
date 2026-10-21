@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   level of `pluginCustomStorage`, without touching the v3 `_pluginStorage`
 //   sub-object. The removed `pluginV2` key is no longer an allowed key, so it
 //   lands in custom storage too. Nothing normalizes the records globally
-//   (Phase 4: each routed value is checked by its owner; the whole-database
-//   normalizer is gone since Phase 6 slice 10).
+//   (each routed value is checked by its owner; there is no whole-database
+//   normalizer).
 // - the `_*SafeLocalStorage` aliases work when called detached, which is how
 //   the sandbox RPC (`CALL_ROOT` does `fn(...args)`) invokes them. `key` and
 //   `clear` used to be exported unbound and threw on `this`.
@@ -83,11 +83,10 @@ import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDa
 import { executePluginV3 } from "./v3.svelte";
 
 /**
- * The records installed as the app installs them (the whole-database aggregate is gone since Phase
- * 6 slice 10): one preset (`preset`, selected here), which a forwarded key such as `temperature`
- * reads and writes through `activePreset`, and the characters' chats held in the chat module, as
- * boot assembles them (Phase 6 slice 9a). `selectedPersonaIndex()` reads this client's persona
- * selection.
+ * The records installed as the app installs them (there is no whole-database aggregate): one
+ * preset (`preset`, selected here), which a forwarded key such as `temperature` reads and writes
+ * through `activePreset`, and the characters' chats held in the chat module, as boot assembles
+ * them. `selectedPersonaIndex()` reads this client's persona selection.
  */
 function installDatabase(fields: Record<string, unknown>) {
     selectPreset("preset");
@@ -122,9 +121,9 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         });
 
         // `characters` is reconciled on the live mirror: a new character is added with a `chaId`, the
-        // shared defaults and a `creation_date` (prepared as a creation, Phase 6 slice 5b), and ids for its
-        // chats (a default chat when it has none), usable at once.
-        // (Phase 6 slice 9a: the chats are the wrapper's chat view, not own keys of the record.)
+        // shared defaults and a `creation_date` (prepared as a creation), and ids for its chats (a
+        // default chat when it has none), usable at once. The chats are the wrapper's chat view, not
+        // own keys of the record.
         expect(characterList()).toEqual([
             {
                 ...normalizeCharacter({ name: "c" }),
@@ -152,7 +151,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         expect(settings.pluginStorage).toEqual({ custom: "v" });
     });
 
-    it("keeps existing ids, gives a persona without an id one, and drops non-object entries (Phase 3 slice 6)", async () => {
+    it("keeps existing ids, gives a persona without an id one, and drops non-object entries", async () => {
         const api = await makeApi();
         const personas = [
             { name: "no id", icon: "", personaPrompt: "" },
@@ -194,12 +193,12 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
     });
 });
 
-// Phase 3, slice 4 (Astra challenge point 3): the sections, the collections, and the two selection
-// ids are normalized by the server, and the client applies no default to them any more, so no
-// setter repairs a `null` or `undefined` a plugin writes there. Both setters refuse such a write
-// (through the owning mutation, with a warning) and keep the value. A forwarded preset field is
-// checked the same way by `updateSettings` (a `null` is refused where the field has no `null`
-// value); a malformed non-null section value still goes through: the server repairs it on write.
+// The sections, the collections, and the two selection ids are normalized by the server, and the
+// client applies no default to them any more, so no setter repairs a `null` or `undefined` a plugin
+// writes there. Both setters refuse such a write (through the owning mutation, with a warning) and
+// keep the value. A forwarded preset field is checked the same way by `updateSettings` (a `null` is
+// refused where the field has no `null` value); a malformed non-null section value still goes
+// through: the server repairs it on write.
 describe("v3 setDatabase / setDatabaseLite against server-normalized fields", () => {
     const personas = [{ id: "p", name: "P", icon: "", personaPrompt: "", note: "", largePortrait: false }];
 
@@ -357,7 +356,7 @@ describe("v3 character setters and the generation lock", () => {
     let job = 0;
 
     beforeEach(() => {
-        // The characters are records since Phase 6 slice 5: installed as boot installs them.
+        // The characters are records: installed as boot installs them.
         installDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
         vi.spyOn(console, "warn").mockImplementation(() => {});
         job += 1;
@@ -430,7 +429,7 @@ describe("v3 character setters and the generation lock", () => {
 
 describe("v3 character setters normalize new characters", () => {
     beforeEach(() => {
-        // The characters are records since Phase 6 slice 5: installed as boot installs them.
+        // The characters are records: installed as boot installs them.
         installDatabase({
             characters: [
                 {
@@ -526,7 +525,7 @@ describe("v3 character setters normalize new characters", () => {
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/another character already has/));
     });
 
-    it("setCharacterToIndex prepares a new character as a creation, and gives a same-id replacement the defaults only (Phase 6 slice 5b)", async () => {
+    it("setCharacterToIndex prepares a new character as a creation, and gives a same-id replacement the defaults only", async () => {
         const api = await makeApi();
         const oldLore = { key: "k", content: "<char>", bookVersion: 1 };
         await api.setCharacterToIndex(1, {
@@ -559,10 +558,10 @@ describe("v3 character setters normalize new characters", () => {
     });
 });
 
-// Phase 6 slice 8: the plugin index APIs keep the character list's position (creation order) as
-// their index, now read through `characterList()`/`selectedCharacter()`. The sidebar's order
-// (`characterOrder`, which its drag rewrites) and the name order of the previous/next hotkeys are
-// not the plugin's index; a getter's result is a detached copy.
+// The plugin index APIs keep the character list's position (creation order) as their index, read
+// through `characterList()`/`selectedCharacter()`. The sidebar's order (`characterOrder`, which its
+// drag rewrites) and the name order of the previous/next hotkeys are not the plugin's index; a
+// getter's result is a detached copy.
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { removeCharacter } from "src/ts/storage/characterStore.svelte";
 
@@ -614,10 +613,10 @@ describe("v3 index APIs address the character list's position", () => {
     });
 });
 
-// Slice G2 of the Open Bug Fixes plan: a plugin character applied over the same `chaId` that turns
-// memory on counts the turn-on (`supaMemoryOnCount`), so a chat's "don't ask again" answer to the
-// no-memory trim question (`memoryTrimAck`, the count when answered) stops matching and the question
-// asks again; the plugin's own copy of the count never replaces the stored one.
+// A plugin character applied over the same `chaId` that turns memory on counts the turn-on
+// (`supaMemoryOnCount`), so a chat's "don't ask again" answer to the no-memory trim question
+// (`memoryTrimAck`, the count when answered) stops matching and the question asks again; the
+// plugin's own copy of the count never replaces the stored one.
 describe("v3 character setters and the memory turn-on count", () => {
     function installMemoryCharacter(fields: Record<string, unknown>) {
         installDatabase({
@@ -690,9 +689,9 @@ describe("v3 character setters and the memory turn-on count", () => {
     });
 });
 
-// Slice G2 of the Open Bug Fixes plan: `TerminalNotice.svelte` stops only bubbling, so a plugin's
-// capture-phase key listener on `document` ran before it; no plugin key listener gets a key while the
-// terminal notice (the restore notice) is shown.
+// `TerminalNotice.svelte` stops only bubbling, so a plugin's capture-phase key listener on
+// `document` ran before it; no plugin key listener gets a key while the terminal notice (the
+// restore notice) is shown.
 describe("v3 document key listeners and the terminal notice", () => {
     beforeEach(() => {
         installDatabase({ characters: [], pluginCustomStorage: undefined });

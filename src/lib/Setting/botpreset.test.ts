@@ -3,11 +3,10 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Slice 4 of `docs/plan/split-preset.md`: `botpreset.svelte` lists either preset kind. The model
-// list selects, adds, copies, and removes model presets (a copy keeps its profile references; the
-// model preset holds no key since `docs/plan/model-profiles.md` O2) and never touches the prompt
-// presets; the prompt-only actions (export, import, comparison, the Ctrl+1..9 numbers) stay on the
-// prompt list.
+// `botpreset.svelte` lists either preset kind. The model list selects, adds, copies, and removes
+// model presets (a copy keeps its profile references; the model preset holds no key) and never
+// touches the prompt presets; the prompt-only actions (export, import, comparison, the Ctrl+1..9
+// numbers) stay on the prompt list.
 
 const mocks = vi.hoisted(() => ({
     confirm: vi.fn(),
@@ -177,14 +176,13 @@ describe("the prompt preset list", () => {
     });
 });
 
-// `docs/plan/chat-binding.md`, slice 5 (decision 8): the list picks for the chat the screen shows.
-// With an open chat a pick binds that chat (the tab's selection stays), the highlight is the chat's
-// bound record that exists (none when unset or gone, never the view's tab fallback), and the list
-// names the chat. A list opened for a given chat (`chatRef`) picks for that chat, selected or not,
-// and closes when it is gone. A deletion names how many chats bind the record, leaves those chats
-// as they are, and moves the tab's selection only when it named the record. At home everything is
-// the tab's, as before.
-describe("the lists with a chat open (slice 5)", () => {
+// The list picks for the chat the screen shows. With an open chat a pick binds that chat (the tab's
+// selection stays), the highlight is the chat's bound record that exists (none when unset or gone,
+// never the view's tab fallback), and the list names the chat. A list opened for a given chat
+// (`chatRef`) picks for that chat, selected or not, and closes when it is gone. A deletion names
+// how many chats bind the record, leaves those chats as they are, and moves the tab's selection
+// only when it named the record. At home everything is the tab's, as before.
+describe("the lists with a chat open", () => {
     const chat = (id: string, fields: Record<string, unknown> = {}) => ({
         id,
         name: id.toUpperCase(),

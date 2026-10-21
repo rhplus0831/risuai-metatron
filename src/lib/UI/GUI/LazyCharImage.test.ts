@@ -3,10 +3,10 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "../tests/reactiveProps.svelte";
 
-// The lazy character icon the long lists use (large-asset-import slice 4b): `getCharImage` runs only
-// once the wrapper nears the viewport, for the path it was seen with; until then the icon is given a
-// promise that never settles, so its `{#await}` (`LazyCharImageFixture.svelte`) stays on the loading
-// placeholder. The list-level check over a real list: `src/lib/Mobile/MobileCharacters.test.ts`.
+// The lazy character icon the long lists use: `getCharImage` runs only once the wrapper nears the
+// viewport, for the path it was seen with; until then the icon is given a promise that never
+// settles, so its `{#await}` (`LazyCharImageFixture.svelte`) stays on the loading placeholder. The
+// list-level check over a real list: `src/lib/Mobile/MobileCharacters.test.ts`.
 
 const getCharImage = vi.fn(async (path: string, type: string) => `${type}:${path}`);
 vi.mock("src/ts/characters", () => ({ getCharImage: (path: string, type: string) => getCharImage(path, type) }));

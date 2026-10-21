@@ -24,16 +24,15 @@ vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import
 
 //#endregion
 
-// The fixture character in the legacy shape; until Phase 6 slice 10 it sat on the removed
-// aggregate's mocked holder.
+// The fixture character in the legacy shape.
 const characters: MockedCharacter[] = [
     { chaId: "c", chatPage: 0, chats: [{ id: "k", scriptstate: {} } as any], defaultVariables: "" },
 ];
 
-// The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
+// The readers resolve the selected character by `selection.characterId`, over
 // the character list (`characterList()`, the records): the fixture's character is the selected one.
 selection.characterId = "c";
-// The chat module holds the chat (Phase 6 slice 9a): the character in the records, its chat assembled.
+// The chat module holds the chat: the character in the records, its chat assembled.
 holdMockedChats(characters);
 
 const template = (op: string, body: string) => `{{${op}}}${body}{{/}}`;

@@ -3,9 +3,9 @@
  *
  * Data-driven definition for the AccessibilitySettings page: scrolling to new messages and keeping the
  * chat input and menu within reach; the page ends with a link to Display's sizes. The interaction
- * preferences that shared this page moved to the Interaction page (`interactionSettingsData.ts`,
- * settings UI plan slice 5), the lorebook ones to Memory, the developer ones to Advanced, and the
- * additional parameters toggle to Model.
+ * preferences that shared this page moved to the Interaction page (`interactionSettingsData.ts`), the
+ * lorebook ones to Memory, the developer ones to Advanced, and the additional parameters toggle to
+ * Model.
  */
 
 import type { SettingItem, SettingSection } from "./types";

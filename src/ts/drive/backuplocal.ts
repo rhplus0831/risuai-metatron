@@ -346,12 +346,12 @@ export function upstreamBackupFileName(date: Date = new Date()): string {
 }
 
 /**
- * A RisuAI-compatible backup (`docs/plan/upstream-bin-compat.md` S7): a `.bin` upstream RisuAI's "Load
- * Backup" restores. Asks whether to include the API keys (D7; every key, the auxiliary services',
- * the characters' TTS keys, and the MCP OAuth secrets included), saves every change, has the server
- * prepare the file from one copy of the store with this tab's selection and open chat, shows the
- * report, and on a yes streams the download to `RisuAI-backup-<date>.bin`. A declined report cancels
- * the prepared export. The file carries no manifest; nothing is read from the stream.
+ * A RisuAI-compatible backup: a `.bin` upstream RisuAI's "Load Backup" restores. Asks whether to
+ * include the API keys (every key, the auxiliary services', the characters' TTS keys, and the MCP
+ * OAuth secrets included), saves every change, has the server prepare the file from one copy of the
+ * store with this tab's selection and open chat, shows the report, and on a yes streams the download
+ * to `RisuAI-backup-<date>.bin`. A declined report cancels the prepared export. The file carries no
+ * manifest; nothing is read from the stream.
  */
 export async function SaveUpstreamLocalBackup() {
     const includeSecrets = await alertConfirm(language.upstreamExport.includeKeys);

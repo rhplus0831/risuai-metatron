@@ -1,8 +1,7 @@
 import type { SettingItem } from "./types";
 
 // The Voice & Emotion page (`VoiceSettings.svelte`, handwritten) renders this item in its Emotion
-// section, under the emotion method: the auxiliary model's emotion prompt, moved from Advanced
-// (settings UI plan slice 4).
+// section, under the emotion method: the auxiliary model's emotion prompt, moved from Advanced.
 export const voiceSettingsItems: SettingItem[] = [
     {
         id: "adv.emoPrompt",

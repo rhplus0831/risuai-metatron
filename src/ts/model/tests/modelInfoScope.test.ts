@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Astra's challenge point 2 on the split-preset implementation (`docs/plan/split-preset.md`):
-// `getModelInfo(id, scope)` applies the custom flags of the main profile of the model preset a
-// request captured (the pair whose ids the server receives; `docs/plan/model-profiles.md`), not the
-// selected one's; without a scope it reads the
-// selection as before; a captured model preset that is gone throws `PresetTargetGoneError` (the
-// request is refused, never redirected to the selection).
+// `getModelInfo(id, scope)` applies the custom flags of the main profile of the model preset a request
+// captured (the pair whose ids the server receives), not the selected one's; without a scope it reads the
+// selection as before; a captured model preset that is gone throws `PresetTargetGoneError` (the request is
+// refused, never redirected to the selection).
 
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));

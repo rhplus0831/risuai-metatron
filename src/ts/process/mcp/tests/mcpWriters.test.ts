@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations } from "src/ts/storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 4 (`mcp-risuaccess-writers`): the MCP writers outside RisuAccess, against the real
-// save adapter and the real server store (`storeBackedServer.ts`), with the remote `MCPClient`
-// stubbed. `importMCPModule` adds a module with an id through `addModule` (an invalid URL adds
-// nothing); the refresh callback `initializeMCPs` installs stores the OAuth entry through
-// `addAuthRefresh`; the Google credential prompt writes the trimmed values through `updateSettings`
-// into `secrets`, asks nothing when credentials exist, and writes nothing for an empty input.
+// The MCP writers outside RisuAccess, against the real save adapter and the real server store
+// (`storeBackedServer.ts`), with the remote `MCPClient` stubbed. `importMCPModule` adds a module
+// with an id through `addModule` (an invalid URL adds nothing); the refresh callback
+// `initializeMCPs` installs stores the OAuth entry through `addAuthRefresh`; the Google credential
+// prompt writes the trimmed values through `updateSettings` into `secrets`, asks nothing when
+// credentials exist, and writes nothing for an empty input.
 
 const { server, alerts, remote } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -23,7 +23,7 @@ const { server, alerts, remote } = vi.hoisted(() => ({
         refresh: null as null | { clientId: string; clientSecret: string; refreshToken: string; tokenUrl: string },
     },
 }));
-/** The stubbed `internal:fs` client (Phase 5 slice 12a): its constructions, handshakes, and destructions. */
+/** The stubbed `internal:fs` client: its constructions, handshakes, and destructions. */
 const { tab } = vi.hoisted(() => ({
     tab: { constructed: 0, handshakes: 0, destroyed: 0, release: null as null | (() => void) },
 }));
@@ -239,7 +239,7 @@ describe("initializeMCPs", () => {
     });
 });
 
-describe("the tab clients shared with a server job (readyTabClient, Phase 5 slice 12a)", () => {
+describe("the tab clients shared with a server job (readyTabClient)", () => {
     it("creates one internal:fs client whose first handshake concurrent callers share, hands the same instance to the registry, and keeps it when the registry's cleanup drops its reference", async () => {
         await boot();
         tab.constructed = 0;

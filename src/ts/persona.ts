@@ -30,10 +30,10 @@ export async function selectUserImg() {
 }
 
 /**
- * Picks persona `id` where the screen shows it (decision 8 of `docs/plan/chat-binding.md`): `target`
- * names the chat, `null` the tab's selection, and `undefined` the open chat now, else (home) the tab's
- * selection. The persona fields are forwarded to the shown persona, so nothing is copied. Returns
- * false when nothing changed (the persona or the chat is gone).
+ * Picks persona `id` where the screen shows it: `target` names the chat, `null` the tab's selection,
+ * and `undefined` the open chat now, else (home) the tab's selection. The persona fields are forwarded
+ * to the shown persona, so nothing is copied. Returns false when nothing changed (the persona or the
+ * chat is gone).
  */
 export function changeUserPersona(id: string, target?: ChatRef | null): boolean {
     return pickBinding("personaId", id, target);

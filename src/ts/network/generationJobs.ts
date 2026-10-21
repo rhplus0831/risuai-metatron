@@ -45,12 +45,12 @@ function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
 }
 
 /*
- * Plugin work of this tab's jobs (RisuNest small wins P2, `plugins-mcp.md`): a job calls the hooks it
- * listed at its creation until it ends, so a plugin reload waits while any of these is held. A job is
- * held from before its hooks are listed (`createGenerationJob`) or from its follow
- * (`followGenerationJob`), and while it is saved for this tab (a reload resumes it), until
- * `releaseGenerationJob`; a busy job this tab may own, until its status read answers; queued channel
- * work; and the channel's running callbacks.
+ * Plugin work of this tab's jobs (`plugins-mcp.md`): a job calls the hooks it listed at its
+ * creation until it ends, so a plugin reload waits while any of these is held. A job is held from
+ * before its hooks are listed (`createGenerationJob`) or from its follow (`followGenerationJob`),
+ * and while it is saved for this tab (a reload resumes it), until `releaseGenerationJob`; a busy
+ * job this tab may own, until its status read answers; queued channel work; and the channel's
+ * running callbacks.
  */
 let creatingJobs = 0;
 const liveJobs = new Set<string>();
@@ -99,12 +99,12 @@ export function noteChannelCallbacks(count: number) {
 }
 
 /**
- * The client transport of server generation jobs (Phase 5, `generation-jobs`; `shared/jobs.ts`):
- * create, status, abort, and the owner socket, plus `applyGenerationEvent`, which mirrors a job's
- * events into the chat module and the save loop without any outgoing write. The tab's `clientId`
- * and its jobs (one per chat) are kept in `sessionStorage`, so a reloaded tab can attach again
- * (`resumeSavedGenerations`). Its callers are the server command and send jobs of
- * `process/serverCommands.ts` (slices 8a and 9; the only generation path since the cutover).
+ * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
+ * owner socket, plus `applyGenerationEvent`, which mirrors a job's events into the chat module and
+ * the save loop without any outgoing write. The tab's `clientId` and its jobs (one per chat) are
+ * kept in `sessionStorage`, so a reloaded tab can attach again (`resumeSavedGenerations`). Its
+ * callers are the server command and send jobs of `process/serverCommands.ts` (the only generation
+ * path).
  */
 
 const CLIENT_ID_KEY = "risu-generation-client";
@@ -130,7 +130,7 @@ export class GenerationStaleError extends Error {
 
 /**
  * 409 `chatBindingIncomplete` (with the chat's binding `problems`) or `chatBindingMismatch`: the job's
- * ids are not its chat's complete binding (`docs/plan/chat-binding.md`). Nothing ran.
+ * ids are not its chat's complete binding. Nothing ran.
  */
 export class ChatBindingRefusedError extends Error {
     readonly code: "chatBindingIncomplete" | "chatBindingMismatch";
@@ -675,8 +675,8 @@ export function applyGenerationEvent(
             }
             return;
         case "preset":
-            // A `presetChain` pick is the job's own (`docs/plan/chat-binding.md`, decision 9): neither
-            // the tab's selection nor the chat's binding changes.
+            // A `presetChain` pick is the job's own: neither the tab's selection nor the chat's binding
+            // changes.
             return;
         case "done":
         case "error":

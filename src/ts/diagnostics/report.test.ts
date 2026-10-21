@@ -2,13 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalDiagnosticReport } from "../../../shared/diagnosticsReport.ts";
 import versionData from "../../../version.json";
 
-// Request history slice 9 (`docs/plan/request-history-diagnostics.md`, decision 6): the Diagnostics
-// panel's report module (`report.ts`). The browser and OS families (never the user agent); the read
-// of the server's diagnostics (`authFetch`, `ok` checked, every failure and a wait past 10 s a null,
-// the fetch aborted); the report built from the tab's side with `Server: unavailable` when the
-// server did not answer (the browser-only fallback), and `Server: current` when it did; and the save
-// (`POST /api/diagnostics/report` as `text/plain`, the answer mapped to a fixed failure kind, the
-// whole save bounded with `network` when nothing was sent, `timeout` after a dispatch, never retried).
+// The Diagnostics panel's report module (`report.ts`). The browser and OS families (never the user agent);
+// the read of the server's diagnostics (`authFetch`, `ok` checked, every failure and a wait past 10 s a
+// null, the fetch aborted); the report built from the tab's side with `Server: unavailable` when the server
+// did not answer (the browser-only fallback), and `Server: current` when it did; and the save
+// (`POST /api/diagnostics/report` as `text/plain`, the answer mapped to a fixed failure kind, the whole
+// save bounded with `network` when nothing was sent, `timeout` after a dispatch, never retried).
 
 const { deps } = vi.hoisted(() => ({
     deps: {

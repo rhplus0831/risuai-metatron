@@ -1,11 +1,10 @@
 import { insertSentenceParagraphBreaks } from "../parser/sentenceBreaks";
 
 /*
- * The bilingual display (`docs/plan/translation.md` slice 2.4, ported from the Fastify fork): the
- * source and its stored translation interleaved before the display transform, paired by position (the
- * k-th unit of the source beside the k-th unit of the translation, decision 7), and the empty pairs the
- * display scripts left pruned after rendering. The class names keep the sanitizer's `x-risu-` prefix,
- * so they survive it.
+ * The bilingual display (ported from the Fastify fork): the source and its stored translation
+ * interleaved before the display transform, paired by position (the k-th unit of the source beside
+ * the k-th unit of the translation), and the empty pairs the display scripts left pruned after
+ * rendering. The class names keep the sanitizer's `x-risu-` prefix, so they survive it.
  */
 
 export const BILINGUAL_TRANSLATION_CLASS = "x-risu-bilingual-translation";

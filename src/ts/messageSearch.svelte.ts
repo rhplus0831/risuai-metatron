@@ -10,9 +10,9 @@ import { currentChatRef, type ChatRef } from "./storage/chatStore.svelte";
 import { onCharacterSelectionChanged, selection } from "./storage/selection.svelte";
 
 /**
- * Message search across chats (archived `docs/plan/search.md` slice 4b): the request to the server's scan
- * (`POST /api/chats/search`, slice 4a), the panel's open state and scope, and the jump from a hit to
- * its message, which the chat screen claims once the hit's chat is selected and loaded.
+ * Message search across chats: the request to the server's scan (`POST /api/chats/search`), the
+ * panel's open state and scope, and the jump from a hit to its message, which the chat screen
+ * claims once the hit's chat is selected and loaded.
  */
 
 /** Which chats a search scans: every character (not trashed, not the playground), one character, one chat. */

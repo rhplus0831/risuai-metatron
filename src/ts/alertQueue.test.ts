@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { alertData } from "./alert";
 import { createAlertQueue, createDialogKeyGate, NEXT_DIALOG_GAP_MS, type AlertQueue } from "./alertQueue";
 
-// RisuNest small wins, slice A1: the alert queue (`alertQueue.ts`), the dialog key gate, and the
-// `alert.ts` helpers over the queue. One status slot (`wait`, `progress`, `toast`) that the newest
-// replaces; every other alert is a dialog that waits its turn and answers only its own caller; after
-// a dialog closes the next one shows `NEXT_DIALOG_GAP_MS` later (also one opened after the close),
-// so a held key or a double click cannot answer it unseen. The helpers (third block) run the real
-// `alert.ts` over a fresh queue per test (`stores.svelte` mocked to it).
+// The alert queue (`alertQueue.ts`), the dialog key gate, and the `alert.ts` helpers over the queue.
+// One status slot (`wait`, `progress`, `toast`) that the newest replaces; every other alert is a
+// dialog that waits its turn and answers only its own caller; after a dialog closes the next one
+// shows `NEXT_DIALOG_GAP_MS` later (also one opened after the close), so a held key or a double
+// click cannot answer it unseen. The helpers (third block) run the real `alert.ts` over a fresh
+// queue per test (`stores.svelte` mocked to it).
 
 /** The queue `alert.ts` writes to in this file: a fresh one per helper test. */
 const holder = vi.hoisted(() => ({ queue: null as unknown as AlertQueue }));

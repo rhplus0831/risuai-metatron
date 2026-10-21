@@ -1,2 +1,2 @@
-// Moved to `shared/prompt/templateCheck.ts` (Phase 5).
+// Moved to `shared/prompt/templateCheck.ts`.
 export { templateCheck } from "../../../../shared/prompt/templateCheck.ts";

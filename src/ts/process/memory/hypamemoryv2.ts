@@ -440,7 +440,7 @@ export class HypaProcessorV2<TMetadata> {
                 model: models[this.options.model],
             };
             // A key given to this processor is used as it is; the stored memory key is used on the
-            // server (`auxFetch`, Phase 5 slice 7b).
+            // server (`auxFetch`).
             response = this.options.oaiKey?.trim()
                 ? await globalFetch("https://api.openai.com/v1/embeddings", {
                       headers: { Authorization: "Bearer " + this.options.oaiKey.trim() },

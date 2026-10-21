@@ -93,7 +93,7 @@ describe("translator preset file codec", () => {
         expect(decoded.id).not.toBe(preset.id);
         expect(decoded.steps[0].id).not.toBe(preset.steps[0].id);
 
-        // The `.risutl` payload carries no id (D5). The mocks make encryption and RPack identity
+        // The `.risutl` payload carries no id. The mocks make encryption and RPack identity
         // transforms, so the container is just compressed msgpack and the inner preset plain msgpack.
         const container = decodeMsgpack(fflate.decompressSync(encoded)) as { preset: Uint8Array };
         const filePreset = decodeMsgpack(new Uint8Array(container.preset)) as Record<string, unknown>;
@@ -110,8 +110,8 @@ describe("translator preset file codec", () => {
         );
     });
 
-    // Translation slice 3.1: version 2 holds every step. The mocks make encryption and RPack identity
-    // transforms, so a file is compressed msgpack around a plain msgpack payload, in both directions.
+    // Version 2 holds every step. The mocks make encryption and RPack identity transforms, so a
+    // file is compressed msgpack around a plain msgpack payload, in both directions.
     const fileOf = (encoded: Uint8Array) => {
         const container = decodeMsgpack(fflate.decompressSync(encoded)) as {
             translatorPresetVersion: number;
@@ -199,7 +199,7 @@ describe("translator preset file codec", () => {
             version: 1,
             payload: { name: "One", prompt: "a", maxResponse: 7 },
         });
-        // Each of these would lose something in version 1 (Astra's plan review, point 4).
+        // Each of these would lose something in version 1.
         const lossy: Record<string, Parameters<typeof createTranslatorPreset>[1]> = {
             "two steps": { steps: [{ prompt: "a" }, { prompt: "b" }] },
             "a disabled second step": { steps: [{ prompt: "a" }, { prompt: "b", enabled: false }] },
@@ -226,7 +226,7 @@ describe("translator preset file codec", () => {
         });
 
         const refused: Record<string, unknown> = {
-            // The Fastify fork's file carries the preset's own fields beside the steps (decision 8).
+            // The Fastify fork's file carries the preset's own fields beside the steps.
             "a Fastify-shaped payload": { ...valid, prompt: "p", maxResponse: 1 },
             "a preset id": { ...valid, id: "keep-me" },
             "a missing name": { steps: valid.steps },
@@ -269,8 +269,8 @@ describe("translator preset file codec", () => {
         await expect(decodeTranslatorPresetFile(fileWith(2, "not a record"))).rejects.toThrow(INVALID);
     });
 
-    // Translation slice 3.2: version 2 carries Send Text As-Is as an optional boolean, written only
-    // when it is on; version 1 cannot hold it, so a version 1 payload carrying it is refused.
+    // Version 2 carries Send Text As-Is as an optional boolean, written only when it is on; version
+    // 1 cannot hold it, so a version 1 payload carrying it is refused.
     it("writes sendTextAsIs: true as version 2, even for the lone default step, reads it back, and writes nothing of it when off", async () => {
         const on = createTranslatorPreset("On", { prompt: "a", maxResponse: 7, sendTextAsIs: true });
         const encoded = await encodeTranslatorPresetFile(on);
@@ -337,8 +337,8 @@ describe("translator preset file codec", () => {
         }
     });
 
-    // Translation slice 3.4: Exclude Chain-of-Thought rides in version 2 as Send Text As-Is does,
-    // written only when on and after it; version 1 cannot hold it.
+    // Exclude Chain-of-Thought rides in version 2 as Send Text As-Is does, written only when on and
+    // after it; version 1 cannot hold it.
     it("writes excludeThoughts: true as version 2, even for the lone default step, after sendTextAsIs when both are on, reads it back, and writes nothing of it when off", async () => {
         const on = createTranslatorPreset("On", { prompt: "a", maxResponse: 7, excludeThoughts: true });
         const encoded = await encodeTranslatorPresetFile(on);

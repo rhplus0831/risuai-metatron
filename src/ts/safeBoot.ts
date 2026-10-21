@@ -1,9 +1,9 @@
 /**
- * Safe boot (RisuNest small wins S1, `app-shell.md` Boot): plugins, or custom CSS and GUI HTML, off for
- * this page load. Asked for with `?safe` (`?safe=all`, `?safe=plugins`, `?safe=css`, or a list), or
- * entered by itself after `SAFE_BOOT_THRESHOLD` consecutive boots that did not settle. Nothing is
- * written to the server and no persisted field changes: the state lives in this module for the page
- * load, plus one `localStorage` record of the boots that reached user content and did not settle.
+ * Safe boot (`app-shell.md` Boot): plugins, or custom CSS and GUI HTML, off for this page load.
+ * Asked for with `?safe` (`?safe=all`, `?safe=plugins`, `?safe=css`, or a list), or entered by
+ * itself after `SAFE_BOOT_THRESHOLD` consecutive boots that did not settle. Nothing is written to
+ * the server and no persisted field changes: the state lives in this module for the page load, plus
+ * one `localStorage` record of the boots that reached user content and did not settle.
  */
 import { language } from "src/lang";
 import { alertNormal } from "./alert";
@@ -12,7 +12,7 @@ import { SafeModeStore } from "./stores.svelte";
 export type SafeBootCategory = "plugins" | "css";
 
 export const SAFE_BOOT_KEY = "risu.safeBoot.attempts";
-/** Consecutive unsettled boots after which the next one is safe (decision D6). */
+/** Consecutive unsettled boots after which the next one is safe. */
 export const SAFE_BOOT_THRESHOLD = 2;
 /** How long a loaded page must stay up, with no failure and every plugin started, to count as settled. */
 export const SAFE_BOOT_SETTLE_MS = 10_000;

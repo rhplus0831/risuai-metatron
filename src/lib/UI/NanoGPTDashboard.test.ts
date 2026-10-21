@@ -3,10 +3,10 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "./tests/reactiveProps.svelte";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the NanoGPT dashboard no longer receives
-// the key; it depends on whether one is stored and on the key's version. An answer still on its way
-// when the key is cleared, replaced, or the dashboard leaves must not write the subscription state
-// (`ModelSettings` resets it when the key is cleared; the chat requests pick their endpoint by it).
+// The NanoGPT dashboard no longer receives the key; it depends on whether one is stored and on the
+// key's version. An answer still on its way when the key is cleared, replaced, or the dashboard
+// leaves must not write the subscription state (`ModelSettings` resets it when the key is cleared;
+// the chat requests pick their endpoint by it).
 
 const { nano } = vi.hoisted(() => ({
     nano: { balance: vi.fn(), subscription: vi.fn(), providers: vi.fn() },
@@ -42,7 +42,7 @@ const mounted: ReturnType<typeof mount>[] = [];
 
 beforeEach(() => {
     // Installed into the records (the `providers` section), since the dashboard writes the state
-    // through the settings views (Phase 6 slice 7): the test reads and writes the same record.
+    // through the settings views: the test reads and writes the same record.
     installFlatDatabase({ nanogptSubscriptionState: "" });
     nano.balance.mockResolvedValue(null);
     target = document.createElement("div");

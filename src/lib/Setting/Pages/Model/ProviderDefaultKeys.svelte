@@ -13,9 +13,9 @@
     /**
      * Each provider's flat default key, for the models the selected model preset's slots use, and
      * the Vertex default key's client email and project id (the API Keys tab). The OpenAI and Google
-     * keys are also the image providers' (DALL-E, Imagen) and OpenAI TTS's keys, edited only here
-     * (settings UI plan slice 8): they are listed while the image provider uses them, and when a
-     * status link on another page asked for them (then the accordion opens on them).
+     * keys are also the image providers' (DALL-E, Imagen) and OpenAI TTS's keys, edited only here:
+     * they are listed while the image provider uses them, and when a status link on another page asked
+     * for them (then the accordion opens on them).
      */
     /** The `data-credential` name of a row a status link can scroll to. */
     function credentialOf(path: SecretPath): string | undefined {

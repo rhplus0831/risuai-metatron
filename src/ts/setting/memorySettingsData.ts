@@ -1,10 +1,9 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
-// The Memory page (`MemorySettings.svelte`, handwritten) renders these items, moved from Advanced
-// (settings UI plan slice 4) and Accessibility (slice 5): the lorebook limits and options in their own
-// section at the end of the page, and the punctuation removal inside the SupaMemory block
-// (`supaMemory.ts` is its only reader).
+// The Memory page (`MemorySettings.svelte`, handwritten) renders these items, moved from Advanced and
+// Accessibility: the lorebook limits and options in their own section at the end of the page, and the
+// punctuation removal inside the SupaMemory block (`supaMemory.ts` is its only reader).
 export const memorySettingsItems: SettingItem[] = [
     {
         id: "adv.lbDepth",

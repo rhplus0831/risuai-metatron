@@ -2,11 +2,11 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 5: the plugin `setDatabase` host setter over the settings records. A forwarded key
-// of `allowedDbKeys` (`temperature`, `maxContext`, ...) lands in the preset this client has selected.
-// When the object also carries `plugins`, the install prompt is awaited before anything is assigned,
-// so every field lands in the preset selected when the prompt is answered, not in two different
-// presets depending on the key order (Astra challenge point 2, adopted in reduced form).
+// The plugin `setDatabase` host setter over the settings records. A forwarded key of
+// `allowedDbKeys` (`temperature`, `maxContext`, ...) lands in the preset this client has selected.
+// When the object also carries `plugins`, the install prompt is awaited before anything is
+// assigned, so every field lands in the preset selected when the prompt is answered, not in two
+// different presets depending on the key order.
 
 const captured = vi.hoisted(() => ({
     api: null as null | Record<string, any>,
@@ -58,7 +58,7 @@ import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/
 import { executePluginV3 } from "./v3.svelte";
 
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
-/** The main profile of the model preset `id` (`docs/plan/model-profiles.md`): `m-a` or `m-b`. */
+/** The main profile of the model preset `id`: `m-a` or `m-b`. */
 const mainProfile = (id: string) =>
     settings.modelProfiles.find((entry: { id: string }) => entry.id === `m-${id}`) as any;
 
@@ -67,11 +67,11 @@ beforeEach(async () => {
     localStorage.clear();
     selectPreset("");
     selectModelPreset("");
-    // The write-only `llmSecrets` state (7b): an empty masked record and no queued credential write.
+    // The write-only `llmSecrets` state: an empty masked record and no queued credential write.
     llmSecretState.queue.splice(0);
     setMaskedSecrets(maskLlmSecrets({}));
     captured.confirm.length = 0;
-    // The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10).
+    // The records installed as the app installs them (there is no whole-database aggregate).
     installFlatDatabase({
         characters: [],
         plugins: [],
@@ -96,8 +96,7 @@ beforeEach(async () => {
 
 describe("the plugin setDatabase host setter", () => {
     it("lands a forwarded key in the selected preset of its owner and leaves the others alone", async () => {
-        // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's
-        // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md` O8).
+        // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's.
         await captured.api!.setDatabase({ temperature: 91, maxContext: 9100 });
         expect(preset("a")).toMatchObject({ temperature: 91 });
         expect(preset("b")).toMatchObject({ temperature: 50 });

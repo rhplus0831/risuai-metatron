@@ -1,6 +1,6 @@
 /*
- * The bilingual display's pure helpers (`docs/plan/translation.md` slice 2.4), ported from the Fastify
- * fork with its cases; the pruning cases are new.
+ * The bilingual display's pure helpers, ported from the Fastify fork with its cases; the pruning
+ * cases are new.
  */
 import { describe, expect, it } from "vitest";
 import {

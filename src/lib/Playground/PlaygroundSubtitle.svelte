@@ -283,7 +283,7 @@
             formData.append("model", "whisper-1");
             formData.append("response_format", "vtt");
 
-            // With the stored OpenAI key, on the server (`auxFetch`, Phase 5 slice 7b).
+            // With the stored OpenAI key, on the server (`auxFetch`).
             const d = await auxFetch("openai-whisper", "https://api.openai.com/v1/audio/transcriptions", {
                 method: "POST",
                 body: formData,

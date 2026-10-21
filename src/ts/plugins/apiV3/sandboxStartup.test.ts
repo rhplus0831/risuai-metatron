@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxHost } from "./factory";
 
-// `SandboxHost.startup` (safe boot, RisuNest small wins S1, `plugins-mcp.md`): how the guest's start
-// ended. `ready` on `SCRIPT_SETTLED`, `failed` on `SCRIPT_SETTLED` with `failed: true` (the script
-// threw or never ran), `stopped` when terminated before either; the first answer stays. A started
-// guest with open work is still `ready`, and a failed one is still idle. The guest is simulated: its
-// messages arrive as window messages from the iframe's window.
+// `SandboxHost.startup` (safe boot, `plugins-mcp.md`): how the guest's start ended. `ready` on
+// `SCRIPT_SETTLED`, `failed` on `SCRIPT_SETTLED` with `failed: true` (the script threw or never ran),
+// `stopped` when terminated before either; the first answer stays. A started guest with open work is
+// still `ready`, and a failed one is still idle. The guest is simulated: its messages arrive as window
+// messages from the iframe's window.
 
 function deferred<T>() {
     let resolve!: (value: T) => void;

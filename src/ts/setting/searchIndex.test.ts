@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Search plan slice 3a: the settings location table (`SETTING_LOCATIONS`, every registry item's one
-// destination, read from the arrays the pages render) and `searchSettings` over the real settings
-// views a fixture installs.
+// The settings location table (`SETTING_LOCATIONS`, every registry item's one destination, read
+// from the arrays the pages render) and `searchSettings` over the real settings views a fixture
+// installs.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");

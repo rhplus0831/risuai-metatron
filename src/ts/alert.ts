@@ -112,9 +112,8 @@ export function alertError(msg: string | Error) {
 }
 
 /**
- * A server job's error (`docs/plan/request-history-diagnostics.md` slice 6): the message as
- * `alertError` shows it, with the job's failure fields for the alert's debug actions. `at`: when the
- * tab received the job's end.
+ * A server job's error: the message as `alertError` shows it, with the job's failure fields for the
+ * alert's debug actions. `at`: when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
     const data = errorAlert(end.message);

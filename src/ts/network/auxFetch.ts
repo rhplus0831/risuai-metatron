@@ -4,8 +4,8 @@ import { assertSaveAdmission, awaitSecretWrites, flushResources } from "../stora
 import { bodyIntercepterStore } from "../stores.svelte";
 
 /**
- * A call that uses a stored LLM credential, through `/proxy2`'s auxiliary operations (Phase 5 slice
- * 7b, `server/src/llm/auxOps.ts`): the server sends it to the operation's fixed endpoint with the
+ * A call that uses a stored LLM credential, through `/proxy2`'s auxiliary operations
+ * (`server/src/llm/auxOps.ts`): the server sends it to the operation's fixed endpoint with the
  * stored key; the tab never holds the key. The operation's method is kept (a GET carries no body).
  * With a profileId it first flushes resource writes (including the profile and named-key metadata),
  * then waits for credential writes this tab queued (a key entered just before is used), runs

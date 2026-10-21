@@ -26,8 +26,8 @@ import { settings } from "../storage/settingsViews.svelte";
 import sendSound from "../../etc/send.mp3";
 
 /**
- * The tab side of the stored translation (`docs/plan/translation.md` slice 1.4): with the LLM
- * translator on `llmTranslationTarget: "message"`, a chat row shows its message's stored translation
+ * The tab side of the stored translation: with the LLM translator on
+ * `llmTranslationTarget: "message"`, a chat row shows its message's stored translation
  * (`Message.translation`, fresh by its source hash), asks the server runner for one
  * (`POST /api/translate/message`), and writes a hand edit (`setMessageTranslation`, `edited: true`).
  * The answer is not shown by itself: the row shows the held message, which the chat's resource
@@ -36,8 +36,7 @@ import sendSound from "../../etc/send.mp3";
 
 /**
  * How long the tab waits for an answer: the server's 10-minute deadline twice (a request for a text
- * that a run in flight no longer matches waits for that run, then translates; slice 2.3), plus
- * transport.
+ * that a run in flight no longer matches waits for that run, then translates), plus transport.
  */
 const ANSWER_TIMEOUT_MS = 21 * 60 * 1000;
 /** How long a request stays pending after its answer, waiting for the chat refresh to bring the translation. */
@@ -50,12 +49,12 @@ const messageKey = (ref: ChatRef, messageId: string) => `${ref.chaId}\u0000${ref
 const pending = new SvelteSet<string>();
 const inFlight = new Map<string, Promise<boolean>>();
 /**
- * Messages whose newer hand-off arrived while this tab's request was running (a Continue's, slice
- * 2.3): that request may have joined the older run, so another follows once it settles.
+ * Messages whose newer hand-off arrived while this tab's request was running (a Continue's):
+ * that request may have joined the older run, so another follows once it settles.
  */
 const followAgain = new Map<string, StoredTranslationFollow>();
 
-/** A request that follows a server hand-off (slice 2.3), and how it reports a failure. */
+/** A request that follows a server hand-off, and how it reports a failure. */
 export interface StoredTranslationFollow {
     /** Shows a failure (the job channel queues it behind any question it shows). */
     report(message: string): void;
@@ -106,10 +105,10 @@ export function setStoredTranslationChoice(ref: ChatRef, messageId: string, show
  * Alerts on failure; resolves true when the translation is stored (and held, unless the refresh is
  * still late).
  *
- * `follow`: the server already runs it (a send's hand-off, slice 2.3). The request joins that run
- * (an unforced request for a message in flight), so the tab gets its result or failure, reported
- * through `follow.report`. It skips the save barrier and the stability checks (the server translates
- * its own copy, which the job just wrote; the next send's job may already block a save) and says
+ * `follow`: the server already runs it (a send's hand-off). The request joins that run (an unforced
+ * request for a message in flight), so the tab gets its result or failure, reported through
+ * `follow.report`. It skips the save barrier and the stability checks (the server translates its
+ * own copy, which the job just wrote; the next send's job may already block a save) and says
  * nothing when the text changed. If the run ended before the request arrives, the answer is the
  * stored translation (`fresh`), or the request starts a run of its own (a failed run is tried once
  * more). A follow while a request for the message runs follows again once it settles (it may have
@@ -287,7 +286,7 @@ async function runRequest(
 }
 
 /**
- * Follows the server's translations of a send's messages (the job's `translating` notice, slice 2.3):
+ * Follows the server's translations of a send's messages (the job's `translating` notice):
  * each shows the loading state until its stored translation arrives or its run fails (alerted).
  */
 export function followStoredTranslations(ref: ChatRef, messageIds: readonly string[], follow: StoredTranslationFollow) {

@@ -3,10 +3,10 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Search plan slice 3b: the settings search in the real `Settings.svelte` shell with the Model,
-// Connections, Prompt and Display pages real (the jump's consumers) and the other pages mocked. The
-// field lists hits instead of the groups; Enter, a click and Escape are search-owned; the keyed page
-// remounts per jump and its attachment scrolls, rings, or shows the unavailable note, then finishes.
+// The settings search in the real `Settings.svelte` shell with the Model, Connections, Prompt and
+// Display pages real (the jump's consumers) and the other pages mocked. The field lists hits instead
+// of the groups; Enter, a click and Escape are search-owned; the keyed page remounts per jump and
+// its attachment scrolls, rings, or shows the unavailable note, then finishes.
 
 vi.mock("./Pages/UserSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/ApiKeysSettings.svelte", () => ({ default: () => {} }));

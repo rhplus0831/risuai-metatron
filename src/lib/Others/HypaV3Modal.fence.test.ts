@@ -3,14 +3,14 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Slice 1c of `docs/plan/data-loss-concurrency.md` (audit A2), the modal's half (`docs/structure/memory.md`,
-// UI and Invariants): over the real chat module, the HypaV3 modal writes nothing while a send of this
-// tab (`sendingChatRef`) or a job this tab follows (`followedJobs` → `generatingChatKeys`) runs in
-// the chat. A change made meanwhile is undone in the copy with the `chatGenerating` notice and is not
-// replayed when the fence drops; the empty default of a chat without memory data is never written by
-// the saving effect (the immediate initialization write is quietly refused while fenced and the chat
-// keeps no `hypaV3Data` after the job), while an unfenced open still initializes it; the V2→V3
-// conversion is offered for a chat without `hypaV3Data` and reports no success while fenced.
+// The modal's half of the generation fence (`docs/structure/memory.md`, UI and Invariants): over the real
+// chat module, the HypaV3 modal writes nothing while a send of this tab (`sendingChatRef`) or a job this
+// tab follows (`followedJobs` → `generatingChatKeys`) runs in the chat. A change made meanwhile is undone
+// in the copy with the `chatGenerating` notice and is not replayed when the fence drops; the empty default
+// of a chat without memory data is never written by the saving effect (the immediate initialization write
+// is quietly refused while fenced and the chat keeps no `hypaV3Data` after the job), while an unfenced open
+// still initializes it; the V2→V3 conversion is offered for a chat without `hypaV3Data` and reports no
+// success while fenced.
 
 const mocks = vi.hoisted(() => ({ alertError: vi.fn(), alertNormalWait: vi.fn(async () => undefined) }));
 
@@ -240,9 +240,9 @@ describe("HypaV3Modal's write fence", () => {
     });
 });
 
-// Slice C2 of `docs/plan/open-bug-fixes.md`: a bulk resummary resolves its selection by summary
-// identity (`summaryKey`) in the copy at Retry and Apply, so a change of the chat that replaces the copy
-// during the summarization await merges the selected summaries or is refused, never others.
+// A bulk resummary resolves its selection by summary identity (`summaryKey`) in the copy at Retry and
+// Apply, so a change of the chat that replaces the copy during the summarization await merges the
+// selected summaries or is refused, never others.
 describe("HypaV3Modal's bulk resummary", () => {
     const three = () => [...summaries(), { text: "three", chatMemos: ["m2"], isImportant: false }];
 

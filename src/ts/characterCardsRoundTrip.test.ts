@@ -7,13 +7,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { cardV2, cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations } from "./storage/tests/mutationStoresHarness";
 
-// Card export round trips (audit findings IO-01 to IO-03): a CharX archive's `embeded://` references
-// name the members the zip writer actually wrote (sanitized, collision-renamed, and extensionless
-// names included), a card's `depth_prompt` extension lands in the native field and the server record
-// (JSON V3 and V2, CharX), and a PNG card exported from a portrait that carries other `tEXt` chunks is
-// a CRC-valid PNG that keeps those chunks, drops the old card chunk, and imports back. The exporters,
-// the zip writer, the PNG stream writer, the importers, and the store are real; dialogs, the asset
-// store, image compression, and the RPack map fetch are isolated as in `characterCardsImport.test.ts`.
+// Card export round trips: a CharX archive's `embeded://` references name the members the zip writer
+// actually wrote (sanitized, collision-renamed, and extensionless names included), a card's
+// `depth_prompt` extension lands in the native field and the server record (JSON V3 and V2, CharX),
+// and a PNG card exported from a portrait that carries other `tEXt` chunks is a CRC-valid PNG that
+// keeps those chunks, drops the old card chunk, and imports back. The exporters, the zip writer, the
+// PNG stream writer, the importers, and the store are real; dialogs, the asset store, image
+// compression, and the RPack map fetch are isolated as in `characterCardsImport.test.ts`.
 
 const { server, alerts, assets } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -272,8 +272,8 @@ describe("CharXImporter asset admission", () => {
 describe("CharX export names its assets as the zip writer wrote them", () => {
     it("sanitized, colliding, and extensionless names import back through the app's own importer", async () => {
         const app = await boot();
-        // The portrait is read alone; the assets come through the batch read (large-asset-import
-        // slice 3a), one record per asked key.
+        // The portrait is read alone; the assets come through the batch read, one record per asked
+        // key.
         vi.spyOn(app.globalApi, "readImage").mockResolvedValue(GIF);
         vi.spyOn(app.globalApi, "loadAssets").mockImplementation(async (keys) => keys.map(() => GIF));
         const char = fixtureCharacter({

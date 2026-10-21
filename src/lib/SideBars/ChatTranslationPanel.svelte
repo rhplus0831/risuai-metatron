@@ -19,13 +19,12 @@
     }
 
     /*
-     * A chat's translation settings (`docs/plan/translation.md` slices 2.1–2.4): auto-translate; with
-     * the stored translation (LLM on `"message"`) and auto-translate on, "bot replies only" (a send
-     * hands only its replies to the server, slice 2.3); and for the LLM translator the chat's
-     * translator preset ("Global" uses the global selection; a deleted one is shown as such and falls
-     * back to it); with the stored translation, the bilingual display with its emphasis and pairing
-     * (slice 2.4). They are list fields, so the panel works while the chat loads; a chat that is not a
-     * member shows nothing.
+     * A chat's translation settings: auto-translate; with the stored translation (LLM on
+     * `"message"`) and auto-translate on, "bot replies only" (a send hands only its replies to the
+     * server); and for the LLM translator the chat's translator preset ("Global" uses the global
+     * selection; a deleted one is shown as such and falls back to it); with the stored translation,
+     * the bilingual display with its emphasis and pairing. They are list fields, so the panel works
+     * while the chat loads; a chat that is not a member shows nothing.
      */
     let { chatRef }: Props = $props();
     const member = $derived(chatEntry(chatRef) !== undefined);

@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 
-// Phase 5 slice 9: `sendChatOnServer`, the flag branch's adapter over `runServerJob`: the job kind
-// from the send (`preview`, `previewPrompt`, `group` for a group chat, `continue`, else `send`), the
-// context (the input with its user message id, an explicit continue target; a preview carries no
-// input), a plugin call's identity, the one per-send field written before the job (`statics.messages`
-// through `incrementStatic`; the target's `lastInteraction` is the server job's to stamp (audit item
-// A2), so the tab touches no character record and uploads none before the job), and the result
-// mapping (`refused` and `followed` are a definite refusal, `unknown` an ambiguous one, an error or
-// lost terminal neither; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls`
-// under its generation, none for a continue; a preview's `result` comes back).
+// `sendChatOnServer`, the flag branch's adapter over `runServerJob`: the job kind from the send
+// (`preview`, `previewPrompt`, `group` for a group chat, `continue`, else `send`), the context (the
+// input with its user message id, an explicit continue target; a preview carries no input), a
+// plugin call's identity, the one per-send field written before the job (`statics.messages` through
+// `incrementStatic`; the target's `lastInteraction` is the server job's to stamp, so the tab
+// touches no character record and uploads none before the job), and the result mapping (`refused`
+// and `followed` are a definite refusal, `unknown` an ambiguous one, an error or lost terminal
+// neither; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
+// generation, none for a continue; a preview's `result` comes back).
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
@@ -17,7 +17,7 @@ const ref = { chaId: "c", chatId: "k" };
 const stubs = vi.hoisted(() => ({
     run: vi.fn<(...args: unknown[]) => Promise<{ outcome: string; terminal: unknown }>>(),
     findChat: vi.fn<() => unknown>(),
-    /** The membership (`chatEntry`, Phase 6 slice 9b): a chat may be listed without being loaded. */
+    /** The membership (`chatEntry`): a chat may be listed without being loaded. */
     members: new Set<string>(),
     currentChatRef: vi.fn<() => unknown>(() => null),
     incrementStatic: vi.fn(),
@@ -144,7 +144,7 @@ describe("sendChatOnServer", () => {
             outcome: "refused",
             refusal: "definite",
         });
-        // The chat left the list meanwhile (Phase 6 slice 9b: the send checks the membership, not a loaded chat).
+        // The chat left the list meanwhile (the send checks the membership, not a loaded chat).
         stubs.members.delete("c/k");
         expect(await send({ target: ref })).toEqual({ ok: false, outcome: "refused", refusal: "definite" });
         expect(stubs.run).toHaveBeenCalledTimes(1);

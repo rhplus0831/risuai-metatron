@@ -99,7 +99,7 @@ export async function processRegexScript(
     const char = selectedCharacter();
     const transform = captureTransform(msgIndex);
     const source = risuChatParser(msg.data, { chara: char, role: msg.role });
-    // Without a context the regex stage is skipped (Phase 5 cutover): the CBS-parsed text stays.
+    // Without a context the regex stage is skipped: the CBS-parsed text stays.
     const newData: string = transform
         ? (
               await serverProcessScript(

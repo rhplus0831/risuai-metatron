@@ -6,10 +6,10 @@
     import TextInput from "./TextInput.svelte";
 
     /**
-     * A write-only credential (Phase 5 slice 7b): the stored key's status (set, with its last
-     * characters when long enough; not set; saving), a password field whose value replaces it on
-     * Enter or the button (once: the field is emptied when the write is queued), and a clear button.
-     * The draft belongs to `path`: it is dropped when the input is moved to another target.
+     * A write-only credential: the stored key's status (set, with its last characters when long
+     * enough; not set; saving), a password field whose value replaces it on Enter or the button
+     * (once: the field is emptied when the write is queued), and a clear button. The draft belongs
+     * to `path`: it is dropped when the input is moved to another target.
      */
     interface Props {
         path: SecretPath;

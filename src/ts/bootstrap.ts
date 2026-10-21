@@ -57,9 +57,9 @@ export async function loadData() {
             // query), and the categories turned off here stay off for this page load.
             beginSafeBoot();
             LoadingStatusState.text = "Loading Save Data...";
-            // Chat summaries, not chats (Phase 6 slice 9b): no message row is read here; a chat is
-            // loaded when it is selected or a consumer needs it. The read skips what the boot cache
-            // holds (`bootCache.ts`), falling back to the plain read; the cache is written after the boot.
+            // Chat summaries, not chats: no message row is read here; a chat is loaded when it is selected
+            // or a consumer needs it. The read skips what the boot cache holds (`bootCache.ts`), falling
+            // back to the plain read; the cache is written after the boot.
             const { snapshot, commit: commitBootCache } = await loadBootSnapshot({
                 store: indexedDbBootCacheStore(appVer),
                 appVer,
@@ -131,7 +131,7 @@ export async function loadData() {
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
             await loadPluginPermissions();
-            // Live updates (Phase 6): other tabs' and devices' changes reach this tab from here on.
+            // Live updates: other tabs' and devices' changes reach this tab from here on.
             setRemoteResourceOwner(RESOURCE_KIND.inlays, { apply: noteRemoteInlay, reconcile: reconcileInlays });
             setRemoteResourceOwner(RESOURCE_KIND.pluginPermissions, {
                 apply: (_id, revision) => refreshPermissionsWithRetry(revision),
@@ -160,8 +160,8 @@ export async function loadData() {
             startRouter();
             // What the boot read gave goes into the boot cache when the tab is idle.
             void scheduleBootCacheCommit(commitBootCache);
-            // Web Push (`docs/plan/web-push.md`): this browser's subscription kept in line, and the
-            // one-time banner offered. Nothing here asks for the permission.
+            // Web Push: this browser's subscription kept in line, and the one-time banner offered.
+            // Nothing here asks for the permission.
             void import("./network/pushNotifications")
                 .then(({ startPushNotifications }) => startPushNotifications())
                 .catch((error) => console.error("[Push]", error));
@@ -169,7 +169,7 @@ export async function loadData() {
             void import("./process/chatStatus.svelte")
                 .then(({ watchChatVisibility }) => watchChatVisibility())
                 .catch((error) => console.error("[Generation]", error));
-            // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
+            // A server job of this tab that a reload interrupted (a Lua button, for example)
             // is attached again; nothing is sent when the tab has none.
             void import("./process/serverCommands")
                 .then(({ resumeServerJobs }) => resumeServerJobs())
@@ -202,9 +202,9 @@ function readLocalFlag(key: string): boolean {
  * order, without chats: the chat module holds every chat in its server order (`assembleChats`; the
  * boot read gives summaries, held as unloaded chats). The server creates and normalizes every
  * section, collection, and the presets, so a missing one is an error, not a default. The
- * `llmSecrets` record is masked (Phase 5 slice 7b): its status goes to `llmSecretState`, and the
- * record's credential fields are `""`. Then this client's selection is resolved against the records
- * and the interface language is set.
+ * `llmSecrets` record is masked: its status goes to `llmSecretState`, and the record's credential
+ * fields are `""`. Then this client's selection is resolved against the records and the interface
+ * language is set.
  */
 export function installBootRecords(snapshot: ResourceReadKindsResult) {
     const single = (kind: string) =>
@@ -392,8 +392,7 @@ function updateHeightMode() {
  * The boot's maintenance of the installed characters: those in the trash for more than three days
  * are deleted (one change of the list), and the character order is repaired against the complete
  * inventory, dropping dangling ids before saving and the event feed start. The characters arrive
- * normalized by the server (`normalizeCharacter`); the client applies no default at boot (Phase 6
- * slice 5b).
+ * normalized by the server (`normalizeCharacter`); the client applies no default at boot.
  */
 function maintainCharacters() {
     const now = Date.now();

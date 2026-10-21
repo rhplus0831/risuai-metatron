@@ -16,8 +16,8 @@
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
 
-    // The NovelAI key is edited only here (settings UI plan slice 8); NovelAI TTS links to it. A link
-    // shows it even while another image provider is selected.
+    // The NovelAI key is edited only here; NovelAI TTS links to it. A link shows it even while
+    // another image provider is selected.
     const revealNovelAIKey = takeCredentialRequest("NAIApiKey");
     onMount(() => {
         if (revealNovelAIKey) void scrollToCredential("NAIApiKey");

@@ -3,10 +3,10 @@ import type { Chat } from "../../../shared/database.ts";
 import type { ChannelAnswer, GenerationCallbackEvent, GenerationEvent } from "../../../shared/jobs.ts";
 import { bootMutations, m, refK } from "../storage/tests/mutationStoresHarness";
 
-// Phase 5 slice 6, the callback barrier of the job channel over the real stores: the save adapter,
-// the chat module, the transport (`generationJobs.ts`, whose chain loads the dispatcher lazily and
-// remembers every hydration), and the dispatcher (`jobChannel.ts`) run for real against the server
-// resource store in memory. A hook must see the job's changes (hydrated before the callback, also
+// The callback barrier of the job channel over the real stores: the save adapter, the chat module,
+// the transport (`generationJobs.ts`, whose chain loads the dispatcher lazily and remembers every
+// hydration), and the dispatcher (`jobChannel.ts`) run for real against the server resource store
+// in memory. A hook must see the job's changes (hydrated before the callback, also
 // when the chat was busy with local work at the time), its own writes must reach the server before
 // the answer, a conflict that discards a write fails the callback as a barrier failure, and a
 // receipt this client cannot hold fails it before the hook runs. Hydration never becomes an

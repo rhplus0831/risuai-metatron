@@ -690,13 +690,13 @@ export const languageEnglish = {
     presensePenalty: "Presense Penalty",
     advancedSettings: "Advanced Settings",
     advancedSettingsWarn: "Warn: If you don't know what the option does, don't change it!",
-    // Settings page sections (`SettingSection`, the archived settings UI plan)
+    // Settings page sections (`SettingSection`)
     settingsSectionFeatureAccess: "Feature access",
     settingsSectionFeatureAccessDesc:
         "These reveal hidden and experimental settings across the app, and choose whether API keys are masked.",
     settingsSectionPerformanceMedia: "Performance & media",
     settingsSectionRequestsTools: "Requests & tools",
-    // Temporary: the Advanced items that move to other pages; slice 4 of the plan removes this section.
+    // The Advanced page's developer and diagnostics section.
     settingsSectionDeveloperDiagnostics: "Developer & diagnostics",
     settingsSectionDeveloperDiagnosticsDesc: "Tools for debugging and for reporting problems.",
     settingsSectionExperimental: "Experimental features",
@@ -810,7 +810,7 @@ export const languageEnglish = {
     emotionWarn: "Auxiliary model is used.",
     plugin: "Plugin",
     language: "Language",
-    // The Translation settings page (settings UI plan slice 6): its menu entry and heading.
+    // The Translation settings page: its menu entry and heading.
     translationSettings: "Translation",
     memorySettings: "Memory",
     voiceSettings: "Voice & Emotion",
@@ -821,7 +821,7 @@ export const languageEnglish = {
     settingsNavGroupInterface: "Interface",
     settingsNavGroupData: "Data",
     settingsNavGroupAdvanced: "Advanced & about",
-    // The settings search at the top of the settings navigation (search plan slice 3b).
+    // The settings search at the top of the settings navigation.
     settingsSearch: {
         label: "Search settings",
         placeholder: "Search settings",

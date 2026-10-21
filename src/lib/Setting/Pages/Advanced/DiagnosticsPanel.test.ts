@@ -2,11 +2,10 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Request history slice 9 (`docs/plan/request-history-diagnostics.md`, decision 6): the Diagnostics
-// panel. The report is built on open and by Refresh, shown as text; Copy, Download, and Save act on
-// the report shown (never a rebuilt one); only Save sends anything; every save answer and a failed
-// copy become a fixed localized notice; the controls are disabled before a report exists and while
-// a build or save runs.
+// The Diagnostics panel. The report is built on open and by Refresh, shown as text; Copy, Download, and
+// Save act on the report shown (never a rebuilt one); only Save sends anything; every save answer and a
+// failed copy become a fixed localized notice; the controls are disabled before a report exists and while a
+// build or save runs.
 
 const deps = vi.hoisted(() => ({
     createDiagnosticReport: vi.fn<() => Promise<string>>(),

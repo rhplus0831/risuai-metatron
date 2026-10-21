@@ -3,10 +3,10 @@
 import { get, type Writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 5: the preset hotkeys (Ctrl+1 to Ctrl+9) map their index to the preset's id and
-// select it for this client through `changeToPreset(id)`, and they do nothing while the popup editor
-// is open: `TextAreaInput`'s popup writes its draft back to the field it was opened on when it
-// closes, and with a forwarded preset field that is the selected preset (Astra challenge point 2).
+// The preset hotkeys (Ctrl+1 to Ctrl+9) map their index to the preset's id and select it for this
+// client through `changeToPreset(id)`, and they do nothing while the popup editor is open:
+// `TextAreaInput`'s popup writes its draft back to the field it was opened on when it closes, and
+// with a forwarded preset field that is the selected preset.
 
 vi.mock("./globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("./alert", async () =>
@@ -166,7 +166,7 @@ describe("preset hotkeys", () => {
     });
 
     it("do nothing while the terminal (restore) notice is shown", async () => {
-        // The restore-notice fix after Phase 6 slice 2: no shortcut runs behind the notice.
+        // No shortcut runs behind the notice.
         (terminalNotice as unknown as Writable<string | null>).set("restored");
         press("2");
         await Promise.resolve();
@@ -176,9 +176,9 @@ describe("preset hotkeys", () => {
 });
 
 describe("hotkey matching", () => {
-    // The Stop B fix (Phase 6): the stored hotkeys are a write-through record since slice 4, and the
-    // built-in hotkeys carry no `shift` flag. Matching filled the missing flags in on the stored
-    // element, so a session's first key press saved the `hotkeys` record.
+    // The stored hotkeys are a write-through record, and the built-in hotkeys carry no `shift` flag.
+    // A matcher that filled the missing flags in on the stored element would save the `hotkeys`
+    // record at a session's first key press.
     it("reads a stored hotkey with missing modifier flags as 'not held' and writes nothing, for the dispatch and the textarea caller", async () => {
         installFlatDatabase({
             characters: [],
@@ -222,10 +222,10 @@ describe("hotkey matching", () => {
     });
 });
 
-describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
+describe("the stored hotkeys and their ui toggle", () => {
     // `initHotkey` reads the `hotkeys` record and the `ui` section's `enableScrollToActiveChar`
     // through the settings views at each key press: an edit of either is what the next press uses.
-    // The records are all there is (slice 10 took the aggregate away).
+    // The records are all there is (there is no aggregate database).
     const pressWith = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
 
@@ -264,7 +264,7 @@ describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
     });
 });
 
-describe("the removed quick settings panel (settings UI plan slice 1)", () => {
+describe("the removed quick settings panel", () => {
     // The panel is gone, but Ctrl+Q stays a built-in hotkey: the dispatch still matches the stored
     // `quickSettings` entry, keeps the key from the browser, and only says where the panel's parts went.
     it("Ctrl+Q shows the removal notice and prevents the browser's default", () => {
@@ -301,9 +301,9 @@ describe("the removed quick settings panel (settings UI plan slice 1)", () => {
     });
 });
 
-describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
+describe("the previous/next character hotkeys", () => {
     // `prevChar` (Ctrl+[) and `nextChar` (Ctrl+]) step through a copy of the character list sorted by
-    // name and select by `chaId`. The slice fixed their bounds: previous does nothing from the first
+    // name and select by `chaId`. Their bounds: previous does nothing from the first
     // character or from home, next does nothing from the last and selects the first from home.
     const pressChar = (key: "[" | "]") =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
@@ -358,13 +358,12 @@ describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
     });
 });
 
-// `docs/plan/chat-binding.md`, slice 5: Ctrl+1..9 picks the prompt preset for the open chat's binding
-// (the tab's selection stays), else at home for the tab; nothing runs while a picker list or the
-// binding dialog is open. Escape closes only the topmost layer: an alert, else the persona list, the
-// model preset list, the prompt preset list, the binding dialog (in the order `App.svelte` mounts
-// them), else the settings or the grid as before; a list or the dialog closes also from a focused text
-// field, where the other shortcuts stay off.
-describe("the preset hotkeys and Escape with the binding layers (slice 5)", () => {
+// Ctrl+1..9 picks the prompt preset for the open chat's binding (the tab's selection stays), else at
+// home for the tab; nothing runs while a picker list or the binding dialog is open. Escape closes only
+// the topmost layer: an alert, else the persona list, the model preset list, the prompt preset list,
+// the binding dialog (in the order `App.svelte` mounts them), else the settings or the grid as before;
+// a list or the dialog closes also from a focused text field, where the other shortcuts stay off.
+describe("the preset hotkeys and Escape with the binding layers", () => {
     const refK = { chaId: "c", chatId: "k" };
     const refJ = { chaId: "c", chatId: "j" };
     const chat = (id: string, fields: Record<string, unknown> = {}) => ({
@@ -531,7 +530,7 @@ describe("the preset hotkeys and Escape with the binding layers (slice 5)", () =
             settingsOpen.set(true);
             openPresetList.set({ chatRef: refK });
             chatBindingDialog.set(refK);
-            // The real queue (slice A1): Escape answers the shown dialog with "" and toasts.
+            // The real queue: Escape answers the shown dialog with "" and toasts.
             const first = alertStore.open({ type: "ask", msg: "sure?" });
             stroke("Escape");
             await expect(first.closed).resolves.toBe("");
@@ -555,8 +554,8 @@ describe("the preset hotkeys and Escape with the binding layers (slice 5)", () =
         }
     });
 
-    // Slice A1 (`createDialogKeyGate` wired in `initHotkey`): a dialog takes Enter only from a stroke
-    // that began after it appeared, never during the gap before it shows, and the default action of
+    // The dialog key gate (`createDialogKeyGate` wired in `initHotkey`): a dialog takes Enter only from a
+    // stroke that began after it appeared, never during the gap before it shows, and the default action of
     // an Enter over an `ask` dialog is prevented whether the stroke is taken or not.
     it("Enter answers an ask dialog only from a new stroke, not a held one nor one during the gap", async () => {
         vi.useFakeTimers();

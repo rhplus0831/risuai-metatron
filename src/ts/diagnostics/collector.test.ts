@@ -1,15 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEvent } from "../../../shared/diagnostics.ts";
 
-// Request history slice 8 (`docs/plan/request-history-diagnostics.md`): the browser's diagnostics
-// collector (`collector.ts`). The client projection (only the browser's kinds, a UUID job id, a
-// route from the table, no server-only field) when recording and when restoring; the 300-event
-// ring and the folding of a repeated event; the `sessionStorage` mirror (a bounded flush, the
-// synchronous flushes, the writer cut to what the restore reads, every storage failure survived);
-// the `window.fetch` wrapper (the original first with the same arguments, the same response and
-// rejection, an unhandled rejection still unhandled, bodies untouched, only same-origin API
-// failures as content-free events, aborts skipped, timeouts named); the window's error and
-// rejection listeners; and the browser stack formats (V8, Gecko, WebKit) against this origin.
+// The browser's diagnostics collector (`collector.ts`). The client projection (only the browser's kinds, a
+// UUID job id, a route from the table, no server-only field) when recording and when restoring; the
+// 300-event ring and the folding of a repeated event; the `sessionStorage` mirror (a bounded flush, the
+// synchronous flushes, the writer cut to what the restore reads, every storage failure survived); the
+// `window.fetch` wrapper (the original first with the same arguments, the same response and rejection, an
+// unhandled rejection still unhandled, bodies untouched, only same-origin API failures as content-free
+// events, aborts skipped, timeouts named); the window's error and rejection listeners; and the browser
+// stack formats (V8, Gecko, WebKit) against this origin.
 
 type Collector = typeof import("./collector");
 

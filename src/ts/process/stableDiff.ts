@@ -12,10 +12,10 @@ import { processZip } from "./processzip";
 import random from "lodash/random";
 
 /**
- * `chatRef` and `pluginContext` are the send's (Phase 5 slice 7a): the prompt request runs for that
- * chat and that frozen preset and persona, not the tab's selection when it starts. `check` (a server
- * job's image callback, slice 11a) throws once the job no longer wants the image: no image request
- * is started after that. An image request already running is not cancelled.
+ * `chatRef` and `pluginContext` are the send's: the prompt request runs for that chat and that
+ * frozen preset and persona, not the tab's selection when it starts. `check` (a server job's image
+ * callback) throws once the job no longer wants the image: no image request is started after that.
+ * An image request already running is not cancelled.
  */
 export async function stableDiff(
     currentChar: character,
@@ -418,7 +418,7 @@ export async function generateAIImage(
         }
     }
     if (settings.memoryTranslateMedia.sdProvider === "dalle") {
-        // With the stored OpenAI key, on the server (`auxFetch`, Phase 5 slice 7b).
+        // With the stored OpenAI key, on the server (`auxFetch`).
         const da = await auxFetchJson("openai-dalle", "https://api.openai.com/v1/images/generations", {
             method: "POST",
             body: {
@@ -677,7 +677,7 @@ export async function generateAIImage(
             };
         }
 
-        // With the stored Google key, on the server (`auxFetch`, Phase 5 slice 7b).
+        // With the stored Google key, on the server (`auxFetch`).
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
 
         const res = await auxFetchJson("google-imagen", url, {

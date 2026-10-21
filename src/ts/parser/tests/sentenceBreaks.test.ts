@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_BILINGUAL_SENTENCES } from "../../../../shared/translation/chatSettings.ts";
 import { insertSentenceParagraphBreaks } from "../sentenceBreaks";
 
-/* The bilingual display's sentence pairing (`docs/plan/translation.md` slice 2.4). */
+/* The bilingual display's sentence pairing. */
 describe("insertSentenceParagraphBreaks", () => {
     it("splits a prose line every N sentences", () => {
         expect(insertSentenceParagraphBreaks("One. Two. Three. Four.", 2, "en")).toBe("One. Two.\n\nThree. Four.");

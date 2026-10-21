@@ -124,7 +124,7 @@ export class HypaProcesser {
                 model: models[this.model],
             };
             // A key given to this processor is used as it is; the stored memory key is used on the
-            // server (`auxFetch`, Phase 5 slice 7b).
+            // server (`auxFetch`).
             gf = this.oaikey?.trim()
                 ? await globalFetch("https://api.openai.com/v1/embeddings", {
                       headers: { Authorization: "Bearer " + this.oaikey.trim() },

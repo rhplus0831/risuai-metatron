@@ -2,9 +2,8 @@ import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
 // The Prompt page's Others tab (`PromptPresetSettings.svelte`) below its handwritten accordions: the
-// prompt options moved from Advanced (settings UI plan slice 4). They are global (`providers` and
-// `ui` fields), not fields of the prompt preset the page edits, so their section says it applies to
-// every preset.
+// prompt options moved from Advanced. They are global (`providers` and `ui` fields), not fields of
+// the prompt preset the page edits, so their section says it applies to every preset.
 export const promptSettingsItems: SettingItem[] = [
     {
         id: "adv.addPrompt",
@@ -46,7 +45,7 @@ export const promptSettingsItems: SettingItem[] = [
         helpUnrecommended: true,
         classes: "mt-4",
     },
-    // From Display (settings UI plan slice 7), by way of Advanced.
+    // From Display, by way of Advanced.
     {
         id: "display.showPromptComparison",
         type: "check",

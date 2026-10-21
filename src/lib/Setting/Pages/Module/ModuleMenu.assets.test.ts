@@ -221,7 +221,7 @@ describe("paged asset lists", () => {
     it("sticker selection receives the live source tuple after a rename and a list replacement", () => {
         const prefix: Asset[] = Array.from({ length: 103 }, (_, i) => [`Other ${i}`, `p${i}`, "mp3"]);
         const view = render("sticker", [...prefix, ["Target", "old-path", "mp3"]]);
-        // A character's asset list is immutable (heap plan B2): a frozen leaf, never a wrapper.
+        // A character's asset list is immutable: a frozen leaf, never a wrapper.
         expect(isRecordWrapper(view.character.additionalAssets)).toBe(false);
         expect(Object.isFrozen(view.character.additionalAssets)).toBe(true);
         input(search(), "target");
@@ -251,7 +251,7 @@ describe("paged asset lists", () => {
         expect(view.character.additionalAssets![0]).toBe(kept);
     });
 
-    describe("the immutable module list (heap plan B1)", () => {
+    describe("the immutable module list", () => {
         const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
         const rawAssets = () => recordData<RisuModule[]>("modules")![0].assets as unknown as string[][];
         const names = () => rowNames("module");

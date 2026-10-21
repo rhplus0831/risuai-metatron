@@ -76,7 +76,7 @@ export function seedInlays(records: readonly ResourceRecord[]) {
 }
 
 /**
- * Live updates (Phase 6) invalidate cached metadata; a metadata read that began before an
+ * Live updates invalidate cached metadata; a metadata read that began before an
  * invalidation must not put an older copy back. `changeCount` counts invalidations; `changedAt` holds
  * the count at an id's last invalidation, `reconciledAt` the count at the last reconnect (every id).
  */

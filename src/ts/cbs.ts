@@ -1,3 +1,3 @@
-// The CBS registry moved to `shared/cbs/` (Phase 5), so the server runs the same functions.
+// The CBS registry lives in `shared/cbs/`, so the server runs the same functions.
 export { defaultCBSRegisterArg, registerCBS } from "../../shared/cbs/registry.ts";
 export type { CBSRegisterArg, matcherArg, RegisterCallback } from "../../shared/cbs/types.ts";

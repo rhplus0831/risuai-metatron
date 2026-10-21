@@ -62,7 +62,7 @@ export type NanoGPTSubscriptionUsage = {
     period: { currentPeriodEnd: string };
 };
 
-// The account and model calls use the stored NanoGPT key on the server (`auxFetch`, Phase 5 slice 7b).
+// The account and model calls use the stored NanoGPT key on the server (`auxFetch`).
 export async function getNanoGPTBalance(profile?: ModelProfile): Promise<NanoGPTBalance | null> {
     try {
         const res = await auxFetch("nanogpt-balance", NANOGPT_BALANCE_ENDPOINT, {

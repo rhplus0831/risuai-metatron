@@ -82,13 +82,13 @@ beforeEach(async () => {
     selectPreset("");
     selectPersona("");
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    // The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10).
+    // The records installed as the app installs them (there is no whole-database aggregate).
     installFlatDatabase({
         characters: [],
         plugins: [],
         modules: [],
         botPresets: [{ id: "p", name: "P", temperature: 1 }],
-        // The default profile the installed model preset's main slot names (`docs/plan/model-profiles.md`).
+        // The default profile the installed model preset's main slot names.
         modelProfiles: [normalizeModelProfile({}, { id: DEFAULT_MODEL_PROFILE_ID })],
         personas: [personaA],
         theme: "",
@@ -107,10 +107,9 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-// Phase 6 slice 4 (`settings-ownership.md`, "Implementation notes", "Bulk writers"): a plugin's
-// `setDatabase`/`setDatabaseLite` call runs in one `batchRecordWrites` scope, so each settings record
-// it changes is queued once, whatever the number of keys, and a key the mutations refuse keeps its
-// value (warned) without stopping the others.
+// A plugin's `setDatabase`/`setDatabaseLite` call runs in one `batchRecordWrites` scope, so each
+// settings record it changes is queued once, whatever the number of keys, and a key the mutations
+// refuse keeps its value (warned) without stopping the others.
 describe("the plugin database setters over the settings records", () => {
     for (const setter of ["setDatabaseLite", "setDatabase"] as const) {
         it(`${setter} queues each record it changes once and keeps a refused key's value`, async () => {
@@ -126,8 +125,7 @@ describe("the plugin database setters over the settings records", () => {
                 otherKey: 2,
                 personas: [personaA, { id: "b", name: "B", icon: "", personaPrompt: "", note: "" }],
             });
-            // `maxContext` is the model preset's main profile's (`docs/plan/model-profiles.md` O8): one
-            // more record, once.
+            // `maxContext` is the model preset's main profile's: one more record, once.
             expect(notified.sort()).toEqual(["modelProfiles", "personas", "pluginStorage", "presets", "ui"]);
             expect(settings.ui.theme).toBe("waifu");
             expect(settings.ui.lineHeight).toBe(2);

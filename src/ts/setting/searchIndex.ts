@@ -1,7 +1,7 @@
-// The settings search (search plan slice 3a): where each registry item lives, and a ranked search
-// over the items, their sections, and the settings pages. Pure: no runes, no DOM. The location table
-// is built from the same leaf arrays and sections the pages render, never from copies, so an item
-// that moves page moves its location with it.
+// The settings search: where each registry item lives, and a ranked search over the items, their
+// sections, and the settings pages. Pure: no runes, no DOM. The location table is built from the
+// same leaf arrays and sections the pages render, never from copies, so an item that moves page
+// moves its location with it.
 import type { SettingContext, SettingItem, SettingSection } from "./types";
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
@@ -54,7 +54,7 @@ export interface SettingLocation extends SettingTarget {
     available?: (ctx: SettingContext) => boolean;
 }
 
-/** Why a hit is listed but cannot be shown (Decisions 9 and 16). */
+/** Why a hit is listed but cannot be shown. */
 export type SettingUnavailableReason = "hidden" | "noMainProfile";
 
 export interface SettingHit {
@@ -66,7 +66,7 @@ export interface SettingHit {
     /** The page, its tab, and the section, in the current language. */
     breadcrumb: string[];
     target: SettingTarget;
-    /** A Connections item's target profile: the main slot's (Decision 16). */
+    /** A Connections item's target profile: the main slot's. */
     profileId?: string;
     available: boolean;
     reason?: SettingUnavailableReason;
@@ -234,11 +234,11 @@ interface Candidate {
 
 /**
  * The hits for `query`, best first, at most `SETTING_HIT_LIMIT`: the navigation pages and the Model
- * tabs, the section titles, and every registry item but headers and accordions (Decision 12 (a)).
- * An item matches on its label (current language and English), its keywords, and its section's
- * title; equal scores keep that order. `ctx` is the context the pages render with; a Connections
- * item is checked against the main slot's profile instead (Decision 16), and a hit whose own or
- * parents' condition fails stays listed as unavailable (Decision 9).
+ * tabs, the section titles, and every registry item but headers and accordions. An item matches on
+ * its label (current language and English), its keywords, and its section's title; equal scores
+ * keep that order. `ctx` is the context the pages render with; a Connections item is checked
+ * against the main slot's profile instead, and a hit whose own or parents' condition fails stays
+ * listed as unavailable.
  */
 export function searchSettings(query: string, ctx: SettingContext): SettingHit[] {
     const prepared = prepareQuery(query);

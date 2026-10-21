@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "After the challenge, 9b", the second re-check): MCP tool listings and calls work on the clients
-// of the call's chat (`syncMCPs`), leased while they are used. An initialization for another chat
-// (or an ambient one) that prunes a client in use defers its destruction to the end of the last
-// lease; no call reads another chat's client set; the same tool name on two servers resolves on
-// the server of the call's chat. The remote `MCPClient` is a fake with gated listings and calls.
+// MCP tool listings and calls work on the clients of the call's chat (`syncMCPs`), leased while
+// they are used. An initialization for another chat (or an ambient one) that prunes a client in use
+// defers its destruction to the end of the last lease; no call reads another chat's client set; the
+// same tool name on two servers resolves on the server of the call's chat. The remote `MCPClient`
+// is a fake with gated listings and calls.
 
 const { fakes, urls } = vi.hoisted(() => {
     class FakeClient {

@@ -140,8 +140,8 @@ async function activatePinnedLore(ref: ChatRef | null) {
     // The chat's owner now: if its character's chats are replaced during the activation (even under
     // the same ids), its variables are not read or written there and the result is dropped.
     const owner = ref ? chatOwnerToken(ref.chaId) : null;
-    // The chat's model preset for the token counts (its display ids, `docs/plan/chat-binding.md`), read
-    // now: the selected chat can change during the activation. Without a chat, the settings views'.
+    // The chat's model preset for the token counts (its display ids), read now: the selected chat
+    // can change during the activation. Without a chat, the settings views'.
     const ids = ref ? chatDisplayIds(ref) : null;
     const tokenScope = ids?.presetId && ids.modelPresetId ? ids : undefined;
     const same = () => {

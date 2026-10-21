@@ -5,8 +5,8 @@
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     /**
-     * The server manual trigger whose id `CurrentTriggerIdStore` holds (Phase 5 slice 8b): only the
-     * invocation that set it clears it, so a refused click or an older timer leaves a newer one alone.
+     * The server manual trigger whose id `CurrentTriggerIdStore` holds: only the invocation that set
+     * it clears it, so a refused click or an older timer leaves a newer one alone.
      */
     let serverTriggerIdOwner: object | null = null;
 </script>
@@ -214,17 +214,16 @@
     let locked = $derived(isMessageLocked(displayedChat, messageId));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
 
-    // The stored translation (`docs/plan/translation.md` slice 1.4): the LLM translator on
-    // `llmTranslationTarget: "message"`, for a row of a stored message. Rows without a message id (the
-    // greeting, bookmark previews) keep the rendered path. Every read below is
-    // tracked: the held chats are deep state, so a refresh that brings a translation re-derives it
-    // without remounting the row.
+    // The stored translation: the LLM translator on `llmTranslationTarget: "message"`, for a row of a
+    // stored message. Rows without a message id (the greeting, bookmark previews) keep the rendered
+    // path. Every read below is tracked: the held chats are deep state, so a refresh that brings a
+    // translation re-derives it without remounting the row.
     let storedPath = $derived(usesStoredTranslation() && !!messageId && displayedChat !== null);
     let storedMessage = $derived(
         storedPath && displayedChat && messageId ? heldMessage(displayedChat, messageId) : undefined,
     );
     let storedFresh = $derived(storedMessage ? freshTranslation(storedMessage) : null);
-    /** The chat's `autoTranslate` (slice 2.1; off for a row outside a chat): its translations show without a click. */
+    /** The chat's `autoTranslate` (off for a row outside a chat): its translations show without a click. */
     let chatAutoShow = $derived(chatAutoTranslate(displayedChat));
     /** The row asks for the translation: its choice (kept across a remount), else the chat's `autoTranslate`. */
     let storedWanted = $derived(
@@ -238,7 +237,7 @@
     /** The stored translation is what the row shows. */
     let storedShown = $derived(storedWanted && storedFresh !== null);
     /**
-     * The chat's bilingual display (slice 2.4): with the stored translation shown, the row renders it
+     * The chat's bilingual display: with the stored translation shown, the row renders it
      * interleaved with the message's text, by line or every `bilingualSentences` sentences, with the
      * chat's emphasis. Null: off, or nothing shown.
      */
@@ -294,7 +293,7 @@
     }
 
     // A row rendered before its chat's first save had no transform context (the script stage was
-    // skipped): it renders again once the save lands (Phase 5 cutover).
+    // skipped): it renders again once the save lands.
     let seenSave: { chat: string; version: number } | null = null;
     $effect(() => {
         const chat = displayedChat;
@@ -633,7 +632,7 @@
         });
     }
 
-    /** The bilingual pairs' source side takes the same pre-pass as the translation (slice 2.4). */
+    /** The bilingual pairs' source side takes the same pre-pass as the translation. */
     function updateBilingualDisplay() {
         bilingualDisplay = storedBilingual
             ? { source: displayPrePass(storedBilingual.source), options: storedBilingual.options }
@@ -720,8 +719,8 @@
         const triggerId = origin.getAttribute("risu-id");
         const btnEvent = origin.getAttribute("risu-btn");
 
-        // The server runs manual triggers and Lua buttons (Phase 5 slices 8a, 8b); their changes arrive
-        // as the server's records.
+        // The server runs manual triggers and Lua buttons; their changes arrive as the server's
+        // records.
         const ref = currentChatRef();
         if (triggerName) {
             // `{{trigger_id}}` reads the id as the browser path left it: set once the job exists,
@@ -1062,7 +1061,7 @@
             class="flex items-center hover:text-blue-500 transition-colors button-icon-copy"
             onclick={async () => {
                 // The persona this message's chat shows, read before the awaits below (the selected
-                // chat can change meanwhile; `docs/plan/chat-binding.md`).
+                // chat can change meanwhile).
                 const copyChat = displayedChat;
                 const copyUserName = getUserName(copyChat);
                 const copyUserIcon = getUserIcon(copyChat);

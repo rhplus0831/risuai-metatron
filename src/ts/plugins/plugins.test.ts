@@ -47,8 +47,8 @@ import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importPlugin, loadPlugins } from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
-// The plugin functions read and write the plugin list through the settings views (Phase 6 slice
-// 7): the records are installed as the app installs them, and `settings.plugins` is that record.
+// The plugin functions read and write the plugin list through the settings views: the records are
+// installed as the app installs them, and `settings.plugins` is that record.
 installFlatDatabase({ characters: [], plugins: [] });
 
 const script = (header: string) => `//@name test_plugin\n${header}\nconsole.log("hi");\n`;

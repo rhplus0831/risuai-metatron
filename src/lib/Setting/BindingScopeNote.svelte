@@ -9,9 +9,9 @@
     }
 
     /*
-     * Whose record a settings header shows (`docs/plan/chat-binding.md`, slice 5): while a chat is open,
-     * "this chat's" when the chat binds the field to a record that exists, else "not set for this chat"
-     * (the view then shows the tab's record). Nothing at home, where the header shows the tab's selection.
+     * Whose record a settings header shows: while a chat is open, "this chat's" when the chat binds the
+     * field to a record that exists, else "not set for this chat" (the view then shows the tab's record).
+     * Nothing at home, where the header shows the tab's selection.
      */
     let { field }: Props = $props();
     const ref = $derived(currentChatRef());

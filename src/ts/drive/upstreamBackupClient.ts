@@ -36,11 +36,11 @@ import {
 } from "../storage/serverImportClient";
 
 /**
- * The upstream RisuAI `.bin` import (`docs/plan/upstream-bin-compat.md` S5; routes in
- * `server/src/routes/backupsUpstream.ts`): the server converts the backup without replacing anything,
- * the tab shows the report, and only a confirmed commit replaces every resource (a full replace with a
- * safety snapshot, U3). `LoadLocalBackup` (`backuplocal.ts`) sends here every archive whose first
- * record is not `manifest.json` (`readFirstRecordName`).
+ * The upstream RisuAI `.bin` import (routes in `server/src/routes/backupsUpstream.ts`): the server
+ * converts the backup without replacing anything, the tab shows the report, and only a confirmed
+ * commit replaces every resource (a full replace with a safety snapshot). `LoadLocalBackup`
+ * (`backuplocal.ts`) sends here every archive whose first record is not `manifest.json`
+ * (`readFirstRecordName`).
  */
 
 function isCount(value: unknown): value is number {
@@ -104,7 +104,7 @@ export function prepareUpstreamImport(
     );
 }
 
-/** A commit's outcome: committed, or refused because resources were written since the prepare (D13). */
+/** A commit's outcome: committed, or refused because resources were written since the prepare. */
 export type UpstreamCommitOutcome = { committed: UpstreamImportCommitted } | { changedWrites: number };
 
 /**
@@ -188,8 +188,8 @@ function failureText(error: unknown): string {
 /**
  * Restores an upstream RisuAI `.bin`: prepare with progress, the report (Cancel removes the prepared
  * import), then the commit with a wait state, asking again with the count while the server answers
- * that changes were saved since the preview (D13: Restore resends with that count, Cancel cancels).
- * The selection (D4) is stored synchronously when the socket detects a restore (`beforeRestoreReload`),
+ * that changes were saved since the preview (Restore resends with that count, Cancel cancels).
+ * The selection is stored synchronously when the socket detects a restore (`beforeRestoreReload`),
  * or from the commit's answer before reloading. A refusal is shown and nothing changes; a
  * prepared import that was not committed is cancelled. A 412 reloads, as the version-2 import does.
  */
@@ -293,7 +293,7 @@ async function exportRefusal(res: Response): Promise<UpstreamExportRequestError>
 /**
  * The export's request for this tab: its selection (`tabSelectionIds`, the records it resolves to,
  * ignoring the open chat's binding), its open chat (`currentChatRef`, whose character's `chatPage`
- * points at it), and the keys answer (D7).
+ * points at it), and the keys answer.
  */
 export function tabExportRequest(includeSecrets: boolean): UpstreamExportRequest {
     const ids = tabSelectionIds();
@@ -308,7 +308,7 @@ export function tabExportRequest(includeSecrets: boolean): UpstreamExportRequest
 }
 
 /**
- * Asks the server to prepare a RisuAI-compatible `.bin` (`docs/plan/upstream-bin-compat.md` S7; routes in
+ * Asks the server to prepare a RisuAI-compatible `.bin` (routes in
  * `server/src/routes/backupsUpstreamExport.ts`) of one consistent copy of the store, with `request`'s
  * selection and keys choice. Resolves with the prepared export's token and report; throws
  * `UpstreamExportRequestError` for a refusal and `ServerImportAnswerError` for a malformed answer.

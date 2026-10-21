@@ -110,7 +110,7 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
 /**
  * The write of a settings wrapper's function binding: the user's edit goes through
  * `setSettingValue` synchronously, in the same task as the input, so a forwarded field lands in the
- * preset selected at that moment (Phase 3: a copy written back from an `$effect` could land after a
+ * preset selected at that moment (a copy written back from an `$effect` could land after a
  * switch). A write of the value already there is skipped, so `onChange` fires once per edit.
  */
 export function updateSettingValue(item: SettingItem, newValue: any, ctx: SettingContext): void {

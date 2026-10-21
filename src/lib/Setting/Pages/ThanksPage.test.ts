@@ -8,8 +8,8 @@ vi.mock("src/ts/globalApi.svelte", () => ({ openURL: vi.fn() }));
 import { language } from "src/lang";
 import ThanksPage from "./ThanksPage.svelte";
 
-// Open bug fixes plan slice C8: the supporter list is fetched when the page opens; a failed fetch (offline,
-// or an error status) shows a localized message instead of "Loading..." forever.
+// The supporter list is fetched when the page opens; a failed fetch (offline, or an error status)
+// shows a localized message instead of "Loading..." forever.
 
 const mounted: ReturnType<typeof mount>[] = [];
 

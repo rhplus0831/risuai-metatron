@@ -13,11 +13,11 @@
     }
 
     /*
-     * A chat's binding (`docs/plan/chat-binding.md`, slice 5): the model preset, prompt preset, and
-     * persona it is sent with, each by name or as not set or deleted, and the confirmation an imported
-     * chat waits for. A row opens its picker for this chat. The bound persona's note (never sent) shows
-     * under the rows. It reads the chat's list entry only, so it works for a chat that is not loaded; a
-     * chat that is not a member shows nothing.
+     * A chat's binding: the model preset, prompt preset, and persona it is sent with, each by name or
+     * as not set or deleted, and the confirmation an imported chat waits for. A row opens its picker
+     * for this chat. The bound persona's note (never sent) shows under the rows. It reads the chat's
+     * list entry only, so it works for a chat that is not loaded; a chat that is not a member shows
+     * nothing.
      */
     let { chatRef }: Props = $props();
     const ids = $derived(chatBindingIds(chatRef));

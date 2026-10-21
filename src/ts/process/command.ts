@@ -50,9 +50,9 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
 
 /**
  * Runs a command line typed in the chat input. Every command writes to and reads (CBS arguments,
- * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server
- * (Phase 5 slice 8b; a server trigger's `v2Command` runs on the server too). The chat is pinned (kept
- * loaded) for the whole line, and loaded first.
+ * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server (a
+ * server trigger's `v2Command` runs on the server too). The chat is pinned (kept loaded) for the
+ * whole line, and loaded first.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;

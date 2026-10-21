@@ -3,11 +3,10 @@ import { chatDisplayIds } from "../../storage/chatBinding.svelte";
 import { chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
 
 /**
- * The call context of a plugin hook (Phase 4, `PLAN.md` Decision 5 for client hooks): the chat a hook
- * runs for and its prompt preset, model preset, and persona when its runner started: the chat's
- * binding (`docs/plan/chat-binding.md`), or a job callback's targets. A chat whose binding is not
- * complete gets its display ids (each bound id that exists, else the tab's); a send or request with
- * such a context is refused by the send guard, never run on them. A runner
+ * The call context of a plugin hook: the chat a hook runs for and its prompt preset, model preset,
+ * and persona when its runner started: the chat's binding, or a job callback's targets. A chat whose
+ * binding is not complete gets its display ids (each bound id that exists, else the tab's); a send or
+ * request with such a context is refused by the send guard, never run on them. A runner
  * captures it before its first await and hands it to each hook it calls (`invokeHook`); the hook's
  * wrapper (`v3.svelte.ts`) takes it synchronously and keeps it on its plugin instance's stack until
  * the hook settles, so the selection-dependent host functions that plugin calls meanwhile act on the
@@ -24,7 +23,7 @@ export interface PluginCallContext {
     readonly chatRef: ChatRef;
     /** The prompt preset. */
     readonly presetId: string;
-    /** The model preset (`docs/plan/split-preset.md`). */
+    /** The model preset. */
     readonly modelPresetId: string;
     readonly personaId: string;
     /**

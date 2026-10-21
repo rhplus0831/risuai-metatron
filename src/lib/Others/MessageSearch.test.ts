@@ -4,11 +4,11 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Search plan slice 4b: the message search panel over a mocked `searchMessages` (fake timers): the
-// debounce and Enter, superseded requests aborted and their answers ignored, "Load more" with the
-// captured query and scope and the dedupe (across and within pages), the automatic re-asks (five
-// per action), the 409 restart (dedupe reset, re-ask budget kept, a second 409 is an error), the
-// snippet as text with a `<mark>`, opening a hit, an interrupted search resumed on reopen, Escape.
+// The message search panel over a mocked `searchMessages` (fake timers): the debounce and Enter,
+// superseded requests aborted and their answers ignored, "Load more" with the captured query and
+// scope and the dedupe (across and within pages), the automatic re-asks (five per action), the 409
+// restart (dedupe reset, re-ask budget kept, a second 409 is an error), the snippet as text with a
+// `<mark>`, opening a hit, an interrupted search resumed on reopen, Escape.
 
 const mocks = vi.hoisted(() => ({
     searchMessages: vi.fn(),

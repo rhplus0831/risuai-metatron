@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): `auxFetch`, the browser's transport for
-// a call that uses a stored LLM credential through `/proxy2`'s auxiliary operations. It waits for
-// the queued credential writes first (a failed save fails the call), keeps the operation's method
-// (a GET carries no body), runs the plugin body interceptors, serializes a `FormData` body once with
-// its boundary, puts the JWT in the outer request only (`authFetch`), checks abort and save
-// admission right before the request goes out (`beforeDispatch`), settles at once on an abort at
-// any stage without starting a later interceptor or the request, leaves no rejection unobserved,
-// and logs the request without any credential.
+// `auxFetch`, the browser's transport for a call that uses a stored LLM credential through
+// `/proxy2`'s auxiliary operations. It waits for the queued credential writes first (a failed save
+// fails the call), keeps the operation's method (a GET carries no body), runs the plugin body
+// interceptors, serializes a `FormData` body once with its boundary, puts the JWT in the outer
+// request only (`authFetch`), checks abort and save admission right before the request goes out
+// (`beforeDispatch`), settles at once on an abort at any stage without starting a later interceptor
+// or the request, leaves no rejection unobserved, and logs the request without any credential.
 
 const { deps } = vi.hoisted(() => ({
     deps: {

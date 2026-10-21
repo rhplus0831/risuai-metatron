@@ -3,14 +3,12 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 7 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-consumers.md`,
-// "Validation": "`colorscheme.ts`, `guisize.ts`, `animation.ts` ... over the records"): the GUI appliers
-// read the `ui` section record through the settings views, not a captured database. Each one
-// applies what the record holds when it runs: a later edit and the records replaced by a conflict
-// reload or a restore (installed afresh) are what the next call applies, never a captured object.
-// The color-scheme writers write the `ui` record and queue its write, and nothing else. The records
-// are all there is (slice 10 took the aggregate away): the readers and the writers (`updateSettings`)
-// reach them only through the views.
+// The GUI appliers (`colorscheme.ts`, `guisize.ts`, `animation.ts`, ...) read the `ui` section record
+// through the settings views, not a captured database. Each one applies what the record holds when it runs:
+// a later edit and the records replaced by a conflict reload or a restore (installed afresh) are what the
+// next call applies, never a captured object. The color-scheme writers write the `ui` record and queue its
+// write, and nothing else. The records are all there is (there is no aggregate database): the readers and
+// the writers (`updateSettings`) reach them only through the views.
 
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());

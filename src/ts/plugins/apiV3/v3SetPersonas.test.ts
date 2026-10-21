@@ -2,15 +2,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 6 (Astra challenge points 1 and 2): the plugin `setDatabase` and `setDatabaseLite`
-// host setters over the settings records, for `personas` and `selectedPersona`. Both setters apply
-// the personas contract (`shared/personas.ts`) to a plain copy of the plugin's list (never empty,
-// the four fields strings, unique ids; a non-list is refused and the personas kept), and apply
-// `selectedPersona` after `personas` whatever the object's key order, so the index names a persona
-// of the list the same call sets. The direct-index readers of the UI (`DefaultChatScreen`,
-// `PersonaSettings`: `personas[selectedPersona]`) must find a record after every call. Point 3: a
-// persona import whose image is still being saved when the full setter replaces the list reaches
-// the live list.
+// The plugin `setDatabase` and `setDatabaseLite` host setters over the settings records, for
+// `personas` and `selectedPersona`. Both setters apply the personas contract (`shared/personas.ts`)
+// to a plain copy of the plugin's list (never empty, the four fields strings, unique ids; a
+// non-list is refused and the personas kept), and apply `selectedPersona` after `personas` whatever
+// the object's key order, so the index names a persona of the list the same call sets. The
+// direct-index readers of the UI (`DefaultChatScreen`, `PersonaSettings`:
+// `personas[selectedPersona]`) must find a record after every call. A persona import whose image is
+// still being saved when the full setter replaces the list reaches the live list.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -92,7 +91,7 @@ const directIndexReader = () => {
 const personaA = { id: "a", name: "A", icon: "ia", personaPrompt: "pa", note: "na" };
 const personaB = { id: "b", name: "B", icon: "ib", personaPrompt: "pb", note: "nb" };
 
-/** The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10). */
+/** The records installed as the app installs them (there is no whole-database aggregate). */
 function install() {
     installFlatDatabase({ characters: [], plugins: [], botPresets: [], personas: [personaA, personaB] });
 }
@@ -252,9 +251,8 @@ describe("a persona import while the full setter replaces the list", () => {
         // The image is being saved: a plugin's full setter replaces (and normalizes) the list.
         const detached = personas();
         await captured.api!.setDatabase({ personas: [{ ...personaA, name: "A from plugin" }, personaB] });
-        // A retained wrapper follows its record across replacements (Phase 6 slice 4,
-        // `settings-ownership.md`, "Observable changes"): the list held before the setter is the live
-        // list's wrapper, and it shows the replaced list.
+        // A retained wrapper follows its record across replacements: the list held before the
+        // setter is the live list's wrapper, and it shows the replaced list.
         expect(personas()).toBe(detached);
         expect(names()).toEqual(["A from plugin", "B"]);
 

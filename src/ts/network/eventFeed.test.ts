@@ -16,11 +16,11 @@ const mocks = vi.hoisted(() => {
         epochMismatch: vi.fn(),
         noteRemoteChanges: vi.fn(),
         reconcileRemote: vi.fn(),
-        /** The chat module's side of a frame's generation locks (data-loss slice 2b). */
+        /** The chat module's side of a frame's generation locks. */
         noteRemoteStreaming: vi.fn(),
         releaseFeedLocks: vi.fn(),
         EpochMismatch,
-        /** `recordClientEvent`: the feed's diagnostics (request history slice 8). */
+        /** `recordClientEvent`: the feed's diagnostics. */
         record: vi.fn<(input: unknown) => void>(),
     };
 });
@@ -211,9 +211,9 @@ describe("the live-update socket client", () => {
     });
 });
 
-// Data-loss slice 2b: a `change` frame's generation locks go to the chat module after its refs, and a
-// `hello` of the loaded epoch drops the feed's locks (a release may have been sent while disconnected).
-describe("the frame's generation locks (slice 2b)", () => {
+// A `change` frame's generation locks go to the chat module after its refs, and a `hello` of the
+// loaded epoch drops the feed's locks (a release may have been sent while disconnected).
+describe("the frame's generation locks", () => {
     const streaming = [{ characterId: "c", id: "k", streaming: [{ messageId: "r", generationId: "g1", seq: 0 }] }];
     const chats = { resources: [], chats: [{ characterId: "c", id: "k", revision: "E1:1:5" }], chatOrders: [] };
 
@@ -262,7 +262,7 @@ describe("the frame's generation locks (slice 2b)", () => {
     });
 });
 
-describe("the feed's diagnostics (request history slice 8)", () => {
+describe("the feed's diagnostics", () => {
     const feedEvents = () => mocks.record.mock.calls.map(([input]) => input);
 
     it("records `connected` once per socket with the attempt it was, `disconnected` with the close code, and `connectFailed` for a socket closed before its hello", async () => {

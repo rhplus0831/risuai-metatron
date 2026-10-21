@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `createSimpleCharacter` (heap plan B2): a character's asset lists are frozen values replaced whole,
-// so the simple-character argument a mounted chat row keeps must read the character's current lists,
-// not the list captured when the row was mounted (Fable's B2 review, item 4). The getters read the
-// live character on every access and are tracked like any wrapper read; the argument still
-// serializes with both lists. The module graph beyond the records is mocked as in
-// `stores.importOrder.test.ts`.
+// `createSimpleCharacter`: a character's asset lists are frozen values replaced whole, so the
+// simple-character argument a mounted chat row keeps must read the character's current lists, not
+// the list captured when the row was mounted. The getters read the live character on every access
+// and are tracked like any wrapper read; the argument still serializes with both lists. The module
+// graph beyond the records is mocked as in `stores.importOrder.test.ts`.
 
 vi.mock("./storage/characterStore.svelte", () => ({ selectedCharacter: () => null }));
 vi.mock("./storage/chatStore.svelte", () => ({

@@ -348,7 +348,7 @@ export const modelSpecificParameterItems: SettingItem[] = [
 
 /**
  * The model profile's parameters, on the Model page (`ModelSettings.svelte`): the context size
- * belongs to the model profile (`docs/plan/split-preset.md`).
+ * belongs to the model profile.
  */
 export const modelParameterItems: SettingItem[] = [
     {

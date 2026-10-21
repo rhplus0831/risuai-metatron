@@ -4,8 +4,8 @@ import { flushSync, mount, unmount } from "svelte";
 import { writable } from "svelte/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// `Chats` mounts its rows by hand (`mount(Chat)`), and passes them its own contexts (heap plan C2:
-// the chat screen's `ChatStyleRegistry` reaches `ChatBody` that way). The row component is a stub
+// `Chats` mounts its rows by hand (`mount(Chat)`), and passes them its own contexts (the chat
+// screen's `ChatStyleRegistry` reaches `ChatBody` that way). The row component is a stub
 // that records the context it was mounted with.
 
 const hoisted = vi.hoisted(() => ({ seen: [] as unknown[] }));

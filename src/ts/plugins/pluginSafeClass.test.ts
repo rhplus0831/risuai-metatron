@@ -23,7 +23,7 @@ const stored = () => (settings.pluginStorage as any)?.[SAFE_LOCAL_PLUGIN_STORAGE
 
 beforeEach(() => {
     // Installed the way the app installs a database (its fields moved into the records), since the
-    // plugin storage mutations write the records through the settings views (Phase 6 slice 7).
+    // plugin storage mutations write the records through the settings views.
     installFlatDatabase({ characters: [] });
 });
 

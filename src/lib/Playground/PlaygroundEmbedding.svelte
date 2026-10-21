@@ -1,6 +1,6 @@
 <script module lang="ts">
     // The tool's draft lives outside the component: the memory key's link opens the settings, which
-    // replace the playground (`App.svelte`), and coming back remounts it (settings UI plan slice 8).
+    // replace the playground (`App.svelte`), and coming back remounts it.
     const draft = $state({
         query: "",
         model: "MiniLM",

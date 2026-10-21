@@ -3,13 +3,12 @@ import { language } from "src/lang";
 import { pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 7 (`docs/plan/phases/slices/phase-4-external-contracts/imports-through-the-module.md`):
 // `importUserPersona` reads the `persona` chunk of a PNG (the real chunk reader), saves the icon
-// first (Phase 3's order), then adds the persona through `addPersona`, over the real save adapter
-// and the real server store (`storeBackedServer.ts`). The persona gets an id, the saved icon, and
-// its fields, keeps the selection, and is on the server after one cycle. A collection replaced while
-// the icon was being saved receives the persona (the add reads the live list). A PNG without the
-// chunk reports `noData` and adds nothing.
+// first, then adds the persona through `addPersona`, over the real save adapter and the real server
+// store (`storeBackedServer.ts`). The persona gets an id, the saved icon, and its fields, keeps the
+// selection, and is on the server after one cycle. A collection replaced while the icon was being
+// saved receives the persona (the add reads the live list). A PNG without the chunk reports `noData`
+// and adds nothing.
 
 const { server, alerts, picker, saving } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -191,11 +190,11 @@ describe("importUserPersona adds the persona through addPersona", () => {
     });
 });
 
-// Phase 6 slice 7: `exportUserPersona` reads the selected persona's four fields through
-// `activePersona` once, before its first await (it took a snapshot of the whole database for them).
-// A selection change, or an edit of the persona, while the icon is being read changes nothing in
-// the export: the image read, the card in the PNG, and the file name are all the persona that was
-// selected when the export started.
+// `exportUserPersona` reads the selected persona's four fields through `activePersona` once, before
+// its first await (it took a snapshot of the whole database for them). A selection change, or an
+// edit of the persona, while the icon is being read changes nothing in the export: the image read,
+// the card in the PNG, and the file name are all the persona that was selected when the export
+// started.
 describe("exportUserPersona", () => {
     it("exports the persona selected at its start, though the selection and the persona change while its icon is read", async () => {
         const { persona, collectionStore, selection } = await boot();

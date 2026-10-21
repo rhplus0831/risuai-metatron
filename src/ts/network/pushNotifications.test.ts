@@ -2,21 +2,20 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { languageEnglish } from "../../lang/en";
 
-// `docs/plan/web-push.md`: this browser's Web Push (`pushNotifications.ts`) over stubbed browser APIs
-// (`Notification`, `PushManager`, `navigator.serviceWorker` with one registration) and a fake
-// `authFetch`: the availability states (ok, insecure, server-off), the boot sync (the key fetched,
-// never a permission request, the subscription registered only with the permission granted, the
-// switch on, and this browser not opted out; an older server key's subscription replaced; an
-// existing one re-registered), the one-time banner's conditions and its dismissal flag from either
-// action, `enablePushOnThisBrowser` requesting the permission synchronously inside the click, the
-// server refusing a subscription, the browser opt-out with the server removal retried at the next
-// sync, the tab's notification (suppressed while subscribed, the worker's `showNotification`, the
-// page's `Notification` fallback with the click opening the chat), the foreground cleanup of the
-// tagged notifications, and the worker's `risu-open-route` message. Slice P1: a browser unsubscribe
-// that rejects or resolves `false` (at a disable, and for an older key's subscription) is reported
-// in `error` and retried at the next sync, dropped by a re-enable, and repaired when another tab turns
-// this browser on mid-retry; the failure details follow the selected language. The `it.fails` case pins intended
-// behavior the implementation does not meet yet (Astra's challenge, point 4).
+// This browser's Web Push (`pushNotifications.ts`) over stubbed browser APIs (`Notification`,
+// `PushManager`, `navigator.serviceWorker` with one registration) and a fake `authFetch`: the
+// availability states (ok, insecure, server-off), the boot sync (the key fetched, never a permission
+// request, the subscription registered only with the permission granted, the switch on, and this
+// browser not opted out; an older server key's subscription replaced; an existing one
+// re-registered), the one-time banner's conditions and its dismissal flag from either action,
+// `enablePushOnThisBrowser` requesting the permission synchronously inside the click, the server
+// refusing a subscription, the browser opt-out with the server removal retried at the next sync, the
+// tab's notification (suppressed while subscribed, the worker's `showNotification`, the page's
+// `Notification` fallback with the click opening the chat), the foreground cleanup of the tagged
+// notifications, and the worker's `risu-open-route` message. A browser unsubscribe that rejects or
+// resolves `false` (at a disable, and for an older key's subscription) is reported in `error` and
+// retried at the next sync, dropped by a re-enable, and repaired when another tab turns this browser
+// on mid-retry; the failure details follow the selected language.
 
 const deps = vi.hoisted(() => ({
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
@@ -587,7 +586,7 @@ describe("disablePushOnThisBrowser", () => {
         expect(state(module)).toMatchObject({ optedOut: false, subscribed: true, error: null });
     });
 
-    // Astra's challenge, point 4: a readable storage is the truth, also when another tab removed a flag.
+    // A readable storage is the truth, also when another tab removed a flag.
     it("reads a flag another tab removed from storage as removed", async () => {
         FakeNotification.permission = "granted";
         const module = await boot();

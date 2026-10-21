@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
-// The client half of the Phase 5 slice 3 host-parity test: the cases of
-// `server/src/tests/fixtures/cbs-parity.json` through the client wrapper (`risuChatParser` with the
-// live-database host of `parser.svelte.ts`: the selection, `CurrentTriggerIdStore`, `window`,
-// `navigator`, the chat variables). `server/src/tests/cbs.test.ts` answers the same cases from a
-// Node host; the expected values are hand-derived and pin the legacy quirks.
+// The client half of the host-parity test: the cases of `server/src/tests/fixtures/cbs-parity.json`
+// through the client wrapper (`risuChatParser` with the live-database host of `parser.svelte.ts`:
+// the selection, `CurrentTriggerIdStore`, `window`, `navigator`, the chat variables).
+// `server/src/tests/cbs.test.ts` answers the same cases from a Node host; the expected values are
+// hand-derived and pin the legacy quirks.
 
 vi.mock(import("../../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
@@ -84,10 +84,10 @@ beforeEach(() => {
     vi.useFakeTimers({ now: new Date(parity.fixedTime), toFake: ["Date"] });
     vi.spyOn(console, "log").mockImplementation(() => {});
     // The capture installed in the records (as the removed `setDatabaseLite` installed a database;
-    // there is no whole-database object since Phase 6 slice 10), since the parser reads the settings
-    // through the record views (Phase 6 slice 7) and the characters through the character store
-    // (slice 8). It is the flat shape the Node host reads: its root preset fields become the one
-    // preset's. The records hold no chats (slice 9a): the capture's chats are held in the chat
+    // there is no whole-database object), since the parser reads the settings through the record
+    // views and the characters through the character store. It is the flat shape the Node host
+    // reads: its root preset fields become the one preset's. The records hold no chats: the
+    // capture's chats are held in the chat
     // module, as boot assembles them, and each character's chat page selected (every chat page of
     // the capture is 0, its first chat, which `initializeChats` selects).
     const database = JSON.parse(JSON.stringify(parity.database));

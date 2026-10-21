@@ -4,20 +4,20 @@ import { findChat, selectChat } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 
-// Phase 5 Stop D fixes (slice 13d, D1) and Open bug fixes G3: the tab's graph memory host
-// (`src/ts/process/mcp/graphmem.ts`) with the real `HypaProcesser` (`src/ts/process/memory/hypamemory.ts`)
-// over a fake custom embedding server (a vector per text: its length, its count of the letter `e`,
-// and 1) and an in-memory vector store shared by every processor (the LocalForage `hypaVector`
-// store), on the real records and chat module (`installFlatDatabaseWithChats`): the variable is
-// read where `getChatVar`/`getChatVarOf` read it and lands where `mergeChatMeta` writes it.
-// `callTool` (no request) acts on the selected chat: a chat that never held the graph (its
-// variable reads as the text `null`) gets a graph on its first write, a read ranks the stored names
-// by similarity (the names stored with `addText`, then the query embedded), and a later read's new
-// processor takes the names' vectors from the store and embeds only its query. `callToolForChat`
-// (a request's call) acts on the request's chat by id while another chat, or another chat of the
-// same character, is selected; null or a chat that is not loaded answers an error and writes nowhere;
-// the preset default is the scope's preset's, else the chat's display preset's, never the selected
-// preset's. The server's host is tested in `server/src/tests/mcpInternal.test.ts`.
+// The tab's graph memory host (`src/ts/process/mcp/graphmem.ts`) with the real `HypaProcesser`
+// (`src/ts/process/memory/hypamemory.ts`) over a fake custom embedding server (a vector per text:
+// its length, its count of the letter `e`, and 1) and an in-memory vector store shared by every
+// processor (the LocalForage `hypaVector` store), on the real records and chat module
+// (`installFlatDatabaseWithChats`): the variable is read where `getChatVar`/`getChatVarOf` read it
+// and lands where `mergeChatMeta` writes it. `callTool` (no request) acts on the selected chat: a
+// chat that never held the graph (its variable reads as the text `null`) gets a graph on its first
+// write, a read ranks the stored names by similarity (the names stored with `addText`, then the
+// query embedded), and a later read's new processor takes the names' vectors from the store and
+// embeds only its query. `callToolForChat` (a request's call) acts on the request's chat by id
+// while another chat, or another chat of the same character, is selected; null or a chat that is
+// not loaded answers an error and writes nowhere; the preset default is the scope's preset's, else
+// the chat's display preset's, never the selected preset's. The server's host is tested in
+// `server/src/tests/mcpInternal.test.ts`.
 
 const { embedded, vectorStore } = vi.hoisted(() => ({
     /** Every embedding request's input, in order. */

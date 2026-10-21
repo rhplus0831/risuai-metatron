@@ -1,9 +1,9 @@
 /**
  * Interaction Settings Data
  *
- * Data-driven definition for the InteractionSettings page (settings UI plan slice 5): how the chat
- * input sends, how messages are edited and removed, and how the menus and chat list behave. Moved from
- * Accessibility (the `acc.` items) and Advanced (the `adv.` items), keeping their ids.
+ * Data-driven definition for the InteractionSettings page: how the chat input sends, how messages are
+ * edited and removed, and how the menus and chat list behave. Moved from Accessibility (the `acc.`
+ * items) and Advanced (the `adv.` items), keeping their ids.
  */
 
 import type { SettingItem, SettingSection } from "./types";

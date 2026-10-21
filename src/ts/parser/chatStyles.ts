@@ -1,10 +1,10 @@
 import { getContext, setContext } from "svelte";
 
 /*
- * The chat screen's shared row stylesheets (archived `docs/plan/heap-memory.md` C2). Each row used to keep
- * its own `<style>` copy of its CSS, so rows repeating a style cost one sheet, one import and one set
- * of font faces each. Here a chat screen keeps one `<style>` per distinct CSS text and attribute
- * list, held by the mounted rows that use it, in a container after the rows.
+ * The chat screen's shared row stylesheets. Each row used to keep its own `<style>` copy of its CSS,
+ * so rows repeating a style cost one sheet, one import and one set of font faces each. Here a chat
+ * screen keeps one `<style>` per distinct CSS text and attribute list, held by the mounted rows that
+ * use it, in a container after the rows.
  *
  * Among shared sheets, the order keeps the cascade the rows' own copies gave: newest message first,
  * then the greeting, and each style's last copy decided where its rules fell. So every row's style

@@ -4,13 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 
 // `LoreBookList` mounted over the real records, selection, chat module, local-lore draft,
-// `LoreBookData`, and the real inputs (open-bug-fixes slice C7, D1): rows are keyed by entry and
-// bind to the entry captured at mount, so an edit that lands while the row is torn down (Chrome
-// fires `change` on a focused, edited control as it is removed; `TextAreaInput`'s `onchange` writes
-// the value) goes nowhere once the shown list no longer holds the entry, and a binding read after
-// the row's list is gone never reaches a removed record element. happy-dom removes nodes silently,
-// so the removal-time `change` is dispatched here from a patched `Element.prototype.remove`.
-// SortableJS, the tokenizer, and the alert dialogs are doubled.
+// `LoreBookData`, and the real inputs: rows are keyed by entry and bind to the entry captured at
+// mount, so an edit that lands while the row is torn down (Chrome fires `change` on a focused,
+// edited control as it is removed; `TextAreaInput`'s `onchange` writes the value) goes nowhere once
+// the shown list no longer holds the entry, and a binding read after the row's list is gone never
+// reaches a removed record element. happy-dom removes nodes silently, so the removal-time `change`
+// is dispatched here from a patched `Element.prototype.remove`. SortableJS, the tokenizer, and the
+// alert dialogs are doubled.
 
 /** The SortableJS instances the lists created (happy-dom cannot drag): their options and lifecycle. */
 const sortables = vi.hoisted(
@@ -365,13 +365,13 @@ describe("LoreBookList rows keyed by entry", () => {
     });
 });
 
-// The list filter (Search plan slice 2c, Decision 5): the outermost list owns the one query field;
-// an entry matches on `comment`, `key` and `secondkey` (a chat's `child` link also on the entry it
-// links), never on `content`; a folder on its own name. A match inside a folder shows the folder
-// expanded (its stored expansion untouched) with only the matching entries, a folder-name match all
-// of them. Hidden rows stay mounted with the `hidden` class, so visibility is read through the row
-// and its ancestors. Every Sortable instance is disabled while filtered, including those created
-// meanwhile, and enabled again after clearing. The query resets when the list's owner changes.
+// The list filter: the outermost list owns the one query field; an entry matches on `comment`,
+// `key` and `secondkey` (a chat's `child` link also on the entry it links), never on `content`; a
+// folder on its own name. A match inside a folder shows the folder expanded (its stored expansion
+// untouched) with only the matching entries, a folder-name match all of them. Hidden rows stay
+// mounted with the `hidden` class, so visibility is read through the row and its ancestors. Every
+// Sortable instance is disabled while filtered, including those created meanwhile, and enabled
+// again after clearing. The query resets when the list's owner changes.
 describe("LoreBookList filter", () => {
     const library = (): loreBook[] => [
         entry("Sword", { key: "excalibur" }),
@@ -420,7 +420,7 @@ describe("LoreBookList filter", () => {
         expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
 
         search("excal");
-        // Shield holds "excalibur" in its content only (Decision 5).
+        // Shield holds "excalibur" in its content only.
         expect(visibleLabels()).toEqual(["Sword"]);
         expect(labels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
 

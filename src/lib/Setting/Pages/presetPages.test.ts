@@ -3,12 +3,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Slice 4 of `docs/plan/split-preset.md`: the Chat Bot page is split into the Model page
-// (`ModelSettings.svelte`, the selected model preset) and the Prompt page
-// (`PromptPresetSettings.svelte`, the selected prompt preset). Each page names its preset and opens
-// its own list, and an edit on one page lands in that page's preset only. With the model profiles
-// (`docs/plan/model-profiles.md`), the Model menu's Preset tab picks a profile per slot and its Connections tab
-// (`ModelProfilesSettings.svelte`) edits the profiles themselves.
+// The Chat Bot page is split into the Model page (`ModelSettings.svelte`, the selected model
+// preset) and the Prompt page (`PromptPresetSettings.svelte`, the selected prompt preset). Each
+// page names its preset and opens its own list, and an edit on one page lands in that page's preset
+// only. With the model profiles, the Model menu's Preset tab picks a profile per slot and its
+// Connections tab (`ModelProfilesSettings.svelte`) edits the profiles themselves.
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({
@@ -77,7 +76,7 @@ beforeEach(() => {
                 { id: "m1" },
             ),
         ],
-        // The main and sub slots name one profile (`docs/plan/model-profiles.md`).
+        // The main and sub slots name one profile.
         modelProfiles: [
             normalizeModelProfile({ id: "echo", name: "Echo", modelId: "echo_model", maxContext: 9000 }),
             normalizeModelProfile({ id: "spare", name: "Spare", modelId: "echo_model", maxContext: 5000 }),
@@ -163,8 +162,8 @@ describe("the Connections tab", () => {
         expect(settings.modelPresets[0]).not.toHaveProperty("maxContext");
     });
 
-    // Open bug fixes plan slice C8: a tab switch remounts the page (`Settings.svelte` keys it by the menu
-    // index); the selected connection survives the remount.
+    // A tab switch remounts the page (`Settings.svelte` keys it by the menu index); the selected
+    // connection survives the remount.
     it("keeps the selected connection when the tab is left and opened again", () => {
         const page = render(ModelProfilesSettings);
         page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
@@ -189,7 +188,7 @@ describe("the Connections tab", () => {
         expect(after.querySelector("[data-profile-id=echo]")?.getAttribute("aria-pressed")).toBe("true");
     });
 
-    // Translation slice 3.1: a translator step may name a profile; deleting the profile lists them.
+    // A translator step may name a profile; deleting the profile lists them.
     it("lists the translator presets with a step on the profile in the delete confirmation, disabled steps included, each preset once", async () => {
         const onSpare = (overrides: Record<string, unknown> = {}) => ({
             prompt: "x",

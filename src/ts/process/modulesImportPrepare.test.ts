@@ -5,14 +5,13 @@ import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 
-// Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`,
-// "Implementation notes", "Modules" and "After the challenge"): the old-lorebook conversion
-// (`upgradeLorebook`, what the startup `updateLorebooks` step did before) runs on every module import
-// path through `prepareModuleImport`, before `addModule`: the module dialog's `.risum`, CharX, module
-// JSON, native lore JSON, and external lore JSON, and the module links of `characterURLImport`
-// (`#import_module=`, `#share_module`, a `.risum` behind `#import=`). A lorebook that is not a list is
-// reported and imported empty only when the user agrees; one whose entries cannot be read is refused
-// with `noData`. Ordinary module mutations never convert (`settingsRecords.test.ts`).
+// The old-lorebook conversion (`upgradeLorebook`, what the startup `updateLorebooks` step did
+// before) runs on every module import path through `prepareModuleImport`, before `addModule`: the
+// module dialog's `.risum`, CharX, module JSON, native lore JSON, and external lore JSON, and the
+// module links of `characterURLImport` (`#import_module=`, `#share_module`, a `.risum` behind
+// `#import=`). A lorebook that is not a list is reported and imported empty only when the user
+// agrees; one whose entries cannot be read is refused with `noData`. Ordinary module mutations
+// never convert (`settingsRecords.test.ts`).
 
 const { server, alerts, picker } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -97,7 +96,7 @@ async function boot() {
     vi.spyOn(globalApi, "saveAsset").mockResolvedValue("asset");
     const util = await import("../util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
-    // The dialog answers the picked `File` itself (large-asset-import slice 2c), built from `picker.file`.
+    // The dialog answers the picked `File` itself, built from `picker.file`.
     vi.spyOn(util, "selectSingleFileHandle").mockImplementation(async () =>
         picker.file ? new File([new Uint8Array(picker.file.data)], picker.file.name) : null,
     );
@@ -279,7 +278,7 @@ describe("the module links of characterURLImport convert too", () => {
             { name: "Shared", description: "", id: "s", lorebook: [oldLore("Shared")], regex: [], trigger: [] } as any,
             { saveData: false, alertEnd: false },
         );
-        // The share target's worker stored the file (slice 4f); the page reads it from Cache Storage and
+        // The share target's worker stored the file; the page reads it from Cache Storage and
         // consumes it once imported. The `fetch` stub below serves only the `#import=` link.
         const shareUrl = "http://local/sw/share/module";
         const pending = new Map([[shareUrl, new Response(new Uint8Array(bytes))]]);

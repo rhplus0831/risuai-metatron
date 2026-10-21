@@ -27,10 +27,10 @@ import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 
 /**
- * The client of the script transform (Phase 5 slice 13; `shared/transform.ts`): the `editdisplay`
- * stage of `ParseMarkdown` and the direct callers (the translator's `editdisplay`, the HypaV3
- * modal's and `parseRisuChat`'s `editprocess`) run on the server; since the cutover (slice 14)
- * there is no browser regex, Lua, or trigger stage. Without a context (`captureTransform` null: no
+ * The client of the script transform (`shared/transform.ts`): the `editdisplay` stage of
+ * `ParseMarkdown` and the direct callers (the translator's `editdisplay`, the HypaV3 modal's and
+ * `parseRisuChat`'s `editprocess`) run on the server; there is no browser regex, Lua, or trigger
+ * stage. Without a context (`captureTransform` null: no
  * chat, a chat not saved on the server yet, no preset or persona) a caller skips the stage and shows
  * the text as the CBS pre-pass and the assets leave it; a new chat's rows render again once its
  * first save lands (`chatSaveVersion`). The browser keeps both additional-asset passes, inlays,
@@ -127,8 +127,8 @@ function readTransformContext(
     if (!chat || heldChatRevision(chatRef) === null) {
         return null;
     }
-    // The chat's display ids (`docs/plan/chat-binding.md`): its bound ids where they exist, else the
-    // tab's. Also inside a plugin hook: a job's `presetChain` pick is that job's, not the chat's render.
+    // The chat's display ids: its bound ids where they exist, else the tab's. Also inside a plugin
+    // hook: a job's `presetChain` pick is that job's, not the chat's render.
     const { presetId, modelPresetId, personaId } = chatDisplayIds(chatRef);
     if (!presetId || !modelPresetId || !personaId) {
         return null;

@@ -12,7 +12,7 @@
     } from "src/ts/network/pushNotifications";
 
     // `settings.ui.notification` is the synced switch (the server sends while it is on); the line
-    // under it is this browser's own state (`docs/plan/web-push.md`).
+    // under it is this browser's own state.
     function statusText(state: PushBrowserState): string {
         const text = language.pushNotifications;
         switch (state.availability) {

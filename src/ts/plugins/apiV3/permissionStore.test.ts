@@ -121,7 +121,7 @@ describe("recordPermissionGrants", () => {
     });
 });
 
-// Phase 6 live updates: another tab's or device's grant reaches this tab as a feed notice with the
+// Live updates: another tab's or device's grant reaches this tab as a feed notice with the
 // committed revision. The fake's revisions are real tokens here, since the refresh compares them.
 describe("refreshPluginPermissions", () => {
     const EPOCH = "00000000-0000-4000-8000-000000000002";

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-// Safe boot (RisuNest small wins S1, `app-shell.md` Safe boot): the `?safe` flag, the attempt counter
-// in `localStorage`, the failure latch, and the settle window, driven through `createSafeBoot` with
-// every effect injected (the query, the store, the clock, the timer, the CSS switch, the notice).
-// The default instance is used only for the error hint and the address.
+// Safe boot (`app-shell.md` Safe boot): the `?safe` flag, the attempt counter in `localStorage`,
+// the failure latch, and the settle window, driven through `createSafeBoot` with every effect
+// injected (the query, the store, the clock, the timer, the CSS switch, the notice). The default
+// instance is used only for the error hint and the address.
 
 vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 

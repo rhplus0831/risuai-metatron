@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refJ, refK } from "src/ts/storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 3 (`plugin-call-context`) against the real save adapter and the real server store
+// The plugin call context against the real save adapter and the real server store
 // (`storeBackedServer.ts`, the `v3SavedWrites.test.ts` harness): what a hook writes for its own
 // chat and preset reaches the records those name. A `chatOutput` listener for a chat of a character
 // that is not selected edits that character through `setCharacter` and the edit is saved (the
 // non-selected character is marked); a hook's `setDatabase({ temperature })` after a preset switch
-// lands in the hook's preset of the `presets` record; and the callback persistence contract of the
-// canonical slice: a `beginMutationScope` + `flushResources({ scope })` pair around the hook reports
-// a discard caused by a conflict during the hook (another tab wrote the `ui` record the hook's
+// lands in the hook's preset of the `presets` record; and the callback persistence contract: a
+// `beginMutationScope` + `flushResources({ scope })` pair around the hook reports a discard caused
+// by a conflict during the hook (another tab wrote the `ui` record the hook's
 // `setDatabaseLite({ theme })` also writes), and nothing when the hook's writes all persisted.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
@@ -163,7 +163,7 @@ describe("a hook's writes reach the records its context names", () => {
         const hookModelPreset = selection.modelPresetId;
         const other = record("presets").find((preset: any) => preset.id !== hookPreset).id;
         const otherModel = record("modelPresets").find((preset: any) => preset.id !== hookModelPreset).id;
-        // `maxContext` is the main profile's (`docs/plan/model-profiles.md` O8): the other model preset
+        // `maxContext` is the main profile's: the other model preset
         // gets a main profile of its own, so the two model presets do not share the written record.
         const hookProfile = record("modelPresets").find((preset: any) => preset.id === hookModelPreset).mainSlot
             .profileId;

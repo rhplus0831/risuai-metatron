@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 10 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/aggregate-removal.md`,
-// "Deviations"): `stores.svelte.ts` and `parser/transformClient.ts` import each other, and
-// `stores.svelte.ts` subscribes to `ReloadGUIPointer` while it evaluates (a Svelte store calls a new
-// subscriber at once). When `transformClient` is the module evaluated first, it is still initializing
-// when `stores.svelte` runs, so that first call must not reach `resetTransformEffects` (its
-// `appliedEmotions` set is in its temporal dead zone: `ReferenceError: Cannot access 'appliedEmotions'
-// before initialization`, the failure the slice's test adaptation hit). Every later change of the
-// pointer must still run the subscriber: the chat pointer is reset (the observable half of the
-// callback; `resetTransformEffects` runs in the same statement list). Both modules are real here;
-// everything they reach is mocked, and each case starts from a fresh module registry.
+// `stores.svelte.ts` and `parser/transformClient.ts` import each other, and `stores.svelte.ts`
+// subscribes to `ReloadGUIPointer` while it evaluates (a Svelte store calls a new subscriber at once).
+// When `transformClient` is the module evaluated first, it is still initializing when `stores.svelte`
+// runs, so that first call must not reach `resetTransformEffects` (its `appliedEmotions` set is in its
+// temporal dead zone: `ReferenceError: Cannot access 'appliedEmotions' before initialization`). Every
+// later change of the pointer must still run the subscriber: the chat pointer is reset (the observable
+// half of the callback; `resetTransformEffects` runs in the same statement list). Both modules are
+// real here; everything they reach is mocked, and each case starts from a fresh module registry.
 
 vi.mock("./storage/characterStore.svelte", () => ({ selectedCharacter: () => null }));
 vi.mock("./storage/chatStore.svelte", () => ({

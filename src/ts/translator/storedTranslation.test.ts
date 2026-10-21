@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 
-// The tab side of the stored translation (`docs/plan/translation.md` slice 1.4, `media-aux.md`):
-// `requestStoredTranslation` against a real chat module and settings records, with the transport
-// (`authFetch`) and the save barrier (`flushResources`) scripted per case. The row never shows the
-// answer itself: the request stays pending until the held message holds the stored translation the
-// chat's refresh brings (`hydrateChat` here), bounded; every failure alerts once and clears pending.
+// The tab side of the stored translation: `requestStoredTranslation` against a real chat module and
+// settings records, with the transport (`authFetch`) and the save barrier (`flushResources`)
+// scripted per case. The row never shows the answer itself: the request stays pending until the
+// held message holds the stored translation the chat's refresh brings (`hydrateChat` here),
+// bounded; every failure alerts once and clears pending.
 
 const hoisted = vi.hoisted(() => ({
     auth: {
@@ -411,7 +411,7 @@ describe("requestStoredTranslation: the answers", () => {
     });
 });
 
-describe("following a server hand-off (docs/plan/translation.md slice 2.3)", () => {
+describe("following a server hand-off", () => {
     const follow = () => ({ report: vi.fn<(message: string) => void>() });
 
     it("posts an unforced request per id at once, without the save barrier or the stability checks, and holds the row pending until the translation arrives; `ignored` and a missing context say nothing", async () => {

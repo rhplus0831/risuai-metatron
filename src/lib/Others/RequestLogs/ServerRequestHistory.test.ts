@@ -10,14 +10,12 @@ import type {
     RequestHistorySummary,
 } from "../../../../shared/requestHistory.ts";
 
-// Request history slice 10 (`docs/plan/request-history-diagnostics.md`, "Sharing to the folder"):
-// the viewer's share controls. An expanded row's "Share for support" sends the row's job id when
-// it has one (so a withdrawal after the row was pruned still names the job) and its request id
-// only for a standalone row; the answer's ids mark every listed row ("Shared" badge, "Update
-// shared copy" and "Withdraw share"); one operation per target at a time; a failure is a
-// localized notice, the server's "older copy could not be removed" answer its own; the "Shared
-// copies" box lists the folder's shares with a Withdraw each, keeps the last list when a read
-// fails, and shows the error with Retry.
+// Sharing to the diagnostics folder: the viewer's share controls. An expanded row's "Share for support"
+// sends the row's job id when it has one (so a withdrawal after the row was pruned still names the job) and
+// its request id only for a standalone row; the answer's ids mark every listed row ("Shared" badge, "Update
+// shared copy" and "Withdraw share"); one operation per target at a time; a failure is a localized notice,
+// the server's "older copy could not be removed" answer its own; the "Shared copies" box lists the folder's
+// shares with a Withdraw each, keeps the last list when a read fails, and shows the error with Retry.
 
 const deps = vi.hoisted(() => ({
     listRequestHistory: vi.fn<() => Promise<RequestHistoryPage>>(),

@@ -3,9 +3,9 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Settings UI plan (archived, `docs/archived-plan/README.md`) slice 2: `SettingsSections` renders an ordinary
-// section as a named region (`section` labelled by its `h3`), a collapsible one as a closed
-// accordion with its badge, and nothing for a section whose items all hide by their conditions.
+// `SettingsSections` renders an ordinary section as a named region (`section` labelled by its `h3`), a
+// collapsible one as a closed accordion with its badge, and nothing for a section whose items all hide by
+// their conditions.
 
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
@@ -133,9 +133,9 @@ describe("SettingsSections", () => {
     });
 });
 
-// Search plan slice 3b: a collapsible section the pending jump names (`currentJump()`, read at mount)
-// starts open; the jump's finish neither closes it nor drops the row's ring; a later re-creation of
-// the accordion (Display switches tabs on one instance) stays closed once the jump finished.
+// A collapsible section the pending jump names (`currentJump()`, read at mount) starts open; the
+// jump's finish neither closes it nor drops the row's ring; a later re-creation of the accordion
+// (Display switches tabs on one instance) stays closed once the jump finished.
 describe("SettingsSections with a search jump", () => {
     const MENU = 6;
     const legacy = (): SettingSection => ({

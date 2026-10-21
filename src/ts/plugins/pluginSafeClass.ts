@@ -78,7 +78,7 @@ export class SafeLocalStorage {
 
 /**
  * The plugin API's `getLocalPluginStorage()`: shared by every plugin and saved on the server inside
- * `pluginCustomStorage` (it was browser-local before Phase 1) through the plugin storage mutations
+ * `pluginCustomStorage` (it used to be browser-local) through the plugin storage mutations
  * (`pluginStorageStore.svelte.ts`). Values must be plain JSON data; any other value throws a
  * `TypeError` and changes nothing. Any string is a valid key. Reads return copies.
  */

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The Translation page's items (`docs/plan/translation.md` slice 1.4, `media-aux.md`; on the Language
-// page until settings UI plan slice 6): `lang.llmTranslationTarget` is shown for the LLM translator only; `legacyTranslation` for every
-// translator but the LLM one on `"message"` (it drives the rendered path); `translateBeforeHTML` and
-// `autoTranslateCachedOnly` only for the LLM translator on `"rendered"`. The conditions read
-// `ctx.settings.memoryTranslateMedia` alone, so a minimal context stands in for the real one.
+// The Translation page's items (`media-aux.md`): `lang.llmTranslationTarget` is shown for the LLM
+// translator only; `legacyTranslation` for every translator but the LLM one on `"message"` (it
+// drives the rendered path); `translateBeforeHTML` and `autoTranslateCachedOnly` only for the LLM
+// translator on `"rendered"`. The conditions read `ctx.settings.memoryTranslateMedia` alone, so a
+// minimal context stands in for the real one.
 
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
@@ -88,7 +88,7 @@ describe("the Translation page's stored-translation items", () => {
         expect(visible({ translator: "", translatorType: "google", llmTranslationTarget: "message" })).toEqual([]);
     });
 
-    it("offers the four remaining translators and no Bergamot item (docs/plan/translation.md slice 1.5)", () => {
+    it("offers the four remaining translators and no Bergamot item", () => {
         expect(item("lang.translatorType").options?.selectOptions?.map((option) => option.value)).toEqual([
             "google",
             "deepl",
@@ -101,7 +101,7 @@ describe("the Translation page's stored-translation items", () => {
         expect(Object.hasOwn(languageEnglish, "htmlTranslation")).toBe(false);
     });
 
-    it("has no global auto-translate item (a chat setting since docs/plan/translation.md slice 2.1) and keeps the cache buttons for the LLM translator on either target", () => {
+    it("has no global auto-translate item (it is a chat setting) and keeps the cache buttons for the LLM translator on either target", () => {
         expect(translationSettingsItems.some((entry) => entry.id === "lang.autoTranslate")).toBe(false);
         // `bindKey` is typed by the settings root keys, so a build fails on the dropped field already.
         expect(translationSettingsItems.some((entry) => (entry.bindKey as string) === "autoTranslate")).toBe(false);
@@ -120,10 +120,10 @@ describe("the Translation page's stored-translation items", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.3: the history slots' budget, `lang.translatorHistoryMaxTokens`,
-// a number item shown for the LLM translator on the stored translation only; its own getter reads
-// the field as stored and its setter writes only what the server normalizer keeps (a finite number
-// above 0, exactly), through the wrapper's `updateSettingValue`.
+// The history slots' budget, `lang.translatorHistoryMaxTokens`, a number item shown for the LLM
+// translator on the stored translation only; its own getter reads the field as stored and its
+// setter writes only what the server normalizer keeps (a finite number above 0, exactly), through
+// the wrapper's `updateSettingValue`.
 describe("the history budget item", () => {
     const BUDGET = "lang.translatorHistoryMaxTokens";
     const LLM_MESSAGE: Media = { translator: "ko", translatorType: "llm", llmTranslationTarget: "message" };

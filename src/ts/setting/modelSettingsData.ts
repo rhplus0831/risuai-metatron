@@ -2,9 +2,9 @@ import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
 // The Model page's Preset tab (`ModelSettings.svelte`) below its handwritten controls: the request
-// and provider options moved from Advanced (settings UI plan slice 4). They are global (`providers`
-// fields and the custom model list), not fields of the model preset the tab edits, so their sections
-// say they apply to every preset.
+// and provider options moved from Advanced. They are global (`providers` fields and the custom model
+// list), not fields of the model preset the tab edits, so their sections say they apply to every
+// preset.
 export const modelSettingsItems: SettingItem[] = [
     {
         id: "adv.retries",
@@ -113,7 +113,7 @@ export const modelSettingsItems: SettingItem[] = [
         componentId: "CustomModelsSettings",
         componentProps: { noAccordion: true },
     },
-    // From Accessibility (settings UI plan slice 5).
+    // From Accessibility.
     {
         id: "acc.applyAdditionalParamsToAll",
         type: "check",

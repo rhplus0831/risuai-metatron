@@ -3,11 +3,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// `ChatBody` under a chat screen's `ChatStyleRegistry` (heap plan C2): the rows' `<style>`s are
-// placeholders, one shared sheet per distinct CSS sits in the provider's container, ordered as the
-// rows' copies were, retained across a row's re-render and released at its unmount. Without a
-// registry a row keeps its own `<style>`. The parser is real: `ParseMarkdown` decodes the styles.
-// This file is `.svelte.test.ts` so the props can be `$state` and change on the mounted rows.
+// `ChatBody` under a chat screen's `ChatStyleRegistry`: the rows' `<style>`s are placeholders, one
+// shared sheet per distinct CSS sits in the provider's container, ordered as the rows' copies were,
+// retained across a row's re-render and released at its unmount. Without a registry a row keeps its
+// own `<style>`. The parser is real: `ParseMarkdown` decodes the styles. This file is
+// `.svelte.test.ts` so the props can be `$state` and change on the mounted rows.
 
 vi.mock("src/ts/storage/database.svelte", () => ({ appVer: "1234.5.67" }));
 vi.mock("src/ts/globalApi.svelte", () => ({

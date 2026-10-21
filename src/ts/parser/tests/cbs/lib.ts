@@ -8,12 +8,11 @@ import type { Chat } from "src/ts/storage/database.svelte";
 export type MockedCharacter = { chaId: string; chatPage?: number; chats: Chat[]; defaultVariables?: string };
 
 /**
- * Installs the test's fixture `characters` the way boot does (Phase 6 slice 9a: the chat module
- * checks a character through the records and holds the chats itself): copies of the characters
- * into the records, with the record fields `fields`, and the characters' chats into the chat module
- * (`assembleChats`). The fixture keeps its plain chat objects (the test's variable storage lives on
- * them); the readers resolve the selected character over the records and its chat in the chat module.
- * (Until Phase 6 slice 10 the fixture sat on the removed aggregate's mocked holder.)
+ * Installs the test's fixture `characters` the way boot does (the chat module checks a character
+ * through the records and holds the chats itself): copies of the characters into the records, with
+ * the record fields `fields`, and the characters' chats into the chat module (`assembleChats`). The
+ * fixture keeps its plain chat objects (the test's variable storage lives on them); the readers
+ * resolve the selected character over the records and its chat in the chat module.
  */
 export const holdMockedChats = (characters: MockedCharacter[], fields: Record<string, unknown> = {}): void => {
     initializeRecords(
@@ -48,14 +47,14 @@ export const resetChatVariables = (characters: MockedCharacter[]): void => {
             // The fixture chat is plain data here (the module is the only writer in the app).
             (chat as { scriptstate?: Record<string, unknown> }).scriptstate = {};
         }
-        // The chats `holdMockedChats` put into the chat module (Phase 6 slice 9a).
+        // The chats `holdMockedChats` put into the chat module.
         for (const entry of chatList(char.chaId)) {
             setChatMeta({ chaId: char.chaId, chatId: entry.id }, { scriptstate: {} });
         }
         char.defaultVariables = "";
     }
 
-    // The settings are read through the record views (Phase 6 slice 7): reset there.
+    // The settings are read through the record views: reset there.
     settings.globalChatVariables = {};
     activePreset.templateDefaultVariables = "";
 };

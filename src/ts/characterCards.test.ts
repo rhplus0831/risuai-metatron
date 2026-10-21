@@ -22,8 +22,8 @@ function staleCharacter(): character {
     } as unknown as character;
 }
 
-// The completion notification's custom message is local to this server (`docs/plan/web-push.md`
-// decision 4): the exporter's explicit field list never carries it into a card.
+// The completion notification's custom message is local to this server: the exporter's explicit
+// field list never carries it into a card.
 test("createBaseV3 does not export customNotificationMessage", () => {
     const card = createBaseV3({ ...staleCharacter(), customNotificationMessage: "Dinner is ready" } as character);
     expect(JSON.stringify(card)).not.toContain("customNotificationMessage");

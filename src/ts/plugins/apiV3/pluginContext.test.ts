@@ -1,14 +1,13 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 4, slice 3 (`plugin-call-context`): a plugin hook runs with a captured call context (the
-// chat, the preset, and the persona id), and the selection-dependent host functions the plugin
-// calls inside the hook act on the hook's chat and preset instead of the tab's selection. Two fake
-// plugins are registered through the real API object (`SandboxHost` mocked, as in
-// `hostApiRouting.test.ts`), and the hooks are invoked as the runners invoke them: through
-// `invokeHook` (the output-listener runner), the server transform's continuation
-// (`serverProcessScript`, the script-handler runner of the tab since the Phase 5 cutover; the server
-// is a stand-in), and `requestChatData` (the replacer and provider runners). Pinned here:
+// A plugin hook runs with a captured call context (the chat, the preset, and the persona id), and
+// the selection-dependent host functions the plugin calls inside the hook act on the hook's chat
+// and preset instead of the tab's selection. Two fake plugins are registered through the real API
+// object (`SandboxHost` mocked, as in `hostApiRouting.test.ts`), and the hooks are invoked as the
+// runners invoke them: through `invokeHook` (the output-listener runner), the server transform's
+// continuation (`serverProcessScript`, the script-handler runner of the tab; the server is a
+// stand-in), and `requestChatData` (the replacer and provider runners). Pinned here:
 // - the capture: the chat ref, the selected preset, and the chat's bound persona (else the selected one);
 // - a `chatOutput` listener for a chat that is not selected reads and writes its own character and
 //   chat (`getChar`/`getCharacter` report the hook's chat as `chatPage`; a `setChar` round trip does
@@ -138,7 +137,7 @@ vi.mock("src/ts/process/request/request", () => {
         requestChatDataMain: vi.fn(async (...args: Parameters<Request["requestChatDataMain"]>) =>
             (await actual()).requestChatDataMain(...args),
         ),
-        // `runLLMModel` runs inside the request's chat guard (Phase 6 slice 9b): the real helper.
+        // `runLLMModel` runs inside the request's chat guard: the real helper.
         withRequestChat: async (...args: Parameters<Request["withRequestChat"]>) =>
             (await actual()).withRequestChat(...args),
     };
@@ -148,9 +147,9 @@ vi.mock("src/ts/process/request/request", () => {
 // (the server's stages before the handlers leave it alone here), and the continuation answers the
 // handlers' texts; without handlers a text is answered as it came.
 //
-// The factory does not load the actual module (as `request` above): since Phase 6 slice 9a its imports
-// reach the chat module and, through it, the transform client, which then bound to the unmocked
-// `authFetch` while the mock was being made. The other export forwards to the actual module at its call.
+// The factory does not load the actual module (as `request` above): its imports reach the chat
+// module and, through it, the transform client, which then bound to the unmocked `authFetch` while
+// the mock was being made. The other export forwards to the actual module at its call.
 vi.mock("src/ts/storage/serverAuth", () => {
     type ServerAuthModule = typeof import("src/ts/storage/serverAuth");
     const actual = () => vi.importActual<ServerAuthModule>("src/ts/storage/serverAuth");
@@ -222,7 +221,7 @@ vi.stubGlobal("safeStructuredClone", (value: unknown) =>
 );
 
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
-/** The main profile of the model preset `id` (`docs/plan/model-profiles.md`): `m-a` or `m-b`. */
+/** The main profile of the model preset `id`: `m-a` or `m-b`. */
 const mainProfile = (id: string) =>
     settings.modelProfiles.find((entry: { id: string }) => entry.id === `m-${id}`) as any;
 const characterOf = (chaId: string) => characterList().find((entry: any) => entry?.chaId === chaId) as any;
@@ -248,9 +247,9 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
 });
 
 /**
- * The live records, installed as boot installs them (the whole-database aggregate is gone since
- * Phase 6 slice 10): the record fields into the records, the characters' chats into the chat module
- * (Phase 6 slice 9a), the selection resolved.
+ * The live records, installed as boot installs them (there is no whole-database aggregate): the
+ * record fields into the records, the characters' chats into the chat module, the selection
+ * resolved.
  */
 function liveDatabase() {
     selectPreset("a");
@@ -344,7 +343,7 @@ async function listenerOf(api: CapturedApi, fn: Function) {
 const where = (api: CapturedApi): [number, number] => [api.getCurrentCharacterIndex(), api.getCurrentChatIndex()];
 
 /**
- * Binds a chat to prompt and model preset `a` and `persona` (`docs/plan/chat-binding.md`): a request
+ * Binds a chat to prompt and model preset `a` and `persona`: a request
  * for a chat runs only on the chat's complete binding, so the cases that send bind their chat first.
  */
 const bind = (ref: { chaId: string; chatId: string }, personaId: string) =>
@@ -377,7 +376,7 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-// The context carries its chat's owner lifetime (`chatOwnerToken`, Phase 6 slice 9b): the token as the
+// The context carries its chat's owner lifetime (`chatOwnerToken`): the token as the
 // chat module holds it now, never an incidental literal.
 const ownerA = () => chatStore.chatOwnerToken("a");
 const ownerB = () => chatStore.chatOwnerToken("b");
@@ -400,7 +399,7 @@ describe("capturePluginContext", () => {
         });
         selectPreset("b");
         expect(capturePluginContext(refA1)!.presetId).toBe("b");
-        // The model preset is captured independently (`docs/plan/split-preset.md`).
+        // The model preset is captured independently.
         expect(capturePluginContext(refA1)!.modelPresetId).toBe("a");
         selectModelPreset("b");
         expect(capturePluginContext(refA1)).toMatchObject({ presetId: "b", modelPresetId: "b" });
@@ -408,7 +407,7 @@ describe("capturePluginContext", () => {
         expect(capturePluginContext(undefined)).toBeUndefined();
     });
 
-    it("resolves through the settings views (Phase 6 slice 7): a bound persona that is gone, and a selection naming no record, fall back as before", () => {
+    it("resolves through the settings views: a bound persona that is gone, and a selection naming no record, fall back as before", () => {
         expect(capturePluginContext(refB1)).toEqual({
             chatRef: refB1,
             presetId: "a",
@@ -458,7 +457,7 @@ describe("a chatOutput listener for a chat that is not selected", () => {
             seen.where = where(api);
             seen.legacy = (await api.getChar()).chaId;
             await api.setCharacter({ ...character, desc: "listener wrote" });
-            // Async since Phase 6 slice 9b (it loads the hook's chat first).
+            // Async (it loads the hook's chat first).
             seen.lore = await api.getCurrentLorebookEntries();
         });
         const context = capturePluginContext(refB1);
@@ -624,8 +623,7 @@ describe("settings inside a hook", () => {
 
         await invokeHook(listener, context, listenerArg);
 
-        // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's
-        // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md` O8).
+        // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's.
         expect(preset("a")).toMatchObject({ temperature: 33 });
         expect(preset("b")).toMatchObject({ temperature: 20 });
         expect(mainProfile("a")).toMatchObject({ maxContext: 3333 });
@@ -679,7 +677,7 @@ describe("settings inside a hook", () => {
     });
 });
 
-describe("the theme getters (Phase 6 slice 7)", () => {
+describe("the theme getters", () => {
     // `getColorScheme`/`getTextTheme` read the ui record through the settings views, as it is at
     // each call, and hand the plugin a detached copy: a change the plugin makes to it reaches nothing.
     it("answer the ui record at each call with detached copies", async () => {
@@ -846,8 +844,8 @@ describe("the runners", () => {
         grants.value = false;
         const prompts: ((value: boolean) => void)[] = [];
         alerts.confirm.mockImplementation(() => new Promise<boolean>((resolve) => prompts.push(resolve)));
-        // `aiModel` is the model id of the model preset's main profile (`docs/plan/model-profiles.md`):
-        // the request reads it from the model preset of its captured context, else the selected one.
+        // `aiModel` is the model id of the model preset's main profile: the request reads it from
+        // the model preset of its captured context, else the selected one.
         mainProfile("a").modelId = "pluginmodel:::ctx";
         mainProfile("b").modelId = "pluginmodel:::ctx";
         bind(refB1, "q");
@@ -912,8 +910,8 @@ describe("the host functions that forward the hook's target", () => {
 
         expect(results).toEqual(["plain", "scripted+"]);
         expect(seen).toEqual(["process 1/1 10 scripted"]);
-        // Inside a hook the direct parses are scoped to the hook's frozen preset and persona (Phase 5
-        // slice 7a), not the tab's selection (`b` was selected after the context was captured).
+        // Inside a hook the direct parses are scoped to the hook's frozen preset and persona, not the
+        // tab's selection (`b` was selected after the context was captured).
         const scope = {
             presetId: context!.presetId,
             modelPresetId: context!.modelPresetId,
@@ -931,9 +929,9 @@ describe("the host functions that forward the hook's target", () => {
             cbsConditions: { chatRole: "char" },
         });
         expect(scoped[0][2]).toEqual(scope);
-        // The script path: the scoped parse before the stage, then the server transform of the hook's
-        // chat with that chat's binding (`docs/plan/chat-binding.md`, the display rule; here the hook's
-        // preset and persona, not the selected `b`), whose continuation ran the handlers above.
+        // The script path: the scoped parse before the stage, then the server transform of the
+        // hook's chat with that chat's binding (the display rule; here the hook's preset and
+        // persona, not the selected `b`), whose continuation ran the handlers above.
         expect(scoped[1][0]).toBe("scripted");
         expect((scoped[1][1] as any).chara.chaId).toBe("b");
         expect(scoped[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
@@ -959,7 +957,7 @@ describe("the host functions that forward the hook's target", () => {
         expect(where(api)).toEqual([0, 0]);
 
         // Outside a hook the same call parses the selected character, unscoped, with the chat selected
-        // when the call came as its chat ref (Phase 6 slice 9a, "After the challenge" point 2).
+        // when the call came as its chat ref.
         vi.mocked(risuChatParser).mockClear();
         vi.mocked(risuChatParserScoped).mockClear();
         expect(await api.parseRisuChat("outside")).toBe("outside");
@@ -1059,8 +1057,8 @@ describe("the host functions that forward the hook's target", () => {
             expect(getModuleLorebooks).toHaveBeenLastCalledWith(refB1);
 
             // Outside the hook: the selected character's lore, its selected chat, and that chat's
-            // modules. The selected chat is captured as the call's target before its load (Phase 6
-            // slice 9b), so the module lookup names it instead of reading the selection afterwards.
+            // modules. The selected chat is captured as the call's target before its load, so the
+            // module lookup names it instead of reading the selection afterwards.
             expect(await api.getCurrentLorebookEntries()).toEqual([
                 { comment: "a global" },
                 { comment: "a0 local" },
@@ -1091,7 +1089,7 @@ describe("sendChat inside a hook", () => {
 
         expect(await api.sendChat("from outside")).toBe(true);
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0", "from outside"]);
-        // The selected chat, captured when the call came (Phase 6 slice 9a, "After the challenge" point 2).
+        // The selected chat, captured when the call came.
         expect(sends[1]).toEqual({ index: -1, arg: { target: { chaId: "a", chatId: "a0" } } });
     });
 

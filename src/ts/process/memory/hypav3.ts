@@ -16,9 +16,9 @@ import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 
 /**
- * Whose request a summary is (Phase 5 P10): the chat it summarizes and the plugin call context
- * captured when the send or the modal action began. Without one, the request reads the selection as
- * it is when it is made.
+ * Whose request a summary is: the chat it summarizes and the plugin call context captured when the
+ * send or the modal action began. Without one, the request reads the selection as it is when it is
+ * made.
  */
 export type SummarizeContext = {
     chatRef?: ChatRef | null;

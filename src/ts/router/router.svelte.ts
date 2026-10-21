@@ -17,12 +17,11 @@ import {
 } from "./routes";
 
 /*
- * The router (`docs/plan/url-routes.md`). The stores stay the state: the router applies a URL to them
- * at boot and on every `popstate`, and a sync effect turns every settled change of them into one
- * history step (R1): a push, a replace, or a back when the target is an entry beneath and the
- * Navigation API lists it. The router does not track its own back (decision 8): it waits for
- * nothing, and the landing is applied like any other `popstate`. The limits this leaves are the
- * plan's accepted risks (A1–A7).
+ * The router. The stores stay the state: the router applies a URL to them at boot and on every
+ * `popstate`, and a sync effect turns every settled change of them into one history step (R1): a
+ * push, a replace, or a back when the target is an entry beneath and the Navigation API lists it.
+ * The router does not track its own back: it waits for nothing, and the landing is applied like any
+ * other `popstate`. The limits this leaves are accepted risks (A1–A7, noted where they apply).
  *
  * A layer (settings, the character grid) opens over a base route. Its entry state holds how many
  * entries it is above its base route (`layerDepth`) and that base (`base`), so a close goes back to
@@ -65,7 +64,7 @@ export type RouteState = {
     rebased?: true;
     /**
      * For a layer entry opened without its base entry beneath (a link, a bookmark, an import at boot):
-     * the base entry is still to be inserted under it at the first user activation (decision 5, H1).
+     * the base entry is still to be inserted under it at the first user activation (H1).
      */
     rootPending?: true;
 };
@@ -373,7 +372,7 @@ let port: HistoryPort | null = null;
 
 /**
  * Adds the entries of a layer opened over the base entry beneath: on a narrow screen a settings page
- * gets the list under it, so the page's close goes back to the list (decision 6).
+ * gets the list under it, so the page's close goes back to the list.
  */
 function pushLayer(layer: Route, base: string) {
     if (layer.kind === "settings" && layer.page !== null && !wideSettings()) {
@@ -458,7 +457,7 @@ function sync(force = false, landed = false) {
     }
     const beneath = port.entryBelow(1);
     if (beneath && canonical(beneath.path) === target) {
-        // Decision 8: the stores already show the target, and the landing is applied like any
+        // The stores already show the target, and the landing is applied like any
         // `popstate`. A back that does nothing leaves the URL behind until the next change (A2).
         port.traverse(beneath.key);
         return;
@@ -518,7 +517,7 @@ function syncFromLayer(
     port!.replace(target, layerState(depth, base, { rebased, rootPending }));
 }
 
-/** Every `popstate` is applied, the router's own back too (decision 8, A1, A6). */
+/** Every `popstate` is applied, the router's own back too (A1, A6). */
 function onPopState() {
     if (!port) {
         return;
@@ -554,7 +553,7 @@ function givesActivation(event: Event): boolean {
 
 /**
  * Waits for the first user activation to insert the base entry under a layer entry with
- * `rootPending` (decision 5). Pushed without an activation, the base entry would be skipped by the
+ * `rootPending`. Pushed without an activation, the base entry would be skipped by the
  * browser's back button (H1). The listeners run in the capture phase on `window`, before the app's
  * own handlers, so a close made by the same click or key finds the base entry beneath.
  */
@@ -634,7 +633,7 @@ export function startRouter(history?: HistoryPort): () => void {
     applyEntry(true);
     untrack(normalize);
     sync(true);
-    // A layer shown at boot without its base entry beneath (decision 5): a layer URL without state, an
+    // A layer shown at boot without its base entry beneath: a layer URL without state, an
     // entry that was still waiting before a reload, or an import's layer over a base URL.
     if (untrack(layerRouteOfState) && (!wasLayer || !before || before.rootPending)) {
         const entry = readState(port.state)!;

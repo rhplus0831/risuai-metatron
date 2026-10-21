@@ -5,9 +5,9 @@
     import { CREDENTIAL_OWNERS, openCredentialOwner, type SharedCredential } from "src/ts/setting/credentialLinks";
 
     /**
-     * A shared credential where its owning page is not (settings UI plan slice 8): the key's status as
-     * `SecretInput` shows it (set, with its last characters when long enough; not set; saving) and a
-     * link that opens the owner with the field shown. Nothing here edits the key.
+     * A shared credential where its owning page is not: the key's status as `SecretInput` shows it
+     * (set, with its last characters when long enough; not set; saving) and a link that opens the
+     * owner with the field shown. Nothing here edits the key.
      */
     interface Props {
         credential: SharedCredential;

@@ -38,7 +38,7 @@ beforeEach(() => {
 afterEach(() => resetRecords());
 
 describe("asset list name caches", () => {
-    it("keeps a character's names by its frozen list's identity until a replacement (heap plan B2)", () => {
+    it("keeps a character's names by its frozen list's identity until a replacement", () => {
         const original: Asset[] = [["SunSET pose", "assets/dawn.png", "png"]];
         initializeRecords({ characters: [{ chaId: "c", name: "C", additionalAssets: original }] });
         const live = character();
@@ -104,8 +104,8 @@ describe("asset list name caches", () => {
 
     it("a retained wrapper of a list that later resolves to frozen lists is never a cache key", () => {
         // A list of another shape (a fourth element that is an object) is a mutable wrapper; the
-        // challenge's finding 1 (Sol, 2026-10-19): the wrapper's identity is stable across the
-        // replacements that follow, so it must stay on the stamp path.
+        // wrapper's identity is stable across the replacements that follow, so it must stay on the
+        // stamp path.
         initializeRecords({
             characters: [{ chaId: "c", name: "C", additionalAssets: [["Seed", "p", "png", { odd: true }]] }],
         });
@@ -145,7 +145,7 @@ describe("asset list name caches", () => {
         const draft: Pick<RisuModule, "assets"> = { assets: [["Draft pose", "assets/hidden.png", "png"]] };
         const names = moduleAssetNames(draft);
         expect(names).toEqual(["draft pose"]);
-        // A module's asset list is immutable (heap plan B1): an edit replaces it whole.
+        // A module's asset list is immutable: an edit replaces it whole.
         draft.assets = [["Renamed", "assets/hidden.png", "png"]];
         expect(moduleAssetNames(draft)).toEqual(["renamed"]);
         expect(names).toEqual(["draft pose"]);
@@ -171,7 +171,7 @@ describe("asset list name caches", () => {
         expect(moduleFieldPlain(live, "assets")).toBe(copy);
         expect(moduleAssetNames(live)).toBe(names);
 
-        // The record's list is frozen and shared as itself; an edit replaces it whole (heap plan B1).
+        // The record's list is frozen and shared as itself; an edit replaces it whole.
         expect(Object.isFrozen(copy)).toBe(true);
         expect(() => ((live.assets as any)[0][0] = "Changed")).toThrow(TypeError);
         expect(moduleAssetNames(live)).toBe(names);

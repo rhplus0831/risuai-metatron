@@ -29,8 +29,8 @@ vi.mock(
 //#endregion
 
 // An empty database installed into the records, since the handler reads the modules through the
-// settings views (Phase 6 slice 7): `settings.modules` and `settings.enabledModules` are those
-// records (an assignment replaces the record; an index read gives the stored module).
+// settings views: `settings.modules` and `settings.enabledModules` are those records (an assignment
+// replaces the record; an index read gives the stored module).
 installFlatDatabase({ characters: [], enabledModules: [], modules: [] });
 
 const makeLorebook = (name: string): loreBook => ({

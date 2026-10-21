@@ -26,12 +26,11 @@
     import { formatBytes } from "./requestLogView";
 
     /**
-     * The server's request history (`docs/plan/request-history-diagnostics.md` slice 5): every LLM
-     * request the server made, newest first, a page at a time. "This chat only" filters by the chat
-     * open when the viewer opened; a row's job filter shows a retried request's attempts together.
-     * A row loads its content when it is expanded.
+     * The server's request history: every LLM request the server made, newest first, a page at a
+     * time. "This chat only" filters by the chat open when the viewer opened; a row's job filter
+     * shows a retried request's attempts together. A row loads its content when it is expanded.
      *
-     * Sharing for support (slice 10): an expanded row shares its job (every request of it the history
+     * Sharing for support: an expanded row shares its job (every request of it the history
      * still holds, as a snapshot) to the server's diagnostics folder, updates that copy, or withdraws
      * it; a shared row is marked. "Shared copies" lists the folder's shares, also those whose rows
      * are gone, so each can still be withdrawn.

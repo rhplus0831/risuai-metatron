@@ -241,8 +241,8 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             case "openai": {
                 const cfg = character.oaiTTSConfig?.enabled ? character.oaiTTSConfig : null;
                 const baseURL = (cfg?.baseURL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
-                // The per-character key is the character's (Decision 6); the stored OpenAI key is
-                // write-only (Phase 5 slice 7b) and only reaches api.openai.com, through the server.
+                // The per-character key is the character's; the stored OpenAI key is write-only and
+                // only reaches api.openai.com, through the server.
                 const ownKey = (cfg?.apiKey || "").trim();
                 const official = baseURL === "https://api.openai.com/v1";
                 const storedKey = isSecretSet({ kind: "flat", field: "openAIKey" });

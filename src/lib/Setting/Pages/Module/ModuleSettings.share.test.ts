@@ -4,10 +4,10 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAlertQueue, type AlertQueue } from "src/ts/alertQueue";
 
-// Slice 3b: the share button awaits the exporter and clears a wait it left behind. The exporters
-// themselves (and their own failure alerts) are covered by src/ts/exportBatches.test.ts. The alert
-// store is the real queue (RisuNest small wins slice A1), a fresh one per test: a stale wait or
-// progress is a status the button clears; an error or success dialog is never closed by it.
+// The share button awaits the exporter and clears a wait it left behind. The exporters themselves
+// (and their own failure alerts) are covered by src/ts/exportBatches.test.ts. The alert store is the
+// real queue, a fresh one per test: a stale wait or progress is a status the button clears; an error
+// or success dialog is never closed by it.
 const { exporters, alerts, store } = vi.hoisted(() => ({
     exporters: { exportModule: vi.fn(), exportModuleLegacy: vi.fn() },
     alerts: { error: vi.fn(), select: vi.fn() },

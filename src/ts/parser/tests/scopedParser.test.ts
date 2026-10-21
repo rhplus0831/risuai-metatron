@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 slice 7a: `risuChatParserScoped` (`parser.svelte.ts`), the CBS parser for a frozen plugin
-// call context. The preset fields come from the context's prompt or model preset, whichever owns the
-// field (`docs/plan/split-preset.md`), and the persona from the context's persona, whatever the tab
-// selects afterwards; everything else is the tab's; a context preset, model preset, or persona that
-// no longer exists fails the parse with `PluginTargetGoneError`. The plugin host's `parseRisuChat`
-// inside a hook and the transport's `cbs` callback use it (`pluginContext.test.ts`, `transport.test.ts`).
+// `risuChatParserScoped` (`parser.svelte.ts`), the CBS parser for a frozen plugin call context. The
+// preset fields come from the context's prompt or model preset, whichever owns the field, and the
+// persona from the context's persona, whatever the tab selects afterwards; everything else is the
+// tab's; a context preset, model preset, or persona that no longer exists fails the parse with
+// `PluginTargetGoneError`. The plugin host's `parseRisuChat` inside a hook and the transport's `cbs`
+// callback use it (`pluginContext.test.ts`, `transport.test.ts`).
 
 vi.mock(import("../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
@@ -42,12 +42,11 @@ import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/
 
 /**
  * The tab's database, installed in the records (as the removed `setDatabaseLite` installed one;
- * there is no whole-database object since Phase 6 slice 10): the parser reads the settings through
- * the record views (Phase 6 slice 7), the selected character through the character store (slice 8)
- * and its chat through the chat module (slice 9a), with the presets and persona selected by id. The
- * prompt presets `p-ctx`/`p-sel` carry the prompt fields; the model presets of the same ids name
- * main profiles (`docs/plan/model-profiles.md`) whose model id and `maxContext` the parser reads as
- * the roots `aiModel` and `maxContext`.
+ * there is no whole-database object): the parser reads the settings through the record views, the
+ * selected character through the character store and its chat through the chat module, with the
+ * presets and persona selected by id. The prompt presets `p-ctx`/`p-sel` carry the prompt fields;
+ * the model presets of the same ids name main profiles whose model id and `maxContext` the parser
+ * reads as the roots `aiModel` and `maxContext`.
  */
 function database(selected: { preset: string; modelPreset?: string; persona: string }) {
     const raw = {
@@ -139,7 +138,7 @@ describe("risuChatParserScoped", () => {
 
     it("reads each preset field from its owner: the model fields from the context's model preset, the prompt fields from its prompt preset, and keys its cache by both ids", () => {
         // The prompt preset of `p-ctx` with the model preset of `p-sel`, and the other way round
-        // (`docs/plan/split-preset.md`: the two are selected independently).
+        // (the two are selected independently).
         const mixed = { presetId: "p-ctx", modelPresetId: "p-sel", personaId: "u-ctx" };
         const text = "{{model}}|{{maxcontext}}|{{mainprompt}}";
         expect(risuChatParserScoped(text, {}, mixed)).toBe("sel-model|2222|ctx main");
@@ -209,9 +208,9 @@ describe("risuChatParserScoped", () => {
     });
 });
 
-// Slice 4 of `docs/plan/chat-binding.md`: a plain parse for a chat (`arg.chatRef`) runs on that
-// chat's display ids (each bound record that exists, else the tab's selection), while a parse without
-// a chat reads the settings views, which follow the selected chat.
+// A plain parse for a chat (`arg.chatRef`) runs on that chat's display ids (each bound record that
+// exists, else the tab's selection), while a parse without a chat reads the settings views, which
+// follow the selected chat.
 describe("risuChatParser for a chat", () => {
     const k = { chaId: "c", chatId: "k" };
     const j = { chaId: "c", chatId: "j" };
@@ -248,7 +247,7 @@ describe("risuChatParser for a chat", () => {
     });
 });
 
-// Slice 4, scoped CBS: the preset-owned variable defaults and module integration are the scope's
+// Scoped CBS: the preset-owned variable defaults and module integration are the scope's
 // (a `presetChain` pick included), while a stored chat variable stays the parse's chat's.
 describe("risuChatParserScoped reads the variable defaults and the module integration from its scope", () => {
     const k = { chaId: "c", chatId: "k" };
@@ -276,8 +275,8 @@ describe("risuChatParserScoped reads the variable defaults and the module integr
     });
 });
 
-// Slice 4, item 5: the asset pass of `ParseMarkdown` reads the render's persona icon before its first
-// await, for the chat selected when the render began, also without a transform context.
+// The asset pass of `ParseMarkdown` reads the render's persona icon before its first await, for the
+// chat selected when the render began, also without a transform context.
 describe("ParseMarkdown's asset pass", () => {
     const k = { chaId: "c", chatId: "k" };
 

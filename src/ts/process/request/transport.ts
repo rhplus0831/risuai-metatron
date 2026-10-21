@@ -121,14 +121,14 @@ function dataUrlImage(mimeType: string, data: string): HTMLImageElement {
 }
 
 /**
- * The client half of `POST /api/llm/request` (Phase 5, `request-layer-and-llm-secrets`): what
- * `requestChatDataMain` does for every format the tab does not run itself. The context ids and the
- * arguments are taken before the first await (so a selection change while the save flushes does not
- * move the request), the pending saves are flushed (an edit made just before reaches the provider;
- * a refused flush fails the request), and the SSE events are handled in order: logs go to the
- * request log, notices to `alertError`, inlays and tool records are written before any later event
- * is handled, callbacks (`mcpTool`, `cbs`) are answered without holding up the stream, and the
- * result or the stream becomes the `requestDataResponse` the caller expects.
+ * The client half of `POST /api/llm/request`: what `requestChatDataMain` does for every format the
+ * tab does not run itself. The context ids and the arguments are taken before the first await (so a
+ * selection change while the save flushes does not move the request), the pending saves are flushed
+ * (an edit made just before reaches the provider; a refused flush fails the request), and the SSE
+ * events are handled in order: logs go to the request log, notices to `alertError`, inlays and tool
+ * records are written before any later event is handled, callbacks (`mcpTool`, `cbs`) are answered
+ * without holding up the stream, and the result or the stream becomes the `requestDataResponse` the
+ * caller expects.
  */
 export async function requestServer(
     arg: TransportArgument,
@@ -142,12 +142,11 @@ export async function requestServer(
     // A parse the server asks for without a chat runs on the chat that was selected now.
     const parseChatRef = chatRef ?? selectedChatRef();
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
-    // The ids (`docs/plan/chat-binding.md`): a chat's request names its captured context's (the
-    // chat's binding when it was captured, or a job callback's targets), else the chat's complete
-    // binding; a request without a chat names the ids its caller captured (`requestIds`), else the
-    // settings views' (decision 10: the selected chat's bound ids where they exist, else the tab's
-    // selection; `requestChatDataMain` computes with the same ids). It sends no `chatRef`: it is not
-    // a send, so no binding refuses it.
+    // The ids: a chat's request names its captured context's (the chat's binding when it was
+    // captured, or a job callback's targets), else the chat's complete binding; a request without a
+    // chat names the ids its caller captured (`requestIds`), else the settings views' (the selected
+    // chat's bound ids where they exist, else the tab's selection; `requestChatDataMain` computes with
+    // the same ids). It sends no `chatRef`: it is not a send, so no binding refuses it.
     let ids: { presetId: string; modelPresetId: string; personaId: string };
     if (arg.pluginContext) {
         ids = {

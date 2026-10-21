@@ -6,8 +6,8 @@
     import { createDiagnosticReport, saveDiagnosticReport, type SaveReportResult } from "src/ts/diagnostics/report";
     import { downloadFile } from "src/ts/globalApi.svelte";
 
-    // Settings → Advanced → Diagnostics (`docs/plan/request-history-diagnostics.md` slice 9): the report
-    // as text, built on open and by Refresh. Copy, Download, and Save act on the report shown.
+    // Settings → Advanced → Diagnostics: the report as text, built on open and by Refresh. Copy,
+    // Download, and Save act on the report shown.
 
     let report: string | null = $state(null);
     let building = $state(false);

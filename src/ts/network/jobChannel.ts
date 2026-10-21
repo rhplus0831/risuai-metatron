@@ -72,8 +72,8 @@ import {
 } from "../stores.svelte";
 
 /**
- * The client side of the job channel (Phase 5, `job-channel`; `shared/jobs.ts`): it shows a job's
- * notices, asks its questions, and runs its plugin callbacks, answering through the job's socket.
+ * The client side of the job channel (`shared/jobs.ts`): it shows a job's notices, asks its
+ * questions, and runs its plugin callbacks, answering through the job's socket.
  *
  * - Events are taken in socket order without waiting for a callback to finish, so an aux request's
  *   child callback can run while its parent waits.
@@ -177,7 +177,7 @@ export function rememberHydration(jobId: string, record: HydrationRecord) {
     }
 }
 
-/** The innermost callback being run (for an aux request made inside it: slice 7a), or null. */
+/** The innermost callback being run (for an aux request made inside it), or null. */
 export function currentChannelCall(): { jobId: string; callbackId: string; targets: CallbackTargets } | null {
     const top = outstanding[outstanding.length - 1];
     return top ? { jobId: top.jobId, callbackId: top.id, targets: top.targets } : null;
@@ -286,8 +286,8 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             }
             return;
         case "translating": {
-            // The send's messages the server translates (slice 2.3): shown loading while the tab follows
-            // them. A failure is queued like an `alertError` notice: it never replaces a question.
+            // The send's messages the server translates: shown loading while the tab follows them. A
+            // failure is queued like an `alertError` notice: it never replaces a question.
             const { chaId, chatId, messageIds } = notice.payload;
             const report = (message: string) =>
                 enqueueUi({ type: "notice", jobId, notice: { kind: "alertError", payload: { message } } });
@@ -306,7 +306,7 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "openURL": {
-            // An MCP server's OAuth page (slice 12): only a web address is opened.
+            // An MCP server's OAuth page: only a web address is opened.
             const { url } = notice.payload;
             if (typeof url === "string" && /^https?:\/\//i.test(url)) {
                 void import("../globalApi.svelte").then(({ openURL }) => openURL(url)).catch(console.error);
@@ -575,8 +575,8 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             return typeof chatId === "string" ? { chatId } : null;
         }
         case "generateImage": {
-            // Lua `generateImage` on the server (Phase 5 slice 8a): generated here with the tab's
-            // image settings and keys, written as an inlay, answered with its id.
+            // Lua `generateImage` on the server: generated here with the tab's image settings and keys,
+            // written as an inlay, answered with its id.
             const characterId = String(payload.characterId);
             const target = characterList().find((entry) => entry?.chaId === characterId);
             if (!target || target.type === "group") {
@@ -627,10 +627,10 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
         }
         case "chatOutput": {
-            // The `chatOutput` listeners of a server send's reply (Phase 5 slice 11a), in order. Each
-            // gets the speaker and the chat as they are now (a plain copy) and indices looked up again:
-            // an earlier listener may have changed, reordered, or deleted them. A listener's throw is
-            // logged and the next one runs, as in the tab's own send.
+            // The `chatOutput` listeners of a server send's reply, in order. Each gets the speaker and
+            // the chat as they are now (a plain copy) and indices looked up again: an earlier listener
+            // may have changed, reordered, or deleted them. A listener's throw is logged and the next
+            // one runs, as in the tab's own send.
             const { chaId, chatId } = context.chatRef;
             const messageId = String(payload.messageId);
             const speakerId = String(payload.speakerId);
@@ -673,8 +673,8 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             return true;
         }
         case "imggen": {
-            // The image view of a server send's reply (slice 11a): `stableDiff` with the tab's image
-            // settings and keys; its prompt request runs for the job's chat, preset, and persona.
+            // The image view of a server send's reply: `stableDiff` with the tab's image settings and
+            // keys; its prompt request runs for the job's chat, preset, and persona.
             const characterId = String(payload.characterId);
             const target = characterList().find((entry) => entry?.chaId === characterId);
             if (!target || target.type === "group") {
@@ -690,9 +690,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             return shown !== false;
         }
         case "provider": {
-            // A plugin provider model of a server job (slice 11b): the provider runs here with the
-            // argument the server built from the job's settings, as the tab's own `requestPlugin`
-            // calls it. An unloaded provider fails the callback (the job's request fails).
+            // A plugin provider model of a server job: the provider runs here with the argument the
+            // server built from the job's settings, as the tab's own `requestPlugin` calls it. An
+            // unloaded provider fails the callback (the job's request fails).
             const name = String(payload.name);
             const provider = pluginHooks.providers.get(name);
             if (!provider) {

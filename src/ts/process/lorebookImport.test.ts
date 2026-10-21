@@ -1,16 +1,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 
-// Phase 4, slice 7 (`docs/plan/phases/slices/phase-4-external-contracts/imports-through-the-module.md`):
 // `importLoreBook("global")` appends the file's entries to the character selected when the dialog
 // opened, by the id captured before it, through `updateCharacter`, over the real save adapter and
-// the real server store (`storeBackedServer.ts`). With the selection moved meanwhile the entries land
-// in the captured character (not selected, so the write reaches the server through its mark) and the
-// selected one is untouched; a record replaced with newer lore while the dialog was open gets the
-// entries appended to its current list; a character deleted meanwhile gets nothing and is not
-// recreated. The local mode (the chat module) is unchanged and not covered here. Since Phase 6 slice 5b
-// the imported entries are converted as they enter (`upgradeLorebook`: these entries have no old syntax,
-// so only `bookVersion: 2` is added), as are the harness characters' entries when they are created
+// the real server store (`storeBackedServer.ts`). With the selection moved meanwhile the entries
+// land in the captured character (not selected, so the write reaches the server through its mark)
+// and the selected one is untouched; a record replaced with newer lore while the dialog was open
+// gets the entries appended to its current list; a character deleted meanwhile gets nothing and is
+// not recreated. The local mode (the chat module) is unchanged and not covered here. The imported
+// entries are converted as they enter (`upgradeLorebook`: these entries have no old syntax, so only
+// `bookVersion: 2` is added), as are the harness characters' entries when they are created
 // (`addCharacter`); an entry written later through `updateCharacter` is kept as written.
 
 const { server, alerts, picker } = vi.hoisted(() => ({
@@ -173,10 +172,10 @@ describe("importLoreBook(global) writes the character captured before the dialog
     });
 });
 
-// Phase 6 slice 5b (`character-ownership.md`, "5b as built", "Lorebook files"): the global import
-// converts the file's old entries (below `bookVersion` 2) as they enter, refuses a file the
-// conversion cannot read without changing anything, and leaves the character's own entries as
-// written; the local import (the chat's lore) stays unconverted, as the old formatter never covered it.
+// The global import converts the file's old entries (below `bookVersion` 2) as they enter, refuses
+// a file the conversion cannot read without changing anything, and leaves the character's own
+// entries as written; the local import (the chat's lore) stays unconverted, as the old formatter
+// never covered it.
 describe("the lorebook conversion of an imported file", () => {
     const old = (comment: string, content: string, extra: Record<string, unknown> = {}) => ({
         ...lore(comment, content),
@@ -231,11 +230,11 @@ describe("the lorebook conversion of an imported file", () => {
     });
 });
 
-// Slice C1 of `docs/plan/open-bug-fixes.md`: the local import sends the chat's whole `localLore`, so
-// while a send of this tab (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in the
-// captured chat at the write, it is refused with the `chatGenerating` notice and nothing is written, as
-// the lore draft's fence does (`localLoreDraft.fence.test.ts`). A job that starts while the dialog is
-// open counts: the fence is checked after it.
+// The local import sends the chat's whole `localLore`, so while a send of this tab
+// (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in the captured chat at the
+// write, it is refused with the `chatGenerating` notice and nothing is written, as the lore draft's
+// fence does (`localLoreDraft.fence.test.ts`). A job that starts while the dialog is open counts:
+// the fence is checked after it.
 describe("importLoreBook(local) during a job in the chat", () => {
     async function local() {
         const booted = await boot();

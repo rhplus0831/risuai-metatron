@@ -11,7 +11,7 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 const { server, alerts } = vi.hoisted(() => {
     // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
     // (`boot` installs it in `current`): `addImportedModule` reads it back to replace only its own
-    // wait alert (data-loss plan slice 5b). The `vi.fn` wrappers keep the calls for the assertions.
+    // wait alert. The `vi.fn` wrappers keep the calls for the assertions.
     const alerts = {
         current: null as null | { set: (data: { type: string; msg: string }) => void },
         show: (type: string) => (msg: unknown) => alerts.current?.set({ type, msg: String(msg) }),
@@ -164,8 +164,8 @@ describe("characterURLImport pending shares", () => {
         expect(app.settings.modules[0].id).not.toBe("source-id");
     });
 
-    // Open-bug-fixes slice C5: the module is added through `addImportedModule`, so success and the
-    // settings page wait for the save's acknowledgement.
+    // The module is added through `addImportedModule`, so success and the settings page wait for
+    // the save's acknowledgement.
     it("announces a shared module and opens its settings only once the save is acknowledged", async () => {
         const app = await boot();
         const share = pendingShare("module", await moduleBytes(app));
@@ -223,9 +223,7 @@ describe("characterURLImport pending shares", () => {
     it("imports a preset, opens prompt settings, then consumes its entry", async () => {
         const app = await boot();
         const ids = app.settings.presets.map((preset) => preset.id);
-        const bytes = new Uint8Array(
-            readFileSync(path.resolve(__dirname, "storage/tests/fixtures/boot/custom.risup")),
-        );
+        const bytes = new Uint8Array(readFileSync(path.resolve(__dirname, "storage/tests/fixtures/boot/custom.risup")));
         const before = app.settings.presets.length;
         const share = pendingShare("preset", bytes);
         share.cache.delete.mockImplementation(async (key) => {
@@ -263,7 +261,7 @@ describe("characterURLImport pending shares", () => {
         await app.cards.characterURLImport();
         expectRead(share);
         expect(alerts.confirm).toHaveBeenCalledWith(language.bootstrap.resetLorebookQuestion);
-        // Declined before anything is sent (large-asset-import slice 2c).
+        // Declined before anything is sent.
         expect(app.fake.requests.filter((request) => request.path === "/api/import/module")).toHaveLength(0);
         expect(app.settings.modules).toHaveLength(0);
         expect(get(app.stores.settingsOpen)).toBe(false);

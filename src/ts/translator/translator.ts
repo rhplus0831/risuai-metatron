@@ -98,7 +98,7 @@ let waitTrans = 0;
 
 /**
  * The translator preset the tab translates with: the selected chat's own, else the global selection
- * (`docs/plan/translation.md` slice 2.2, `resolveTranslatorPreset`).
+ * (`resolveTranslatorPreset`).
  */
 export function getCurrentTranslatorPreset(): TranslatorPreset {
     return currentTranslatorPreset();
@@ -171,13 +171,13 @@ export async function runTranslator(
         // The LLM requests' ids, read once too, so a chat switch between chunks moves none of them.
         requestIds: chatlessRequestIds(),
     };
-    // Send Text As-Is (slice 3.2): the LLM translator takes the whole text in one pipeline run and its
-    // reply is returned as it is (a failure already alerted and returned the text).
+    // Send Text As-Is: the LLM translator takes the whole text in one pipeline run and its reply is
+    // returned as it is (a failure already alerted and returned the text).
     const llm = settings.memoryTranslateMedia.translatorType === "llm";
     if (llm && arg.preset.sendTextAsIs === true) {
         return await translateMain(text, arg);
     }
-    // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the whole text before it is cut
+    // Exclude Chain-of-Thought: the reasoning blocks leave the whole text before it is cut
     // into lines (a block may span several), and the chunks go out as prepared, not stripped again.
     // A chunk's failure (alerted by `translateLLM`) returns the text as it was given, not the
     // stripped text.
@@ -585,9 +585,9 @@ function needSuperChunkedTranslate() {
 /** What an LLM translation depends on besides its source text: read once, detached, before any await. */
 interface LLMTranslationContext {
     steps: TranslatorStep[];
-    /** The preset's Send Text As-Is (slice 3.2): no `<risu-style>` placeholders, the reply kept as it is. */
+    /** The preset's Send Text As-Is: no `<risu-style>` placeholders, the reply kept as it is. */
     sendTextAsIs: boolean;
-    /** The preset's Exclude Chain-of-Thought (slice 3.4): part of the cache key. */
+    /** The preset's Exclude Chain-of-Thought: part of the cache key. */
     excludeThoughts: boolean;
     /** Whether `translateLLM` strips the reasoning blocks of its text (on, unless the caller did). */
     stripInput: boolean;
@@ -653,9 +653,10 @@ function chatlessRequestIds(): ChatContextIds {
 /**
  * The `LLMTranslateCache` key prefix of a context: a hash of the pipeline signature, the languages,
  * the note, and Send Text As-Is and Exclude Chain-of-Thought each when it is on (so the keys of a
- * preset without them are those from before slices 3.2 and 3.4), plus `inputPrepared` for a text the
- * caller stripped. The key's text is the caller's, before any reasoning strip. Another preset, prompt, or language reads and writes other entries;
- * entries from before the pipeline (keyed by the bare source) are never read again.
+ * preset without them are those from before the two options), plus `inputPrepared` for a text the
+ * caller stripped. The key's text is the caller's, before any reasoning strip. Another preset,
+ * prompt, or language reads and writes other entries; entries from before the pipeline (keyed by the
+ * bare source) are never read again.
  */
 function llmCacheKeyPrefix(context: LLMTranslationContext): string {
     const signature = JSON.stringify({
@@ -704,7 +705,7 @@ async function translateLLM(
             return cacheMatch;
         }
     }
-    // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the text before anything else;
+    // Exclude Chain-of-Thought: the reasoning blocks leave the text before anything else;
     // a text left blank is an empty translation, cached without a request. A failure below still
     // returns the text as it was given.
     const requestText = context.stripInput ? stripTranslatorReasoning(text) : text;
@@ -827,9 +828,9 @@ interface pEdittransScript {
 }
 
 /**
- * Applies the `edittrans` scripts to a stored translation (`docs/plan/translation.md` slice 1.4)
- * before it is rendered, as the `translateBeforeHTMLFormatting` path applies them to its translated
- * text: the character as `translateHTML` resolves it.
+ * Applies the `edittrans` scripts to a stored translation before it is rendered, as the
+ * `translateBeforeHTMLFormatting` path applies them to its translated text: the character as
+ * `translateHTML` resolves it.
  */
 export function applyEdittransToStoredTranslation(
     text: string,

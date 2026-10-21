@@ -57,7 +57,7 @@ export const advancedSettingsItems: SettingItem[] = [
         helpKey: "useExperimental",
         classes: "mt-4",
     },
-    // From Display (settings UI plan slice 7)
+    // From Display
     {
         id: "display.hideApiKey",
         type: "check",
@@ -173,7 +173,7 @@ export const advancedSettingsItems: SettingItem[] = [
         classes: "mt-4",
     },
     { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError", classes: "mt-4" },
-    // From Accessibility (settings UI plan slice 5), with Advanced's spacing.
+    // From Accessibility, with Advanced's spacing.
     {
         id: "acc.requestInfoInsideChat",
         type: "check",
@@ -246,7 +246,7 @@ export const advancedSettingsItems: SettingItem[] = [
         helpUnrecommended: true,
         classes: "mt-4",
     },
-    // From Display (settings UI plan slice 7)
+    // From Display
     {
         id: "display.useLegacyGUI",
         type: "check",
@@ -257,8 +257,8 @@ export const advancedSettingsItems: SettingItem[] = [
 
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },
 
-    // Diagnostics (docs/plan/request-history-diagnostics.md slice 9); the "Developer & diagnostics"
-    // section is its heading (its own `adv.diagnostics` header went with settings UI plan slice 2).
+    // Diagnostics; the "Developer & diagnostics" section is its heading (it has no
+    // `adv.diagnostics` header of its own).
     {
         type: "custom",
         id: "adv.diagnosticsPanel",
@@ -271,7 +271,7 @@ export const advancedSettingsItems: SettingItem[] = [
 /** The page heading, above the sections. */
 export const advancedSettingsHeader: SettingItem[] = itemsById(advancedSettingsItems, ["adv.header", "adv.warn"]);
 
-/** The Advanced page's sections (archived, `docs/archived-plan/README.md`, slice 2), over `advancedSettingsItems`. */
+/** The Advanced page's sections, over `advancedSettingsItems`. */
 export const advancedSettingsSections: SettingSection[] = [
     {
         id: "advanced.featureAccess",

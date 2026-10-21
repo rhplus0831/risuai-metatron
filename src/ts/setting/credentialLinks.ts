@@ -11,11 +11,11 @@ import {
 } from "../stores.svelte";
 
 /*
- * Settings UI plan slice 8 (decision 2): a credential that several features use has one editing place,
- * its owning page; the other places show its status and a link (`CredentialStatusLink.svelte`). An
- * owner may hide its field behind a condition (the API Keys tab lists only the providers the model
- * slots use; Image Generation shows the NovelAI key only for its NovelAI provider), so the link asks the
- * owner to show the field on its next mount and scrolls to it.
+ * A credential that several features use has one editing place, its owning page; the other places show
+ * its status and a link (`CredentialStatusLink.svelte`). An owner may hide its field behind a condition
+ * (the API Keys tab lists only the providers the model slots use; Image Generation shows the NovelAI key
+ * only for its NovelAI provider), so the link asks the owner to show the field on its next mount and
+ * scrolls to it.
  */
 
 export type SharedCredential = "openAIKey" | "google" | "NAIApiKey" | "supaMemoryKey";

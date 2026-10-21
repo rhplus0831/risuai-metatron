@@ -2,16 +2,16 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 
-// Phase 5 slice 8a, the tab's side of a server Lua button (`serverCommands.ts`) over a stubbed
-// transport: one lifecycle per job shared by every caller (a button, a busy job of this tab, the
-// boot resume), the bounded reattach after a socket closed without the terminal (a failed status
-// read retried, a job the server no longer knows released as lost), the end reported once, the
-// boot discovery joining an active follow and never releasing it, and `runServerButton`'s
-// preflight (ids before the flush, a discarding or rejected flush runs nothing, a saved revision,
-// the owned-busy path). Slice 9 adds `runServerJob` itself: the send kinds with their context,
-// the `unknown` outcome of a create request without an answer, the abort signal (a DELETE for a
-// started job, for a followed busy job, and for a signal that fired during the create; nothing
-// posted after an abort before the flush ends), and a plugin call's identity.
+// The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
+// lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
+// bounded reattach after a socket closed without the terminal (a failed status read retried, a job
+// the server no longer knows released as lost), the end reported once, the boot discovery joining
+// an active follow and never releasing it, and `runServerButton`'s preflight (ids before the flush,
+// a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
+// `runServerJob` itself: the send kinds with their context, the `unknown` outcome of a create
+// request without an answer, the abort signal (a DELETE for a started job, for a followed busy job,
+// and for a signal that fired during the create; nothing posted after an abort before the flush
+// ends), and a plugin call's identity.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
@@ -31,7 +31,7 @@ const stubs = vi.hoisted(() => ({
     saved: vi.fn<() => string[]>(() => []),
     apply: vi.fn(),
     alertError: vi.fn(),
-    /** `alertJobError`: a job's error terminal with its failure fields (request history slice 6). */
+    /** `alertJobError`: a job's error terminal with its failure fields. */
     alertJobError: vi.fn(),
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
     /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
@@ -40,19 +40,19 @@ const stubs = vi.hoisted(() => ({
     notices: vi.fn<() => number>(() => 0),
     /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
     restored: vi.fn<() => Promise<boolean>>(async () => false),
-    /** `ensureChatLoaded`: the target chat, loaded (Phase 6 slice 9b); `undefined` for a chat that is not listed. */
+    /** `ensureChatLoaded`: the target chat, loaded; `undefined` for a chat that is not listed. */
     load: vi.fn<() => Promise<unknown>>(async () => ({})),
     /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
     pin: vi.fn(() => vi.fn()),
     held: vi.fn<() => string | null>(() => "e:1:1"),
     /**
-     * `chatEntry`: the target chat's list entry, whose binding (`docs/plan/chat-binding.md`) the runner
-     * sends; `undefined` for a chat that is not listed. The default binds the records installed below.
+     * `chatEntry`: the target chat's list entry, whose binding the runner sends; `undefined` for a
+     * chat that is not listed. The default binds the records installed below.
      */
     entry: vi.fn<() => Record<string, unknown> | undefined>(() => ({})),
     /** `loadChat`: the runner reads the chat again after a binding mismatch. */
     loadChat: vi.fn<() => Promise<unknown>>(async () => ({})),
-    /** `recordClientEvent`: the follow's diagnostics (request history slice 8). */
+    /** `recordClientEvent`: the follow's diagnostics. */
     record: vi.fn<(input: unknown) => void>(),
 }));
 /** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
@@ -406,7 +406,7 @@ describe("runServerButton", () => {
             mode: "button",
             chatRevision: "e:1:1",
         });
-        // A chat job has one persona, the chat's: no selected persona is sent (`docs/plan/chat-binding.md`).
+        // A chat job has one persona, the chat's: no selected persona is sent.
         expect(body.context).not.toHaveProperty("selectedPersonaId");
         expect(body.context.client).toMatchObject({ viewport: { width: expect.any(Number) } });
         expect(stubs.flush).toHaveBeenCalledTimes(1);
@@ -504,8 +504,8 @@ describe("runServerButton", () => {
     });
 });
 
-// Phase 5 slice 8b: a manual trigger through the same preflight and follow, with its typed outcome
-// and `onStart` (the tab sets `CurrentTriggerIdStore` there: only once the job exists).
+// A manual trigger through the same preflight and follow, with its typed outcome and `onStart` (the
+// tab sets `CurrentTriggerIdStore` there: only once the job exists).
 describe("runServerManualTrigger", () => {
     const char = { chaId: "c", type: "character" } as never;
 
@@ -593,7 +593,7 @@ describe("runServerManualTrigger", () => {
     });
 });
 
-// Phase 5 slice 9: the shared job runner the sends use (`sendChatOnServer` maps its outcome).
+// The shared job runner the sends use (`sendChatOnServer` maps its outcome).
 describe("runServerJob", () => {
     const char = { chaId: "c", type: "character" } as never;
     const send = (
@@ -648,9 +648,8 @@ describe("runServerJob", () => {
         await run;
     });
 
-    // The send guard (`docs/plan/chat-binding.md`, slice 3): a chat whose binding is not complete runs
-    // nothing, before the flush and the create, never on the tab's selection; the server's 409s are shown
-    // the same way.
+    // The send guard: a chat whose binding is not complete runs nothing, before the flush and the
+    // create, never on the tab's selection; the server's 409s are shown the same way.
     it("refuses a chat whose binding is not complete before the flush, listing each problem, and never falls back to the selection", async () => {
         stubs.entry.mockReturnValue({ bindedPersona: "nope", bindingReview: true });
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
@@ -778,8 +777,8 @@ describe("runServerJob", () => {
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 
-    // Stop D fixes (C2): a flush refused because a change waits for a generation (another tab's
-    // job) is reported as `chatGenerating`, not as a save error, and only once with the adapter's.
+    // A flush refused because a change waits for a generation (another tab's job) is reported as
+    // `chatGenerating`, not as a save error, and only once with the adapter's.
     it("shows chatGenerating for a flush refused for a generation unless the adapter's recovery showed it during the flush, and posts nothing", async () => {
         // Refused at once (no recovery during this flush): the send shows the notice itself.
         stubs.flush.mockRejectedValueOnce(new BlockedError());
@@ -860,7 +859,7 @@ const followUpStubs = vi.hoisted(() => ({
 }));
 vi.mock("./command", () => ({ runMultisend: followUpStubs.runMultisend }));
 
-describe("`/multisend` follow-ups of a command job (slice 11b)", () => {
+describe("`/multisend` follow-ups of a command job", () => {
     /** Lets the follow-up chain (a dynamic import, one await per part) run out. */
     const settle = async () => {
         for (let round = 0; round < 8; round += 1) {
@@ -946,11 +945,11 @@ describe("`/multisend` follow-ups of a command job (slice 11b)", () => {
     });
 });
 
-// Phase 6 slice 9b: the job's chat is pinned from the start and loaded after the flush, before the
-// job is created (a failed load alerts and runs nothing); a followed job's chat is pinned once it is
-// known and loaded before the follow attaches (retried like a status read; a load that keeps failing
-// makes the job lost); the follow-ups take their own pin. Every exit releases the pin once.
-describe("the job's chat (Phase 6 slice 9b)", () => {
+// The job's chat is pinned from the start and loaded after the flush, before the job is created (a
+// failed load alerts and runs nothing); a followed job's chat is pinned once it is known and loaded
+// before the follow attaches (retried like a status read; a load that keeps failing makes the job
+// lost); the follow-ups take their own pin. Every exit releases the pin once.
+describe("the job's chat", () => {
     const char = { chaId: "c", type: "character" } as never;
     /** Whether every pin taken so far was released exactly once. */
     const pinsBalanced = () =>
@@ -1041,7 +1040,7 @@ describe("the job's chat (Phase 6 slice 9b)", () => {
     });
 });
 
-describe("the follow's diagnostics (request history slice 8)", () => {
+describe("the follow's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
     it("records `reattach` with its attempt before every attach after the first, and `lost` once when the attaches run out", async () => {
@@ -1098,7 +1097,7 @@ describe("the follow's diagnostics (request history slice 8)", () => {
     });
 });
 
-describe("followedJobs (audit JOB-02, slice 2b)", () => {
+describe("followedJobs", () => {
     const jobsOf = (chat: { chaId: string; chatId: string }) =>
         commands.followedJobsOf(get(commands.followedJobs), chat);
 

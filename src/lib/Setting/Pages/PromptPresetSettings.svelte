@@ -28,9 +28,9 @@
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
     /**
-     * The prompt preset's page (`docs/plan/split-preset.md`, slice 4): the selected prompt preset's
-     * sampling parameters, prompts and template, bias, regex, module integration, and icon. The
-     * parameters shown follow the selected model preset's model.
+     * The prompt preset's page: the selected prompt preset's sampling parameters, prompts and
+     * template, bias, regex, module integration, and icon. The parameters shown follow the selected
+     * model preset's model.
      */
 
     let tokens = $state({

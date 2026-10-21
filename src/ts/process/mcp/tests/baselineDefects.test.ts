@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 5 baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"):
-// the behavior of two confirmed defects in the MCP client code, recorded against the client
-// functions themselves (they are pure, so no browser capture is needed). Each test pins the defect
-// until the slice that fixes it FLIPS it to the intended behavior (implementation plan, question
-// 10): `decodeToolCall` was flipped in slice 11b (`post-generation-and-plugin-callbacks`); the OAuth
-// refresh was flipped in slice 12a (`mcp-on-server`).
+// The baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"): the
+// behavior of two confirmed defects in the MCP client code, recorded against the client functions
+// themselves (they are pure, so no browser capture is needed). Each test pinned its defect until the
+// fix FLIPPED it to the intended behavior; both are fixed now: `decodeToolCall` (when remembered
+// tool calls moved into the chat record) and the OAuth refresh (when MCP moved to the server).
 
 const { fetchCalls, fetchAnswers, chats } = vi.hoisted(() => ({
     fetchCalls: [] as { url: string; init: RequestInit | undefined }[],
@@ -54,7 +53,7 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remembered tool call", () => {
+describe("baseline defect, fixed: decodeToolCall decodes a remembered tool call", () => {
     it("decodes the exact text encodeToolCall produced", async () => {
         const { decodeToolCall, encodeToolCall } = await import("../mcp");
         const call = {
@@ -64,7 +63,7 @@ describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remem
         const encoded = await encodeToolCall(call, ref);
         expect(encoded).toBe("<tool_call>call-1lookup</tool_call>\n\n");
 
-        // Before slice 11b `text.slice("<tool_call>".length, 0)` emptied the text and lost the id;
+        // Before the fix `text.slice("<tool_call>".length, 0)` emptied the text and lost the id;
         // the opening tag is now cut off and the whole marker decodes to the record.
         expect(await decodeToolCall(encoded, ref)).toEqual({
             call: { id: "call-1", name: "lookup", arg: { q: "x" } },
@@ -83,7 +82,7 @@ describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remem
     });
 });
 
-describe("Phase 5 baseline, flipped in slice 12a: the MCP OAuth refresh stores the token only when the status is 200", () => {
+describe("baseline defect, fixed: the MCP OAuth refresh stores the token only when the status is 200", () => {
     const refresh = {
         clientId: "client",
         clientSecret: "secret",
@@ -97,7 +96,7 @@ describe("Phase 5 baseline, flipped in slice 12a: the MCP OAuth refresh stores t
         client.getRefreshToken = async () => refresh;
         fetchAnswers.push(new Response(JSON.stringify({ access_token: "fresh" }), { status: 200 }));
 
-        // Before slice 12a the status check was inverted: a 200 was ignored and the login went on
+        // Before the fix the status check was inverted: a 200 was ignored and the login went on
         // to discovery; now the refreshed token is stored and no discovery request is made.
         await expect(client.oauthLogin()).resolves.toBeUndefined();
         expect(client.accessToken).toBe("fresh");
@@ -114,7 +113,7 @@ describe("Phase 5 baseline, flipped in slice 12a: the MCP OAuth refresh stores t
             throw new Error("discovery reached");
         });
 
-        // Before slice 12a the error body's `access_token` was stored as the access token.
+        // Before the fix the error body's `access_token` was stored as the access token.
         await expect(client.oauthLogin()).rejects.toThrow("discovery reached");
         expect(client.accessToken).toBeNull();
         expect(fetchCalls.map((c) => c.url)).toEqual([

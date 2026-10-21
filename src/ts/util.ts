@@ -9,7 +9,7 @@ import type { Attachment } from "svelte/attachments";
 import { mount, unmount, type Snippet } from "svelte";
 import PopupList from "src/lib/UI/PopupList.svelte";
 
-// Shared with the server (Phase 5 slice 8a) so CBS and lore pick the same values.
+// Shared with the server so CBS and lore pick the same values.
 export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
 export { parseToggleSyntax } from "../../shared/prompt/toggles.ts";
 export type { sidebarToggle, sidebarToggleGroup, sidebarToggleGroupEnd } from "../../shared/prompt/toggles.ts";
@@ -52,8 +52,8 @@ export async function selectSingleFile(ext: string[]) {
 }
 
 /**
- * The picked file as the `File` itself, read by nobody here (historical `docs/plan/large-asset-import.md`
- * slice 2c: a `.risum` is uploaded as it is, never held in the tab); `null` when none is picked.
+ * The picked file as the `File` itself, read by nobody here (a `.risum` is uploaded as it is, never
+ * held in the tab); `null` when none is picked.
  */
 export async function selectSingleFileHandle(ext: string[]): Promise<File | null> {
     const files = await selectFileByDom(ext, "single");
@@ -61,9 +61,8 @@ export async function selectSingleFileHandle(ext: string[]): Promise<File | null
 }
 
 /**
- * The picked files as the `File`s themselves, read by nobody here (historical `docs/plan/large-asset-import.md`
- * slice 3c: the asset pickers read each file only when its save slot is free, `savePickedFiles`);
- * `[]` when none is picked.
+ * The picked files as the `File`s themselves, read by nobody here (the asset pickers read each file
+ * only when its save slot is free, `savePickedFiles`); `[]` when none is picked.
  */
 export async function selectMultipleFileHandles(ext: string[]): Promise<File[]> {
     return (await selectFileByDom(ext, "multiple")) ?? [];
@@ -106,8 +105,8 @@ export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } |
 
 /**
  * The persona a render of `chatRef`'s chat (default: the selected chat) shows: its bound persona
- * when that exists, else the tab's selected persona (`docs/plan/chat-binding.md`'s display rule),
- * never the selected chat's when `chatRef` names another chat.
+ * when that exists, else the tab's selected persona, never the selected chat's when `chatRef` names
+ * another chat.
  */
 function displayPersona(chatRef?: { chaId: string; chatId: string } | null) {
     return checkPersonaBinded(chatRef) ?? tabPersonaRecord();

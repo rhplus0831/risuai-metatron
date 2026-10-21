@@ -104,7 +104,7 @@ describe("slug tables", () => {
         expect(new Set(Object.values(PLAYGROUND_TOOLS)).size).toBe(playgroundTools.length);
     });
 
-    it("give the Language and Translation pages their own slugs (settings UI plan slice 6)", () => {
+    it("give the Language and Translation pages their own slugs", () => {
         expect(SETTINGS_PAGES.language).toBe(10);
         expect(SETTINGS_PAGES.translation).toBe(TRANSLATION_SETTINGS_MENU);
         expect(TRANSLATION_SETTINGS_MENU).toBe(21);
@@ -112,7 +112,7 @@ describe("slug tables", () => {
         expect(parseRoute("/settings/translation")).toEqual({ kind: "settings", page: "translation" });
     });
 
-    it("give Memory, Image Generation and Voice their own slugs, and read the old bot slug as Memory (settings UI plan slice 3)", () => {
+    it("give Memory, Image Generation and Voice their own slugs, and read the old bot slug as Memory", () => {
         expect([MEMORY_SETTINGS_MENU, IMAGE_GENERATION_SETTINGS_MENU, VOICE_SETTINGS_MENU]).toEqual([2, 19, 20]);
         expect(settingsPageOf(MEMORY_SETTINGS_MENU)).toBe("memory");
         expect(settingsPageOf(IMAGE_GENERATION_SETTINGS_MENU)).toBe("image-generation");

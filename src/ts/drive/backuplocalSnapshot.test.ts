@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 
-// The partial backup against the real export route (audit IO-04): the client sends no key list, so
+// The partial backup against the real export route: the client sends no key list, so
 // a profile image another writer commits while the client waits for its flush is selected from the
 // snapshot the server archives, and a referenced image the server lacks is reported under the
 // client's label. The flush is a stub that stands in for the save cycle (it lets the test commit

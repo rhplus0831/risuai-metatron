@@ -68,7 +68,7 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // No `root` record since slice 6; the character order is a collection record of its own.
+    // There is no `root` record; the character order is a collection record of its own.
     fake.set("characterOrder", "main", ["a", "b"]);
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
@@ -88,7 +88,7 @@ async function boot() {
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    // The real boot installs the records (Phase 6 slice 10); the tab starts at home.
+    // The real boot installs the records; the tab starts at home.
     bootstrap.installBootRecords(snapshot);
     selectionModule.selectCharacter(null);
     fake.requests.length = 0;
@@ -136,7 +136,7 @@ describe("trash and restore", () => {
     });
 });
 
-// The emotion and portrait writers over the immutable asset lists (heap plan B2): each one replaces
+// The emotion and portrait writers over the immutable asset lists: each one replaces
 // the character's `emotionImages` / `ccAssets` whole through the record, the stored list is frozen,
 // the edit is saved, and `addCharEmotion` appends to the latest list of the character found again
 // by `chaId` after its awaits (nothing when it is gone meanwhile).

@@ -31,7 +31,7 @@
 
     /** Typing stops for this long before a query runs (Enter runs it at once). */
     const DEBOUNCE_MS = 300;
-    /** Automatic re-asks after a page that brought no new hit while `next` is set (Decision 8). */
+    /** Automatic re-asks after a page that brought no new hit while `next` is set. */
     const MAX_REASKS = 5;
 
     let query = $state("");

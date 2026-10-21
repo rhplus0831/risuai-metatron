@@ -279,8 +279,8 @@ describe("importedChatTogglePreset", () => {
 });
 
 describe("toggle preset operations", () => {
-    // Assertions come from slice 4: captures use resolved values; chat writes must
-    // remain per-field metadata operations, never a replacement of the toggle map.
+    // Captures use resolved values; chat writes must remain per-field metadata operations, never a
+    // replacement of the toggle map.
     const definitions = "flag=Flag\nmode=Mode=select=First,Second\ntitle=Title=text\nnotes=Notes=textarea";
     const saved = (id = "saved") => ({
         id,
