@@ -25,6 +25,8 @@ export type ScriptWorkerData = {
     /** How long a synchronous host call waits for the main thread (`SYNC_HOST_TIMEOUT_MS` by default). */
     syncHostTimeoutMs: number;
     sleepCaps: SleepCaps;
+    /** The Lua allowance of preparing an engine (`DEFAULT_LUA_CPU_MS` by default). */
+    prepareCpuMs: number;
 };
 
 /**
@@ -153,8 +155,9 @@ export function runRegexOp(op: RegexOp): RegexOpResult {
 
 if (parentPort) {
     const port = parentPort;
-    const { jsonLuaPath, syncPort, syncFlag, syncHostTimeoutMs, sleepCaps } = workerData as ScriptWorkerData;
-    const runtime = createLuaRuntime({ jsonLua: readFileSync(jsonLuaPath, "utf8"), sleepCaps });
+    const { jsonLuaPath, syncPort, syncFlag, syncHostTimeoutMs, sleepCaps, prepareCpuMs } =
+        workerData as ScriptWorkerData;
+    const runtime = createLuaRuntime({ jsonLua: readFileSync(jsonLuaPath, "utf8"), sleepCaps, prepareCpuMs });
     const runs = new Map<number, { controller: AbortController; callIds: Set<number> }>();
     const hostCalls = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
     let nextCallId = 1;

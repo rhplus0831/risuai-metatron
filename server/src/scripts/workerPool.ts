@@ -232,7 +232,7 @@ export type ScriptWorkerPoolOptions = {
     resourceLimits?: ResourceLimits;
     egress?: EgressDeps;
     wallMs?: number;
-    /** Tests shorten these; the defaults are `SYNC_HOST_TIMEOUT_MS` and the runtime's sleep caps. */
+    /** Tests change these; the defaults are `SYNC_HOST_TIMEOUT_MS` and the runtime's sleep caps. */
     syncHostTimeoutMs?: number;
     sleepCaps?: SleepCaps;
     /**
@@ -242,7 +242,33 @@ export type ScriptWorkerPoolOptions = {
      */
     watchdogGraceMs?: number;
     abortGraceMs?: number;
+    /**
+     * The limits a task gets when it names none, which tests lengthen: a Lua run's CPU allowance
+     * (`DEFAULT_LUA_CPU_MS`), a worker engine's preparation allowance (`DEFAULT_LUA_CPU_MS`), a regex
+     * script run's (`DEFAULT_REGEX_SCRIPTS_CPU_MS`), a regex's deadline, also of a regex a run's host
+     * call spawns (`DEFAULT_REGEX_DEADLINE_MS`), and the total of a budget from `createBudget`
+     * (`DEFAULT_LUA_BUDGET_MS`).
+     */
+    luaCpuMs?: number;
+    prepareCpuMs?: number;
+    regexScriptsCpuMs?: number;
+    regexDeadlineMs?: number;
+    luaBudgetMs?: number;
 };
+
+/** The pool options a server context passes through (its time limits; tests change them). */
+export type ScriptWorkerTimingOptions = Pick<
+    ScriptWorkerPoolOptions,
+    | "bootMs"
+    | "syncHostTimeoutMs"
+    | "watchdogGraceMs"
+    | "abortGraceMs"
+    | "luaCpuMs"
+    | "prepareCpuMs"
+    | "regexScriptsCpuMs"
+    | "regexDeadlineMs"
+    | "luaBudgetMs"
+>;
 
 export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
     const size = options.size ?? 2;
@@ -254,6 +280,11 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
     const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
     const watchdogGraceMs = options.watchdogGraceMs ?? WATCHDOG_GRACE_MS;
     const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS;
+    const luaCpuMs = options.luaCpuMs ?? DEFAULT_LUA_CPU_MS;
+    const prepareCpuMs = options.prepareCpuMs ?? DEFAULT_LUA_CPU_MS;
+    const regexScriptsCpuMs = options.regexScriptsCpuMs ?? DEFAULT_REGEX_SCRIPTS_CPU_MS;
+    const regexDeadlineMs = options.regexDeadlineMs ?? DEFAULT_REGEX_DEADLINE_MS;
+    const luaBudgetMs = options.luaBudgetMs ?? DEFAULT_LUA_BUDGET_MS;
     const limiter = createRequestLimiter();
     const slots = new Set<Slot>();
     const queue: TopTask[] = [];
@@ -303,6 +334,7 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
                 syncFlag,
                 syncHostTimeoutMs,
                 sleepCaps,
+                prepareCpuMs,
             } satisfies ScriptWorkerData,
             transferList: [port2],
             resourceLimits: options.resourceLimits ?? DEFAULT_RESOURCE_LIMITS,
@@ -615,7 +647,7 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
         }
         const taskId = nextTaskId++;
         return new Promise((settle) => {
-            const timer = setTimeout(() => kill(slot, "Regex timed out", "timeout"), DEFAULT_REGEX_DEADLINE_MS);
+            const timer = setTimeout(() => kill(slot, "Regex timed out", "timeout"), regexDeadlineMs);
             slot.subs.set(taskId, { settle, timer });
             post(slot, { type: "regex", taskId, op });
         });
@@ -830,7 +862,7 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
                     kind: "lua",
                     taskId: nextTaskId++,
                     task,
-                    perRunMs: task.cpuMs ?? DEFAULT_LUA_CPU_MS,
+                    perRunMs: task.cpuMs ?? luaCpuMs,
                     cpuMs: 0,
                     host: run.host ?? {},
                     budget,
@@ -859,7 +891,7 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
             const { identity, cpuMs, ...data } = input;
             const { host } = run;
             const result = await api.runLua(
-                { code: "", mode: REGEX_SCRIPTS_MODE, data, identity, cpuMs: cpuMs ?? DEFAULT_REGEX_SCRIPTS_CPU_MS },
+                { code: "", mode: REGEX_SCRIPTS_MODE, data, identity, cpuMs: cpuMs ?? regexScriptsCpuMs },
                 {
                     signal: run.signal,
                     host: {
@@ -888,7 +920,7 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
             return { data: result.res };
         },
 
-        /** Runs one regex on any worker, under `deadlineMs` (1,000 ms by default). */
+        /** Runs one regex on any worker, under `deadlineMs` (the pool's `regexDeadlineMs` by default). */
         regex(op: RegexOp, opts: { deadlineMs?: number } = {}): Promise<RegexOpResult> {
             if (disposed) {
                 return Promise.resolve({ error: "The script workers are disposed" });
@@ -902,10 +934,15 @@ export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
                     kind: "regex",
                     taskId: nextTaskId++,
                     op,
-                    deadlineMs: opts.deadlineMs ?? DEFAULT_REGEX_DEADLINE_MS,
+                    deadlineMs: opts.deadlineMs ?? regexDeadlineMs,
                     settle,
                 });
             });
+        },
+
+        /** A new aggregate Lua budget of `luaBudgetMs` for one job's runs to share. */
+        createBudget(): LuaBudget {
+            return createLuaBudget(luaBudgetMs);
         },
 
         /** Waits for `size` ready workers, including those already booting; disposal resolves it. */

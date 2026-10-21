@@ -479,8 +479,9 @@ function primitiveIn(name: string, value: unknown): unknown {
 }
 
 /** One worker's runtime: a factory with `json.lua` mounted and a pool of prepared one-use engines. */
-export function createLuaRuntime(options: { jsonLua: string; sleepCaps?: SleepCaps }) {
+export function createLuaRuntime(options: { jsonLua: string; sleepCaps?: SleepCaps; prepareCpuMs?: number }) {
     const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
+    const prepareCpuMs = options.prepareCpuMs ?? DEFAULT_LUA_CPU_MS;
     let factoryPromise: Promise<LuaFactory> | null = null;
     const prepared: PreparedEngine[] = [];
     // Pending while an engine boots; a run does not start while it is held, and no boot overlaps a run.
@@ -538,7 +539,7 @@ export function createLuaRuntime(options: { jsonLua: string; sleepCaps?: SleepCa
     async function createPrepared(): Promise<PreparedEngine> {
         const engine = await (await factory()).createEngine({ injectObjects: true, traceAllocations: true });
         const previous = current;
-        current = { cpuMs: DEFAULT_LUA_CPU_MS, startActive: activeMs(), excludedMs: 0, aborted: () => false };
+        current = { cpuMs: prepareCpuMs, startActive: activeMs(), excludedMs: 0, aborted: () => false };
         try {
             engine.global.setMemoryMax(LUA_MEMORY_MAX_BYTES);
             installValueGuard(engine);

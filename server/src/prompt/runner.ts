@@ -260,7 +260,7 @@ class SendError extends GenerationRunnerError {
  * (`JobRunState.stage`: setup, input, assembly, request, tail).
  */
 export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
-    const state = createJobRunState(job);
+    const state = createJobRunState(job, deps.scriptWorkers.createBudget());
     let setup: RunSetup | null = null;
     try {
         await runSend(job, deps, state, (next) => {
@@ -975,6 +975,7 @@ async function runSpeaker(arg: {
             },
             embeddings: embeddingEnv,
             regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
+            ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
             parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
             userName: () => scope.effectivePersona.name,
             progress: (payload) => {

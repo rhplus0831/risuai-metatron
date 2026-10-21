@@ -34,6 +34,7 @@ import { createLlmRequests } from "./llm/requests.ts";
 import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
+import type { HypaV3SeparatorLimits } from "./prompt/memory/host.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
@@ -82,7 +83,7 @@ import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
-import { createScriptWorkerPool, type ScriptWorkerPoolOptions } from "./scripts/workerPool.ts";
+import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
 import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import type { AppEnv } from "./types.ts";
@@ -105,9 +106,10 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * `generationRunner` runs the generation jobs (tests inject one; the default runs `command` jobs
  * and the sends and previews of prompt assembly), and `generationRandom` is the default runner's
  * random source. `messageSearch` replaces the message search's limits and its yield between batches
- * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, and `generationAbortGraceMs`
- * replace the staged Realm imports' expiry timer, the trigger effect loop's clock, and an aborted job's
- * grace (tests control them; the defaults are the production ones).
+ * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, `generationAbortGraceMs`, and
+ * `generationHypaV3SeparatorLimits` replace the staged Realm imports' expiry timer, the trigger effect
+ * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
+ * defaults are the production ones).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -116,8 +118,11 @@ export function createServerContext(options: {
     trustProxy?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
-    /** The script workers' watchdog and abort graces (tests change them; the defaults are the production ones). */
-    scriptWorkerOptions?: Pick<ScriptWorkerPoolOptions, "watchdogGraceMs" | "abortGraceMs">;
+    /**
+     * The script workers' graces, boot cap, synchronous-call wait, and default allowances, deadline and
+     * budget (tests change them; the defaults are the production ones).
+     */
+    scriptWorkerOptions?: ScriptWorkerTimingOptions;
     maxImportBytes?: number;
     generationRunner?: GenerationRunner;
     /** The default runner's random source (`presetChain`, the group order); default `Math.random`. */
@@ -143,6 +148,8 @@ export function createServerContext(options: {
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default `JOB_ABORT_GRACE_MS`, 5 s). */
     generationAbortGraceMs?: number;
+    /** The default runner's HypaV3 summary separator limits (default 5 s chunking, 1 s per split). */
+    generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -332,6 +339,9 @@ export function createServerContext(options: {
         diagnostics,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
         ...(options.generationEffectClock ? { effectClock: options.generationEffectClock } : {}),
+        ...(options.generationHypaV3SeparatorLimits
+            ? { hypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits }
+            : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
     // The script transform: read-only renders on the runner's services. A restore

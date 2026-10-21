@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
@@ -116,7 +117,7 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir });
+    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -428,6 +429,30 @@ describe("the route", () => {
             ).status,
         ).toBe(400);
     });
+});
+
+describe("the job's Lua budget", () => {
+    it(
+        "is one budget from the pool's createBudget, which every run of the button shares",
+        async () => {
+            const pool = server.context.scriptWorkers;
+            const budgets = vi.spyOn(pool, "createBudget");
+            const runs = vi.spyOn(pool, "runLua");
+            try {
+                const chaId = await seedCharacter({ codes: [button(`return "one"`), button(`return "two"`)] });
+                const { terminal } = await runButton(chaId);
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(budgets).toHaveBeenCalledTimes(1);
+                const budget = budgets.mock.results[0].value;
+                expect(budget.totalMs).toBe(UNHURRIED_SCRIPT_WORKERS.luaBudgetMs);
+                expect(runs.mock.calls.map(([, run]) => run?.budget)).toEqual([budget, budget]);
+            } finally {
+                runs.mockRestore();
+                budgets.mockRestore();
+            }
+        },
+        SLOW,
+    );
 });
 
 describe("the host-function contract through the real worker", () => {

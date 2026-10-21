@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, v
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
 // `server/src/prompt/scripts.ts`, `server/src/jobs/runSetup.ts`) on a real listening server with the
@@ -452,7 +453,12 @@ beforeAll(async () => {
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
     // An aborted job gets a ten-minute grace: no 5 s deadline races the runner's last write.
-    server = createTestServer({ rootDir, generationRandom: () => 0, generationAbortGraceMs: 10 * 60_000 });
+    server = createTestServer({
+        rootDir,
+        generationRandom: () => 0,
+        generationAbortGraceMs: 10 * 60_000,
+        scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+    });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -715,8 +721,16 @@ describe("a send", () => {
                 ],
             });
             mode = { chunks: [" More", " text."], delayMs: 40 };
+            // The job's Lua runs share one budget from the pool's `createBudget` (the test server's size).
+            const runs = vi.spyOn(server.context.scriptWorkers, "runLua");
+            onTestFinished(() => runs.mockRestore());
             const { events, terminal } = await job("continue", chaId);
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            // The regex-script run (`runScripts`, a `runLua` without a budget) is not a Lua run of the job.
+            const budgets = runs.mock.calls.map(([, run]) => run?.budget).filter((budget) => budget !== undefined);
+            expect(budgets.length).toBeGreaterThan(0);
+            expect(new Set(budgets).size).toBe(1);
+            expect(budgets[0].totalMs).toBe(UNHURRIED_SCRIPT_WORKERS.luaBudgetMs);
             expect(
                 events
                     .filter((event) => event.type === "accepted" && event.messageId)

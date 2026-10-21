@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat, Message, loreBook } from "../../../shared/database.ts";
 import {
     activateLore,
@@ -9,7 +9,9 @@ import {
     type LoreActivationInput,
     type LoreHost,
 } from "../../../shared/lore/activation.ts";
+import type { RegexOpResult } from "../scripts/worker.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 /**
  * The shared lore activation (`shared/lore/activation.ts`) under plain Node, with
@@ -671,13 +673,25 @@ describe("scheduling", () => {
 });
 
 describe("with the script worker pool as the regex host", () => {
-    const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1, maxSize: 1 });
+    // Booted once; a regex gets ten minutes unless a test names its own deadline.
+    const pool = createScriptWorkerPool({
+        rootDir: REPO_ROOT,
+        size: 1,
+        maxSize: 1,
+        bootMs: UNHURRIED_SCRIPT_WORKERS.bootMs,
+        regexDeadlineMs: UNHURRIED_SCRIPT_WORKERS.regexDeadlineMs,
+    });
+    beforeAll(() => pool.warm(), 60_000);
     afterAll(() => pool.dispose());
 
-    const host = (deadlineMs?: number) =>
+    /** `deadlineFor`: a pattern's own deadline (none: the pool's). */
+    const host = (deadlineFor: (pattern: string) => number | undefined = () => undefined) =>
         makeHost({
             testRegex: async (pattern, flags, text) => {
-                const answer = await pool.regex({ op: "test", pattern, flags, input: text }, { deadlineMs });
+                const answer = await pool.regex(
+                    { op: "test", pattern, flags, input: text },
+                    { deadlineMs: deadlineFor(pattern) },
+                );
                 if ("error" in answer) {
                     throw new Error(answer.error);
                 }
@@ -690,16 +704,46 @@ describe("with the script worker pool as the regex host", () => {
         expect(sources(result)).toEqual(["slash", "rx"]);
     });
 
-    it("a worker timeout during activation is no match for that entry; the others still activate and the pool recovers", async () => {
-        const redos = "a".repeat(40) + "b";
-        const result = await run(
-            [regex("runaway", "/(a+)+$/"), lore("plain", "b", "p"), regex("sane", "/b$/")],
-            [user(redos)],
-            host(200),
-        );
-        expect(sources(result)).toEqual(["sane", "plain"]);
-        expect(await pool.regex({ op: "test", pattern: "b$", flags: "", input: "ab" })).toEqual({ value: true });
-    }, 15_000);
+    // A real deadline, and a replacement worker's boot: the gate covers a rejected test as no match
+    // with a fake host ("an asynchronous host answers matches and treats a rejection as no match").
+    it(
+        "a worker timeout during activation is no match for that entry; the others still activate and the pool recovers",
+        { tags: ["slow"], timeout: 60_000 },
+        async () => {
+            const redos = "a".repeat(40) + "b";
+            const answers: RegexOpResult[] = [];
+            const recording = makeHost({
+                testRegex: async (pattern, flags, text) => {
+                    const answer = await pool.regex(
+                        { op: "test", pattern, flags, input: text },
+                        { deadlineMs: pattern === "(a+)+$" ? 200 : undefined },
+                    );
+                    answers.push(answer);
+                    if ("error" in answer) {
+                        throw new Error(answer.error);
+                    }
+                    return answer.value as boolean;
+                },
+            });
+            const terminated = pool.stats().terminated;
+            const result = await run(
+                [regex("runaway", "/(a+)+$/"), lore("plain", "b", "p"), regex("sane", "/b$/")],
+                [user(redos)],
+                recording,
+            );
+            expect(sources(result)).toEqual(["sane", "plain"]);
+            // The runaway's deadline killed its worker (once per scan: the recursive scan tests it
+            // again); the sane pattern ran on the replacement.
+            const timeouts = answers.filter((answer) => "error" in answer);
+            expect(answers[0]).toEqual({ error: "Regex timed out", timedOut: true });
+            expect(
+                timeouts.every((answer) => "error" in answer && answer.error === "Regex timed out" && answer.timedOut),
+            ).toEqual(true);
+            expect(answers.filter((answer) => "value" in answer)).toEqual([{ value: true }]);
+            expect(pool.stats().terminated).toBe(terminated + timeouts.length);
+            expect(await pool.regex({ op: "test", pattern: "b$", flags: "", input: "ab" })).toEqual({ value: true });
+        },
+    );
 
     it("an invalid pattern is the worker's error, so no match, without ending the activation", async () => {
         const result = await run([regex("bad", "/(dragon/"), lore("plain", "dragon", "p")], [user("a dragon")], host());
