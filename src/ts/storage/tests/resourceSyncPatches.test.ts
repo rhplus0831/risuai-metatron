@@ -1,6 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // Per `docs/structure/persistence.md` (save loop steps 2, 3, 5, and 9), a held character or
@@ -231,6 +232,8 @@ async function boot(prepare?: (fake: StoreBackedServer) => void) {
         patchModules,
     };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

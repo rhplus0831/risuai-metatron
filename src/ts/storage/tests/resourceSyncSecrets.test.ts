@@ -1,8 +1,9 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SecretPath } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize, serverNormalizer } from "./serverKinds";
 
 // The credential write queue of the save adapter (`resourceSync.svelte.ts` with
@@ -119,6 +120,8 @@ async function boot() {
     fake.requests.length = 0;
     return { fake, client, sync, secrets, bootBatches, settings };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });

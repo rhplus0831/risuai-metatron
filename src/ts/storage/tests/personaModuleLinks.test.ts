@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain, refJ, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
 
 // The persona module links (`RisuPersona.modules`) on the tab, over the real stores
 // (`mutationStoresHarness.ts`: character `c` with chats `k` and `j`): `getModules` adds the links of
@@ -97,6 +97,8 @@ async function boot() {
     const ids = (chatRef?: { chaId: string; chatId: string }) => modules.getModules(chatRef).map((entry) => entry.id);
     return { ...booted, binding, modules, ids, tabPersonaId, minaId };
 }
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

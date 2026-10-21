@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The pickers' action (`chatBindingPick.ts` `pickBinding`), the picker highlight (`pickedId`), and
@@ -146,6 +147,11 @@ async function boot() {
     };
     return { server, chat, binding, pick, records, selectionModule, probes, flushSync, selected, entryIds, open };
 }
+
+beforeAll(
+    () => warmMutationGraph(() => Promise.all([import("../chatBindingPick"), import("./reactiveProbe.svelte")])),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,6 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // A character removed and added again under the same id before the save cycle runs (a plugin's
@@ -125,9 +126,12 @@ async function boot(fake?: StoreBackedServer) {
     return { fake, sync, chat, characterStore, stored, sentGroups };
 }
 
+beforeAll(() => warmMutationGraph(), 60_000);
+
 beforeEach(() => {
     localStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    // `Date` too: the job-retry block and the save timer compare `Date.now()` with their deadlines.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});

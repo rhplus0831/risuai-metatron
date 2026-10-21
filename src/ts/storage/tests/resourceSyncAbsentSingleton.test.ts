@@ -1,6 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // A tab that booted while the server had no `pluginStorage/main` record (the one mirrored singleton
@@ -87,6 +88,8 @@ async function boot({ live = true } = {}) {
     const reads = () => fake.requests.filter((request) => request.path === "/api/resources/read").length;
     return { fake, sync, storage, reads };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

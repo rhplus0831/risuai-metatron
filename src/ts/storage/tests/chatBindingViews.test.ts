@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 
@@ -192,6 +193,8 @@ async function boot() {
 /** `seen` without consecutive repeats (an effect re-runs on a dependency change, also to the same value). */
 const distinct = <T>(seen: T[]) =>
     seen.filter((value, index) => index === 0 || JSON.stringify(value) !== JSON.stringify(seen[index - 1]));
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

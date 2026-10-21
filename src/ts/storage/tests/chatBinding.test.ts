@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The client side of a chat's binding (`src/ts/storage/chatBinding.svelte.ts`) over the chat module
@@ -163,6 +164,8 @@ async function boot() {
     };
     return { server, chat, binding, records, probes, flushSync, take, commit, summaryOf, remoteMeta };
 }
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,7 +1,8 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The save adapter (`resourceSync.svelte.ts`) against an in-memory stand-in for the resource routes.
@@ -113,6 +114,8 @@ async function boot(
     fake.requests.length = 0;
     return { fake, client, sync, bootBatches, settings, characterList, characterStore, selection };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     // The adapter's debounce and backoff timers; cleared after each test so an earlier test's

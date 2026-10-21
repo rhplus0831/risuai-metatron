@@ -1,8 +1,9 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // A conflicting character or `statics` record whose server copy changed only in ways this client
@@ -115,8 +116,11 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     return { fake, sync, settings, characters, mirror, remote, changed };
 }
 
+beforeAll(() => warmMutationGraph(), 60_000);
+
 beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    // `Date` too: the save backoff compares `Date.now()` with its deadline.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     // The chat-change notices (started by `startResourceSync`) stay closed in these tests.
     vi.stubGlobal("BroadcastChannel", undefined);

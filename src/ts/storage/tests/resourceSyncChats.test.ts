@@ -1,6 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
@@ -125,6 +126,8 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     const mirrorIds = () => chat.chatList("c").map((entry) => entry.id);
     return { fake, client, sync, chat, bootBatches, settings, characters, selection, mirrorIds };
 }
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,8 +1,9 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../../shared/database.ts";
 import type { GenerationEvent } from "../../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // A server generation job's events mirrored on the client without any outgoing write
@@ -288,6 +289,11 @@ async function boot() {
         unloadWarning,
     };
 }
+
+beforeAll(
+    () => warmMutationGraph(() => Promise.all([import("./reactiveProbe.svelte"), import("../../network/jobChannel")])),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

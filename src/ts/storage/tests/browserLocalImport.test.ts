@@ -1,7 +1,8 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type InlayResource, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The boot-time move of browser-local data to the server (`importBrowserLocalData`): write, verify,
@@ -165,6 +166,8 @@ async function boot() {
     await sync.flushResources();
     fake.requests.length = 0;
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });

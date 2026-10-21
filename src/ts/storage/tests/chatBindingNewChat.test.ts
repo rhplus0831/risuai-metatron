@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // How a new chat starts (`initialChatBinding`) and how an imported chat is prepared
@@ -172,6 +173,8 @@ async function boot() {
     };
     return { server, chat, binding, records, views, selection, probes, flushSync, reads, commit, summaryOf, newChat };
 }
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

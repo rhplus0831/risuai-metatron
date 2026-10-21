@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, m, plain, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, m, plain, refK, warmMutationGraph } from "./mutationStoresHarness";
 
 // The character mutation module (`characterStore.svelte.ts`) and the relocated `checkCharOrder`
 // (`characterOrder.ts`) against the real server store: a refusal throws and changes nothing (mirror
@@ -42,6 +42,8 @@ async function boot() {
         server.current = fake;
     });
 }
+
+beforeAll(() => warmMutationGraph(() => vi.importActual("../../globalApi.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

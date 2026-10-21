@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, refJ, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
 
 // The readers that take a chat ref read that chat's display ids (its bound records, else the tab's
 // selection), never the selected chat's binding, over the real stores (`mutationStoresHarness.ts`:
@@ -83,6 +83,8 @@ async function boot() {
     const util = await import("../../util");
     return { ...booted, binding, util, p1, p2, tabPersonaId, minaId };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

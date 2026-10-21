@@ -1,6 +1,6 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KINDS, bootMutations, m, plain, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { KINDS, bootMutations, m, plain, refK, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The character records under the real boot (`installBootRecords`), the real save loop, and the
@@ -57,6 +57,8 @@ async function boot() {
     const records = await import("../records.svelte");
     return { ...booted, records };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

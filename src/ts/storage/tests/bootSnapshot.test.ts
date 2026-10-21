@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
     MODEL_PRESET_FIELDS,
     MODEL_PROFILE_FIELDS,
@@ -17,6 +17,7 @@ import {
     SECTION_FIELDS,
     SELECTION_KEYS,
 } from "../../../../shared/sections.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The boot-snapshot comparison rule, kept as a test. `fixtures/boot/boot-snapshot.json` is the
@@ -131,6 +132,8 @@ async function bootFresh() {
         close: () => server.current.close(),
     };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 describe("the boot snapshot of a fresh store against the fresh-boot fixture", () => {
     it("differs only in ids and the id selections", async () => {

@@ -158,18 +158,27 @@ export class StoreBackedServer {
      * handed to `onFeed` (the test's stand-in for the live-update socket).
      */
     static async create(options: { lock?: boolean; feed?: boolean } = {}): Promise<StoreBackedServer> {
-        const [storeModule, kindsModule, lockModule, feedModule] = (await Promise.all([
-            import(/* @vite-ignore */ `${SERVER_DATA}resourceStore.ts`),
-            import(/* @vite-ignore */ `${SERVER_DATA}kinds.ts`),
-            options.lock ? import(/* @vite-ignore */ `${SERVER_JOBS}generationLock.ts`) : null,
-            options.feed ? import(/* @vite-ignore */ `${SERVER_DATA}changeFeed.ts`) : null,
-        ])) as [StoreModule, KindsModule, LockModule | null, FeedModule | null];
+        const [storeModule, kindsModule, lockModule, feedModule] = await StoreBackedServer.loadModules(options);
         return new StoreBackedServer(
             storeModule,
             kindsModule,
             lockModule?.createGenerationLock() ?? null,
             feedModule?.createChangeFeed() ?? null,
         );
+    }
+
+    /** Loads every server module `create` can import (both options on) without building a store. */
+    static async preload(): Promise<void> {
+        await StoreBackedServer.loadModules({ lock: true, feed: true });
+    }
+
+    private static async loadModules(options: { lock?: boolean; feed?: boolean }) {
+        return (await Promise.all([
+            import(/* @vite-ignore */ `${SERVER_DATA}resourceStore.ts`),
+            import(/* @vite-ignore */ `${SERVER_DATA}kinds.ts`),
+            options.lock ? import(/* @vite-ignore */ `${SERVER_JOBS}generationLock.ts`) : null,
+            options.feed ? import(/* @vite-ignore */ `${SERVER_DATA}changeFeed.ts`) : null,
+        ])) as [StoreModule, KindsModule, LockModule | null, FeedModule | null];
     }
 
     readonly kinds: ReadonlyMap<string, unknown>;
