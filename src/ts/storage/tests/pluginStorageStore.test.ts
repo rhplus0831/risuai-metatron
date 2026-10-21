@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
 
 // The `pluginStorage` mutations (`pluginStorageStore.svelte.ts`) against the real server store.
 // Every function is sent (there is no `pluginCustomStorage` watcher; `v3SavedWrites.test.ts` has
@@ -43,6 +43,8 @@ async function boot() {
         server.current = fake;
     });
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

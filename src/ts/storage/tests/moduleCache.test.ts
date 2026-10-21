@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, refJ, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -94,6 +94,17 @@ async function boot() {
         ids: () => modules.getModules().map((entry) => entry.id),
     };
 }
+
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([
+                import("./reactiveProbe.svelte"),
+                import("../../../lib/Setting/Pages/Module/ModuleChatMenu.svelte"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

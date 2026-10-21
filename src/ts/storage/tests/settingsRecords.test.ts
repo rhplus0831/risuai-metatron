@@ -1,7 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { bootMutations, plain } from "./mutationStoresHarness";
+import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The settings records under the real boot (`installBootRecords`), the real save loop, and the real
@@ -86,6 +86,8 @@ async function bootWithoutPluginStorage() {
     await sync.flushResources();
     return { fake, sync, records, snapshots, pluginStorageStore, settings: settingsViews.settings };
 }
+
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

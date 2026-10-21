@@ -1,8 +1,9 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The save loop's character field-text cache (`characterProjection`, `characterTexts`, and
@@ -67,10 +68,11 @@ const character = (chaId: string, name: string, extra: Record<string, unknown> =
 /** A large array field: `count` entries of about 60 UTF-16 units each. */
 const big = (count: number) => Array.from({ length: count }, (_, i) => ({ i, text: `entry ${i} ${"x".repeat(40)}` }));
 
-// Every case boots the client/store/bootstrap graph after `vi.resetModules()` and flushes the
-// real save loop inside its timed body: about 1 s alone, over 30 s for the first case on one CPU
-// shared with eight busy processes and two other test workers. Vitest's default 5 s runner
-// timeout is a load gauge here, not a check; this one only catches a hang.
+// Every case re-evaluates the client/store/bootstrap graph after `vi.resetModules()` (the
+// `beforeAll` below loads it once, outside the cases) and flushes the real save loop over its
+// fixture inside its timed body: up to about 1 s alone, many times that on one CPU shared with
+// busy processes. Vitest's default 5 s runner timeout would be a load gauge here, not a check;
+// this one only catches a hang.
 const INTEGRATION_TIMEOUT = 60_000;
 
 async function boot(prepare: (fake: FakeResourceServer) => void = () => {}) {
@@ -125,6 +127,8 @@ async function boot(prepare: (fake: FakeResourceServer) => void = () => {}) {
     };
     return { fake, sync, records, characterStore, c, rawOf, flush, ops, reports, serialized, agree };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });

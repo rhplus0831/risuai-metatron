@@ -1,7 +1,8 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../../shared/chats.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // Real store commits reach the real save adapter synchronously, as the live feed does.
@@ -147,6 +148,8 @@ async function boot(options: { summaries?: boolean } = {}) {
 
     return { fake, sync, client, chat: chatModule, live, flushFeed };
 }
+beforeAll(() => warmMutationGraph(), 60_000);
+
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();

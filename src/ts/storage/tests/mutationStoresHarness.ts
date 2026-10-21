@@ -1,5 +1,5 @@
 import { tick } from "svelte";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
@@ -20,6 +20,37 @@ export const refK = { chaId: "c", chatId: "k" };
 export const refJ = { chaId: "c", chatId: "j" };
 /** A plain copy of a mirror value (a Svelte proxy answers `Object.hasOwn` for an own `__proto__` differently). */
 export const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+/**
+ * Loads the module graph the storage tests boot, once: the modules `bootMutations` imports and the
+ * server modules behind `StoreBackedServer` and `serverKinds.ts`. A test file calls it in a
+ * `beforeAll` with a 60 s hook timeout (under its own mocks), so the cold transform is paid outside
+ * every timed test. Each test still calls `vi.resetModules()` and evaluates fresh modules; the
+ * instance loaded here is left behind as each test's own is for the next one. `also` loads the
+ * file's further modules (the caller passes the imports, whose paths are relative to it). The
+ * mock calls made while loading are cleared.
+ */
+export async function warmMutationGraph(also?: () => Promise<unknown>) {
+    await Promise.all([
+        StoreBackedServer.preload(),
+        import("../../stores.svelte"),
+        import("../resourceClient"),
+        import("../resourceSync.svelte"),
+        import("../chatStore.svelte"),
+        import("../../bootstrap"),
+        import("../settingsViews.svelte"),
+        import("../snapshots.svelte"),
+        import("../characterStore.svelte"),
+        import("../collectionStore.svelte"),
+        import("../pluginStorageStore.svelte"),
+        import("../characterOrder"),
+        import("../selection.svelte"),
+        import("../mutationValidation"),
+    ]);
+    await also?.();
+    await tick();
+    vi.clearAllMocks();
+}
 
 export async function bootMutations(install: (server: StoreBackedServer) => void) {
     const fake = await StoreBackedServer.create();

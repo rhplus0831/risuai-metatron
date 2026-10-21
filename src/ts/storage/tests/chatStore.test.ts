@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The chat mutation module (`chatStore.svelte.ts`) on a fresh module graph per test, against the real
@@ -167,6 +168,8 @@ async function boot(server?: StoreBackedServer) {
         open,
     };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,5 +1,5 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { maskLlmSecrets, type SecretPath } from "../../../../shared/llmSecrets.ts";
 import { newPersonaId } from "../../../../shared/presets.ts";
@@ -7,6 +7,7 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { COLLECTION_KIND, PERSONA_ROOT_KEYS, SECTION_FIELDS, SECTION_KIND } from "../../../../shared/sections.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize, serverNormalizer } from "./serverKinds";
 import { StoreBackedServer } from "./storeBackedServer";
 
@@ -249,6 +250,8 @@ const customRecords: Record<string, unknown> = {
         { name: "Q" },
     ],
 };
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });

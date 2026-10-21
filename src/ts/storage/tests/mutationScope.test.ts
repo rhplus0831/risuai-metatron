@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, refK } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, refK, warmMutationGraph } from "./mutationStoresHarness";
 
 // `beginMutationScope` and `flushResources({ scope })` (`resourceSync.svelte.ts`). The scope is a
 // time window: the flush reports every key a conflict discarded since the scope began, whether the
@@ -43,6 +43,8 @@ async function boot() {
         server.current = fake;
     });
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

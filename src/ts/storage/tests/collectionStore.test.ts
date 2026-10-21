@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain } from "./mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
 
 // The settings, persona, module, plugin, order, OAuth, and preset mutations
 // (`collectionStore.svelte.ts`) against the real server store. Every refusal is checked to throw
@@ -45,6 +45,8 @@ async function boot() {
     const presets = await import("../presets.svelte");
     return { ...booted, presets };
 }
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

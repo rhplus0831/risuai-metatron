@@ -1,8 +1,9 @@
 import { tick } from "svelte";
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // Another writer's commit reaches this tab as a change set from the server's live-update feed
@@ -150,6 +151,8 @@ async function boot() {
         });
     return { fake, sync, chat, transport, character, mirrorChat, notify };
 }
+
+beforeAll(() => warmMutationGraph(() => import("../../network/jobChannel")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,6 +1,7 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // The save adapter and the chat module booted from summaries, as `loadData` boots them (`readKinds`
@@ -185,6 +186,8 @@ async function boot() {
         remoteMeta,
     };
 }
+
+beforeAll(() => warmMutationGraph(() => import("../exportAsDataset")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

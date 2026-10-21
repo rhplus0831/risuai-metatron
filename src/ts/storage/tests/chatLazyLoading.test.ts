@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The chat module booted from summaries, against the real server store in memory, with the save loop
@@ -241,6 +242,8 @@ async function boot(initialMeta: Record<string, unknown> = {}) {
         runTrim,
     };
 }
+
+beforeAll(() => warmMutationGraph(() => vi.importActual("../../globalApi.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,7 +1,8 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The save adapter's diagnostics over a stubbed collector. A 409 records one `sync conflict` with
@@ -87,6 +88,8 @@ async function boot() {
 }
 
 const events = () => diagnostics.calls.filter((call) => typeof call === "object");
+
+beforeAll(() => warmMutationGraph(), 60_000);
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
