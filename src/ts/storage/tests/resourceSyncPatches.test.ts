@@ -317,7 +317,7 @@ describe("what a save sends", () => {
         agree("characters", "c");
         expect(sync.heldRecordRevision("characters", "c")).toBe(revision("characters", "c"));
         noNotice();
-    }, 20_000);
+    });
     it("sends a modules edit as an item patch: a renamed module as its changed fields, a new one whole, the order when it changed, an empty order to clear; a large module stays home", async () => {
         const { fake, collectionStore, settings, record, revision, ops, agree, settle, noNotice, published } =
             await boot();
@@ -403,7 +403,7 @@ describe("what a save sends", () => {
         expect(record("modules")).toEqual([]);
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
     it("sends the whole record instead when the patch is not smaller in UTF-8 bytes, or when key order alone differs sends nothing", async () => {
         const { fake, sync, characterStore, character, record, revision, ops, agree, settle, noNotice } = await boot();
         // A field named with 400 Hangul syllables: 400 UTF-16 units, 1,200 UTF-8 bytes.
@@ -459,7 +459,7 @@ describe("what a save sends", () => {
         ]);
         agree("characters", "c");
         noNotice();
-    }, 20_000);
+    });
     it("adopts a modules key-order change without a write, and applies another tab's patch on the adopted revision without a read", async () => {
         const {
             fake,
@@ -491,7 +491,7 @@ describe("what a save sends", () => {
         expect(record("modules")[1]).toEqual({ id: "m2", name: "Remote" });
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
     it("sends the whole record for a create, a changed top-level __proto__ of a character, a module list without unique ids, and a module whose __proto__ changed", async () => {
         const { fake, characterStore, collectionStore, settings, record, revision, ops, agree, settle, noNotice } =
             await boot();
@@ -568,7 +568,7 @@ describe("what a save sends", () => {
         expect(record("modules")[1]).toEqual(module("b", { n: 1 }));
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
     it("serializes a value with a toJSON hook as the whole record always did (the hook gets its field name or index), by sending the record whole", async () => {
         const { fake, records, character, settings, record, ops, settle, noNotice } = await boot();
         const hook = (expected: string) => ({
@@ -637,7 +637,7 @@ describe("what a save sends", () => {
         ]);
         expect(sent).not.toHaveProperty("patch");
         noNotice();
-    }, 20_000);
+    });
     it("saves integer keys where the record has them (a top-level one first, a nested one where the proxy holds it) and agrees with the server by value, with no echo", async () => {
         const { characterStore, character, record, ops, agree, settle, noNotice } = await boot();
         characterStore.updateCharacter("c", { deep: { a: 1 } });
@@ -657,7 +657,7 @@ describe("what a save sends", () => {
         expect(Object.keys(plain(character("c")))[0]).toBe("2");
         agree("characters", "c");
         noNotice();
-    }, 20_000);
+    });
 });
 
 describe("lost acknowledgements", () => {
@@ -688,7 +688,7 @@ describe("lost acknowledgements", () => {
         await sync.flushResources();
         await vi.advanceTimersByTimeAsync(2000);
         expect(fake.batchCount()).toBe(2);
-    }, 20_000);
+    });
     it("keeps a local edit made while the answer was lost: the retry merges it without a discard and saves it", async () => {
         const { fake, sync, character, record, revision, agree, noNotice } = await boot();
         const element = character("c");
@@ -705,7 +705,7 @@ describe("lost acknowledgements", () => {
         expect(sync.heldRecordRevision("characters", "c")).toBe(revision("characters", "c"));
         agree("characters", "c");
         noNotice();
-    }, 20_000);
+    });
     it("recognizes a lost acknowledgement of a modules item patch on the retry, with a module's keys in another order", async () => {
         const { fake, sync, live, collectionStore, settings, record, revision, ops, agree, noNotice } = await boot();
         // No feed echo: it would settle the lost write before the retry (the 409 path is tested here).
@@ -732,7 +732,7 @@ describe("lost acknowledgements", () => {
         await sync.flushResources();
         await vi.advanceTimersByTimeAsync(2000);
         expect(fake.batchCount()).toBe(2);
-    }, 20_000);
+    });
     it("takes the feed echo of a lost write as the saved base: more typing goes as one patch on its revision, no 409, no notice", async () => {
         const { fake, sync, character, record, revision, ops, reads, agree, noNotice } = await boot();
         const element = character("c");
@@ -759,7 +759,7 @@ describe("lost acknowledgements", () => {
         noNotice();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(2);
-    }, 20_000);
+    });
     it("sends a revert after a lost answer whose echo arrived: the saved value goes back on the echo's revision", async () => {
         const { fake, sync, character, record, revision, ops, agree, noNotice } = await boot();
         const element = character("c");
@@ -777,7 +777,7 @@ describe("lost acknowledgements", () => {
         expect(record("characters", "c").name).toBe(saved);
         agree("characters", "c");
         noNotice();
-    }, 20_000);
+    });
     it("does not apply the echo of a lost write over a revert made before it arrived", async () => {
         const { fake, sync, live, flushFeed, character, record, agree, noNotice } = await boot();
         const element = character("c");
@@ -796,7 +796,7 @@ describe("lost acknowledgements", () => {
         expect(record("characters", "c").name).toBe(saved);
         agree("characters", "c");
         noNotice();
-    }, 20_000);
+    });
 });
 
 describe("modules item patches another tab committed", () => {
@@ -838,7 +838,7 @@ describe("modules item patches another tab committed", () => {
         expect(record("modules")[0]).toEqual({ id: "m4", name: "written through the retained wrapper" });
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
     it("reads the record whole for a patch it cannot take: a base it does not hold, a malformed patch, an unknown or omitted item, a field form on modules, an item form on a character, a patch over 64 KiB", async () => {
         // Small modules: the size that matters is the 70,000-byte patch below; projecting the boot's large
         // asset list on every read only costs time.
@@ -917,7 +917,7 @@ describe("modules item patches another tab committed", () => {
         expect(sync.heldRecordRevision("modules", "main")).toBe(revision("modules"));
         expect(fake.batchCount()).toBe(0);
         noNotice();
-    }, 20_000);
+    });
     it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts)", async () => {
         const { fake, sync, settings, changed, record, reads, patchModules, agree } = await boot();
         settings.modules[2].name = "mine";
@@ -936,7 +936,7 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(1);
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
-    }, 20_000);
+    });
     // `mergeItemAdds` (persistence.md Save step 5): an item this tab added goes over another tab's
     // list; the feed patch still waits behind the unsent add, and the conflict's recovery rebuilds the
     // server's record from it and merges.
@@ -1005,7 +1005,7 @@ describe("modules item patches another tab committed", () => {
         agree("modules");
         expect(reads()).toBe(0);
         noNotice();
-    }, 20_000);
+    });
     it("merges the same add after an HTTP read when the matching patch is not available (live delivery paused)", async () => {
         const {
             fake,
@@ -1046,7 +1046,7 @@ describe("modules item patches another tab committed", () => {
         expect(reads()).toBe(1);
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
     it("drops the echo of this tab's own modules patch before its acknowledgement, and holds another tab's patch that lands during the save until after it, without a read", async () => {
         const { fake, sync, settings, intercept, patchModules, reads, settle, agree, revision, noNotice } =
             await boot();
@@ -1083,7 +1083,7 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(1);
         agree("modules");
         noNotice();
-    }, 20_000);
+    });
 });
 
 // General record patches. Expectations describe the wire contract, not a diff helper.

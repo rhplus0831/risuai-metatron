@@ -4,9 +4,10 @@ Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), t
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
 `ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`),
 then the 9a and 9b sweeps (merged at `05aa74159`). The 6a follow-up on `lastEffectYieldAt` landed
-in `e3ba64355`. Close-out 10 is in progress: its whole-suite runs failed on load alone, and the
-user decided on 2026-10-22 to treat the gate's timeout as a hang guard (D5). Next: slice 10's
-timeout change and the three races it found. Source: the
+in `e3ba64355`. Close-out 10: its whole-suite runs failed on load alone, and the user decided on
+2026-10-22 to treat the gate's timeout as a hang guard (D5); its timeout change, slow-test report
+and race fixes landed on 2026-10-22 (see Slice 10). Next: mark the inventory complete and archive
+this plan. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -350,6 +351,30 @@ starting, list the remaining rows from the inventory (rows without a `fixed in` 
 disposition is not `keep-*`) and split further if the list is long.
 
 ## Slice 10. Close-out (_small_, `build-test-platforms.md`)
+
+Landed 2026-10-22 (this commit; the inventory and archive steps below are left to the merge):
+
+- `vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s and `slowTestThreshold` to 1 s.
+  51 explicit budgets below 60 s on gated tests went (50 tests, one hook: `requestCapture`,
+  `regexScriptsTask`, `triggerRuntime`, `lorebook.svelte`, `chatToggles`, `resourceSyncPatches`,
+  `resourceSyncModuleCache`, `resourceSyncLive`, `resourceSyncFieldCache`, `resourceSyncChats`),
+  with `resourceSyncFieldCache`'s 60 s `INTEGRATION_TIMEOUT`, whose reason was the 5 s default.
+  None was part of an assertion. Slow-tier timeouts, gated values of exactly 60 s and non-Vitest
+  timeouts stay.
+- The agent-test reporter lists the passed tests over `slowTestThreshold` (ten slowest and a
+  count) as a warning before the summary line; the exit code is unchanged.
+- The three races, causes confirmed in the code: `resourceSyncHydration` waited on real animation
+  frames (now `handRunFrames`, which the 9b neighbour uses too); `pluginContext`'s prompt polls
+  had `vi.waitFor`'s own real 1 s deadline (now `heldPrompts` deferreds, both prompt tests); the
+  `exportBatches` json failure was a cascade of the charx case's 5 s timeout, whose abandoned body
+  sent its last POST to the json case's fake. Each rewritten test was mutation-checked, and the
+  hydration and export cases gained the check their titles claimed (a late `accepted` of the
+  retired generation; the next POST pending at a batch's first use).
+- Verification on the final tree: the gated suite alone (6113 passed, 52 skipped, 54 s); the
+  whole gated suite under the overload, three runs at once on CPUs 23/22/21 (all passed, about
+  31 min each); four unpinned whole suites at once (all passed, about 187 s each). Nothing failed,
+  so no new row. The slowest test under the overload, `importRealm` "refuses a card or asset chunk
+  over MAX_PNG_TEXT_CHUNK_BYTES..." (2-4 s alone), took 26-27 s, under half the guard.
 
 First runs, 2026-10-22, at `a7bcb103b`:
 

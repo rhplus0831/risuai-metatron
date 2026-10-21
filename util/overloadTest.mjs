@@ -6,8 +6,10 @@
 // busy-loop burners to it, and runs `util/agentTest.mjs --force <args> --maxWorkers=3` pinned to the
 // same CPU, `--runs` times (default 3). The test run gets about 1/9 of a CPU with deschedules of
 // seconds, which is what a test that depends on real time fails under (`STRUCTURE.md` V3). No
-// `--testTimeout` is passed unless given: a raised outer timeout hides a cold module graph or an
-// oversized fixture inside the default 5 s. With no files the whole gated suite runs. Exits 1 when
+// `--testTimeout` is passed unless given: the gate's own timeout (`vitest.config.ts`) is a hang
+// guard, not a budget, so slowness alone does not fail a run here; the load exposes tests that
+// depend on real time or the scheduler (investigate each failure). With no files the whole gated
+// suite runs. Exits 1 when
 // any run fails and names the failed runs, 2 on a usage error or when the overload itself broke (a
 // burner that could not start or exited during a run). Linux only (`taskset`).
 //

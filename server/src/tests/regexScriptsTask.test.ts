@@ -82,7 +82,7 @@ describe("the regex scripts task", () => {
             { kind: "emotion", name: "happy" },
             { kind: "inject", text: "x b c" },
         ]);
-    }, 30_000);
+    });
 
     it("ends the task as aborted when a host effect aborts the run, with no later host call", async () => {
         const controller = new AbortController();
@@ -103,7 +103,7 @@ describe("the regex scripts task", () => {
         expect(result).toEqual({ error: "request aborted", aborted: true });
         expect(effects).toEqual([{ kind: "inject", text: "ab" }]);
         expect(calls).toEqual(["effect:inject"]);
-    }, 30_000);
+    });
 
     it("fails the task for a CBS argument over the cap and dispatches no host call after it, not even a later effect", async () => {
         const { host, calls, effects } = recordingHost();
@@ -159,5 +159,5 @@ describe("the regex scripts task", () => {
             data: "bye",
         });
         expect(await pool.regex({ op: "test", pattern: "b$", flags: "", input: "ab" })).toEqual({ value: true });
-    }, 30_000);
+    });
 });

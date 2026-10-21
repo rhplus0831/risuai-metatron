@@ -107,7 +107,7 @@ beforeEach(async () => {
     localStorage.clear();
     sessionStorage.clear();
     fixture = await boot();
-}, 20_000);
+});
 afterEach(() => {
     vi.restoreAllMocks();
     for (const server of servers.splice(0)) server.close();

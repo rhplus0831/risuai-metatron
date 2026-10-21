@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // `pnpm test:agent [--force] [--verbose] [--all] [vitest args]`: `pnpm test` for agents.
 //
-// Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with `util/agentTestReporter.ts` (failures and one summary
-// line only, on stdout) and caches the output under `node_modules/.cache/agent-test/` keyed by the
+// Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with
+// `util/agentTestReporter.ts` (failures, a warning listing the slowest passed tests, and one summary
+// line, on stdout) and caches the output under `node_modules/.cache/agent-test/` keyed by the
 // working tree. Everything the run writes to stderr (Node warnings, worker-thread traces from
 // passing tests) is held back: a passing run reports only its line count, a failing run prints the
 // last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key is `git write-tree` over a temporary index with every change staged (untracked

@@ -67,6 +67,23 @@ const earlierIncarnation = (token: string) => {
 };
 
 /**
+ * Stubs `requestAnimationFrame` for the test; the returned function runs the frames asked for,
+ * including the ones they ask for, until none is left.
+ */
+function handRunFrames() {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    return () => {
+        // A frame that always asks for another would loop forever, and the test's timeout cannot
+        // stop a synchronous loop.
+        for (let ran = 0; frames.length > 0; ran++) {
+            if (ran === 100) throw new Error("the frames keep asking for another frame");
+            frames.shift()!(0);
+        }
+    };
+}
+
+/**
  * Boots the adapter, the chat module, and the transport the way `loadData` does: the server holds
  * the collections and a character `c` with chats `k` (messages a, b, c) and `j` (empty), guarded by
  * the generation lock; read with chats, seed, install the records (`installBootRecords`), select
@@ -580,6 +597,9 @@ describe("a job's reply in the mirror", () => {
     });
 
     it("releases a reply finalized while the job continues, scopes releases to the job, retires a replaced generation, and orders job metadata across revisions", async () => {
+        // The stream's frames run by hand: a chunk after the first in a frame waits for it, and a
+        // frame that showed held text asks for another before the next chunk shows at once.
+        const runFrames = handRunFrames();
         const { fake, chat, text, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
         // Job A owns a (g1) and b (g2); job B owns c (g3).
         apply("A", accepted("A", "g1", "a"));
@@ -613,7 +633,13 @@ describe("a job's reply in the mirror", () => {
         apply("A", accepted("A", "g4", "b", 0));
         apply("A", chunk("g2", 5, "OLD GENERATION", "b"));
         apply("A", chunk("g4", 1, "NEW GENERATION", "b"));
-        await vi.waitFor(() => expect(text("b")).toBe("NEW GENERATION"));
+        runFrames();
+        expect(text("b")).toBe("NEW GENERATION");
+        expect(locked("b")).toBe(true);
+        // A late `accepted` of the retired g2 (a chunk is also refused by its base; an `accepted`
+        // only by the retirement) neither shows its text nor takes b back from g4.
+        apply("A", accepted("A", "g2", "b", 6, "OLD GENERATION AGAIN"));
+        expect(text("b")).toBe("NEW GENERATION");
         expect(locked("b")).toBe(true);
         // Metadata ordering while the chat is busy (a local edit pends): a revision-12 copy still
         // listing b is consumed; a delayed revision-11 copy with an empty list changes nothing.
@@ -1529,11 +1555,7 @@ describe("a job's chat patch", () => {
 
     it("installs the job's generated row under the streamed text at a new and at an equal revision, honours the claim as a watermark, and releases the reply at the terminal patch", async () => {
         // The stream's frames run by hand: a chunk after the first in a frame waits for it.
-        const frames: FrameRequestCallback[] = [];
-        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
-        const runFrames = () => {
-            while (frames.length > 0) frames.shift()!(0);
-        };
+        const runFrames = handRunFrames();
         const { fake, sync, text, locked, apply, chunk, accepted, patchEvent, row, serverWrite } = await boot();
         apply("J", accepted("J", "g1"));
         apply("J", chunk("g1", 1, "RAW ONE"));

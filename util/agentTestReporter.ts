@@ -1,5 +1,6 @@
 // Vitest reporter for agents: prints nothing while tests run, then only the failures (test name,
-// error message, diff, in-repo stack frames, that test's console output) and one summary line.
+// error message, diff, in-repo stack frames, that test's console output), a warning listing the
+// passed tests slower than `slowTestThreshold` (it never changes the exit code), and one summary line.
 // Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/build-test-platforms.md`.
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
@@ -23,6 +24,7 @@ const MAX_DIFF_LINES = 60;
 const MAX_VALUE_LINES = 12;
 const MAX_LOG_LINES = 40;
 const MAX_CAUSE_DEPTH = 3;
+const MAX_SLOW_TESTS = 10;
 
 const ANSI = /\u001b\[[0-9;]*m/g;
 const toText = (value: unknown): string =>
@@ -37,12 +39,14 @@ const capLines = (text: unknown, max: number): string[] => {
 
 export default class AgentTestReporter implements Reporter {
     private root = process.cwd();
+    private slowTestThreshold = 1000;
     private startedAt = Date.now();
     private logs = new Map<string, UserConsoleLog[]>();
     private logLines = new Map<string, number>();
 
     onInit(vitest: Vitest): void {
         this.root = vitest.config.root;
+        this.slowTestThreshold = vitest.config.slowTestThreshold;
     }
 
     onTestRunStart(): void {
@@ -73,6 +77,7 @@ export default class AgentTestReporter implements Reporter {
         let pending = 0;
         let moduleErrors = 0;
         const failedFiles = new Set<string>();
+        const slow: { duration: number; name: string }[] = [];
 
         for (const module of modules) {
             const file = this.relative(module.moduleId);
@@ -97,6 +102,8 @@ export default class AgentTestReporter implements Reporter {
                     this.printFailure(`FAIL ${file} > ${test.fullName}`, result.errors, test.id);
                 } else if (result.state === "passed") {
                     passed += 1;
+                    const duration = test.diagnostic()?.duration ?? 0;
+                    if (duration > this.slowTestThreshold) slow.push({ duration, name: `${file} > ${test.fullName}` });
                 } else if (result.state === "skipped") {
                     skipped += 1;
                 } else {
@@ -107,6 +114,7 @@ export default class AgentTestReporter implements Reporter {
         for (const error of unhandledErrors) {
             this.printFailure("UNHANDLED ERROR", [error]);
         }
+        this.printSlow(slow);
 
         const seconds = ((Date.now() - this.startedAt) / 1000).toFixed(1);
         const files = `${modules.length} files`;
@@ -126,6 +134,21 @@ export default class AgentTestReporter implements Reporter {
         } else {
             this.write(`FAIL ${parts.join(", ")} (${failedFiles.size} of ${files} failed, ${seconds}s)`);
         }
+    }
+
+    // A warning only: the gate's timeout is a hang guard (`STRUCTURE.md` V3), and a duration measured
+    // beside parallel workers or other load says little about the test alone.
+    private printSlow(slow: { duration: number; name: string }[]): void {
+        if (slow.length === 0) return;
+        slow.sort((a, b) => b.duration - a.duration);
+        const seconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+        this.write(
+            `SLOW ${slow.length} passed ${slow.length === 1 ? "test" : "tests"} took over ${seconds(this.slowTestThreshold)} in this run ` +
+                "(a warning, not a failure; durations under load or beside parallel workers are inflated):",
+        );
+        for (const { duration, name } of slow.slice(0, MAX_SLOW_TESTS)) this.write(`  ${seconds(duration)} ${name}`);
+        if (slow.length > MAX_SLOW_TESTS) this.write(`  ... and ${slow.length - MAX_SLOW_TESTS} more`);
+        this.write("");
     }
 
     private printFailure(header: string, errors: ReadonlyArray<ErrorLike>, taskId?: string): void {

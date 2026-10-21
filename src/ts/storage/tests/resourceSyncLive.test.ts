@@ -998,9 +998,7 @@ describe("work that waits", () => {
         for (const release of releases) {
             release();
         }
-        // The cap needs the 1,001 chats inserted, loaded, and refreshed: about half a second of CPU
-        // alone, over the default timeout at a ninth of a CPU.
-    }, 20_000);
+    });
 });
 
 describe("the reconcile after a `hello`", () => {
