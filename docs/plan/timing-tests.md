@@ -2,7 +2,8 @@
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`), then 5b and 6b (merged at `444cd6107`). Next: 7a, 7b. The 6a follow-up on
+`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`). Next: 9a, 9b.
+The 6a follow-up on
 `lastEffectYieldAt` landed in `e3ba64355`. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
@@ -285,6 +286,14 @@ including `Date`).
 
 ## Slice 7a. Server duration and size guards (_hard_, `self-host-server.md`)
 
+Landed 2026-10-21 (`83b9f9591`): `routeLimits` on `createServerContext` (`requestsPerMinute`,
+`assetBatchRecords`, `archiveRecords`, `charxEntryBytes`) and the resource store options
+`patchBaseMaxUnits` and `inspectStoredText`, all defaulting to the production values. The
+`assets` 2001, `backups` 200,000, `importCharx` 50 MiB and patch-base budget cases moved to slow
+with small-cap gated copies; `mcp`/`mcpSse` count scanned and copied bytes (`byteWork.ts`); the
+Lua, trigger and CBS duration bounds were deleted. `thoughts` stays keep-accepted (D3). Left for
+9a: `mcp` "shares one client per identifier..." (`sleep(90)`).
+
 Causes 6, 8 and 12 on the server: `mcp` (deadline tests on full fake timers; the 8 MiB guard
 becomes a scan/copy count), `mcpSse` (80k events: count framing work), `luaRuntime` duration
 bounds, `triggerRuntime` v2Wait bound, `cbsLimitsJobs` bound, `thoughts` 1 MB fixtures,
@@ -295,6 +304,13 @@ stored-text inspection seam plus one small disk-backed case; the cache-budget te
 small budget).
 
 ## Slice 7b. Client size guards (_small_, `build-test-platforms.md`)
+
+Landed 2026-10-21 (`45b6309bf`): test changes only. `exportBatches` mocks compression instead of
+injecting a limit (the cap counts raw bytes, so the cap cases stay at 64 MiB);
+`resourceSyncHydration` splits into a gated 3,000-message case and a slow 150,000-message one. The
+CPU-bound refusal cases from 4a/4b check the full mirror after every call (`refusedEach`, a local
+`unchangedEach`). New rows for 9b: `exportBatches` "'module'/'borrowed charx' aborts on
+'close'..." time out under overload.
 
 Cause 8 in the client: `moduleCache` 100k assets and `assetList` 100k names (shrink to a few
 thousand; the identity guards do not depend on size), `exportBatches` 64 MiB caps (injected limit),
