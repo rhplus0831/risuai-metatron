@@ -1,6 +1,7 @@
 # Timing-Dependent Tests Plan
 
-Status: planned 2026-10-21; slice 0 landed 2026-10-21 (`pnpm test:overload`). Source: the
+Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
+and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`). Next: 4b, 5a, 6a. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -9,7 +10,8 @@ against the code before editing.
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task (most are `build-test-platforms.md`, whose `Tests` section owns the
 slow-test table and the test rules); that guide's `Invariants` apply. Workflow per slice:
-`opus-lite` for a slice marked _small_, `delegate-implementation` for one marked _hard_. This is a
+`opus-lite` for a slice marked _small_, `opus-workflow` for one marked _hard_ (the user's choice
+over `delegate-implementation`). This is a
 test-management plan: the implementer edits tests, and the production seams named in a slice are
 test-only options with production defaults unchanged.
 
@@ -98,6 +100,10 @@ it once on `server/src/tests/cbsLimitsHost.test.ts` and on a deliberately sleepi
 
 ## Slice 1. Fresh processes and production-scale cases to slow (_small_, `build-test-platforms.md`)
 
+Landed 2026-10-21 (`40ab0dce4`). Also split `projectionBindings` "bulk: the lorebook drag rebuild
+and the preset reorder..." (same cause, failed an overload run); the gated suite starts no child
+Node process (the remaining hits run `mkfifo` or only serve slow cases).
+
 Every `move-slow` row (cause 4 and the slow parts of 6 and 8), each with its slow-test table row:
 
 - `shutdown.test.ts` whole file (`/** @module-tag slow */`).
@@ -122,6 +128,9 @@ with `rg -n 'spawn|fork|execFile|execSync' --glob '*.test.ts'` against the remai
 
 ## Slice 2. Clock control in client tests (_small_, `build-test-platforms.md`)
 
+Landed 2026-10-21 (`7a1a083ba`). The `resourceSyncMerge` / `resourceSyncRecreation` `toFake` bullet
+moved to 4a (same files); a `performance.now` stub was enough, so no CBS clock seam was added.
+
 Causes 7 and 11:
 
 - Add `"Date"` to the fake-timer `toFake` lists of `resourceSyncMerge.test.ts` and
@@ -137,6 +146,12 @@ Causes 7 and 11:
   as default.
 
 ## Slice 3. Server poll helpers (_hard_, `build-test-platforms.md`)
+
+Landed 2026-10-21 (`88953f6d0`). `waitFor` has no deadline unless given one (only the slow
+`shutdown` passes one); `follow()` closes on the terminal frame behind a ping/pong fence.
+`memoryJobs`, `assets` and the restore spy keep uncapped polls (a latch would catch nothing more).
+New row for 7a: `importCharx` 50 MiB entry. Still failing under overload, owned elsewhere: `assets`
+2001 records (7a), `chatMetadataCoalescingEvents` manual batches (6a).
 
 Cause 2. `server/src/tests/testSupport.ts` `waitFor`: drop the wall deadline and let the Vitest
 timeout catch a hang, keeping the condition check on every turn (or, if a cap must stay, yield with
@@ -156,6 +171,12 @@ Wrong implementations to keep catching: a job that never sends `done`, a lost fr
 copy never cleaned up.
 
 ## Slice 4a. Storage graph warm-up (_hard_ by volume, `build-test-platforms.md`)
+
+Landed 2026-10-21 (`7d52aa936`): `warmMutationGraph` in `mutationStoresHarness.ts`, 36 files, plus
+the two `toFake` additions from slice 2. No first case fails under overload any more; the raised
+per-case timeouts stay. New rows for 7b/9b: CPU-bound cases in `characterStore`,
+`collectionStore`, `pluginStorageStore`, `resourceSyncPatches`, and a frame race in
+`resourceSyncHydration` "installs the job's generated row under the streamed text...".
 
 Cause 1 for `src/ts/storage/tests/`. Add one warm-up export next to `bootMutations` in
 `mutationStoresHarness.ts` (the dynamic imports `bootMutations` performs, run once) and call it in a
@@ -241,6 +262,8 @@ thousand; the identity guards do not depend on size), `exportBatches` 64 MiB cap
 protocol boundary; budget the rest).
 
 ## Slice 8. MessagePort polls (_small_, `plugins-mcp.md`)
+
+Landed 2026-10-21 (`645e093c2`). `guestBridge` also gained a marker that catches a surplus pull.
 
 Cause 10: `nativeFetchAbort.test.ts` ("aborts the host fetch after headers while the guest is
 reading the body", "cancels a body the plugin never pulls from at 60 s..."), `guestBridge.test.ts`
