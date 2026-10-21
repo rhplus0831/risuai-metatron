@@ -528,10 +528,13 @@ describe("the stored path: display", () => {
     });
 
     it("with the flag on but no target language, a mounted row shows the original and requests nothing", async () => {
+        // Fake timers: the window below runs every timer the row could start (the rendered path's
+        // 10 ms start included) and the work they chain, at once.
+        vi.useFakeTimers();
         boot("k3c", { autoTranslate: true, translator: "", translation: tr("ㄱ", "A") });
         const ui = render();
         await ui.expectText("A");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await vi.advanceTimersByTimeAsync(1000);
         expect(ui.text()).toBe("A");
         expect(fetchCalls).toEqual([]);
         expect(hoisted.translateHTML).not.toHaveBeenCalled();
@@ -758,10 +761,12 @@ describe("the rendered path is unchanged", () => {
     });
 
     it("on `rendered`, toggling the chat's flag on a mounted row starts the auto translation and stops it again", async () => {
+        // Fake timers: each "nothing more" window runs the row's 10 ms start and every timer after it.
+        vi.useFakeTimers();
         const { ref } = boot("k9b", { target: "rendered" });
         const ui = render();
         await ui.expectText("A");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await vi.advanceTimersByTimeAsync(1000);
         expect(hoisted.translateHTML).not.toHaveBeenCalled();
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
 
@@ -776,7 +781,7 @@ describe("the rendered path is unchanged", () => {
         flushSync();
         await ui.expectText("A");
         expect(ui.toggle().classList.contains("text-blue-400")).toBe(false);
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await vi.advanceTimersByTimeAsync(1000);
         expect(hoisted.translateHTML.mock.calls.length).toBe(calls);
         expect(fetchCalls).toEqual([]);
     });

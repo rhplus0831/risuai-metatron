@@ -1528,11 +1528,18 @@ describe("a job's chat patch", () => {
     });
 
     it("installs the job's generated row under the streamed text at a new and at an equal revision, honours the claim as a watermark, and releases the reply at the terminal patch", async () => {
+        // The stream's frames run by hand: a chunk after the first in a frame waits for it.
+        const frames: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+        const runFrames = () => {
+            while (frames.length > 0) frames.shift()!(0);
+        };
         const { fake, sync, text, locked, apply, chunk, accepted, patchEvent, row, serverWrite } = await boot();
         apply("J", accepted("J", "g1"));
         apply("J", chunk("g1", 1, "RAW ONE"));
         apply("J", chunk("g1", 2, "RAW TWO"));
-        await vi.waitFor(() => expect(text("b")).toBe("RAW TWO"));
+        runFrames();
+        expect(text("b")).toBe("RAW TWO");
         // The job's processed checkpoint covering chunk 2: the stored row shows over the raw text.
         const r0 = fake.chat("c", "k")!.revision;
         const r1 = serverWrite([{ op: "setText", id: "b", text: "PROCESSED TWO" }]);

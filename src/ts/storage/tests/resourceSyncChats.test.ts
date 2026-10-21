@@ -1,7 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
@@ -235,7 +235,9 @@ describe("boot and mixed batches", () => {
         const serverId = fake.chat("c", "n")!.data.message[0].chatId as string;
         expect(serverId).not.toBe("bad\tid");
         expect(chat.findChat(ref)!.message[0].chatId).toBe(serverId);
-        await vi.waitFor(() => expect(fake.texts("c", "n")).toEqual(["edited during the create"]), { timeout: 3000 });
+        // The redirected edit goes out in the next cycle: the save debounce after the batch.
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.texts("c", "n")).toEqual(["edited during the create"]);
     });
 });
 
@@ -271,7 +273,8 @@ describe("the flush barrier", () => {
         fake.releaseBatch!();
         await flushed;
         expect(fake.texts("c", "k")[0]).toBe("first");
-        await vi.waitFor(() => expect(fake.texts("c", "k")[0]).toBe("second"), { timeout: 3000 });
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.texts("c", "k")[0]).toBe("second");
         expect((fake.chat("c", "k")!.data as any).note).toBe("meanwhile");
         expect(fake.batchCount()).toBe(2);
     });
@@ -384,10 +387,10 @@ describe("one chat's trouble does not block the rest", () => {
         chat.setChatMeta(refJ, { note: "j saved" });
         settings.ui.theme = "section saved";
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        await vi.waitFor(() => expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section saved" }), {
-            timeout: 5000,
-        });
-        await vi.waitFor(() => expect((fake.chat("c", "j")!.data as any).note).toBe("j saved"), { timeout: 5000 });
+        // The rest goes out on its own in the next cycle, the save debounce after the refusal.
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section saved" });
+        expect((fake.chat("c", "j")!.data as any).note).toBe("j saved");
         expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["streamed"]);
         expect(chat.isMessageLocked(refK, "a")).toBe(true);
 
@@ -1015,7 +1018,9 @@ describe("missing targets and gone anchors", () => {
         expect(chat.chatDiscardsSince(0)).toEqual([]);
         chat.endServerJob("J");
         expect((await sync.flushResources()).discarded).toEqual([]);
-        await vi.waitFor(() => expect(texts(chat)).toEqual(["A", "C", "D"]), { timeout: 5000 });
+        // The job's end leaves the chat for the idle read in the next cycle.
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(texts(chat)).toEqual(["A", "C", "D"]);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
         expect(chat.hasChatWork()).toBe(false);
     });

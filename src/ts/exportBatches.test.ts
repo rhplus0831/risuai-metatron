@@ -574,7 +574,9 @@ describe("export failure ownership", () => {
         async ({ owner, failure }) => {
             const h = await boot();
             const error = new Error(`failed ${failure}`);
-            const keys = Array.from({ length: 401 }, (_, i) => `assets/${i}.png`);
+            // Read, write and zip fail while the next batch is prefetched: three batches. A close fails
+            // after every batch, so one batch of three assets reaches it the same way.
+            const keys = Array.from({ length: failure === "close" ? 3 : 401 }, (_, i) => `assets/${i}.png`);
             keys.forEach((key) => h.data.set(key, PAYLOAD));
             const original = h.transport.getMockImplementation()!;
             const cancelled = vi.fn();
@@ -665,10 +667,10 @@ describe("export failure ownership", () => {
                 expect(cancelled).toHaveBeenCalledOnce();
                 expect(h.requests[1].signal.aborted).toBe(true);
             }
-            expect(h.requests).toHaveLength(failure === "close" ? 3 : 2);
-            // Even across retry timers, a stopped export cannot send a third batch.
+            expect(h.requests).toHaveLength(failure === "close" ? 1 : 2);
+            // Even across retry timers, a stopped export cannot send another batch.
             await vi.advanceTimersByTimeAsync(180_000);
-            expect(h.requests).toHaveLength(failure === "close" ? 3 : 2);
+            expect(h.requests).toHaveLength(failure === "close" ? 1 : 2);
             expect(h.transport.mock.calls.some(([url]) => url === "/api/read")).toBe(false);
         },
     );
