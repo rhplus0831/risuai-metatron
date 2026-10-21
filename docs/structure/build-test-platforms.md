@@ -220,7 +220,8 @@ non-literal pattern, an object spread, an unsupported pattern-list spread, or a 
 
 The static inventory of gated tests that still break the determinism gate, with a
 disposition per spot (keep, rewrite, move to `slow`, delete), is
-`docs/audit/timing-dependent-tests-2026-10-19.md`. Verify a timing fix under load with
+`docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed 2026-10-21); the fix plan is
+`docs/plan/timing-tests.md`. Verify a timing fix under load with
 the taskset recipe (one CPU, eight `node -e "while(true){}"` burners,
 `--maxWorkers=3 --testTimeout=60000`), three runs. `server/src/tests/testSupport.ts`
 `waitFor` carries a 2 s real-time cap and is a known offender; prefer awaiting the event.
