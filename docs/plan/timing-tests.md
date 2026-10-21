@@ -2,8 +2,8 @@
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`). Next: 5b, 6b. The 6a follow-up on `lastEffectYieldAt` landed in `e3ba64355`.
-Source: the
+`ae024b5bb`), then 5b and 6b (merged at `444cd6107`). Next: 7a, 7b. The 6a follow-up on
+`lastEffectYieldAt` landed in `e3ba64355`. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -227,6 +227,15 @@ case.
 
 ## Slice 5b. Other worker consumers (_hard_, `self-host-server.md`)
 
+Landed 2026-10-21 (`6f4b9191d`): test-only pool options `luaCpuMs`, `regexDeadlineMs` (also the
+formerly hard-coded sub-regex deadline), `regexScriptsCpuMs`, `luaBudgetMs` with `createBudget()`,
+`prepareCpuMs` (no effect today: the prelude runs fewer instructions than the hook interval), and
+`MemoryHost.separatorLimits` (`generationHypaV3SeparatorLimits`); `scriptWorkerOptions` also passes
+`bootMs` and `syncHostTimeoutMs`. Generous values in `server/src/tests/unhurriedLimits.ts`;
+`scriptWorkerOptions.test.ts` checks each default reaches its task. The real-worker `hypaV3Limits`
+case and the `lore` worker-timeout case went to slow (D2). Left for 9a: the server CBS limits (5 s per
+template, 60 s per job) on these paths, and transform renders keep the real 30 s Lua budget.
+
 Cause 3 outside `scriptWorker`: `hypaV3Limits` (warm the pool, drop the `< 5000` / `< 1000`
 bounds), `lore` (warm in `beforeAll`; a large deadline for the sane match; the real-limit case to
 slow or behind a fake host), `regexScriptsTask` (its changed large fixture), `manualTriggers` "six
@@ -262,6 +271,11 @@ Cause 5 on the server, each with a test-only seam:
 - `promptRunner`: the real 5000 ms job abort grace and the 150 ms delay before a stream break.
 
 ## Slice 6b. Client production timers (_small_, `build-test-platforms.md`)
+
+Landed 2026-10-21 (`56c228579`): test changes only. The stalled boot-cache open is checked at both
+the default and an explicit bound on fake `setTimeout`; `storedTranslation`'s five sleeps and sync
+poll and the `Chat` toggle run on fake timers including `Date`. Left for 9b: the 50 ms sleeps at
+`Chat.test.ts` 533, 757 and 772.
 
 Cause 5 in the client: `bootCache.test.ts` (fake `setTimeout`/`clearTimeout` for the stalled-open
 case and drop its elapsed bound; pass a large `timeoutMs` to the 18 constructions where the timeout
