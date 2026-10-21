@@ -2,8 +2,8 @@ import { Template } from "@huggingface/jinja";
 import type { OpenAIChat } from "../openai.ts";
 
 /**
- * Instruct chat templates, shared by the client and the server (PLAN.md Decision 2). The caller
- * resolves the settings (`instructChatTemplate`, `JinjaTemplate`) and the names.
+ * Instruct chat templates, shared by the client and the server. The caller resolves the settings
+ * (`instructChatTemplate`, `JinjaTemplate`) and the names.
  */
 export const chatTemplates = {
     llama3: "{% set bos_token = '<|begin_of_text|>' %}{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}",

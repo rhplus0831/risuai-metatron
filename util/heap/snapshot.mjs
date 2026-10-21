@@ -244,9 +244,9 @@ export function parseSnapshot(buf) {
          * The edges the dominator tree uses: the strong ones, except the table's half of a WeakMap
          * entry. A WeakMap value is retained by its key and its table together; as in Chrome
          * DevTools (`JSHeapSnapshot.isEssentialEdge`), only the key's edge counts, so the value is
-         * charged to the key. DevTools' other exclusions (debugger- and other-context-owned
-         * edges into page objects) are not applied; they changed none of the heap memory plan's
-         * numbers on the snapshots it was checked against.
+         * charged to the key. DevTools' other exclusions (debugger- and other-context-owned edges
+         * into page objects) are not applied; they changed none of the `heapReport` numbers on the
+         * snapshots it was checked against.
          */
         dominating: (e, from) => {
             const t = edges[e + eType];
@@ -485,7 +485,7 @@ function isStringTriple(s, n) {
 const MB = 1024 * 1024;
 
 /**
- * The numbers the heap memory plan's slices check (archived `docs/plan/heap-memory.md`):
+ * The heap numbers the measurements check:
  * - `proxies`: every `JSProxy`, and `tupleProxies`, those whose target is an array with string
  *   elements at 0, 1 and 2 and no other element edge (an asset tuple made a Svelte `$state` proxy;
  *   a snapshot shows no edge for a small-integer element, so `[a, b, c, 1]` would count too);

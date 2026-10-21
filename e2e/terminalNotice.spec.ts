@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// The restore notice as the terminal notice (the restore-notice fix after Phase 6 slice 2,
-// `persistence.md` Save step 10, `global-api.md` `alertTerminal` and `TerminalNotice.svelte`), in the
-// real app against the isolated stack of `playwright.config.ts`. Before the fix a transform the
-// restore refused (412 EpochMismatch) toasted over the notice, the toast's end cleared the shared
-// alert store, and the page reloaded about a second later without the user's acknowledgement. What
-// only the browser shows:
+// The restore notice as the terminal notice (`persistence.md` Save step 10, `global-api.md`
+// `alertTerminal` and `TerminalNotice.svelte`), in the real app against the isolated stack of
+// `playwright.config.ts`. Before the fix a transform the restore refused (412 EpochMismatch)
+// toasted over the notice, the toast's end cleared the shared alert store, and the page reloaded
+// about a second later without the user's acknowledgement. What only the browser shows:
 // - a refused transform shows the notice and no toast; ordinary alerts (toast, error, wait, clear)
 //   neither hide nor dismiss it, well past the old failure window, and nothing navigates;
 // - it is a modal dialog in the top layer: above a full-screen overlay with the largest z-index, with
@@ -336,10 +335,10 @@ test("no key event leaves the notice for the page's own listeners behind it; Spa
     context,
     baseURL,
 }) => {
-    // The Stop B fix (Phase 6): a key pressed on the notice bubbled out of the dialog to `window`,
-    // where a panel's own `svelte:window` handler (Iris's Enter/Space, the Escape of Iris,
-    // `BookmarkList`, `TriggerV2List`) acted behind the notice. Here every bubbling `window` and
-    // `document` listener stands for such a panel; a capture listener records what was pressed.
+    // The notice's key-containment fix: a key pressed on the notice bubbled out of the dialog to
+    // `window`, where a panel's own `svelte:window` handler (Iris's Enter/Space, the Escape of
+    // Iris, `BookmarkList`, `TriggerV2List`) acted behind the notice. Here every bubbling `window`
+    // and `document` listener stands for such a panel; a capture listener records what was pressed.
     const s = await session(context, baseURL!);
     const { page } = s;
     const leaked: string[] = [];

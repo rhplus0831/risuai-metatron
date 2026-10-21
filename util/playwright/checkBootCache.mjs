@@ -1,10 +1,10 @@
-// Check for the Boot Resource Cache plan's slice 4 (`docs/plan/boot-resource-cache.md`, archived when it
-// closes): the snapshot a real tab hands to `seedResources` after a boot through the IndexedDB boot cache
-// equals a plain read, text for text. `measureBoot.mjs` measures the same boots on a production build,
-// where the app's modules cannot be reached; this check runs the dev stack (`startStack`) and wraps
-// `loadBootSnapshot` as Vite serves `src/ts/storage/bootCache.ts` (the module text is fulfilled with the
-// export renamed and a wrapper that keeps `JSON.stringify(snapshot)` on `window.__risuBootSnapshot`), so
-// what it compares is exactly what `loadData` installs.
+// Check for the boot resource cache: the snapshot a real tab hands to `seedResources` after a boot
+// through the IndexedDB boot cache equals a plain read, text for text. `measureBoot.mjs` measures
+// the same boots on a production build, where the app's modules cannot be reached; this check runs
+// the dev stack (`startStack`) and wraps `loadBootSnapshot` as Vite serves
+// `src/ts/storage/bootCache.ts` (the module text is fulfilled with the export renamed and a wrapper
+// that keeps `JSON.stringify(snapshot)` on `window.__risuBootSnapshot`), so what it compares is
+// exactly what `loadData` installs.
 //
 // Data: 14 modules of 300 asset tuples (one listed twice), 6 characters (one with a TTS API key, which is
 // never cached), 20 presets. Boots, each a reload: `cold` (cache deleted), `warm`, after one module's

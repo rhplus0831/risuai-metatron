@@ -1,8 +1,8 @@
 /**
- * The report of an upstream RisuAI `.bin` import (`docs/plan/upstream-bin-compat.md`): what the
- * converter (`server/src/data/upstream/importDatabase.ts`) kept, converted, or left out, shown to
- * the user before the import replaces anything. Codes are stable strings the client maps to
- * `language.*` text; an entry's `examples` are names (presets, fields, models), never values.
+ * The report of an upstream RisuAI `.bin` import: what the converter
+ * (`server/src/data/upstream/importDatabase.ts`) kept, converted, or left out, shown to the user
+ * before the import replaces anything. Codes are stable strings the client maps to `language.*`
+ * text; an entry's `examples` are names (presets, fields, models), never values.
  */
 
 /** Data the converter carried over in another shape. */
@@ -49,10 +49,11 @@ export const UPSTREAM_EXCLUDED_CODES = [
     /** A custom model with invalid required fields or rejected serialized data; examples are names or positions. */
     "invalid-custom-model",
     /**
-     * A cold-storage pointer whose payload the backup lacks or holds unreadable (D3), one per pointer:
-     * a character kept as its stub (name, image, an empty chat), a chat kept without its messages, or
-     * a plugin storage value left out. Upstream's own backup never writes a plugin value that is not a
-     * list or an object with `character` or `message`. Examples are character names or storage keys.
+     * A cold-storage pointer whose payload the backup lacks or holds unreadable, one per pointer: a
+     * character kept as its stub (name, image, an empty chat), a chat kept without its messages, or
+     * a plugin storage value left out. Upstream's own backup never writes a plugin value that is
+     * not a list or an object with `character` or `message`. Examples are character names or
+     * storage keys.
      */
     "cold-missing",
     /** A multiuser or playground leftover (`§temp`, `§playground`), one per character. */
@@ -158,7 +159,7 @@ export type UpstreamImportReport = {
     missingAssets: UpstreamMissingAsset[];
 };
 
-/** The records the tab selects after the import (D4): the upstream-selected preset and persona. */
+/** The records the tab selects after the import: the upstream-selected preset and persona. */
 export type UpstreamImportSelection = {
     promptPresetId: string;
     modelPresetId: string;
@@ -213,15 +214,15 @@ export function addUpstreamReportEntry<Code extends string>(
 }
 
 /**
- * The import routes (`server/src/routes/backupsUpstream.ts`, `docs/plan/upstream-bin-compat.md` S5):
+ * The import routes (`server/src/routes/backupsUpstream.ts`):
  *
  * 1. Prepare: the `.bin` as the raw body. Archive refusals (a Risu Account backup among them) are a
  *    400 before anything streams; then the answer is NDJSON: `UpstreamImportProgress` lines, then one
  *    `UpstreamImportPrepared` line, or one `{ error }` line when the conversion failed (the live store
  *    is never touched by a prepare).
- * 2. Commit `{ token, acceptWrites? }`: replaces every resource with the staged store (full replace,
- *    U3) and answers `UpstreamImportCommitted`; `409 { error: UPSTREAM_CHANGED_SINCE_REVIEW, writes }`
- *    when resources were written since the prepare and `acceptWrites` does not name that count (D13).
+ * 2. Commit `{ token, acceptWrites? }`: replaces every resource with the staged store (a full
+ *    replace) and answers `UpstreamImportCommitted`; `409 { error: UPSTREAM_CHANGED_SINCE_REVIEW, writes }`
+ *    when resources were written since the prepare and `acceptWrites` does not name that count.
  *    Or cancel `{ token }`: the staged import is removed.
  */
 export const UPSTREAM_IMPORT_PREPARE_PATH = "/api/backups/import-upstream/prepare";
@@ -238,7 +239,7 @@ export const UPSTREAM_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 export const UPSTREAM_IMPORT_EXPIRED = "Import expired";
 /** The 409 `error` text of a prepare while another prepared import waits. */
 export const UPSTREAM_TOO_MANY_STAGED = "Another RisuAI backup import is waiting for its answer";
-/** The 409 `error` of a commit refused because resources were written since the prepare (D13). */
+/** The 409 `error` of a commit refused because resources were written since the prepare. */
 export const UPSTREAM_CHANGED_SINCE_REVIEW = "changedSinceReview";
 
 /** The prepare's steps, in order; `assets` and `cold` count records, `write` counts chats. */
@@ -255,7 +256,7 @@ export type UpstreamImportPrepared = {
     selection: UpstreamImportSelection;
 };
 
-/** The commit's answer: the new epoch, the assets added and kept, and the selection to apply (D4). */
+/** The commit's answer: the new epoch, the assets added and kept, and the selection to apply. */
 export type UpstreamImportCommitted = {
     epoch: string;
     assetsWritten: number;

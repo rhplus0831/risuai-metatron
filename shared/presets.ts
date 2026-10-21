@@ -11,8 +11,8 @@ import type { PromptItem } from "./prompt.ts";
 import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
 
 /**
- * The canonical schema for prompt presets, model presets, and model profiles
- * (`docs/plan/model-profiles.md`), used by the client (importers, the views) and server normalizers.
+ * The canonical schema for prompt presets, model presets, and model profiles, used by the client
+ * (importers, the views) and server normalizers.
  *
  * `PRESET_DEFAULTS` is the one table of every schema field, keyed by its record name, with its
  * fresh-boot default. The profile fields retain the former preset and provider defaults.
@@ -369,7 +369,8 @@ export const PERSONA_ROOT_ALIASES = {
 /**
  * Preset fields whose explicit `null` is a value the readers handle (`promptTemplate` null means no
  * template, `thinkingTokens` null no budget): `setPreset` copied it to the root as it was before
- * Phase 3. `normalizePreset` keeps it, and the forwarding layer serves it.
+ * the settings were split into section records. `normalizePreset` keeps it, and the forwarding
+ * layer serves it.
  */
 export const PRESET_NULLABLE_FIELDS = [
     "promptTemplate",
@@ -385,8 +386,9 @@ export const PRESET_NULLABLE_FIELDS = [
 ] as const satisfies readonly PresetField[];
 
 /**
- * The base `importPreset` spreads under an imported file, unchanged from before Phase 3 so old
- * files import as they did. It is not the default of a new preset (that is `normalizePreset`).
+ * The base `importPreset` spreads under an imported file, unchanged from before the settings were
+ * split into section records so old files import as they did. It is not the default of a new preset
+ * (that is `normalizePreset`).
  */
 export const presetTemplate: Omit<botPreset, "id"> = {
     name: "New Preset",
@@ -532,12 +534,12 @@ function normalizeAuxSlots(value: unknown): ModelPreset["auxSlots"] {
 /**
  * A normalized copy of `source`'s `fields`: each missing one (absent or `undefined`) or one of the
  * wrong JSON kind (`PRESET_FIELD_KINDS`; a number where an object belongs) filled with its default,
- * and the migrations `setDatabase` and `setPreset` applied to the root working copy before Phase 3,
- * each only where the record owns its field. An explicit `null` is kept only where it is a value
- * (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through as it was, such as `min_p`); any other
- * `null` gets the default, as `setPreset` gave the root copy (a number field cleared in the UI comes
- * back as its default after a reload). Fields outside `fields` are dropped. Nested values are not
- * checked beyond those migrations.
+ * and the migrations `setDatabase` and `setPreset` applied to the root working copy before the
+ * settings were split into section records, each only where the record owns its field. An explicit
+ * `null` is kept only where it is a value (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through
+ * as it was, such as `min_p`); any other `null` gets the default, as `setPreset` gave the root copy
+ * (a number field cleared in the UI comes back as its default after a reload). Fields outside
+ * `fields` are dropped. Nested values are not checked beyond those migrations.
  */
 function normalizeFields(source: Record<string, unknown>, fields: readonly PresetField[], id: string) {
     const record: Record<string, unknown> = { id };

@@ -7,8 +7,8 @@ type GraphIndex = {
 };
 
 /**
- * What the graph memory tools (`internal:graphmem`) need from where they run (Phase 5 slice 12b): the
- * tab (`src/ts/process/mcp/graphmem.ts`) or a server job (`server/src/mcp/jobTools.ts`). The graph is
+ * What the graph memory tools (`internal:graphmem`) need from where they run: the tab
+ * (`src/ts/process/mcp/graphmem.ts`) or a server job (`server/src/mcp/jobTools.ts`). The graph is
  * the chat variable `graphmem_graph` of the chat the tools run for.
  */
 export type GraphMemHost = {

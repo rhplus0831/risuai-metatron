@@ -4,9 +4,8 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// Phase 6 slice 7 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-consumers.md`,
-// "Validation"): the settings consumers outside the settings pages read and write through the settings
-// views. In the real app against the isolated stack of `playwright.config.ts`:
+// The settings consumers outside the settings pages read and write through the settings views. In
+// the real app against the isolated stack of `playwright.config.ts`:
 // - the chat screen's settings-driven behaviors: send with Enter (on and off), the auto-translate
 //   input row toggled from the menu (saved), the icon size, the module effect (a module that hides the
 //   icons, enabled globally or named by the preset's module integration), the theme;
@@ -141,9 +140,9 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
     const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
     const personas = (await s.api("/api/resources/personas/main")).body;
     const selected = await views(s.page);
-    // `modelFixtureOps` sets the first model preset's slots: the one a fresh tab selects. The chat is
-    // bound to it, the first prompt preset (the selected one, edited below), and the first persona
-    // (`docs/plan/chat-binding.md`: a send runs only with a complete binding).
+    // `modelFixtureOps` sets the first model preset's slots: the one a fresh tab selects. The chat
+    // is bound to it, the first prompt preset (the selected one, edited below), and the first
+    // persona (a send runs only with a complete binding).
     expect(selected.modelPreset.id).toBe(modelPresets.data[0].id);
     expect(selected.preset.id).toBe(presets.data[0].id);
     const binding = chatBindingFixture(modelPresets, presets, personas);

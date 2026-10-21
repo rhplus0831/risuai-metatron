@@ -1,11 +1,11 @@
 /**
- * The CharX character file (historical `docs/plan/large-asset-import.md` slice 2d), a cross-user format
- * (STRUCTURE D5): a zip archive, alone (`.charx`) or after a JPEG (`charxJpeg`, a `.jpg`/`.jpeg`: the
- * JPEG's bytes, then the zip, whose offsets count from the zip's own start). The client's
- * `CharXWriter` (`src/ts/process/processzip.ts`) writes it with fflate: every entry a `ZipDeflate`
- * stream (level 0 for the assets, so their bytes stand in stored deflate blocks), a data descriptor
- * after each (general-purpose flag bit 3: no sizes in the local header), flag bit 11 for a non-ASCII
- * name, and no zip64 (fflate wraps the entry count past 65,535 and every offset past 4 GiB).
+ * The CharX character file, a cross-user format (STRUCTURE D5): a zip archive, alone (`.charx`) or
+ * after a JPEG (`charxJpeg`, a `.jpg`/`.jpeg`: the JPEG's bytes, then the zip, whose offsets count
+ * from the zip's own start). The client's `CharXWriter` (`src/ts/process/processzip.ts`) writes it
+ * with fflate: every entry a `ZipDeflate` stream (level 0 for the assets, so their bytes stand in
+ * stored deflate blocks), a data descriptor after each (general-purpose flag bit 3: no sizes in the
+ * local header), flag bit 11 for a non-ASCII name, and no zip64 (fflate wraps the entry count past
+ * 65,535 and every offset past 4 GiB).
  *
  * Two readers read it. The client's in-tab `CharXImporter` runs fflate's streaming `Unzip`, which
  * finds the end of a data-descriptor entry by scanning its bytes for the next signature, so a stored

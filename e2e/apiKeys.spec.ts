@@ -1,13 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// `docs/plan/shared-api-keys.md`, slice 4, with the binding on the model profile
-// (`docs/plan/model-profiles.md`): the Model menu's API Keys tab and the key select of a profile
-// (shown as a connection), through the real server. A key is added on the tab and its value set
-// through its write-only field; the Connections tab binds it to the main slot's profile; the binding
-// shows on the API Keys tab and both survive a reload; deleting the key (after a confirm that names
-// its use) leaves the binding dangling, shown as missing with the refusal on the Connections tab. No key value ever reaches
-// a settings batch.
+// Shared API keys with the binding on the model profile: the Model menu's API Keys tab and the key
+// select of a profile (shown as a connection), through the real server. A key is added on the tab
+// and its value set through its write-only field; the Connections tab binds it to the main slot's
+// profile; the binding shows on the API Keys tab and both survive a reload; deleting the key (after
+// a confirm that names its use) leaves the binding dangling, shown as missing with the refusal on
+// the Connections tab. No key value ever reaches a settings batch.
 
 const API_KEYS_MENU = 17;
 const MODEL_PROFILES_MENU = 18;

@@ -4,9 +4,8 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// Validation): lazy loading in the browser, against the isolated stack of `playwright.config.ts`.
-// What only the whole stack shows:
+// Lazy loading in the browser, against the isolated stack of `playwright.config.ts`. What only the
+// whole stack shows:
 // - the boot reads summaries (no chat), and no chat is loaded at home; selecting a character loads
 //   its selected chat only, a cold switch loads the chat on demand and the chat screen shows it;
 // - after switching through more chats than the LRU keeps, at most eight idle chats stay loaded
@@ -171,7 +170,7 @@ async function seed(s: Session): Promise<string> {
     // A profile on the mock provider, named by the first model preset's main and sub slots.
     const model = { aiModel: "reverse_proxy", forceReplaceUrl: providerUrl, customProxyRequestModel: "mock" };
     // Every chat is bound to that model preset, the first prompt preset, and the first persona: the
-    // send below runs only with a complete binding (`docs/plan/chat-binding.md`).
+    // send below runs only with a complete binding.
     const binding = chatBindingFixture(modelPresets, presets, personas);
     const seeded = await s.api("/api/resources/batch", {
         method: "POST",

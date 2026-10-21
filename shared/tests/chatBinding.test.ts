@@ -10,10 +10,10 @@ import {
     type ChatBindingLookup,
 } from "../chatBinding.ts";
 
-// `docs/plan/chat-binding.md`, "The resolver" and slice 1: the pure resolver both sides run before a
-// send. It fails closed: every field must name a record that exists and no confirmation may be
-// pending; every problem is reported at once, in field order; there is no fallback branch, so a
-// lookup that answers "exists" for everything still cannot make an unset field pass.
+// The pure resolver both sides run before a send. It fails closed: every field must name a record
+// that exists and no confirmation may be pending; every problem is reported at once, in field
+// order; there is no fallback branch, so a lookup that answers "exists" for everything still cannot
+// make an unset field pass.
 
 /** A lookup over fixed id sets, each call recorded. */
 function lookupOf(sets: { modelPreset?: string[]; promptPreset?: string[]; persona?: string[] }) {

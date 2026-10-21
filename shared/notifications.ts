@@ -1,6 +1,6 @@
 /**
- * Chat completion notifications (`docs/plan/web-push.md`): the text the server builds once, for the
- * tab's `notification` notice and for Web Push alike, and the payload shape the service worker shows.
+ * Chat completion notifications: the text the server builds once, for the tab's `notification`
+ * notice and for Web Push alike, and the payload shape the service worker shows.
  */
 
 export const COMPLETION_NOTIFICATION_TAG = "risuai-chat-completion";

@@ -4,15 +4,14 @@ import { expect, test, type BrowserContext, type Page, type Route } from "@playw
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Phase 5 slice 13b (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`):
-// the server script transform (the only script path since the Phase 5 cutover), in the mounted chat
-// screen of the real app, against the isolated stack of `playwright.config.ts`. What only the whole
-// stack shows:
+// The server script transform (the only script path since browser generation was removed), in the
+// mounted chat screen of the real app, against the isolated stack of `playwright.config.ts`. What
+// only the whole stack shows:
 // - a send renders its reply raw while it streams and transforms it once when the lock ends, in each
 //   streaming display mode, without rendering any other row again (a lock change on one message
-//   re-rendered every row before the reviewed fix: their HTML was rebuilt and an open `<details>`
+//   re-rendered every row before the fix: their HTML was rebuilt and an open `<details>`
 //   closed); while it streams it is the streaming message with the configured mode, which "strong"
-//   shows without markdown and the others parse (Phase 6 slice 3);
+//   shows without markdown and the others parse;
 // - a locked message that is not the last row renders raw while locked and transformed after;
 // - "Re-render" asks again for that message only, bypassing the cache;
 // - a render answered after a chat switch does not land in the new chat, whose rows render with
@@ -180,7 +179,7 @@ async function seed(
         maxResponse: 100,
     };
     // Every chat is bound to that model preset, the prompt preset, and the first persona: a send
-    // runs only with a complete binding (`docs/plan/chat-binding.md`).
+    // runs only with a complete binding.
     const binding = chatBindingFixture(modelPresets, presets, personas);
     const seeded = await s.api("/api/resources/batch", {
         method: "POST",
@@ -305,7 +304,7 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         });
         const from = s.posts.length;
 
-        // Markdown in the reply tells the display modes apart while it streams (Phase 6 slice 3).
+        // Markdown in the reply tells the display modes apart while it streams.
         stream = { chunks: ["Hello ", "**slow** ", "stream ", "reply."], delayMs: 400 };
         const input = page.locator("textarea.input-text").first();
         await input.fill(`Stream please ${mode}`);

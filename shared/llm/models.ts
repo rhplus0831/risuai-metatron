@@ -1,8 +1,8 @@
-// The static model catalogue (Phase 5, `shared/llm/`): the provider arrays, the assembled base list
-// with its derived Response API and Vertex variants, and `resolveModelInfo`, the client's
-// `getModelInfo` resolution with its database reads and its dynamic and plugin models passed in.
-// The client keeps its own copy of the list for the dynamic registry (`src/ts/model/modellist.ts`);
-// the server reads this one. Keep it free of DOM types, runes, and non-relative imports.
+// The static model catalogue (`shared/llm/`): the provider arrays, the assembled base list with its
+// derived Response API and Vertex variants, and `resolveModelInfo`, the client's `getModelInfo`
+// resolution with its database reads and its dynamic and plugin models passed in. The client keeps
+// its own copy of the list for the dynamic registry (`src/ts/model/modellist.ts`); the server reads
+// this one. Keep it free of DOM types, runes, and non-relative imports.
 
 import type { Database } from "../database.ts";
 import {

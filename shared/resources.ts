@@ -17,8 +17,8 @@ import type {
 } from "./sections.ts";
 
 /**
- * The server resource kinds and their payloads (Phase 1 of `docs/plan/PLAN.md`). The client
- * assembles `Database` from them and writes them back per collection.
+ * The server resource kinds and their payloads. The client assembles `Database` from them and
+ * writes them back per collection.
  */
 export const RESOURCE_KIND = {
     presets: "presets",
@@ -28,8 +28,9 @@ export const RESOURCE_KIND = {
     pluginPermissions: "pluginPermissions",
     characters: "characters",
     inlays: "inlays",
-    // Phase 3 sections (`SECTION_KIND`) and collections (`COLLECTION_KIND`), spelled out here because
-    // `shared/sections.ts` imports this module; the `satisfies` below keeps the two in step.
+    // The settings sections (`SECTION_KIND`) and collections (`COLLECTION_KIND`), spelled out here
+    // because `shared/sections.ts` imports this module; the `satisfies` below keeps the two in
+    // step.
     providers: "providers",
     secrets: "secrets",
     llmSecrets: "llmSecrets",
@@ -97,7 +98,7 @@ export type ResourceBatchOp =
 export type ResourceBatchResult = {
     epoch: string;
     results: { kind: string; id: string; revision: string | null }[];
-    /** One result per chat group sent (Phase 2). */
+    /** One result per chat group sent. */
     chats?: ChatGroupResult[];
     /** Every chat order the batch changed, including through chat creates and deletes. */
     chatOrders?: ChatOrderResult[];
@@ -105,7 +106,7 @@ export type ResourceBatchResult = {
 
 /**
  * A resource entry of a 409: `kind` is the resource kind name. `reason: "generating"`: a character
- * delete refused because a server generation job owns one of its messages (Phase 5).
+ * delete refused because a server generation job owns one of its messages.
  */
 export type ResourceConflict = { kind: string; id: string; revision: string | null; reason?: "generating" };
 
@@ -187,8 +188,8 @@ export type ResourceReadRefsResult = {
 };
 
 /**
- * The boot read that skips what the client already holds (`docs/plan/boot-resource-cache.md`):
- * `POST RESOURCE_BOOT_PATH` with a `ResourceBootRequest`, answered with a `ResourceBootResult`.
+ * The boot read that skips what the client already holds: `POST RESOURCE_BOOT_PATH` with a
+ * `ResourceBootRequest`, answered with a `ResourceBootResult`.
  */
 export const RESOURCE_BOOT_PATH = "/api/resources/boot";
 
@@ -307,13 +308,13 @@ export type ChatPatchBody = {
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
 /**
- * What one committed write changed (Phase 6 live updates): refs and their new revisions, and data
- * only as a record patch (`RecordPatch`) or a by-id chat patch (`ChatPatchBody`). A `null` revision
- * is a deletion. A record or chat recorded more than once in the write appears once with its final
- * revision and no patch. A client holding exactly a patch's base revision may apply it when idle
- * (a chat must also be loaded and not stale); otherwise it handles the plain notice as before.
- * Chat revisions advance by the applied op count, not necessarily one. Whole-chat writes, no-op
- * groups, remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch.
+ * What one committed write changed (live updates): refs and their new revisions, and data only as a
+ * record patch (`RecordPatch`) or a by-id chat patch (`ChatPatchBody`). A `null` revision is a
+ * deletion. A record or chat recorded more than once in the write appears once with its final
+ * revision and no patch. A client holding exactly a patch's base revision may apply it when idle (a
+ * chat must also be loaded and not stale); otherwise it handles the plain notice as before. Chat
+ * revisions advance by the applied op count, not necessarily one. Whole-chat writes, no-op groups,
+ * remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch.
  */
 export type ChangeSet = {
     resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];
@@ -343,7 +344,7 @@ export type BackupArchiveManifest = {
 };
 
 /**
- * Phase 3 payloads. A section record holds its `SECTION_FIELDS` under their `Database` names;
+ * The section payloads. A section record holds its `SECTION_FIELDS` under their `Database` names;
  * `llmSecrets` also holds the named credential values by credential record id.
  */
 export type SectionResource<K extends SectionKind> = Pick<Database, (typeof SECTION_FIELDS)[K][number]>;

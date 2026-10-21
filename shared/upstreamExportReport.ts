@@ -1,17 +1,17 @@
 import type { UpstreamAssetReference, UpstreamReportEntry } from "./upstreamBackup.ts";
 
 /**
- * The report of an upstream RisuAI `.bin` export (`docs/plan/upstream-bin-compat.md` S6): what the
- * exporter (`server/src/data/upstream/exportDatabase.ts`) carried over in another shape, what it left
- * out because upstream cannot hold it, and the referenced assets that are missing. Entries share the
- * import report's shape (`UpstreamReportEntry`, built with `addUpstreamReportEntry`): stable codes the
- * client maps to `language.*` text, and `examples` that are names (presets, fields, characters), never
- * values.
+ * The report of an upstream RisuAI `.bin` export: what the exporter
+ * (`server/src/data/upstream/exportDatabase.ts`) carried over in another shape, what it left out
+ * because upstream cannot hold it, and the referenced assets that are missing. Entries share the
+ * import report's shape (`UpstreamReportEntry`, built with `addUpstreamReportEntry`): stable codes
+ * the client maps to `language.*` text, and `examples` that are names (presets, fields,
+ * characters), never values.
  */
 
 /** Data the exporter carried over in another shape. */
 export const UPSTREAM_EXPORT_CONVERTED_CODES = [
-    /** Model presets other than the chosen one; every prompt preset is exported with the chosen one (D10). */
+    /** Model presets other than the chosen one; every prompt preset is exported with the chosen one. */
     "model-presets-flattened",
     /** A requested prompt preset, model preset, or persona no longer exists; the first record was used. */
     "selection-fallback",
@@ -27,19 +27,19 @@ export const UPSTREAM_EXPORT_CONVERTED_CODES = [
 
 /** Data the exporter did not export. */
 export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
-    /** API keys, left out because the export was made without them (D7); the examples are field names. */
+    /** API keys, left out because the export was made without them; the examples are field names. */
     "api-keys",
     /** Named keys no exported field holds (upstream has no named keys); the examples are key names. */
     "named-keys",
-    /** Sub/aux profile options lost to the main profile's options (D10); the examples are slot names. */
+    /** Sub/aux profile options lost to the main profile's options; the examples are slot names. */
     "slot-options-flattened",
     /** metatron-only settings; the examples are field names. */
     "metatron-settings",
     /** metatron-only character fields; the examples are field names. */
     "character-fields",
-    /** metatron-only chat fields (D12); counted per chat, the examples are field names. */
+    /** metatron-only chat fields; counted per chat, the examples are field names. */
     "chat-fields",
-    /** Stored message translations (D12); counted per message. */
+    /** Stored message translations; counted per message. */
     "message-translations",
     /** Persona module links; the examples are persona names. */
     "persona-modules",
@@ -47,7 +47,7 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
     "translator-steps",
     /** Plugin storage upstream keeps outside the backup; counted per entry, the examples are plugin names. */
     "plugin-storage",
-    /** Chats with inlay references (D8); the inlays are not exported. The examples are character names. */
+    /** Chats with inlay references; the inlays are not exported. The examples are character names. */
     "inlays",
     /**
      * Referenced assets whose file name a RisuAI backup record cannot hold (a `/`, or a name upstream's
@@ -83,7 +83,7 @@ export type UpstreamExportReport = {
 };
 
 /**
- * The export routes (`server/src/routes/backupsUpstreamExport.ts`, `docs/plan/upstream-bin-compat.md` S7):
+ * The export routes (`server/src/routes/backupsUpstreamExport.ts`):
  *
  * 1. Prepare `UpstreamExportRequest`: one consistent copy of the store projected and encoded into
  *    `database.risudat`, kept on the server under a token; answers `UpstreamExportPrepared`.
@@ -104,7 +104,7 @@ export const UPSTREAM_EXPORT_EXPIRED = "Export expired";
 /** The 409 `error` text of a prepare while `MAX_UPSTREAM_EXPORTS_STAGED` prepared exports wait. */
 export const UPSTREAM_EXPORT_TOO_MANY_STAGED = "Other RisuAI-compatible backups are waiting for their download";
 
-/** The prepare's body: the tab's selection (S6's options), whether to export the API keys (D7), and its open chat. */
+/** The prepare's body: the tab's selection, whether to export the API keys, and its open chat. */
 export type UpstreamExportRequest = {
     promptPresetId: string;
     modelPresetId: string;

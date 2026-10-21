@@ -14,11 +14,10 @@ import { registerCBS } from "./registry.ts";
 import type { CBSRegisterArg, CbsConditions, CbsDatabase, RegisterCallback, matcherArg } from "./types.ts";
 
 /**
- * The CBS evaluator, shared by the client and the server (PLAN.md Decision 2): the `{{...}}`
- * loop, block statements (`#if`, `#when`, `#each`, `#func`, ...), and the registry's functions.
- * The application state comes only through `CbsHost` (the registry's globals apply here too,
- * and `dateTimeFormat` uses the runtime's timezone); an evaluator registers the functions on first
- * use.
+ * The CBS evaluator, shared by the client and the server: the `{{...}}` loop, block statements
+ * (`#if`, `#when`, `#each`, `#func`, ...), and the registry's functions. The application state
+ * comes only through `CbsHost` (the registry's globals apply here too, and `dateTimeFormat` uses
+ * the runtime's timezone); an evaluator registers the functions on first use.
  *
  * A host with `limits` (`limits.ts`: the client and server) gets a bounded evaluator: a top-level
  * `risuChatParser` call that reaches a limit throws `CbsLimitError`. Without `limits` nothing is

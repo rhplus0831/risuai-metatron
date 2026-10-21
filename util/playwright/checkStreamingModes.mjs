@@ -1,10 +1,10 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 6 slice 3 (the streaming display optimization rewired to server streams,
-// owner decision 3): for each `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a
-// server send makes its reply the streaming message (`streamingState`, with the configured mode) from
-// its first chunk until the job ends. While it streams, "strong" renders the reply raw (no markdown)
-// and the others render it parsed; every mode keeps the reply's row mounted across chunks (rows are
-// keyed by message id). At the end the state is cleared and the final reply renders parsed.
+// Browser check for the streaming display optimization on server streams: for each
+// `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a server send makes its reply
+// the streaming message (`streamingState`, with the configured mode) from its first chunk until the
+// job ends. While it streams, "strong" renders the reply raw (no markdown) and the others render it
+// parsed; every mode keeps the reply's row mounted across chunks (rows are keyed by message id). At
+// the end the state is cleared and the final reply renders parsed.
 //
 // Usage: node util/playwright/checkStreamingModes.mjs   (dev only: it reads the tab's state through
 // the dev server's modules).

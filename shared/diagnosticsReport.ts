@@ -7,18 +7,18 @@ import {
 } from "./diagnostics.ts";
 
 /**
- * The Diagnostics panel's report (`docs/plan/request-history-diagnostics.md` slice 9, decision 6):
- * the browser's events and the server's state and events as one text the user copies, downloads, or
- * saves to the diagnostics folder (`POST /api/diagnostics/report`). The browser builds it with
- * `buildDiagnosticReport`; the server keeps only a text `canonicalDiagnosticReport` accepts.
+ * The Diagnostics panel's report: the browser's events and the server's state and events as one
+ * text the user copies, downloads, or saves to the diagnostics folder
+ * (`POST /api/diagnostics/report`). The browser builds it with `buildDiagnosticReport`; the server
+ * keeps only a text `canonicalDiagnosticReport` accepts.
  *
- * Content-free by construction (decision 9): every value goes through a projection here, whatever the
- * caller passed. What a kept report can hold is what the projections admit: ids of the server's
- * shapes (a UUID, a translation run's `translate-<UUID>`), enumerations, counts, booleans, times,
- * route templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and
- * application stack frames (a file path of the app's shape, its line and column). A provider code
- * and a frame's file name are the only strings with a free shape; decision 9 permits both. The
- * check is of shape, not of provenance: a text written by hand to fit the format passes.
+ * Content-free by construction: every value goes through a projection here, whatever the caller
+ * passed. What a kept report can hold is what the projections admit: ids of the server's shapes (a
+ * UUID, a translation run's `translate-<UUID>`), enumerations, counts, booleans, times, route
+ * templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and application
+ * stack frames (a file path of the app's shape, its line and column). A provider code and a frame's
+ * file name are the only strings with a free shape; the content-free rule permits both. The check
+ * is of shape, not of provenance: a text written by hand to fit the format passes.
  *
  * The format, v1 (strict; a text that differs in any byte from what the builder makes of it is
  * refused):

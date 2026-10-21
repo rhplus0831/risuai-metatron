@@ -1,10 +1,10 @@
 import type { character, groupChat } from "./database.ts";
 
 /**
- * The character defaults (Phase 6 slice 5b, `character-ownership`): one pure helper the client applies
- * when a character is created or replaced whole and before it saves one, and the server's `characters`
- * normalizer applies on every write and in its startup pass. Only deterministic defaults live here: ids,
- * times, chats, the lorebook conversion, and the `postHistoryInstructions` transfer are creation steps
+ * The character defaults: one pure helper the client applies when a character is created or
+ * replaced whole and before it saves one, and the server's `characters` normalizer applies on every
+ * write and in its startup pass. Only deterministic defaults live here: ids, times, chats, the
+ * lorebook conversion, and the `postHistoryInstructions` transfer are creation steps
  * (`characterStore.svelte.ts`'s `prepareNewCharacter`).
  */
 

@@ -13,9 +13,9 @@ import {
     truncateGraphemes,
 } from "../notifications.ts";
 
-// `docs/plan/web-push.md` slice 1: the completion notification's text (the custom message, else the
-// default sentence by the `language` setting with the name cut to 20 graphemes), the body's 1 KiB
-// ceiling, the chat route, and the serialized payload budget (Astra plan review, point 4).
+// The completion notification's text (the custom message, else the default sentence by the
+// `language` setting with the name cut to 20 graphemes), the body's 1 KiB ceiling, the chat route,
+// and the serialized payload budget.
 
 const utf8 = (text: string) => new TextEncoder().encode(text).byteLength;
 

@@ -3,10 +3,9 @@ import { describe, expect, it } from "vitest";
 import { resolveCredentialBinding, type CredentialBindingRecord } from "../credentialBinding.ts";
 import { resolveModelInfo } from "../models.ts";
 
-// `docs/plan/shared-api-keys.md`, decision 3, with the binding on the model profile
-// (`docs/plan/model-profiles.md`): the one binding decision the tab and the server share.
-// An absent binding selects the default; any binding that cannot be honored refuses, first failure
-// first, and never falls back.
+// The credential binding on the model profile: the one binding decision the tab and the server
+// share. An absent binding selects the default; any binding that cannot be honored refuses, first
+// failure first, and never falls back.
 
 type Record_ = CredentialBindingRecord & { key: string };
 const records: Record<string, Record_> = {

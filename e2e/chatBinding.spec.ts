@@ -4,9 +4,9 @@ import { expect, test, type BrowserContext, type Locator, type Page } from "@pla
 import { newPersonaId, normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../shared/presets.ts";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Per-chat binding (`docs/plan/chat-binding.md`, slice 7): a chat is sent only with its own model
-// preset, prompt preset, and persona, never with the tab's selection, in the real app against the
-// isolated stack of `playwright.config.ts`. What only the whole stack shows:
+// Per-chat binding: a chat is sent only with its own model preset, prompt preset, and persona,
+// never with the tab's selection, in the real app against the isolated stack of
+// `playwright.config.ts`. What only the whole stack shows:
 // - an unbound chat refuses to send: its send button reads "Set up this chat", Enter opens the
 //   binding dialog and consumes nothing, no job is created, and the dialog's rows bind the chat
 //   through the pickers in chat mode while the tab's selection stays; the bound chat then sends with
@@ -460,7 +460,7 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     await pick(page, "Persona", NAMES.personaA);
     await expect(row(dialog(page), "personaId")).toContainText(NAMES.personaA);
     expect(await entryOf(page, ref)).toMatchObject({ ...a, bindingReview: null });
-    // The tab's selection is untouched (decision 8: the picks were this chat's).
+    // The tab's selection is untouched (the picks were this chat's).
     expect(await tabSelection(page)).toEqual(tabBefore);
 
     // The dialog's close button; the send button is the send button again, and the sidebar's panel shows the binding.

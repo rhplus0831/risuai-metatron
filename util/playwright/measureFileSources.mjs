@@ -1,9 +1,8 @@
-// Measurement for the heap memory plan (archived `docs/plan/heap-memory.md`, slice D2b): the Blob memory the
-// page keeps for file sources, with and without the service worker. A file shown through
-// `getFileSrc` (avatars, inlay images, chat assets) is pinned for the page: with the worker its URL
-// is `/sw/img/…` and no Blob is kept; without it the source is an object URL of the file's bytes,
-// never revoked. Inlay audio and video use typed object URLs per asset key (`inlays.ts`
-// `mediaObjectUrls`), never revoked either way.
+// Measurement of the Blob memory the page keeps for file sources, with and without the service
+// worker. A file shown through `getFileSrc` (avatars, inlay images, chat assets) is pinned for the
+// page: with the worker its URL is `/sw/img/…` and no Blob is kept; without it the source is an
+// object URL of the file's bytes, never revoked. Inlay audio and video use typed object URLs per
+// asset key (`inlays.ts` `mediaObjectUrls`), never revoked either way.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI. Seeds `AVATARS` characters with a PNG avatar each (random pixels, so the

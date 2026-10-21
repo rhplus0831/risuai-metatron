@@ -3,9 +3,9 @@ import type { OpenAIChat } from "./openai.ts";
 import type { ChatPatchBody } from "./resources.ts";
 
 /**
- * The generation job contract (Phase 5, `generation-jobs`): `POST /api/generations` creates a job
- * for one chat, its owner (the tab's `clientId`) follows it over `/api/generations/:id/ws`, and
- * `DELETE /api/generations/:id` aborts it. One chat has at most one running job.
+ * The generation job contract: `POST /api/generations` creates a job for one chat, its owner (the
+ * tab's `clientId`) follows it over `/api/generations/:id/ws`, and `DELETE /api/generations/:id`
+ * aborts it. One chat has at most one running job.
  */
 
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
@@ -20,13 +20,13 @@ export const GENERATION_KINDS: readonly GenerationKind[] = [
     "command",
 ];
 
-/** The execution context of PLAN.md Decision 5, plus the chat revision the client last saw. */
+/** The execution context a job runs in, plus the chat revision the client last saw. */
 export type GenerationContext = {
     characterId: string;
     chatId: string;
     /** The prompt preset (`presets`). */
     presetId: string | null;
-    /** The model preset (`modelPresets`, `docs/plan/split-preset.md`). */
+    /** The model preset (`modelPresets`). */
     modelPresetId: string | null;
     /** The effective persona (a bound persona wins). */
     personaId: string | null;
@@ -35,9 +35,9 @@ export type GenerationContext = {
     continueMessageId?: string;
     speakerChaId?: string;
     /**
-     * A send's user message (Phase 5 slice 9): the id the job appends `input` under after the input
-     * trigger and `editinput`. The input stage is skipped when the chat already holds a user message
-     * with this id (a job created again after the first one appended it).
+     * A send's user message: the id the job appends `input` under after the input trigger and
+     * `editinput`. The input stage is skipped when the chat already holds a user message with this
+     * id (a job created again after the first one appended it).
      */
     userMessageId?: string;
     /** A command job's trigger (buttons, manual triggers). */
@@ -55,7 +55,7 @@ export type GenerationContext = {
 /**
  * The tab's viewport (CSS pixels) and `navigator.language` when the job was created, and the
  * emotions it showed last (`CharEmotion`) for the chat's character or each member of its group, by
- * character id, oldest first (Phase 5 slice 11: the emotion modes penalize a recent choice).
+ * character id, oldest first (the emotion modes penalize a recent choice).
  */
 export type GenerationClientEnv = {
     viewport: { width: number; height: number };
@@ -77,7 +77,7 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
 
 /**
  * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, or a manual
- * trigger (`risu-trigger`, `/trigger`) by name (Phase 5 slice 8b; its `risu-id` is `context.triggerId`).
+ * trigger (`risu-trigger`, `/trigger`) by name (its `risu-id` is `context.triggerId`).
  */
 export type GenerationCommand = { type: "button"; data: string } | { type: "manual"; name: string };
 
@@ -134,9 +134,9 @@ export const GENERATION_ERROR_REASONS = ["failed", "aborted", "shutdown", "maint
 export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
 
 /**
- * Where a job failed (`docs/plan/request-history-diagnostics.md`, slice 6): the job's setup (its
- * scope, bindings, and speakers), the input stage, prompt assembly, an LLM request, a script (Lua, a
- * trigger, a regex script, a plugin hook), a write, or the tail after the reply.
+ * Where a job failed: the job's setup (its scope, bindings, and speakers), the input stage, prompt
+ * assembly, an LLM request, a script (Lua, a trigger, a regex script, a plugin hook), a write, or
+ * the tail after the reply.
  */
 export const GENERATION_ERROR_STAGES = ["setup", "input", "assembly", "request", "script", "persist", "tail"] as const;
 
@@ -248,13 +248,13 @@ export type GenerationTerminalEvent =
           result?: unknown;
           /**
            * A send that ended without counting as sent (a trigger's stop, an error written into the
-           * chat, nothing to continue): the tab's `sendChat` returns false (Phase 5 slice 9).
+           * chat, nothing to continue): the tab's `sendChat` returns false.
            */
           stopped?: true;
           /**
-           * `/multisend` commands a command job ran (slice 11b), in order: the tab sends each part
-           * after the job (the user message appended, then a send), `clear` removing the chat's
-           * messages before each part, and stops at the first part that does not send.
+           * `/multisend` commands a command job ran, in order: the tab sends each part after the
+           * job (the user message appended, then a send), `clear` removing the chat's messages
+           * before each part, and stops at the first part that does not send.
            */
           followUps?: GenerationFollowUp[];
       }
@@ -296,18 +296,18 @@ export type GenerationNotice =
     | { kind: "progress"; payload: { open: boolean; miniMsg: string; msg: string; subMsg: string } }
     | { kind: "tts"; payload: { chaId: string; text: string } }
     /**
-     * A reply finished (`docs/plan/web-push.md`): `chaId`/`chatId` are the job's chat (a group's, not
-     * the speaking member's); the text is the server's (`shared/notifications.ts`).
+     * A reply finished: `chaId`/`chatId` are the job's chat (a group's, not the speaking member's);
+     * the text is the server's (`shared/notifications.ts`).
      */
     | {
           kind: "notification";
           payload: { chaId: string; chatId: string; title: string; body: string; url: string; tag: string };
       }
-    /** Opens a web page in the tab (an MCP server's OAuth authorization page, slice 12); `http(s)` only. */
+    /** Opens a web page in the tab (an MCP server's OAuth authorization page); `http(s)` only. */
     | { kind: "openURL"; payload: { url: string } }
     /**
-     * The send's messages handed to the translation runner (`docs/plan/translation.md` slice 2.3): the
-     * tab shows them loading and follows their runs.
+     * The send's messages handed to the translation runner: the tab shows them loading and follows
+     * their runs.
      */
     | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } };
 
@@ -351,7 +351,7 @@ export type CallbackName =
     | "inlayImage"
     | "imggen";
 
-/** A callback's payload by name; `provider` is defined by slice 11b. */
+/** A callback's payload by name. */
 export type CallbackPayloads = {
     replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
     replacerafterRequest: { text: string; model: string };
@@ -361,32 +361,32 @@ export type CallbackPayloads = {
     editoutput: { text: string };
     editdisplay: { text: string };
     /**
-     * The `chatOutput` listeners for the reply `messageId` of `speakerId` (slice 11): the tab runs
-     * them in order, each with a fresh snapshot of the character and chat and fresh indices, and
-     * answers `true`.
+     * The `chatOutput` listeners for the reply `messageId` of `speakerId`: the tab runs them in
+     * order, each with a fresh snapshot of the character and chat and fresh indices, and answers
+     * `true`.
      */
     chatOutput: { messageId: string; speakerId: string };
     /**
-     * A plugin provider model's request (slice 11b): the tab calls the provider `name` with
-     * `argument` (the prompt and the parameters, built on the server from the job's frozen settings).
-     * A provider that answers text: the callback's answer is `{ success, content }`. One that answers
-     * a stream: the tab sends `chunk` messages with the cumulative text (the first one, possibly
+     * A plugin provider model's request: the tab calls the provider `name` with `argument` (the
+     * prompt and the parameters, built on the server from the job's frozen settings). A provider
+     * that answers text: the callback's answer is `{ success, content }`. One that answers a
+     * stream: the tab sends `chunk` messages with the cumulative text (the first one, possibly
      * empty, as soon as the stream exists) and then answers `{ success: true, streamed: true }`. No
      * answer from the provider at all: `{ none: true }`.
      */
     provider: { name: string; argument: Record<string, unknown> };
     /**
-     * The tools of an MCP that lives in the tab (slice 12): a plugin MCP of the job's hook list, or one
-     * of `TAB_MCP_IDENTIFIERS`. The tab handshakes it (a directory picker, a credential prompt) and
+     * The tools of an MCP that lives in the tab: a plugin MCP of the job's hook list, or one of
+     * `TAB_MCP_IDENTIFIERS`. The tab handshakes it (a directory picker, a credential prompt) and
      * answers its tools as `{ name, description, inputSchema }` entries.
      */
     mcpList: { identifier: string };
     /** A call of one of those tools: answered with the tool's content. */
     mcpTool: { identifier: string; tool: string; args: unknown };
     /**
-     * The chat of `characterId` this tab has selected (slice 12b: RisuAccess's chat history of a
-     * character other than the job's; the selection is per tab), answered `{ chatId }`, or `null`
-     * when the tab has no such character or chat.
+     * The chat of `characterId` this tab has selected (RisuAccess's chat history of a character
+     * other than the job's; the selection is per tab), answered `{ chatId }`, or `null` when the
+     * tab has no such character or chat.
      */
     selectedChat: { characterId: string };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
@@ -398,14 +398,14 @@ export type CallbackPayloads = {
      */
     inlayImage: { id: string; asset: string } | { id: string; mimeType: string; data: string };
     /**
-     * The image view of a reply (`viewScreen === "imggen"`, slice 11): the tab runs `stableDiff` for
+     * The image view of a reply (`viewScreen === "imggen"`): the tab runs `stableDiff` for
      * `characterId` with `text` (the last user message and the character messages after it) and its
      * own image settings, shows the image, and answers whether one was made.
      */
     imggen: { characterId: string; text: string };
 };
 
-/** The chat, prompt and model presets, and persona a callback acts on (the Phase 4 hook context). */
+/** The chat, prompt and model presets, and persona a callback acts on (the hook context). */
 export type CallbackTargets = {
     chatRef: { chaId: string; chatId: string };
     presetId: string;

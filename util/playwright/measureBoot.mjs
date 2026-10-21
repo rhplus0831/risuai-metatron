@@ -1,7 +1,6 @@
-// Measurement for the Boot Resource Cache plan's slice 4 (`docs/plan/boot-resource-cache.md`, archived
-// when it closes): the boot read on a server shaped like the reported one (synthetic data: 14 modules of
-// ~9.3k asset tuples of ~125 bytes each (130k in all), 18 characters of ~250 KB with one chat each,
-// 50 presets: a ~21.6 MB plain read), over a throttled network.
+// Measurement for the boot resource cache: the boot read on a server shaped like the reported one
+// (synthetic data: 14 modules of ~9.3k asset tuples of ~125 bytes each (130k in all), 18 characters
+// of ~250 KB with one chat each, 50 presets: a ~21.6 MB plain read), over a throttled network.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // with the page's network throttled through CDP (`THROTTLE_MBPS`, default 10, both ways; `LATENCY_MS`,
@@ -9,7 +8,8 @@
 // browser's HTTP cache stays on (no request routing), as in a real reload. The scenarios, each `RUNS`
 // times (default 3):
 // - `plain`: the boot request blocked (the app falls back to the plain read) and every request sent
-//   with `Accept-Encoding: identity` (CDP extra headers): the uncompressed fallback baseline, close to the boot before the plan;
+//   with `Accept-Encoding: identity` (CDP extra headers): the uncompressed fallback baseline, close
+//   to the boot before the boot cache;
 // - `cold`: the boot cache deleted, then a reload: the boot request claims nothing, compressed answer;
 // - `warm`: a reload with the cache the previous boot wrote, nothing changed on the server;
 // - `module`: one module's assets edited through the routes, then a reload;

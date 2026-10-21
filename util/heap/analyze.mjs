@@ -13,7 +13,7 @@
 //   node util/heap/analyze.mjs top <snapshot> [--depth 4] [--top 40]
 //       the largest retainers (dominator retained size) at most `--depth` levels below the root
 //   node util/heap/analyze.mjs report <snapshot> [--json]
-//       the heap memory plan's numbers (`heapReport`)
+//       the heap numbers the measurements check (`heapReport`)
 //
 // Snapshots of user data stay local: nothing here prints string content unless asked (--prefix N),
 // and no property key unless asked (--keys): a key can be user text, so without it a property edge

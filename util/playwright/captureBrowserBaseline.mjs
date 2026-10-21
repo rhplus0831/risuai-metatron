@@ -1,6 +1,5 @@
-// Captures the Phase 5 baseline fixtures (docs/plan/phases/slices/phase-5-server-side-processing/
-// implementation-plan.md, "Order and stops": the baseline capture after Stop A) from the browser
-// path as it is before slice 3 changes it, into server/src/tests/fixtures/baseline/:
+// Captures the server baseline fixtures from the browser path as it was before CBS moved into
+// `shared/`, into server/src/tests/fixtures/baseline/:
 //
 // - scenario.json: the seed (settings, personas, presets, characters, chats, messages) the capture
 //   applied, so a server test can rebuild the same state.
@@ -851,10 +850,10 @@ try {
         },
     );
     // At the baseline commit the client's Lua runtime (`scriptings.ts` `makeLuaFactory`, then
-    // `new LuaFactory()` with no URL) fetched wasmoon's glue from unpkg at run time; since Stop B it
-    // loads the app's own asset. For a recapture of the baseline, the capture answers that request
-    // with the installed package's copy of the same version, so no network is used and the bytes
-    // are pinned.
+    // `new LuaFactory()` with no URL) fetched wasmoon's glue from unpkg at run time; now it loads
+    // the app's own asset. For a recapture of the baseline, the capture answers that request with
+    // the installed package's copy of the same version, so no network is used and the bytes are
+    // pinned.
     const wasmoonVersion = JSON.parse(
         await readFile(path.join(repoRoot, "node_modules/wasmoon/package.json"), "utf8"),
     ).version;

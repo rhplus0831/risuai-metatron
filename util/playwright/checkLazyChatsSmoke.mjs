@@ -1,11 +1,10 @@
-// The Phase 6 Stop C Docker smoke (lazy chats, slice 9b), against the built app (the Docker image on a
-// fresh volume; the check sets its password), through the UI and the public API only (no dev
-// modules). A character with 12 chats: the boot reads chat summaries only and no chat at home;
-// opening the character reads its selected chat alone; each chat is read once when it is first
-// opened; after eleven switches the least recently used chats are evicted (opening one reads it
-// again) and a recent one is not (no read); a second client converges on another writer's rename of
-// a chat it has not loaded through the summary list, without a chat read; nothing is written by
-// opening, switching, or reloading.
+// The lazy chats Docker smoke, against the built app (the Docker image on a fresh volume; the check
+// sets its password), through the UI and the public API only (no dev modules). A character with 12
+// chats: the boot reads chat summaries only and no chat at home; opening the character reads its
+// selected chat alone; each chat is read once when it is first opened; after eleven switches the
+// least recently used chats are evicted (opening one reads it again) and a recent one is not (no
+// read); a second client converges on another writer's rename of a chat it has not loaded through
+// the summary list, without a chat read; nothing is written by opening, switching, or reloading.
 //
 // Usage: node util/playwright/checkLazyChatsSmoke.mjs --base http://localhost:6246 --password docker-pw
 import { randomUUID } from "node:crypto";

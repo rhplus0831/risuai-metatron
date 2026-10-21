@@ -11,11 +11,11 @@ import {
     withFields,
 } from "../recordPatch.ts";
 
-// Audit item A1: the record patch helpers the server store and the client share. The item-id rule
-// (`itemIds`), the checks (`checkFields`, `checkItemPatch`), the applications (`withFields`,
-// `applyItemPatch`), and the diffs the change feed is built from (`diffFields`, `diffItems`), with
-// `__proto__` and `constructor` as field names and as ids, and a seeded round trip of random lists:
-// applying `diffItems(old, next)` to `old` gives `next` as a JSON value.
+// The record patch helpers the server store and the client share. The item-id rule (`itemIds`), the
+// checks (`checkFields`, `checkItemPatch`), the applications (`withFields`, `applyItemPatch`), and
+// the diffs the change feed is built from (`diffFields`, `diffItems`), with `__proto__` and
+// `constructor` as field names and as ids, and a seeded round trip of random lists: applying
+// `diffItems(old, next)` to `old` gives `next` as a JSON value.
 
 const item = (id: string, extra: Record<string, unknown> = {}) => ({ id, ...extra });
 /** An object with an own `__proto__` key (a Svelte proxy or `JSON.parse` stores one). */

@@ -4,9 +4,9 @@ import type { MessageTranslation } from "../database.ts";
 import { translationSourceHash } from "../translation/hash.ts";
 import { isTranslateMessageAnswer, TRANSLATE_MESSAGE_PATH } from "../translation/route.ts";
 
-// `docs/plan/translation.md` slice 1.4: the contract the tab's caller (`storedTranslation.svelte.ts`)
-// and the server route (`server/src/routes/translate.ts`) share. The tab validates every 200 answer
-// with `isTranslateMessageAnswer` before it reads it (Astra plan review, point 11).
+// The contract the tab's caller (`storedTranslation.svelte.ts`) and the server route
+// (`server/src/routes/translate.ts`) share. The tab validates every 200 answer with
+// `isTranslateMessageAnswer` before it reads it.
 
 const translation: MessageTranslation = {
     text: "ㄱ",

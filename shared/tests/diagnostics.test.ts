@@ -25,13 +25,12 @@ import {
 } from "../diagnostics.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
 
-// Request history slices 7 and 8 (`docs/plan/request-history-diagnostics.md`, "Diagnostics folder"):
-// the content-free projection of a diagnostic event (`shared/diagnostics.ts`). Every kind has an
-// exact key list, every field its own check, and a value that fails is dropped on its own
-// (decision 9): no free text, no URL, no path outside the application, no message. The tests feed
-// each field what an attacker or a bug would (names, paths, queries, forged frames) and look at
-// what is kept. Slice 8 adds the browser's kinds, the route table (`ROUTE_TEMPLATES`,
-// `apiRouteTemplate`, `isApiPath`), the browser frames (`CLIENT_FRAME`), and the duck-typed name.
+// The content-free projection of a diagnostic event (`shared/diagnostics.ts`). Every kind has an
+// exact key list, every field its own check, and a value that fails is dropped on its own: no free
+// text, no URL, no path outside the application, no message. The tests feed each field what an
+// attacker or a bug would (names, paths, queries, forged frames) and look at what is kept, with the
+// browser's kinds, the route table (`ROUTE_TEMPLATES`, `apiRouteTemplate`, `isApiPath`), the
+// browser frames (`CLIENT_FRAME`), and the duck-typed name.
 
 const ID = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const AT = 1_700_000_000_000;

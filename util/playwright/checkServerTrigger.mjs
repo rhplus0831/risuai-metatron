@@ -1,8 +1,7 @@
-// Browser check for Phase 5 slice 8b: a manual trigger (`risu-trigger` with `risu-id`) in a
-// character's greeting runs on the server as a `command` job: the browser posts the job, the
-// trigger's alert and question appear and are answered in the UI, its chat changes (with
-// `{{trigger_id}}`) show and are stored, and they survive a reload; `/trigger name` typed in the
-// chat input runs on the server too.
+// Browser check: a manual trigger (`risu-trigger` with `risu-id`) in a character's greeting runs on
+// the server as a `command` job: the browser posts the job, the trigger's alert and question appear
+// and are answered in the UI, its chat changes (with `{{trigger_id}}`) show and are stored, and
+// they survive a reload; `/trigger name` typed in the chat input runs on the server too.
 //
 // Usage: node util/playwright/checkServerTrigger.mjs [--base <url> --password <pw>] (production: the built app,
 // e.g. the Docker image on a fresh volume; the check sets its password)
@@ -166,7 +165,7 @@ try {
                     },
                 ],
                 // A bound chat: a command job runs on its chat's binding or not at all, and a
-                // character's first chat starts unbound (`docs/plan/chat-binding.md`).
+                // character's first chat starts unbound.
                 chats: [
                     {
                         characterId: chaId,

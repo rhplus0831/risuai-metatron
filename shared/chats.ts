@@ -2,9 +2,9 @@ import type { Chat, Message, MessageTranslation } from "./database.ts";
 import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 
 /**
- * The chat wire contract (Phase 2 of `docs/plan/PLAN.md`). A chat is stored as its metadata plus
- * one row per message, addressed by `Message.chatId`; each character's chat order is a record of its
- * own. Chat changes travel in the resource batch (`POST /api/resources/batch`) beside resource ops.
+ * The chat wire contract. A chat is stored as its metadata plus one row per message, addressed by
+ * `Message.chatId`; each character's chat order is a record of its own. Chat changes travel in the
+ * resource batch (`POST /api/resources/batch`) beside resource ops.
  */
 
 /** Chat fields a `meta` op may not set or unset: identity, the messages, and client-only state. */
@@ -30,10 +30,10 @@ export type MessageGeneration = { id: string; seq: number; final?: boolean };
 
 /**
  * One chat operation. `create`, `delete`, `replace`, and a `remove` of several ids need the chat's
- * current revision; the others apply on a stale revision (Decision 4), except a `begin` that starts a
- * generation the message does not know yet: it needs the current revision unless the message was
- * inserted by the same group. A `begin` of the message's current or an earlier generation is a replay
- * and changes nothing.
+ * current revision; the others apply on a stale revision, except a `begin` that starts a generation
+ * the message does not know yet: it needs the current revision unless the message was inserted by
+ * the same group. A `begin` of the message's current or an earlier generation is a replay and
+ * changes nothing.
  *
  * A `setText`, `setMessage`, `patchMessage`, or `setTranslation` whose message is gone when it runs
  * changes nothing and is reported `missing` (`ChatGroupResult.targets`); the rest of the group still
@@ -83,8 +83,8 @@ export type ChatOp =
     | { op: "remove"; ids: string[] }
     | { op: "begin"; id: string; generationId: string }
     /**
-     * Sets or clears a message's stored translation (`docs/plan/translation.md`). A translation lands
-     * only while its `sourceHash` matches the message's current `data`, else the op is `ignored`
+     * Sets or clears a message's stored translation. A translation lands only while its
+     * `sourceHash` matches the message's current `data`, else the op is `ignored`
      * (`ChatGroupResult.translations`); `null` always clears. The only op besides `replace` that
      * changes a stored translation (`setMessage` keeps it).
      */
@@ -93,14 +93,13 @@ export type ChatOp =
 /**
  * Every change to one chat in one batch. `baseRevision` is null only for a group starting with `create`.
  *
- * `groupId` (data-loss plan slice 6b, audit D1): the client's id of the group, the same on a resend.
- * The chat remembers the ids of the last `MAX_CHAT_GROUP_IDS` (server) groups it applied, answered
- * or not, so a resend of one of them is answered with that group's result (`ChatGroupResult`) and
- * changes nothing, before any lock, revision, or anchor check. `retry`: this is a resend of a group
- * whose answer was lost; when the chat no longer remembers its id and may have dropped it (the
- * group's base is not newer than the oldest id it kept), the group conflicts with `reason: "expired"`
- * instead of applying a second time. The ids belong to a chat incarnation: a chat deleted and created
- * again remembers none.
+ * `groupId`: the client's id of the group, the same on a resend. The chat remembers the ids of the
+ * last `MAX_CHAT_GROUP_IDS` (server) groups it applied, answered or not, so a resend of one of them
+ * is answered with that group's result (`ChatGroupResult`) and changes nothing, before any lock,
+ * revision, or anchor check. `retry`: this is a resend of a group whose answer was lost; when the
+ * chat no longer remembers its id and may have dropped it (the group's base is not newer than the
+ * oldest id it kept), the group conflicts with `reason: "expired"` instead of applying a second
+ * time. The ids belong to a chat incarnation: a chat deleted and created again remembers none.
  */
 export type ChatGroup = {
     characterId: string;
@@ -172,10 +171,10 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /**
- * A chat's summary (Phase 6 slice 9a): what a chat list shows, projected from the stored metadata
- * without reading message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`,
- * `supaMemoryData`), bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive
- * defaulted (the server's chat normalizer stores both); `pinned` is projected only when true.
+ * A chat's summary: what a chat list shows, projected from the stored metadata without reading
+ * message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),
+ * bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive defaulted (the
+ * server's chat normalizer stores both); `pinned` is projected only when true.
  */
 export type ChatSummary = {
     characterId: string;
@@ -193,10 +192,10 @@ export type ChatSummary = {
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
- * touches a message a server generation job owns (Phase 5); discard by-id edits of the named locked
- * messages and reload the chat when idle, retrying retained work after the job ends.
- * `reason: "expired"`: the chat may have forgotten a retry's id; it may already have landed, so reload
- * and discard with the notice instead of repairing it or giving it a new identity.
+ * touches a message a server generation job owns; discard by-id edits of the named locked messages
+ * and reload the chat when idle, retrying retained work after the job ends. `reason: "expired"`:
+ * the chat may have forgotten a retry's id; it may already have landed, so reload and discard with
+ * the notice instead of repairing it or giving it a new identity.
  */
 export type ChatConflict = {
     kind: "chat";

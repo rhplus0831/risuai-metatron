@@ -7,10 +7,10 @@ import type { RisuModule } from "../modules.ts";
  * (`evaluator.ts`) reach their host only through `CBSRegisterArg` and `CbsHost`.
  */
 /**
- * The settings and the character list shared CBS reads from its host's database (Phase 6 slice 10,
- * F-d): the server's job projection is a whole `Database`; the client serves these fields from its
- * records (`parser.svelte.ts`). The characters are in the legacy shape: shared CBS reads a
- * character's `chats` and `chatPage`.
+ * The settings and the character list shared CBS reads from its host's database: the server's job
+ * projection is a whole `Database`; the client serves these fields from its records
+ * (`parser.svelte.ts`). The characters are in the legacy shape: shared CBS reads a character's
+ * `chats` and `chatPage`.
  */
 export type CbsDatabase = Pick<
     Database,

@@ -1,5 +1,5 @@
 /**
- * The JSON kind of a stored value, for the shape checks of the Phase 3 normalizers
+ * The JSON kind of a stored value, for the shape checks of the preset and section normalizers
  * (`normalizePreset` and the server section normalizers). A field declares one kind; a value of
  * another kind is replaced by the field's default.
  */

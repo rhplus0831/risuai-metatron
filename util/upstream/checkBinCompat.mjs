@@ -7,7 +7,8 @@
 //   node util/upstream/checkBinCompat.mjs [--bin <file.bin>]...
 //
 // Without `--bin` it runs three checks on synthetic data:
-// 1. encoder: `encodeUpstreamDatabase` (S1) output decoded by upstream's `decodeRisuSave` equals the input
+// 1. encoder: `encodeUpstreamDatabase` output decoded by upstream's `decodeRisuSave` equals the
+//    input
 //    (the frozen codec fixture and an edge-case object).
 // 2. export: a synthetic upstream library imported through this server's upstream import routes, then
 //    exported through the RisuAI-compatible export routes (without and with API keys); upstream's
@@ -293,7 +294,7 @@ const formatCounts = (counts) =>
         .join(", ");
 
 // ---------------------------------------------------------------------------------------------------
-// Check 1: S1's encoder read by upstream's decoder
+// Check 1: this server's encoder read by upstream's decoder
 
 /** Values the codec must carry exactly: wide and negative integers, floats, bytes, long non-ASCII text. */
 function edgeCaseDatabase() {

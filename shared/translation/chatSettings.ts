@@ -3,10 +3,9 @@ import type { TranslatorPreset } from "../settings.ts";
 import { createTranslatorPreset, isTranslatorPreset } from "../translatorPresets.ts";
 
 /**
- * A chat's translation settings (`docs/plan/translation.md` slices 2.1 and 2.2, decisions 3, 4, and
- * 10). They are stored on the chat as sent, like the binding fields, and are list fields (the chat
- * summary carries them, so a new chat inherits them from a chat that is not loaded). A missing or
- * malformed field reads as unset: translation off.
+ * A chat's translation settings. They are stored on the chat as sent, like the binding fields, and
+ * are list fields (the chat summary carries them, so a new chat inherits them from a chat that is
+ * not loaded). A missing or malformed field reads as unset: translation off.
  */
 
 /** The stored translation fields of a chat, a chat summary, or a chat list entry. */
@@ -88,9 +87,9 @@ export type ResolvedTranslatorPreset = {
 };
 
 /**
- * The translator preset a chat translates with (decision 4): the chat's own when it names a valid
- * preset that exists, else the global selection. Not the binding's fail-closed rule: translation is
- * optional, and a deleted preset rewrites nothing.
+ * The translator preset a chat translates with: the chat's own when it names a valid preset that
+ * exists, else the global selection. Not the binding's fail-closed rule: translation is optional,
+ * and a deleted preset rewrites nothing.
  */
 export function resolveTranslatorPreset(
     chat: Readonly<ChatTranslationFields> | null | undefined,

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { captureToggleValues, compareTogglePreset, toggleValuesForChat, type TogglePreset } from "./togglePresets.ts";
 
-// Slice 4's contract: resolved values are captured under bare keys; projection is
-// restricted to defined toggles and comparison distinguishes edits from schema drift.
+// The capture contract: resolved values are captured under bare keys; projection is restricted to
+// defined toggles and comparison distinguishes edits from schema drift.
 const definitions = [
     "help=Help=caption",
     "flag=Flag",

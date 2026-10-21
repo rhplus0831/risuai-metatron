@@ -1,14 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`,
-// "Validation", the manual check "every settings page still loads and saves through the facade"): the
-// settings records are the source of truth and the settings views (`settingsViews.svelte.ts`) read and
-// write them, so every settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
-// accordion it holds) mounts without a page error and without writing anything; an edit made through
-// the page's own controls (a section field bound with `bind:checked`, a nested section field bound
-// with `bind:value`) is saved and survives a reload. The supporter page (77) is left out: it fetches from public services,
-// which this context refuses.
+// Every settings page still loads and saves through the facade: the settings records are the source
+// of truth and the settings views (`settingsViews.svelte.ts`) read and write them, so every
+// settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
+// accordion it holds) mounts without a page error and without writing anything; an edit made
+// through the page's own controls (a section field bound with `bind:checked`, a nested section
+// field bound with `bind:value`) is saved and survives a reload. The supporter page (77) is left
+// out: it fetches from public services, which this context refuses.
 
 /** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(2500);
@@ -106,8 +105,8 @@ test("every settings page mounts through the records without an error or a write
         }
         await settle(page);
     };
-    // The first visit may save defaults some pages fill in on mount (it did before this slice too); a
-    // second visit reads everything again and writes nothing.
+    // The first visit may save defaults some pages fill in on mount (they always have); a second
+    // visit reads everything again and writes nothing.
     await visitAll();
     batches.length = 0;
     await visitAll();

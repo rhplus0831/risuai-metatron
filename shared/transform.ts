@@ -1,8 +1,8 @@
 /**
- * The script transform (Phase 5 slice 13): the read-only batch endpoint that runs the display
- * transform (`editdisplay`: Lua `editDisplay`, the `display` trigger, CBS, the regex scripts, the
- * dynamic assets) and the `editprocess` transform (CBS, the regex scripts) of `processScriptFull` on
- * the server. Both runtimes compile this file: no DOM types, no Svelte runes.
+ * The script transform: the read-only batch endpoint that runs the display transform
+ * (`editdisplay`: Lua `editDisplay`, the `display` trigger, CBS, the regex scripts, the dynamic
+ * assets) and the `editprocess` transform (CBS, the regex scripts) of `processScriptFull` on the
+ * server. Both runtimes compile this file: no DOM types, no Svelte runes.
  *
  * `POST /api/transform` takes a `TransformRequest`. Without `handlers` it answers every target. With
  * `handlers` (the tab has plugin handlers for the mode), the server runs the stages before them,

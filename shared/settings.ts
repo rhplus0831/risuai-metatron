@@ -87,15 +87,14 @@ export interface TranslatorPreset {
     /** 1 to `TRANSLATOR_PRESET_MAX_STEPS` steps (`normalizeTranslatorSteps`, `shared/translatorPresets.ts`). */
     steps: TranslatorStep[];
     /**
-     * Send Text As-Is (`docs/plan/translation.md` slice 3.2): the whole source goes through the
-     * pipeline once, without line protection or style placeholders. Only `true` is stored (the
-     * normalizer drops any other value), so an absent field is off.
+     * Send Text As-Is: the whole source goes through the pipeline once, without line protection or
+     * style placeholders. Only `true` is stored (the normalizer drops any other value), so an
+     * absent field is off.
      */
     sendTextAsIs?: boolean;
     /**
-     * Exclude Chain-of-Thought (`docs/plan/translation.md` slice 3.4): `<Thoughts>` and `<think>`
-     * blocks are removed from the source and the history slots before they are sent. Only `true` is
-     * stored, like `sendTextAsIs`.
+     * Exclude Chain-of-Thought: `<Thoughts>` and `<think>` blocks are removed from the source and
+     * the history slots before they are sent. Only `true` is stored, like `sendTextAsIs`.
      */
     excludeThoughts?: boolean;
 }

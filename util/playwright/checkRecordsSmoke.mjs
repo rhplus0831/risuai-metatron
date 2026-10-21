@@ -1,9 +1,9 @@
-// The Phase 6 Stop B Docker smoke (open, edit, reload, two tabs), for the records slices 4 and 5 made
-// the source of truth: a settings edit (a nested section field, `NAIImgConfig.width`, typed into the
-// NovelAI image settings) and a character edit (the description, typed into the character editor) are
-// saved, survive a reload, and reach a second client without a reload. Run against the built app (the
-// Docker image on a fresh volume; the check sets its password), through the UI and the public API only
-// (no dev modules).
+// The records Docker smoke (open, edit, reload, two tabs), for the settings and character records
+// that are the source of truth: a settings edit (a nested section field, `NAIImgConfig.width`,
+// typed into the NovelAI image settings) and a character edit (the description, typed into the
+// character editor) are saved, survive a reload, and reach a second client without a reload. Run
+// against the built app (the Docker image on a fresh volume; the check sets its password), through
+// the UI and the public API only (no dev modules).
 //
 // Usage: node util/playwright/checkRecordsSmoke.mjs --base http://localhost:6232 --password docker-pw
 import { randomUUID } from "node:crypto";
@@ -185,7 +185,7 @@ try {
     check("seed: stored", seeded.status === 200, seeded);
     const stored = (await api(`/api/resources/characters/${chaId}`)).body?.data;
     check(
-        "seed: the server normalized the character (slice 5b defaults)",
+        "seed: the server normalized the character (the shared defaults)",
         stored?.firstMessage === "" && Array.isArray(stored?.globalLore) && stored?.ttsMode === "",
         stored,
     );
@@ -227,9 +227,9 @@ try {
     check("settings edit: B shows it", liveWidth === true, liveWidth);
 
     // Reload: A shows both edits from the server, and the reload writes nothing. (No key is pressed
-    // here: `hotkeyMatches` writes a hotkey's missing modifier flags into the stored list on a key
-    // press, a write the server's hotkey normalizer undoes, so the first key press of a session saves
-    // `hotkeys`. That predates Phase 6; it is reported at Stop B.)
+    // here: `hotkeyMatches` once wrote a hotkey's missing modifier flags into the stored list on a
+    // key press, a write the server's hotkey normalizer undoes, so the first key press of a session
+    // saved `hotkeys`. It only reads them now.)
     let batches = 0;
     const written = [];
     A.page.on("request", (r) => {

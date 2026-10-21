@@ -2,8 +2,8 @@ import type { MessageTranslation } from "../database.ts";
 import { translationSourceHash } from "./hash.ts";
 
 /**
- * The stored translation of a message (`docs/plan/translation.md`): its shape, its freshness, and
- * the rule both runtimes apply to a message they take in.
+ * The stored translation of a message: its shape, its freshness, and the rule both runtimes apply
+ * to a message they take in.
  */
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

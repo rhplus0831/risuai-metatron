@@ -411,14 +411,13 @@ export interface Database {
     translateBeforeHTMLFormatting: boolean;
     autoTranslateCachedOnly: boolean;
     /**
-     * What the LLM translator translates (`docs/plan/translation.md` decision 9): `"message"`, the
-     * message's source text, stored on the message by the server; `"rendered"`, the rendered output,
-     * cached in this browser.
+     * What the LLM translator translates: `"message"`, the message's source text, stored on the
+     * message by the server; `"rendered"`, the rendered output, cached in this browser.
      */
     llmTranslationTarget: "message" | "rendered";
     /**
-     * The token budget of each translator history slot (`docs/plan/translation.md` slice 3.3), counted
-     * with the main model's tokenizer by the server runner: a finite number above 0 (2048 by default).
+     * The token budget of each translator history slot, counted with the main model's tokenizer by
+     * the server runner: a finite number above 0 (2048 by default).
      */
     translatorHistoryMaxTokens: number;
     notification: boolean;
@@ -756,7 +755,7 @@ export interface character {
     imported?: boolean;
     trashTime?: number;
     nickname?: string;
-    /** The completion notification's body for this character (`docs/plan/web-push.md`); local, never in a card. */
+    /** The completion notification's body for this character; local, never in a card. */
     customNotificationMessage?: string;
     source?: string[];
     group_only_greetings?: string[];
@@ -828,7 +827,7 @@ export interface groupChat {
     lorePlus?: boolean;
     trashTime?: number;
     nickname?: string;
-    /** The completion notification's body for this group (`docs/plan/web-push.md`); local. */
+    /** The completion notification's body for this group; local. */
     customNotificationMessage?: string;
     defaultVariables?: string;
     lowLevelAccess?: boolean;
@@ -865,9 +864,9 @@ export interface groupChat {
 }
 
 /**
- * A prompt preset (the `presets` resource; `docs/plan/split-preset.md`). It stores only the
- * prompt-owned fields (`PROMPT_PRESET_FIELDS`) and `name`/`image`; the model fields below
- * are read only from old files and imports, and `normalizePreset` drops them.
+ * A prompt preset (the `presets` resource). It stores only the prompt-owned fields
+ * (`PROMPT_PRESET_FIELDS`) and `name`/`image`; the model fields below are read only from old files
+ * and imports, and `normalizePreset` drops them.
  */
 export interface botPreset {
     /** Assigned at creation (`normalizePreset`, `shared/presets.ts`); stripped from `.risup` exports. */
@@ -984,7 +983,7 @@ export type AuxModelMode = "memory" | "translate" | "emotion" | "otherAx";
 /** A slot states whether it names a profile or a bare definition; ids are never guessed apart. */
 export type ModelSlot = { profileId: string } | { modelId: string };
 
-/** Which profiles a preset uses (`docs/plan/model-profiles.md`); auxiliary slots may be bare. */
+/** Which profiles a preset uses; auxiliary slots may be bare. */
 export type ModelPreset = {
     id: string;
     name: string;
@@ -1199,7 +1198,7 @@ export interface Chat {
     scriptstate?: { [key: string]: string | number | boolean };
     modules?: string[];
     id?: string;
-    /** The persona this chat is bound to (`docs/plan/chat-binding.md`; misspelled name kept, D3). */
+    /** The persona this chat is bound to (misspelled name kept, D3). */
     bindedPersona?: string;
     /** The prompt preset this chat is bound to (`presets`). */
     promptPresetId?: string;
@@ -1208,20 +1207,20 @@ export interface Chat {
     /** Set on an imported chat: its binding needs the user's confirmation before it is sent. */
     bindingReview?: boolean;
     /*
-     * Translation settings (`docs/plan/translation.md` slice 2.1; read through
-     * `shared/translation/chatSettings.ts`, missing means off). List fields, stored as sent.
+     * Translation settings (read through `shared/translation/chatSettings.ts`, missing means off).
+     * List fields, stored as sent.
      */
     /** The chat's translator preset; none, or one that was deleted, uses the global selection. */
     translatorPresetId?: string;
-    /** Show (and, from slice 2.3, request) this chat's translations without a click. */
+    /** Show (and request) this chat's translations without a click. */
     autoTranslate?: boolean;
-    /** Slice 2.3: automatic translation of the replies only, not the user's messages. */
+    /** Automatic translation of the replies only, not the user's messages. */
     translateBotOnly?: boolean;
-    /** Slice 2.4: the source and its translation shown in pairs. */
+    /** The source and its translation shown in pairs. */
     bilingualDisplay?: boolean;
-    /** Slice 2.4: which side of a pair is emphasized. */
+    /** Which side of a pair is emphasized. */
     bilingualEmphasis?: "original" | "translation";
-    /** Slice 2.4: 0 or unset pairs by line; 1–10 pairs every N sentences. */
+    /** 0 or unset pairs by line; 1–10 pairs every N sentences. */
     bilingualSentences?: number;
     fmIndex?: number;
     hypaV3Data?: SerializableHypaV3Data;
@@ -1238,8 +1237,8 @@ export interface Chat {
     togglePresetId?: string;
     /**
      * The remembered tool calls of this chat (`rememberToolUsage`), by call id: what a
-     * `<tool_call>` marker in a message stands for (Phase 5 slice 11b). Conversation data: stored
-     * and deleted with the chat.
+     * `<tool_call>` marker in a message stands for. Conversation data: stored and deleted with the
+     * chat.
      */
     toolCalls?: { [id: string]: ToolCallRecord };
 }
@@ -1263,9 +1262,9 @@ export interface Message {
     disabled?: false | true | "allBefore";
     isComment?: boolean;
     /**
-     * A stored translation of `data` (`docs/plan/translation.md`), shown only while fresh
-     * (`storedTranslation`, `shared/translation/messageTranslation.ts`). Written by the `setTranslation`
-     * chat op; a `setMessage` never changes it.
+     * A stored translation of `data`, shown only while fresh (`storedTranslation`,
+     * `shared/translation/messageTranslation.ts`). Written by the `setTranslation` chat op; a
+     * `setMessage` never changes it.
      */
     translation?: MessageTranslation;
 }

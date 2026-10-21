@@ -1,5 +1,5 @@
-// Captures the Phase 3 pre-phase fixtures (docs/plan/phases/slices/phase-3-settings-sections/
-// implementation-plan.md, "Step 0 recipe") into src/ts/storage/tests/fixtures/boot/:
+// Captures the fixtures of the app from before the settings were split into section records into
+// src/ts/storage/tests/fixtures/boot/:
 //
 // - boot-snapshot.json: `getDatabase({ snapshot: true })` right after the first boot on an empty
 //   server, before anything else runs.

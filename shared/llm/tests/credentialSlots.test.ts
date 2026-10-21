@@ -5,9 +5,8 @@ import { LLMFormat, LLMProvider } from "../../llm.ts";
 import { credentialSlotOf } from "../credentialSlots.ts";
 import { BASE_LLM_MODELS, resolveModelInfo } from "../models.ts";
 
-// `docs/plan/shared-api-keys.md`, "The credential slot table": which default a model reads today
-// and which named key types it accepts. The binding itself is the profile's `credentialId`
-// (`docs/plan/model-profiles.md`).
+// The credential slot table: which default a model reads today and which named key types it
+// accepts. The binding itself is the profile's `credentialId`.
 
 const slotOf = (id: string) => credentialSlotOf(id, resolveModelInfo(id));
 const allButVertex = CREDENTIAL_TYPES.filter((type) => type !== "vertex");

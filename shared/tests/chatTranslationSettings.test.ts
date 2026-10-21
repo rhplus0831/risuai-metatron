@@ -11,12 +11,11 @@ import {
     selectedTranslatorPreset,
 } from "../translation/chatSettings.ts";
 
-// `docs/plan/translation.md` slices 2.1 and 2.2 (decisions 3, 4, 10): the pure readers both sides
-// run over a chat's translation fields. A missing or malformed field reads as off; the resolver
-// takes the chat's preset when it names one that exists, else the global rule (the selected preset,
-// else the first valid one, else a default), reporting `missing` only for a non-blank id that names
-// nothing; the summary projection keeps typed values only, `false` and `0` included, and defaults
-// nothing. None of them writes its inputs.
+// The pure readers both sides run over a chat's translation fields. A missing or malformed field
+// reads as off; the resolver takes the chat's preset when it names one that exists, else the global
+// rule (the selected preset, else the first valid one, else a default), reporting `missing` only
+// for a non-blank id that names nothing; the summary projection keeps typed values only, `false`
+// and `0` included, and defaults nothing. None of them writes its inputs.
 
 const A = createTranslatorPreset("A", { id: "a", prompt: "A {{slot::content}}" });
 const B = createTranslatorPreset("B", { id: "b", prompt: "B {{slot::content}}" });

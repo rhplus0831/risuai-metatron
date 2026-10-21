@@ -1,15 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Phase 3, slice 6 (`docs/plan/phases/slices/phase-3-settings-sections/forwarding-personas.md`,
-// Validation) and the chat binding (`docs/plan/chat-binding.md`: the persona is one of the three
-// fields a chat binds, picked through the binding panel's row or the chat list's "Chat Settings",
-// while a pick at home is the tab's selection): the persona forwarding in the browser, against the
-// isolated stack of `playwright.config.ts`. What only the whole stack shows: an icon picked through
-// the real file chooser while the user leaves for home, where the tab's other persona shows, lands
-// on the persona the chooser opened for and keeps its id, so the chat bound to that persona keeps
-// its binding across a reload (the phase's exit criterion); and the persona selection is per client
-// while the personas are shared.
+// The persona forwarding and the chat binding (the persona is one of the three fields a chat binds,
+// picked through the binding panel's row or the chat list's "Chat Settings", while a pick at home
+// is the tab's selection) in the browser, against the isolated stack of `playwright.config.ts`.
+// What only the whole stack shows: an icon picked through the real file chooser while the user
+// leaves for home, where the tab's other persona shows, lands on the persona the chooser opened for
+// and keeps its id, so the chat bound to that persona keeps its binding across a reload; and the
+// persona selection is per client while the personas are shared.
 
 /** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(3000);
@@ -86,7 +84,7 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     await openApp(page, baseURL!);
     await settle(page);
     const [u1, u2] = await seedPersonas(page);
-    // At home a pick is the tab's selection (decision 8).
+    // At home a pick is the tab's selection.
     await select(page, u2);
     expect((await personas(page)).selected).toBe(u2);
 
@@ -95,7 +93,7 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     const chaId = await page.evaluate(async () => {
         const { selectCharacter } = await import("/src/ts/storage/selection.svelte.ts");
         const { createNewCharacter } = await import("/src/ts/characters.ts");
-        // `createNewCharacter` returns the new character's id (Phase 6 slice 8); the selection is by id.
+        // `createNewCharacter` returns the new character's id; the selection is by id.
         const chaId = createNewCharacter();
         selectCharacter(chaId);
         return chaId;
@@ -163,9 +161,9 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     const view = await personas(page);
     expect(view.selected).toBe(u2);
     expect(view.list.map((persona) => persona.id)).toEqual([u1, u2]);
-    // After the reload the chat is held as its summary (Phase 6 slice 9b: boot reads summaries, and the
-    // tab is at home): the binding is read from its list entry, and the persona readers resolve it
-    // without loading the chat.
+    // After the reload the chat is held as its summary (boot reads summaries, and the tab is at
+    // home): the binding is read from its list entry, and the persona readers resolve it without
+    // loading the chat.
     const binding = await page.evaluate(async (ref) => {
         const { chatEntry, findChat } = await import("/src/ts/storage/chatStore.svelte.ts");
         const { getUserIcon, getPersonaPrompt, getUserName } = await import("/src/ts/util.ts");

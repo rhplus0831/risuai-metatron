@@ -1,11 +1,11 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 5 slice 9: a send from the chat input runs as a server job against a mock provider (an OpenAI-compatible SSE stream): the
-// browser posts the job with the input and its user message id, the user message and the streamed
-// reply show and are stored, a continue extends the reply, a settings edit made right before a
-// preview reaches the assembled prompt (the pre-send flush), an abort keeps the text so far, and a
-// reload in the middle of a slow stream shows the checkpointed text and then the whole reply, and a
-// second reload mid-stream shows Stop for the resumed job, which ends it with the text so far kept
-// (audit JOB-02); the messages render through the server transform.
+// Browser check: a send from the chat input runs as a server job against a mock provider (an
+// OpenAI-compatible SSE stream): the browser posts the job with the input and its user message id,
+// the user message and the streamed reply show and are stored, a continue extends the reply, a
+// settings edit made right before a preview reaches the assembled prompt (the pre-send flush), an
+// abort keeps the text so far, and a reload in the middle of a slow stream shows the checkpointed
+// text and then the whole reply, and a second reload mid-stream shows Stop for the resumed job,
+// which ends it with the text so far kept; the messages render through the server transform.
 //
 // Usage:
 //   node util/playwright/checkServerSend.mjs
@@ -200,8 +200,7 @@ try {
                     },
                 ],
                 // A chat bound to the mock's model preset, the prompt preset, and a persona: a send
-                // refuses an unbound chat, and a character's first chat starts unbound
-                // (`docs/plan/chat-binding.md`).
+                // refuses an unbound chat, and a character's first chat starts unbound.
                 chats: [
                     {
                         characterId: chaId,
@@ -358,8 +357,8 @@ try {
             stored.at(-1)?.data === "Part A. Part B. Part C. Part D. Part E. Part F.",
             stored.at(-1)?.data,
         );
-        // Stop after a reload mid-stream (audit JOB-02, `docs/plan/audit-findings-perf.md` slice 2b): the
-        // resumed job shows Stop, and Stop ends that job with the text so far kept.
+        // Stop after a reload mid-stream: the resumed job shows Stop, and Stop ends that job with
+        // the text so far kept.
         mode = {
             chunks: [
                 "Half A. ",

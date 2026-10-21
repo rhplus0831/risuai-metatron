@@ -1,11 +1,11 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 5 slice 13: the display transform of a chat runs through
-// `POST /api/transform` for a chat with `editdisplay` regex scripts, a Lua `editDisplay` listener
-// that sets a chat variable, and a display trigger (the expected text is checked; since the cutover
-// there is no browser path to compare with): the variable is not stored (rendering is read-only);
-// a streamed reply renders raw while it streams and transformed after; "Re-render" bypasses the
-// cache (a server-evaluated `{{random}}` changes); a tab plugin `editdisplay` handler runs between the
-// two calls; the HypaV3 modal's `editprocess` runs on the server.
+// Browser check: the display transform of a chat runs through `POST /api/transform` for a chat with
+// `editdisplay` regex scripts, a Lua `editDisplay` listener that sets a chat variable, and a
+// display trigger (the expected text is checked; there is no browser path to compare with): the
+// variable is not stored (rendering is read-only); a streamed reply renders raw while it streams
+// and transformed after; "Re-render" bypasses the cache (a server-evaluated `{{random}}` changes);
+// a tab plugin `editdisplay` handler runs between the two calls; the HypaV3 modal's `editprocess`
+// runs on the server.
 //
 // Usage: node util/playwright/checkServerTransform.mjs
 import http from "node:http";
@@ -209,7 +209,7 @@ try {
                                     id: chatId,
                                     name: "Chat",
                                     // Bound: the streamed reply below is a send, which refuses an
-                                    // unbound chat (`docs/plan/chat-binding.md`).
+                                    // unbound chat.
                                     ...chatBindingFixture(modelPresets, presets, personas),
                                     message: [
                                         { role: "user", data: "Hello user VAR", chatId: "m-user" },

@@ -1,6 +1,5 @@
-// Measurement for the heap memory plan (archived `docs/plan/heap-memory.md`, slice M0): the page's JS heap
-// with large modules and characters, in the shape of the user's 2026-10-19 snapshots but with
-// generated content.
+// Measurement of the page's JS heap with large modules and characters, in the shape of the user's
+// 2026-10-19 snapshots but with generated content.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI. Seeds 12 enabled modules of 11,000 `[name, path, "avif"]` assets each, two
@@ -15,7 +14,7 @@
 // 3. `character-asset-edit`: after renaming that character's first additional asset by typing
 //    (timed per keystroke), deleting its second, and the save;
 // 4. `chats`: after opening the five small characters' chats, one after another (their three styled
-//    replies share one stylesheet, slice C2; `HEAP_STYLE_COPIES=3` for a build before it);
+//    replies share one stylesheet; `HEAP_STYLE_COPIES=3` for a build before the shared chat styles);
 // 5. `module-assets`: the module editor's asset list of the first module (one page of rows);
 // 6. `module-asset-edit`: after renaming its first asset by typing (timed per keystroke), deleting
 //    its second, and the save;
@@ -36,13 +35,13 @@
 // (`character-recreate` within 2 MiB of `home`), the booted big character deleted frees at least 2 MiB, and no
 // page error or unexpected egress.
 //
-// Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default they
-// go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default 16000),
-// `HEAP_STEPS` (comma-separated step names: only these, and `boot`, are captured and analysed; every
-// step's UI actions still run, since each starts from the state the one before left, and a check that
-// compares a step not captured prints SKIP), `HEAP_STYLE_COPIES` (the copies of a chat's style the
-// build keeps: 1, the default, since slice C2; 3, one per styled reply, before it), `DEBUG` (server
-// output).
+// Env: `RISU_DIST` (another build), `HEAP_OUT` (keep the snapshots in this directory; by default
+// they go to a temporary directory and are deleted), `HEAP_ANALYZE_MB` (the analysis heap, default
+// 16000), `HEAP_STEPS` (comma-separated step names: only these, and `boot`, are captured and
+// analysed; every step's UI actions still run, since each starts from the state the one before
+// left, and a check that compares a step not captured prints SKIP), `HEAP_STYLE_COPIES` (the copies
+// of a chat's style the build keeps: 1, the default, since the chat styles are shared; 3, one per
+// styled reply, before), `DEBUG` (server output).
 //
 // Usage: pnpm build && node util/playwright/measureHeap.mjs
 import { spawn, execFile } from "node:child_process";
@@ -64,8 +63,8 @@ const FONT_FACES = 120;
 const STYLED_REPLIES = 3;
 // A row's faces: its style's inline and imported ones.
 const ROW_FONT_FACES = 2 * FONT_FACES;
-// The copies of a chat's style on its screen: one shared stylesheet since slice C2 (`chatStyles.ts`),
-// one per styled reply before it.
+// The copies of a chat's style on its screen: one shared stylesheet (`chatStyles.ts`), or one per
+// styled reply in a build before the styles were shared.
 const STYLE_COPIES = Number(process.env.HEAP_STYLE_COPIES ?? 1);
 if (STYLE_COPIES !== 1 && STYLE_COPIES !== STYLED_REPLIES) {
     console.error(`HEAP_STYLE_COPIES is 1 or ${STYLED_REPLIES}.`);
@@ -585,8 +584,8 @@ try {
     for (const [i, id] of smallIds.entries()) {
         chatSheets.push(await openChat(id, `HeapFont${BIG_CHARACTERS + i}`));
     }
-    // Slice C2: every chat's three styled replies keep the build's copies of the style (one, shared
-    // outside the rows, since C2), with exactly their faces.
+    // Every chat's three styled replies keep the build's copies of the style (one, shared outside
+    // the rows, in a build with shared chat styles), with exactly their faces.
     check(
         `fonts: ${STYLE_COPIES} copy of each chat's style`,
         chatSheets.every(
@@ -804,11 +803,10 @@ try {
     if (await homeButton.isVisible().catch(() => false)) await homeButton.click({ timeout: 10_000 });
     await snapshot("boot-module-delete");
 
-    // Slice D1, bounds declared before the fix was measured: nothing of the deleted characters stays
-    // (within 2 MiB of `home`), and deleting the booted big character frees at least 2 MiB (it is more
-    // than that). The module deletion is a measurement only: the server's copy of the modules is new
-    // data, and Svelte keeps the old module assets through the parser's asset inputs (see the plan's D1
-    // entry).
+    // Bounds declared before the fix was measured: nothing of the deleted characters stays (within
+    // 2 MiB of `home`), and deleting the booted big character frees at least 2 MiB (it is more than
+    // that). The module deletion is a measurement only: the server's copy of the modules is new
+    // data, and Svelte keeps the old module assets through the parser's asset inputs.
     const bytes = Object.fromEntries(rows.map((row) => [row.step, row.totalBytes]));
     const MiB = 1048576;
     // A check comparing snapshots runs only when `HEAP_STEPS` captured all of them.
@@ -834,7 +832,7 @@ try {
         ),
     );
 
-    // Slice C1: the chat styles' faces (inline and imported) are on the chat screen, and leave with it.
+    // The chat styles' faces (inline and imported) are on the chat screen, and leave with it.
     const faces = Object.fromEntries(rows.map((row) => [row.step, row.fontFaces]));
     check("fonts: the chat styles' import was fetched", importsServed > 0, { importsServed });
     compared("fonts: on the chat screen, the style's copies", ["chats"], () =>

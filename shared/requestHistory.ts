@@ -1,6 +1,6 @@
 /**
- * The LLM request history's wire shapes (`docs/plan/request-history-diagnostics.md`): what the
- * server's store (`server/src/data/requestHistory.ts`) answers and its routes
+ * The LLM request history's wire shapes: what the server's store
+ * (`server/src/data/requestHistory.ts`) answers and its routes
  * (`server/src/routes/requestHistory.ts`) send to the app's viewer.
  */
 
@@ -12,7 +12,7 @@ export type RequestHistoryStatus = (typeof REQUEST_HISTORY_STATUSES)[number];
 
 /**
  * A provider's error code (OpenAI `error.code`, Anthropic `error.type`, Google `error.status`): the
- * only provider text a content-free record may carry (decision 9).
+ * only provider text a content-free record may carry.
  */
 export const PROVIDER_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -87,7 +87,7 @@ export type RequestHistoryPage = {
 
 /**
  * `PUT`: shares a job's requests to the diagnostics folder for support, or withdraws the share
- * (`docs/plan/request-history-diagnostics.md` slice 10). Body: `RequestHistoryShareBody`.
+ * Body: `RequestHistoryShareBody`.
  */
 export const REQUEST_HISTORY_SHARE_PATH = "/api/request-history/share";
 
@@ -109,8 +109,8 @@ export const SHARE_JOB_ID = new RegExp(`^(?:translate-)?${UUID_TEXT}$`);
 export type RequestHistoryShareTarget = { jobId: string; requestId: null } | { jobId: null; requestId: string };
 
 /**
- * A share or a withdrawal. A `requestId` whose row has a job stands for that job (decision 4); a
- * withdrawal of a request whose row is gone withdraws that request's own share.
+ * A share or a withdrawal. A `requestId` whose row has a job stands for that job; a withdrawal of a
+ * request whose row is gone withdraws that request's own share.
  */
 export type RequestHistoryShareBody =
     | { jobId: string; requestId?: undefined; shared: boolean }

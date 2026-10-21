@@ -1,7 +1,7 @@
 /**
- * The batch asset codec (historical `docs/plan/large-asset-import.md` slice 1b): the local backup archive's
- * record framing (`server/src/data/archive.ts`), each record `u32le nameLength`, the UTF-8 name,
- * `u32le dataLength`, then the bytes, with no header or footer of its own.
+ * The batch asset codec: the local backup archive's record framing (`server/src/data/archive.ts`),
+ * each record `u32le nameLength`, the UTF-8 name, `u32le dataLength`, then the bytes, with no
+ * header or footer of its own.
  *
  * - `POST /api/assets/write` takes records named by their full logical keys (`assets/<id>.<ext>`)
  *   and writes each one under its key (always overwriting, as `/api/write` does).

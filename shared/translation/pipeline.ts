@@ -3,11 +3,10 @@ import { defaultTranslatorPrompt } from "../translatorPresets.ts";
 import { type TranslatorHistory, type TranslatorHistorySlot, translatorHistoryCount } from "./historySlots.ts";
 
 /**
- * The translator pipeline (`docs/plan/translation.md` slice 1.2): a preset's steps run in order, each
- * one a request whose prompt can name the source, the previous step's output, and earlier named
- * outputs. Pure: the caller sends each step's request (`runTranslatorPipeline`'s `runStep`). CBS is
- * not evaluated anywhere in a translator prompt. The history slots (slice 3.3) fill in from the
- * caller's `history`, empty without one.
+ * The translator pipeline: a preset's steps run in order, each one a request whose prompt can name
+ * the source, the previous step's output, and earlier named outputs. Pure: the caller sends each
+ * step's request (`runTranslatorPipeline`'s `runStep`). CBS is not evaluated anywhere in a
+ * translator prompt. The history slots fill in from the caller's `history`, empty without one.
  */
 
 export interface TranslatorChatMessage {
@@ -252,13 +251,13 @@ export function isProtectedTranslationLine(line: string): boolean {
 
 /**
  * `text` translated chunk by chunk around its protected lines (`isProtectedTranslationLine`), the
- * Fastify fork's rule (`docs/plan/translation.md` slice 3.2, a preset without Send Text As-Is; the
- * server runner and the tab's `runTranslator`): the
- * lines between two protected lines are one chunk (joined with `\n`), translated trimmed by
- * `translateChunk` and trimmed again; a protected line is kept as it is, and each one is followed by
- * an empty chunk, so the parts joined with `\n` put an extra blank line between two protected lines
- * in a row (`{{img::a}}\n{{img::b}}` gets one, three newlines become four). A blank or
- * whitespace-only chunk is kept without a call. The whole result is trimmed. Chunks run one after another; an error from `translateChunk` ends the run.
+ * Fastify fork's rule (a preset without Send Text As-Is; the server runner and the tab's
+ * `runTranslator`): the lines between two protected lines are one chunk (joined with `\n`),
+ * translated trimmed by `translateChunk` and trimmed again; a protected line is kept as it is, and
+ * each one is followed by an empty chunk, so the parts joined with `\n` put an extra blank line
+ * between two protected lines in a row (`{{img::a}}\n{{img::b}}` gets one, three newlines become
+ * four). A blank or whitespace-only chunk is kept without a call. The whole result is trimmed.
+ * Chunks run one after another; an error from `translateChunk` ends the run.
  */
 export async function translateProtectingLines(
     text: string,

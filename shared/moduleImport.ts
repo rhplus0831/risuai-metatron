@@ -3,10 +3,10 @@ import { decodeRPackInPlace } from "./rpack.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
- * The `.risum` module file (historical `docs/plan/large-asset-import.md` slice 2b), a cross-user format
- * (STRUCTURE D5): the client's `exportModuleLegacy` writes it and `readModule` reads it
- * (`src/ts/process/modules.ts`), and the self-host server reads it too (`POST /api/import/module`,
- * `server/src/routes/importModule.ts`), so every reader stays byte-compatible with that writer.
+ * The `.risum` module file, a cross-user format (STRUCTURE D5): the client's `exportModuleLegacy`
+ * writes it and `readModule` reads it (`src/ts/process/modules.ts`), and the self-host server reads
+ * it too (`POST /api/import/module`, `server/src/routes/importModule.ts`), so every reader stays
+ * byte-compatible with that writer.
  *
  * - Byte `MODULE_FILE_MAGIC` (111), byte `MODULE_FILE_VERSION` (0), `u32le mainLength`, then
  *   `mainLength` bytes: the rpack-encoded (`shared/rpack.ts`) UTF-8 JSON
@@ -21,7 +21,7 @@ import { isPlainObject } from "./valueKinds.ts";
  * client's `saveAsset` gives them (the extension is never sniffed).
  *
  * The helpers are pure (`Uint8Array`, `DataView`, `TextDecoder`), so the server route and the
- * client's local header read (slice 2c) share one reader.
+ * client's local header read share one reader.
  */
 
 /** `POST`: a `.risum` file as the raw body; the answer is NDJSON `ModuleImportLine`s. */

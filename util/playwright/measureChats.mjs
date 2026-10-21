@@ -1,8 +1,7 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Measurement for Phase 6 slice 9 (chat projection and lazy loading; `docs/plan/phases/slices/
-// phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`): the chats left the
-// character records for the chat module's own store (9a), and boot reads summaries, a chat loads
-// when it is selected, and idle loaded chats are evicted beyond eight (9b).
+// Measurement for chat projection and lazy loading: the chats live in the chat module's own store,
+// not the character records, and boot reads summaries, a chat loads when it is selected, and idle
+// loaded chats are evicted beyond eight.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI, with a character "Many" of 30 chats (one of them "Long", 2,000 messages; the
@@ -14,7 +13,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 //   loaded after the first switch; each switch opens the chat from the list, after an untimed Go Back
 //   has closed the one before, so these timings are not comparable with builds before the
 //   closed-chat screen, which switched from one open chat to the next), and cold switches: each of
-//   28 other 20-message chats once, until its chat screen shows (9b: it loads first; with eight
+//   28 other 20-message chats once, until its chat screen shows (it loads first; with eight
 //   idle loaded chats kept, each is a load);
 // - a streamed reply: the frame intervals while it streams (each chunk renders through the chat
 //   screen's readers) and the long tasks, labeled with the chat and chunk settings;
@@ -250,8 +249,8 @@ try {
                     note: "",
                     localLore: [],
                     message: Array.from({ length: count }, (_, i) => message(i)),
-                    // Bound: Stream's and Long's chats are sent in, and a send refuses an unbound chat
-                    // (`docs/plan/chat-binding.md`).
+                    // Bound: Stream's and Long's chats are sent in, and a send refuses an unbound
+                    // chat.
                     ...chatBindingFixture(modelPresets, presets, personas),
                 },
             },

@@ -1,11 +1,11 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for the Phase 5 cutover's credential criterion ("no LLM provider credential appears
-// in client network traffic, except the request that enters or replaces a key"): every credential
-// leaf of `llmSecrets` (`shared/llmSecrets.ts`) gets its own sentinel, set through the server's
-// `PUT /api/llm-secrets/*` from this script; then the tab runs the consumers that stay after the
-// cutover, and everything the browser context sent or received is searched for every sentinel:
-// request URLs, full headers (and their decoded forms), and bodies; response headers and bodies (a
-// streamed answer through the page's own copy, as the browser protocol keeps no stream body); every
+// Browser check for the credential rule ("no LLM provider credential appears in client network
+// traffic, except the request that enters or replaces a key"): every credential leaf of
+// `llmSecrets` (`shared/llmSecrets.ts`) gets its own sentinel, set through the server's
+// `PUT /api/llm-secrets/*` from this script; then the tab runs the consumers that remain in the
+// tab, and everything the browser context sent or received is searched for every sentinel: request
+// URLs, full headers (and their decoded forms), and bodies; response headers and bodies (a streamed
+// answer through the page's own copy, as the browser protocol keeps no stream body); every
 // WebSocket's URL and frames. The one exemption is the body of the tab's own key replacement
 // (`PUT /api/llm-secrets/openAIKey`), never its URL, headers, or response.
 //
@@ -457,7 +457,7 @@ try {
                 },
             ],
             // A bound chat: a send refuses an unbound chat, and a character's first chat starts
-            // unbound (`docs/plan/chat-binding.md`).
+            // unbound.
             chats: [
                 {
                     characterId: chaId,

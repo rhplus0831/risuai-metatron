@@ -13,13 +13,12 @@ import {
 } from "../diagnosticsReport.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
 
-// Request history slice 9 (`docs/plan/request-history-diagnostics.md`, decisions 6 and 9): the
-// Diagnostics panel's report (`shared/diagnosticsReport.ts`). The tests are written against the
+// The Diagnostics panel's report (`shared/diagnosticsReport.ts`). The tests are written against the
 // format's contract, not the builder's code: the exact v1 text of a known input; every metadata
 // value's fallback; the state projection's required fields, nullable sections, and lists; the
 // report's rules over the event projections (each side's kinds, four-digit-year times, ids of the
-// server's shapes); the merge order; the per-source cap and the byte cap with `Omitted events`;
-// and the server's check (`canonicalDiagnosticReport`): the builder's own text passes, and every
+// server's shapes); the merge order; the per-source cap and the byte cap with `Omitted events`; and
+// the server's check (`canonicalDiagnosticReport`): the builder's own text passes, and every
 // variant that is not that text, byte for byte, is refused, so a kept report holds nothing a
 // projection drops (no free text, no URL, no message, no path outside the application).
 
@@ -481,8 +480,9 @@ describe("projectDiagnosticsState", () => {
         });
     });
 
-    it("keeps the optional `shared` section (slice 10) only when the input owns the key, after `journal`, as `{ files }` checked or null, so a report an older tab built without it stays canonical", () => {
-        // A state from before slice 10 (or an older tab's projection): no key, not even an explicit absence.
+    it("keeps the optional `shared` section only when the input owns the key, after `journal`, as `{ files }` checked or null, so a report an older tab built without it stays canonical", () => {
+        // A state from before the `shared` section existed (or an older tab's projection): no key,
+        // not even an explicit absence.
         const old = projectDiagnosticsState(state())!;
         expect(Object.hasOwn(old, "shared")).toBe(false);
         expect(Object.keys(projectDiagnosticsState(state({ shared: { files: 2 } }))!)).toEqual([

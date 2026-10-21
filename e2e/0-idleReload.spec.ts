@@ -1,17 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Phase 3, slice 4: the convergence rule in the browser (`docs/plan/phases/slices/
-// phase-3-settings-sections/client-section-mirrors.md`, Validation). The stack of
-// `playwright.config.ts` starts with an empty store, so the first boot is the first run: the server
-// materializes every section, collection, and `presets`, and the client's boot (`installBootRecords`)
-// creates only the two Phase 1 lists it fills (no `root` record since slice 6). It also updates the
-// server's `ui` record once: `applyFirstBootDefaults` (`bootstrap.ts`, which replaced the first-run
-// wizard) sets `didFirstSetup`, and the UI language when the browser's is one the UI has, so that
-// later boots keep those defaults instead of applying them again. From then on an idle reload must
-// write nothing: every projection equals the server's normalized text.
-// The store is shared by every spec of a run, in file order, so this file must run first: the `0-`
-// prefix sorts it before any camelCase name.
+// The convergence rule in the browser. The stack of `playwright.config.ts` starts with an empty
+// store, so the first boot is the first run: the server materializes every section, collection, and
+// `presets`, and the client's boot (`installBootRecords`) creates only the two per-item collection
+// lists it fills (there is no `root` record). It also updates the server's `ui` record once:
+// `applyFirstBootDefaults` (`bootstrap.ts`, which replaced the first-run wizard) sets
+// `didFirstSetup`, and the UI language when the browser's is one the UI has, so that later boots
+// keep those defaults instead of applying them again. From then on an idle reload must write
+// nothing: every projection equals the server's normalized text. The store is shared by every spec
+// of a run, in file order, so this file must run first: the `0-` prefix sorts it before any
+// camelCase name.
 
 /** The ops of every batch the page sends, as `kind` with `+` for a create. */
 function trackBatches(page: Page): string[][] {

@@ -1,6 +1,6 @@
-// The write-only `llmSecrets` kind (Phase 5 slice 7b, `request-layer-and-llm-secrets`): which paths
-// of the record are credentials, the path codec of `/api/llm-secrets/*`, and the masked projection
-// a client reads. Both runtimes compile this file; keep it free of DOM types and runes.
+// The write-only `llmSecrets` kind: which paths of the record are credentials, the path codec of
+// `/api/llm-secrets/*`, and the masked projection a client reads. Both runtimes compile this file;
+// keep it free of DOM types and runes.
 
 /** The flat string credentials of the record (`SECTION_FIELDS.llmSecrets`). */
 export const FLAT_SECRET_FIELDS = [
@@ -29,8 +29,8 @@ export const NESTED_SECRET_FIELDS = {
 export const SECRET_MAP_FIELDS = ["OaiCompAPIKeys"] as const;
 
 /**
- * Named credential values, owned by the `credentials` collection. Profiles and definitions have
- * no secret of their own (Model Profiles O2).
+ * Named credential values, owned by the `credentials` collection. Profiles and definitions have no
+ * secret of their own.
  */
 export const SECRET_ENTRY_MAPS = { credentials: "key" } as const;
 

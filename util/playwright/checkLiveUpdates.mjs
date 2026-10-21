@@ -1,13 +1,13 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 6 slice 2 (live updates, Stop A's two-tab matrix on the flat mirror):
-// two tabs of one browser (A1, A2) and a second browser (B) against one dev stack. Writes made in a
-// tab, and through the routes as another device would, reach the other tabs without a reload,
-// without the `resourceReloaded` notice, and without a write back: a new character with its chat, a
-// settings edit, a character edit, a preset edit, a chat rename, a message edit, an appended
-// message, a new chat, a deleted chat, and a deleted character. The preset selection stays per
-// client. A server send in A1 shows its
-// checkpoint and its final text in A2 and B. After a server restart with changes made right away,
-// every tab reconnects and reconciles. An imported archive (a restore) reloads every tab.
+// Browser check for live updates (a two-tab matrix on the flat mirror): two tabs of one browser
+// (A1, A2) and a second browser (B) against one dev stack. Writes made in a tab, and through the
+// routes as another device would, reach the other tabs without a reload, without the
+// `resourceReloaded` notice, and without a write back: a new character with its chat, a settings
+// edit, a character edit, a preset edit, a chat rename, a message edit, an appended message, a new
+// chat, a deleted chat, and a deleted character. The preset selection stays per client. A server
+// send in A1 shows its checkpoint and its final text in A2 and B. After a server restart with
+// changes made right away, every tab reconnects and reconciles. An imported archive (a restore)
+// reloads every tab.
 //
 // Usage: node util/playwright/checkLiveUpdates.mjs   (dev only: it reads the tabs' state through
 // the dev server's modules).
@@ -126,9 +126,8 @@ try {
 
     // State of a tab, through the dev server's modules (the same instances the app uses).
     const state = (p, fn, arg) => p.evaluate(fn, arg);
-    // A character with its chats in list order. Chats load on demand (Phase 6 slice 9b): each listed
-    // chat is loaded as a reader showing it would (once; afterwards the held copy is what live
-    // updates refresh).
+    // A character with its chats in list order. Chats load on demand: each listed chat is loaded as
+    // a reader showing it would (once; afterwards the held copy is what live updates refresh).
     const charOf = (p, chaId) =>
         state(
             p,
@@ -356,8 +355,7 @@ try {
                 ops: [
                     {
                         op: "create",
-                        // Bound: step 8 sends in it, and a send refuses an unbound chat
-                        // (`docs/plan/chat-binding.md`).
+                        // Bound: step 8 sends in it, and a send refuses an unbound chat.
                         chat: {
                             ...chat("j", "Chat J", [message("n1", "char", "Second chat.")]),
                             ...chatBindingFixture(modelPresets, presets, personas),

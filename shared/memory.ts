@@ -54,7 +54,7 @@ export interface SerializableHypaV2Data extends Omit<HypaV2Data, "mainChunks"> {
 }
 
 export interface HypaV3Preset {
-    /** Assigned at creation (`createHypaV3Preset`); `hypaV3PresetId` selects by it from slice 4 on. */
+    /** Assigned at creation (`createHypaV3Preset`); `hypaV3PresetId` selects by it. */
     id: string;
     name: string;
     settings: HypaV3Settings;

@@ -119,10 +119,10 @@ async function registerCache(urlr, buffer, noContentType = false){
         "done": true
     }))
 }
-// Web Push for chat completions (`docs/plan/web-push.md`). A new worker takes over at once, so an
-// installed app gets these handlers without closing every tab; the cache routes above keep working
-// (they read `risuCache`, which outlives the worker). A rotated subscription (`pushsubscriptionchange`)
-// is not handled here: the worker has no credentials, and the page registers it again when it opens.
+// Web Push for chat completions. A new worker takes over at once, so an installed app gets these
+// handlers without closing every tab; the cache routes above keep working (they read `risuCache`,
+// which outlives the worker). A rotated subscription (`pushsubscriptionchange`) is not handled
+// here: the worker has no credentials, and the page registers it again when it opens.
 const NOTIFICATION_LOGO = '/logo_192.png'
 const COMPLETION_TAG = 'risuai-chat-completion'
 

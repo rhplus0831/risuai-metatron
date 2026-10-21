@@ -11,11 +11,11 @@ import {
     TRANSLATOR_PRESET_MAX_STEPS,
 } from "../translatorPresets.ts";
 
-// `docs/plan/translation.md` slice 1.2: a translator preset holds 1 to 5 steps. `createTranslatorPreset`
-// is the server's per-preset normalizer and the tab's creation and import helper, so what it emits
-// is a fixed point of itself (what the tab writes is what the server stores), and it migrates the
-// `{ prompt, maxResponse }` shape presets had before steps. `isTranslatorPreset` is the tab's read
-// guard (`getCurrentTranslatorPresetFromState`).
+// A translator preset holds 1 to 5 steps. `createTranslatorPreset` is the server's per-preset
+// normalizer and the tab's creation and import helper, so what it emits is a fixed point of itself
+// (what the tab writes is what the server stores), and it migrates the `{ prompt, maxResponse }`
+// shape presets had before steps. `isTranslatorPreset` is the tab's read guard
+// (`getCurrentTranslatorPresetFromState`).
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -159,7 +159,7 @@ describe("createTranslatorPreset", () => {
     });
 });
 
-// Translation slice 3.1: the editor's "Add step" appends a step the normalizer keeps as it is.
+// The editor's "Add step" appends a step the normalizer keeps as it is.
 describe("createTranslatorStep", () => {
     it("is a normalized step named by its position, with a fresh id and no output key", () => {
         const step = createTranslatorStep(2);
@@ -224,9 +224,9 @@ describe("isTranslatorStep and isTranslatorPreset", () => {
     });
 });
 
-// Translation slice 3.2: Send Text As-Is is stored only as `true`. `createTranslatorPreset` (the
-// server's per-preset normalizer) drops any other value, so every preset from before the option
-// keeps its text, and `isTranslatorPreset` (the selection's guard) still reads a stray `false` as off.
+// Send Text As-Is is stored only as `true`. `createTranslatorPreset` (the server's per-preset
+// normalizer) drops any other value, so every preset from before the option keeps its text, and
+// `isTranslatorPreset` (the selection's guard) still reads a stray `false` as off.
 describe("sendTextAsIs", () => {
     it("is kept by createTranslatorPreset only as true, after the steps, and is absent otherwise", () => {
         const on = createTranslatorPreset("On", { id: "on", prompt: "p", maxResponse: 5, sendTextAsIs: true });
@@ -258,8 +258,8 @@ describe("sendTextAsIs", () => {
     });
 });
 
-// Translation slice 3.4: Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs` and
-// independent of it; the normalizer drops any other value, and the guard reads a boolean or nothing.
+// Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs` and independent of it;
+// the normalizer drops any other value, and the guard reads a boolean or nothing.
 describe("excludeThoughts", () => {
     it("is kept by createTranslatorPreset only as true, after sendTextAsIs and independent of it, and is absent otherwise", () => {
         const on = createTranslatorPreset("On", { id: "on", prompt: "p", maxResponse: 5, excludeThoughts: true });

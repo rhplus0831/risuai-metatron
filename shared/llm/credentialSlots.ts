@@ -43,7 +43,7 @@ export function credentialSlotOf(
     modelId: string,
     modelInfo: Pick<LLMModel, "provider" | "format" | "keyIdentifier">,
 ): CredentialSlot | null {
-    // Custom definitions and reverse proxies have no flat default key (Model Profiles O2).
+    // Custom definitions and reverse proxies have no flat default key.
     if (modelId.startsWith("xcustom:::")) {
         return slot("customModel", stringCredentialTypes, "No flat default (no key unless a named key is chosen)");
     }

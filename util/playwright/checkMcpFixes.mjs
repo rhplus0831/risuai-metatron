@@ -1,9 +1,8 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 5's Stop D fixes to the MCP clients and graph memory (slice 13d), on the
-// server-job path (the only one since the cutover; the tab client's fixes are pinned by
-// `src/ts/process/mcp/tests/mcplib.test.ts`), against a mock provider
-// (an OpenAI-compatible SSE stream that calls the offered tools), a mock MCP server, and a mock
-// embedding server:
+// Browser check for the fixes to the MCP clients and graph memory, on the server-job path (the only
+// one since browser generation was removed; the tab client's fixes are pinned by
+// `src/ts/process/mcp/tests/mcplib.test.ts`), against a mock provider (an OpenAI-compatible SSE
+// stream that calls the offered tools), a mock MCP server, and a mock embedding server:
 // - a remote MCP server whose every answer is an event stream with CRLF line ends and `data:`
 //   without the space, whose `initialize` answer carries the session id only as a header of that
 //   stream, and whose OAuth refresh answers rotate the refresh token: the tool is called with the

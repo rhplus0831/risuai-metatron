@@ -1,6 +1,6 @@
-// The wire contract of `POST /api/llm/request` (Phase 5, `request-layer-and-llm-secrets`): the
-// request body the client transport sends, the SSE events the server answers with, and the
-// callback answers. Both runtimes compile this file; keep it free of DOM types and runes.
+// The wire contract of `POST /api/llm/request`: the request body the client transport sends, the
+// SSE events the server answers with, and the callback answers. Both runtimes compile this file;
+// keep it free of DOM types and runes.
 
 import type { LLMFormat, LLMModel, LLMTokenizer } from "../llm.ts";
 import type { OpenAIChat } from "../openai.ts";
@@ -17,9 +17,9 @@ export const MODEL_MODES: readonly ModelModeExtended[] = [
 ];
 
 /**
- * What made a request (`docs/plan/request-history-diagnostics.md`): a job's reply (`send`), its
- * memory, emotion, and IGP requests, a trigger's `runLLM`, a Lua `LLM`/`axLLM`/`simpleLLM`, the
- * `internal:aiaccess` MCP, a server translation, or a tab's own `POST /api/llm/request`.
+ * What made a request: a job's reply (`send`), its memory, emotion, and IGP requests, a trigger's
+ * `runLLM`, a Lua `LLM`/`axLLM`/`simpleLLM`, the `internal:aiaccess` MCP, a server translation, or
+ * a tab's own `POST /api/llm/request`.
  */
 export type RequestSource = "send" | "memory" | "emotion" | "igp" | "trigger" | "lua" | "mcp" | "translation" | "tab";
 
@@ -95,8 +95,8 @@ export type RequestArgs = {
     previewBody?: boolean;
     staticModel?: string;
     /**
-     * A model profile the request runs on instead of its mode's slot (a translator step's model,
-     * `docs/plan/translation.md` slice 3.1). A missing profile refuses; it never falls back to the slot.
+     * A model profile the request runs on instead of its mode's slot (a translator step's model). A
+     * missing profile refuses; it never falls back to the slot.
      */
     profileId?: string;
     rememberToolUsage?: boolean;

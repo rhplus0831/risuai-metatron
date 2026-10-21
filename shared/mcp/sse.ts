@@ -1,9 +1,10 @@
 /**
  * Server-sent event framing for the MCP clients (the server's `server/src/mcp/client.ts` and the
- * tab's `src/ts/process/mcp/mcplib.ts`; Phase 5 Stop D fixes). Bytes go in as they arrive; each
- * complete event comes out as its text. Line ends are CRLF, LF, or CR (a CR ends its line at once;
- * an LF first in the next non-empty chunk is taken as the rest of that CRLF). An event ends at a
- * blank line; an unfinished event at the end of the stream is dropped. Dispatch (endpoint, ping, answers) stays in each client.
+ * tab's `src/ts/process/mcp/mcplib.ts`). Bytes go in as they arrive; each complete event comes out
+ * as its text. Line ends are CRLF, LF, or CR (a CR ends its line at once; an LF first in the next
+ * non-empty chunk is taken as the rest of that CRLF). An event ends at a blank line; an unfinished
+ * event at the end of the stream is dropped. Dispatch (endpoint, ping, answers) stays in each
+ * client.
  */
 
 const LF = 10;

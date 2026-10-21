@@ -14,8 +14,8 @@ const profileDefinitions = new Set([
 ]);
 
 /**
- * Definitions whose connection options or key choice require a profile (Model Profiles O8).
- * Only definition ids matter; catalogue descriptors and custom flags cannot change this rule.
+ * Definitions whose connection options or key choice require a profile. Only definition ids matter;
+ * catalogue descriptors and custom flags cannot change this rule.
  */
 export function definitionNeedsProfile(modelId: string): boolean {
     return profileDefinitions.has(modelId) || modelId.startsWith("xcustom:::");
@@ -35,10 +35,10 @@ function bareModel(modelId: string): SlotProfileResolution {
 /**
  * One slot-routing decision for the tab and server. A request that names a profile (`profileId`, a
  * translator step's model) runs on it whatever its mode, `staticModel` included, and refuses with
- * `missingNamedProfile` when it is gone. A static model reuses only a matching main profile (O5);
- * auxiliary slots fall back to sub when disabled or unset, and `submodel` always uses sub (O3).
- * Dangling profile ids refuse, never redirect. A bare definition uses profile field defaults and its
- * flat default key unless it requires a profile (O8).
+ * `missingNamedProfile` when it is gone. A static model reuses only a matching main profile;
+ * auxiliary slots fall back to sub when disabled or unset, and `submodel` always uses sub. Dangling
+ * profile ids refuse, never redirect. A bare definition uses profile field defaults and its flat
+ * default key unless it requires a profile.
  *
  * Both runtimes already hold the profile collection as an array; no lookup needs to be built.
  */

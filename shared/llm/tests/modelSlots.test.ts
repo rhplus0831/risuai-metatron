@@ -10,8 +10,8 @@ import {
 } from "../../presets.ts";
 import { definitionNeedsProfile, resolveSlotProfile } from "../modelSlots.ts";
 
-// `docs/plan/model-profiles.md`, "Slot resolution" with O3 (slots), O5 (`staticModel`), and O8
-// (definitions that need a profile): the one routing decision the tab and the server share.
+// Slot resolution with the slots, `staticModel`, and the definitions that need a profile: the one
+// routing decision the tab and the server share.
 
 const profiles = [
     normalizeModelProfile({ id: "main", modelId: "claude-opus-4-6" }),
@@ -54,7 +54,7 @@ describe("resolveSlotProfile", () => {
         );
         expect(routed).toEqual({
             model: "profile:main",
-            // `submodel` never gets an auxiliary slot (O3).
+            // `submodel` never gets an auxiliary slot.
             submodel: "profile:sub",
             memory: "profile:memory",
             emotion: "profile:proxy",
@@ -90,7 +90,7 @@ describe("resolveSlotProfile", () => {
         });
     });
 
-    it("uses the main profile for a static model only when the ids match, and otherwise no profile (O5)", () => {
+    it("uses the main profile for a static model only when the ids match, and otherwise no profile", () => {
         const base = preset({});
         expect(summary(resolveSlotProfile(base, profiles, "model", "claude-opus-4-6"))).toBe("profile:main");
         // Even an auxiliary mode reads the main profile, never its own slot.
@@ -102,7 +102,7 @@ describe("resolveSlotProfile", () => {
         expect(summary(resolveSlotProfile(dangling, profiles, "model", "gpt-5.5"))).toBe("none:gpt-5.5");
     });
 
-    it("runs a request that names a profile on it, whatever the mode, the slots, or a static model, and refuses a missing one (translation slice 3.1)", () => {
+    it("runs a request that names a profile on it, whatever the mode, the slots, or a static model, and refuses a missing one", () => {
         const on = preset({
             seperateModelsForAxModels: true,
             auxSlots: { translate: { profileId: "sub" }, memory: { modelId: "gemini-2.5-flash" } },
@@ -189,7 +189,7 @@ describe("model slot normalization", () => {
         expect(record.auxSlots).toEqual({ memory: { profileId: "p" }, translate: { modelId: "gpt-5.5" } });
     });
 
-    it("drops the old model ids and the fields that moved to the profile, with no migration (O6)", () => {
+    it("drops the old model ids and the fields that moved to the profile, with no migration", () => {
         const record = normalizeModelPreset({
             aiModel: "gpt-5.5",
             subModel: "gpt-5.5",
@@ -211,7 +211,7 @@ describe("model slot normalization", () => {
         expect(only).not.toHaveProperty("credentialId");
         expect(normalizeModelProfile({ credentialId: "k" }).credentialId).toBe("k");
         expect(normalizeModelProfile({ credentialId: 3 })).not.toHaveProperty("credentialId");
-        // Profiles hold no secret of their own (O2).
+        // Profiles hold no secret of their own.
         expect(normalizeModelProfile({ key: "sk", proxyKey: "sk" })).not.toHaveProperty("proxyKey");
         expect(normalizeModelProfile({ key: "sk" })).not.toHaveProperty("key");
     });

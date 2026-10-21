@@ -1,7 +1,6 @@
-// Measurement for Phase 6 slice 5 (character ownership): the spike verdict's production-build
-// obligation (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/spike-projection-bindings.md`,
-// "Verdict") extended to the character records: the characters are deep write-through records from
-// slice 5 on (`records.svelte.ts`), and `characterList()` is their list's wrapper.
+// Measurement for the character records in a production build, as `measureRecords.mjs` does for the
+// settings records: the characters are deep write-through records (`records.svelte.ts`), and
+// `characterList()` is their list's wrapper.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI, with 300 characters (one of them "Big": a 300-entry lorebook and a chat of 400

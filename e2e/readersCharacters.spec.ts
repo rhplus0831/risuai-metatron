@@ -1,13 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// Phase 6 slice 8 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-characters.md`,
-// "Validation" and "Implementation notes"): the components read the selected character as
-// `$derived(selectedCharacter())` and the list as `characterList()`, the list rows carry `chaId`s,
-// and the async handlers capture their target by id. In the browser, against the isolated stack:
+// The components read the selected character as `$derived(selectedCharacter())` and the list as
+// `characterList()`, the list rows carry `chaId`s, and the async handlers capture their target by
+// id. In the browser, against the isolated stack:
 // - the sidebar's folder menu renames the folder it was opened for while the order moves during
-//   its dialog, and a color picked for a folder deleted meanwhile changes nothing (Astra challenge
-//   point 1);
+//   its dialog, and a color picked for a folder deleted meanwhile changes nothing;
 // - a lorebook entry typed into the character editor (a nested binding through the derived record)
 //   saves that character only;
 // - a group gets three members through the character picker, and its screens render them;
@@ -92,7 +90,7 @@ test("character readers by id: folder menu, lorebook editor, group picker, and t
     await settle(page);
     const ours = new Set(Object.values(ids));
 
-    // --- The sidebar's folder menu (Astra challenge point 1). ---
+    // --- The sidebar's folder menu. ---
     const others = (await characterOrder(page)).filter((entry) => typeof entry === "string" && !ours.has(entry));
     await setCharacterOrder(page, [
         { id: "f-one", name: "Folder One", color: "", data: [ids.Alpha] },
@@ -173,7 +171,7 @@ test("character readers by id: folder menu, lorebook editor, group picker, and t
     await expect(loreText).toBeVisible();
     await loreText.fill("Gamma's lore, typed");
     // Leaves the field as a click elsewhere does (its `change` writes the value). Switching the
-    // character while the field still has focus throws in the editor, before this slice as well.
+    // character while the field still has focus throws in the editor (a known editor issue).
     await loreText.blur();
     await settle(page);
     const characterOps = batches.flat().filter((op) => op.startsWith("characters/"));

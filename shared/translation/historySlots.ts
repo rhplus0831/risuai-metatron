@@ -2,11 +2,11 @@ import type { Message } from "../database.ts";
 import { storedTranslation } from "./messageTranslation.ts";
 
 /**
- * The translator's history slots (`docs/plan/translation.md` slice 3.3): `{{slot::history::N}}` (the
- * source text of the N messages before the translated one) and `{{slot::historytrans::N}}` (their
- * fresh stored translations). Pure: the server runner counts the tokens (`buildTranslatorHistory`'s
- * `countTokens`); the pipeline fills the slots from the result (`TranslatorSlotValues.history`).
- * Anywhere without one (the tab), they fill in empty.
+ * The translator's history slots: `{{slot::history::N}}` (the source text of the N messages before
+ * the translated one) and `{{slot::historytrans::N}}` (their fresh stored translations). Pure: the
+ * server runner counts the tokens (`buildTranslatorHistory`'s `countTokens`); the pipeline fills
+ * the slots from the result (`TranslatorSlotValues.history`). Anywhere without one (the tab), they
+ * fill in empty.
  */
 
 export const TRANSLATOR_HISTORY_MAX_COUNT = 50;
@@ -42,11 +42,11 @@ export interface TranslatorHistoryEntry {
 }
 
 /**
- * Up to `count` entries before `messages[messageIndex]`, oldest first: walking back from the message
- * before it, a row with `disabled: "allBefore"` ends the walk (it is not taken, comment or not), and
- * a disabled row (`disabled: true`) or a comment row (`isComment`) is skipped. `transformText` (Exclude
- * Chain-of-Thought, slice 3.4) is applied to each entry's source and to its translation, after the
- * translation's freshness is read from the stored message.
+ * Up to `count` entries before `messages[messageIndex]`, oldest first: walking back from the
+ * message before it, a row with `disabled: "allBefore"` ends the walk (it is not taken, comment or
+ * not), and a disabled row (`disabled: true`) or a comment row (`isComment`) is skipped.
+ * `transformText` (Exclude Chain-of-Thought) is applied to each entry's source and to its
+ * translation, after the translation's freshness is read from the stored message.
  */
 export function collectTranslatorHistory(
     messages: readonly Message[],

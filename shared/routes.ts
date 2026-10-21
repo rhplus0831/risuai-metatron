@@ -1,7 +1,7 @@
 /**
- * The first path segment of every client route other than `/` (`docs/plan/url-routes.md`). The
- * server serves the client for these paths, so a reload or a link lands on its screen; the client
- * parses the rest (`src/ts/router/routes.ts`).
+ * The first path segment of every client route other than `/`. The server serves the client for
+ * these paths, so a reload or a link lands on its screen; the client parses the rest
+ * (`src/ts/router/routes.ts`).
  */
 export const CLIENT_ROUTE_SEGMENTS: readonly string[] = ["chat", "playground", "realm", "characters", "settings"];
 

@@ -1,12 +1,13 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// Browser check for Phase 5 Stop D (and the cutover's matrix): the parts of the server matrix the
-// slice checks do not cover, against a mock provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
-// image service (OpenAI-compatible images): a send and a reroll, a group send (one reply per active
-// member, in order), a send that summarizes with SupaMemory, a Lua button that generates an image
-// (the inlay stored), two tabs of one chat (a send after the other tab's open is not a conflict and
-// keeps the local edit; the second tab shows the running reply's checkpoint and the final reply
-// without a reload, and its own send is refused with `chatGenerating`), and a backup restore during
-// a slow send (the job ends, the data is the backup's, the tab reloads). The send, continue, abort, and reload-mid-stream cases are
+// Browser check for the server generation matrix: the parts the other server checks do not cover,
+// against a mock provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory
+// summary) and a mock image service (OpenAI-compatible images): a send and a reroll, a group send
+// (one reply per active member, in order), a send that summarizes with SupaMemory, a Lua button
+// that generates an image (the inlay stored), two tabs of one chat (a send after the other tab's
+// open is not a conflict and keeps the local edit; the second tab shows the running reply's
+// checkpoint and the final reply without a reload, and its own send is refused with
+// `chatGenerating`), and a backup restore during a slow send (the job ends, the data is the
+// backup's, the tab reloads). The send, continue, abort, and reload-mid-stream cases are
 // `checkServerSend.mjs`'s; buttons, alerts, and manual triggers `checkServerButton.mjs`'s and
 // `checkServerTrigger.mjs`'s; rendering `checkServerTransform.mjs`'s.
 //
@@ -237,7 +238,7 @@ try {
     const secrets = await single("secrets");
     const personas = await single("personas");
     // Every seeded chat is bound: a job runs on its chat's binding or not at all, and a character's
-    // first chat starts unbound (`docs/plan/chat-binding.md`).
+    // first chat starts unbound.
     const binding = chatBindingFixture(modelPresets, presets, personas);
     const boundChat = (characterId, chatId = "c") => ({
         characterId,

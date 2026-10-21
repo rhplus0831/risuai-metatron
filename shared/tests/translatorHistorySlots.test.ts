@@ -13,12 +13,12 @@ import {
     translatorHistoryMaxTokens,
 } from "../translation/historySlots.ts";
 
-// `docs/plan/translation.md` slice 3.3: the pure rules of the history slots. The count of a slot
-// (all digits, 1 to 50), the budget in use (a finite number above 0, else 2048), the walk back from
-// the row before the message (`allBefore` ends it before the comment skip, disabled and comment rows
-// are skipped, the raw `data` and the fresh stored translation are taken), the block of an entry,
-// and the build: per count the newest N entries, each entry's two blocks counted once (the empty
-// translation block included), the oldest whole entries dropped while the sum passes the budget.
+// The pure rules of the history slots. The count of a slot (all digits, 1 to 50), the budget in use
+// (a finite number above 0, else 2048), the walk back from the row before the message (`allBefore`
+// ends it before the comment skip, disabled and comment rows are skipped, the raw `data` and the
+// fresh stored translation are taken), the block of an entry, and the build: per count the newest N
+// entries, each entry's two blocks counted once (the empty translation block included), the oldest
+// whole entries dropped while the sum passes the budget.
 
 const fresh = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
     text,
@@ -300,9 +300,9 @@ describe("buildTranslatorHistory", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.4: `transformText` (Exclude Chain-of-Thought) is applied by
-// the collector to each entry's source and fresh translation, once each, after the freshness check
-// on the stored text; the build forwards it, so the blocks are rendered and counted as transformed.
+// `transformText` (Exclude Chain-of-Thought) is applied by the collector to each entry's source and
+// fresh translation, once each, after the freshness check on the stored text; the build forwards
+// it, so the blocks are rendered and counted as transformed.
 describe("transformText", () => {
     const rows: Message[] = [
         msg("hello <think>h</think>", "user", {

@@ -1,13 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// `getFileSrc` (the Stop B fix of Phase 6, `global-api.md`) in the real app against the isolated
+// `getFileSrc` (the uncontrolled-page fix, `global-api.md`) in the real app against the isolated
 // stack of `playwright.config.ts`, with the app's own service worker. Before the fix, on a page's
 // first load (the worker registered but not controlling the page yet) the worker check reached the
-// network, the read answered `undefined`, and every later read of the same path waited forever;
-// a refused registration still answered the worker's URL. The worker now claims every page at once,
-// so the uncontrolled case is a page whose worker script failed to load (slice 4f: the boot
-// continues without the worker). What only the browser shows:
+// network, the read answered `undefined`, and every later read of the same path waited forever; a
+// refused registration still answered the worker's URL. The worker now claims every page at once,
+// so the uncontrolled case is a page whose worker script failed to load (the boot continues without
+// the worker). What only the browser shows:
 // - on a page without a worker: an object URL (`blob:`) that displays, one storage read and one URL
 //   for concurrent and later reads, a missing file answers "" and is read again once it exists;
 // - on a page the worker controls: `/sw/img/<hex>`, looked up in the worker's Cache Storage from the
@@ -116,8 +116,8 @@ test("on a page without a worker: an object URL that displays, one read for conc
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error).slice(0, 300)));
     // The worker claims every page at once (`clients.claim`), so a page it does not control is made
-    // by failing its script (a context route: the page's routes do not see the worker script request); the
-    // boot records the failure and continues without it (slice 4f).
+    // by failing its script (a context route: the page's routes do not see the worker script
+    // request); the boot records the failure and continues without it.
     await page
         .context()
         .route("**/sw.js", (route) => route.fulfill({ status: 503, contentType: "text/javascript", body: "" }));

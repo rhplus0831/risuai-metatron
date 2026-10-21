@@ -1,12 +1,11 @@
-// Browser check for Phase 5 slice 7a (`request-layer-and-llm-secrets`, transport): a send, a
-// translation-style aux call (no chat), a suggestion-style submodel call, an edit followed at once by
-// a model call, and a streaming send all reach the provider through the server (the tab's own calls
-// through `POST /api/llm/request`, the two sends as server jobs since the Phase 5 cutover), and the
-// browser makes no request to the provider's origin and sends no stored credential anywhere but the
-// settings writes.
+// Browser check for the LLM request transport: a send, a translation-style aux call (no chat), a
+// suggestion-style submodel call, an edit followed at once by a model call, and a streaming send
+// all reach the provider through the server (the tab's own calls through `POST /api/llm/request`,
+// the two sends as server jobs), and the browser makes no request to the provider's origin and
+// sends no stored credential anywhere but the settings writes.
 //
-// Slice 7b (write-only `llmSecrets`): the sentinel named key is typed into the settings page's
-// credential input, and the send right after it reaches the provider with that key. Only the
+// Write-only `llmSecrets`: the sentinel named key is typed into the settings page's credential
+// input, and the send right after it reaches the provider with that key. Only the
 // `PUT /api/llm-secrets/*` request carries the key, no response does, the mirror holds `""`, and
 // after a reload the status reads "set" with the key's last characters.
 //

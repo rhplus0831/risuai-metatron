@@ -22,18 +22,19 @@ export type RisuAccessWrite = { ok: true } | { ok: false; notFound: true } | { o
 
 /**
  * A character as the tools read it: its own fields. Its chats are not part of it (the tab's records
- * hold none since Phase 6 slice 9a; `currentMessages` reads the current chat).
+ * hold none; `currentMessages` reads the current chat).
  */
 export type RisuAccessCharacter = Omit<character, "chats" | "chatPage"> | Omit<groupChat, "chats" | "chatPage">;
 
 /**
- * What the RisuAccess tools (`internal:risuai`) need from where they run (Phase 5 slice 12b): the
- * tab's mirror and mutation modules (`src/ts/process/mcp/risuaccess/`), or the server's store inside
- * a job (`server/src/mcp/internal.ts`). The handlers hold no data of their own.
+ * What the RisuAccess tools (`internal:risuai`) need from where they run: the tab's mirror and
+ * mutation modules (`src/ts/process/mcp/risuaccess/`), or the server's store inside a job
+ * (`server/src/mcp/internal.ts`). The handlers hold no data of their own.
  *
  * Reads return the records as they are now, typed read-only. A write is synchronous and built from
- * the record the handler just read (Phase 4's rule: consent, the record found again by its id, then
- * the write with no await in between); a failure that is not the write's own (the job's end) throws.
+ * the record the handler just read (the mutation rule: consent, the record found again by its id,
+ * then the write with no await in between); a failure that is not the write's own (the job's end)
+ * throws.
  */
 export type RisuAccessHost = {
     /** The character a tool names: by `chaId`, else by name; the current one for an empty id. */

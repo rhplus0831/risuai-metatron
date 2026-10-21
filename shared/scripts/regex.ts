@@ -1,11 +1,11 @@
 import type { customscript } from "../database.ts";
 
 /**
- * The regex script engine, shared by the client and the server (PLAN.md Decision 2): flags and
- * `<order n>`, the `@@` directives, and the script loop. It writes nothing itself: `@@emo` and
- * `@@inject` go to `applyEffect` at the point they match, so a later script's CBS reads what the
- * effect wrote, and come back as the ordered `effects` of the run. Lua edit hooks, the display
- * trigger, plugin handlers, and dynamic assets stay with the caller.
+ * The regex script engine, shared by the client and the server: flags and `<order n>`, the `@@`
+ * directives, and the script loop. It writes nothing itself: `@@emo` and `@@inject` go to
+ * `applyEffect` at the point they match, so a later script's CBS reads what the effect wrote, and
+ * come back as the ordered `effects` of the run. Lua edit hooks, the display trigger, plugin
+ * handlers, and dynamic assets stay with the caller.
  */
 export type RegexScriptMode = "editinput" | "editoutput" | "editprocess" | "editdisplay";
 

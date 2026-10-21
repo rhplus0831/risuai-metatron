@@ -12,7 +12,7 @@ export const EVENT_FEED_PATH = "/api/events/ws";
 export type ChatStreaming = { characterId: string; id: string; streaming: StreamingMessage[] };
 
 /**
- * A frame of the live-update socket (Phase 6), server to client:
+ * A frame of the live-update socket, server to client:
  * - `hello`: sent once on every connection with the database epoch; the client reconciles its
  *   revisions against `GET /api/resources/revisions` (nothing is replayed);
  * - `change`: one committed write's refs and revisions, optionally with record or by-id chat patches;

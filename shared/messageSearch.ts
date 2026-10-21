@@ -1,13 +1,13 @@
 import type { Message } from "./database.ts";
 
 /**
- * Message search across chats (archived `docs/plan/search.md` slice 4a): the server scans the stored messages'
- * text (`Message.data`, not translations) with a case-insensitive substring match (ASCII letters only
- * fold, as SQLite `LIKE` does), newest chat incarnation first and newest message first within a chat.
+ * Message search across chats: the server scans the stored messages' text (`Message.data`, not
+ * translations) with a case-insensitive substring match (ASCII letters only fold, as SQLite `LIKE`
+ * does), newest chat incarnation first and newest message first within a chat.
  */
 export const MESSAGE_SEARCH_PATH = "/api/chats/search";
 
-/** Fewest and most code points of a query after NFC normalization and trimming (Decision 13). */
+/** Fewest and most code points of a query after NFC normalization and trimming. */
 export const MESSAGE_SEARCH_MIN_QUERY = 2;
 export const MESSAGE_SEARCH_MAX_QUERY = 200;
 /** Hits per page when `limit` is absent, and the most a page holds (a larger `limit` is clamped). */

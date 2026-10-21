@@ -11,20 +11,20 @@ import {
 } from "./presets.ts";
 
 /**
- * The field-to-resource map of Phase 3 (`docs/plan/phases/phase-3-settings-sections.md`): which
- * resource owns each top-level `Database` field (the flat legacy shape the plugin API and the
- * server's job projection keep, D3); these lists say where each one is stored. Together with the Phase 1 collections
- * (`ITEM_RECORD_FIELDS`) they partition `keyof Database`:
+ * The field-to-resource map: which resource owns each top-level `Database` field (the flat legacy
+ * shape the plugin API and the server's job projection keep, D3); these lists say where each one is
+ * stored. Together with the per-item collections (`ITEM_RECORD_FIELDS`) they partition `keyof Database`:
  *
  * - `SECTION_FIELDS`: five singleton section resources.
  * - `COLLECTION_FIELDS`: small collection resources, each holding one field (two for the preset
  *   collections that carry their selection).
  * - `FORWARDED_ROOT_KEYS`: the fields of the removed `root` resource (the working copies before
- *   Phase 3), not stored under their own names. The client's views serve them under those names
- *   (`src/ts/storage/settingsViews.svelte.ts`: the prompt fields from the selected prompt preset,
- *   the model ids from the selected model preset's slots, the profile fields from its main profile,
- *   the persona fields from the selected persona); the three selection indexes come from the
- *   per-client selection store. The two auto-suggest fields are `ui` fields, not forwarded.
+ *   the settings were split into section records), not stored under their own names. The client's
+ *   views serve them under those names (`src/ts/storage/settingsViews.svelte.ts`: the prompt fields
+ *   from the selected prompt preset, the model ids from the selected model preset's slots, the
+ *   profile fields from its main profile, the persona fields from the selected persona); the three
+ *   selection indexes come from the per-client selection store. The two auto-suggest fields are
+ *   `ui` fields, not forwarded.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
@@ -528,7 +528,7 @@ export const DROPPED_FIELDS = [
     "autoTranslate",
 ] as const satisfies readonly (keyof Database | "modelCredentials")[];
 
-/** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */
+/** The per-item collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */
 export const ITEM_RECORD_FIELDS = [
     "characters",
     "botPresets",

@@ -7,12 +7,12 @@ import type { CBSRegisterArg, matcherArg } from "./types.ts";
 export type { CBSRegisterArg, CbsConditions, matcherArg, RegisterCallback } from "./types.ts";
 
 /**
- * The CBS function registry, shared by the client and the server (PLAN.md Decision 2). The
- * application state (the database, the chat variables, the selection, the modules, the trigger,
- * the viewport, the browser language) comes only through `CBSRegisterArg`; the module imports no
- * client or server code. It still uses globals both runtimes have: `Buffer` (a polyfill on the
- * client), `TextEncoder`/`TextDecoder`, `Math.random`, `console`, and `Date`/`Intl` with the
- * runtime's own timezone and default locale, which on the server are the server's.
+ * The CBS function registry, shared by the client and the server. The application state (the
+ * database, the chat variables, the selection, the modules, the trigger, the viewport, the browser
+ * language) comes only through `CBSRegisterArg`; the module imports no client or server code. It
+ * still uses globals both runtimes have: `Buffer` (a polyfill on the client),
+ * `TextEncoder`/`TextDecoder`, `Math.random`, `console`, and `Date`/`Intl` with the runtime's own
+ * timezone and default locale, which on the server are the server's.
  */
 export const defaultCBSRegisterArg: CBSRegisterArg = {
     registerFunction: () => {

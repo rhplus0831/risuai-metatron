@@ -1,9 +1,8 @@
 import type { Chat } from "./database.ts";
 
 /**
- * A chat's binding (`docs/plan/chat-binding.md`): the model preset, prompt preset, and persona a chat
- * is sent with. A chat whose binding is not complete cannot be sent; nothing falls back to the tab's
- * selection.
+ * A chat's binding: the model preset, prompt preset, and persona a chat is sent with. A chat whose
+ * binding is not complete cannot be sent; nothing falls back to the tab's selection.
  */
 
 /** How a new chat starts (`Database.newChatBinding`, the `ui` section). */

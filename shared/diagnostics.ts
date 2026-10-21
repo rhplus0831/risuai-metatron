@@ -7,9 +7,8 @@ import { isProviderCode, PROVIDER_CODE_PATTERN } from "./requestHistory.ts";
 export { isProviderCode, PROVIDER_CODE_PATTERN };
 
 /**
- * The diagnostic events (`docs/plan/request-history-diagnostics.md` "Diagnostics folder", slices 7
- * and 8): a closed set of kinds, each with an exact-key projection. Content-free by construction
- * (decision 9): every field has its own check, a key not in its kind's list is dropped, and a value
+ * The diagnostic events: a closed set of kinds, each with an exact-key projection. Content-free by
+ * construction: every field has its own check, a key not in its kind's list is dropped, and a value
  * that fails its check is dropped (the rest of the event is kept). Strings are ids, enumerations, a
  * provider error code, a route template from `ROUTE_TEMPLATES`, a catalog model id, or an
  * application stack frame.
@@ -573,8 +572,8 @@ export type DiagnosticsState = {
     history: { rows: number | null; bytes: number | null } | null;
     journal: { eventBytes: number; writeFailures: number };
     /**
-     * The copies the folder's `shared/` holds (slice 10), null when it could not be read. Optional:
-     * a state from before slice 10 (a report an older tab built) has none.
+     * The copies the folder's `shared/` holds, null when it could not be read. Optional: a state
+     * from before this field existed (a report an older tab built) has none.
      */
     shared?: { files: number | null } | null;
     workers: {

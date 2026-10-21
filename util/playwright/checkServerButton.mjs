@@ -1,7 +1,7 @@
-// Browser check for Phase 5 slice 8a: a Lua button (`risu-btn`) in a character's greeting runs on
-// the server as a `command` job: the browser posts the job, the button's alert and question appear
-// and are answered in the UI, its chat edits show and are stored, and they survive a reload. (Since
-// the cutover there is no browser path to compare with.)
+// Browser check: a Lua button (`risu-btn`) in a character's greeting runs on the server as a
+// `command` job: the browser posts the job, the button's alert and question appear and are answered
+// in the UI, its chat edits show and are stored, and they survive a reload. (There is no browser
+// path to compare with.)
 //
 // Usage: node util/playwright/checkServerButton.mjs [--base <url> --password <pw>] (production: the built app,
 // e.g. the Docker image on a fresh volume; the check sets its password)
@@ -155,7 +155,7 @@ try {
                     },
                 ],
                 // A bound chat: a command job runs on its chat's binding or not at all, and a
-                // character's first chat starts unbound (`docs/plan/chat-binding.md`).
+                // character's first chat starts unbound.
                 chats: [
                     {
                         characterId: chaId,

@@ -1,18 +1,17 @@
 import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "Validation", the manual list): the characters are write-through records and `characterList()`
-// is their list's wrapper, which refuses any structural write (a push, a splice, an index assignment
-// of another object, a list assignment) with a `TypeError`. A UI writer the slice missed would throw
-// only when its flow runs, so the flows run here in the browser, against the isolated stack of
-// `playwright.config.ts`: create a character and a group, every character-settings page and accordion
-// mounting through the records without an error (and, visited again, without a write), an edit through
-// a bound input, the view-screen select's `updateInlayScreen` handler, the chat screen's creator-quote
-// removal, trash, restore, a permanent delete, the playground character (created, then reopened), and
-// a module converted to a character; then a reload shows all of it. Two tabs on a character edit are
-// `util/playwright/checkLiveUpdates.mjs`'s. The stack's store is shared by every spec of a run, in file
-// order: `0-idleReload.spec.ts` sorts first, since it needs the store fresh.
+// The characters are write-through records and `characterList()` is their list's wrapper, which
+// refuses any structural write (a push, a splice, an index assignment of another object, a list
+// assignment) with a `TypeError`. A UI writer that still did so would throw only when its flow
+// runs, so the flows run here in the browser, against the isolated stack of `playwright.config.ts`:
+// create a character and a group, every character-settings page and accordion mounting through the
+// records without an error (and, visited again, without a write), an edit through a bound input,
+// the view-screen select's `updateInlayScreen` handler, the chat screen's creator-quote removal,
+// trash, restore, a permanent delete, the playground character (created, then reopened), and a
+// module converted to a character; then a reload shows all of it. Two tabs on a character edit are
+// `util/playwright/checkLiveUpdates.mjs`'s. The stack's store is shared by every spec of a run, in
+// file order: `0-idleReload.spec.ts` sorts first, since it needs the store fresh.
 
 /** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(2500);
@@ -43,7 +42,7 @@ const characters = (page: Page): Promise<CharacterView[]> =>
     page.evaluate(async () => {
         const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
         const { chatCount } = await import("/src/ts/storage/chatStore.svelte.ts");
-        // The chats are the chat module's (Phase 6 slice 9a): its count of the character's chats.
+        // The chats are the chat module's: its count of the character's chats.
         return characterList().map((entry: any) => ({
             chaId: entry.chaId,
             name: entry.name,
@@ -105,7 +104,7 @@ test("the character flows run through the records without an error, save, and su
     const created = await page.evaluate(async () => {
         const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
         const { createNewCharacter, createNewGroup, changeChar } = await import("/src/ts/characters.ts");
-        // The creations return the new character's id, and `changeChar` takes one (Phase 6 slice 8).
+        // The creations return the new character's id, and `changeChar` takes one.
         const byId = (chaId: string) => characterList().find((entry) => entry.chaId === chaId)!;
         const character = createNewCharacter();
         byId(character).name = "Alpha";
@@ -191,8 +190,7 @@ test("the character flows run through the records without an error, save, and su
         batches.flat().filter((op) => op === `characters/${created.alpha}`),
     );
 
-    // The view-screen select runs `updateInlayScreen` on the record (the slice removed its list
-    // self-assignment).
+    // The view-screen select runs `updateInlayScreen` on the record (with no list self-assignment).
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
         stores.CharConfigSubMenu.set(1);

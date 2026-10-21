@@ -2,8 +2,8 @@ import type { MessageTranslation } from "../database.ts";
 import { isMessageTranslation } from "./messageTranslation.ts";
 
 /**
- * The stored-translation route (`docs/plan/translation.md` slices 1.3 and 1.4): the server runner
- * (`server/src/routes/translate.ts`) and the tab's caller (`src/ts/translator/storedTranslation.svelte.ts`).
+ * The stored-translation route: the server runner (`server/src/routes/translate.ts`) and the tab's
+ * caller (`src/ts/translator/storedTranslation.svelte.ts`).
  */
 export const TRANSLATE_MESSAGE_PATH = "/api/translate/message";
 

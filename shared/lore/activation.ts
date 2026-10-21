@@ -3,10 +3,9 @@ import type { Chat, Message, character, groupChat, loreBook } from "../database.
 import type { DeepReadonly } from "../readonly.ts";
 
 /**
- * Lorebook activation, shared by the client and the server (PLAN.md Decision 2): the key, regex,
- * and decorator matching over the chat, recursion, the token budget, and `@@inject_lore`. The
- * application state comes through `input` and `host`; the module also uses `Math.random`
- * (`@@probability`) and `console`.
+ * Lorebook activation, shared by the client and the server: the key, regex, and decorator matching
+ * over the chat, recursion, the token budget, and `@@inject_lore`. The application state comes
+ * through `input` and `host`; the module also uses `Math.random` (`@@probability`) and `console`.
  */
 export type LoreActivationInput = {
     /** The chat's owner (a group's own lore and settings for a group chat): what activation reads. */
@@ -169,8 +168,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                                 return false;
                             }
                             // `/pattern/flags`: the last `/` ends the pattern, and the flags may be
-                            // empty. (Before Phase 5 the key's first entry was overwritten with the
-                            // pattern, the leading `/` stayed in it, and empty flags never matched.)
+                            // empty. (In the browser-only version the key's first entry was
+                            // overwritten with the pattern, the leading `/` stayed in it, and empty
+                            // flags never matched.)
                             const lastSlash = regexString.lastIndexOf("/");
                             if (lastSlash === 0) {
                                 return false;

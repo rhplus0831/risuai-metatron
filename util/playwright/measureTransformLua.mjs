@@ -1,10 +1,9 @@
-// Measurement of the display transform's per-request Lua cost (the Phase 6 closeout). The server
-// runs in process (`createServerContext`, the real resource store, the real script worker pool, the
-// production bindings), and every request goes through `app.request`, so the time is the server's
-// own: authentication, admission, the job scope's snapshot, the worker round trips, Lua, CBS, the
-// regex scripts, and the JSON answer, without TCP or a browser. The server exposes no internal
-// timing, so the per-target figures are derived from batch times (amortized) and from one-target
-// requests.
+// Measurement of the display transform's per-request Lua cost. The server runs in process
+// (`createServerContext`, the real resource store, the real script worker pool, the production
+// bindings), and every request goes through `app.request`, so the time is the server's own:
+// authentication, admission, the job scope's snapshot, the worker round trips, Lua, CBS, the regex
+// scripts, and the JSON answer, without TCP or a browser. The server exposes no internal timing, so
+// the per-target figures are derived from batch times (amortized) and from one-target requests.
 //
 // The fixture: one character with a 200-message chat; one module whose trigger is a Lua
 // `listenEdit("editDisplay", ...)` that appends a marker, enabled by the chat (`chat.modules`); and a
@@ -15,10 +14,10 @@
 // Measured, Lua and no Lua alike:
 // - cold: the first 200-target batch after the server starts (the workers boot on the first task);
 // - batch: the 200 targets as the tab sends them (64-target chunks, concurrently), 10 warm runs;
-// - single: 200 one-target requests one after another, warm.
-// Reported: every batch observation, the median, the amortized time per target (batch / 200), the
-// single-target median, and the Lua minus no-Lua differences. The follow-up threshold (50 ms per
-// target, the slice's) is checked against the warm amortized batch time per target with Lua.
+// - single: 200 one-target requests one after another, warm. Reported: every batch observation, the
+//   median, the amortized time per target (batch / 200), the single-target median, and the Lua
+//   minus no-Lua differences. The follow-up threshold (50 ms per target) is checked against the
+//   warm amortized batch time per target with Lua.
 //
 // Usage: node util/playwright/measureTransformLua.mjs
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

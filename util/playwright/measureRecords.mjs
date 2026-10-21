@@ -1,6 +1,4 @@
-// Measurement for Phase 6 slice 4 (settings ownership): the spike verdict's obligation
-// (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/spike-projection-bindings.md`, "Verdict")
-// to time the deep write-through records in a production build before the reader slices start.
+// Measurement for the settings records: the deep write-through records timed in a production build.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI:

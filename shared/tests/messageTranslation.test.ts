@@ -4,9 +4,9 @@ import type { MessageTranslation } from "../database.ts";
 import { translationSourceHash } from "../translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation, storedTranslation } from "../translation/messageTranslation.ts";
 
-// `docs/plan/translation.md`, "Data model" (slice 1.1): the pinned source hash and the read helpers
-// both runtimes share. The hash vectors are cyrb53 (seed 0, UTF-16 code units, 14 hex digits) as the
-// reference implementation computes them; a change here makes every stored translation stale.
+// The pinned source hash and the read helpers both runtimes share. The hash vectors are cyrb53
+// (seed 0, UTF-16 code units, 14 hex digits) as the reference implementation computes them; a
+// change here makes every stored translation stale.
 
 const translation = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
     text,

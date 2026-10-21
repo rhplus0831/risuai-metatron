@@ -1,6 +1,6 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
-// The Phase 6 Stop D Docker smoke (the closeout's two-client matrix), against the built app (the
-// Docker image on a fresh volume), through the UI and the public API only (no dev modules):
+// The two-client Docker smoke, against the built app (the Docker image on a fresh volume), through
+// the UI and the public API only (no dev modules):
 // - first run: client A sets the password of the fresh server, client B (another browser context,
 //   its own key pair) logs in with it;
 // - two clients converge: a character edit typed in A shows in B and one typed in B shows in A, and a
@@ -21,7 +21,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 //
 // Usage:
 //   node util/playwright/checkTwoClientSmoke.mjs --base http://localhost:6270 --password docker-pw \
-//       --provider-host host.docker.internal --restart-cmd "docker restart risu-stopd"
+//       --provider-host host.docker.internal --restart-cmd "docker restart risu-smoke"
 // The mock provider listens on every interface; the server reaches it as `--provider-host`.
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -47,7 +47,7 @@ if (!base || !restartCmd) {
 }
 
 const DEADLINE_MS = 30_000;
-const SENTINEL = `sk-stopd-sentinel-${randomUUID()}`;
+const SENTINEL = `sk-smoke-sentinel-${randomUUID()}`;
 const results = [];
 const delays = {};
 const check = (name, ok, detail) => {
@@ -83,11 +83,11 @@ const provider = http.createServer(async (req, res) => {
     upstream.push({ authorization: req.headers.authorization ?? null, stream: !!body.stream });
     if (!body.stream) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Stop D mock reply." } }] }));
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Smoke mock reply." } }] }));
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    for (const chunk of ["Stop D ", "mock ", "reply."]) {
+    for (const chunk of ["Smoke ", "mock ", "reply."]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
         await new Promise((r) => setTimeout(r, 300));
     }
@@ -317,10 +317,10 @@ try {
                 kind: "credentials",
                 id: "main",
                 baseRevision: credentials.revision,
-                data: [...credentials.data, { id: "stop-d-key", name: "Stop D key", type: "custom" }],
+                data: [...credentials.data, { id: "smoke-key", name: "Smoke key", type: "custom" }],
             },
             ...modelFixtureOps(
-                { ...preset, customTokenizer: "tik", credentialId: "stop-d-key" },
+                { ...preset, customTokenizer: "tik", credentialId: "smoke-key" },
                 modelPresets,
                 modelProfiles,
             ),
@@ -340,7 +340,7 @@ try {
                 kind: "characters",
                 id: chaId,
                 baseRevision: null,
-                data: { chaId, name: "Stop D", type: "character", desc: "Seeded.", firstMessage: "Greetings." },
+                data: { chaId, name: "Smoke", type: "character", desc: "Seeded.", firstMessage: "Greetings." },
             },
             {
                 kind: "characterOrder",
@@ -361,7 +361,7 @@ try {
                             id: chatId,
                             name: "Chat 1",
                             message: [{ role: "char", data: "Greetings.", chatId: randomUUID() }],
-                            // Bound: a send refuses an unbound chat (`docs/plan/chat-binding.md`).
+                            // Bound: a send refuses an unbound chat.
                             ...chatBindingFixture(modelPresets, presets, personas),
                         },
                     },
@@ -372,7 +372,7 @@ try {
     check("seed: stored", seeded.status === 200, seeded);
     // The sentinel credential, written through the public route (the browser never holds it).
     const secrets = await single("llmSecrets");
-    const keyed = await api("/api/llm-secrets/credentials/~stop-d-key/key", {
+    const keyed = await api("/api/llm-secrets/credentials/~smoke-key/key", {
         method: "PUT",
         body: JSON.stringify({ value: SENTINEL, baseRevision: secrets.revision }),
     });
@@ -432,14 +432,14 @@ try {
     const input = A.page.locator("textarea.input-text").first();
     await input.fill("Hello from A.");
     await input.press("Enter");
-    await converges("send: A shows the reply", async () => (await A.bodyText()).includes("Stop D mock reply."));
-    await converges("send: B shows the reply", async () => (await B.bodyText()).includes("Stop D mock reply."));
+    await converges("send: A shows the reply", async () => (await A.bodyText()).includes("Smoke mock reply."));
+    await converges("send: B shows the reply", async () => (await B.bodyText()).includes("Smoke mock reply."));
     await converges("send: the user message and the reply are stored", async () => {
         const messages = (await storedChat(chaId, chatId))?.data?.message ?? [];
         return (
             (messages.some((m) => m.role === "user" && m.data === "Hello from A.") &&
                 messages.at(-1)?.role === "char" &&
-                messages.at(-1)?.data === "Stop D mock reply.") ||
+                messages.at(-1)?.data === "Smoke mock reply.") ||
             JSON.stringify({ messages: messages.map((m) => [m.role, m.data]), upstream })
         );
     });

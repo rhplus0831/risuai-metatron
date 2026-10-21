@@ -3,12 +3,12 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 
-// Phase 5 slice 13 golden test (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`;
-// `server/src/tests/fixtures/baseline/README.md`): the final browser HTML of `ParseMarkdown` and the
-// `editprocess` text (the display and process transform on the server, the only script path since the
-// Phase 5 cutover; both asset passes, inlays, Markdown, and sanitization in the browser) against
-// `markdown.json`, which the browser path captured before slice 3, with and without plugin hooks.
-// The fixture files are read, never written.
+// The script transform golden test (`server/src/tests/fixtures/baseline/README.md`): the final
+// browser HTML of `ParseMarkdown` and the `editprocess` text (the display and process transform on
+// the server, the only script path since browser generation was removed; both asset passes, inlays,
+// Markdown, and sanitization in the browser) against `markdown.json`, which the browser path
+// captured before CBS moved into `shared/`, with and without plugin hooks. The fixture files are
+// read, never written.
 //
 // The baseline's nondeterminism is reproduced where the browser evaluates it: the same seeded
 // `Math.random` (re-seeded before every value), viewport, timezone, and locale. Two things cannot be:
@@ -19,14 +19,15 @@ import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 // - The browser clock cannot be frozen as the capture froze it: the server refuses an auth token
 //   whose expiry is in the past. `Date` is fixed only while the browser pre-pass runs (it is
 //   synchronous), so `prePass` reads the captured time.
-// Until the cutover the browser path of the current client was captured in the same run and held to
-// `markdown.json` too; it is gone, so the capture is the only oracle.
+// Until browser generation was removed the browser path of the current client was captured in the
+// same run and held to `markdown.json` too; it is gone, so the capture is the only oracle.
 //
 // The README's "Not captured" items get independent cases below: a v2 `display` trigger, and
 // additional assets (the first asset pass, and a regex output that the second pass turns into an
 // asset), against `fixtures/transform/display-trigger-assets.json`, which the browser path recorded
-// at 219dfb51 (before the cutover; its `capturedFrom` gives the provenance). Inlays (they need stored
-// inlay records) and dynamic assets (they need an embedding model) are not covered here.
+// at 219dfb51 (before browser generation was removed; its `capturedFrom` gives the provenance).
+// Inlays (they need stored inlay records) and dynamic assets (they need an embedding model) are not
+// covered here.
 
 const baselineDir = path.join(repoRoot, "server/src/tests/fixtures/baseline");
 const scenario = JSON.parse(readFileSync(path.join(baselineDir, "scenario.json"), "utf8"));
@@ -433,8 +434,8 @@ const renderExtra = (page: Page, chaId: string, chatId: string) =>
             selectCharacter(chaId);
             chatStore.selectChat(chaId, chatId);
             const char = characterList().find((c: any) => c?.chaId === chaId) as any;
-            // The selection is immediate and the chat loads on demand (Phase 6 slice 9b): loaded
-            // here before its messages are read.
+            // The selection is immediate and the chat loads on demand: loaded here before its
+            // messages are read.
             const chat = (await chatStore.ensureChatLoaded({ chaId, chatId }))!;
             const out: Record<string, string> = {};
             const texts: [string, string, number, object][] = [
@@ -501,13 +502,13 @@ test("on a page without a worker the same render holds object URLs, a large imag
     page,
     baseURL,
 }) => {
-    // The Stop B fix (Phase 6): on a page the worker does not control `getFileSrc` answered
-    // `undefined` (and a later read of the path never settled). Its fallback is an object URL, not a
-    // data URL: the first asset pass runs before the text goes to the server transform, and a data
-    // URL of a large image (twice in the markup: `src` and `alt`) would pass the transform's text
-    // limit, so the display trigger and the scripts would not run. The worker claims every page at
-    // once, so the uncontrolled page is one whose worker script failed to load (slice 4f: the boot
-    // continues without the worker).
+    // The uncontrolled-page `getFileSrc` fix: on a page the worker does not control `getFileSrc`
+    // answered `undefined` (and a later read of the path never settled). Its fallback is an object
+    // URL, not a data URL: the first asset pass runs before the text goes to the server transform,
+    // and a data URL of a large image (twice in the markup: `src` and `alt`) would pass the
+    // transform's text limit, so the display trigger and the scripts would not run. The worker
+    // claims every page at once, so the uncontrolled page is one whose worker script failed to load
+    // (the boot continues without the worker).
     const errors: string[] = [];
     await page
         .context()

@@ -1,7 +1,8 @@
-// Captures the browser path's token ids for the Phase 5 tokenizer parity fixture
+// Captures the browser path's token ids for the tokenizer parity fixture
 // (server/src/tests/fixtures/tokens/browser-ids.json; the procedure is in that folder's README):
 // the client's own `encodeWithTokenizer` and `encode`, on the Vite dev stack, in a fresh headless
-// Chrome context. The server tokenizers must reproduce these ids (server/src/tests/tokenParity.test.ts and tokenPlainNode.test.ts).
+// Chrome context. The server tokenizers must reproduce these ids
+// (server/src/tests/tokenParity.test.ts and tokenPlainNode.test.ts).
 //
 // Usage: node util/playwright/captureTokenizerIds.mjs [outFile]
 import { execSync } from "node:child_process";

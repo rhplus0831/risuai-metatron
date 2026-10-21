@@ -1,9 +1,9 @@
 import type { MCPTool, RPCToolCallContent } from "./risuaccess/host.ts";
 
 /**
- * What the LLM tool (`internal:aiaccess`) needs from where it runs (Phase 5 slice 12b): a request of
- * the main model (`model`) or the lighter one (`otherAx`) with the given messages and no bias, as the
- * tab's `requestChatData` or a server job's own request.
+ * What the LLM tool (`internal:aiaccess`) needs from where it runs: a request of the main model
+ * (`model`) or the lighter one (`otherAx`) with the given messages and no bias, as the tab's
+ * `requestChatData` or a server job's own request.
  */
 export type AiAccessHost = {
     runLLM(

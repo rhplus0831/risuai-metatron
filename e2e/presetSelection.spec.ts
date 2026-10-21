@@ -1,12 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// Phase 3, slice 5 (`docs/plan/phases/slices/phase-3-settings-sections/forwarding-presets-and-selection.md`,
-// Validation): the forwarding layer and the per-client selection in the browser, against the
-// isolated stack of `playwright.config.ts`. Two things only the whole stack shows: an edit made in
-// the real settings UI followed by a hotkey switch in the same interaction lands in the preset that
-// was selected and survives a reload, and the selection is per client (a browser context) and per
-// tab (`sessionStorage`), while the presets themselves are shared through the server.
+// The forwarding layer and the per-client selection in the browser, against the isolated stack of
+// `playwright.config.ts`. Two things only the whole stack shows: an edit made in the real settings
+// UI followed by a hotkey switch in the same interaction lands in the preset that was selected and
+// survives a reload, and the selection is per client (a browser context) and per tab
+// (`sessionStorage`), while the presets themselves are shared through the server.
 
 /** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(3000);

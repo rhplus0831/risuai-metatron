@@ -46,11 +46,11 @@ function ownCopy(value: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * The lorebook conversion of entries below `bookVersion` 2 (the startup step `updateLorebooks` ran
- * before Phase 6): an `activationPercent` becomes an `@@probability` line, `@@end`/`@@@end` becomes
- * `@@depth 0`, `<char>`/`<bot>` and `<user>` become their CBS forms, and the entry is marked version 2.
- * Returns new entries (the input is not changed); an entry already at version 2, or without a string
- * `content`, is kept as it is. A non-object entry is refused. Idempotent.
+ * The lorebook conversion of entries below `bookVersion` 2 (the startup step `updateLorebooks` the
+ * client once ran): an `activationPercent` becomes an `@@probability` line, `@@end`/`@@@end`
+ * becomes `@@depth 0`, `<char>`/`<bot>` and `<user>` become their CBS forms, and the entry is
+ * marked version 2. Returns new entries (the input is not changed); an entry already at version 2,
+ * or without a string `content`, is kept as it is. A non-object entry is refused. Idempotent.
  */
 export function upgradeLorebook(entries: readonly unknown[]): loreBook[] {
     return entries.map((entry, index) => {

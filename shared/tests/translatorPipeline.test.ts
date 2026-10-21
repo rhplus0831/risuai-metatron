@@ -17,10 +17,10 @@ import {
     type TranslatorSlotValues,
 } from "../translation/pipeline.ts";
 
-// `docs/plan/translation.md` slice 1.2: the pure translator pipeline both runtimes share (the tab's
-// `translateLLM` now, the server runner of slice 1.3). Step selection, the slots filled in one
-// pass, the ChatML parse, the embedded-input rule, the reasoning stripped from every step's output,
-// the signature the `LLMTranslateCache` key hashes, and the run itself.
+// The pure translator pipeline both runtimes share (the tab's `translateLLM` and the server
+// runner). Step selection, the slots filled in one pass, the ChatML parse, the embedded-input rule,
+// the reasoning stripped from every step's output, the signature the `LLMTranslateCache` key
+// hashes, and the run itself.
 
 const step = (overrides: Partial<TranslatorStep> = {}): TranslatorStep => ({
     id: "s",
@@ -307,10 +307,10 @@ describe("runTranslatorPipeline", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.2: the server runner's line protection when a preset does not
-// send its text as is, the Fastify fork's `translatePreservingRawBlocks` exactly (the user's parity
-// decision): each run of lines between protected lines is one trimmed chunk, a protected line is kept
-// and followed by an empty chunk, and the parts are joined with `\n` and trimmed.
+// The server runner's line protection when a preset does not send its text as is, the Fastify
+// fork's `translatePreservingRawBlocks` exactly (the user's parity decision): each run of lines
+// between protected lines is one trimmed chunk, a protected line is kept and followed by an empty
+// chunk, and the parts are joined with `\n` and trimmed.
 describe("isProtectedTranslationLine", () => {
     it("protects an exactly empty line and an asset line at column zero, case-sensitively; audio needs the closing braces at the end", () => {
         for (const line of ["", "{{img::a.png}}", "{{img", "{{raw::x}} tail", "{{video::v}}", "{{audio::a}}"]) {
@@ -348,7 +348,7 @@ describe("translateProtectingLines", () => {
     });
 
     it("keeps an interior blank line and one protected line as they are, and gives two protected lines in a row an extra blank line", async () => {
-        // The four examples of Astra's challenge (`docs/plan/translation.md` slice 3.2 As built).
+        // Four examples of the blank-line rule.
         await expect(translateProtectingLines("a\n{{img::x}}\nb", identity)).resolves.toBe("a\n{{img::x}}\nb");
         await expect(translateProtectingLines("a\n\nb", identity)).resolves.toBe("a\n\nb");
         await expect(translateProtectingLines("{{img::a}}\n{{img::b}}", identity)).resolves.toBe(
@@ -414,11 +414,11 @@ describe("translateProtectingLines", () => {
     });
 });
 
-// `docs/plan/translation.md` slice 3.3: the history slots in the pipeline. `{{slot::history::N}}` and
-// `{{slot::historytrans::N}}` fill in from the caller's `history` in the same one pass as every other
-// slot (empty without one, or for an invalid N); the counts a preset's executed prompts name are read
-// from the same matches, so discovery and replacement agree on a nested malformed token; and a
-// history slot is not an input slot.
+// The history slots in the pipeline. `{{slot::history::N}}` and `{{slot::historytrans::N}}` fill in
+// from the caller's `history` in the same one pass as every other slot (empty without one, or for
+// an invalid N); the counts a preset's executed prompts name are read from the same matches, so
+// discovery and replacement agree on a nested malformed token; and a history slot is not an input
+// slot.
 describe("the history slots", () => {
     /** A history that records its calls and answers `<slot N>`. */
     function recording() {
@@ -484,7 +484,7 @@ describe("the history slots", () => {
 
     it("consumes a nested malformed token the way the fill does: an input slot inside it is not an input slot, so the source still follows as the user message", () => {
         const { calls, history } = recording();
-        // Astra's challenge finding 1: the invalid history token consumes `{{slot::content`.
+        // The invalid history token consumes `{{slot::content`.
         for (const inner of ["{{slot::content}}", "{{slot::prev}}", "{{solt::content}}", "{{slot::out::draft}}"]) {
             const prompt = `{{slot::history::${inner}}}`;
             expect(fillTranslatorSlots(prompt, values({ history })), prompt).toBe("}}");
