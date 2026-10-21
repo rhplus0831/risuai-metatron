@@ -733,14 +733,31 @@ describe("convertUpstreamDatabase: assets", () => {
 });
 
 describe("convertUpstreamDatabase: recovery of malformed input", () => {
-    it("reports every repair of a chat with very many invalid messages instead of overflowing", () => {
+    it("reports one repair per invalid message and keeps the valid ones around them", () => {
         const out = convert({
             formatversion: 5,
-            characters: [{ chaId: "a", name: "A", chats: [{ message: Array.from({ length: 150_000 }, () => null) }] }],
+            characters: [{ chaId: "a", name: "A", chats: [{ message: [null, msg("user", "kept"), null, null] }] }],
         });
-        expect(chatsOf(out, "a")[0].message).toEqual([]);
-        expect(excluded(out, "invalid-data")?.count).toBe(150_000);
+        expect(chatsOf(out, "a")[0].message.map((message) => message.data)).toEqual(["kept"]);
+        expect(excluded(out, "invalid-data")).toEqual({ code: "invalid-data", count: 3, examples: ["A"] });
     });
+
+    // The cardinality is the subject: a report that spreads its entries into one call overflows the
+    // stack well before this count. Slow, like the other production-scale fixtures.
+    it(
+        "reports every repair of a chat with very many invalid messages instead of overflowing",
+        { tags: ["slow"] },
+        () => {
+            const out = convert({
+                formatversion: 5,
+                characters: [
+                    { chaId: "a", name: "A", chats: [{ message: Array.from({ length: 150_000 }, () => null) }] },
+                ],
+            });
+            expect(chatsOf(out, "a")[0].message).toEqual([]);
+            expect(excluded(out, "invalid-data")?.count).toBe(150_000);
+        },
+    );
 
     it("resets tool calls the store cannot serialize and keeps the chat, also inside a cold payload", () => {
         const toolCalls = (arg: unknown) => ({ t1: { call: { id: "t1", name: "fn", arg }, response: [] } });

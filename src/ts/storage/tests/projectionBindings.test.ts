@@ -1949,39 +1949,8 @@ describe("cost", () => {
     const WRITES = 1000;
     const ROUNDS = 9;
 
-    it("1,000 sequential nested writes into the 300-entry character: one serialization per flush; tracked modes against direct $state writes", async () => {
-        const direct = liveRecord<any>(CHARACTERS_KIND, CHA);
-        const accessor = projectRecord(CHARACTERS_KIND, CHA);
+    it("1,000 sequential nested writes into the 300-entry character: no serialization while writing, one per flush", async () => {
         const tracked = trackedRecord(CHARACTERS_KIND, CHA);
-        const facadeDb = mountFacade("tracked", [CHA]) as any;
-        // Each target: the record to write through and the resolve-cache mode it runs with.
-        const targets: Record<string, [() => any, boolean]> = {
-            direct: [() => liveRecord<any>(CHARACTERS_KIND, CHA), false],
-            accessor: [() => accessor, false],
-            tracked: [() => tracked, false],
-            "tracked-cached": [() => tracked, true],
-            "tracked via facade": [() => facadeDb.characters[0], false],
-            "tracked-cached via facade": [() => facadeDb.characters[0], true],
-        };
-        expect(direct).toBe(liveRecord(CHARACTERS_KIND, CHA));
-
-        const times: Record<string, number[]> = Object.fromEntries(Object.keys(targets).map((name) => [name, []]));
-        let counter = 0;
-        for (let round = 0; round < ROUNDS; round += 1) {
-            for (const [name, [target, cached]] of Object.entries(targets)) {
-                setResolveCache(cached);
-                const record = target();
-                const start = performance.now();
-                for (let index = 0; index < WRITES; index += 1) {
-                    record.globalLore[index % LORE_SIZE].content = `write ${(counter += 1)}`;
-                }
-                times[name].push(performance.now() - start);
-            }
-        }
-        const medians = Object.fromEntries(Object.entries(times).map(([name, list]) => [name, median(list)]));
-        const ratio = (name: string) => medians[name] / medians.direct;
-
-        // The write path never serializes; the flush serializes the record once.
         setResolveCache(false);
         resetCounters();
         for (let index = 0; index < WRITES; index += 1) {
@@ -1997,56 +1966,97 @@ describe("cost", () => {
         expect(server.record(CHARACTERS_KIND, CHA)!.data.globalLore[(WRITES - 1) % LORE_SIZE].content).toBe(
             `final ${WRITES - 1}`,
         );
-
-        console.info(
-            [
-                "[projection bindings] 1,000 nested writes (median of 9 rounds, ms):",
-                ...Object.keys(targets).map(
-                    (name) => `  ${name}: ${medians[name].toFixed(3)} ms (x${ratio(name).toFixed(2)} of direct)`,
-                ),
-                machine(),
-            ].join("\n"),
-        );
-        // The target is for tracked modes to stay within 2x; the assertion is generous so it does not flake.
-        expect(ratio("tracked")).toBeLessThan(10);
-        expect(ratio("tracked-cached")).toBeLessThan(10);
     });
 
-    it("bulk: the lorebook drag rebuild and the preset reorder, tracked modes against direct $state", () => {
-        // `LoreBookList.svelte:209-296`: copy the array (here with a new object per item), move one
-        // item as a copy, regroup by folder, then replace the field.
-        function drag(lore: any[], assign: (next: any[]) => void) {
-            const newArray = lore.map((item) => ({ ...item }));
-            const [moved] = newArray.splice(10, 1);
-            const updated = { ...moved };
-            delete updated.folder;
-            newArray.splice(200, 0, updated);
-            const sorted: any[] = [];
-            const processed = new Set();
-            for (const item of newArray) {
-                if (processed.has(item)) {
-                    continue;
+    // Real time is the subject (tracked against direct write cost), so the comparison runs in the
+    // slow tier; the case above keeps the write path's serialization contract in the gate.
+    it(
+        "1,000 sequential nested writes into the 300-entry character: tracked modes against direct $state writes",
+        { tags: ["slow"] },
+        () => {
+            const direct = liveRecord<any>(CHARACTERS_KIND, CHA);
+            const accessor = projectRecord(CHARACTERS_KIND, CHA);
+            const tracked = trackedRecord(CHARACTERS_KIND, CHA);
+            const facadeDb = mountFacade("tracked", [CHA]) as any;
+            // Each target: the record to write through and the resolve-cache mode it runs with.
+            const targets: Record<string, [() => any, boolean]> = {
+                direct: [() => liveRecord<any>(CHARACTERS_KIND, CHA), false],
+                accessor: [() => accessor, false],
+                tracked: [() => tracked, false],
+                "tracked-cached": [() => tracked, true],
+                "tracked via facade": [() => facadeDb.characters[0], false],
+                "tracked-cached via facade": [() => facadeDb.characters[0], true],
+            };
+            expect(direct).toBe(liveRecord(CHARACTERS_KIND, CHA));
+
+            const times: Record<string, number[]> = Object.fromEntries(Object.keys(targets).map((name) => [name, []]));
+            let counter = 0;
+            for (let round = 0; round < ROUNDS; round += 1) {
+                for (const [name, [target, cached]] of Object.entries(targets)) {
+                    setResolveCache(cached);
+                    const record = target();
+                    const start = performance.now();
+                    for (let index = 0; index < WRITES; index += 1) {
+                        record.globalLore[index % LORE_SIZE].content = `write ${(counter += 1)}`;
+                    }
+                    times[name].push(performance.now() - start);
                 }
-                sorted.push(item);
-                processed.add(item);
-                if (item.mode === "folder") {
-                    for (const sub of newArray) {
-                        if (!processed.has(sub) && sub.folder === item.key) {
-                            sorted.push(sub);
-                            processed.add(sub);
-                        }
+            }
+            setResolveCache(false);
+            const medians = Object.fromEntries(Object.entries(times).map(([name, list]) => [name, median(list)]));
+            const ratio = (name: string) => medians[name] / medians.direct;
+
+            console.info(
+                [
+                    "[projection bindings] 1,000 nested writes (median of 9 rounds, ms):",
+                    ...Object.keys(targets).map(
+                        (name) => `  ${name}: ${medians[name].toFixed(3)} ms (x${ratio(name).toFixed(2)} of direct)`,
+                    ),
+                    machine(),
+                ].join("\n"),
+            );
+            // The target is for tracked modes to stay within 2x; the assertion is generous so it does not flake.
+            expect(ratio("tracked")).toBeLessThan(10);
+            expect(ratio("tracked-cached")).toBeLessThan(10);
+        },
+    );
+
+    // `LoreBookList.svelte:209-296`: copy the array (here with a new object per item), move one
+    // item as a copy, regroup by folder, then replace the field.
+    function drag(lore: any[], assign: (next: any[]) => void) {
+        const newArray = lore.map((item) => ({ ...item }));
+        const [moved] = newArray.splice(10, 1);
+        const updated = { ...moved };
+        delete updated.folder;
+        newArray.splice(200, 0, updated);
+        const sorted: any[] = [];
+        const processed = new Set();
+        for (const item of newArray) {
+            if (processed.has(item)) {
+                continue;
+            }
+            sorted.push(item);
+            processed.add(item);
+            if (item.mode === "folder") {
+                for (const sub of newArray) {
+                    if (!processed.has(sub) && sub.folder === item.key) {
+                        sorted.push(sub);
+                        processed.add(sub);
                     }
                 }
             }
-            assign(sorted);
         }
-        // `botpreset.svelte:49` (`movePreset`): copy the collection, move one preset, replace it.
-        function move(list: any[], assign: (next: any[]) => void) {
-            const presets = [...list];
-            const [moved] = presets.splice(0, 1);
-            presets.splice(29, 0, moved);
-            assign(presets);
-        }
+        assign(sorted);
+    }
+    // `botpreset.svelte:49` (`movePreset`): copy the collection, move one preset, replace it.
+    function move(list: any[], assign: (next: any[]) => void) {
+        const presets = [...list];
+        const [moved] = presets.splice(0, 1);
+        presets.splice(29, 0, moved);
+        assign(presets);
+    }
+    /** Fills 50 presets and returns each mode's drag and reorder with its resolve-cache mode. */
+    function bulkTargets(): Record<string, [() => void, () => void, boolean]> {
         const base = recordJson(PRESETS_KIND)[0];
         applyRaw(
             PRESETS_KIND,
@@ -2055,7 +2065,7 @@ describe("cost", () => {
         );
         const facadeDb = mountFacade("tracked", [CHA]) as any;
         const tracked = trackedRecord(CHARACTERS_KIND, CHA);
-        const targets: Record<string, [() => void, () => void, boolean]> = {
+        return {
             direct: [
                 () => drag(liveChar().globalLore, (next) => (liveChar().globalLore = next)),
                 () => move(liveRecord(PRESETS_KIND), (next) => setLiveRecord(PRESETS_KIND, "main", next)),
@@ -2072,36 +2082,61 @@ describe("cost", () => {
                 true,
             ],
         };
-        const times: Record<string, { drag: number[]; move: number[] }> = {};
-        for (let round = 0; round < 9; round += 1) {
-            for (const [name, [dragOnce, moveOnce, cached]] of Object.entries(targets)) {
-                setResolveCache(cached);
-                times[name] ??= { drag: [], move: [] };
-                let start = performance.now();
-                dragOnce();
-                times[name].drag.push(performance.now() - start);
-                start = performance.now();
-                moveOnce();
-                times[name].move.push(performance.now() - start);
-            }
+    }
+
+    it("bulk: the lorebook drag rebuild and the preset reorder through each mode store no wrapper and keep every item", () => {
+        for (const [dragOnce, moveOnce, cached] of Object.values(bulkTargets())) {
+            setResolveCache(cached);
+            dragOnce();
+            moveOnce();
         }
         setResolveCache(false);
         expect(findLiveWrappers()).toEqual([]);
         expect(liveChar().globalLore).toHaveLength(LORE_SIZE);
         expect(new Set(liveRecord<any[]>(PRESETS_KIND).map((preset) => preset.id)).size).toBe(50);
-        const medians = Object.fromEntries(
-            Object.entries(times).map(([name, list]) => [name, { drag: median(list.drag), move: median(list.move) }]),
-        );
-        console.info(
-            [
-                "[projection bindings] bulk paths (median of 9 rounds, ms; dev-mode Svelte under vitest):",
-                ...Object.entries(medians).map(
-                    ([name, value]) =>
-                        `  ${name}: lorebook drag (300 new items) ${value.drag.toFixed(3)} (x${(value.drag / medians.direct.drag).toFixed(2)}), preset reorder (50) ${value.move.toFixed(3)} (x${(value.move / medians.direct.move).toFixed(2)})`,
-                ),
-            ].join("\n"),
-        );
     });
+
+    // Real time is the subject (each mode's median against direct `$state`), so the report runs in
+    // the slow tier; the case above keeps the stored shape in the gate.
+    it(
+        "bulk: the lorebook drag rebuild and the preset reorder, tracked modes against direct $state",
+        { tags: ["slow"] },
+        () => {
+            const targets = bulkTargets();
+            const times: Record<string, { drag: number[]; move: number[] }> = {};
+            for (let round = 0; round < 9; round += 1) {
+                for (const [name, [dragOnce, moveOnce, cached]] of Object.entries(targets)) {
+                    setResolveCache(cached);
+                    times[name] ??= { drag: [], move: [] };
+                    let start = performance.now();
+                    dragOnce();
+                    times[name].drag.push(performance.now() - start);
+                    start = performance.now();
+                    moveOnce();
+                    times[name].move.push(performance.now() - start);
+                }
+            }
+            setResolveCache(false);
+            expect(findLiveWrappers()).toEqual([]);
+            expect(liveChar().globalLore).toHaveLength(LORE_SIZE);
+            expect(new Set(liveRecord<any[]>(PRESETS_KIND).map((preset) => preset.id)).size).toBe(50);
+            const medians = Object.fromEntries(
+                Object.entries(times).map(([name, list]) => [
+                    name,
+                    { drag: median(list.drag), move: median(list.move) },
+                ]),
+            );
+            console.info(
+                [
+                    "[projection bindings] bulk paths (median of 9 rounds, ms; dev-mode Svelte under vitest):",
+                    ...Object.entries(medians).map(
+                        ([name, value]) =>
+                            `  ${name}: lorebook drag (300 new items) ${value.drag.toFixed(3)} (x${(value.drag / medians.direct.drag).toFixed(2)}), preset reorder (50) ${value.move.toFixed(3)} (x${(value.move / medians.direct.move).toFixed(2)})`,
+                    ),
+                ].join("\n"),
+            );
+        },
+    );
 
     it("mounting and re-rendering a component bound to 60 fields", () => {
         // A 60-field record of the section fields' primitive values (the `ui` record holds 58), held

@@ -11,7 +11,7 @@ const sharedDir = path.resolve(import.meta.dirname, "../../../shared");
 // `shared/` through plain Node type stripping, which does not. Only a real `node` proves the folder
 // loads at runtime. (Type-only imports are erased before Node resolves them; the `nodenext` server
 // `tsc` in `pnpm check` guards their extensions.)
-it("imports every shared/**/*.ts with plain node", () => {
+it("imports every shared/**/*.ts with plain node", { tags: ["slow"], timeout: 60_000 }, () => {
     const files = readdirSync(sharedDir, { recursive: true, encoding: "utf8" })
         .map((name) => name.split(path.sep).join("/"))
         .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))

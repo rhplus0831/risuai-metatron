@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { requestDataResponse } from "../llm/request.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 
@@ -99,7 +99,11 @@ describe("requestChatDataOuter and banCharacterset", () => {
 });
 
 describe("a group send with the Echo model and a banned script", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "charset-retries-"));
+    // Made in a hook, not at collection, so a run that skips these cases leaves nothing behind.
+    let dir = "";
+    beforeAll(() => {
+        dir = mkdtempSync(path.join(os.tmpdir(), "charset-retries-"));
+    });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
     type Report = {
@@ -200,27 +204,35 @@ describe("a group send with the Echo model and a banned script", () => {
         return JSON.parse(run.stdout) as Report;
     }
 
-    it("ends with the request's failure once the retries are spent, yielding between attempts", () => {
-        expect(runGroupSend("budget")).toEqual({
-            attempts: 3,
-            immediateRanAfter: 1,
-            attemptsAtStop: null,
-            terminal: { type: "error", reason: "failed", status: 500, message: BANNED, stage: "request" },
-        });
-    }, 90_000);
+    it(
+        "ends with the request's failure once the retries are spent, yielding between attempts",
+        { tags: ["slow"], timeout: 90_000 },
+        () => {
+            expect(runGroupSend("budget")).toEqual({
+                attempts: 3,
+                immediateRanAfter: 1,
+                attemptsAtStop: null,
+                terminal: { type: "error", reason: "failed", status: 500, message: BANNED, stage: "request" },
+            });
+        },
+    );
 
-    it("observes a stop scheduled from a timer while the rejections continue", () => {
-        const report = runGroupSend("stop");
-        expect(report.terminal).toEqual({
-            type: "error",
-            reason: "aborted",
-            status: 499,
-            message: "The generation was aborted",
-        });
-        expect(report.immediateRanAfter).toBe(1);
-        expect(report.attemptsAtStop).toBeGreaterThanOrEqual(1);
-        // The stop ended the loop well inside its 10,000-attempt budget.
-        expect(report.attempts).toBeLessThan(10_000);
-        expect(report.attempts).toBeGreaterThanOrEqual(report.attemptsAtStop ?? 0);
-    }, 90_000);
+    it(
+        "observes a stop scheduled from a timer while the rejections continue",
+        { tags: ["slow"], timeout: 90_000 },
+        () => {
+            const report = runGroupSend("stop");
+            expect(report.terminal).toEqual({
+                type: "error",
+                reason: "aborted",
+                status: 499,
+                message: "The generation was aborted",
+            });
+            expect(report.immediateRanAfter).toBe(1);
+            expect(report.attemptsAtStop).toBeGreaterThanOrEqual(1);
+            // The stop ended the loop well inside its 10,000-attempt budget.
+            expect(report.attempts).toBeLessThan(10_000);
+            expect(report.attempts).toBeGreaterThanOrEqual(report.attemptsAtStop ?? 0);
+        },
+    );
 });
