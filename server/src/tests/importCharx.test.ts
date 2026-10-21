@@ -217,10 +217,13 @@ describe("POST /api/import/charx", () => {
         await recovered(s);
     });
 
-    it("excludes declared and decoded oversized entries in file order with the exact readable asset total", async () => {
-        const s = await server();
-        const limit = 50 * 1024 * 1024;
-        // Only the bomb expands beyond 50 MiB. All declared-size cases occupy tiny entries.
+    /**
+     * The entry-size rules at `limit`: entries whose local header declares the limit or whose central
+     * directory declares one byte more are excluded unread, one that decodes to one byte more is
+     * excluded after reading, in file order, and the asset total counts only what is read.
+     */
+    async function excludesOversized(limit: number, s: ResourceTestClient) {
+        // Only the bomb expands beyond the limit. All declared-size cases occupy tiny entries.
         let zip = Buffer.from(
             zipSync(
                 {
@@ -266,7 +269,20 @@ describe("POST /api/import/charx", () => {
         expect(assetFiles(s)).toEqual([path.basename(keyOf(bytes("kept")))]);
         expect(readFileSync(path.join(s.savePath, keyOf(bytes("kept"))))).toEqual(bytes("kept"));
         await recovered(s);
+    }
+
+    it("excludes declared and decoded oversized entries at an injected entry limit, in file order with the exact readable asset total", async () => {
+        // A 1 KiB entry limit; the production 50 MiB is the slow case below.
+        await excludesOversized(1024, await server({ routeLimits: { charxEntryBytes: 1024 } }));
     });
+
+    it(
+        "excludes declared and decoded oversized entries in file order with the exact readable asset total",
+        { tags: ["slow"], timeout: 60_000 },
+        async () => {
+            await excludesOversized(50 * 1024 * 1024, await server());
+        },
+    );
 
     it("throttles progress to 200 ms and always reports the final asset", async () => {
         const s = await server();

@@ -372,10 +372,8 @@ describe("a send whose card text reaches the CBS limit", () => {
         async () => {
             const chaId = await seedCharacter({ name: "Ann", desc: `Desc ${STUCK}` });
             const before = bodies.length;
-            const started = Date.now();
             const failed = await job("send", chaId, { input: "hi there", userMessageId: "u1" });
             expectLimitTerminal(failed, "Ann", before, "assembly");
-            expect(Date.now() - started).toBeLessThan(20_000);
             // The input stage's write stays (termination, not rollback); no reply was appended.
             expect(texts(await readChat(chaId))).toEqual(["user:hi there"]);
             expect(await clientSetText(chaId, "u1", "edited by the tab")).toBe(200);

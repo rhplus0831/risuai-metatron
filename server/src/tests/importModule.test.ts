@@ -260,7 +260,8 @@ describe("POST /api/import/module", () => {
     });
 
     it("checks JWT, the shared authenticated limiter, maintenance and missing body before reading", async () => {
-        const s = await server();
+        // A 20-request bucket, so spending it takes a few requests (the policy itself is the same limiter).
+        const s = await server({ routeLimits: { requestsPerMinute: 20 } });
         vi.spyOn(console, "log").mockImplementation(() => {});
         for (const headers of [{}, { "risu-auth": await s.signer.jwt({ breakSignature: true }) }]) {
             const input = unreadBody();
@@ -295,7 +296,8 @@ describe("POST /api/import/module", () => {
         // Spend the bucket through another authenticated route, proving it is shared.
         const before = await s.request("/api/backups");
         const remaining = Number(before.headers.get("ratelimit-remaining"));
-        expect(before.headers.get("ratelimit-limit")).toBe("2000");
+        expect(before.headers.get("ratelimit-limit")).toBe("20");
+        expect(remaining).toBeGreaterThan(0);
         for (let i = 0; i < remaining; i++) await s.app.request("/api/backups");
         const input = unreadBody();
         const limited = await post(s, input.body);

@@ -318,8 +318,16 @@ export function createResourceStore(options: {
     guard?: MessageGuard;
     /** Where committed changes are published (the live updates). */
     feed?: ChangeFeed;
+    /** The `patchBases` cache's budget in estimated units (default `PATCH_BASES_MAX_UNITS`; tests lower it). */
+    patchBaseMaxUnits?: number;
+    /**
+     * Tests: called once with a reader of a record's stored JSON text, as the database holds it (an
+     * in-memory store has no file another connection could read).
+     */
+    inspectStoredText?: (read: (kind: ResourceKind, id: string) => string | undefined) => void;
 }) {
     const { kinds, guard, feed } = options;
+    const patchBaseMaxUnits = options.patchBaseMaxUnits ?? PATCH_BASES_MAX_UNITS;
     if (options.file !== ":memory:") {
         mkdirSync(path.dirname(options.file), { recursive: true });
     }
@@ -360,6 +368,10 @@ export function createResourceStore(options: {
         "SELECT id, seq, revision, schemaVersion, data FROM resources WHERE kind = ? ORDER BY seq",
     );
     const deleteKind = db.prepare("DELETE FROM resources WHERE kind = ?");
+    options.inspectStoredText?.((kind, id) => {
+        assertKind(kind);
+        return (selectOne.get(kind.name, id) as { data: string } | undefined)?.data;
+    });
 
     /**
      * The normalization pass, inside the caller's transaction: every stored record of every
@@ -657,7 +669,7 @@ export function createResourceStore(options: {
             units += entry.text.length * PATCH_BASE_UNITS_PER_CHAR;
         }
         for (const [oldest, entry] of patchBases) {
-            if (patchBases.size <= PATCH_BASES_MAX && units <= PATCH_BASES_MAX_UNITS) {
+            if (patchBases.size <= PATCH_BASES_MAX && units <= patchBaseMaxUnits) {
                 break;
             }
             patchBases.delete(oldest);

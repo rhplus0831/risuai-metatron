@@ -12,7 +12,8 @@ import { createResourceStore, type ResourceStore } from "../data/resourceStore.t
 // cache). Each test runs the same writes on a store of the real kinds and on one whose kinds have the
 // flag stripped (the whole-record path) and requires the same stored text, the same errors, and the same
 // feed patches; plus the cache's invalidation (a whole write, a rolled-back batch), the feed's copy, and
-// that a patch of a cached record parses and stringifies nothing of its size.
+// that a patch of a cached record parses and stringifies nothing of its size. The stores are in memory
+// (`inspectStoredText` reads their stored text); one case runs on files read through a second connection.
 
 const FAST = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 /** `JSON.rawJSON` (Node 21+), which the server's lib types leave out. */
@@ -31,7 +32,11 @@ type Side = {
 
 const dirs: string[] = [];
 const stores: ResourceStore[] = [];
+const readers: DatabaseSync[] = [];
 afterEach(() => {
+    for (const reader of readers.splice(0)) {
+        reader.close();
+    }
     for (const store of stores.splice(0)) {
         store.close();
     }
@@ -40,30 +45,51 @@ afterEach(() => {
     }
 });
 
-/** A store on a file, so the stored text itself can be read back (`text`). */
-function side(kinds: typeof FAST): Side {
-    const dir = mkdtempSync(path.join(tmpdir(), "patch-parts-"));
-    dirs.push(dir);
-    const file = path.join(dir, "resources.sqlite");
+/**
+ * A store and its stored text (`text`): in memory, read through `inspectStoredText`, or with `disk` on a
+ * file read through a second, read-only connection (which sees only committed writes).
+ */
+function side(kinds: typeof FAST, options: { disk?: boolean; patchBaseMaxUnits?: number } = {}): Side {
     const feed = createChangeFeed();
     const events: ChangeFeedEvent[] = [];
     feed.subscribe((event) => events.push(event));
-    const store = createResourceStore({ file, kinds, feed });
+    let text: Side["text"];
+    let store: ResourceStore;
+    if (options.disk) {
+        const dir = mkdtempSync(path.join(tmpdir(), "patch-parts-"));
+        dirs.push(dir);
+        const file = path.join(dir, "resources.sqlite");
+        store = createResourceStore({ file, kinds, feed, patchBaseMaxUnits: options.patchBaseMaxUnits });
+        const reader = new DatabaseSync(file, { readOnly: true });
+        readers.push(reader);
+        const select = reader.prepare("SELECT data FROM resources WHERE kind = ? AND id = ?");
+        text = (kind, id) => (select.get(kind.name, id) as { data: string }).data;
+    } else {
+        let read!: (kind: ResourceKind, id: string) => string | undefined;
+        store = createResourceStore({
+            file: ":memory:",
+            kinds,
+            feed,
+            patchBaseMaxUnits: options.patchBaseMaxUnits,
+            inspectStoredText: (reader) => {
+                read = reader;
+            },
+        });
+        text = (kind, id) => read(kind, id)!;
+    }
     stores.push(store);
-    const reader = new DatabaseSync(file, { readOnly: true });
-    const select = reader.prepare("SELECT data FROM resources WHERE kind = ? AND id = ?");
     return {
         store,
         characters: kinds.get("characters")!,
         modules: kinds.get("modules")!,
         events,
-        text: (kind, id) => (select.get(kind.name, id) as { data: string }).data,
+        text,
     };
 }
 
 /** Both sides, seeded with the same character and module list. */
-function pair(character: Record<string, unknown>, modules: unknown[]): [Side, Side] {
-    const sides: [Side, Side] = [side(SLOW), side(FAST)];
+function pair(character: Record<string, unknown>, modules: unknown[], options: { disk?: boolean } = {}): [Side, Side] {
+    const sides: [Side, Side] = [side(SLOW, options), side(FAST, options)];
     for (const s of sides) {
         s.store.put(s.characters, CHARACTER_ID, character, null);
         s.store.put(s.modules, MODULES_ID, modules, null);
@@ -172,6 +198,54 @@ describe("a patch of a shallowNormalize kind", () => {
                 }
                 return { changes: [{ id, set: { extra: value() } }] };
             });
+        }
+    });
+
+    it("commits to the file what the whole-record path commits, and nothing of a rolled-back batch", () => {
+        // On files, read through a second connection: a patch left uncommitted would not be seen there.
+        const sides = pair(
+            { chaId: CHARACTER_ID, name: "C", desc: "one", note: "dropped" },
+            [
+                { id: "a", name: "A" },
+                { id: "b", name: "B" },
+            ],
+            { disk: true },
+        );
+        for (const s of sides) {
+            expect(JSON.parse(s.text(s.characters, CHARACTER_ID))).toHaveProperty("note", "dropped");
+        }
+        const character = same(sides, "characters", () => ({ set: { desc: "two", tags: ["t"] }, remove: ["note"] }));
+        expect(JSON.parse(character)).toMatchObject({ chaId: CHARACTER_ID, name: "C", desc: "two", tags: ["t"] });
+        expect(JSON.parse(character)).not.toHaveProperty("note");
+        const modules = same(sides, "modules", () => ({
+            changes: [{ id: "a", set: { name: "A2" } }],
+            items: [{ id: "c", name: "C" }],
+            order: ["b", "a", "c"],
+        }));
+        expect((JSON.parse(modules) as { id: string; name: string }[]).map(({ id, name }) => [id, name])).toEqual([
+            ["b", "B"],
+            ["a", "A2"],
+            ["c", "C"],
+        ]);
+        for (const s of sides) {
+            expect(() =>
+                s.store.applyBatch([
+                    {
+                        kind: s.characters,
+                        id: CHARACTER_ID,
+                        baseRevision: s.store.revisionOf(s.characters, CHARACTER_ID),
+                        patch: { set: { desc: "rolled back" } },
+                    },
+                    {
+                        kind: s.modules,
+                        id: MODULES_ID,
+                        baseRevision: s.store.revisionOf(s.modules, MODULES_ID),
+                        patch: { changes: [{ id: "missing", set: { name: "x" } }] },
+                    },
+                ]),
+            ).toThrow(/ops\[1\]/);
+            expect(s.text(s.characters, CHARACTER_ID)).toBe(character);
+            expect(s.text(s.modules, MODULES_ID)).toBe(modules);
         }
     });
 
@@ -463,14 +537,17 @@ describe("general record patch writes", () => {
         expect(other.store.get(transformed, "main")!.data).toEqual(JSON.parse('{"version":2,"__proto__":2}'));
     });
 
-    it("charges four units per cut text: evicts older large bases and never caches one over a quarter of the budget", () => {
-        const s = side(FAST);
+    /**
+     * The cache at a budget of 64 units per `unit` characters: three texts of 6 `unit`s (24 units each
+     * at four per character) leave room for two, and one of 17 `unit`s (68) is never kept.
+     */
+    function chargesFourUnits(unit: number, s: Side) {
         const kind = s.characters;
         const write = (id: string, value: string) =>
             s.store.applyChanges({
                 ops: [{ kind, id, baseRevision: s.store.revisionOf(kind, id), patch: { set: { desc: value } } }],
             });
-        const large = "x".repeat(6 * 1024 * 1024);
+        const large = "x".repeat(6 * unit);
         for (const id of ["a", "b", "c"]) {
             s.store.put(kind, id, { chaId: id, payload: large }, null);
             write(id, "warm");
@@ -484,11 +561,25 @@ describe("general record patch writes", () => {
                 parse.mockRestore();
             }
         };
-        expect(parsesPayload("b")).toBe(false); // Two 6 Mi texts fit (48 Mi charged units).
-        expect(parsesPayload("a")).toBe(true); // Three do not (72 Mi): oldest was evicted.
-        s.store.put(kind, "oversized", { chaId: "oversized", payload: "x".repeat(17 * 1024 * 1024) }, null);
+        expect(parsesPayload("b")).toBe(false); // Two 6-unit texts fit (48 of 64 units charged).
+        expect(parsesPayload("a")).toBe(true); // Three do not (72): the oldest was evicted.
+        s.store.put(kind, "oversized", { chaId: "oversized", payload: "x".repeat(17 * unit) }, null);
         write("oversized", "warm");
         expect(parsesPayload("oversized")).toBe(true);
         expect((s.store.get(kind, "oversized")!.data as any).desc).toBe("next");
-    }, 20_000);
+    }
+
+    it("charges four units per cut text at an injected budget: evicts older large bases and never caches one over a quarter of the budget", () => {
+        // A budget of 64 x 4096 units; the production 64 Mi units is the slow case below.
+        const unit = 4096;
+        chargesFourUnits(unit, side(FAST, { patchBaseMaxUnits: 64 * unit }));
+    });
+
+    it(
+        "charges four units per cut text: evicts older large bases and never caches one over a quarter of the budget",
+        { tags: ["slow"], timeout: 60_000 },
+        () => {
+            chargesFourUnits(1024 * 1024, side(FAST));
+        },
+    );
 });

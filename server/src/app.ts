@@ -95,6 +95,18 @@ const headOpenTag = /<head(\s[^>]*)?>/i;
 
 export type ServerContext = ReturnType<typeof createServerContext>;
 
+/** Lower route caps, so a test reaches them in a few requests; each default is the production value. */
+export type RouteLimits = {
+    /** Requests per minute of each 2000-request bucket: the authenticated, storage, and auth routes (default 2000). */
+    requestsPerMinute?: number;
+    /** Most records of one `POST /api/assets/write` batch (default `MAX_ASSET_BATCH_RECORDS`, 2000). */
+    assetBatchRecords?: number;
+    /** Most records of an imported backup archive (default `MAX_ARCHIVE_RECORDS`, 200,000). */
+    archiveRecords?: number;
+    /** Most decoded bytes of one CharX import entry, and the declared-size rules made from it (default `MAX_CHARX_ENTRY_BYTES`, 50 MiB). */
+    charxEntryBytes?: number;
+};
+
 /**
  * Builds the self-host server: `rootDir/dist` is the built client, `rootDir/save` the storage
  * (`savePath` replaces it: `RISU_SAVE_DIR`, the `pnpm dev:agent` sandbox). `authBypass` lets every
@@ -109,7 +121,9 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, `generationAbortGraceMs`, and
  * `generationHypaV3SeparatorLimits` replace the staged Realm imports' expiry timer, the trigger effect
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
- * defaults are the production ones).
+ * defaults are the production ones). `routeLimits` lowers the rate limits and the asset batch, backup
+ * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
+ * production ones).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -150,6 +164,8 @@ export function createServerContext(options: {
     generationAbortGraceMs?: number;
     /** The default runner's HypaV3 summary separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
+    /** Lower route caps (tests reach them in a few requests); each default is the production value. */
+    routeLimits?: RouteLimits;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -349,9 +365,10 @@ export function createServerContext(options: {
     const transforms = createTransformService(runnerDeps);
     snapshots.onMaintenance(async () => transforms.pause("The server data is being replaced"));
 
+    const requestsPerMinute = options.routeLimits?.requestsPerMinute ?? 2000;
     const authenticatedRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
-        limit: 2000,
+        limit: requestsPerMinute,
         message: "Too many requests. Please retry shortly.",
         keyOf: clientIp,
     });
@@ -359,13 +376,13 @@ export function createServerContext(options: {
     // burst of asset reads or writes (a module import or export) cannot 429 resource sync and the rest.
     const storageRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
-        limit: 2000,
+        limit: requestsPerMinute,
         message: "Too many requests. Please retry shortly.",
         keyOf: clientIp,
     });
     const authRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
-        limit: 2000,
+        limit: requestsPerMinute,
         message: "Too many requests. Please retry shortly.",
         keyOf: clientIp,
     });
@@ -639,6 +656,7 @@ export function createServerContext(options: {
         auth,
         limiter: storageRouteLimiter.middleware,
         maintenance: snapshots.gate,
+        maxBatchRecords: options.routeLimits?.assetBatchRecords,
     });
     registerResourceRoutes(app, {
         store: resources,
@@ -672,6 +690,7 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
         slot: backupImportSlot,
+        maxArchiveRecords: options.routeLimits?.archiveRecords,
     });
     const maxUpstreamDatabaseBytes = parsePositiveInteger(
         "RISU_MAX_UPSTREAM_DB_BYTES",
@@ -725,6 +744,7 @@ export function createServerContext(options: {
         maxImportBytes,
         diagnostics,
         slot: importSlot,
+        maxEntryBytes: options.routeLimits?.charxEntryBytes,
     });
     registerRealmImportRoutes(app, {
         savePath,

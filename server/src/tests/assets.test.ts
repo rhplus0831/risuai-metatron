@@ -231,16 +231,44 @@ describe("batch asset routes", () => {
         expect(stagedFiles()).toEqual([]);
     });
 
-    it("rejects record 2001 with 400 after keeping the first 2000 writes", async () => {
-        const records: [string, string][] = Array.from({ length: 2000 }, () => ["assets/kept.bin", ""]);
-        records.push(["assets/overflow.bin", "refused"]);
-        const res = await writeBatch(buildArchive(records));
+    it("keeps a batch of exactly the cap, and rejects the record past it with 400 after keeping the earlier writes", async () => {
+        // A three-record cap; the production 2000 is the slow case below and the parser's own test.
+        await s.close();
+        s = await createResourceTestClient({ routeLimits: { assetBatchRecords: 3 } });
+        const records: [string, string][] = [
+            ["assets/one.bin", "one"],
+            ["assets/two.bin", "two"],
+            ["assets/three.bin", "three"],
+        ];
+        const full = await writeBatch(buildArchive(records));
+        expect(full.status).toBe(200);
+        expect(await full.json()).toEqual({ success: true, written: 3 });
+
+        const again = records.map(([key, body]): [string, string] => [key, `${body} again`]);
+        const res = await writeBatch(buildArchive([...again, ["assets/overflow.bin", "refused"]]));
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({ error: "Invalid asset batch" });
-        expect(readFileSync(file("kept.bin"))).toEqual(Buffer.alloc(0));
+        for (const [key, body] of again) {
+            expect(readFileSync(file(key.slice("assets/".length)), "utf8"), key).toBe(body);
+        }
         expect(existsSync(file("overflow.bin"))).toBe(false);
         expect(stagedFiles()).toEqual([]);
     });
+
+    it(
+        "rejects record 2001 with 400 after keeping the first 2000 writes",
+        { tags: ["slow"], timeout: 60_000 },
+        async () => {
+            const records: [string, string][] = Array.from({ length: 2000 }, () => ["assets/kept.bin", ""]);
+            records.push(["assets/overflow.bin", "refused"]);
+            const res = await writeBatch(buildArchive(records));
+            expect(res.status).toBe(400);
+            expect(await res.json()).toEqual({ error: "Invalid asset batch" });
+            expect(readFileSync(file("kept.bin"))).toEqual(Buffer.alloc(0));
+            expect(existsSync(file("overflow.bin"))).toBe(false);
+            expect(stagedFiles()).toEqual([]);
+        },
+    );
 
     it("reads stored bytes and empty missing/invalid/symlink/directory records in requested duplicate order", async () => {
         await write("assets/real.bin", "real bytes");

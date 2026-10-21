@@ -5,7 +5,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { createServerContext } from "../app.ts";
+import { createServerContext, type RouteLimits } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
@@ -55,6 +55,8 @@ export type TestServerOptions = {
     generationAbortGraceMs?: number;
     /** The default runner's HypaV3 separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
+    /** Lower rate limits and asset batch, backup archive, and CharX entry caps (default the production ones). */
+    routeLimits?: RouteLimits;
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -86,6 +88,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         generationEffectClock: options.generationEffectClock,
         generationAbortGraceMs: options.generationAbortGraceMs,
         generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
+        routeLimits: options.routeLimits,
     });
     return {
         rootDir,

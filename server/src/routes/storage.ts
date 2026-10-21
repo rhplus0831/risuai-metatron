@@ -241,9 +241,16 @@ async function* storedRecords(savePath: string, keys: string[]): AsyncGenerator<
  */
 export function registerStorageRoutes(
     app: Hono<AppEnv>,
-    arg: { savePath: string; auth: AuthStore; limiter: MiddlewareHandler<AppEnv>; maintenance: MaintenanceGate },
+    arg: {
+        savePath: string;
+        auth: AuthStore;
+        limiter: MiddlewareHandler<AppEnv>;
+        maintenance: MaintenanceGate;
+        /** Most records of one batch write (default `MAX_ASSET_BATCH_RECORDS`; tests lower it). */
+        maxBatchRecords?: number;
+    },
 ) {
-    const { savePath, auth, limiter, maintenance } = arg;
+    const { savePath, auth, limiter, maintenance, maxBatchRecords } = arg;
 
     /** Admits a mutation, or answers 503 while maintenance holds the files. */
     function enterMaintenanceGate(c: Context<AppEnv>): { leave: () => void } | { closed: Response } {
@@ -432,7 +439,7 @@ export function registerStorageRoutes(
         if (denied) {
             return denied;
         }
-        const parser = new AssetRecordParser();
+        const parser = new AssetRecordParser({ maxRecords: maxBatchRecords });
         let written = 0;
         /** The record whose bytes are being staged. */
         let staged: { target: string; file: string; out: FileHandle } | null = null;
