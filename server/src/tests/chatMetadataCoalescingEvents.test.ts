@@ -301,7 +301,9 @@ describe("coalescing through generation routes", () => {
     it.each(["manual", "button"] as const)(
         "persists %s batches and reports the final stored revision to HTTP and the owner",
         async (kind) => {
-            const client = await createResourceTestClient();
+            // The effect loop's clock stands still: its 50 ms yield never comes, so the setters after
+            // the alert answer coalesce with it whatever the wait or the machine's speed.
+            const client = await createResourceTestClient({ generationEffectClock: () => 0 });
             mkdirSync(path.join(client.rootDir, "public"));
             symlinkSync(
                 path.resolve(import.meta.dirname, "../../../public/lua"),

@@ -61,6 +61,7 @@ import {
     REALM_CANCEL_PATH,
     REALM_COMMIT_PATH,
     REALM_IMPORT_PATH,
+    type RealmStagingTimer,
     registerRealmImportRoutes,
 } from "./routes/importRealm.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
@@ -104,7 +105,9 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * `generationRunner` runs the generation jobs (tests inject one; the default runs `command` jobs
  * and the sends and previews of prompt assembly), and `generationRandom` is the default runner's
  * random source. `messageSearch` replaces the message search's limits and its yield between batches
- * (tests inject a latch).
+ * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, and `generationAbortGraceMs`
+ * replace the staged Realm imports' expiry timer, the trigger effect loop's clock, and an aborted job's
+ * grace (tests control them; the defaults are the production ones).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -134,6 +137,12 @@ export function createServerContext(options: {
     /** The upstream RisuAI-compatible export (`routes/backupsUpstreamExport.ts`): how long a prepared export waits for its download. */
     upstreamExport?: { stagedTtlMs?: number };
     messageSearch?: MessageSearchRouteOptions;
+    /** What schedules a staged Realm import's expiry (tests hold it; default an unref'd `setTimeout`). */
+    realmStagingTimer?: RealmStagingTimer;
+    /** The default runner's trigger effect-loop clock for its 50 ms yield (default `performance.now`). */
+    generationEffectClock?: () => number;
+    /** An aborted generation job's grace before it is ended for it (default `JOB_ABORT_GRACE_MS`, 5 s). */
+    generationAbortGraceMs?: number;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -194,7 +203,7 @@ export function createServerContext(options: {
         intervalMs: options.snapshotIntervalMs,
     });
     // The Realm imports staged by a prepare and waiting for their commit (`routes/importRealm.ts`).
-    const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs });
+    const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs, timer: options.realmStagingTimer });
     // The upstream imports prepared and waiting for their commit (`routes/backupsUpstream.ts`).
     const upstreamStaging = createUpstreamImportStaging({ ttlMs: options.upstreamImport?.stagedTtlMs });
     // The upstream exports prepared and waiting for their download (`routes/backupsUpstreamExport.ts`).
@@ -227,6 +236,7 @@ export function createServerContext(options: {
         // a job starts only after the context exists.
         runner: options.generationRunner ?? ((job) => defaultRunner(job)),
         diagnostics,
+        abortGraceMs: options.generationAbortGraceMs,
     });
     // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
@@ -321,6 +331,7 @@ export function createServerContext(options: {
         push,
         diagnostics,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
+        ...(options.generationEffectClock ? { effectClock: options.generationEffectClock } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
     // The script transform: read-only renders on the runner's services. A restore

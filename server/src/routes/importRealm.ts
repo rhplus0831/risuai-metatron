@@ -78,18 +78,36 @@ class RealmDownloadError extends Error {
 
 /**
  * The staged Realm imports (see `registerRealmImportRoutes`): each waits, outside the import slot, for
- * its commit or cancel, at most `ttlMs` (`REALM_STAGED_TTL_MS`) from its prepare's answer, and at most
- * `MAX_REALM_STAGED` at once. Expiry, cancel, and `close` (shutdown) remove the staging folder; a
+ * its commit or cancel, at most `ttlMs` (`REALM_STAGED_TTL_MS`) from its staging, just before its
+ * prepare's answer (scheduled by `timer`, an unref'd `setTimeout` unless a test injects one), and at
+ * most `MAX_REALM_STAGED` at once. Expiry, cancel, and `close` (shutdown) remove the staging folder; a
  * commit takes the import out (`take`), and its finalizer removes the folder. Maintenance leaves them
  * (a restore replaces the database, not `save/.tmp`; a commit during it is refused and keeps its
  * import). What a crash leaves under `save/.tmp` is emptied at the next start (`routes/storage.ts`).
  */
 export type RealmStaging = ReturnType<typeof createRealmStaging>;
 
-type StagedRealmImport = StagedFile<RealmStagedPlan> & { timer: ReturnType<typeof setTimeout> };
+/** What schedules a staged import's expiry (tests hold the callback and fire it themselves). */
+export type RealmStagingTimer = {
+    set(expire: () => void, ms: number): unknown;
+    clear(handle: unknown): void;
+};
 
-export function createRealmStaging(options: { ttlMs?: number } = {}) {
+/** A real `setTimeout` that does not keep the process alive. */
+const realmStagingTimer: RealmStagingTimer = {
+    set(expire, ms) {
+        const timer = setTimeout(expire, ms);
+        timer.unref?.();
+        return timer;
+    },
+    clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+type StagedRealmImport = StagedFile<RealmStagedPlan> & { timer: unknown };
+
+export function createRealmStaging(options: { ttlMs?: number; timer?: RealmStagingTimer } = {}) {
     const ttlMs = options.ttlMs ?? REALM_STAGED_TTL_MS;
+    const timers = options.timer ?? realmStagingTimer;
     const waiting = new Map<string, StagedRealmImport>();
     let closing: Promise<void> | null = null;
     const remove = (staged: StagedFile<RealmStagedPlan>) =>
@@ -98,7 +116,7 @@ export function createRealmStaging(options: { ttlMs?: number } = {}) {
     const detach = (token: string): StagedRealmImport | null => {
         const staged = waiting.get(token) ?? null;
         if (staged) {
-            clearTimeout(staged.timer);
+            timers.clear(staged.timer);
             waiting.delete(token);
         }
         return staged;
@@ -124,13 +142,12 @@ export function createRealmStaging(options: { ttlMs?: number } = {}) {
                 return null;
             }
             const token = randomUUID();
-            const timer = setTimeout(() => {
+            const timer = timers.set(() => {
                 const expired = detach(token);
                 if (expired) {
                     void remove(expired);
                 }
             }, ttlMs);
-            timer.unref?.();
             waiting.set(token, { ...staged, timer });
             return token;
         },

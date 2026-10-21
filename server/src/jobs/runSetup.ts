@@ -62,6 +62,8 @@ export type GenerationRunnerDeps = {
     push?: Pick<PushService, "send">;
     /** The diagnostics journal (its caught faults). */
     diagnostics?: DiagnosticsRecorder;
+    /** The trigger effect loop's monotonic clock for its yield (default `performance.now`; tests freeze or step it). */
+    effectClock?: () => number;
 };
 
 /** Rejects with the signal's reason when it aborts first. */
@@ -405,6 +407,7 @@ export function createRunSetup(
         effectivePersonaId: scope.effectivePersona.id ?? null,
         runCommand: (line) => executor.processMultiCommand(line),
         effects: state.effects,
+        ...(deps.effectClock ? { now: deps.effectClock } : {}),
     });
 
     // `requestChatData`'s `request` trigger: the chat owner's (none for a group), in display mode on

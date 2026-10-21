@@ -85,8 +85,11 @@ describe("POST /api/translate/message with the Echo model", () => {
     let jobRun: (job: RunningJob) => Promise<void> = async () => {};
     const generationRunner: GenerationRunner = (job) => jobRun(job);
 
+    /** Every hold of the test (provider answers, fake generation jobs), released before the client closes. */
+    const holds: (() => void)[] = [];
     afterEach(async () => {
         jobRun = async () => {};
+        for (const release of holds.splice(0)) release();
         await client?.close();
     });
 
@@ -121,10 +124,11 @@ describe("POST /api/translate/message with the Echo model", () => {
     /**
      * A server whose default profile is the Echo model (`pong`, no delay), with `translator: "ko"`, a
      * character `c` (with a translator note) holding the bound chat `k` (`u`: "hi", `r`: "reply") and
-     * the unbound chat `loose` (`a`: "alpha", `b`: "beta").
+     * the unbound chat `loose` (`a`: "alpha", `b`: "beta"). An aborted generation job gets a
+     * ten-minute grace, so no 5 s deadline races a test that holds its runner.
      */
-    async function seed(echo: { echoDelay?: number; echoMessage?: string } = {}) {
-        client = await createResourceTestClient({ generationRunner });
+    async function seed(echo: { echoMessage?: string } = {}) {
+        client = await createResourceTestClient({ generationRunner, generationAbortGraceMs: 10 * 60_000 });
         ids = {
             presetId: (await single("presets")).data[0].id,
             modelPresetId: (await single("modelPresets")).data[0].id,
@@ -181,6 +185,49 @@ describe("POST /api/translate/message with the Echo model", () => {
         return { status: res.status, body: parsed, headers: res.headers };
     };
     const runner = () => client.context.translationRunner;
+    /** The chat's stored revision number: one more per applied write. */
+    const revisionOf = async (chatId = "k") => Number((await readChat(chatId)).revision.split(":")[2]);
+
+    /**
+     * Holds the runs' provider answers: every request-layer call (`runInJob`) runs the real request
+     * (Echo, no delay), then waits for `release` before the run sees the answer. `answered` resolves
+     * at the first held answer; `calls` counts the provider requests; `restore` ends the holding.
+     */
+    function holdProvider() {
+        const llm = client.context.llmRequests;
+        // A later hold replaces an earlier one (whose spy would otherwise call itself).
+        if (vi.isMockFunction(llm.runInJob)) llm.runInJob.mockRestore();
+        const runInJob = llm.runInJob;
+        let answered!: () => void;
+        const reached = new Promise<void>((resolve) => (answered = resolve));
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        holds.push(release);
+        const spy = vi.spyOn(llm, "runInJob").mockImplementation(async (spec) => {
+            const answer = await runInJob.call(llm, spec);
+            answered();
+            await released;
+            return answer;
+        });
+        return { answered: reached, release, calls: () => spy.mock.calls.length, restore: () => spy.mockRestore() };
+    }
+    /** Resolves once the runner took a request matching `match` (a join is decided in that call). */
+    function admitted(match: (request: TranslateMessageRequest) => boolean) {
+        const target = runner();
+        const translate = target.translate;
+        let seen!: () => void;
+        const taken = new Promise<void>((resolve) => (seen = resolve));
+        vi.spyOn(target, "translate").mockImplementation((request) => {
+            const result = translate.call(target, request);
+            if (match(request)) seen();
+            return result;
+        });
+        return taken;
+    }
+    /** Passes a few immediate turns of the event loop, so promise continuations already due have run. */
+    const turns = async (count = 5) => {
+        for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve));
+    };
 
     /** Creates a `send` job on chat `k` for the fake runner; returns its id. */
     async function createJob() {
@@ -209,6 +256,7 @@ describe("POST /api/translate/message with the Echo model", () => {
         let release!: () => void;
         const held = new Promise<void>((resolve) => (locked = resolve));
         const released = new Promise<void>((resolve) => (release = resolve));
+        holds.push(release);
         jobRun = async (job) => {
             job.write(() => ({
                 chats: [group("k", job.context.chatRevision, [{ op: "begin", id: messageId, generationId: "g1" }])],
@@ -251,10 +299,12 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("ignores a translation whose source text changed during the run and stores nothing", async () => {
-        await seed({ echoDelay: 0.3 });
+        await seed();
+        const held = holdProvider();
         const pending = translate(req("r"));
-        await waitFor(() => runner().runningCount() === 1);
+        await held.answered;
         await chatBatch("k", [{ op: "setText", id: "r", text: "edited" }]);
+        held.release();
         expect(await pending).toMatchObject({ status: 200, body: { outcome: "ignored", translation: null } });
         const after = await message("r");
         expect(after.data).toBe("edited");
@@ -263,31 +313,43 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("joins a run in flight (one run, the same result, whatever the joiner's force) after the joiner's ids pass the display binding and exist", async () => {
-        await seed({ echoDelay: 0.3 });
+        await seed();
+        const held = holdProvider();
+        const joined = admitted((request) => request.force === true);
+        const before = await revisionOf();
         const first = translate(req("r"));
-        await waitFor(() => runner().runningCount() === 1);
+        await held.answered;
         const joiner = translate(req("r", { force: true }));
+        await joined;
         // A joiner whose ids are not the bound chat's, and one naming a record that does not exist.
         expect(await translate(req("r", { modelPresetId: "other" }))).toMatchObject({
             status: 409,
             body: { error: "chatBindingMismatch" },
         });
         expect(runner().runningCount()).toBe(1);
+        held.release();
         const results = await Promise.all([first, joiner]);
         expect(results[0].status).toBe(200);
         expect(results[0].body).toMatchObject({ outcome: "applied", translation: { text: "pong" } });
         expect(results[1].body).toEqual(results[0].body);
         expect(runner().runningCount()).toBe(0);
+        expect(runner().workingCount()).toBe(0);
+        // One run: one provider request and one stored write for both callers.
+        expect(held.calls()).toBe(1);
+        expect(await revisionOf()).toBe(before + 1);
 
         // The unbound chat takes the sent ids: a joiner's must still name existing records.
+        const heldLoose = holdProvider();
         const loose = translate(req("a", {}, "loose"));
-        await waitFor(() => runner().runningCount() === 1);
+        await heldLoose.answered;
         expect(await translate(req("a", { personaId: "nope" }, "loose"))).toMatchObject({
             status: 404,
             body: { error: "The request's preset, model preset, or persona no longer exists" },
         });
+        heldLoose.release();
         expect((await loose).body).toMatchObject({ outcome: "applied" });
         expect((await message("a", "loose")).translation?.text).toBe("pong");
+        expect(heldLoose.calls()).toBe(1);
     });
 
     it("refuses a message a generation owns: before the run (409 generating) and at the write when the lock was taken meanwhile", async () => {
@@ -303,13 +365,15 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect((await translate(req("r"))).body).toMatchObject({ outcome: "applied" });
 
         // A lock taken during the run: the write conflicts with reason generating, nothing stored.
-        await patch("providers", { echoDelay: 0.3, echoMessage: "late" });
+        await patch("providers", { echoMessage: "late" });
         await chatBatch("k", [{ op: "setTranslation", id: "u", translation: null }]);
+        const provider = holdProvider();
         const pending = translate(req("u"));
-        await waitFor(() => runner().runningCount() === 1);
+        await provider.answered;
         const second = lockingJob("u");
         const secondJob = await createJob();
         await second.held;
+        provider.release();
         expect(await pending).toMatchObject({ status: 409, body: { error: "generating" } });
         expect((await message("u")).translation).toBeUndefined();
         second.release();
@@ -378,24 +442,30 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("maintenance ends a run at once (503, Retry-After), refuses new ones while it lasts, also while the jobs' listener waits, and the ended run never writes", async () => {
-        await seed({ echoDelay: 0.3 });
+        await seed();
+        const held = holdProvider();
         const pending = translate(req("r"));
-        await waitFor(() => runner().runningCount() === 1);
+        await held.answered;
         let inside: Awaited<ReturnType<typeof translate>> | undefined;
         await client.context.snapshots.withMaintenance(async () => {
             inside = await translate(req("u"));
         });
+        // The run ended while its answer is still held: it did not wait for the provider.
         const ended = await pending;
         expect(ended.status).toBe(503);
         expect(ended.body).toEqual({ error: "The server data is being replaced" });
         expect(ended.headers.get("retry-after")).toBe("5");
         expect(inside).toMatchObject({ status: 503, body: { error: "The server data is being replaced" } });
         expect(runner().runningCount()).toBe(0);
-        // The Echo request was still sleeping; once it settles, nothing is stored.
+        expect(runner().workingCount()).toBe(1);
+        // The held answer arrives after the run ended: once it settles, nothing is stored.
+        const before = await revisionOf();
+        held.release();
         await waitFor(() => runner().workingCount() === 0);
         expect((await message("r")).translation).toBeUndefined();
+        expect(await revisionOf()).toBe(before);
         // Admission reopened with the maintenance's end.
-        await patch("providers", { echoDelay: 0 });
+        held.restore();
         expect((await translate(req("r"))).body).toMatchObject({ outcome: "applied" });
 
         // The jobs' listener (registered after the runner's) aborts the running jobs and waits for
@@ -404,6 +474,7 @@ describe("POST /api/translate/message with the Echo model", () => {
         let release!: () => void;
         const aborted = new Promise<void>((resolve) => (abortSeen = resolve));
         const released = new Promise<void>((resolve) => (release = resolve));
+        holds.push(release);
         jobRun = async (job) => {
             job.signal.addEventListener("abort", () => abortSeen(), { once: true });
             await released;
@@ -418,9 +489,10 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("shutdown ends a run (503) and refuses new ones; dispose waits for the work still settling", async () => {
-        await seed({ echoDelay: 0.3 });
+        await seed();
+        const held = holdProvider();
         const pending = translate(req("r"));
-        await waitFor(() => runner().runningCount() === 1);
+        await held.answered;
         client.context.beginShutdown();
         const ended = await pending;
         expect(ended.status).toBe(503);
@@ -432,7 +504,33 @@ describe("POST /api/translate/message with the Echo model", () => {
             status: 503,
             body: { error: "The server is shutting down" },
         });
-        await client.context.dispose();
+        // The runner's drain is bounded by a 5 s timer: hold that timer, so only the work settling ends it.
+        const target = runner();
+        const drain = target.drain;
+        let drainCapped = false;
+        let drained = false;
+        vi.spyOn(target, "drain").mockImplementation(() => {
+            const realSetTimeout = globalThis.setTimeout;
+            const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation((() => {
+                drainCapped = true;
+                return realSetTimeout(() => {}, 0);
+            }) as unknown as typeof setTimeout);
+            try {
+                const draining = drain.call(target);
+                void draining.then(() => (drained = true));
+                return draining;
+            } finally {
+                timers.mockRestore();
+            }
+        });
+        const disposing = client.context.dispose();
+        expect(drainCapped).toBe(true);
+        await turns();
+        // Dispose waits for the work of the ended run, still held.
+        expect(drained).toBe(false);
+        held.release();
+        await disposing;
+        expect(drained).toBe(true);
         expect(runner().workingCount()).toBe(0);
     });
 
@@ -508,8 +606,21 @@ describe("POST /api/translate/message with the Echo model", () => {
     });
 
     it("a run outlives its HTTP request: the tab's disconnect does not end it, and the translation lands", async () => {
-        await seed({ echoDelay: 0.3 });
-        const node = serve({ fetch: client.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+        await seed();
+        const held = holdProvider();
+        // The server's side of the translate request: its signal aborts when the tab's socket closes.
+        let disconnected!: () => void;
+        const serverSawDisconnect = new Promise<void>((resolve) => (disconnected = resolve));
+        const node = serve({
+            fetch: (request, env) => {
+                if (new URL(request.url).pathname === TRANSLATE) {
+                    request.signal.addEventListener("abort", () => disconnected(), { once: true });
+                }
+                return client.app.fetch(request, env);
+            },
+            port: 0,
+            hostname: "127.0.0.1",
+        }) as http.Server;
         await new Promise<void>((resolve) => node.once("listening", () => resolve()));
         allowListenerOrigin(node);
         try {
@@ -521,10 +632,13 @@ describe("POST /api/translate/message with the Echo model", () => {
                 body: JSON.stringify(req("r")),
                 signal: controller.signal,
             });
-            await waitFor(() => runner().runningCount() === 1);
+            await held.answered;
             controller.abort();
             await expect(request).rejects.toThrow();
+            await serverSawDisconnect;
+            await turns();
             expect(runner().runningCount()).toBe(1);
+            held.release();
             await waitFor(() => runner().runningCount() === 0);
             expect((await message("r")).translation).toMatchObject({ text: "pong", targetLanguage: "ko" });
         } finally {
