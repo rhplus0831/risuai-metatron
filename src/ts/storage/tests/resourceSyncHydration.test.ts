@@ -1977,9 +1977,12 @@ describe("recovery after a refused chat patch", () => {
         expect(chat.isChatStale(refK)).toBe(false);
     });
 
-    it("applies an empty equal-revision patch and an append on a very large chat without reading or rewriting the list: the earlier messages keep their objects", async () => {
+    /**
+     * Hydrates chat `j` with `count` messages, then applies an empty patch at its revision and an
+     * append: the list keeps its earlier message objects and only the new row is written.
+     */
+    async function patchLongChat(count: number) {
         const { fake, sync, chat, serverWrite } = await boot();
-        const count = 150_000;
         const big = Array.from({ length: count }, (_, index) => m(`m${index}`, "x"));
         const revision = serverWrite([{ op: "append", messages: big, anchor: { end: true } }], "j");
         const refJ = { chaId: "c", chatId: "j" };
@@ -2021,7 +2024,22 @@ describe("recovery after a refused chat patch", () => {
         expect(chat.findChat(refJ)!.message[count - 1]).toBe(last);
         expect(chat.findChat(refJ)!.message[count].chatId).toBe("z");
         expect(chat.heldChatRevision(refJ)).toBe(next);
+    }
+
+    it("applies an empty equal-revision patch and an append on a long chat without reading or rewriting the list: the earlier messages keep their objects", async () => {
+        await patchLongChat(3_000);
     });
+
+    // Past the engine's argument limit (about 125,000 in V8): a whole-list spread such as `splice(0, n, ...list)`
+    // throws here, which the 3,000-message case above does not show. Building and hydrating the chat
+    // takes seconds.
+    it(
+        "applies the same patches to a chat longer than a call's argument list can hold (150,000 messages)",
+        { tags: ["slow"], timeout: 120_000 },
+        async () => {
+            await patchLongChat(150_000);
+        },
+    );
 
     it("places rows by their anchors (an insertion chain, a row after a replaced one, a removal before the anchor, a start insertion), takes removed ids the mirror lacks, and refuses a null anchor on a later row", async () => {
         const { fake, sync, chat, ids } = await boot();

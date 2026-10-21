@@ -290,6 +290,9 @@ describe("the flush barrier", () => {
     });
 });
 
+// Each case needs more than the 5,000 operations one batch may carry (the server's cap), queued one
+// call at a time and applied by the store: about a quarter second of CPU, so each has its own budget
+// for a ninth of a CPU instead of the default timeout.
 describe("request caps", () => {
     it("sends more than 5,000 unsent ops of one chat over several requests without losing any or blocking other chats", async () => {
         const { fake, sync, chat } = await boot();
@@ -314,7 +317,7 @@ describe("request caps", () => {
         expect(Math.max(...nested)).toBeLessThanOrEqual(5000);
         expect(nested.reduce((sum, count) => sum + count, 0)).toBe(5002);
         expect(chat.hasChatWork()).toBe(false);
-    });
+    }, 20_000);
 
     it("bases a reorder sent in a later request on the order revision its own earlier request produced", async () => {
         const { fake, sync, chat, mirrorIds } = await boot();
@@ -340,7 +343,7 @@ describe("request caps", () => {
         expect(orderRequest).toBeGreaterThan(createRequest);
         expect(fake.order("c")!.ids).toEqual(["j", "k", "n"]);
         expect(mirrorIds()).toEqual(["j", "k", "n"]);
-    });
+    }, 20_000);
 });
 
 describe("one chat's trouble does not block the rest", () => {

@@ -302,12 +302,14 @@ describe("module asset cache", () => {
         }
     });
 
-    it("enables 100k assets in one flush and reuses their plain copy after toggling", async () => {
+    it("enables a large module's assets in one flush and reuses their plain copy after toggling", async () => {
         const { collectionStore: c, modules, createProbe, flushSync } = await boot();
+        // The reuse is checked by identity, which does not depend on the list's length.
+        const count = 5_000;
         c.setEnabledModules([]);
         c.setModules([
             module("large", {
-                assets: Array.from({ length: 100_000 }, (_, i) => [`image-${i}`, `assets/${i}.png`, "png"]),
+                assets: Array.from({ length: count }, (_, i) => [`image-${i}`, `assets/${i}.png`, "png"]),
             }),
         ]);
         const probe = createProbe(() => modules.getModuleAssets());
@@ -316,8 +318,8 @@ describe("module asset cache", () => {
             c.setEnabledModules(["large"]);
             const first = probe.derived();
             flushSync();
-            expect(first).toHaveLength(100_000);
-            expect(first[99_999]).toEqual(["image-99999", "assets/99999.png", "png"]);
+            expect(first).toHaveLength(count);
+            expect(first[count - 1]).toEqual([`image-${count - 1}`, `assets/${count - 1}.png`, "png"]);
             c.setEnabledModules([]);
             expect(probe.derived()).toEqual([]);
             flushSync();

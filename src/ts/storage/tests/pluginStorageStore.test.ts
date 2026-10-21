@@ -89,14 +89,19 @@ describe("the v3 pluginStorage dictionary", () => {
     });
 
     it("refuses a value that is not JSON data and changes nothing", async () => {
-        const { pluginStorageStore: ps, refused, validation } = await boot();
-        for (const value of [() => 1, 1n, Number.NaN, { nested: Symbol("s") }, new Map(), undefined]) {
-            await refused(() => ps.setPluginStorageItem("k", value), validation.MutationValidationError);
-            await refused(() => ps.setSafeLocalPluginValue("k", value), validation.MutationValidationError);
-        }
-        await refused(() => ps.setPluginCustomValue("k", () => 1), validation.MutationValidationError);
-        await refused(() => ps.replacePluginCustomStorage([]), validation.MutationValidationError);
-        await refused(() => ps.replacePluginCustomStorage({ k: 1n }), validation.MutationValidationError);
+        const { pluginStorageStore: ps, refusedEach, validation } = await boot();
+        await refusedEach(
+            [
+                ...[() => 1, 1n, Number.NaN, { nested: Symbol("s") }, new Map(), undefined].flatMap((value) => [
+                    () => ps.setPluginStorageItem("k", value),
+                    () => ps.setSafeLocalPluginValue("k", value),
+                ]),
+                () => ps.setPluginCustomValue("k", () => 1),
+                () => ps.replacePluginCustomStorage([]),
+                () => ps.replacePluginCustomStorage({ k: 1n }),
+            ],
+            validation.MutationValidationError,
+        );
     });
 });
 

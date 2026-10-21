@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cardV3, pngWithText } from "./storage/tests/importFixtures";
-import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { bootMutations, plain, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -118,11 +118,19 @@ const assetProgress = () =>
         .map(([alert]) => alert)
         .filter((alert) => alert.type === "progress" && alert.msg === "Loading... (Loading Assets)");
 
-beforeAll(async () => {
-    await import("./stores.svelte");
-    await import("./storage/database.svelte");
-    await import("./characterCards");
-}, 60_000);
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([
+                import("./storage/database.svelte"),
+                import("./globalApi.svelte"),
+                import("./util"),
+                import("./characterCards"),
+                import("./pngChunk"),
+            ]),
+        ),
+    60_000,
+);
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
@@ -187,8 +195,10 @@ describe("PNG streaming entry points", () => {
         expect(plain(b.character(id!).additionalAssets)).toEqual(
             values.map((_, i) => [`Asset ${i}`, `asset-${i + 1}`, "png"]),
         );
-        expect(b.saveAssetBatch.mock.calls.flatMap(([items]) => items.map(({ bytes }) => Buffer.from(bytes)))).toEqual(
-            values.map((value) => Buffer.from(JSON.stringify(value))),
+        // Compared as base64 text: a deep equality walks every byte of the Buffers one by one.
+        const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+        expect(b.saveAssetBatch.mock.calls.flatMap(([items]) => items.map(({ bytes }) => base64(bytes)))).toEqual(
+            values.map((value) => base64(Buffer.from(JSON.stringify(value)))),
         );
         expect(alerts.error).not.toHaveBeenCalled();
     });
@@ -258,7 +268,9 @@ describe("PNG streaming entry points", () => {
     it("readGenerator drops consumed bytes so large asset chunks keep a bounded stream window", async () => {
         const { PngChunk, api } = await boot();
         const texts = Object.fromEntries(
-            Array.from({ length: 12 }, (_, i) => [`chara-ext-asset_${i}`, `${i}:` + "x".repeat(256 * 1024)]),
+            // Four chunks of about 260 KB, each larger than the 200 KB drop point: about 1 MB in all, so a
+            // window that keeps consumed bytes exceeds the limit below.
+            Array.from({ length: 4 }, (_, i) => [`chara-ext-asset_${i}`, `${i}:` + "x".repeat(192 * 1024)]),
         );
         const expected = Object.entries(texts).map(([key, value]) => ({
             key,

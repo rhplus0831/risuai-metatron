@@ -7,7 +7,7 @@ import { encodeAssetRecordHeader } from "../../shared/assetBatch.ts";
 import { encodeRPack } from "../../shared/rpack.ts";
 import { decodeModuleMain, readModuleFileHeader } from "../../shared/moduleImport.ts";
 import { pngWithText } from "./storage/tests/importFixtures";
-import { bootMutations } from "./storage/tests/mutationStoresHarness";
+import { bootMutations, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
 
 // Real exporters, batch client, writers, and importers. Only authentication, UI, image conversion,
 // and the download sink are replaced at their external boundaries.
@@ -195,11 +195,22 @@ async function boot() {
     };
 }
 
-beforeAll(async () => {
-    await import("./stores.svelte");
-    await import("./storage/database.svelte");
-    await import("./characterCards");
-}, 60_000);
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([
+                import("./storage/database.svelte"),
+                import("./globalApi.svelte"),
+                import("./util"),
+                import("./media"),
+                import("./characterCards"),
+                import("./process/modules"),
+                import("./pngChunk"),
+                import("./process/processzip"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();
@@ -784,7 +795,9 @@ describe("JSON export asset cap", () => {
         // The first batch crosses the cap at its third asset; the second batch is still pending.
         const sizes: (Uint8Array | "pending")[] = [half(), half(), new Uint8Array(1)];
         sizes.push(...Array.from({ length: 197 }, () => PAYLOAD), ...Array<"pending">(3).fill("pending"));
-        const { h, reads, cancelled, result } = await capped(sizes);
+        // The cap counts the bytes read, not the encoded ones: compressing to a few bytes keeps the
+        // halves from being base64-encoded, which only cost time.
+        const { h, reads, cancelled, result } = await capped(sizes, PAYLOAD);
         expect(result).toBeUndefined();
         expect(reads.map((read) => read.keys.length)).toEqual([200, 3]);
         expect(cancelled).toHaveBeenCalledOnce();
