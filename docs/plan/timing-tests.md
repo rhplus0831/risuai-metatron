@@ -2,10 +2,11 @@
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`), then the 9a and 9b sweeps (merged at `05aa74159`). Next:
-close-out 10.
-The 6a follow-up on
-`lastEffectYieldAt` landed in `e3ba64355`. Source: the
+`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`),
+then the 9a and 9b sweeps (merged at `05aa74159`). The 6a follow-up on `lastEffectYieldAt` landed
+in `e3ba64355`. Close-out 10 is in progress: its whole-suite runs failed on load alone, and the
+user decided on 2026-10-22 to treat the gate's timeout as a hang guard (D5). Next: slice 10's
+timeout change and the three races it found. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -50,8 +51,8 @@ Every edited or rewritten test passes both gates (`STRUCTURE.md` V3):
    proves nothing extra (a duration bound behind a terminal check, a sleep after a synchronous
    state change) is deleted rather than rewritten.
 
-Not allowed as a fix: a global or per-file timeout increase alone (the inventory's
-`rewrite:raise-timeout` rows still need the warm-up or fixture change their reason names), moving a
+Not allowed as a fix: a timeout increase for a test that depends on real time (a sleep, a real
+deadline or a bounded poll is fixed with a controlled clock at any timeout), moving a
 deterministic contract to slow along with its slow neighbour (split the case instead), or a new
 test for code no slice changed.
 
@@ -63,9 +64,8 @@ Each slice ends with:
   `build-test-platforms.md` disagree), `pnpm format:check`.
 - The touched test files with `pnpm test:agent --force <files>`, and the owning guide's focused
   checks when a production seam changed.
-- The touched files under the overload, three runs, default timeouts (no `--testTimeout`: a raised
-  outer timeout hides the cold-boot and fixture-size causes this plan fixes):
-  `pnpm --silent test:overload <files>` (slice 0).
+- The touched files under the overload, three runs, default timeouts (no `--testTimeout`; after
+  D5 the default is the gate's 60 s hang guard): `pnpm --silent test:overload <files>` (slice 0).
 - In the inventory, each resolved row gets the suffix `fixed in <slice> (<commit>)`; a row the slice
   judged differently gets the new disposition and a reason. The close-out recomputes the summary.
 
@@ -351,12 +351,43 @@ disposition is not `keep-*`) and split further if the list is long.
 
 ## Slice 10. Close-out (_small_, `build-test-platforms.md`)
 
-- The whole gated suite under the overload, three runs, default timeouts. Any failure becomes a new
-  row and a fix in this slice, or a recorded leftover.
-- Recompute the inventory's summary (a "fixed" column), mark it complete, and update
-  `build-test-platforms.md` `Tests` and `STRUCTURE.md` V3 (which point at "the inventory of current
-  offenders").
-- Archive this plan in `docs/archived-plan/README.md`.
+First runs, 2026-10-22, at `a7bcb103b`:
+
+- The whole gated suite under the overload, three runs at once on CPUs 23/22/21 (about 31 min
+  each): all three failed, with 8, 3 and 6 failures.
+- Four whole gated suites at once with no CPU limit (about 205 s each against 54 s alone): all four
+  failed, with 7, 10, 3 and 6 failures.
+- Nearly every failure was the default 5 s timeout on a test that reads no clock:
+  - `ModuleMenu.assets` module/sticker paging: 7 of 7.
+  - `resourcesBatch` "takes 5,000 operations in one batch": 5 of 7.
+  - `collectionStore` "refuses credentials...": 4 of 7.
+  - `characterStore` "refuses malformed input...": 3 of 4.
+  - `CharConfig.emotions` paging: 2 of 3.
+  - Once each: `resourcePatchParts` field matrix, `tokens` dispose, `scriptWorker` argument cap,
+    three other `collectionStore` cases, `resourceSyncHydration` "ignores an older incarnation...",
+    `exportBatches` charx batch, `modulesImport` CharX, `characterCardsCharxImport`,
+    `characterCardsRealmImport`.
+  - Most were never in the inventory: it searched for timing code, and these are plain CPU work.
+  - The two refusal cases got heavier in 7b, when the shared helper began comparing the whole
+    mirror after every call.
+- Three failures were assertions. They are scheduler races, which a timeout does not fix. They are
+  new inventory rows:
+  - `resourceSyncHydration` "releases a reply finalized while the job continues...": 2 of 7.
+  - `exportBatches` "json consumes a batch while the next 200-key POST is pending": 1 of 4.
+  - `pluginContext` "the replacers and the provider of a request get the request's context...":
+    1 of 3.
+
+Remaining work, after D5:
+
+- Raise the gated default timeout to 60 s in `vitest.config.ts`, including the hook timeout. Keep
+  the slow tier's explicit timeouts. Update the comment in `util/overloadTest.mjs` that says a
+  raised timeout hides cold boots.
+- Have the agent-test reporter list the tests that run longer than 1 s on their own, as a warning
+  that does not fail the run.
+- Fix the three races with a deferred, a latch, or a hand-run frame.
+- Rerun both checks on the merged tree: the whole suite under the overload, three runs, and four
+  unpinned whole suites at once. Any failure left is a new row and a fix, or a recorded leftover.
+- Mark the inventory complete. Archive this plan in `docs/archived-plan/README.md`.
 
 ## Decisions
 
@@ -370,6 +401,16 @@ Defaults the slices take unless the user decides otherwise:
 - D3. `keep-accepted` rows stay as they are; the plan does not chase rows the inventory accepted
   with a stated margin.
 - D4. The slow tier is not run under the overload; slow tests may keep real time by definition.
+- D5 (user, 2026-10-22). The gate's Vitest timeout is a hang guard, not a performance budget. The
+  close-out's whole-suite runs showed why: under load alone, deterministic tests that take
+  0.35-0.85 s on an idle machine (`ModuleMenu.assets` paging, `resourcesBatch` 5,000 operations,
+  the `characterStore` / `collectionStore` refusal cases) fail Vitest's default 5 s, and shrinking
+  them one by one never ends as more sessions share the machine. Those tests read no clock, and
+  for a synchronous one the timeout cannot even stop a hang, only report it afterwards. So the
+  gated default becomes 60 s (about 27 times the slowest such case's idle time, the slowdown under
+  the overload), a test that is slow alone is reported rather than failed, and the plan's earlier
+  "default timeouts expose cold boots and large fixtures" rule ends. Real-time dependencies stay
+  V3 violations at any timeout.
 
 ## Not in this plan
 
