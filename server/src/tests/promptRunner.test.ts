@@ -1164,18 +1164,10 @@ describe("the route", () => {
 
 describe("automatic translation of a send's messages", () => {
     /** Polls the chat until `condition` holds on it. */
-    async function chatUntil(chaId: string, condition: (chat: any) => boolean, timeoutMs = 10_000) {
-        const deadline = Date.now() + timeoutMs;
-        for (;;) {
-            const chat = await readChat(chaId);
-            if (condition(chat.data)) {
-                return chat;
-            }
-            if (Date.now() > deadline) {
-                throw new Error(`chat ${chaId}: ${JSON.stringify(chat.data.message)}`);
-            }
-            await sleep(25);
-        }
+    async function chatUntil(chaId: string, condition: (chat: any) => boolean) {
+        let chat!: Awaited<ReturnType<typeof readChat>>;
+        await waitFor(async () => condition((chat = await readChat(chaId)).data), undefined, 25);
+        return chat;
     }
     const translations = (chat: { data: any }) =>
         chat.data.message.map((m: any) => [m.chatId, m.translation?.text ?? null]);
@@ -1231,7 +1223,7 @@ describe("automatic translation of a send's messages", () => {
                     [replyId, null],
                 ]);
                 // The two translation requests reach the provider (non-streaming, the source text in each) and are held.
-                await waitFor(() => bodies.length === before + 3, 10_000);
+                await waitFor(() => bodies.length === before + 3);
                 const held = bodies.slice(before + 1);
                 expect(held.map((body) => body.stream ?? false)).toEqual([false, false]);
                 expect(held.map((body) => body.messages.at(-1).content).sort()).toEqual(["Reply one.", "hello you"]);

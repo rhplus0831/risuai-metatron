@@ -2,6 +2,7 @@
 import type http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
@@ -167,42 +168,51 @@ describe("generation jobs over HTTP and WebSocket", () => {
         return res.body.jobId as string;
     };
 
-    type Followed = { events: GenerationEvent[]; closed: Promise<number>; ws: WebSocket };
-    /** Opens the owner socket; `until` resolves `closed` early with the events so far. */
+    type Followed = { events: GenerationEvent[]; closed: Promise<number>; ws: WsClient; fence(): Promise<void> };
+    /**
+     * Opens the owner socket. It closes itself at the terminal (`done` or `error`) unless `keepOpen`;
+     * `fence` resolves once every frame the server sent before it is in `events`.
+     */
     async function follow(
         jobId: string,
-        options: { clientId?: string; token?: string; attach?: number; maxMs?: number } = {},
+        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean } = {},
     ): Promise<Followed> {
         const token = options.token ?? (await signer.jwt());
         const query =
             `?risu-auth=${encodeURIComponent(token)}&clientId=${encodeURIComponent(options.clientId ?? "tab")}` +
             (options.attach === undefined ? "" : `&attach=${options.attach}`);
-        const ws = new WebSocket(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
+        const ws = new WsClient(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
         const events: GenerationEvent[] = [];
-        const opened = new Promise<void>((resolve) => {
-            ws.onopen = () => resolve();
+        const opened = new Promise<void>((resolve) => ws.once("open", () => resolve()));
+        const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
+        ws.on("message", (data) => {
+            const event = JSON.parse(String(data)) as GenerationEvent;
+            if (event.type !== "ping") {
+                events.push(event);
+            }
+            if (!options.keepOpen && (event.type === "done" || event.type === "error")) {
+                ws.close();
+            }
         });
-        const closed = new Promise<number>((resolve) => {
-            const timer = setTimeout(() => ws.close(), options.maxMs ?? 4000);
-            ws.onmessage = (message) => {
-                const event = JSON.parse(String(message.data)) as GenerationEvent;
-                if (event.type !== "ping") {
-                    events.push(event);
-                }
-                if (event.type === "done" || event.type === "error") {
-                    clearTimeout(timer);
-                    setTimeout(() => ws.close(), 20);
-                }
-            };
-            ws.onerror = () => {};
-            ws.onclose = (event) => {
-                clearTimeout(timer);
-                resolve(event.code);
-            };
-        });
+        ws.on("error", () => {});
         // Attached (the snapshot is on its way) or refused: emits after this cannot race the handshake.
         await Promise.race([opened, closed]);
-        return { events, closed, ws };
+        // The server answers a ping after the frames it sent before reading it, the attach batch included.
+        const fence = () =>
+            new Promise<void>((resolve, reject) => {
+                if (ws.readyState !== WsClient.OPEN) {
+                    reject(new Error("fence: the socket is not open"));
+                    return;
+                }
+                const closed = () => reject(new Error("fence: the socket closed before the pong"));
+                ws.once("close", closed);
+                ws.once("pong", () => {
+                    ws.off("close", closed);
+                    resolve();
+                });
+                ws.ping();
+            });
+        return { events, closed, ws, fence };
     }
     const types = (events: GenerationEvent[]) => events.map((event) => event.type);
     const until = (followed: Followed, count: number) => waitFor(() => followed.events.length >= count);
@@ -452,9 +462,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await listen();
         const jobId = await createOk();
         const snapshot = async () => {
-            const f = await follow(jobId);
-            await until(f, 1);
-            await sleep(30);
+            const f = await follow(jobId, { keepOpen: true });
+            await f.fence();
             f.ws.close();
             await f.closed;
             return f.events as any[];
@@ -503,6 +512,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         events = await snapshot();
+        expect(types(events)).toEqual(["chatPatch", "resource", "accepted"]);
         expect(events[0].streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 0 }]);
         // Each attach's patch is based on the copy the previous attach handed over.
         expect(events[0].baseRevision).toBe(handed);
@@ -516,6 +526,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         events = await snapshot();
+        expect(types(events)).toEqual(["chatPatch", "resource", "accepted"]);
         expect(events[0].streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 5 }]);
         expect(events[0].baseRevision).toBe(handed);
         handed = events[0].revision;
@@ -530,6 +541,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         events = await snapshot();
+        expect(types(events)).toEqual(["chatPatch", "resource", "accepted"]);
         expect(events[0].streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 5 }]);
         // The final: the reply is no longer streaming, and the job (still running) sends no `accepted`.
         step((job) => {
@@ -843,7 +855,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await sleep(50);
         owner.ws.send(JSON.stringify({ type: "resync" }));
         await until(owner, 7);
-        await sleep(50);
+        await owner.fence();
         expect(types(owner.events.slice(6))).toEqual(["resource"]);
         expect((owner.events[6] as any).streaming).toEqual([]);
         expect((owner.events[6] as any).data.message[1].data).toBe("final");

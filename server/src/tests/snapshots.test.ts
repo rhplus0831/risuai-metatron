@@ -3,11 +3,11 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createResourceStore, ResourceBatchConflictError, type ResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
-import { sleep, waitFor } from "./testSupport.ts";
+import { sleep } from "./testSupport.ts";
 
 const docs: ResourceKind = { name: "docs", schemaVersion: 1, normalize: (input) => input };
 const kinds = createKindRegistry([docs]);
@@ -100,16 +100,32 @@ describe("snapshot files", () => {
 });
 
 describe("periodic snapshots", () => {
+    // Only the interval is fake: each test fires it, and the backup's own I/O stays real.
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    });
+    afterEach(async () => {
+        await Promise.all(managers.splice(0).map((m) => m.stop()));
+        vi.useRealTimers();
+    });
+    /** Fires the 30 ms interval once and waits for the snapshot it queued, if any, to settle. */
+    async function tick(manager: SnapshotManager) {
+        vi.advanceTimersByTime(30);
+        await manager.exclusive(async () => {});
+    }
+
     it("snapshot only after a committed write since the last one", async () => {
         const { store, manager } = setup({ intervalMs: 30 });
         manager.start();
         manager.start();
-        await sleep(100);
+        expect(vi.getTimerCount()).toBe(1);
+        await tick(manager);
         expect(manager.list()).toHaveLength(0);
 
         store.put(docs, "a", 1, null);
-        await waitFor(() => manager.list().length === 1);
-        await sleep(100);
+        await tick(manager);
+        expect(manager.list()).toHaveLength(1);
+        await tick(manager);
         expect(manager.list()).toHaveLength(1);
 
         // A rolled-back transaction is not a write.
@@ -119,14 +135,16 @@ describe("periodic snapshots", () => {
                 throw new Error("rollback");
             }),
         ).toThrow("rollback");
-        await sleep(100);
+        await tick(manager);
         expect(manager.list()).toHaveLength(1);
 
         store.transaction(() => store.put(docs, "b", 1, null));
-        await waitFor(() => manager.list().length === 2);
+        await tick(manager);
+        expect(manager.list()).toHaveLength(2);
         await manager.stop();
+        expect(vi.getTimerCount()).toBe(0);
         store.put(docs, "c", 1, null);
-        await sleep(100);
+        await tick(manager);
         expect(manager.list()).toHaveLength(2);
     });
 
@@ -149,14 +167,16 @@ describe("periodic snapshots", () => {
             chats: [group(null, [{ op: "create", chat: { message: [{ role: "user", data: "", chatId: "a" }] } }])],
         });
         manager.start();
-        await waitFor(() => manager.list().length === 1);
-        await sleep(100);
+        await tick(manager);
+        expect(manager.list()).toHaveLength(1);
+        await tick(manager);
         expect(manager.list()).toHaveLength(1);
 
         const revision = created.chats[0].revision!;
         store.applyChanges({ chats: [group(revision, [{ op: "setText", id: "a", text: "edited" }])] });
-        await waitFor(() => manager.list().length === 2);
-        await sleep(100);
+        await tick(manager);
+        expect(manager.list()).toHaveLength(2);
+        await tick(manager);
         expect(manager.list()).toHaveLength(2);
 
         // A checkpoint for a message without its generation is ignored; a conflicting batch (an
@@ -178,7 +198,7 @@ describe("periodic snapshots", () => {
                 ],
             }),
         ).toThrow(ResourceBatchConflictError);
-        await sleep(100);
+        await tick(manager);
         expect(manager.list()).toHaveLength(2);
         await manager.stop();
     });

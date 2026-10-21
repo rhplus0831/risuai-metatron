@@ -227,7 +227,9 @@ disposition per spot (keep, rewrite, move to `slow`, delete), is
 `docs/plan/timing-tests.md`. Verify a timing fix under load with
 `pnpm --silent test:overload <files>` (three runs, default timeouts; see `util/overloadTest.mjs`
 above). The slow tier is not run under it. `server/src/tests/testSupport.ts`
-`waitFor` carries a 2 s real-time cap and is a known offender; prefer awaiting the event.
+`waitFor` has no polling deadline by default: the test's Vitest timeout reports a condition that
+never holds as a failure. An explicit `timeoutMs` cap is for slow-tier tests only; prefer awaiting
+the event where one exists.
 
 | Test (file in `server/src/tests/`)                                                                                                                     | Covers                                                                                                                                                                                | Run after changing                                                                     |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |

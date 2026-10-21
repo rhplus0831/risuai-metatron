@@ -29,7 +29,6 @@ import {
     allowTestLoopbackOrigin,
     createResourceTestClient,
     type ResourceTestClient,
-    sleep,
     waitFor,
 } from "./testSupport.ts";
 
@@ -203,15 +202,7 @@ describe("POST /api/translate/message with the Echo model", () => {
     const jobState = async (jobId: string) =>
         ((await (await client.request(`/api/generations/${jobId}?clientId=tab`)).json()) as { state: string }).state;
     /** Polls the owner's status until the job is no longer running. */
-    async function jobEnded(jobId: string) {
-        const deadline = Date.now() + 2000;
-        while ((await jobState(jobId)) === "running") {
-            if (Date.now() > deadline) {
-                throw new Error(`job ${jobId} still running`);
-            }
-            await sleep(10);
-        }
-    }
+    const jobEnded = (jobId: string) => waitFor(async () => (await jobState(jobId)) !== "running");
     /** A job that locks `messageId` and holds it until the returned `release` is called. */
     function lockingJob(messageId: string) {
         let locked!: () => void;
@@ -401,7 +392,7 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect(inside).toMatchObject({ status: 503, body: { error: "The server data is being replaced" } });
         expect(runner().runningCount()).toBe(0);
         // The Echo request was still sleeping; once it settles, nothing is stored.
-        await waitFor(() => runner().workingCount() === 0, 2000);
+        await waitFor(() => runner().workingCount() === 0);
         expect((await message("r")).translation).toBeUndefined();
         // Admission reopened with the maintenance's end.
         await patch("providers", { echoDelay: 0 });
@@ -534,7 +525,7 @@ describe("POST /api/translate/message with the Echo model", () => {
             controller.abort();
             await expect(request).rejects.toThrow();
             expect(runner().runningCount()).toBe(1);
-            await waitFor(() => runner().runningCount() === 0, 2000);
+            await waitFor(() => runner().runningCount() === 0);
             expect((await message("r")).translation).toMatchObject({ text: "pong", targetLanguage: "ko" });
         } finally {
             node.closeAllConnections();

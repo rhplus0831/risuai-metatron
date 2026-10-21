@@ -304,8 +304,8 @@ export async function startUpstream() {
         url: allowListenerOrigin(server),
         requests,
         /** Waits until the upstream has received `count` requests. */
-        async received(count: number, timeoutMs = 2000) {
-            await waitFor(() => requests.length >= count, timeoutMs);
+        async received(count: number) {
+            await waitFor(() => requests.length >= count);
             return requests[count - 1];
         },
         close() {
@@ -341,10 +341,20 @@ export function allowListenerOrigin(server: LoopbackListener): string {
     return origin;
 }
 
-export async function waitFor(condition: () => boolean, timeoutMs = 2000, stepMs = 10) {
-    const deadline = Date.now() + timeoutMs;
-    while (!condition()) {
+/**
+ * Polls `condition` (awaited when it returns a promise) every `stepMs` until it holds. Without
+ * `timeoutMs` there is no polling deadline of its own: the test's Vitest timeout reports a condition
+ * that never holds as a failure, and a stall that only delays it fails nothing. A cap is for
+ * slow-tier tests only; it yields one event-loop turn (`setImmediate`) and re-checks before it throws.
+ */
+export async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs?: number, stepMs = 10) {
+    const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+    while (!(await condition())) {
         if (Date.now() > deadline) {
+            await new Promise((resolve) => setImmediate(resolve));
+            if (await condition()) {
+                return;
+            }
             throw new Error("waitFor: condition not met in time");
         }
         await new Promise((resolve) => setTimeout(resolve, stepMs));
