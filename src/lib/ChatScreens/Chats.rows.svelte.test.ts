@@ -335,6 +335,11 @@ describe("append-time window trim", () => {
         const keep = Math.max(150, visible + 1 + 15);
         const survivors = state.rows.filter((row) => row.props.idx >= 201 - keep);
         const anchor = latest("m199").element;
+        // Retired rows are disposed over animation frames, a few per frame: run the frames by hand,
+        // and charge 1 ms per clock read so each frame's 4 ms budget covers a few unmounts.
+        vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+        let now = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => ++now);
         append();
         expect(onTrim.mock.calls).toEqual([[keep]]);
         expect(props.loadPages).toBe(keep);
@@ -347,7 +352,17 @@ describe("append-time window trim", () => {
         expect(scrollWrite).not.toHaveBeenCalled();
         const retired = state.rows.filter((row) => row.props.idx < 201 - keep);
         expect(retired.every((row) => !row.element.isConnected)).toBe(true);
-        await vi.waitFor(() => expect(retired.every((row) => row.destroyed)).toBe(true));
+        const destroyed = () => retired.filter((row) => row.destroyed).length;
+        expect(destroyed()).toBe(0);
+        vi.advanceTimersToNextFrame();
+        expect(destroyed()).toBeGreaterThan(0);
+        expect(destroyed()).toBeLessThan(retired.length);
+        for (let frame = 1; frame < retired.length && destroyed() < retired.length; frame++) {
+            vi.advanceTimersToNextFrame();
+        }
+        expect(destroyed()).toBe(retired.length);
+        expect(survivors.every((row) => !row.destroyed)).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it.each(["scrolled up", "suspended", "capture", "folded", "instance editor", "message editor", "partial editor"])(

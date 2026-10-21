@@ -697,10 +697,14 @@ describe("v3 document key listeners and the terminal notice", () => {
         installDatabase({ characters: [], pluginCustomStorage: undefined });
     });
 
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     const press = (key: string) =>
         document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
-    // The key listeners are delivered after a random delay below 100 ms.
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+    // The key listeners are delivered after a random delay below 100 ms: past it on fake timers.
+    const settle = () => vi.advanceTimersByTimeAsync(100);
 
     it("delivers no key to a capture or bubbling listener while the notice is shown", async () => {
         const api = await makeApi();
@@ -709,6 +713,7 @@ describe("v3 document key listeners and the terminal notice", () => {
         const bubbled: string[] = [];
         const captureId = await root.addEventListener("keydown", (event: any) => captured.push(event.key), true);
         const bubbleId = await root.addEventListener("keydown", (event: any) => bubbled.push(event.key));
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
             const notice = alertTerminal("restored");
             expect(terminalNoticeShown()).toBe(true);

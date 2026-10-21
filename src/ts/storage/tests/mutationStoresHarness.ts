@@ -18,6 +18,11 @@ export const m = (id: string | undefined, data: string, role: "user" | "char" = 
     ({ role, data, chatId: id }) as any;
 export const refK = { chaId: "c", chatId: "k" };
 export const refJ = { chaId: "c", chatId: "j" };
+/**
+ * `resourceSync.svelte.ts`'s save debounce (`DEBOUNCE_MS`): after a batch that leaves work, the next
+ * cycle runs this long later. A test advances fake time by it instead of polling for the cycle.
+ */
+export const SAVE_DEBOUNCE_MS = 500;
 /** A plain copy of a mirror value (a Svelte proxy answers `Object.hasOwn` for an own `__proto__` differently). */
 export const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 

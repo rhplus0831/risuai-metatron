@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cardV2, cardV3, charx } from "./storage/tests/importFixtures";
-import { bootMutations } from "./storage/tests/mutationStoresHarness";
+import { bootMutations, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
 
 // Card export round trips: a CharX archive's `embeded://` references name the members the zip writer
 // actually wrote (sanitized, collision-renamed, and extensionless names included), a card's
@@ -140,11 +140,20 @@ function portrait(text: [string, string][]): Uint8Array {
     ]);
 }
 
-beforeAll(async () => {
-    await import("./stores.svelte");
-    await import("./storage/database.svelte");
-    await import("./characterCards");
-}, 60_000);
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([
+                import("./storage/database.svelte"),
+                import("./globalApi.svelte"),
+                import("./util"),
+                import("./media"),
+                import("./characterCards"),
+                import("./process/processzip"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();
@@ -176,11 +185,12 @@ describe("CharXImporter asset admission", () => {
         const output = new globalApi.VirtualWriter();
         const writer = new CharXWriter(output);
         for (let i = 0; i < 40; i++) {
-            // Incompressible entries exceed a 64 KiB feed slice even after compression, so a
-            // single synchronous unzip push cannot complete more than one asset.
+            // Each entry stays larger than a 64 KiB feed slice in the zip (level 0 keeps the
+            // deflate stream stored), so a single synchronous unzip push cannot complete more than
+            // one asset.
             const data = randomBytes(96 * 1024);
             data[0] = i;
-            await writer.write(`assets/${i}.png`, data, 6);
+            await writer.write(`assets/${i}.png`, data, 0);
         }
         await writer.write("card.json", JSON.stringify(cardV3("Backpressure")));
         await writer.end();

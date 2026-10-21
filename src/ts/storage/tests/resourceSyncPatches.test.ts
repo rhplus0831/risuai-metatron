@@ -1,6 +1,6 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -74,6 +74,11 @@ const canonicalJson = (value: unknown): string => {
 const LOCAL = new Set(["chats", "chatPage", "reloadKeys"]);
 /** A list of asset entries about `count * 40` bytes long (a character's or module's `additionalAssets`). */
 const assets = (count: number) => Array.from({ length: count }, (_, i) => [`asset-${i}`, `assets/${i}.png`, "png"]);
+/**
+ * The large asset list's length: its text is over `MAX_FEED_PATCH_BYTES`, so a patch carrying it is a
+ * plain ref on the feed, and it dwarfs a patch that leaves it home.
+ */
+const LARGE = 2_000;
 const module = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, ...extra });
 
 /**
@@ -87,7 +92,7 @@ async function boot(prepare?: (fake: StoreBackedServer) => void) {
     const fake = await StoreBackedServer.create({ feed: true });
     server.current = fake;
     fake.set("presets", "main", [{ id: "pa", name: "p1" }]);
-    fake.set("modules", "main", [module("m1", { additionalAssets: assets(5_000) }), module("m2"), module("m3")]);
+    fake.set("modules", "main", [module("m1", { additionalAssets: assets(LARGE) }), module("m2"), module("m3")]);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     fake.store.applyChanges({
@@ -257,7 +262,7 @@ describe("what a save sends", () => {
     it("sends a character edit as a field patch of the changed fields only: a large unchanged asset list stays home, a removed field is named, the feed carries the same patch", async () => {
         const { fake, sync, characterStore, character, record, revision, ops, agree, settle, noNotice, published } =
             await boot();
-        const list = assets(5_000);
+        const list = assets(LARGE);
         characterStore.updateCharacter("c", { additionalAssets: list });
         await settle();
         // The first save carries the list (a new field) and nothing else of the record.
@@ -270,7 +275,7 @@ describe("what a save sends", () => {
             },
         ]);
         const whole = JSON.stringify(record("characters", "c")).length;
-        expect(whole).toBeGreaterThan(100_000);
+        expect(whole).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
         agree("characters", "c");
         fake.requests.length = 0;
         published();
@@ -316,7 +321,7 @@ describe("what a save sends", () => {
     it("sends a modules edit as an item patch: a renamed module as its changed fields, a new one whole, the order when it changed, an empty order to clear; a large module stays home", async () => {
         const { fake, collectionStore, settings, record, revision, ops, agree, settle, noNotice, published } =
             await boot();
-        expect(JSON.stringify(record("modules")).length).toBeGreaterThan(100_000);
+        expect(JSON.stringify(record("modules")).length).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
         // A rename through the wrapper and a field removed through the mutation module.
         collectionStore.updateModule("m2", { description: "d", extra: 1 });
         settings.modules[1].name = "Two";
@@ -368,7 +373,7 @@ describe("what a save sends", () => {
         ]);
         expect(JSON.stringify(fake.batchBodies()[0]).length).toBeLessThan(1000);
         expect(record("modules").map((entry: any) => entry.id)).toEqual(["m4", "m1", "m2"]);
-        expect(record("modules")[1].additionalAssets).toHaveLength(5_000);
+        expect(record("modules")[1].additionalAssets).toHaveLength(LARGE);
         agree("modules");
         fake.requests.length = 0;
 
@@ -807,7 +812,7 @@ describe("modules item patches another tab committed", () => {
         // Applied inside the feed's delivery, before any cycle.
         expect(settings.modules.map((entry: any) => entry.id)).toEqual(["m4", "m1", "m2"]);
         expect(plain(settings.modules[2])).toEqual({ id: "m2", name: "Two", description: "d" });
-        expect((settings.modules[1] as any).additionalAssets).toHaveLength(5_000);
+        expect((settings.modules[1] as any).additionalAssets).toHaveLength(LARGE);
         expect(sync.heldRecordRevision("modules", "main")).toBe(patched);
         expect(changed).toEqual(["modules/main"]);
         expect(reads()).toBe(0);
@@ -961,7 +966,7 @@ describe("modules item patches another tab committed", () => {
         expect(await sync.flushResources()).toEqual({ discarded: [] });
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
         expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
-        expect(record("modules")[0].additionalAssets).toHaveLength(5_000);
+        expect(record("modules")[0].additionalAssets).toHaveLength(LARGE);
         agree("modules");
         // The server's rename was taken into the mirror: the listeners hear of it.
         expect(changed).toEqual(["modules/main"]);

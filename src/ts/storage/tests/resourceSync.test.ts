@@ -2,7 +2,7 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The save adapter (`resourceSync.svelte.ts`) against an in-memory stand-in for the resource routes.
@@ -235,7 +235,9 @@ describe("dirty generations", () => {
         await flushed;
         // The flush covered "first"; "second" was made during the request and goes out on its own.
         expect(fake.data("ui", "main").theme).toBe("first");
-        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("second"), { timeout: 3000 });
+        // The next cycle is the save debounce after the batch, with no further edit or flush.
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.data("ui", "main").theme).toBe("second");
         expect(fake.batchCount()).toBe(2);
     });
 
@@ -281,7 +283,8 @@ describe("membership", () => {
         characterStore.addCharacter(character("late", "Late"));
         await tick();
         fake.releaseBatch!();
-        await vi.waitFor(() => expect(fake.get("characters", "late")).not.toBeNull(), { timeout: 3000 });
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.get("characters", "late")).not.toBeNull();
     });
 
     it("repairs a duplicate chaId at installation and refuses one at insertion, so no record overwrites another", async () => {

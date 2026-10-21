@@ -59,13 +59,25 @@ describe("runHookPipeline", () => {
             new Promise(() => {
                 /* never resolves */
             });
-        const fast: TTSHookFn<BeforeTTSContext, BeforeTTSResult> = async (c) => ({ text: c.text + " F" });
+        const fast = vi.fn<TTSHookFn<BeforeTTSContext, BeforeTTSResult>>(async (c) => ({ text: c.text + " F" }));
         const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
-            const result = await runHookPipeline([slow, fast], makeCtx(), 50);
+            let settled = false;
+            const running = runHookPipeline([slow, fast], makeCtx(), 50).finally(() => {
+                settled = true;
+            });
+            // The slow hook holds the pipeline until its own timeout, not less.
+            await vi.advanceTimersByTimeAsync(49);
+            expect(settled).toBe(false);
+            expect(fast).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            const result = await running;
             expect(result.skip).toBe(false);
             expect(result.ctx.text).toBe("hello F");
+            expect(errSpy).toHaveBeenCalledWith("[TTS hook] timed out, continuing with next hook");
         } finally {
+            vi.useRealTimers();
             errSpy.mockRestore();
         }
     });
