@@ -6,8 +6,6 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 
 Active planning and implementation:
 
-- [Audit Findings and Performance Leftovers](audit-findings-perf.md): landed slices
-  are listed in its Status; deferred work and Phase 5 verification remain separate.
 - [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.
