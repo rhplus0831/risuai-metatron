@@ -12,7 +12,7 @@ import {
 
 /**
  * The field-to-resource map: which resource owns each top-level `Database` field (the flat legacy
- * shape the plugin API and the server's job projection keep, D3); these lists say where each one is
+ * shape the plugin API and the server's job projection keep); these lists say where each one is
  * stored. Together with the per-item collections (`ITEM_RECORD_FIELDS`) they partition `keyof Database`:
  *
  * - `SECTION_FIELDS`: five singleton section resources.

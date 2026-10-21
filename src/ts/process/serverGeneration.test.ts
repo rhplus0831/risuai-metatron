@@ -95,7 +95,7 @@ describe("sendChatOnServer", () => {
         expect(options).toEqual({ signal: undefined });
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledWith("messages");
-        // A2: the stamp is the job's (a server field patch), so no character record becomes dirty and
+        // The stamp is the job's (a server field patch), so no character record becomes dirty and
         // none is uploaded before the job: the target keeps its seeded stamp, the others are untouched.
         expect(stubs.db.characters).toEqual(seededCharacters());
         expect(stubs.addRerolls).not.toHaveBeenCalled();

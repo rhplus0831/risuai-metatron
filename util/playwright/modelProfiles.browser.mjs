@@ -13,7 +13,7 @@ import {
 } from "../../src/ts/storage/collectionStore.svelte.ts";
 import { MODEL_PROFILE_ROOT_FIELDS } from "../../shared/sections.ts";
 
-/** A browser check selects tagged slots explicitly; legacy root model-id writes obey O8. */
+/** A browser check selects tagged slots explicitly; changed main/sub root model ids require one matching profile. */
 export function applyModelFixtureSettings(configuration) {
     const presetId = activeModelPreset.id;
     const choose = (modelId) => {

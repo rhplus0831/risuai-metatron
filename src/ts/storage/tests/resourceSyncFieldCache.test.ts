@@ -15,8 +15,8 @@ import { materialize } from "./serverKinds";
 // delete, defineProperty, each array mutator, `replaceRecordList`, `moveRecordListItem`, batched
 // writes, same-field reuse, a copy from another character); the raw paths (`applyRawCharacter`,
 // `patchRawCharacter` with the same identity, a same-id replacement, a deletion and re-creation); the
-// cache bound (the oldest of nine characters is serialized again); the challenge's end-to-end
-// reproductions (Sol, 2026-10-15: a comparator alias, `reloadKeys` and symbol properties holding record
+// cache bound (the oldest of nine characters is serialized again); the end-to-end
+// cases (a comparator alias, `reloadKeys` and symbol properties holding record
 // state, the character's own `toJSON` hook); and `canonicalShape` against `normalizeCharacter` on a
 // whole parse, over fixed and pseudo-random shapes.
 
@@ -434,8 +434,8 @@ describe("every write path saves the mirror's text", { timeout: INTEGRATION_TIME
     });
 });
 
-describe("the challenge's reproductions, end to end", { timeout: INTEGRATION_TIMEOUT }, () => {
-    it("a sort comparator writing a raw owned object into another field: the character is saved whole and right (point 1)", async () => {
+describe("record aliases and hooks, end to end", { timeout: INTEGRATION_TIMEOUT }, () => {
+    it("a sort comparator writing a raw owned object into another field: the character is saved whole and right", async () => {
         const { fake, c, rawOf, flush, agree } = await boot();
         c("a").left = { n: 1 };
         c("a").rows = [2, 1];
@@ -454,7 +454,7 @@ describe("the challenge's reproductions, end to end", { timeout: INTEGRATION_TIM
         agree("a");
     });
 
-    it("reloadKeys given record state holds a detached copy: a write through it changes nothing persisted (point 2)", async () => {
+    it("reloadKeys given record state holds a detached copy: a write through it changes nothing persisted", async () => {
         const { fake, c, rawOf, flush, agree } = await boot();
         c("a").payload = { n: 1 };
         await flush();
@@ -470,7 +470,7 @@ describe("the challenge's reproductions, end to end", { timeout: INTEGRATION_TIM
         agree("a");
     });
 
-    it("a symbol property given the character's own state: the write through it is saved (point 3)", async () => {
+    it("a symbol property given the character's own state: the write through it is saved", async () => {
         const { fake, c, rawOf, flush, agree } = await boot();
         c("a").payload = { n: 1 };
         await flush();
@@ -484,7 +484,7 @@ describe("the challenge's reproductions, end to end", { timeout: INTEGRATION_TIM
         agree("a");
     });
 
-    it("a character's own toJSON hook is invoked and the record sent whole, without a patch (point 4)", async () => {
+    it("a character's own toJSON hook is invoked and the record sent whole, without a patch", async () => {
         const { fake, c, records, flush, ops, reports } = await boot();
         c("a").assets = big(20);
         await flush();

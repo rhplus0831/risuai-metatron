@@ -1076,7 +1076,7 @@ function restoreStyles(root: HTMLElement) {
 }
 
 /**
- * `trimMarkdown` for a chat row whose styles its chat screen shares (`chatStyles.ts`, heap plan C2):
+ * `trimMarkdown` for a chat row whose styles its chat screen shares (`chatStyles.ts`):
  * the same sanitized tree with its `<risu-style>`s restored, `prepare` run on it, then shareable
  * styles replaced by an inert CSS comment in place, their CSS and sanitized attributes returned
  * in document order. Placeholders keep their attributes and structure (including `:empty`).

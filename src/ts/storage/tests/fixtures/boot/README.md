@@ -1,4 +1,4 @@
-# Phase 3 fixtures
+# Boot and preset fixtures
 
 `boot-snapshot.json` is the hand-maintained record of fresh-boot defaults. When a default changes
 deliberately, edit its normalizer spec (or `PRESET_DEFAULTS` for a preset field) and this JSON in the
@@ -7,8 +7,8 @@ default change, because a new capture would also replace the fixture's random id
 
 ## Provenance
 
-The three fixtures were initially captured on 2026-09-30 from commit `4914ccc7`, before any Phase 3
-source change (the tree differs from that commit only by the Playwright tooling:
+The three fixtures were initially captured on 2026-09-30 from commit `4914ccc7`, before normalization
+moved to the server (the tree differs from that commit only by the Playwright tooling:
 `util/playwright/`, `playwright.config.ts`, the `test:e2e` script, and the Vitest `e2e/**` exclude,
 none of which the app loads), with:
 
@@ -40,7 +40,7 @@ After that capture, the `theme` default `"metatron"` and the nine preset default
 `groupTemplate`, `thinkingTokens`, `outputImageModal`, and `dynamicOutput` were added to
 `boot-snapshot.json` by hand as deliberate fresh-boot defaults, and so was the `ui` default `chatScreenWidth` 900.
 
-The preset split (`docs/plan/split-preset.md`, 2026-10-08) changed the fresh boot by hand too: the
+The preset split (2026-10-08) changed the fresh boot by hand too: the
 `providers` toggle `doNotChangeSeperateModels` is gone, the model fields `seperateModels` and
 `seperateModelsForAxModels` read their `PRESET_DEFAULTS` through the selected model preset (they were unset `providers` fields), and the new `modelPresets` collection
 holds the one materialized default model preset (its `id` was never captured; the tests compare it
@@ -48,22 +48,22 @@ without ids). The stored `botPresets[0]` still carries the pre-split template pa
 included, because `default.risup`/`custom.risup` pin the `.risup` reader contract; `normalizePresets`
 drops those fields when a test installs it. The removal of the fallback models (2026-10-09) took
 `fallbackModels` and `fallbackWhenBlankResponse` out of the root and the default model preset by hand.
-The model profiles (`docs/plan/model-profiles.md`, 2026-10-09) changed it by hand again: the default
+The model profiles (2026-10-09) changed it by hand again: the default
 model preset holds only its slots and toggle (`mainSlot`/`subSlot` naming profile `default`,
 `auxSlots: {}`), the new `modelProfiles` collection holds the one default profile with the values
 the root copy captured for the moved fields, and `providers.modelCredentials` is gone. The captured
 root keeps `apiType` and `proxyKey`, now dropped fields, as it keeps `hypaMemoryKey`.
 The Model menu regroup (2026-10-09) renamed the default profile by hand: `MODEL_PROFILE_DEFAULT_NAME`
 is "New Connection" (was "New Model Profile"), as profiles are shown as connections.
-The stored translation's display (`docs/plan/translation.md` slice 1.4, 2026-10-12) added the
+The stored translation's display (2026-10-12) added the
 `memoryTranslateMedia` default `llmTranslationTarget` `"message"` by hand.
-The request history settings (`docs/plan/request-history-diagnostics.md` slice 4, 2026-10-13) added
+The request history settings (2026-10-13) added
 the `providers` defaults `requestHistoryContent` `true` and `requestHistoryLimit` `1000` by hand.
 The prompt preset's context size override (2026-10-14) added the two prompt preset defaults
 `maxContextOverride` `false` and `maxContextOverrideSize` `0` to the root by hand (they are forwarded
 prompt fields; the stored `botPresets[0]` keeps the pre-split template payload, which never had them).
 
-Toggle presets (historical `docs/plan/chat-toggles-and-presets.md` slice 3, 2026-10-17;
+Toggle presets (2026-10-17;
 retrievable at `154711858` through [the archive](../../../../../../docs/archived-plan/README.md))
 added `"togglePresets": []` by hand.
 

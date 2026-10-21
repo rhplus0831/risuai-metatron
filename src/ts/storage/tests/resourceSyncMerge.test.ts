@@ -339,7 +339,7 @@ describe("which remote changes are merged", () => {
         expect(Object.hasOwn(mirror("a"), "extra")).toBe(false);
     });
 
-    it("reproduces the round-1 group case: a membership change against a local activity edit follows normal conflict handling", async () => {
+    it("a membership change against a local activity edit follows normal conflict handling", async () => {
         const { fake, sync, mirror, remote } = await boot();
         // Remote removes member a and adds c, with the parallel arrays unchanged in value.
         remote("characters", "g", (data) => (data.characters = ["b", "c"]));

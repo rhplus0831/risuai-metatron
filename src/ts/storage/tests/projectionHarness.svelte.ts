@@ -30,7 +30,7 @@ import type { StoreBackedServer } from "./storeBackedServer";
 // Pieces:
 // - The record store: one `$state` slot per `(kind, id)`, holding the record's data. `applyRaw`
 //   replaces a slot (boot, hydration, conflict reload) and never queues a write.
-// - Two wrapper candidates over a record, measured on the same cases:
+// - Two wrapper implementations over a record, measured on the same cases:
 //   1. `projectRecord(kind, id)`, accessor-backed: a plain object (an array for an array record)
 //      with one enumerable accessor per top-level field (per index); the setter writes the field
 //      and calls `queueRecordWrite`. Nested containers are the raw `$state` sub-objects, so a nested
@@ -49,8 +49,8 @@ import type { StoreBackedServer } from "./storeBackedServer";
 //   batching limits; the production save loop's own tests cover those.
 
 /**
- * `accessor` is candidate 1; `tracked` is candidate 2 validating its path on every access;
- * `tracked-cached` is candidate 2 with the resolve cache (`resolve`): outside a tracking context a
+ * `accessor` uses top-level getters and setters; `tracked` validates its path on every access;
+ * `tracked-cached` uses the resolve cache (`resolve`): outside a tracking context a
  * nested wrapper reuses its last resolution while no structural write happened since.
  */
 export type Candidate = "accessor" | "tracked" | "tracked-cached";
@@ -115,17 +115,17 @@ const STATE: symbol = (() => {
  */
 const isObject = (value: unknown): value is object => typeof value === "object" && !Object.is(value, null);
 
-/** Whether `value` is a Svelte `$state` proxy (never a candidate-2 wrapper, which answers `has` from its target). */
+/** Whether `value` is a Svelte `$state` proxy (never a tracked wrapper, which answers `has` from its target). */
 export function isStateProxy(value: unknown): boolean {
     return isObject(value) && !nodeOf.has(value) && STATE in value;
 }
 
-/** Whether `value` is a candidate-2 wrapper. */
+/** Whether `value` is a tracked wrapper. */
 export function isTrackedWrapper(value: unknown): boolean {
     return isObject(value) && nodeOf.has(value);
 }
 
-/** Whether `value` is a candidate-1 accessor view. */
+/** Whether `value` is a accessor view. */
 export function isAccessorView(value: unknown): boolean {
     return isObject(value) && viewKeys.has(value);
 }
@@ -137,7 +137,7 @@ export function isAccessorView(value: unknown): boolean {
 const records: Record<string, unknown> = $state({});
 /**
  * Per record (not reactive): `epoch`, bumped by every `applyRaw` (a nested wrapper uses it to tell
- * a raw replacement from a local edit), and the candidate-2 wrapper cache (the nested wrapper of
+ * a raw replacement from a local edit), and the tracked wrapper cache (the nested wrapper of
  * each `$state` sub-object). Held by reference on every wrapper node.
  */
 interface RecordMeta {
@@ -183,7 +183,7 @@ export function liveRecord<T = any>(kind: string, id: string = SINGLETON_RESOURC
 
 /**
  * The raw application path (boot, hydration, conflict reload): replaces the record's data and
- * never calls `queueRecordWrite`. Candidate-1 views re-sync their accessors to the new field set.
+ * never calls `queueRecordWrite`. Accessor views re-sync their accessors to the new field set.
  * A masked `llmSecrets` record from the server is split as the client does: its status goes to
  * `setMaskedSecrets`, the record holds the mirror form (`mirrorFields`: credentials read `""`).
  */
@@ -208,7 +208,7 @@ export function applyRaw(kind: string, id: string, data: unknown): void {
  */
 function replaceLocal(kind: string, id: string, value: unknown): void {
     const key = keyOf(kind, id);
-    // Candidate 1's own view assigned back (`db.botPresets = models` after an indexed swap through
+    // Accessor mode's own view assigned back (`db.botPresets = models` after an indexed swap through
     // its index accessors) stands for the record's data, never the accessor object itself.
     records[key] = Object.is(value, views.get(key)) ? untrack(() => records[key]) : unwrap(value, key);
     structureVersion += 1;
@@ -664,7 +664,7 @@ function credentialDelete(container: string | null, field: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Candidate 1: the accessor-backed record.
+// Accessor mode: the accessor-backed record.
 
 const views = new Map<string, any>();
 /** Each view's own accessor keys (to drop the ones a raw application removed). */
@@ -679,7 +679,7 @@ function defineFieldAccessor(view: any, kind: string, id: string, field: string)
             return (records[key] as Record<string, unknown>)[field];
         },
         set(value: unknown) {
-            // The top-level setter is candidate 1's mutation: it applies the credential rule too.
+            // The top-level setter is the accessor mode's mutation: it applies the credential rule too.
             const stored = kind === SECTION_KIND.llmSecrets ? credentialWrite(null, field, value) : value;
             if (stored === NOT_STORED) {
                 return;
@@ -715,7 +715,7 @@ function syncAccessors(view: any, kind: string, id: string): void {
     }
 }
 
-/** Candidate 1: one accessor view per record (cached), its fields synced at every raw application. */
+/** Accessor mode: one accessor view per record (cached), its fields synced at every raw application. */
 export function projectRecord<T = any>(kind: string, id: string = SINGLETON_RESOURCE_ID): T {
     const key = keyOf(kind, id);
     let view = views.get(key);
@@ -729,7 +729,7 @@ export function projectRecord<T = any>(kind: string, id: string = SINGLETON_RESO
 }
 
 // ---------------------------------------------------------------------------------------------
-// Candidate 2: the deep write-through record.
+// Tracked mode: the deep write-through record.
 
 /** Thrown when a retained nested wrapper names an element that no longer exists in its record. */
 export class DetachedWrapperError extends Error {
@@ -976,7 +976,7 @@ function detachedCopy(value: object, seen = new Map<object, unknown>()): unknown
 }
 
 /**
- * A value written into record `destKey` through a wrapper. Rules (the round-2 contract):
+ * A value written into record `destKey` through a wrapper follows these rules:
  * - a wrapper of the same record stores its current `$state` object (`assignedTarget`);
  * - a wrapper of another record stores a detached copy (no record aliases another record's state);
  * - a Svelte proxy the destination record owns (reached through its wrappers) is stored as is;
@@ -1375,7 +1375,7 @@ function createNode(
     return node;
 }
 
-/** Candidate 2: the record's root wrapper (cached), resolving the record by `(kind, id)` on every access. */
+/** Tracked mode: the record's root wrapper (cached), resolving the record by `(kind, id)` on every access. */
 export function trackedRecord<T = any>(kind: string, id: string = SINGLETON_RESOURCE_ID): T {
     const key = keyOf(kind, id);
     let node = rootNodes.get(key);
@@ -1386,7 +1386,7 @@ export function trackedRecord<T = any>(kind: string, id: string = SINGLETON_RESO
     return node.proxy as T;
 }
 
-/** The candidate's record wrapper. */
+/** The chosen mode's record wrapper. */
 export function recordView<T = any>(candidate: Candidate, kind: string, id: string = SINGLETON_RESOURCE_ID): T {
     return candidate === "accessor" ? projectRecord<T>(kind, id) : trackedRecord<T>(kind, id);
 }
@@ -1396,7 +1396,7 @@ export function recordView<T = any>(candidate: Candidate, kind: string, id: stri
 
 /**
  * The paths in the live `$state` records (read through the Svelte proxies, not a snapshot) that
- * hold a candidate-2 wrapper or a candidate-1 view, at any depth. Ordinary Svelte proxies are fine.
+ * hold a tracked wrapper or a accessor view, at any depth. Ordinary Svelte proxies are fine.
  */
 export function findLiveWrappers(): string[] {
     const found: string[] = [];

@@ -32,7 +32,7 @@ const stubs = vi.hoisted(() => ({
     ),
     channelCall: null as { jobId: string; callbackId: string } | null,
     dynamicIds: new Set<string>(),
-    /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope (P2). */
+    /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope. */
     modelInfoCalls: [] as unknown[][],
     db: {
         aiModel: "reverse_proxy",
@@ -373,7 +373,7 @@ describe("the request body", () => {
         const init = posted()[0][1]!;
         expect(init.method).toBe("POST");
         expect(init.headers).toMatchObject({ "content-type": "application/json", "x-resource-epoch": "epoch-1" });
-        // The main model's flags come from the captured model preset, not the selected one (P2).
+        // The main model's flags come from the captured model preset, not the selected one.
         expect(stubs.modelInfoCalls).toEqual([["model", { presetId: "preset-ctx", modelPresetId: "model-ctx" }]]);
     });
 
@@ -441,7 +441,7 @@ describe("the request body", () => {
         });
         expect(body.arg).not.toHaveProperty("requestIds");
         expect(body.arg).not.toHaveProperty("chatRef");
-        // The main model and tokenizer of the captured model preset, not the selected one (P2).
+        // The main model and tokenizer of the captured model preset, not the selected one.
         expect(stubs.modelInfoCalls).toEqual([["model", { presetId: "preset-ctx", modelPresetId: "model-ctx" }]]);
 
         // A captured pair that no longer exists: refused before the flush and the POST.

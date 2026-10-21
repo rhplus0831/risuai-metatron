@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// WEB-03: mount the actual Settings shell, so a responsive guard around HotkeySettings is tested.
+// Mount the actual Settings shell, so a responsive guard around HotkeySettings is tested.
 // Other pages are not rendered and their service graphs are unnecessary for this boundary.
 vi.mock("./Pages/DisplaySettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/UserSettings.svelte", () => ({ default: () => {} }));

@@ -145,8 +145,7 @@ describe("risuChatParserScoped", () => {
         expect(risuChatParserScoped(text, {}, { ...mixed, presetId: "p-sel", modelPresetId: "p-ctx" })).toBe(
             "ctx-model|1111|sel main",
         );
-        // Two scopes that differ only by the model preset share no cached evaluator (Astra plan
-        // review point 1): the same prompt preset and persona read different model presets.
+        // Two scopes that differ only by the model preset share no cached evaluator: the same prompt preset and persona read different model presets.
         expect(risuChatParserScoped("{{model}}", {}, { ...scope, modelPresetId: "p-ctx" })).toBe("ctx-model");
         expect(risuChatParserScoped("{{model}}", {}, { ...scope, modelPresetId: "p-sel" })).toBe("sel-model");
         expect(risuChatParserScoped("{{model}}", {}, { ...scope, modelPresetId: "p-ctx" })).toBe("ctx-model");

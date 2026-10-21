@@ -16,7 +16,7 @@ export function isNewChatBinding(value: unknown): value is NewChatBinding {
     return (NEW_CHAT_BINDING_VALUES as readonly unknown[]).includes(value);
 }
 
-/** The binding fields of a chat, a chat summary, or a chat list entry. `bindedPersona` is the persona's (D3). */
+/** The binding fields of a chat, a chat summary, or a chat list entry. `bindedPersona` holds the persona id. */
 export type ChatBindingFields = Pick<Chat, "modelPresetId" | "promptPresetId" | "bindedPersona" | "bindingReview">;
 
 export type ChatBindingField = "modelPresetId" | "promptPresetId" | "personaId";

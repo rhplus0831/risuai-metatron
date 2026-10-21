@@ -535,7 +535,7 @@ describe("characters another writer created or deleted", () => {
         noNotice();
     });
 
-    it("does not let a delayed deletion answer remove a newer incarnation a job installed meanwhile (finding 4)", async () => {
+    it("does not let a delayed deletion answer remove a newer incarnation a job installed meanwhile", async () => {
         const { fake, sync, live, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.delete(characterKind(fake), "d", fake.record("characters", "d")!.revision);
@@ -557,7 +557,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps a deletion announced while an older update's read was out (finding 1)", async () => {
+    it("keeps a deletion announced while an older update's read was out", async () => {
         const { fake, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.set("characters", "d", { chaId: "d", name: "D1" });
@@ -570,7 +570,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("reads the chat list again for a chat created while a new character's first read was out (finding 1)", async () => {
+    it("reads the chat list again for a chat created while a new character's first read was out", async () => {
         const { fake, chatIds, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.applyChanges({
@@ -586,7 +586,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("refreshes a chat edited while its new character's first read was out (finding 1)", async () => {
+    it("refreshes a chat edited while its new character's first read was out", async () => {
         const { fake, chat, texts, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.applyChanges({
@@ -615,7 +615,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("settles a character created and deleted before this tab read it: no endless reads (finding 5)", async () => {
+    it("settles a character created and deleted before this tab read it: no endless reads", async () => {
         const { fake, live, flushFeed, character } = await boot();
         live.paused = true;
         fake.set("characters", "x", { chaId: "x", name: "X" });
@@ -628,7 +628,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("does not insert a character whose deletion was announced while its first read was out (finding 5)", async () => {
+    it("does not insert a character whose deletion was announced while its first read was out", async () => {
         const { fake, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.applyChanges({
@@ -645,7 +645,7 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps the selected character after an earlier one is removed without running the selection's side effects (finding 6)", async () => {
+    it("keeps the selected character after an earlier one is removed without running the selection's side effects", async () => {
         const { fake, sync, selection, settings, characters, character } = await boot();
         settings.memoryTranslateMedia.hypaV3 = true;
         settings.hypaV3Presets.items = [
@@ -729,7 +729,7 @@ describe("chats and chat lists another writer changed", () => {
         noNotice();
     });
 
-    it("reads a chat list again when a reorder is announced while the list's read was out (finding 1)", async () => {
+    it("reads a chat list again when a reorder is announced while the list's read was out", async () => {
         const { fake, chatIds, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.applyChanges({ chats: [create("c", "y")] });
@@ -744,7 +744,7 @@ describe("chats and chat lists another writer changed", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps a chat deleted here out of the mirror while another writer's new chat brings the list in (finding 2)", async () => {
+    it("keeps a chat deleted here out of the mirror while another writer's new chat brings the list in", async () => {
         const { fake, chat, chatIds, intercept } = await boot();
         const seen: string[][] = [];
         intercept.beforeRequest = (path) => {
@@ -763,7 +763,7 @@ describe("chats and chat lists another writer changed", () => {
         noNotice();
     });
 
-    it("never writes when another writer deletes a character's only chat; its replacement then takes its place (finding 3)", async () => {
+    it("never writes when another writer deletes a character's only chat; its replacement then takes its place", async () => {
         const { fake, chatIds } = await boot();
         fake.chatBatch([
             {
@@ -783,7 +783,7 @@ describe("chats and chat lists another writer changed", () => {
         noNotice();
     });
 
-    it("does not let a delayed chat-list answer remove a newer copy a job installed meanwhile (finding 4)", async () => {
+    it("does not let a delayed chat-list answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, flushFeed, chatIds, texts, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.chatBatch([
@@ -824,7 +824,7 @@ describe("chats and chat lists another writer changed", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("does not let a delayed idle read's deletion answer remove a newer copy a job installed meanwhile (finding 4)", async () => {
+    it("does not let a delayed idle read's deletion answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, chatIds, texts, intercept } = await boot();
         live.paused = true;
         fake.chatBatch([
@@ -1014,7 +1014,7 @@ describe("the reconcile after a `hello`", () => {
 });
 
 describe("halting for a restore", () => {
-    it("applies nothing and sends nothing once an epoch change lands during a live read (finding 9)", async () => {
+    it("applies nothing and sends nothing once an epoch change lands during a live read", async () => {
         const { fake, client, settings, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 190 });
@@ -1032,7 +1032,7 @@ describe("halting for a restore", () => {
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 
-    it("refuses a batch at dispatch when saving halted after it was captured (finding 9)", async () => {
+    it("refuses a batch at dispatch when saving halted after it was captured", async () => {
         const { fake, sync, client, settings, chat } = await boot();
         let open!: () => void;
         dispatch.gate = new Promise<void>((resolve) => (open = resolve));

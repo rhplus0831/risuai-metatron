@@ -56,7 +56,7 @@ describe("parser asset inputs", () => {
         const probe = createProbe(() => parse("module", "img"));
         try {
             expect(await probe.derived()).toContain('src="assets/module.png"');
-            // A module's asset list is immutable: the edit replaces it whole (heap plan B1).
+            // A module's asset list is immutable: the edit replaces it whole.
             settings.modules[0].assets = [asset("module", "assets/module-edited.png")];
             // Calling the derived, then ParseMarkdown, happens in the same stack as the write.
             const tracked = probe.derived();
@@ -64,7 +64,7 @@ describe("parser asset inputs", () => {
             expect(await tracked).toContain('src="assets/module-edited.png"');
             expect(text(await direct)).toBe("assets/module-edited.png");
             expect(text(await parse("cat"))).toBe("assets/cat.png");
-            // A character's asset list is immutable too (heap plan B2): the edit replaces it whole.
+            // A character's asset list is immutable too: the edit replaces it whole.
             char().additionalAssets = [asset("cat", "assets/character-edited.png")];
             const changed = parse("cat", "img");
             expect(await changed).toContain('src="assets/character-edited.png"');
@@ -132,9 +132,8 @@ describe("parser fuzzy assets", () => {
 
     it("keys the once-built index by a frozen list, never by a retained wrapper of a list that later resolves to one", async () => {
         // A list of another shape (a fourth tuple element that is an object) stays a mutable wrapper
-        // (heap plan B2); a simple-character argument built then keeps that wrapper. Once the field
-        // holds frozen lists, each replacement must still rebuild the index the wrapper reads
-        // (Sol's challenge finding 1, 2026-10-19).
+        // and a simple-character argument built then keeps that wrapper. Once the field
+        // holds frozen lists, each replacement must still rebuild the index the wrapper reads.
         settings.ui.assetMaxDifference = 1;
         install([["cat", "assets/first.png", "png", { odd: true }] as unknown as Asset]);
         const held = char().additionalAssets;

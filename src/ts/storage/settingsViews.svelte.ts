@@ -379,7 +379,7 @@ function refuseModelRoot(rootKey: string, reason: string): false {
 }
 
 /**
- * Applies one legacy model-root write (Model Profiles O8), to the selected or captured preset.
+ * Applies one legacy model-root write to the selected or captured preset.
  * Same values never re-match a slot. Auxiliary modes may clear or go bare; main/sub require one
  * matching profile. Refusals warn, keep the old value, and return false without throwing, so other
  * keys still apply. A whole `seperateModels` object applies its supplied modes independently.

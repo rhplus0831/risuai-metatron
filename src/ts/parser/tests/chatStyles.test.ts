@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ChatStyleRegistry, type ChatStyle } from "../chatStyles";
 
-// The chat screen's shared row stylesheets (heap plan C2): one `<style>` per distinct CSS and
+// The chat screen's shared row stylesheets: one `<style>` per distinct CSS and
 // attribute list, held by the rows that use it, ordered as the rows' own copies were (newest message
 // first in the DOM, the greeting last, a sheet at its latest use), reconciled after a microtask.
 

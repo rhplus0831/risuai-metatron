@@ -27,7 +27,7 @@ vi.mock(import("../../stores.svelte"), () => ({}) as unknown as typeof import(".
 
 //#endregion
 
-// `trimMarkdownSharingStyles` (heap plan C2): `trimMarkdown`'s tree with the shareable styles' CSS
+// `trimMarkdownSharingStyles`: `trimMarkdown`'s tree with the shareable styles' CSS
 // handed out and an inert comment left in their place; `trimMarkdown` itself is unchanged.
 
 const SCOPED = ".chattext .x-risu-mybox{color:red;}";

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Svelte bindings, snapshots, and writes through per-resource record wrappers: the cases that chose
 // the deep write-through wrapper `records.svelte.ts` uses. Every case runs over the test-only
 // prototype in `projectionHarness.svelte.ts`: per-resource records held as `$state`, the two wrapper
-// candidates (`projectRecord`, accessor-backed; `trackedRecord`, deep write-through), a root facade
+// implementations (`projectRecord`, accessor-backed; `trackedRecord`, deep write-through), a root facade
 // installed on the real `prototypeRoot.db` (so the real `customQuotesData` items and real components
 // run against it), and a prototype transport over the real server store (`StoreBackedServer`). The
 // real `getSettingValue` / `setSettingValue` resolve `bindKey`/`bindPath` through the settings record
@@ -16,10 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // registry's older resolution over `prototypeRoot.db` (`prototypeRegistry.ts`), and the items'
 // callbacks get a context over the facade.
 //
-// Every per-candidate case runs three times: `accessor` (candidate 1), `tracked` (candidate 2,
-// validating its path on every access), and `tracked-cached` (candidate 2 with the resolve cache).
+// Every case for a wrapper mode runs three times: `accessor` (top-level getters and setters), `tracked`
+// (validating its path on every access), and `tracked-cached` (with the resolve cache).
 //
-// A case that a candidate fails is asserted as the observed result (the failing candidate's
+// A case that a mode fails is asserted as the observed result (the failing mode's
 // expectation is the measured failure), so the suite stays green while recording each result.
 //
 // The module mocks are the forwarding binding suite's (`forwardingBindings.test.ts`):
@@ -198,7 +198,7 @@ afterEach(async () => {
     resetProjection();
 });
 
-/** The candidate's settings context (`prototypeRegistry.ts`): every section view is the facade on `prototypeRoot.db`. */
+/** The wrapper mode's settings context (`prototypeRegistry.ts`): every section view is the facade on `prototypeRoot.db`. */
 function ctx(): SettingContext {
     return candidateContext();
 }
@@ -318,7 +318,7 @@ function presetIndex(id: string): number {
 const livePreset = (id: string) => (liveRecord(PRESETS_KIND) as any[])[presetIndex(id)];
 const liveChar = () => liveRecord<any>(CHARACTERS_KIND, CHA);
 
-/** The results each candidate shows; `tracked` is expected to pass everything. */
+/** The results each mode shows; `tracked` is expected to pass everything. */
 const onlyTracked = (candidate: Candidate) => candidate !== "accessor";
 
 // ---------------------------------------------------------------------------------------------
@@ -376,7 +376,7 @@ describe("Svelte 5.57.1 facts the pattern relies on", () => {
     });
 });
 
-describe.each(CANDIDATES)("candidate %s", (candidate) => {
+describe.each(CANDIDATES)("wrapper mode %s", (candidate) => {
     let db: any;
     const view = <T = any>(kind: string, id = "main") => recordView<T>(candidate, kind, id);
 
@@ -426,7 +426,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(livePreset("a").reverseProxyOobaArgs.name1_instruct).toBe("edited-2");
             expect(livePreset("b").reverseProxyOobaArgs.name1_instruct).toBe("b-user");
             const result = await capture(PRESETS);
-            // Candidate 1 returns the raw nested object: the write bypasses the queue.
+            // Accessor mode returns the raw nested object: the write bypasses the queue.
             expect(result.captured).toBe(onlyTracked(candidate));
             if (candidate !== "accessor") {
                 expect(result.calls).toBe(2);
@@ -699,7 +699,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 expect(restored.captured).toBe(true);
                 expect(server.record(CHARACTERS_KIND, CHA)!.data.replaceGlobalNote).toBe("restored");
             } else {
-                // Candidate 1: `delete` removes the view's accessor; the record keeps the key and nothing queues.
+                // Accessor mode: `delete` removes the view's accessor; the record keeps the key and nothing queues.
                 expect(liveChar().replaceGlobalNote).toBe("the note");
                 expect(queuedKeys()).toEqual([]);
                 // A later set creates a plain data property on the view; the record never sees it.
@@ -720,7 +720,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(livePreset("b").dynamicOutput).toEqual({ order: ["openai"] });
             expect(livePreset("a").dynamicOutput).not.toEqual({ order: ["openai"] });
             const preset = await capture(PRESETS);
-            // Candidate 1 writes the container into the raw preset object (no queue).
+            // Accessor mode writes the container into the raw preset object (no queue).
             expect(preset.captured).toBe(onlyTracked(candidate));
             if (preset.captured) {
                 expect(preset.report.ops[0].data[1].dynamicOutput).toEqual({ order: ["openai"] });
@@ -782,7 +782,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
 
         it("resolves and writes exactly as over a plain object", () => {
             const overFacade = runRegistry();
-            // Candidate 1: the `deeplXOptions.url` write lands in the existing container without a queue.
+            // Accessor mode: the `deeplXOptions.url` write lands in the existing container without a queue.
             expect(new Set(queuedKeys())).toEqual(new Set(candidate !== "accessor" ? [UI, SECRETS] : [UI]));
             expect(overFacade.after).toEqual([false, "https://changed", "<", ">", "(", ")"]);
             expect(liveRecord<any>("ui").customQuotesData).toEqual(["<", ">", "(", ")"]);
@@ -848,7 +848,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 resetCounters();
                 entry.write();
                 const result = await capture(entry.key);
-                // `nested`: the item writes inside an existing container (candidate 1 bypasses the queue there).
+                // `nested`: the item writes inside an existing container (accessor mode bypasses the queue there).
                 expect(result.captured, entry.name).toBe(!entry.nested || onlyTracked(candidate));
             }
             expect(liveRecord<any>("ui").customQuotesData).toEqual(['"', '"', "'", ")"]);
@@ -960,7 +960,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 false,
             );
 
-            // A mark plus a raw edit (candidate-neutral): the transport keeps the key.
+            // A mark plus a raw edit (independent of the wrapper mode): the transport keeps the key.
             livePreset("a").temperature = 81;
             queueRecordWrite(PRESETS_KIND, "main");
             const result = await capture(PRESETS);
@@ -995,14 +995,14 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             const stored = livePreset("a").seperateParameters.overrides;
             expect(Object.getPrototypeOf(stored)).toBe(Object.prototype);
             if (candidate !== "accessor") {
-                // Candidate 2 rebuilds the map the `writeEntries` way and installs it in its parent.
+                // Tracked mode rebuilds the map the `writeEntries` way and installs it in its parent.
                 expect(Object.hasOwn(stored, "__proto__")).toBe(true);
                 expect(stored["__proto__"]).toEqual({ temperature: 33 });
                 const result = await capture(PRESETS);
                 expect(result.captured).toBe(true);
                 expect(stats.bodies[0]).toContain('"__proto__":{"temperature":33}');
             } else {
-                // Candidate 1 hands the write to the Svelte proxy, which drops it silently.
+                // Accessor mode hands the write to the Svelte proxy, which drops it silently.
                 expect(Object.hasOwn(stored, "__proto__")).toBe(false);
                 expect(queuedKeys()).toEqual([]);
             }
@@ -1094,7 +1094,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 expectNoPlaintextInRecord();
                 expect(queuedKeys()).toEqual([]);
             } else {
-                // Candidate 1 fails: the nested write lands the plaintext in the record, nothing is
+                // Accessor mode fails: the nested write lands the plaintext in the record, nothing is
                 // routed or queued, and the credential is silently not saved.
                 expect(queued()).toEqual([]);
                 expect(liveRecord<any>("llmSecrets").google.accessToken).toBe("ya29-new-plaintext-0000002");
@@ -1157,7 +1157,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 ]);
                 expectNoPlaintextInRecord();
             } else {
-                // Candidate 1 fails: the entry lands in the record's map as plaintext, not routed.
+                // Accessor mode fails: the entry lands in the record's map as plaintext, not routed.
                 expect(queued()).toEqual([]);
                 expect(liveRecord<any>("llmSecrets").OaiCompAPIKeys["model-3"]).toBe("oai-entry-plaintext-000003");
             }
@@ -1180,7 +1180,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 }
                 expect(recordText()).toBe(before);
             } else {
-                // Candidate 1: the entry map has no accessor, so the assignment makes a plain
+                // Accessor mode: the entry map has no accessor, so the assignment makes a plain
                 // property on the view (silently lost); `delete` removes the view's accessor (the
                 // record keeps the field); a nested `delete` removes the leaf from the record.
                 llm().presets = { a: { proxyKey: "pk-a-plaintext-0000000001" } };
@@ -1234,7 +1234,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 const write = await capture(PRESETS);
                 expect(write.captured).toBe(true);
             } else {
-                // Candidate 1: the retained preset is the old, now detached, `$state` object.
+                // Accessor mode: the retained preset is the old, now detached, `$state` object.
                 expect(retained.temperature).toBe(80);
                 retained.maxResponse = 1234;
                 expect(livePreset("a").maxResponse).toBe(4000);
@@ -1371,7 +1371,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             flushSync();
             expect(element.value).toBe("hydrated");
             expect(cachedRoot.globalLore[7].content).toBe("hydrated");
-            // Candidate 2's cached nested wrapper reaches the new record; candidate 1's retained
+            // The tracked modes' cached nested wrapper reaches the new record; accessor mode's retained
             // nested object is the old, detached one.
             expect(cachedLore.content).toBe(candidate === "accessor" ? "content 7" : "hydrated");
             expect(stats.queueCalls.size).toBe(0);
@@ -1594,7 +1594,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 expect(entry.comment).toBe("raw");
                 expect(lore.includes(entry)).toBe(true);
             } else {
-                // Candidate 1 returns the raw `$state` objects: a replacement makes new ones.
+                // Accessor mode returns the raw `$state` objects: a replacement makes new ones.
                 expect(fresh).not.toBe(retained);
                 expect(db.botPresets.includes(retained)).toBe(false);
             }
@@ -1949,7 +1949,7 @@ describe("cost", () => {
     const WRITES = 1000;
     const ROUNDS = 9;
 
-    it("1,000 sequential nested writes into the 300-entry character: one serialization per flush; candidate 2 against direct $state writes", async () => {
+    it("1,000 sequential nested writes into the 300-entry character: one serialization per flush; tracked modes against direct $state writes", async () => {
         const direct = liveRecord<any>(CHARACTERS_KIND, CHA);
         const accessor = projectRecord(CHARACTERS_KIND, CHA);
         const tracked = trackedRecord(CHARACTERS_KIND, CHA);
@@ -2007,12 +2007,12 @@ describe("cost", () => {
                 machine(),
             ].join("\n"),
         );
-        // The target is candidate 2 within 2x; the assertion is generous so it does not flake.
+        // The target is for tracked modes to stay within 2x; the assertion is generous so it does not flake.
         expect(ratio("tracked")).toBeLessThan(10);
         expect(ratio("tracked-cached")).toBeLessThan(10);
     });
 
-    it("bulk: the lorebook drag rebuild and the preset reorder, candidate 2 against direct $state", () => {
+    it("bulk: the lorebook drag rebuild and the preset reorder, tracked modes against direct $state", () => {
         // `LoreBookList.svelte:209-296`: copy the array (here with a new object per item), move one
         // item as a copy, regroup by folder, then replace the field.
         function drag(lore: any[], assign: (next: any[]) => void) {

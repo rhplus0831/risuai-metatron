@@ -1198,7 +1198,7 @@ export interface Chat {
     scriptstate?: { [key: string]: string | number | boolean };
     modules?: string[];
     id?: string;
-    /** The persona this chat is bound to (misspelled name kept, D3). */
+    /** The persona this chat is bound to (misspelled persisted name kept). */
     bindedPersona?: string;
     /** The prompt preset this chat is bound to (`presets`). */
     promptPresetId?: string;

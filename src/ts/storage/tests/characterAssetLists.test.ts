@@ -21,15 +21,15 @@ import {
     wrapperFieldStamp,
 } from "../records.svelte";
 
-// A character's asset lists as immutable values (heap plan B2, `docs/structure/persistence.md`):
+// A character's asset lists as immutable values (`docs/structure/persistence.md`):
 // `additionalAssets` and `emotionImages` (tuples) and `ccAssets` (flat records) are frozen when
 // they enter the record through the raw paths, and a whole field written or stored becomes a wholly
 // owned frozen copy that shares only verified entries. Covered on the records module alone: the
 // three install paths; reads returning the frozen value (never a wrapper); every refused in-place
 // write leaving text, stamps and notifications unchanged; ownership (same-character unproxied
 // containers, nested aliases, own `$state` edits, foreign state); the mutable fallback for every
-// unsupported shape, with the JSON the ordinary adoption stores (the challenge's holes, class
-// instance, accessor and out-of-range key reproductions, Sol 2026-10-19); retained wrappers of a
+// unsupported shape, with the JSON the ordinary adoption stores (holes, class
+// instances, accessors and out-of-range keys); retained wrappers of a
 // mutable list that later resolves to a frozen one (the Proxy invariants, `isFrozenAssetList`
 // false, the stamp following); a retained frozen value staying the old value; `characterFieldPlain`
 // and the stored-character paths; and local/ordinary fields staying as they were.
@@ -375,7 +375,7 @@ describe("unsupported shapes take the mutable fallback with the ordinary adoptio
             const a = byId("a");
             const value = input();
             const expected = JSON.stringify(value);
-            // Plain and through this character's own wrapper (the live value), as the challenge wrote it.
+            // Plain and through this character's own wrapper (the live value).
             a[field] = value;
             expect(JSON.stringify(raw("a")[field])).toBe(expected);
             expect(Object.isFrozen(raw("a")[field])).toBe(false);

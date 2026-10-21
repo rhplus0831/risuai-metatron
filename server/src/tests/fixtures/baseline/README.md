@@ -1,8 +1,8 @@
-# Phase 5 baseline fixtures
+# Browser baseline fixtures
 
-The golden values the Phase 5 server path is compared against, captured once from the **browser
-path as it was before slice 3** (commit `efad2b76`, the Stop A state: slices 1 and 2 only added
-server files the client does not load). They were captured by
+The golden values the server path is compared against, captured once from the **browser
+path at commit `efad2b76`** (the tree differed only by added server files the client does not load).
+They were captured by
 `util/playwright/captureBrowserBaseline.mjs` from the client's own functions on the Vite dev stack
 (`util/playwright/stack.mjs`: a fresh server working directory, so an empty `save/`) in a headless
 system Chrome, and never derived from server code. `provenance.json` records the commit, the Chrome,
@@ -11,19 +11,19 @@ locally.
 
 The expectations in these files come from the client; a server test that disagrees with one has
 found a difference to attribute, not a fixture to overwrite. Approved deltas (defect fixes, Safety
-Contract changes) are separate reviewed expected-delta files, as the implementation plan says.
+Contract changes) are separate reviewed expected-delta files.
 
 ## Files
 
-| File                | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Consumer (plan)                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `scenario.json`     | The seed the capture applied, verbatim: the environment, the base settings, the personas, the two extra presets (`normalizePreset` input), every character with its chats and messages (explicit `chaId`, chat `id`, message `chatId`), the per-fixture settings, the markdown hooks, the token configurations, the lore regex scenarios, and the `igp` send. A server test rebuilds the same state from it.                                                                                                                                                                    | every golden test                                                                                |
-| `prompts.json`      | Per prompt fixture: `formated`, the `OpenAIChat[]` the DevTool preview shows (`sendChat(-1, { preview: true })` then `previewFormated`), and `selectedPresetName`. `jinja` also has `instruct` (the `applyChatTemplate` renders: `jinja` through the database template, then `chatml`, `mistral`, `alpaca`) and `previewBody` (`sendChat(-1, { previewPrompt: true })`: the Ooba request body with the Jinja-rendered prompt).                                                                                                                                                  | `assemble.test.ts` (slice 9), `lore.test.ts` (slice 4)                                           |
-| `markdown.json`     | `ParseMarkdown` HTML and the `editprocess` text of the greeting and every message of the `Mark` chat, `withoutHooks` and `withHooks` (plugin hooks registered on `pluginHooks`). Per message: `direct` (`ParseMarkdown(data, char, "normal", index, cbsConditions)`), `prePass` (the `Chat.svelte` pre-pass `risuChatParser(data, { chara: name, chatID, rmVar: true, visualize: true, cbsConditions })`: its `text`, then its `html` through `ParseMarkdown`), `back` (mode `"back"`), and `editprocess` (`processScript(char, data, "editprocess", cbsConditions, chatRef)`). | `e2e/transformGolden.spec.ts` (the `script-transform` golden, slice 13), `cbs.test.ts` (slice 3) |
-| `token-counts.json` | `routing`: `encode(text)` per model configuration (ids for `ascii` and `mixed`, ids or the thrown error for `special`, count and FNV-1a hash for `long`), with the `LLMTokenizer` name `getModelInfo` resolved. `prompts`: per prompt fixture and tokenizer family, the token count of every `formated` message's `content` and their total.                                                                                                                                                                                                                                    | `tokenParity.test.ts` (slice 4)                                                                  |
-| `lore-regex.json`   | `loadLoreBookV3Prompt(ref)` on regex-keyed lore: per scenario the messages, the lore keys, the `actives` (source, prompt, position, depth, role), and the `matchLog`.                                                                                                                                                                                                                                                                                                                                                                                                           | `lore.test.ts` (slice 4): the lore regex defect                                                  |
-| `igp.json`          | A real send with `igpPrompt` set, through a mock plugin provider: the provider calls (`mode`, `max_tokens`, `prompt_chat`) and the chat's messages afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                  | slice 11: the `igp` defect                                                                       |
-| `provenance.json`   | The commit, versions, page errors, blocked and locally served requests, and the preset ids of the run (the only file that differs between two captures).                                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                                                  |
+| File                | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Consumer                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `scenario.json`     | The seed the capture applied, verbatim: the environment, the base settings, the personas, the two extra presets (`normalizePreset` input), every character with its chats and messages (explicit `chaId`, chat `id`, message `chatId`), the per-fixture settings, the markdown hooks, the token configurations, the lore regex scenarios, and the `igp` send. A server test rebuilds the same state from it.                                                                                                                                                                    | every golden test                                                            |
+| `prompts.json`      | Per prompt fixture: `formated`, the `OpenAIChat[]` the DevTool preview shows (`sendChat(-1, { preview: true })` then `previewFormated`), and `selectedPresetName`. `jinja` also has `instruct` (the `applyChatTemplate` renders: `jinja` through the database template, then `chatml`, `mistral`, `alpaca`) and `previewBody` (`sendChat(-1, { previewPrompt: true })`: the Ooba request body with the Jinja-rendered prompt).                                                                                                                                                  | `assemble.test.ts`, `lore.test.ts`                                           |
+| `markdown.json`     | `ParseMarkdown` HTML and the `editprocess` text of the greeting and every message of the `Mark` chat, `withoutHooks` and `withHooks` (plugin hooks registered on `pluginHooks`). Per message: `direct` (`ParseMarkdown(data, char, "normal", index, cbsConditions)`), `prePass` (the `Chat.svelte` pre-pass `risuChatParser(data, { chara: name, chatID, rmVar: true, visualize: true, cbsConditions })`: its `text`, then its `html` through `ParseMarkdown`), `back` (mode `"back"`), and `editprocess` (`processScript(char, data, "editprocess", cbsConditions, chatRef)`). | `e2e/transformGolden.spec.ts` (the `script-transform` golden), `cbs.test.ts` |
+| `token-counts.json` | `routing`: `encode(text)` per model configuration (ids for `ascii` and `mixed`, ids or the thrown error for `special`, count and FNV-1a hash for `long`), with the `LLMTokenizer` name `getModelInfo` resolved. `prompts`: per prompt fixture and tokenizer family, the token count of every `formated` message's `content` and their total.                                                                                                                                                                                                                                    | `tokenParity.test.ts`                                                        |
+| `lore-regex.json`   | `loadLoreBookV3Prompt(ref)` on regex-keyed lore: per scenario the messages, the lore keys, the `actives` (source, prompt, position, depth, role), and the `matchLog`.                                                                                                                                                                                                                                                                                                                                                                                                           | `lore.test.ts`: the lore regex defect                                        |
+| `igp.json`          | A real send with `igpPrompt` set, through a mock plugin provider: the provider calls (`mode`, `max_tokens`, `prompt_chat`) and the chat's messages afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                  | the `igp` defect                                                             |
+| `provenance.json`   | The commit, versions, page errors, blocked and locally served requests, and the preset ids of the run (the only file that differs between two captures).                                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                              |
 
 ## Expected deltas (`deltas/`)
 
@@ -33,11 +33,11 @@ the value after the change, and why the change produces it; a test takes the del
 entry and the capture everywhere else. The re-capture (`node util/playwright/captureBrowserBaseline.mjs`,
 at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 
-| File                               | What it holds                                                                                                                                                                                                                                                                                                                                                                   | Consumer                                                                                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `lore-regex-fix.json`              | The lore regex key fix of slice 4 (owner answer 10): the three `lore-regex.json` scenarios whose `actives` and `matchLog` change (`i-flag-plain-text`, `empty-flags-plain-text`, `i-flag-two-messages-match-second`), each with the reason the fixed parse (split at the last `/`, empty flags allowed, no rewrite in place) produces it, and why the other four do not change. | `src/ts/process/lorebookRegexBaseline.test.ts` (the client), `lore.test.ts` (the server)                                                               |
-| `lore-regex-fix-prompts.json`      | The same fix in `prompts.json`: the `lore` fixture's `formated` after the fix (`Loremaster`'s two regex entries, `/dragon/` and `/dragon/i`, as system messages at indexes 12 and 13), with the reason they activate and why they land there; the other four prompts are unchanged.                                                                                             | `lore.test.ts` (the activation that produces the two entries, and the delta's consistency with the capture); slice 9's prompt golden test              |
-| `lore-regex-fix-token-counts.json` | The same fix in `token-counts.json`: per family, the `lore` prompt's `perMessage` with the two entries' counts at indexes 12 and 13 and the grown `total`; `routing` and the other prompts are unchanged.                                                                                                                                                                       | `tokenParity.test.ts` (recounts the two messages per family with the server's tokenizers against `inserted`, and checks the delta against the capture) |
+| File                               | What it holds                                                                                                                                                                                                                                                                                                                                      | Consumer                                                                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lore-regex-fix.json`              | The lore regex key fix: the three `lore-regex.json` scenarios whose `actives` and `matchLog` change (`i-flag-plain-text`, `empty-flags-plain-text`, `i-flag-two-messages-match-second`), each with the reason the fixed parse (split at the last `/`, empty flags allowed, no rewrite in place) produces it, and why the other four do not change. | `src/ts/process/lorebookRegexBaseline.test.ts` (the client), `lore.test.ts` (the server)                                                                 |
+| `lore-regex-fix-prompts.json`      | The same fix in `prompts.json`: the `lore` fixture's `formated` after the fix (`Loremaster`'s two regex entries, `/dragon/` and `/dragon/i`, as system messages at indexes 12 and 13), with the reason they activate and why they land there; the other four prompts are unchanged.                                                                | `lore.test.ts` (the activation that produces the two entries, and the delta's consistency with the capture); `assemble.test.ts` (the prompt golden test) |
+| `lore-regex-fix-token-counts.json` | The same fix in `token-counts.json`: per family, the `lore` prompt's `perMessage` with the two entries' counts at indexes 12 and 13 and the grown `total`; `routing` and the other prompts are unchanged.                                                                                                                                          | `tokenParity.test.ts` (recounts the two messages per family with the server's tokenizers against `inserted`, and checks the delta against the capture)   |
 
 ## The fixture characters (`scenario.json`)
 
@@ -84,7 +84,7 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
   `https://unpkg.com/wasmoon@1.16.0/dist/glue.wasm` at run time (`scriptings.ts`
   `makeLuaFactory`, a bare `new LuaFactory()`); the capture answers it with the installed package's
   `node_modules/wasmoon/dist/glue.wasm` of the same version (this describes the captured commit;
-  since Stop B the client loads the app's own `glue.wasm` asset). No provider is called: the
+  the client now loads the app's own `glue.wasm` asset). No provider is called: the
   previews return before the request layer, `previewBody` returns the body instead of sending it, and the
   `igp` send uses a plugin provider registered on `pluginHooks.providers`.
 - **Plugin hooks.** The markdown hooks and the `igp` provider are plain functions registered on
@@ -97,11 +97,12 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 - **Double capture.** The capture ran twice (two fresh stacks and browser contexts); every file
   except `provenance.json` was identical by parsed content (`JSON.parse`, then `JSON.stringify`).
 
-## Defects pinned here (the "before" evidence, implementation plan question 10)
+## Defects pinned here (the "before" evidence)
 
 - **`igp` appends the response object** (`src/ts/process/index.svelte.ts`, the `igp` block after
   auto-continue): `igp.json` shows the reply as `Reply from the mock provider.[object Object]` and
-  the second provider call (`mode: "emotion"`) with the parsed `igpPrompt`. Fixed in slice 11.
+  the second provider call (`mode: "emotion"`) with the parsed `igpPrompt`. The server path appends
+  the response text instead.
 - **Lore regex keys** (`src/ts/process/lorebook.svelte.ts`, `searchMatch`, the `arg.regex`
   branch): `lore-regex.json` shows that `/dragon/i` does not match `A dragon appears.` and
   `/dragon/` (empty flags) matches nothing, because the key is rewritten to `/dragon` (the leading
@@ -109,13 +110,13 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
   (`i-flag-slash-in-text`); and because the rewrite lands in `arg.keys[0]`, a second message is
   scanned with the rewritten key, whose "flags" are now the pattern text, which throws and ends the
   search (`i-flag-two-messages-match-second` matches nothing although the second message contains
-  `/dragon`). `prompts.json` (`lore`) shows the two regex entries absent from the prompt. Fixed in
-  slice 4: the expected delta is `deltas/lore-regex-fix.json`, and the client-side pin
+  `/dragon`). `prompts.json` (`lore`) shows the two regex entries absent from the prompt. The fixed
+  behavior is recorded in `deltas/lore-regex-fix.json`, and the client-side pin
   `src/ts/process/lorebookRegexBaseline.test.ts` now asserts the fixed behavior through it.
 - **`decodeToolCall`** (`src/ts/process/mcp/mcp.ts`) and **the MCP OAuth refresh**
   (`src/ts/process/mcp/mcplib.ts`, `oauthLogin`) are pure client functions, so they are pinned as
   Vitest tests against the client code instead of browser fixtures:
-  `src/ts/process/mcp/tests/baselineDefects.test.ts`. Fixed in slices 11 and 12.
+  `src/ts/process/mcp/tests/baselineDefects.test.ts`. The client implementations now pass these cases.
 
 ## Other behavior worth knowing when comparing
 
@@ -143,15 +144,14 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 ## Not captured
 
 - A v2 `display` trigger: `processScriptFull` runs it on the selected character, which the capture
-  selects, but the fixture character has none (slice 8b owns the trigger runtime; its display run
-  is a recorded behavior change).
-- Inlays, additional assets, and dynamic assets: they need stored assets and `HypaProcesser`
-  (slice 10).
-- The `@@repeat_back` null dereference: slice 3's own fixture.
+  selects, but the fixture character has none (the server trigger runtime's display run is a
+  recorded behavior change).
+- Inlays, additional assets, and dynamic assets: they need stored assets and `HypaProcesser`.
+- The `@@repeat_back` null dereference: covered by the CBS tests' own fixture.
 
 ## Re-capture
 
-The capture drives the browser path the Phase 5 cutover (slice 14) removed: it imports
+The capture drives the browser path removed when scripting moved to the server: it imports
 `src/ts/process/scripts.ts`. It runs only on a checkout at `219dfb51` or earlier.
 
 `node util/playwright/captureBrowserBaseline.mjs` writes this folder (an `outDir` argument writes

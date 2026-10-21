@@ -6,7 +6,7 @@ import { language } from "src/lang";
 import { cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
-// WEB-01: the page consumes pending shares through Cache Storage, including before SW control.
+// The page consumes pending shares through Cache Storage, including before SW control.
 // Keep the importers and record writes real; stub only external services and user decisions.
 const { server, alerts } = vi.hoisted(() => {
     // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do

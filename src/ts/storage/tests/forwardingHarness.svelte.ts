@@ -210,7 +210,7 @@ export function currentDb(): PrototypeDb {
     return prototypeRoot.db as unknown as PrototypeDb;
 }
 
-/** Changes only the preset selection. No root copy (Astra P10). */
+/** Changes only the preset selection. No root copy. */
 export function switchTo(id: string): void {
     currentDb().botPresetId = id;
 }

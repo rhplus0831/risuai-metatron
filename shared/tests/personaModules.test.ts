@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizePersonaModules, normalizePersonas, personaLinksModule, personaModuleIdSet } from "../personas.ts";
 
-// The persona module links (`RisuPersona.modules`): the canonical form both sides store (D2: the
+// The persona module links (`RisuPersona.modules`): the canonical form both sides store (the
 // client's projection must equal the server's normalized text, so the normalizer is a fixed point
 // and an entry without the field stays without it), and the link predicate the two resolvers share
 // (`getModules` on the tab, `jobModules` on the server): a link matches a stored module by its `id`

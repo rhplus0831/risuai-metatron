@@ -95,7 +95,7 @@ describe("a write under an element field stamps that field of that element only"
             "lorebook",
         ]);
         expect(changed(a, () => wa.lorebook.pop())).toEqual(["lorebook"]);
-        // The asset list is immutable (heap plan B1): an addition replaces it whole.
+        // The asset list is immutable: an addition replaces it whole.
         expect(changed(a, () => (wa.assets = [...wa.assets, ["y", "assets/y.png", "png"]]))).toEqual(["assets"]);
         expect(changed(a, () => replaceRecordList(wa.lorebook, [wa.lorebook[0], { key: "n", content: "n" }]))).toEqual([
             "lorebook",
@@ -213,7 +213,7 @@ describe("shared state or data that is not plain JSON makes every module stamp n
     });
 });
 
-describe("frozen module asset lists (heap plan B1)", () => {
+describe("frozen module asset lists", () => {
     /** A list frozen with every tuple frozen (a Svelte proxy of one forwards `Object.isFrozen`). */
     const frozenList = (value: unknown) =>
         Array.isArray(value) &&

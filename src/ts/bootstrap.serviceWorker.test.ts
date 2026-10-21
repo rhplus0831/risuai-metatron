@@ -2,7 +2,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
 
-// WEB-02: drive loadData, observe completed startup, persisted diagnostics, and real asset routing.
+// Drive loadData, observe completed startup, persisted diagnostics, and real asset routing.
 // Background services are irrelevant to SW availability; records and getFileSrc stay real.
 const mocks = vi.hoisted(() => ({
     server: null as StoreBackedServer | null,

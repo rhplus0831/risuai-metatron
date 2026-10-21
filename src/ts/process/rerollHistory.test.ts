@@ -115,7 +115,7 @@ afterAll(() => {
 });
 
 describe("createRerollHistory", () => {
-    it("undo in chat B after a reroll in chat A leaves B's reply and ids alone (GEN-01)", () => {
+    it("undo in chat B after a reroll in chat A leaves B's reply and ids alone", () => {
         const history = createRerollHistory();
         const b = freshChat([m("ub", "Hello B", "user"), m("rb1", "AUDIT_REPLY_1")]);
         const a = freshChat([m("ua", "Hello A", "user"), m("ra1", "AUDIT_REPLY_2")]);
@@ -282,7 +282,7 @@ describe("createRerollHistory", () => {
         expect(texts(ref)).toEqual(["Hi", "second"]);
     });
 
-    it("an edit of a reply before a reroll comes back with it (C1)", () => {
+    it("an edit of a reply before a reroll comes back with it", () => {
         const history = createRerollHistory();
         const ref = freshChat([m("u", "Hi", "user"), m("r1", "first")]);
         history.record(ref, "u", tail(ref, "u"));
@@ -295,7 +295,7 @@ describe("createRerollHistory", () => {
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "first, edited"]);
     });
 
-    it("an edit of the reply on display survives back and forward (C1)", () => {
+    it("an edit of the reply on display survives back and forward", () => {
         const history = createRerollHistory();
         const ref = freshChat([m("u", "Hi", "user"), m("r1", "first")]);
         history.record(ref, "u", tail(ref, "u"));
@@ -309,7 +309,7 @@ describe("createRerollHistory", () => {
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "second, edited"]);
     });
 
-    it("a reroll from an earlier bundle keeps its edit: begin refreshes the kept slot (C1)", () => {
+    it("a reroll from an earlier bundle keeps its edit: begin refreshes the kept slot", () => {
         const history = createRerollHistory();
         const ref = freshChat([m("u", "Hi", "user"), m("r1", "first")]);
         history.record(ref, "u", tail(ref, "u"));
@@ -323,7 +323,7 @@ describe("createRerollHistory", () => {
         expect(texts(ref)).toEqual(["Hi", "first, edited"]);
     });
 
-    it("a group bundle with one edited member round-trips whole (C1)", () => {
+    it("a group bundle with one edited member round-trips whole", () => {
         const history = createRerollHistory();
         const ref = freshChat([m("u", "Hi", "user"), m("g1", "Alice says"), m("g2", "Bob says")]);
         history.record(ref, "u", tail(ref, "u"));
@@ -341,7 +341,7 @@ describe("createRerollHistory", () => {
     });
 });
 
-describe("prereroll candidates (C1)", () => {
+describe("prereroll candidates", () => {
     const reply = (id: string, data: string, generationId: string) =>
         ({ ...m(id, data), generationInfo: { generationId } }) as Message;
     /** The screen's swipe over the candidates: a candidate is applied with `setMessageText`. */

@@ -519,7 +519,7 @@ describe("field patches in the feed", () => {
         expect(published()).toEqual([{ kind: hidden.name, id: "r", revision: next }]);
         expect(store.get(hidden, "r")!.data).toEqual({ secret: "changed", n: 2 });
         // A projecting kind's stored data never reaches a client, so a client could not patch it
-        // against what it holds: the store refuses the op (clients send patches since A1), and
+        // against what it holds: the store refuses the op, and
         // nothing is published.
         const masking = store.put(masked, "r", { secret: "value", n: 1 }, null).revision;
         published();

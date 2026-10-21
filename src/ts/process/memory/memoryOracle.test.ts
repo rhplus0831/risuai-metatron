@@ -165,7 +165,7 @@ describe("the browser memory algorithms against the recorded fixture", () => {
     }
 });
 
-describe("GEN-03: the modal's contextual summary vectors", () => {
+describe("the modal's contextual summary vectors", () => {
     const shared = "Shared paragraph.";
     const cases = [
         {

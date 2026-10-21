@@ -28,7 +28,7 @@ import {
 // index, a deletion and re-creation); plain JSON written into a character is copied, so the caller's
 // object is not linked; a character comes to have null stamps (uncacheable) when it shares state
 // between fields or holds data that is not plain JSON, and not for the ordinary same-field reuses; and
-// the challenge's reproductions (Sol, 2026-10-15): the sort comparator alias, `reloadKeys` and symbol
+// the alias and wrapper cases: the sort comparator alias, `reloadKeys` and symbol
 // properties holding record state, the retained wrapper of a `defineProperty`-installed container
 // across a mutator's write-back, and a failed preparation leaving no taint.
 
@@ -235,8 +235,8 @@ describe("null stamps (uncacheable)", () => {
         expect(cacheable("a")).toBe(false);
         applyRawCharacter("a", fixture());
 
-        // The challenge's point 1: a comparator writing a raw owned object (read through `characterData`)
-        // into another field during a sort used to pass unmarked.
+        // A comparator writing a raw owned object (read through `characterData`)
+        // into another field during a sort must mark the alias.
         a = byId("a");
         void a.left;
         const rawLeft = raw("a").left;
@@ -295,8 +295,8 @@ describe("null stamps (uncacheable)", () => {
     });
 });
 
-describe("the challenge's other reproductions", () => {
-    it("a retained wrapper of a defineProperty-installed (unproxied) container survives a splice re-insertion and a same-task displaced push (point 5)", () => {
+describe("retained wrappers and failed preparations", () => {
+    it("a retained wrapper of a defineProperty-installed (unproxied) container survives a splice re-insertion and a same-task displaced push", () => {
         initializeRecords({ characters: [{ chaId: "a", name: "A" }] });
         const a = byId("a");
         define(a, "rows", [{ n: 1 }, { n: 2 }]);
@@ -320,7 +320,7 @@ describe("the challenge's other reproductions", () => {
         expect(cacheable("a")).toBe(true);
     });
 
-    it("a failed preparation leaves the data and the stamps as they were (point 6)", async () => {
+    it("a failed preparation leaves the data and the stamps as they were", async () => {
         initializeRecords({ characters: [{ chaId: "a", name: "A", rows: [{ n: 1 }, { n: 2 }], other: { m: 1 } }] });
         const a = byId("a");
         const removed = a.rows[0];
@@ -336,7 +336,7 @@ describe("the challenge's other reproductions", () => {
         expect(cacheable("a")).toBe(true);
     });
 
-    it("a local field (reloadKeys) holding record state at any depth gets a detached copy (point 2)", () => {
+    it("a local field (reloadKeys) holding record state at any depth gets a detached copy", () => {
         initializeRecords({
             characters: [
                 { chaId: "a", name: "A", payload: { n: 1 } },
@@ -367,7 +367,7 @@ describe("the challenge's other reproductions", () => {
         expect(cacheable("b")).toBe(true);
     });
 
-    it("a symbol property is adopted like a field: plain data copied, the character's own state marks it (point 3)", () => {
+    it("a symbol property is adopted like a field: plain data copied, the character's own state marks it", () => {
         initializeRecords({ characters: [{ chaId: "a", name: "A", payload: { n: 1 } }] });
         const a = byId("a");
         const key = Symbol("alias");
@@ -388,8 +388,8 @@ describe("the challenge's other reproductions", () => {
 
 // `wrapperFieldStamp`: the parser's fuzzy asset lookup reuses an interim index of a character's asset
 // list only while the list wrapper's stamp is unchanged (`fuzzyIndexOf`), so every change the wrapper
-// can read must change it, a same-id whole replacement included (Sol, 2026-10-15). A valid asset
-// field is a frozen leaf since heap plan B2 (no wrapper, `characterAssetLists.test.ts`), so the
+// can read must change it, a same-id whole replacement included. A valid asset
+// field is a frozen leaf (no wrapper, `characterAssetLists.test.ts`), so the
 // generic wrapper behavior is checked on a mutable field of tuples (`rows`) here.
 describe("wrapperFieldStamp", () => {
     const assetsOf = (chaId: string) => byId(chaId).rows;
@@ -457,7 +457,7 @@ describe("wrapperFieldStamp", () => {
         expect(wrapperFieldStamp([["old", "old.png", "png"]])).toBeNull();
         expect(wrapperFieldStamp(null)).toBeNull();
         expect(wrapperFieldStamp(byId("a"))).toBeNull();
-        // A valid asset field reads as the frozen list itself: no wrapper, no stamp (heap plan B2).
+        // A valid asset field reads as the frozen list itself: no wrapper, no stamp.
         byId("a").additionalAssets = [["frozen", "frozen.png", "png"]];
         expect(wrapperFieldStamp(byId("a").additionalAssets)).toBeNull();
         expect(wrapperFieldStamp(byId("a").additionalAssets[0])).toBeNull();
