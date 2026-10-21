@@ -2,7 +2,8 @@
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`). Next: 9a, 9b.
+`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`), then the 9a and 9b sweeps (merged at `05aa74159`). Next:
+close-out 10.
 The 6a follow-up on
 `lastEffectYieldAt` landed in `e3ba64355`. Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
@@ -329,6 +330,15 @@ reading the body", "cancels a body the plugin never pulls from at 60 s..."), `gu
 instead of `vi.waitFor`.
 
 ## Slice 9a / 9b. Sweeps (_hard_ server, _small_ client)
+
+Landed 2026-10-22: 9a (`fd6805ccf`) and 9b (`0a6fb1aa5`), 25 server and 11 client items, nothing
+moved to slow and no new overload failures. 9a added the test-only `cbsTimeLimits` server option
+(`serverCbsLimits`) and gave transform renders the pool's `createBudget()`, closing the 5b
+leftovers; several old tests turned out vacuous (the `jobChannel` replay passed without the
+superseded-socket guard) and now fail without the code they name. Kept: `prepareCpuMs` (inert, one
+option), the 5a cold-boot exception, and the scriptWorker "summed" / "after a resumption" cases in
+the gated tier (summation also has a deterministic `luaRuntimeCharge` test). 9b's
+`SAVE_DEBOUNCE_MS` in `mutationStoresHarness.ts` copies the unexported production debounce.
 
 Every actionable row left in the area after the cause slices: the remaining `rewrite:deferred`,
 `rewrite:fake-timers`, `rewrite:injected-clock` and `rewrite:other` rows, the `rewrite:deferred`

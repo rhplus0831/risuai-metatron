@@ -7,8 +7,8 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 Active planning and implementation:
 
 - [Timing-Dependent Tests](timing-tests.md): make the gated Vitest suite independent of
-  real time, by cause, from the refreshed timing inventory; slices 0 to 8 landed; sweeps
-  9a and 9b next.
+  real time, by cause, from the refreshed timing inventory; slices 0 to 9b landed;
+  close-out 10 next.
 - [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.
