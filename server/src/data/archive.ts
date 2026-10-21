@@ -50,9 +50,14 @@ export function encodeRecordHeader(name: string, length: number): Uint8Array {
 /**
  * Reads the record headers of an archive file without reading record data. Every name must be
  * strict UTF-8, every record must fit, and the last one must end exactly at the end of the file. The
- * index stops with an error at `MAX_ARCHIVE_RECORDS` records or `MAX_ARCHIVE_NAME_TOTAL_BYTES` of names.
+ * index stops with an error past `maxRecords` records (default `MAX_ARCHIVE_RECORDS`; tests lower it)
+ * or `MAX_ARCHIVE_NAME_TOTAL_BYTES` of names.
  */
-export async function indexArchive(handle: FileHandle, signal?: AbortSignal): Promise<ArchiveRecord[]> {
+export async function indexArchive(
+    handle: FileHandle,
+    signal?: AbortSignal,
+    maxRecords = MAX_ARCHIVE_RECORDS,
+): Promise<ArchiveRecord[]> {
     const { size } = await handle.stat();
     const records: ArchiveRecord[] = [];
     // Headers are read through one window, so many tiny records cost few reads.
@@ -79,7 +84,7 @@ export async function indexArchive(handle: FileHandle, signal?: AbortSignal): Pr
             throw new ArchiveFormatError("The archive has an invalid record header");
         }
         nameBytesTotal += nameLength;
-        if (records.length >= MAX_ARCHIVE_RECORDS || nameBytesTotal > MAX_ARCHIVE_NAME_TOTAL_BYTES) {
+        if (records.length >= maxRecords || nameBytesTotal > MAX_ARCHIVE_NAME_TOTAL_BYTES) {
             throw new ArchiveFormatError("The archive holds too many records");
         }
         const nameBytes = await bytesAt(offset + 4, nameLength);

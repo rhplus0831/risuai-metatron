@@ -76,8 +76,8 @@ export function encodeAssetRecordHeader(name: string, length: number): Uint8Arra
  *
  * `end()` checks the batch ended on a record boundary. Every refusal is an `AssetBatchFormatError`:
  * a zero-length name, a name over `MAX_ASSET_BATCH_NAME_BYTES` or not strict UTF-8, a record past
- * `MAX_ASSET_BATCH_RECORDS`, or a trailing partial record. A parser that threw, or whose `events`
- * iteration was left before its end, must not be used again.
+ * `MAX_ASSET_BATCH_RECORDS` (or the lower `maxRecords` a test passes), or a trailing partial record.
+ * A parser that threw, or whose `events` iteration was left before its end, must not be used again.
  */
 export class AssetRecordParser {
     // `ignoreBOM` keeps a leading U+FEFF in the name, so the decoded name encodes back to its bytes.
@@ -98,6 +98,11 @@ export class AssetRecordParser {
     private started = 0;
     /** The record `push` is collecting. */
     private collecting: { name: string; bytes: Uint8Array; filled: number } | null = null;
+    private readonly maxRecords: number;
+
+    constructor(options: { maxRecords?: number } = {}) {
+        this.maxRecords = options.maxRecords ?? MAX_ASSET_BATCH_RECORDS;
+    }
 
     /** Every record completed by `chunk`, in order (records completed earlier in a chunk that throws are lost). */
     push(chunk: Uint8Array): AssetRecord[] {
@@ -154,8 +159,8 @@ export class AssetRecordParser {
                 }
                 continue;
             }
-            if (this.phase === "nameLength" && this.wordFilled === 0 && this.started >= MAX_ASSET_BATCH_RECORDS) {
-                throw new AssetBatchFormatError(`An asset batch holds more than ${MAX_ASSET_BATCH_RECORDS} records`);
+            if (this.phase === "nameLength" && this.wordFilled === 0 && this.started >= this.maxRecords) {
+                throw new AssetBatchFormatError(`An asset batch holds more than ${this.maxRecords} records`);
             }
             const take = Math.min(4 - this.wordFilled, chunk.length - at);
             this.word.set(chunk.subarray(at, at + take), this.wordFilled);

@@ -876,7 +876,32 @@ describe("POST /api/backups/import", () => {
         expect(res.status).toBe(200);
     });
 
-    it("refuses an archive with more records than the index allows", async () => {
+    it("refuses an archive past an injected record cap and imports one of exactly the cap", async () => {
+        // An eight-record cap; the production 200,000 is the slow case below.
+        const cap = 8;
+        const s = await defaultServer({ routeLimits: { archiveRecords: cap } });
+        const db = await databaseBytes(s);
+        const archive = (keys: string[]) =>
+            buildArchive([
+                ["manifest.json", manifestOf(keys)],
+                ["resources.sqlite", db],
+                ...keys.map((key): [string, string] => [key, key]),
+            ]);
+        const keys = Array.from({ length: cap - 2 }, (_, index) => `assets/r${index}.bin`);
+
+        const over = await importArchive(s, archive([...keys, "assets/extra.bin"]));
+        expect(over.status).toBe(400);
+        expect(await over.json()).toEqual({ error: "The archive holds too many records" });
+        expect(assetFiles(s)).toEqual([]);
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+
+        const exact = await importArchive(s, archive(keys));
+        expect(exact.status).toBe(200);
+        expect(assetFiles(s).sort()).toEqual(keys.map((key) => key.slice("assets/".length)).sort());
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+
+    it("refuses an archive with more records than the index allows", { tags: ["slow"], timeout: 60_000 }, async () => {
         const s = await defaultServer();
         const db = await databaseBytes(s);
         const head = buildArchive([

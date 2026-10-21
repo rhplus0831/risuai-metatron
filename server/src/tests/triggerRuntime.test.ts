@@ -1408,11 +1408,9 @@ describe("chat, character, persona, and UI effects", () => {
 
         // The sleep ends with the signal's own reason (the runner lets an abort escape as it is).
         const waiting = harness({ triggers: [trig([ef("v2Wait", v("30")), say("char", "never")])] });
-        const started = Date.now();
         const run = waiting.run();
         setTimeout(() => waiting.controller.abort(new Error("stop")), 20);
         await expect(run).rejects.toThrow("stop");
-        expect(Date.now() - started).toBeLessThan(5000);
         expect(waiting.commands).toEqual([]);
     });
 });

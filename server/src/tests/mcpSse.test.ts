@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
+import { countByteWork } from "./byteWork.ts";
 
 // The event framing both MCP clients share (`shared/mcp/sse.ts`), on its own. `SseFramer`: CRLF, LF,
 // and CR line ends (a CR at a chunk end ends its line at once and an LF first in the next non-empty
@@ -113,18 +114,22 @@ describe("SseFramer", () => {
         expect(String(frame(["x".repeat(max + 1)], max).error)).toContain("too large");
     });
 
-    it("delivers an event before an oversized one in the same chunk, and frames many small events in a chunk larger than the bound", () => {
+    it("delivers an event before an oversized one in the same chunk, and frames many small events in a chunk larger than the bound", async () => {
         const { events, error } = frame(["data:x\n\ndata:" + "y".repeat(20) + "\n\n"], 10);
         expect(events).toEqual(["data:x"]);
         expect(String(error)).toContain("too large");
 
-        const many = "data:x\n\n".repeat(80_000);
-        const started = Date.now();
-        const small = frame([many], 16);
+        const many = bytes("data:x\n\n".repeat(10_000));
+        const { result: small, scanned, copied } = await countByteWork(() => frame([many], 16));
         expect(small.error).toBeNull();
-        expect(small.events).toHaveLength(80_000);
-        // Linear in the chunk: no rescanning of what was already framed.
-        expect(Date.now() - started).toBeLessThan(3000);
+        expect(small.events).toHaveLength(10_000);
+        // Linear in the chunk: each line's LF is found from where the last one ended, the CR search
+        // misses once for the whole chunk, and each line is kept and joined once. Searching the rest of
+        // the chunk again for every line is thousands of times the chunk.
+        expect(scanned).toBeGreaterThanOrEqual(many.length);
+        expect(scanned).toBeLessThanOrEqual(2 * many.length);
+        expect(copied).toBeGreaterThan(0);
+        expect(copied).toBeLessThanOrEqual(2 * many.length);
     });
 
     it("decodes an event whole, so a multibyte character split across chunks after a line end is intact", () => {

@@ -114,9 +114,12 @@ export function registerCharxImportRoutes(
         diagnostics?: DiagnosticsRecorder;
         /** The import slot shared with the module import (`createServerContext`); a slot of its own without one. */
         slot?: ImportSlot;
+        /** Most decoded bytes of one entry, and the declared-size rules made from it (default `MAX_CHARX_ENTRY_BYTES`; tests lower it). */
+        maxEntryBytes?: number;
     },
 ) {
     const { savePath, snapshots, auth, limiter, maxImportBytes, diagnostics } = arg;
+    const maxEntryBytes = arg.maxEntryBytes ?? MAX_CHARX_ENTRY_BYTES;
     const deps = { savePath, snapshots, auth, maxImportBytes, slot: arg.slot ?? createImportSlot() };
 
     app.post(CHARX_IMPORT_PATH, limiter, (c) =>
@@ -124,9 +127,9 @@ export function registerCharxImportRoutes(
             stagingPrefix: "charx",
             fileName: "file.charx",
             missingBody: "CharX body required",
-            prepare: (handle) => planCharxFile(handle),
+            prepare: (handle) => planCharxFile(handle, maxEntryBytes),
             refusal,
-            lines: (plan, stream) => charxLines({ savePath, snapshots, diagnostics }, plan, stream),
+            lines: (plan, stream) => charxLines({ savePath, snapshots, diagnostics }, plan, stream, { maxEntryBytes }),
         }),
     );
 }
@@ -144,13 +147,13 @@ export type CharxLinesDeps = {
  * `charxImport`), skips the card and module entries (the Realm prepare read them with
  * `readCharxCardParts`), and makes the result line a `RealmCommittedCharx`. Never throws once the
  * stream has started (a failure is the last line), and sends its last line once `finalize` has run,
- * as the module import does.
+ * as the module import does. `maxEntryBytes` is the decoded cap (default `MAX_CHARX_ENTRY_BYTES`).
  */
 export async function* charxLines(
     { savePath, snapshots, diagnostics }: CharxLinesDeps,
     { entries, total }: CharxFilePlan,
     { handle, signal, finalize }: FileImportStream,
-    options: { realm?: boolean } = {},
+    options: { realm?: boolean; maxEntryBytes?: number } = {},
 ): AsyncGenerator<Uint8Array> {
     try {
         let card: string | null = null;
@@ -171,7 +174,7 @@ export async function* charxLines(
             if (entry.kind === "ignored" || (options.realm && entry.kind !== "asset")) {
                 continue;
             }
-            const bytes = await readEntry(handle, entry);
+            const bytes = await readEntry(handle, entry, options.maxEntryBytes);
             if (bytes === null) {
                 excluded.push(entry.name);
             } else if (entry.kind === "card") {
@@ -253,9 +256,10 @@ export async function readCharxCardParts(
 /**
  * Checks the zip's whole structure before anything is written (see the route comment), reading the
  * end records, the central directory, and each local header and data descriptor (never an entry's
- * bytes). Throws `CharxFileError` for a file the route refuses.
+ * bytes). Throws `CharxFileError` for a file the route refuses. `maxEntryBytes` is the entry cap of
+ * the declared-size rules (`excludedBeforeReading`; default `MAX_CHARX_ENTRY_BYTES`, tests lower it).
  */
-export async function planCharxFile(handle: FileHandle): Promise<CharxFilePlan> {
+export async function planCharxFile(handle: FileHandle, maxEntryBytes = MAX_CHARX_ENTRY_BYTES): Promise<CharxFilePlan> {
     const size = (await handle.stat()).size;
     const tailLength = Math.min(size, ZIP_END_SEARCH_BYTES);
     const end = findZipEnd(await readAt(handle, new Uint8Array(tailLength), size - tailLength), size - tailLength);
@@ -348,7 +352,7 @@ export async function planCharxFile(handle: FileHandle): Promise<CharxFilePlan> 
         }
         const name = decodeZipName(local.name, local.flags);
         const kind = charxEntryKind(name);
-        const excluded = excludedBeforeReading(local, record, compressedSize);
+        const excluded = excludedBeforeReading(local, record, compressedSize, maxEntryBytes);
         if (!excluded && local.method !== ZIP_METHOD_STORED && local.method !== ZIP_METHOD_DEFLATED) {
             throw new CharxFileError("A zip entry uses an unsupported compression method");
         }
@@ -364,19 +368,23 @@ export async function planCharxFile(handle: FileHandle): Promise<CharxFilePlan> 
 }
 
 /**
- * An entry's decoded bytes, or null when they are over `MAX_CHARX_ENTRY_BYTES` (excluded). A corrupt
- * deflate stream throws `CharxFileError`.
+ * An entry's decoded bytes, or null when they are over `maxEntryBytes` (excluded). A corrupt deflate
+ * stream throws `CharxFileError`.
  */
-async function readEntry(handle: FileHandle, entry: CharxPlanEntry): Promise<Uint8Array | null> {
+async function readEntry(
+    handle: FileHandle,
+    entry: CharxPlanEntry,
+    maxEntryBytes = MAX_CHARX_ENTRY_BYTES,
+): Promise<Uint8Array | null> {
     if (entry.compressedSize === 0) {
         return new Uint8Array(0);
     }
     const stored = await readAt(handle, new Uint8Array(entry.compressedSize), entry.dataStart);
     if (entry.method === ZIP_METHOD_STORED) {
-        return stored.length > MAX_CHARX_ENTRY_BYTES ? null : stored;
+        return stored.length > maxEntryBytes ? null : stored;
     }
     try {
-        return await inflateRaw(stored, { maxOutputLength: MAX_CHARX_ENTRY_BYTES });
+        return await inflateRaw(stored, { maxOutputLength: maxEntryBytes });
     } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ERR_BUFFER_TOO_LARGE") {

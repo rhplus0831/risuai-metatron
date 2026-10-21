@@ -65,9 +65,11 @@ export function registerBackupRoutes(
         diagnostics?: DiagnosticsRecorder;
         /** The backup import's slot, shared with the upstream import; a slot of its own without one. */
         slot?: ImportSlot;
+        /** Most records of an imported archive (default `MAX_ARCHIVE_RECORDS`; tests lower it). */
+        maxArchiveRecords?: number;
     },
 ) {
-    const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics } = arg;
+    const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics, maxArchiveRecords } = arg;
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
     const slot = arg.slot ?? createImportSlot();
@@ -343,7 +345,7 @@ export function registerBackupRoutes(
                 return c.json({ error: "Archive too large" }, 413);
             }
             handle = await fs.open(archiveFile, "r");
-            const plan = await planImport(handle, savePath);
+            const plan = await planImport(handle, savePath, maxArchiveRecords);
             const databaseFile = path.join(staging, "resources.sqlite");
             await copyRecordToFile(handle, plan.database, databaseFile);
             const validated = store.readSnapshot(databaseFile);
@@ -455,10 +457,10 @@ export async function listAssetKeys(assetsPath: string): Promise<string[]> {
  * RisuAI backup (`database.risudat`) are refused with their own message; cold-storage records of old
  * archives are ignored.
  */
-async function planImport(handle: FileHandle, savePath: string) {
+async function planImport(handle: FileHandle, savePath: string, maxRecords?: number) {
     let records;
     try {
-        records = await indexArchive(handle);
+        records = await indexArchive(handle, undefined, maxRecords);
     } catch (error) {
         if (error instanceof ArchiveFormatError) {
             throw new ArchiveRejectedError(error.message);

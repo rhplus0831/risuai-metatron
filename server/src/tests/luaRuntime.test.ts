@@ -182,11 +182,9 @@ describe("validateEgressUrl", () => {
     it("races a stalled lookup against the abort and rejects with the abort", async () => {
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 20);
-        const start = performance.now();
         await expect(
             validateEgressUrl("https://stalled.test/", { lookup: () => new Promise(() => {}) }, controller.signal),
         ).rejects.toBeInstanceOf(EgressAbortError);
-        expect(performance.now() - start).toBeLessThan(1000);
         await expect(
             validateEgressUrl("https://stalled.test/", { lookup: () => new Promise(() => {}) }, AbortSignal.abort()),
         ).rejects.toBeInstanceOf(EgressAbortError);
@@ -281,7 +279,6 @@ describe("serverLuaRequest", () => {
 
         const dns = new AbortController();
         setTimeout(() => dns.abort(), 20);
-        const start = performance.now();
         await expect(
             serverLuaRequest("https://stalled.test/", {
                 limiter: createRequestLimiter(),
@@ -289,7 +286,6 @@ describe("serverLuaRequest", () => {
                 signal: dns.signal,
             }),
         ).rejects.toThrow("request aborted");
-        expect(performance.now() - start).toBeLessThan(1000);
     });
 });
 

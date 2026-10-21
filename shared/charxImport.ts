@@ -455,17 +455,19 @@ export function entryCompressedSize(local: ZipLocalHeader, central: ZipCentralEn
 /**
  * Whether an entry is excluded before it is read: its local header declares, without a data
  * descriptor, an uncompressed size of at least `MAX_CHARX_ENTRY_BYTES` (the in-tab rule), the central
- * directory one over it, or `compressedSize` is over `MAX_CHARX_COMPRESSED_BYTES`.
+ * directory one over it, or `compressedSize` is over `MAX_CHARX_COMPRESSED_BYTES`. A lower
+ * `maxEntryBytes` (the server's test seam) moves all three, the compressed cap keeping its slack.
  */
 export function excludedBeforeReading(
     local: ZipLocalHeader,
     central: ZipCentralEntry,
     compressedSize: number,
+    maxEntryBytes = MAX_CHARX_ENTRY_BYTES,
 ): boolean {
     return (
-        (!hasDataDescriptor(local) && local.uncompressedSize >= MAX_CHARX_ENTRY_BYTES) ||
-        central.uncompressedSize > MAX_CHARX_ENTRY_BYTES ||
-        compressedSize > MAX_CHARX_COMPRESSED_BYTES
+        (!hasDataDescriptor(local) && local.uncompressedSize >= maxEntryBytes) ||
+        central.uncompressedSize > maxEntryBytes ||
+        compressedSize > maxEntryBytes + (MAX_CHARX_COMPRESSED_BYTES - MAX_CHARX_ENTRY_BYTES)
     );
 }
 

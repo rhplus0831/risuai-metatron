@@ -428,7 +428,8 @@ describe("an unavailable history", () => {
 
 describe("the admission middleware", () => {
     it("refuses the history routes with 503 during shutdown, and sets no-store on a 413 and on the limiter's 429", async () => {
-        const s = await server();
+        // A 20-request shared bucket (the production 2000/min is checked by the paging test's header).
+        const s = await server({ routeLimits: { requestsPerMinute: 20 } });
         // The body limit's 413 comes before the route (and before the JWT): no-store nevertheless.
         const tooLarge = await s.app.request(REQUEST_HISTORY_PATH, {
             method: "DELETE",
@@ -439,23 +440,20 @@ describe("the admission middleware", () => {
         expect(await tooLarge.json()).toEqual({ error: "Request body too large" });
         expect(tooLarge.headers.get("cache-control")).toBe("no-store");
 
-        // The limiter's 429 (2,000 per minute per client, the client's earlier requests counted;
-        // without a JWT each hit is a quick 400).
-        let hits = 0;
-        let limited: Response | undefined;
-        while (hits < 2001 && !limited) {
-            const res = await s.app.request(REQUEST_HISTORY_PATH);
-            hits++;
-            if (res.status === 429) {
-                limited = res;
-            } else {
-                expect(res.status).toBe(400);
-            }
+        // The limiter's 429: the shared authenticated bucket, spent first through another route, so
+        // the history answers exactly what that route left (without a JWT each hit is a quick 400).
+        const other = await s.request("/api/backups");
+        expect(other.status).toBe(200);
+        const remaining = Number(other.headers.get("ratelimit-remaining"));
+        expect(remaining).toBeGreaterThan(0);
+        for (let i = 0; i < remaining; i++) {
+            expect((await s.app.request(REQUEST_HISTORY_PATH)).status, `history request ${i + 1}`).toBe(400);
         }
-        expect(hits).toBeGreaterThan(1990);
-        expect(limited!.headers.get("retry-after")).toMatch(/^[0-9]+$/);
-        expect(limited!.headers.get("cache-control")).toBe("no-store");
-        expect(await limited!.json()).toEqual({ error: "Too many requests. Please retry shortly." });
+        const limited = await s.app.request(REQUEST_HISTORY_PATH);
+        expect(limited.status).toBe(429);
+        expect(limited.headers.get("retry-after")).toMatch(/^[0-9]+$/);
+        expect(limited.headers.get("cache-control")).toBe("no-store");
+        expect(await limited.json()).toEqual({ error: "Too many requests. Please retry shortly." });
         const stillLimited = await s.request(REQUEST_HISTORY_PATH);
         expect(stillLimited.status).toBe(429);
         expect(stillLimited.headers.get("cache-control")).toBe("no-store");

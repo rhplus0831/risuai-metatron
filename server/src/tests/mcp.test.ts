@@ -31,6 +31,7 @@ import {
 } from "../mcp/jobTools.ts";
 import { createMcpRegistry } from "../mcp/registry.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
+import { countByteWork } from "./byteWork.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
 // The MCP tools of a server job, against injected `fetch` implementations (no network, no public
@@ -390,28 +391,47 @@ describe("McpClient over streamable HTTP", () => {
     });
 
     it("ends a request at its deadline and rejects when the caller aborts, leaving no pending entry", async () => {
+        vi.useFakeTimers();
+        // Resolved once the handler holds a request (its abort listener installed).
+        let held: (() => void) | null = null;
         const server = recorder((call) => {
             if (call.rpc?.id === undefined) {
                 return accepted();
             }
-            return call.rpc.method === "initialize" ? rpcAnswer(call, { result: INFO }) : withheld(call);
+            if (call.rpc.method === "initialize") {
+                return rpcAnswer(call, { result: INFO });
+            }
+            const response = withheld(call);
+            held?.();
+            return response;
         });
         const mcp = client(server.fetchImpl, { timeoutMs: 40 });
-        await mcp.checkHandshake(ioOf());
-        const started = Date.now();
-        const late = (await mcp.callTool("echo", {}, ioOf()))[0] as { text: string };
-        expect(late.text).toMatch(/timed out|Internal Error/);
-        expect(Date.now() - started).toBeLessThan(2000);
-        expect(server.calls[2].signal.aborted).toBe(true);
+        try {
+            await mcp.checkHandshake(ioOf());
+            let settled = false;
+            const late = mcp.callTool("echo", {}, ioOf()).finally(() => {
+                settled = true;
+            });
+            await vi.advanceTimersByTimeAsync(39);
+            expect(settled).toBe(false);
+            expect(server.calls[2].signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(((await late)[0] as { text: string }).text).toMatch(/timed out|Internal Error/);
+            expect(server.calls[2].signal.aborted).toBe(true);
 
-        const controller = new AbortController();
-        const pending = mcp.callTool("echo", {}, ioOf({}, controller.signal));
-        await waitFor(() => server.calls.length === 4);
-        controller.abort(new Error("caller gone"));
-        await expect(pending).rejects.toThrow("caller gone");
-        expect(server.calls[3].signal.aborted).toBe(true);
-        expect(priv(mcp).pending.size).toBe(0);
-        mcp.destroy();
+            const controller = new AbortController();
+            const holding = new Promise<void>((resolve) => {
+                held = resolve;
+            });
+            const pending = mcp.callTool("echo", {}, ioOf({}, controller.signal));
+            await holding;
+            controller.abort(new Error("caller gone"));
+            await expect(pending).rejects.toThrow("caller gone");
+            expect(server.calls[3].signal.aborted).toBe(true);
+            expect(priv(mcp).pending.size).toBe(0);
+        } finally {
+            mcp.destroy();
+        }
     });
 
     it("resets the session on a 404 with a session id or a 401 with a token and repeats the request once without them", async () => {
@@ -577,24 +597,36 @@ describe("McpClient over the legacy SSE transport", () => {
     });
 
     it("gives the session stream one deadline to connect and name its endpoint, and none once connected", async () => {
+        vi.useFakeTimers();
         const remote = legacy();
         const server = recorder((call, index) =>
             call.method === "GET" && index === 1 ? withheld(call) : remote.handler(call, index),
         );
         const mcp = client(server.fetchImpl, { url: "http://mcp.test/sse", timeoutMs: 40 });
-        const started = Date.now();
-        await expect(mcp.checkHandshake(ioOf())).rejects.toThrow("did not connect in time");
-        expect(Date.now() - started).toBeLessThan(2000);
-        expect(server.calls[1].signal.aborted).toBe(true);
-        expect(priv(mcp).legacy).toBeNull();
-        expect(priv(mcp).pending.size).toBe(0);
+        try {
+            let settled = false;
+            const first = mcp.checkHandshake(ioOf()).finally(() => {
+                settled = true;
+            });
+            const refused = expect(first).rejects.toThrow("did not connect in time");
+            await vi.advanceTimersByTimeAsync(39);
+            expect(settled).toBe(false);
+            expect(server.calls[1].signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            await refused;
+            expect(server.calls[1].signal.aborted).toBe(true);
+            expect(priv(mcp).legacy).toBeNull();
+            expect(priv(mcp).pending.size).toBe(0);
 
-        expect((await mcp.checkHandshake(ioOf())).serverInfo.name).toBe("mock");
-        await sleep(100);
-        expect(remote.session.open).toBe(true);
-        expect(priv(mcp).serverInfo).not.toBeNull();
-        expect(await mcp.callTool("legacy_tool", {}, ioOf())).toEqual([{ type: "text", text: "legacy" }]);
-        mcp.destroy();
+            expect((await mcp.checkHandshake(ioOf())).serverInfo.name).toBe("mock");
+            // Connected: no deadline is left armed on the session stream.
+            await vi.advanceTimersByTimeAsync(100);
+            expect(remote.session.open).toBe(true);
+            expect(priv(mcp).serverInfo).not.toBeNull();
+            expect(await mcp.callTool("legacy_tool", {}, ioOf())).toEqual([{ type: "text", text: "legacy" }]);
+        } finally {
+            mcp.destroy();
+        }
     });
 
     it("publishes nothing from a handshake whose session ended right after the initialize answer or during the initialized notification, and handshakes afresh next", async () => {
@@ -1009,21 +1041,34 @@ describe("the SSE reader (readSse)", () => {
         await expect(unfinished.run).rejects.toThrow("too large");
     });
 
-    it("reads a limit-sized event delivered in small chunks without rescanning it (bounded time)", async () => {
+    it("reads a limit-sized event delivered in small chunks without rescanning or recopying it", async () => {
+        // Plain `Uint8Array` chunks, as a fetch body yields them (`countByteWork` sees their searches and copies).
         const chunk = 64 * 1024;
-        const chunks: Uint8Array[] = [];
-        const payload = Buffer.alloc(MAX_MCP_MESSAGE_BYTES - 6, 0x78);
-        chunks.push(bytes("data: "));
+        const chunks: Uint8Array[] = [bytes("data: ")];
+        const payload = new Uint8Array(MAX_MCP_MESSAGE_BYTES - 6).fill(0x78);
         for (let offset = 0; offset < payload.length; offset += chunk) {
             chunks.push(payload.subarray(offset, Math.min(offset + chunk, payload.length)));
         }
         chunks.push(bytes("\n\n"));
-        const started = Date.now();
-        const { run, events } = reading(chunks);
-        await run;
+        const input = chunks.reduce((total, part) => total + part.length, 0);
+        const {
+            result: events,
+            scanned,
+            copied,
+        } = await countByteWork(async () => {
+            const read = reading(chunks);
+            await read.run;
+            return read.events;
+        });
         expect(events).toHaveLength(1);
         expect(Buffer.byteLength(events[0])).toBe(MAX_MCP_MESSAGE_BYTES);
-        expect(Date.now() - started).toBeLessThan(5000);
+        // Linear: each chunk is searched for both line ends once, kept once, and joined once. Searching
+        // or joining what the event already holds on every chunk is about 64 times the input here.
+        // The lower bounds only prove the counters were active.
+        expect(scanned).toBeGreaterThanOrEqual(input);
+        expect(scanned).toBeLessThanOrEqual(2 * input + 64);
+        expect(copied).toBeGreaterThan(0);
+        expect(copied).toBeLessThanOrEqual(2 * input + 64);
     });
 
     it("dispatches an endpoint event, a ping, and a message by id, and ignores events it cannot parse", async () => {

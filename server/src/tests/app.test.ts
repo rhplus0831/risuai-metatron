@@ -283,31 +283,39 @@ describe("storage rate limiter", () => {
         }
     });
 
-    it("allows 2000 storage requests then returns draft-6 headers and Retry-After without blocking resource sync", async () => {
-        const s = await authedServer();
+    it("allows the storage bucket's requests then returns draft-6 headers and Retry-After without blocking resource sync", async () => {
+        // A five-request bucket; the production 2000;w=60 policy is checked by the test above.
+        const limit = 5;
+        const s = await createResourceTestClient({ routeLimits: { requestsPerMinute: limit } });
+        servers.push(s);
+        const quota = (res: Response, remaining: number, label?: string) => {
+            expect(res.headers.get("RateLimit-Limit"), label).toBe(String(limit));
+            expect(res.headers.get("RateLimit-Policy"), label).toBe(`${limit};w=60`);
+            expect(res.headers.get("RateLimit-Remaining"), label).toBe(String(remaining));
+        };
         const headers = await s.headers({ "file-path": hex("assets/missing.bin") });
         // Freeze only the clock, so the 60-second header assertions do not depend on runner speed.
         const now = vi.spyOn(Date, "now").mockReturnValue(Date.now());
         try {
-            let last!: Response;
-            for (let i = 0; i < 2000; i++) {
-                last = await s.app.request("/api/read", { headers });
-                expect(last.status, `storage request ${i + 1}`).toBe(200);
-                await last.arrayBuffer();
+            for (let i = 0; i < limit; i++) {
+                const read = await s.app.request("/api/read", { headers });
+                expect(read.status, `storage request ${i + 1}`).toBe(200);
+                quota(read, limit - 1 - i, `storage request ${i + 1}`);
+                expect(read.headers.get("RateLimit-Reset")).toBe("60");
+                await read.arrayBuffer();
             }
-            expectQuota(last, 0);
-            expect(last.headers.get("RateLimit-Reset")).toBe("60");
 
             const blocked = await s.request("/api/list");
             expect(blocked.status).toBe(429);
-            expectQuota(blocked, 0);
+            quota(blocked, 0);
             expect(blocked.headers.get("RateLimit-Reset")).toBe("60");
             expect(blocked.headers.get("Retry-After")).toBe("60");
             expect(await blocked.json()).toEqual({ error: "Too many requests. Please retry shortly." });
 
+            // The authenticated bucket is separate: one request read the epoch, this is the second.
             const resources = await s.request("/api/resources?kinds=ui");
             expect(resources.status).toBe(200);
-            expectQuota(resources, 1998);
+            quota(resources, limit - 2);
         } finally {
             now.mockRestore();
         }
