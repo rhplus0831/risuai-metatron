@@ -72,11 +72,13 @@ describe("the client CBS budget", () => {
     });
 
     test("the budget starts over for the next top-level parse", () => {
+        stopClock();
         expect(() => risuChatParser(HUGE)).toThrow(CbsLimitError);
         expect(risuChatParser("a".repeat(1000) + "{{range::[3]}}")).toBe("a".repeat(1000) + '["0","1","2"]');
     });
 
     test("a non-advancing range answers [] without reaching the limit", () => {
+        stopClock();
         expect(risuChatParser("{{range::[0,1,0]}}")).toBe("[]");
         expect(risuChatParser("{{range::[0,1,-1]}}")).toBe("[]");
         expect(risuChatParser("{{range::[0,1e400]}}")).toBe("[]");
@@ -101,6 +103,7 @@ describe("the client CBS budget", () => {
 
 describe("the call depth on the client host", () => {
     test("twenty-five sibling calls answer, genuine recursion stops with the error text", () => {
+        stopClock();
         expect(risuChatParser("{{#func f}}hello|{{/func}}" + "{{call::f}}".repeat(25))).toBe("hello|".repeat(25));
         expect(risuChatParser("{{#func loop}}{{call::loop}}{{/func}}{{call::loop}}")).toBe(
             "ERROR: Call stack limit reached",

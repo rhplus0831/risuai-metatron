@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `ChatBody` under a chat screen's `ChatStyleRegistry`: the rows' `<style>`s are placeholders, one
 // shared sheet per distinct CSS sits in the provider's container, ordered as the rows' copies were,
@@ -41,10 +41,17 @@ const styled = (css: string, text: string) => `<style>${css}</style>\n\n<p class
 const mounted: ReturnType<typeof mount>[] = [];
 let registry: ChatStyleRegistry;
 
+// The decode's CBS budget (`CLIENT_CBS_LIMITS`) allows 2 s of `performance.now()` per parse; a
+// starved test worker could reach it and get the decoder's fallback instead of the sheet. A stopped
+// clock leaves only the work limit, which these small sheets never reach.
+beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+});
 afterEach(async () => {
     for (const instance of mounted.splice(0)) await unmount(instance);
     registry?.destroy();
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
 });
 
 /** Waits (timer by timer, so the parser's awaits settle) until `ready` holds. */
