@@ -2,6 +2,7 @@
 import type http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
@@ -167,42 +168,51 @@ describe("generation delta chunks on the owner socket", () => {
         return res.body.jobId as string;
     };
 
-    type Followed = { events: GenerationEvent[]; closed: Promise<number>; ws: WebSocket };
-    /** Opens the owner socket; `until` resolves `closed` early with the events so far. */
+    type Followed = { events: GenerationEvent[]; closed: Promise<number>; ws: WsClient; fence(): Promise<void> };
+    /**
+     * Opens the owner socket. It closes itself at the terminal (`done` or `error`) unless `keepOpen`;
+     * `fence` resolves once every frame the server sent before it is in `events`.
+     */
     async function follow(
         jobId: string,
-        options: { clientId?: string; token?: string; attach?: number; maxMs?: number } = {},
+        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean } = {},
     ): Promise<Followed> {
         const token = options.token ?? (await signer.jwt());
         const query =
             `?risu-auth=${encodeURIComponent(token)}&clientId=${encodeURIComponent(options.clientId ?? "tab")}` +
             (options.attach === undefined ? "" : `&attach=${options.attach}`);
-        const ws = new WebSocket(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
+        const ws = new WsClient(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
         const events: GenerationEvent[] = [];
-        const opened = new Promise<void>((resolve) => {
-            ws.onopen = () => resolve();
+        const opened = new Promise<void>((resolve) => ws.once("open", () => resolve()));
+        const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
+        ws.on("message", (data) => {
+            const event = JSON.parse(String(data)) as GenerationEvent;
+            if (event.type !== "ping") {
+                events.push(event);
+            }
+            if (!options.keepOpen && (event.type === "done" || event.type === "error")) {
+                ws.close();
+            }
         });
-        const closed = new Promise<number>((resolve) => {
-            const timer = setTimeout(() => ws.close(), options.maxMs ?? 4000);
-            ws.onmessage = (message) => {
-                const event = JSON.parse(String(message.data)) as GenerationEvent;
-                if (event.type !== "ping") {
-                    events.push(event);
-                }
-                if (event.type === "done" || event.type === "error") {
-                    clearTimeout(timer);
-                    setTimeout(() => ws.close(), 20);
-                }
-            };
-            ws.onerror = () => {};
-            ws.onclose = (event) => {
-                clearTimeout(timer);
-                resolve(event.code);
-            };
-        });
+        ws.on("error", () => {});
         // Attached (the snapshot is on its way) or refused: emits after this cannot race the handshake.
         await Promise.race([opened, closed]);
-        return { events, closed, ws };
+        // The server answers a ping after the frames it sent before reading it, the attach batch included.
+        const fence = () =>
+            new Promise<void>((resolve, reject) => {
+                if (ws.readyState !== WsClient.OPEN) {
+                    reject(new Error("fence: the socket is not open"));
+                    return;
+                }
+                const closed = () => reject(new Error("fence: the socket closed before the pong"));
+                ws.once("close", closed);
+                ws.once("pong", () => {
+                    ws.off("close", closed);
+                    resolve();
+                });
+                ws.ping();
+            });
+        return { events, closed, ws, fence };
     }
     const until = (owner: Followed, type: GenerationEvent["type"], count = 1) =>
         waitFor(() => owner.events.filter((e) => e.type === type).length >= count);
@@ -321,7 +331,7 @@ describe("generation delta chunks on the owner socket", () => {
     it("sends no reply resync answer before a message exists or after the job ends", async () => {
         await listen();
         const jobId = await createOk();
-        const owner = await follow(jobId);
+        const owner = await follow(jobId, { keepOpen: true });
         step((job) => job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" }));
         await until(owner, "accepted");
         const start = owner.events.length;
@@ -338,8 +348,10 @@ describe("generation delta chunks on the owner socket", () => {
         });
         await until(owner, "done");
         owner.ws.send(JSON.stringify({ type: "resyncReply" }));
-        await owner.closed;
+        await owner.fence();
         expect(owner.events.filter((e) => e.type === "accepted")).toHaveLength(3);
+        owner.ws.close();
+        await owner.closed;
     });
 
     it("puts committed patches on both live sockets and omits patches from HTTP batches", async () => {

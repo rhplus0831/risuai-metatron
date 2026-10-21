@@ -794,14 +794,10 @@ describe("the registry over a real socket", () => {
             close: () => ws.close(),
             async next(type) {
                 let found: GenerationEvent | undefined;
-                try {
-                    await waitFor(() => {
-                        found = events.find((event) => event.type === type && !taken.has(event));
-                        return found !== undefined;
-                    });
-                } catch {
-                    throw new Error(`no ${type} event; seen: ${JSON.stringify(events)}`);
-                }
+                await waitFor(() => {
+                    found = events.find((event) => event.type === type && !taken.has(event));
+                    return found !== undefined;
+                });
                 taken.add(found!);
                 return found as never;
             },
@@ -932,7 +928,7 @@ describe("the registry over a real socket", () => {
             return "end" as never;
         });
         await create();
-        await waitFor(() => outcome.result !== undefined, 2_000);
+        await waitFor(() => outcome.result !== undefined);
         expect(outcome.result).toMatchObject({ outcome: "disconnected" });
     });
 

@@ -357,7 +357,7 @@ describe("maintenance", () => {
         });
     });
 
-    it("lets an asset removal admitted before a restore finish before the restore runs", async () => {
+    it("lets an asset removal admitted before a restore finish before the restore runs", async ({ signal }) => {
         const s = await defaultServer();
         await writeAsset(s, "assets/keep", "blob");
         await s.create("inlays", "keep", { name: "keep", ext: "png", type: "image", asset: "assets/keep" });
@@ -366,31 +366,49 @@ describe("maintenance", () => {
         const original = fs.rm;
         const entered = defer();
         const release = defer();
+        // A timed-out run lets the held removal go, so teardown does not wait behind it.
+        signal.addEventListener("abort", () => release.resolve());
+        // The order the removal's file deletion and the restore's maintenance body really ran in.
+        const order: string[] = [];
         vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
-            if (String(target).endsWith(`${path.sep}assets${path.sep}keep`)) {
+            const held = String(target).endsWith(`${path.sep}assets${path.sep}keep`);
+            if (held) {
                 entered.resolve();
                 await release.promise;
             }
-            return original.call(fs, target, options);
+            await original.call(fs, target, options);
+            if (held) {
+                order.push("removed");
+            }
         });
+        const withMaintenance = s.context.snapshots.withMaintenance;
+        vi.spyOn(s.context.snapshots, "withMaintenance").mockImplementation((fn) =>
+            withMaintenance((tools) => {
+                order.push("restore");
+                return fn(tools);
+            }),
+        );
         const removing = removeAsset(s, "assets/keep");
         await entered.promise;
 
         let restored: Response | null = null;
         const restoring = restore(s, snapshot.id).then((res) => (restored = res));
-        await sleep(30);
-        // Maintenance is closed to new mutations, but the restore waits for the removal in flight.
-        expect(restored).toBeNull();
-        expect(s.context.snapshots.gate.active).toBe(true);
-        expect((await writeAsset(s, "assets/other", "x")).status).toBe(503);
-        expect((await s.put("characters", "c", { baseRevision: null, data: character("c") })).status).toBe(503);
-
-        release.resolve();
+        try {
+            await waitFor(() => s.context.snapshots.gate.active);
+            // Maintenance is closed to new mutations, but the restore waits for the removal in flight.
+            expect(restored).toBeNull();
+            expect(order).toEqual([]);
+            expect((await writeAsset(s, "assets/other", "x")).status).toBe(503);
+            expect((await s.put("characters", "c", { baseRevision: null, data: character("c") })).status).toBe(503);
+        } finally {
+            release.resolve();
+        }
         expect((await removing).status).toBe(200);
         await restoring;
         expect(restored!.status).toBe(200);
         expect(s.context.snapshots.gate.active).toBe(false);
         // The removal completed before the restore, not across it.
+        expect(order).toEqual(["removed", "restore"]);
         expect(await readAsset(s, "assets/keep")).toBe("");
         expect((await writeAsset(s, "assets/other", "x")).status).toBe(200);
     });

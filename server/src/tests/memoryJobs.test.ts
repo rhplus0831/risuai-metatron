@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
 // server with the default runner, the production memory services, the vector cache file, a mock chat
@@ -1032,7 +1032,7 @@ describe("the no-memory trim question", () => {
                     ws.onopen = () => resolve();
                     ws.onerror = () => reject(new Error("feed socket failed"));
                 });
-                await expect.poll(() => frames.some((frame) => frame.type === "hello")).toBe(true);
+                await waitFor(() => frames.some((frame) => frame.type === "hello"));
                 await patchSettings({ hypaV3: true });
                 const chaId = await seedCharacter({ extra: { supaMemory: false } });
                 let patchBase = "";
@@ -1061,7 +1061,8 @@ describe("the no-memory trim question", () => {
                             (ref) =>
                                 ref.kind === "characters" && ref.id === chaId && ref.patch?.set?.supaMemory === true,
                         );
-                await expect.poll(memoryPatches).toHaveLength(1);
+                await waitFor(() => memoryPatches().length > 0);
+                expect(memoryPatches()).toHaveLength(1);
                 expect(memoryPatches()[0].patch).toEqual({
                     baseRevision: patchBase,
                     set: { supaMemory: true, supaMemoryOnCount: 1 },
