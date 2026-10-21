@@ -10,6 +10,7 @@ import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
+import type { RealmStagingTimer } from "../routes/importRealm.ts";
 import { allowTestLoopbackOrigin } from "../../../vitest.testNetwork.ts";
 
 export { allowTestLoopbackOrigin };
@@ -39,6 +40,12 @@ export type TestServerOptions = {
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
     /** The upstream RisuAI-compatible export's staged expiry. */
     upstreamExport?: { stagedTtlMs?: number };
+    /** What schedules a staged Realm import's expiry (a test holds the callback and fires it). */
+    realmStagingTimer?: RealmStagingTimer;
+    /** The default runner's trigger effect-loop clock (a test freezes or steps the 50 ms yield window). */
+    generationEffectClock?: () => number;
+    /** An aborted generation job's grace before it is ended for it (default 5 s). */
+    generationAbortGraceMs?: number;
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -65,6 +72,9 @@ export function createTestServer(options: TestServerOptions = {}) {
         realm: options.realm,
         upstreamImport: options.upstreamImport,
         upstreamExport: options.upstreamExport,
+        realmStagingTimer: options.realmStagingTimer,
+        generationEffectClock: options.generationEffectClock,
+        generationAbortGraceMs: options.generationAbortGraceMs,
     });
     return {
         rootDir,

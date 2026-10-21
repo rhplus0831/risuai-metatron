@@ -182,25 +182,43 @@ describe("auth routes", () => {
 
     it("limits /api/login to 10 attempts per window with draft-6 RateLimit headers", async () => {
         const { app } = freshServer({ password: "pw" });
-        let last: Response | undefined;
-        for (let i = 0; i < 10; i++) {
-            last = await app.request("/api/login", json({ password: "bad" }));
-            expect(last.status).toBe(400);
+        // The limiter's clock is `Date.now`: held still, then moved to the window's edges.
+        let now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        try {
+            let last: Response | undefined;
+            for (let i = 0; i < 10; i++) {
+                last = await app.request("/api/login", json({ password: "bad" }));
+                expect(last.status).toBe(400);
+            }
+            expect(last?.headers.get("RateLimit-Limit")).toBe("10");
+            expect(last?.headers.get("RateLimit-Remaining")).toBe("0");
+            expect(last?.headers.get("RateLimit-Policy")).toBe("10;w=30");
+
+            const blocked = await app.request("/api/login", json({ password: "pw", publicKey: {} }));
+            expect(blocked.status).toBe(429);
+            expect(await blocked.json()).toEqual({ error: "Too many attempts. Please wait and try again later." });
+            expect(blocked.headers.get("Retry-After")).toBe("30");
+            expect(blocked.headers.get("RateLimit-Reset")).toBe("30");
+
+            // The window started at the first attempt: blocked until its last millisecond, open after it.
+            now += 29_999;
+            const late = await app.request("/api/login", json({ password: "bad" }));
+            expect(late.status).toBe(429);
+            expect(late.headers.get("Retry-After")).toBe("1");
+            now += 1;
+            const reopened = await app.request("/api/login", json({ password: "bad" }));
+            expect(reopened.status).toBe(400);
+            expect(reopened.headers.get("RateLimit-Remaining")).toBe("9");
+            expect(reopened.headers.get("RateLimit-Reset")).toBe("30");
+
+            // Separate limiter instance for test_auth.
+            const auth = await app.request("/api/test_auth");
+            expect(auth.headers.get("RateLimit-Policy")).toBe("2000;w=60");
+            expect(auth.headers.get("RateLimit-Remaining")).toBe("1999");
+        } finally {
+            clock.mockRestore();
         }
-        expect(last?.headers.get("RateLimit-Limit")).toBe("10");
-        expect(last?.headers.get("RateLimit-Remaining")).toBe("0");
-        expect(last?.headers.get("RateLimit-Policy")).toBe("10;w=30");
-
-        const blocked = await app.request("/api/login", json({ password: "pw", publicKey: {} }));
-        expect(blocked.status).toBe(429);
-        expect(await blocked.json()).toEqual({ error: "Too many attempts. Please wait and try again later." });
-        expect(blocked.headers.get("Retry-After")).toMatch(/^(29|30)$/);
-        expect(blocked.headers.get("RateLimit-Reset")).toBe(blocked.headers.get("Retry-After"));
-
-        // Separate limiter instance for test_auth.
-        const auth = await app.request("/api/test_auth");
-        expect(auth.headers.get("RateLimit-Policy")).toBe("2000;w=60");
-        expect(auth.headers.get("RateLimit-Remaining")).toBe("1999");
     });
 });
 

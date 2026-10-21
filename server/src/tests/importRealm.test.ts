@@ -15,8 +15,10 @@ import {
     REALM_CANCEL_PATH,
     REALM_COMMIT_PATH,
     REALM_IMPORT_PATH,
+    REALM_STAGED_TTL_MS,
 } from "../../../shared/realmImport.ts";
 import { MAX_PNG_CHUNKS, MAX_PNG_TEXT_CHUNK_BYTES, PngFileError, planPngFile } from "../routes/importPng.ts";
+import type { RealmStagingTimer } from "../routes/importRealm.ts";
 import {
     allowListenerOrigin,
     allowTestLoopbackOrigin,
@@ -228,6 +230,36 @@ async function recovered(s: ResourceTestClient) {
     expect(prepared).toEqual({ kind: "charx", token: prepared.token, card, moduleData: null });
     expect(committed).toEqual([{ kind: "charx", assets: {}, excluded: [] }]);
     expect(staged(s)).toEqual([]);
+}
+/**
+ * The staged imports' expiry timer, held: `pending` lists the expiries still scheduled (a commit or
+ * cancel clears its own), `fire` runs them now, and `fireAll` also runs the cleared ones, as a timer
+ * that fired late would.
+ */
+function heldExpiry() {
+    const scheduled: { expire: () => void; ms: number; cleared: boolean }[] = [];
+    const timer: RealmStagingTimer = {
+        set(expire, ms) {
+            const entry = { expire, ms, cleared: false };
+            scheduled.push(entry);
+            return entry;
+        },
+        clear(handle) {
+            (handle as (typeof scheduled)[number]).cleared = true;
+        },
+    };
+    const run = (entries: typeof scheduled) => {
+        for (const entry of entries) {
+            entry.cleared = true;
+            entry.expire();
+        }
+    };
+    return {
+        timer,
+        pending: () => scheduled.filter((entry) => !entry.cleared).map((entry) => entry.ms),
+        fire: () => run(scheduled.filter((entry) => !entry.cleared)),
+        fireAll: () => run([...scheduled]),
+    };
 }
 function deferred() {
     let resolve!: () => void;
@@ -844,21 +876,35 @@ describe("the staged Realm import (commit and cancel)", () => {
 
     it("removes a staged import that waits past its expiry; its commit answers 404 and writes nothing", async () => {
         const realm = await startRealm();
-        const s = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 50 } });
+        const expiry = heldExpiry();
+        const s = await server(realm, {
+            realm: { downloadOrigin: realm.url, stagedTtlMs: 50 },
+            realmStagingTimer: expiry.timer,
+        });
         realm.answer("slow-user", file("application/charx", withAsset("slow-user")));
         const prepared = await prepare(s, "slow-user");
-        await waitFor(() => staged(s).length === 0);
+        // The expiry is scheduled for the configured TTL and nothing is removed before it fires.
+        expect(expiry.pending()).toEqual([50]);
+        expect(staged(s)).toHaveLength(1);
+        expect(s.context.realmStaging.size).toBe(1);
+        expiry.fire();
         expect(s.context.realmStaging.size).toBe(0);
+        await waitFor(() => staged(s).length === 0);
         await refused(await commitRequest(s, prepared.token), 404, "Import expired");
         expect(assetFiles(s)).toEqual([]);
-        // A commit takes its import out of the store before the expiry can remove it.
-        const s2 = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 200 } });
+        // A commit takes its import out of the store: its expiry is cleared, and one that fires
+        // anyway after the take (while the commit's answer is unread) removes nothing.
+        const expiry2 = heldExpiry();
+        const s2 = await server(realm, { realmStagingTimer: expiry2.timer });
         const quick = await prepare(s2, "slow-user");
-        const answer = await lines(await commitRequest(s2, quick.token));
+        expect(expiry2.pending()).toEqual([REALM_STAGED_TTL_MS]);
+        const commit = await commitRequest(s2, quick.token);
+        expect(expiry2.pending()).toEqual([]);
+        expiry2.fireAll();
+        const answer = await lines(commit);
         expect(answer.at(-1)).toMatchObject({ kind: "charx" });
-        await new Promise((resolve) => setTimeout(resolve, 250));
         expect(assetFiles(s2)).toHaveLength(1);
-        expect(staged(s2)).toEqual([]);
+        await waitFor(() => staged(s2).length === 0);
     });
 
     it("frees the shared slot while an import waits: other imports run, and its commit takes the slot like any import", async () => {
@@ -1020,11 +1066,20 @@ describe("the staged Realm import (commit and cancel)", () => {
 
     it("a client that leaves before reading the prepare's line leaves nothing staged past the expiry, the slot free", async () => {
         const realm = await startRealm();
-        const s = await server(realm, { realm: { downloadOrigin: realm.url, stagedTtlMs: 100 } });
+        const expiry = heldExpiry();
+        const s = await server(realm, {
+            realm: { downloadOrigin: realm.url, stagedTtlMs: 100 },
+            realmStagingTimer: expiry.timer,
+        });
         const res = await download(s, "ok");
         expect(res.status).toBe(200);
+        // The file is staged with its expiry before the line is read; the client then leaves.
+        await waitFor(() => expiry.pending().length === 1);
+        expect(expiry.pending()).toEqual([100]);
         await res.body!.cancel();
         expect((await lines(await charxUpload(s, archive()))).at(-1)).toMatchObject({ card });
+        expect(staged(s)).toHaveLength(1);
+        expiry.fire();
         await waitFor(() => staged(s).length === 0);
         await recovered(s);
     });

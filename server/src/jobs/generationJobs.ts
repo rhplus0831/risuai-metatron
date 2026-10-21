@@ -160,9 +160,9 @@ export type RunningJob = {
     ownerAttached(): boolean;
     /** The database epoch the job was admitted under; every write and event names it. */
     readonly epoch: string;
-    /** Aborted by DELETE, the time limit, shutdown, or maintenance; the job then has
-     * `JOB_ABORT_GRACE_MS` to persist its text and return. It may already be aborted when the
-     * runner starts (check `aborted` before adding a listener). */
+    /** Aborted by DELETE, the time limit, shutdown, or maintenance; the job then has its abort grace
+     * (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default) to persist its text and return. It may already
+     * be aborted when the runner starts (check `aborted` before adding a listener). */
     readonly signal: AbortSignal;
     /**
      * Sends an event to the owner. `accepted` is preceded by the job chat's hydration; `done` and
@@ -355,7 +355,7 @@ const abortMessages: Record<GenerationErrorReason, { status: number; message: st
 /**
  * The generation job registry: admission (one running job per chat), the owner socket, the job's
  * writes (`writeAsJob` with the generation lock), and the lifecycle. Every abort fixes one
- * deadline (`JOB_ABORT_GRACE_MS`); a job is finalized once: its token dies, its locks and chat
+ * deadline (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default); a job is finalized once: its token dies, its locks and chat
  * slot are released, its chat's hydration and one terminal event are sent, and `finished`
  * resolves. Shutdown aborts every job at `beginShutdown`; a restore or import aborts them from
  * `withMaintenance` and waits for their end while writes are still open, so an abort checkpoint
@@ -374,8 +374,11 @@ export function createGenerationJobs(options: {
     hub?: ChannelHub;
     /** The diagnostics journal: a `job` event at admission and at the end, and the caught faults. */
     diagnostics?: DiagnosticsRecorder;
+    /** How long an aborted job's runner may take before the job is ended for it (default `JOB_ABORT_GRACE_MS`; tests raise it). */
+    abortGraceMs?: number;
 }) {
     const { store, kinds, gate, snapshots, lock, authorize, diagnostics } = options;
+    const abortGraceMs = options.abortGraceMs ?? JOB_ABORT_GRACE_MS;
     const runner = options.runner ?? unavailableRunner;
     const hub = options.hub ?? createChannelHub();
     const jobs = new Map<string, Job>();
@@ -797,7 +800,7 @@ export function createGenerationJobs(options: {
         job.abortReason = reason;
         // One deadline per job, set before the signal's listeners run (one may end the job at once);
         // later aborts do not extend it.
-        job.abortTimer = setTimeout(() => finalize(job, abortTerminal(reason)), JOB_ABORT_GRACE_MS);
+        job.abortTimer = setTimeout(() => finalize(job, abortTerminal(reason)), abortGraceMs);
         try {
             // A runner waiting on a question or callback gets `aborted` now, not at the deadline.
             job.channelLink.close(abortMessages[reason].message);

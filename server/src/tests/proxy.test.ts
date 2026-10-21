@@ -125,19 +125,54 @@ describe("/proxy2", () => {
         expect(sse.headers.get("content-security-policy")).toBeNull();
         expect(await sse.text()).toBe("data: 0\n\ndata: 1\n\ndata: 2\n\n");
 
-        const timeout = await server.app.request("/proxy2", {
-            method: "POST",
-            headers: {
-                "risu-auth": "pw",
-                "risu-url": target("/hang"),
-                "risu-header": rh({}),
-                "risu-timeout-ms": "100",
-            },
-            body: "{}",
-        });
-        expect(timeout.status).toBe(504);
-        expect(await timeout.json()).toEqual({ error: "Proxy request timed out after 100ms" });
-        await waitFor(() => upstream.requests[1]?.closed === true);
+        // The proxy's timeout timer is held: it fires only once the upstream has the request. Every
+        // other timer passes through.
+        const timeoutMs = 999_999;
+        const realSetTimeout = globalThis.setTimeout;
+        let fireTimeout: (() => void) | undefined;
+        const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            callback: (...args: unknown[]) => void,
+            ms?: number,
+            ...args: unknown[]
+        ) => {
+            if (ms !== timeoutMs) {
+                return realSetTimeout(callback, ms, ...args);
+            }
+            fireTimeout = () => callback(...args);
+            return realSetTimeout(() => {}, 0);
+        }) as typeof setTimeout);
+        const controller = new AbortController();
+        // Also when the test times out with the request still pending (its `finally` then never runs).
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            timers.mockRestore();
+            controller.abort();
+        };
+        onTestFinished(cleanup);
+        try {
+            const pending = server.app.request("/proxy2", {
+                method: "POST",
+                headers: {
+                    "risu-auth": "pw",
+                    "risu-url": target("/hang"),
+                    "risu-header": rh({}),
+                    "risu-timeout-ms": String(timeoutMs),
+                },
+                body: "{}",
+                signal: controller.signal,
+            });
+            expect((await upstream.received(2)).url).toBe("/hang");
+            expect(fireTimeout).toBeDefined();
+            fireTimeout!();
+            const timeout = await pending;
+            expect(timeout.status).toBe(504);
+            expect(await timeout.json()).toEqual({ error: `Proxy request timed out after ${timeoutMs}ms` });
+            await waitFor(() => upstream.requests[1].closed);
+        } finally {
+            cleanup();
+        }
     });
 
     it("answers HEAD with headers only and closes the upstream body", async () => {

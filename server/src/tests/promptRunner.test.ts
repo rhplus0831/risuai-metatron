@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
@@ -38,6 +38,21 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+/**
+ * Runs `cleanup` once: at the test's end even when it times out (its `finally` then never runs), or
+ * earlier from that `finally`.
+ */
+function cleanupOnce(cleanup: () => void): () => void {
+    let done = false;
+    const run = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+    };
+    onTestFinished(run);
+    return run;
+}
+
 // The provider: `mode` picks the next answer; `onRequest` runs when a request arrives.
 let mode: {
     chunks: string[];
@@ -45,6 +60,8 @@ let mode: {
     status?: number;
     /** The stream's socket is destroyed after this many chunks (a dropped connection). */
     breakAfterChunks?: number;
+    /** Holds that break until the test releases it. */
+    breakWhen?: Promise<void>;
     /** Holds this chunk and the stream end until the test releases them. */
     holdBeforeChunk?: { index: number; until: Promise<void> };
 } = { chunks: ["Hel", "lo"], delayMs: 0 };
@@ -93,6 +110,7 @@ const provider = http.createServer(async (req, res) => {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
         await sleep(requestMode.delayMs);
         if (++sent === requestMode.breakAfterChunks) {
+            await requestMode.breakWhen;
             res.destroy();
             return;
         }
@@ -284,6 +302,8 @@ async function clientSetText(chaId: string, messageId: string, text: string) {
 let attach = 0;
 type JobOptions = {
     abortAfterChunks?: number;
+    /** Runs at every `chunk` event the owner socket gets. */
+    onChunk?: () => void;
     /** Answers a `callback` event (an edit hook): the answer message's fields. */
     answerCallback?: (event: any) => Record<string, unknown>;
     hooks?: typeof NO_GENERATION_HOOKS;
@@ -297,76 +317,91 @@ async function job(
     options: JobOptions = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId);
-    const created = await api("/api/generations", {
-        method: "POST",
-        body: JSON.stringify({
-            kind,
-            clientId: "tab",
-            ...(options.hooks ? { hooks: options.hooks } : {}),
-            context: {
-                characterId: chaId,
-                chatId: "k",
-                presetId: options.presetId ?? presetId,
-                modelPresetId,
-                personaId,
-                selectedPersonaId: personaId,
-                mode: kind,
-                input: "",
-                chatRevision: chat.revision,
-                ...extra,
-            },
-        }),
-    });
-    if (created.status !== 200) {
-        return { ...created, events: [], terminal: undefined };
-    }
-    const jobId = created.body.jobId as string;
+    // The provider waits for this job's owner socket: the gate is set before the job is admitted,
+    // whose runner may reach the provider before the create's answer arrives here.
     let opened!: () => void;
     socketOpen = new Promise<void>((resolve) => {
         opened = resolve;
     });
-    const url =
-        `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
-        `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
-    const ws = new WebSocket(url);
-    const events: any[] = [];
-    let chunks = 0;
-    await new Promise<void>((resolve) => {
-        ws.onopen = () => {
-            opened();
-            resolve();
-        };
-        ws.onerror = () => {
-            opened();
-            resolve();
-        };
-    });
-    await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 45_000);
-        ws.onmessage = async (message) => {
-            const event = JSON.parse(String(message.data));
-            if (event.type === "ping") {
-                return;
-            }
-            events.push(event);
-            if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
-                await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
-            }
-            if (event.type === "callback" && options.answerCallback) {
-                ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
-            }
-            if (event.type === "done" || event.type === "error") {
-                clearTimeout(timer);
+    let socket: WebSocket | undefined;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    try {
+        const created = await api("/api/generations", {
+            method: "POST",
+            body: JSON.stringify({
+                kind,
+                clientId: "tab",
+                ...(options.hooks ? { hooks: options.hooks } : {}),
+                context: {
+                    characterId: chaId,
+                    chatId: "k",
+                    presetId: options.presetId ?? presetId,
+                    modelPresetId,
+                    personaId,
+                    selectedPersonaId: personaId,
+                    mode: kind,
+                    input: "",
+                    chatRevision: chat.revision,
+                    ...extra,
+                },
+            }),
+        });
+        if (created.status !== 200) {
+            return { ...created, events: [], terminal: undefined };
+        }
+        const jobId = created.body.jobId as string;
+        const url =
+            `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
+            `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
+        const ws = new WebSocket(url);
+        socket = ws;
+        const events: any[] = [];
+        let chunks = 0;
+        // Every frame is observed from the open on: the handler is set before the provider is released.
+        const ended = new Promise<void>((resolve) => {
+            fallback = setTimeout(resolve, 45_000);
+            ws.onmessage = async (message) => {
+                const event = JSON.parse(String(message.data));
+                if (event.type === "ping") {
+                    return;
+                }
+                events.push(event);
+                if (event.type === "chunk") {
+                    options.onChunk?.();
+                }
+                if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
+                    await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
+                }
+                if (event.type === "callback" && options.answerCallback) {
+                    ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
+                }
+                if (event.type === "done" || event.type === "error") {
+                    resolve();
+                }
+            };
+        });
+        await new Promise<void>((resolve) => {
+            ws.onopen = () => {
+                opened();
                 resolve();
-            }
+            };
+            ws.onerror = () => {
+                opened();
+                resolve();
+            };
+        });
+        await ended;
+        return {
+            ...created,
+            events,
+            terminal: events.find((event) => event.type === "done" || event.type === "error"),
         };
-    });
-    ws.close();
-    return {
-        ...created,
-        events,
-        terminal: events.find((event) => event.type === "done" || event.type === "error"),
-    };
+    } finally {
+        // Also on a failed create or a throw: the provider never waits on this job's gate forever.
+        opened();
+        clearTimeout(fallback);
+        socket?.close();
+    }
 }
 /**
  * The chunks' whole texts, rebuilt from the wire deltas: each chunk keeps `keep` units of the text its
@@ -416,7 +451,8 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir, generationRandom: () => 0 });
+    // An aborted job gets a ten-minute grace: no 5 s deadline races the runner's last write.
+    server = createTestServer({ rootDir, generationRandom: () => 0, generationAbortGraceMs: 10 * 60_000 });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -710,20 +746,53 @@ describe("a send", () => {
     );
 
     it(
-        "checkpoints a stalled stream on the timer, and an abort keeps the text so far and releases the lock",
+        "an abort while the provider stalls keeps the text so far and releases the lock",
         async () => {
             const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
-            mode = { chunks: ["First.", " Never."], delayMs: 20_000 };
-            const started = Date.now();
-            // The DELETE fires on the first chunk, while the provider stalls before its second one.
-            const { events, terminal } = await job("send", chaId, {}, { abortAfterChunks: 1 });
-            expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
-            expect(Date.now() - started).toBeLessThan(15_000);
-            expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["First."]);
-            expect(events.filter((event) => event.type === "done")).toHaveLength(0);
-            const chat = await readChat(chaId);
-            expect(texts(chat)).toEqual(["user:q", "char:First."]);
-            expect(await clientSetText(chaId, chat.data.message.at(-1).chatId, "tab edit")).toBe(200);
+            const stalled = deferred<void>();
+            mode = { chunks: ["First.", " Never."], delayMs: 0, holdBeforeChunk: { index: 1, until: stalled.promise } };
+            // The clock stands still, so no periodic checkpoint stores the text: the abort's write must.
+            const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+            // The deadline the DELETE fixes is this server's configured grace, not the 5 s default: the
+            // timers set while the registry aborts the job are captured.
+            const jobs = server.context.generationJobs;
+            const abort = jobs.abort;
+            const deadlines: unknown[] = [];
+            const abortSpy = vi.spyOn(jobs, "abort").mockImplementation((...args) => {
+                const realSetTimeout = globalThis.setTimeout;
+                const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+                    callback: (...rest: unknown[]) => void,
+                    ms?: number,
+                    ...rest: unknown[]
+                ) => {
+                    deadlines.push(ms);
+                    return realSetTimeout(callback, ms, ...rest);
+                }) as typeof setTimeout);
+                try {
+                    return abort.apply(jobs, args);
+                } finally {
+                    timers.mockRestore();
+                }
+            });
+            const cleanup = cleanupOnce(() => {
+                abortSpy.mockRestore();
+                clock.mockRestore();
+                stalled.resolve();
+            });
+            try {
+                // The DELETE fires on the first chunk; the second is held, so the terminal comes
+                // without waiting for the provider.
+                const { events, terminal } = await job("send", chaId, {}, { abortAfterChunks: 1 });
+                expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
+                expect(deadlines).toContain(10 * 60_000);
+                expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["First."]);
+                expect(events.filter((event) => event.type === "done")).toHaveLength(0);
+                const chat = await readChat(chaId);
+                expect(texts(chat)).toEqual(["user:q", "char:First."]);
+                expect(await clientSetText(chaId, chat.data.message.at(-1).chatId, "tab edit")).toBe(200);
+            } finally {
+                cleanup();
+            }
         },
         SLOW,
     );
@@ -1078,9 +1147,18 @@ describe("a send", () => {
         "a stream that breaks after its chunks ends the job as the request's failure, naming the request, with the text so far stored and the lock released",
         async () => {
             const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
-            mode = { chunks: ["First.", " Never."], delayMs: 150, breakAfterChunks: 1 };
+            // The socket breaks only once the owner saw the first chunk: the runner read it before.
+            const seen = deferred<void>();
+            mode = { chunks: ["First.", " Never."], delayMs: 0, breakAfterChunks: 1, breakWhen: seen.promise };
+            // The clock stands still, so no periodic checkpoint stores the text: the failure's write must.
+            const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+            const cleanup = cleanupOnce(() => {
+                clock.mockRestore();
+                seen.resolve();
+                mode = { chunks: ["x"], delayMs: 0 };
+            });
             try {
-                const { body, events, terminal } = await job("send", chaId);
+                const { body, events, terminal } = await job("send", chaId, {}, { onChunk: () => seen.resolve() });
                 expect(terminal).toMatchObject({ type: "error", status: 500, reason: "failed", stage: "request" });
                 const rows = await historyOf(body.jobId);
                 const errored = rows.filter((row) => row.status === "error");
@@ -1094,7 +1172,7 @@ describe("a send", () => {
                 expect(texts(chat)).toEqual(["user:q", "char:First."]);
                 expect(await clientSetText(chaId, chat.data.message.at(-1).chatId, "tab edit")).toBe(200);
             } finally {
-                mode = { chunks: ["x"], delayMs: 0 };
+                cleanup();
             }
         },
         SLOW,
@@ -1331,24 +1409,37 @@ describe("automatic translation of a send's messages", () => {
         "an aborted send hands nothing over: no notice, and neither its partial reply nor its user message is translated",
         async () => {
             const chaId = await seedCharacter({ name: "Ann", chat: { autoTranslate: true } });
-            mode = { chunks: ["First.", " Never."], delayMs: 20_000 };
+            const stalled = deferred<void>();
+            mode = { chunks: ["First.", " Never."], delayMs: 0, holdBeforeChunk: { index: 1, until: stalled.promise } };
             const before = bodies.length;
-            const { events, terminal } = await job(
-                "send",
-                chaId,
-                { input: "hi", userMessageId: "u1" },
-                { abortAfterChunks: 1 },
-            );
-            expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
-            expect(translating(events)).toEqual([]);
-            await sleep(200);
-            expect(bodies.length).toBe(before + 1);
-            expect(server.context.translationRunner.runningCount()).toBe(0);
-            expect(translations(await readChat(chaId))).toEqual([
-                ["u1", null],
-                [expect.any(String), null],
-            ]);
-            expect(texts(await readChat(chaId))).toEqual(["user:hello", "char:First."]);
+            // The handover is decided by the runner before it returns, and the job ends only then.
+            const handOff = vi.spyOn(server.context.translationRunner, "handOff");
+            const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+            const cleanup = cleanupOnce(() => {
+                clock.mockRestore();
+                handOff.mockRestore();
+                stalled.resolve();
+            });
+            try {
+                const { events, terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "hi", userMessageId: "u1" },
+                    { abortAfterChunks: 1 },
+                );
+                expect(terminal).toMatchObject({ type: "error", status: 499, reason: "aborted" });
+                expect(translating(events)).toEqual([]);
+                expect(handOff).not.toHaveBeenCalled();
+                expect(bodies.length).toBe(before + 1);
+                expect(server.context.translationRunner.runningCount()).toBe(0);
+                expect(translations(await readChat(chaId))).toEqual([
+                    ["u1", null],
+                    [expect.any(String), null],
+                ]);
+                expect(texts(await readChat(chaId))).toEqual(["user:hello", "char:First."]);
+            } finally {
+                cleanup();
+            }
         },
         SLOW,
     );
