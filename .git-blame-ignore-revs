@@ -3,3 +3,9 @@
 
 # chore: add Prettier and format the repo
 058da60e5d7e2e06da488e172f7a327c76a26e35
+
+# refactor(comments): drop plan, phase, and slice labels (by area)
+133e30e09f49cf5ca71930345ea8ea2dfea7f0c1
+a85375bd35a24d356a351fb620209602b66c4d06
+c1711ddbcf380c62e5d08e11894b2736518747ac
+8bc78b7bc3fac9796f0b94a4ec75e93ab9a60685
