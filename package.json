@@ -14,6 +14,7 @@
     "check:tests": "node util/testInventory.mjs",
     "test": "vitest run --tags-filter=!slow",
     "test:agent": "node util/agentTest.mjs",
+    "test:overload": "node util/overloadTest.mjs",
     "test:slow": "vitest run --tags-filter=slow",
     "test:all": "vitest run",
     "test:e2e": "node util/requireHuman.mjs \"pnpm test:e2e\" && playwright test",

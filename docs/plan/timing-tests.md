@@ -1,10 +1,10 @@
 # Timing-Dependent Tests Plan
 
-Status: planned 2026-10-21. No slice landed. Source: the refreshed inventory
-`docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`: 463 rows in 216
-files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line numbers there and
-here are approximate; the quoted test titles are the anchors. Re-verify each row against the code
-before editing.
+Status: planned 2026-10-21; slice 0 landed 2026-10-21 (`pnpm test:overload`). Source: the
+refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
+463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
+numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
+against the code before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task (most are `build-test-platforms.md`, whose `Tests` section owns the
@@ -58,8 +58,8 @@ Each slice ends with:
 - The touched test files with `pnpm test:agent --force <files>`, and the owning guide's focused
   checks when a production seam changed.
 - The touched files under the overload, three runs, default timeouts (no `--testTimeout`: a raised
-  outer timeout hides the cold-boot and fixture-size causes this plan fixes). Use the script from
-  slice 0 once it exists; until then the recipe in `build-test-platforms.md` `Tests`.
+  outer timeout hides the cold-boot and fixture-size causes this plan fixes):
+  `pnpm --silent test:overload <files>` (slice 0).
 - In the inventory, each resolved row gets the suffix `fixed in <slice> (<commit>)`; a row the slice
   judged differently gets the new disposition and a reason. The close-out recomputes the summary.
 
@@ -80,6 +80,11 @@ Each slice ends with:
   5b and 6a; 7b after 6b; each sweep after its area's cause slices.
 
 ## Slice 0. Overload runner (_small_, `build-test-platforms.md`)
+
+Landed 2026-10-21. Beyond the text below: each run is a supervisor in its own session holding the
+burners and the run (one scheduler autogroup), killed as a group afterwards; a burner that dies
+during a run aborts with exit 2 (no result counts); `--cpu` picks the CPU; `--maxWorkers` is
+refused. Details in `build-test-platforms.md` (`util/overloadTest.mjs`).
 
 `util/overloadTest.mjs` (plain Node, no dependencies): pick one CPU the process may use (for example the
 last one `taskset -pc <pid>` reports), start eight `node -e "while(true){}"` burners pinned to it,
