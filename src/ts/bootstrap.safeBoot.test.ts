@@ -78,7 +78,9 @@ beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
     originalServiceWorker = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    // `Date` too: the settle window compares the guests' start against a `Date.now()` deadline
+    // (`safeBoot.ts` `deps.now`), so only the advances below may pass it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     // loadData installs error listeners on each fresh page; remove this test's listeners at teardown.
     listeners = [];
     const add = window.addEventListener.bind(window);

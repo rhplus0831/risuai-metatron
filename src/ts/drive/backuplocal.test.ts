@@ -299,6 +299,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -442,6 +443,8 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
             return file.response();
         };
         answer(false, true);
+        // The name is the local date the save ran on; only `Date` is faked, so the stream still flows.
+        vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 6, 4, 23, 30) });
         await SaveUpstreamLocalBackup();
         expect(order).toEqual(["flush", "prepare"]);
         expect(alerts.alertConfirm.mock.calls[0][0]).toBe("Include API keys?");
@@ -476,7 +479,7 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
             "/api/backups/export-upstream/prepare",
             `/api/backups/export-upstream/download?token=${TOKEN}`,
         ]);
-        expect(writer.names).toEqual([upstreamBackupFileName()]);
+        expect(writer.names).toEqual(["RisuAI-backup-2026-07-04"]);
         expect(written()).toEqual(file.bytes);
         expect(writer.close).toHaveBeenCalledTimes(1);
         expect(alerts.alertNormal).toHaveBeenCalledWith("Saved.");

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ParseMarkdown, trimMarkdown, trimMarkdownSharingStyles } from "../parser.svelte";
 import {
     BILINGUAL_MUTED_CLASS,
@@ -29,6 +29,16 @@ vi.mock(import("../../stores.svelte"), () => ({}) as unknown as typeof import(".
 
 // `trimMarkdownSharingStyles`: `trimMarkdown`'s tree with the shareable styles' CSS
 // handed out and an inert comment left in their place; `trimMarkdown` itself is unchanged.
+
+// Decoding a style runs the real parser, whose CBS budget (`CLIENT_CBS_LIMITS`) allows 2 s of
+// `performance.now()` per parse; a starved test worker could reach it and get the decoder's fallback.
+// A stopped clock leaves only the work limit, which these small sheets never reach.
+beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+});
+afterEach(() => {
+    vi.restoreAllMocks();
+});
 
 const SCOPED = ".chattext .x-risu-mybox{color:red;}";
 const notrim = (text: string) => ParseMarkdown(text, null, "notrim");
