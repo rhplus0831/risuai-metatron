@@ -11,6 +11,7 @@ import {
 } from "../../../../shared/resources.ts";
 import {
     BOOT_CACHE_FORMAT,
+    BOOT_CACHE_TIMEOUT_MS,
     BootCacheMiss,
     type BootCacheContents,
     type BootCacheStore,
@@ -253,12 +254,20 @@ function depsFor(server: ReturnType<typeof fakeServer>, store: BootCacheStore, a
 
 const fallbacks = (deps: Deps) => deps.events.filter((event) => event.phase === "fallback");
 
+/**
+ * The IndexedDB adapter with an open and read bound no test reaches: fake-indexeddb answers on
+ * `setImmediate`, so a stalled run must not turn a success or a cache fallback into `timeout`. The
+ * bound itself is the stalled-open case's subject.
+ */
+const cacheStore = (appVer = APP) => indexedDbBootCacheStore(appVer, 60_000);
+
 beforeEach(() => {
     vi.stubGlobal("indexedDB", new IDBFactory());
     performance.clearMarks();
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
@@ -747,7 +756,7 @@ describe("the write diff", () => {
 describe("the boot over the IndexedDB cache", () => {
     it("first boot: claims nothing, equals the full read, and the commit writes the answer (texts, hashes, items, meta) without the credential holder", async () => {
         const server = seededServer();
-        const deps = depsFor(server, indexedDbBootCacheStore(APP));
+        const deps = depsFor(server, cacheStore());
         const boot = await loadBootSnapshot(deps);
         expect(boot.snapshot).toEqual(server.full());
         expect(deps.requests).toHaveLength(1);
@@ -787,7 +796,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("second boot: claims every record and hash, the answer is all `cached`, and the snapshot still equals the full read", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         const deps = depsFor(server, store);
         const boot = await loadBootSnapshot(deps);
@@ -816,7 +825,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a changed module, a changed character, a deleted character, a reordered list: the answer is partial, equals the full read, and GC drops what is no longer named", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         server.set("modules", "main", [module("m1"), module("m3"), module("m1")]);
         server.set("characters", "c1", character("c1", { name: "renamed" }));
@@ -878,27 +887,45 @@ describe("the boot over the IndexedDB cache", () => {
     });
 
     it("an open that never answers falls back as `timeout` within the bound, and a connection that arrives later is closed", async () => {
-        const close = vi.fn();
-        let request: { onsuccess?: () => void; result?: unknown } | null = null;
-        vi.stubGlobal("indexedDB", {
-            open: () => {
-                request = {};
-                return request;
-            },
-        });
-        const server = seededServer();
-        const deps = depsFor(server, indexedDbBootCacheStore(APP, 20));
-        const started = Date.now();
-        const boot = await loadBootSnapshot(deps);
-        expect(Date.now() - started).toBeLessThan(1000);
-        expect(boot.snapshot).toEqual(server.full());
-        expect(deps.events).toEqual([
-            { kind: "bootCache", phase: "fallback", reason: "timeout", records: 0, items: 0 },
-        ]);
-        request!.result = { close, onversionchange: null };
-        request!.onsuccess!();
-        expect(close).toHaveBeenCalledTimes(1);
-        await boot.commit();
+        // Only the bounds' timers are faked; the open is held at each bound's edges, the default and an
+        // explicit one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        for (const [timeoutMs, bound] of [
+            [undefined, BOOT_CACHE_TIMEOUT_MS],
+            [20, 20],
+        ] as const) {
+            const close = vi.fn();
+            let request: { onsuccess?: () => void; result?: unknown } | null = null;
+            vi.stubGlobal("indexedDB", {
+                open: () => {
+                    request = {};
+                    return request;
+                },
+            });
+            const server = seededServer();
+            const deps = depsFor(server, indexedDbBootCacheStore(APP, timeoutMs));
+            const loading = loadBootSnapshot(deps);
+            let settled = false;
+            void loading.then(() => {
+                settled = true;
+            });
+            await vi.advanceTimersByTimeAsync(bound - 1);
+            expect(settled, `bound ${bound}`).toBe(false);
+            expect(deps.events).toEqual([]);
+            expect(deps.fullReads).toBe(0);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled, `bound ${bound}`).toBe(true);
+            const boot = await loading;
+            expect(deps.fullReads).toBe(1);
+            expect(boot.snapshot).toEqual(server.full());
+            expect(deps.events).toEqual([
+                { kind: "bootCache", phase: "fallback", reason: "timeout", records: 0, items: 0 },
+            ]);
+            request!.result = { close, onversionchange: null };
+            request!.onsuccess!();
+            expect(close).toHaveBeenCalledTimes(1);
+            await boot.commit();
+        }
     });
 
     it("a database another version holds (a newer app opened it) cannot be opened: `readFailed`, and the cache is left alone", async () => {
@@ -911,7 +938,7 @@ describe("the boot over the IndexedDB cache", () => {
             };
         });
         const server = seededServer();
-        const deps = depsFor(server, indexedDbBootCacheStore(APP));
+        const deps = depsFor(server, cacheStore());
         const boot = await loadBootSnapshot(deps);
         expect(boot.snapshot).toEqual(server.full());
         expect(deps.fullReads).toBe(1);
@@ -924,7 +951,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("every call closes its connection: a foreign upgrade after a boot is not blocked", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         await loadBootSnapshot(depsFor(server, store));
         const blocked = vi.fn();
@@ -944,7 +971,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a failed boot request: one plain read, `fallback request`, the cache untouched, no clear", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         const before = await dump();
         const deps = depsFor(server, store);
@@ -964,7 +991,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("an answer of another format: the fenced clear starts before the plain read answers, and is reported as `cleared` with a fresh generation kept", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         const before = await dump();
         const deps = depsFor(server, store);
@@ -1002,7 +1029,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a corrupt item text or character text in the cache: `fallback incomplete`, a plain read, and the cache cleared", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         await seedRaw({ items: [[itemKey("modules", hashOf(module("m1"))), "{bad"]] });
         let deps = depsFor(server, store);
@@ -1030,7 +1057,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a cache entry that fails the runtime check is dropped from the claims (a foreign kind, a bad id, a broken shape), not sent, not a fallback", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         const stored = (await dump()).records.get(recordKey("characters", "c1")) as Record<string, unknown>;
         await seedRaw({
@@ -1058,7 +1085,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a cached character holding a credential (a foreign write) is installed, advertised once, and dropped by the commit", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         // The cache holds c2 with its key, as if written by a version without the exclusion.
         const c2 = server.state.kinds.characters[1];
@@ -1080,7 +1107,7 @@ describe("the boot over the IndexedDB cache", () => {
     });
 
     it("another tab's write since the load: the commit is skipped (no `written` mark), that tab's cache stays", async () => {
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         const serverA = seededServer();
         await (await loadBootSnapshot(depsFor(serverA, store))).commit();
         const tabA = await loadBootSnapshot(depsFor(serverA, store));
@@ -1098,7 +1125,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a clear invalidates a write prepared over an empty cache: the `null` expectation no longer matches", async () => {
         const server = seededServer();
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         const first = await loadBootSnapshot(depsFor(server, store));
         expect((await dump()).meta).toBeNull();
         await clearBootCache(store);
@@ -1116,7 +1143,7 @@ describe("the boot over the IndexedDB cache", () => {
     });
 
     it("an unusable answer after another tab wrote: the fenced clear is skipped and not reported, that tab's cache stays", async () => {
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         const server = seededServer();
         await (await loadBootSnapshot(depsFor(server, store))).commit();
         const depsA = depsFor(server, store);
@@ -1146,9 +1173,9 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("another app version: the cache is not claimed, and the commit clears and rewrites it under the new version", async () => {
         const server = seededServer();
-        await (await loadBootSnapshot(depsFor(server, indexedDbBootCacheStore("v1")))).commit();
+        await (await loadBootSnapshot(depsFor(server, cacheStore("v1")))).commit();
         const old = await dump();
-        const deps = depsFor(server, indexedDbBootCacheStore("v2"), "v2");
+        const deps = depsFor(server, cacheStore("v2"), "v2");
         const boot = await loadBootSnapshot(deps);
         expect(deps.requests[0]).not.toHaveProperty("known");
         expect(boot.snapshot).toEqual(server.full());
@@ -1161,7 +1188,7 @@ describe("the boot over the IndexedDB cache", () => {
         expect(fresh.items).toEqual(old.items);
         // A format the cache does not know is treated the same way.
         await seedRaw({ meta: { ...fresh.meta, format: BOOT_CACHE_FORMAT + 1 } });
-        const next = depsFor(server, indexedDbBootCacheStore("v2"), "v2");
+        const next = depsFor(server, cacheStore("v2"), "v2");
         await (await loadBootSnapshot(next)).commit();
         expect(next.requests[0]).not.toHaveProperty("known");
         expect((await dump()).meta?.format).toBe(BOOT_CACHE_FORMAT);
@@ -1169,7 +1196,7 @@ describe("the boot over the IndexedDB cache", () => {
 
     it("a failed write: `writeFailed` with the quota reason, the cache cleared (fenced), the boot unaffected", async () => {
         const server = seededServer();
-        const real = indexedDbBootCacheStore(APP);
+        const real = cacheStore();
         await (await loadBootSnapshot(depsFor(server, real))).commit();
         const failing: BootCacheStore = {
             load: () => real.load(),
@@ -1204,7 +1231,7 @@ describe("the boot over the IndexedDB cache", () => {
     });
 
     it("the store's own contract: a fenced write and clear answer `skipped`, an unconditional clear always clears", async () => {
-        const store = indexedDbBootCacheStore(APP);
+        const store = cacheStore();
         const empty = await store.load();
         expect(empty).toEqual({ meta: null, records: [], items: new Map() });
         const write = (expectGeneration: string | null, generation: string): BootCacheWrite => ({

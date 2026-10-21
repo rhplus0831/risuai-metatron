@@ -300,6 +300,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     popupStore.children = null;
     popupStore.openId = 0;
     for (const instance of mounted.splice(0)) {
@@ -539,6 +540,9 @@ describe("the stored path: display", () => {
 
 describe("the stored path: requests", () => {
     it("the toggle requests a translation when none is fresh: pending until the refresh lands, spinner, disabled controls, and the stored translation shown after", async () => {
+        // The request's wait for the refresh polls every 100 ms against a 15 s Date.now deadline: both
+        // run on fake time (the render polls advance it as they check).
+        vi.useFakeTimers();
         const { hydrate, held } = boot("k4");
         const answer = deferred<Response>();
         answerWith(() => answer.promise);
@@ -562,13 +566,16 @@ describe("the stored path: requests", () => {
         // The answer alone shows nothing: the row waits for the held message.
         const T = tr("ㄱ", "A");
         answer.resolve(json(200, { outcome: "applied", translation: T }));
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await vi.advanceTimersByTimeAsync(150);
         expect(ui.spinner()).toBe(true);
         expect(ui.toggle().classList.contains("translating")).toBe(true);
 
+        // The refresh lands: the row shows it, and the next poll ends the request.
         expect(hydrate("a", T)).toBe(true);
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+        expect(ui.toggle().classList.contains("translating")).toBe(false);
         await ui.expectText("ㄱ");
-        await vi.waitFor(() => expect(ui.toggle().classList.contains("translating")).toBe(false));
         expect(ui.spinner()).toBe(false);
         expect(ui.button(language.retranslate)!.disabled).toBe(false);
         expect(ui.button(language.editTranslation)!.disabled).toBe(false);
