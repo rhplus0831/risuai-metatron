@@ -68,7 +68,7 @@ function prepareRun(
                 : "Buttons do not run in a group chat",
         );
     }
-    const state = createJobRunState(job);
+    const state = createJobRunState(job, deps.scriptWorkers.createBudget());
     // The chat screen's character, which owns the chat.
     const setup = createRunSetup(job, deps, state, scope, {
         runCharacterId: characterId,

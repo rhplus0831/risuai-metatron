@@ -16,6 +16,7 @@ import type { LlmRequests } from "../llm/requests.ts";
 import { createLuaBindings, type LuaBindings, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { EmbeddingsService } from "../prompt/embeddings.ts";
+import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
 import {
@@ -64,6 +65,8 @@ export type GenerationRunnerDeps = {
     diagnostics?: DiagnosticsRecorder;
     /** The trigger effect loop's monotonic clock for its yield (default `performance.now`; tests freeze or step it). */
     effectClock?: () => number;
+    /** HypaV3's summary separator limits (`MemoryHost.separatorLimits`; default the production ones, tests lengthen them). */
+    hypaV3SeparatorLimits?: HypaV3SeparatorLimits;
 };
 
 /** Rejects with the signal's reason when it aborts first. */
@@ -166,10 +169,11 @@ export function emotionHistory(state: JobRunState, chaId: string): string[] {
     return list;
 }
 
-export function createJobRunState(job: RunningJob): JobRunState {
+/** `budget`: the job's aggregate Lua budget (the runners pass their pool's `createBudget()`). */
+export function createJobRunState(job: RunningJob, budget: LuaBudget = createLuaBudget()): JobRunState {
     const fatalAbort = new AbortController();
     return {
-        budget: createLuaBudget(),
+        budget,
         cbsUsage: { usedMs: 0 },
         effects: { count: 0 },
         fatalAbort,

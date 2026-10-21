@@ -40,6 +40,8 @@ export type MemoryHost = {
     embeddings: EmbeddingEnv;
     /** A user regex on a script worker, under a per-task deadline and the run's abort signal. */
     regex(op: RegexOp, opts?: { deadlineMs?: number }): Promise<RegexOpResult>;
+    /** HypaV3's summary separator limits; absent, the production ones (tests lengthen them). */
+    separatorLimits?: HypaV3SeparatorLimits;
     /** `parseChatML` with the job's CBS (the job's chat and its owner). */
     parseChatML(text: string): OpenAIChat[] | null;
     /** `getUserName()`: the job's effective persona. */
@@ -55,6 +57,13 @@ export type MemoryHost = {
     /** The run's signal: a rate limiter's waiting tasks end with it. */
     signal: AbortSignal;
 };
+
+/**
+ * HypaV3's summary separator limits: the cumulative chunking budget of one memory step
+ * (`SEPARATOR_BUDGET_MS`, 5,000 ms) and the most one split may take (`DEFAULT_REGEX_DEADLINE_MS`,
+ * 1,000 ms; less when less of the budget is left).
+ */
+export type HypaV3SeparatorLimits = { budgetMs: number; regexDeadlineMs: number };
 
 /** `ChatTokenizer.tokenizeChat` (the job's `ChatTokenCounter`). */
 export type MemoryTokenizer = {

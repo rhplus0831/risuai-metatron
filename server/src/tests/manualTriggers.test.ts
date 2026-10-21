@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A manual trigger as a server `command` job end to end on a real listening server with the default
 // runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the trigger runtime, the command
@@ -65,7 +66,7 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir });
+    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -533,16 +534,34 @@ describe("a manual trigger job", () => {
                     ]),
                 ],
             });
-            expect((await runManual(chaId, "regex")).terminal?.type).toBe("done");
-            expect(texts(await readChat(chaId)).at(-1)).toBe(
-                'char:ex=123-abc rp=a[1]b[2] rt=0 sp=["a","b","c"] lb=[0] qs=1',
-            );
-            const bad = await runManual(chaId, "bad");
-            expect(bad.terminal).toMatchObject({
-                type: "error",
-                status: 500,
-                message: /^Trigger: .*Invalid regular expression/,
-            });
+            // Every site's pattern reaches the pool (`scriptWorkers.regex`), the invalid ones included:
+            // none is compiled on the main thread.
+            const regexes = vi.spyOn(server.context.scriptWorkers, "regex");
+            const sites = () => [...new Set(regexes.mock.calls.map(([op]) => `${op.op} /${op.pattern}/${op.flags}`))];
+            try {
+                expect((await runManual(chaId, "regex")).terminal?.type).toBe("done");
+                expect(texts(await readChat(chaId)).at(-1)).toBe(
+                    'char:ex=123-abc rp=a[1]b[2] rt=0 sp=["a","b","c"] lb=[0] qs=1',
+                );
+                expect(sites()).toEqual([
+                    "exec /([a-z]+)(\\d+)/",
+                    "matches /(\\d)/g",
+                    "test /(/",
+                    "split /,\\s*/",
+                    "test /^l/i",
+                    "test /^greeting/",
+                ]);
+                regexes.mockClear();
+                const bad = await runManual(chaId, "bad");
+                expect(bad.terminal).toMatchObject({
+                    type: "error",
+                    status: 500,
+                    message: /^Trigger: .*Invalid regular expression/,
+                });
+                expect(sites()).toEqual(["exec /(/"]);
+            } finally {
+                regexes.mockRestore();
+            }
             const chat = await readChat(chaId);
             expect(texts(chat)).not.toContain("char:never");
             expect(chat.data.scriptstate.$kept).toBe("1");

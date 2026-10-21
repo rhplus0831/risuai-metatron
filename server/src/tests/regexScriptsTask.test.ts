@@ -1,9 +1,10 @@
 // @vitest-environment node
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { customscript } from "../../../shared/database.ts";
 import type { RegexScriptEffect } from "../../../shared/scripts/regex.ts";
 import { createScriptWorkerPool, type RegexScriptsHost } from "../scripts/workerPool.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The regex script engine as a worker task (`workerPool.ts` `runScripts`, `worker.ts`
 // `REGEX_SCRIPTS_MODE`) under the real workers: the synchronous hosts (`parse` on the replaced text,
@@ -28,7 +29,10 @@ const script = (fields: Partial<customscript>): customscript => ({
     ...fields,
 });
 
-const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1 });
+// Booted once, with ten-minute allowances: the subjects here are the caps and the host order, not
+// the CPU allowance or a regex deadline.
+const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1, ...UNHURRIED_SCRIPT_WORKERS });
+beforeAll(() => pool.warm(), 60_000);
 afterAll(async () => {
     await pool.dispose();
 });

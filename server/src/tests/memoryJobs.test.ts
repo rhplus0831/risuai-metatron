@@ -8,6 +8,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
 // server with the default runner, the production memory services, the vector cache file, a mock chat
@@ -474,7 +475,12 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir, generationRandom: () => 0.5 });
+    server = createTestServer({
+        rootDir,
+        generationRandom: () => 0.5,
+        scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+        generationHypaV3SeparatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
+    });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -547,9 +553,25 @@ describe("HypaV3", () => {
             await patchHypaV3({ recentMemoryRatio: 0.1, similarMemoryRatio: 0.6 });
             const chaId = await seedCharacter();
             state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
+            // The spy is restored after the job (the file's `afterAll` restores it if the job fails).
+            const regexes = vi.spyOn(server.context.scriptWorkers, "regex");
             const first = await job("send", chaId, { input: "Hello V3", userMessageId: "u1" });
+            const splits = regexes.mock.calls.filter(([op]) => op.op === "split");
+            regexes.mockRestore();
             expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
             const made = summaries();
+            // The summaries the similarity search embeds (the recent share aside) were split on a
+            // worker by the preset's separator, under the test server's separator limits (a production
+            // split gets at most 1,000 ms), and their parts embedded apart.
+            expect(splits.map(([op]) => op.input)).toContain("Summary 1: events happened.\n\nPart two of 1.");
+            expect(
+                splits.every(
+                    ([op, opts]) => op.pattern === "\\n\\n" && op.flags === "" && (opts?.deadlineMs ?? 0) > 1000,
+                ),
+            ).toBe(true);
+            expect(embedCalls.flatMap((call) => call.input)).toEqual(
+                expect.arrayContaining(["Summary 1: events happened.", "Part two of 1."]),
+            );
             expect(made.length).toBeGreaterThan(0);
             expect(made.every((entry) => entry.body.stream !== true && entry.body.model === "m")).toBe(true);
             expect(

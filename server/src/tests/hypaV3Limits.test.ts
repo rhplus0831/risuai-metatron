@@ -265,28 +265,87 @@ describe("summary chunk separator", () => {
             expect(p.progressOpened()).toBe(false);
         });
 
-        it("ends a catastrophic pattern on a real worker while the event loop stays free", async () => {
-            const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1, maxSize: 1 });
-            try {
-                // The host's adapter owns the deadline: 100 ms here instead of the production 1,000 ms.
-                const p = probe((op) => pool.regex(op, { deadlineMs: 100 }));
-                const started = performance.now();
-                let timerFiredAfterMs: number | null = null;
-                const timer = setTimeout(() => {
-                    timerFiredAfterMs = performance.now() - started;
-                }, 10);
-                try {
-                    const result = await run(p, experimental, "/(a+)+$/", ["a".repeat(26) + "!"]);
-                    expect(result.error).toBe("[HypaV3] Summary chunk separator failed: Error: Regex timed out");
-                } finally {
-                    clearTimeout(timer);
-                }
-                expect(performance.now() - started).toBeLessThan(5000);
-                expect(timerFiredAfterMs).not.toBeNull();
-                expect(timerFiredAfterMs!).toBeLessThan(1000);
-            } finally {
-                await pool.dispose();
-            }
+        // The host's `separatorLimits` replace the production 5,000 ms budget and 1,000 ms deadline.
+        const limits = { budgetMs: 8000, regexDeadlineMs: 2500 };
+
+        it("takes the host's separator limits for the budget check before a split and the deadline clamp", async () => {
+            // The step's start, then 6,000 ms in at the first split's check: past the production budget.
+            vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(6000).mockReturnValue(6001);
+            const p = probe(async () => ({ value: ["part"] }));
+            p.host.separatorLimits = limits;
+            await expect(run(p, experimental, "\\n\\n")).rejects.toThrow("no embeddings in this test");
+            // The lesser of the configured deadline and what is left of the configured budget.
+            expect(p.ops.map((entry) => entry.opts)).toEqual([{ deadlineMs: 2000 }]);
+            expect(p.embeddingsTouched()).toBe(true);
         });
+
+        it("names the host's separator budget when a split would start past it", async () => {
+            vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(8000);
+            const p = probe(unexpected);
+            p.host.separatorLimits = limits;
+            const result = await run(p, experimental, "\\n\\n", ["one", "two"]);
+            expect(p.ops).toEqual([]);
+            expect(result.error).toBe(
+                "[HypaV3] Summary chunk separator failed: Error: Summary chunk separator timed out: 8000 ms chunking budget exhausted",
+            );
+            expect(result.memory?.summaries).toHaveLength(2);
+            expect(p.embeddingsTouched()).toBe(false);
+        });
+
+        it("takes the host's separator budget for the check after a split", async () => {
+            const now = vi.spyOn(performance, "now").mockReturnValue(0);
+            // Back 7,999 ms in: past the production budget, within the configured one.
+            const within = probe(async () => {
+                now.mockReturnValue(7999);
+                return { value: ["part"] };
+            });
+            within.host.separatorLimits = limits;
+            await expect(run(within, experimental, "\\n\\n")).rejects.toThrow("no embeddings in this test");
+            expect(within.ops.map((entry) => entry.opts)).toEqual([{ deadlineMs: 2500 }]);
+            now.mockReturnValue(0);
+            const past = probe(async () => {
+                now.mockReturnValue(8000);
+                return { value: ["part"] };
+            });
+            past.host.separatorLimits = limits;
+            const result = await run(past, experimental, "\\n\\n");
+            expect(past.ops).toHaveLength(1);
+            expect(result.error).toBe(
+                "[HypaV3] Summary chunk separator failed: Error: Summary chunk separator timed out: 8000 ms chunking budget exhausted",
+            );
+            expect(result.memory?.summaries.map((summary) => summary.text)).toEqual([SUMMARY]);
+            expect(past.embeddingsTouched()).toBe(false);
+        });
+
+        // A real worker, a real deadline, and a real timer: the fake-host cases above cover the
+        // timeout's handling in the gate.
+        it(
+            "ends a catastrophic pattern on a real worker while the event loop stays free",
+            { tags: ["slow"], timeout: 60_000 },
+            async () => {
+                const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, size: 1, maxSize: 1 });
+                try {
+                    // Booted before the measured part, which the chunking budget also covers.
+                    await pool.warm();
+                    // The host's adapter owns the deadline: 100 ms here instead of the production 1,000 ms.
+                    const p = probe((op) => pool.regex(op, { deadlineMs: 100 }));
+                    const started = performance.now();
+                    let timerFiredAfterMs: number | null = null;
+                    const timer = setTimeout(() => {
+                        timerFiredAfterMs = performance.now() - started;
+                    }, 10);
+                    try {
+                        const result = await run(p, experimental, "/(a+)+$/", ["a".repeat(26) + "!"]);
+                        expect(result.error).toBe("[HypaV3] Summary chunk separator failed: Error: Regex timed out");
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                    expect(timerFiredAfterMs).not.toBeNull();
+                    expect(timerFiredAfterMs!).toBeLessThan(1000);
+                } finally {
+                    await pool.dispose();
+                }
+            },
+        );
     });
 });

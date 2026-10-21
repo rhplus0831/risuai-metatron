@@ -11,7 +11,8 @@ import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import type { RealmStagingTimer } from "../routes/importRealm.ts";
-import type { ScriptWorkerPoolOptions } from "../scripts/workerPool.ts";
+import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
+import type { ScriptWorkerTimingOptions } from "../scripts/workerPool.ts";
 import { allowTestLoopbackOrigin } from "../../../vitest.testNetwork.ts";
 
 export { allowTestLoopbackOrigin };
@@ -26,8 +27,11 @@ export type TestServerOptions = {
     password?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
-    /** The script workers' watchdog and abort graces (the defaults are the production ones). */
-    scriptWorkerOptions?: Pick<ScriptWorkerPoolOptions, "watchdogGraceMs" | "abortGraceMs">;
+    /**
+     * The script workers' graces, boot cap, synchronous-call wait, and default allowances, deadline and
+     * budget (the defaults are the production ones; `unhurriedLimits.ts` lengthens all but the graces).
+     */
+    scriptWorkerOptions?: ScriptWorkerTimingOptions;
     maxImportBytes?: number;
     /** The generation jobs' runner (the default runs command jobs and sends). */
     generationRunner?: GenerationRunner;
@@ -49,6 +53,8 @@ export type TestServerOptions = {
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default 5 s). */
     generationAbortGraceMs?: number;
+    /** The default runner's HypaV3 separator limits (default 5 s chunking, 1 s per split). */
+    generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -79,6 +85,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         realmStagingTimer: options.realmStagingTimer,
         generationEffectClock: options.generationEffectClock,
         generationAbortGraceMs: options.generationAbortGraceMs,
+        generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
     });
     return {
         rootDir,

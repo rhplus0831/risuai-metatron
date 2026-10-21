@@ -54,9 +54,11 @@ async function splitBySeparator(
     separator: string,
     chunkingStartedAt: number,
 ): Promise<string[]> {
-    const remaining = SEPARATOR_BUDGET_MS - (performance.now() - chunkingStartedAt);
+    const budgetMs = host.separatorLimits?.budgetMs ?? SEPARATOR_BUDGET_MS;
+    const regexDeadlineMs = host.separatorLimits?.regexDeadlineMs ?? DEFAULT_REGEX_DEADLINE_MS;
+    const remaining = budgetMs - (performance.now() - chunkingStartedAt);
     if (remaining <= 0) {
-        throw new Error(`Summary chunk separator timed out: ${SEPARATOR_BUDGET_MS} ms chunking budget exhausted`);
+        throw new Error(`Summary chunk separator timed out: ${budgetMs} ms chunking budget exhausted`);
     }
     let pattern = separator;
     let flags = "";
@@ -71,11 +73,11 @@ async function splitBySeparator(
     }
     const result = await host.regex(
         { op: "split", pattern, flags, input: text },
-        { deadlineMs: Math.min(DEFAULT_REGEX_DEADLINE_MS, remaining) },
+        { deadlineMs: Math.min(regexDeadlineMs, remaining) },
     );
     host.fence();
-    if (performance.now() - chunkingStartedAt >= SEPARATOR_BUDGET_MS) {
-        throw new Error(`Summary chunk separator timed out: ${SEPARATOR_BUDGET_MS} ms chunking budget exhausted`);
+    if (performance.now() - chunkingStartedAt >= budgetMs) {
+        throw new Error(`Summary chunk separator timed out: ${budgetMs} ms chunking budget exhausted`);
     }
     if ("error" in result) {
         throw new Error(result.error);
