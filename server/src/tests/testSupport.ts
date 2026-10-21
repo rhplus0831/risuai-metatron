@@ -10,6 +10,7 @@ import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
+import type { ScriptWorkerPoolOptions } from "../scripts/workerPool.ts";
 import { allowTestLoopbackOrigin } from "../../../vitest.testNetwork.ts";
 
 export { allowTestLoopbackOrigin };
@@ -24,6 +25,8 @@ export type TestServerOptions = {
     password?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
+    /** The script workers' watchdog and abort graces (the defaults are the production ones). */
+    scriptWorkerOptions?: Pick<ScriptWorkerPoolOptions, "watchdogGraceMs" | "abortGraceMs">;
     maxImportBytes?: number;
     /** The generation jobs' runner (the default runs command jobs and sends). */
     generationRunner?: GenerationRunner;
@@ -58,6 +61,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         rootDir,
         resourceKinds: options.resourceKinds,
         snapshotIntervalMs: options.snapshotIntervalMs,
+        scriptWorkerOptions: options.scriptWorkerOptions,
         maxImportBytes: options.maxImportBytes,
         generationRunner: options.generationRunner,
         generationRandom: options.generationRandom,

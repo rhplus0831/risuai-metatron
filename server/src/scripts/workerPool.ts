@@ -223,7 +223,7 @@ function hostValue(value: unknown): unknown {
     return value ?? undefined;
 }
 
-export function createScriptWorkerPool(options: {
+export type ScriptWorkerPoolOptions = {
     rootDir: string;
     size?: number;
     maxSize?: number;
@@ -235,7 +235,16 @@ export function createScriptWorkerPool(options: {
     /** Tests shorten these; the defaults are `SYNC_HOST_TIMEOUT_MS` and the runtime's sleep caps. */
     syncHostTimeoutMs?: number;
     sleepCaps?: SleepCaps;
-}) {
+    /**
+     * How far past a Lua run's CPU budget the watchdog terminates its worker, and how long an
+     * aborted run may take to stop before its worker is terminated. Tests lengthen or shorten them;
+     * the defaults are `WATCHDOG_GRACE_MS` and `ABORT_GRACE_MS`.
+     */
+    watchdogGraceMs?: number;
+    abortGraceMs?: number;
+};
+
+export function createScriptWorkerPool(options: ScriptWorkerPoolOptions) {
     const size = options.size ?? 2;
     const maxSize = Math.max(size, options.maxSize ?? 6);
     const idleMs = options.idleMs ?? 30_000;
@@ -243,6 +252,8 @@ export function createScriptWorkerPool(options: {
     const wallMs = options.wallMs ?? DEFAULT_LUA_WALL_MS;
     const syncHostTimeoutMs = options.syncHostTimeoutMs ?? SYNC_HOST_TIMEOUT_MS;
     const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
+    const watchdogGraceMs = options.watchdogGraceMs ?? WATCHDOG_GRACE_MS;
+    const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS;
     const limiter = createRequestLimiter();
     const slots = new Set<Slot>();
     const queue: TopTask[] = [];
@@ -530,7 +541,7 @@ export function createScriptWorkerPool(options: {
             asyncHost: Object.keys(task.host.async ?? {}),
             syncHost: Object.keys(task.host.sync ?? {}),
         };
-        watch(slot, task, task.cpuMs + WATCHDOG_GRACE_MS);
+        watch(slot, task, task.cpuMs + watchdogGraceMs);
         try {
             post(slot, { type: "lua", taskId: task.taskId, input });
         } catch (error) {
@@ -783,7 +794,7 @@ export function createScriptWorkerPool(options: {
         Atomics.notify(slot.syncFlag, SYNC_REPLIES);
         post(slot, { type: "abort", taskId: top.taskId });
         // A run in C code does not reach the hook; its worker goes.
-        top.abortTimer = setTimeout(() => kill(slot, "request aborted", "abort"), ABORT_GRACE_MS);
+        top.abortTimer = setTimeout(() => kill(slot, "request aborted", "abort"), abortGraceMs);
     }
 
     const api = {
