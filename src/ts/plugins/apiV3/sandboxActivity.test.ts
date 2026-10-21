@@ -126,9 +126,15 @@ describe("SandboxHost activity", () => {
         expect(lastPosted().ports).toHaveLength(1);
         expect(host.isIdle()).toBe(false);
         changed.mockClear();
+        // The cancel crosses a real MessagePort: await the activity change that reports idle.
+        const idle = deferred<void>();
+        changed.mockImplementation(() => {
+            if (host.isIdle()) idle.resolve();
+        });
         const port = lastPosted().ports[0];
         port.postMessage({ cancel: true });
-        await vi.waitFor(() => expect(host.isIdle()).toBe(true));
+        await idle.promise;
+        expect(host.isIdle()).toBe(true);
         expect(changed).toHaveBeenCalled();
         port.close();
     });
@@ -139,7 +145,11 @@ describe("SandboxHost activity", () => {
         const running = wrapper();
         const { port1, port2 } = new NodeMessageChannel();
         const received: unknown[] = [];
-        port1.on("message", (message) => received.push(message));
+        const pulled = deferred<void>();
+        port1.on("message", (message) => {
+            received.push(message);
+            if (message?.pull === true) pulled.resolve();
+        });
         send(
             {
                 type: "CALLBACK_RETURN",
@@ -152,7 +162,8 @@ describe("SandboxHost activity", () => {
         expect(host.isIdle()).toBe(false);
         // The host's stream pulls ahead (its high-water mark), so the read may not add a pull of its own.
         const read = stream.getReader().read();
-        await vi.waitFor(() => expect(received).toContainEqual({ pull: true }));
+        await pulled.promise;
+        expect(received).toContainEqual({ pull: true });
         port1.postMessage({ done: true });
         await expect(read).resolves.toEqual({ done: true, value: undefined });
         expect(host.isIdle()).toBe(true);
@@ -165,7 +176,11 @@ describe("SandboxHost activity", () => {
         const running = wrapper();
         const { port1, port2 } = new NodeMessageChannel();
         const received: unknown[] = [];
-        port1.on("message", (message) => received.push(message));
+        const firstMessage = deferred<void>();
+        port1.on("message", (message) => {
+            received.push(message);
+            firstMessage.resolve();
+        });
         send(
             {
                 type: "CALLBACK_RETURN",
@@ -179,7 +194,8 @@ describe("SandboxHost activity", () => {
         );
         await expect(running).rejects.toThrow("Stream port at index 7 not received");
         expect(host.isIdle()).toBe(true);
-        await vi.waitFor(() => expect(received).toEqual([{ cancel: true }]));
+        await firstMessage.promise;
+        expect(received).toEqual([{ cancel: true }]);
         port1.close();
     });
 
