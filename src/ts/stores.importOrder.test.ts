@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmModules } from "./storage/tests/mutationStoresHarness";
 
 // `stores.svelte.ts` and `parser/transformClient.ts` import each other, and `stores.svelte.ts`
 // subscribes to `ReloadGUIPointer` while it evaluates (a Svelte store calls a new subscriber at once).
@@ -49,6 +50,14 @@ function chatPointerChanges(stores: Stores, change: () => void): unknown[] {
     }
     return seen.slice(1);
 }
+
+// Transforms both modules once, outside the timed cases. Each case still starts from a fresh registry
+// (`resetModules` below), so it evaluates both modules again in its own order: the instance loaded
+// here does not take part in either case's order.
+beforeAll(
+    () => warmModules(() => Promise.all([import("./stores.svelte"), import("./parser/transformClient")])),
+    60_000,
+);
 
 beforeEach(() => {
     vi.resetModules();

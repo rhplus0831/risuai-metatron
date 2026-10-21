@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
     CallbackTargets,
     ChannelAnswer,
@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/jobs.ts";
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import { createAlertQueue, type AlertQueue } from "../alertQueue";
+import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The client dispatcher of the job channel (`jobChannel.ts`) with controlled persistence and plugin
 // dependencies and the real alert module over the real alert queue (a fresh queue per test, with no
@@ -231,6 +232,23 @@ const pump = (ms = 30) => vi.advanceTimersByTimeAsync(ms);
 const alert = () => get(stores.alertStore);
 /** The user answers the shown dialog the way `AlertComp` does. */
 const userAnswers = (msg: string) => stores.alertStore.answer(msg);
+
+beforeAll(
+    () =>
+        warmModules(() =>
+            Promise.all([
+                import("../stores.svelte"),
+                import("../plugins/pluginHooks"),
+                import("./jobChannel"),
+                import("../storage/characterStore.svelte"),
+                import("../storage/records.svelte"),
+                import("../storage/selection.svelte"),
+                import("../storage/settingsViews.svelte"),
+                import("../../lang"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(async () => {
     vi.resetModules();

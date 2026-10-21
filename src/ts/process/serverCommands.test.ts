@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
 // lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
@@ -164,6 +165,11 @@ const endWith = (follow: Follow, terminal: GenerationTerminalEvent) => {
     follow.onEvent(terminal);
     follow.end(terminal);
 };
+
+beforeAll(
+    () => warmModules(() => Promise.all([import("../storage/tests/installFlatDatabase"), import("./serverCommands")])),
+    60_000,
+);
 
 beforeEach(async () => {
     vi.resetModules();

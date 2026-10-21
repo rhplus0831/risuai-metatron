@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
+import { warmMutationGraph } from "../storage/tests/mutationStoresHarness";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 const { authFetch } = vi.hoisted(() => ({ authFetch: vi.fn() }));
@@ -85,7 +86,21 @@ async function boot() {
     return { server, chat, settings, activePreset, recordsWritten, take, commit, unload, ...toggles, ...togglePresets };
 }
 
-// Cold Svelte/server imports belong to setup, outside each synchronous behavior test's timeout.
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([
+                import("../storage/tests/installFlatDatabase"),
+                import("../storage/records.svelte"),
+                import("./chatToggles.svelte"),
+                import("./togglePresets.svelte"),
+            ]),
+        ),
+    60_000,
+);
+
+// The per-test Svelte/server module evaluation belongs to setup, outside each synchronous behavior
+// test's timeout.
 beforeEach(async () => {
     vi.resetModules();
     authFetch.mockReset();

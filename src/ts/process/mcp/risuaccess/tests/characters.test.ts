@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import type { RPCToolCallContent } from "../../mcplib";
 
 // The RisuAccess character tools (`characters.ts`) against the real save adapter and the real
@@ -135,6 +135,8 @@ async function boot() {
     const saved = (id = "c") => booted.record("characters", id);
     return { ...booted, handler, call, other, hold, unchanged, saved };
 }
+
+beforeAll(() => warmMutationGraph(() => import("../characters")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmModules } from "src/ts/storage/tests/mutationStoresHarness";
 
 // Safe boot's plugin side (`plugins-mcp.md`): `loadPluginsForBoot` captures
 // the startup of the guests its own serialized load started (not whatever a later reload applied), a
@@ -47,13 +48,6 @@ vi.mock("./apiV3/v3.svelte", () => ({
     pluginWorkIdle: () => true,
     onPluginWorkChange: () => () => {},
 }));
-vi.mock("src/ts/storage/resourceSync.svelte", async (importOriginal) => ({
-    ...(await importOriginal<Record<string, unknown>>()),
-    onRemoteRecordApplied: (listener: (kind: string, id: string) => void) => {
-        mocks.remoteListeners.add(listener);
-        return () => mocks.remoteListeners.delete(listener);
-    },
-}));
 
 const plugin = (name: string, overrides: Record<string, unknown> = {}) =>
     ({ name, version: "3.0", enabled: true, script: `script of ${name}`, ...overrides }) as any;
@@ -66,12 +60,33 @@ const guest = (name: string) => mocks.instances.get(name)!.host;
 /** A fresh plugin module per test: the reload chain and the remote listener are module state. */
 async function fresh() {
     vi.resetModules();
+    // The remote listener is a spy on this registry's own `resourceSync`: a mocked module outlives
+    // `vi.resetModules()`, so a partial mock would keep the module the first registry loaded (the
+    // warm-up's) for every test.
+    vi.spyOn(await import("src/ts/storage/resourceSync.svelte"), "onRemoteRecordApplied").mockImplementation(
+        (listener) => {
+            mocks.remoteListeners.add(listener);
+            return () => mocks.remoteListeners.delete(listener);
+        },
+    );
     const { settings } = await import("src/ts/storage/settingsViews.svelte");
     const { installFlatDatabase } = await import("src/ts/storage/tests/installFlatDatabase");
     installFlatDatabase({ characters: [], plugins: [] });
     const { loadPlugins, loadPluginsForBoot } = await import("./plugins.svelte");
     return { settings, loadPlugins, loadPluginsForBoot };
 }
+
+beforeAll(
+    () =>
+        warmModules(() =>
+            Promise.all([
+                import("src/ts/storage/settingsViews.svelte"),
+                import("src/ts/storage/tests/installFlatDatabase"),
+                import("./plugins.svelte"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     mocks.off.clear();

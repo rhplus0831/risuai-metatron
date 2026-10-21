@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations } from "src/ts/storage/tests/mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 
 // The MCP writers outside RisuAccess, against the real save adapter and the real server store
 // (`storeBackedServer.ts`), with the remote `MCPClient` stubbed. `importMCPModule` adds a module
@@ -151,6 +151,14 @@ async function boot() {
     };
     return { ...booted, unchanged };
 }
+
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([import("../mcp"), import("../googlesearchclient"), import("../risuaccess")]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

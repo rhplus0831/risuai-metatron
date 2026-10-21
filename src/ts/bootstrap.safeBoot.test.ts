@@ -1,5 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { warmModules } from "./storage/tests/mutationStoresHarness";
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
 import { SAFE_BOOT_KEY, SAFE_BOOT_SETTLE_MS } from "./safeBoot";
 
@@ -68,10 +69,20 @@ vi.mock("./process/serverCommands", () => ({ resumeServerJobs: vi.fn() }));
 let originalServiceWorker: PropertyDescriptor | undefined;
 let listeners: [string, EventListenerOrEventListenerObject][];
 
-beforeAll(async () => {
-    await import("./stores.svelte");
-    await import("./bootstrap");
-}, 60_000);
+// The client graph `app` boots and the server store behind it (its modules and `node:sqlite`), once.
+beforeAll(
+    () =>
+        warmModules(async () => {
+            (await StoreBackedServer.create()).close();
+            await import("./stores.svelte");
+            await import("./bootstrap");
+            // `loadData` imports it lazily.
+            await import("./process/chatStatus.svelte");
+            await import("src/lang");
+            await import("./util");
+        }),
+    60_000,
+);
 
 beforeEach(() => {
     vi.resetModules();

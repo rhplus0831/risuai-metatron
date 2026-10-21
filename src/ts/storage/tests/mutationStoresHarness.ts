@@ -22,15 +22,29 @@ export const refJ = { chaId: "c", chatId: "j" };
 export const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 /**
- * Loads the module graph the storage tests boot, once: the modules `bootMutations` imports and the
- * server modules behind `StoreBackedServer` and `serverKinds.ts`. A test file calls it in a
- * `beforeAll` with a 60 s hook timeout (under its own mocks), so the cold transform is paid outside
- * every timed test. Each test still calls `vi.resetModules()` and evaluates fresh modules; the
- * instance loaded here is left behind as each test's own is for the next one. `also` loads the
- * file's further modules (the caller passes the imports, whose paths are relative to it). The
- * mock calls made while loading are cleared.
+ * Loads a test file's module graph once: `load` performs the imports (the caller passes them, so
+ * their paths are relative to it). A test file calls it in a `beforeAll` with a 60 s hook timeout
+ * (under its own mocks), so the cold transform is paid outside every timed test. Each test still
+ * calls `vi.resetModules()` and evaluates fresh modules; the instance loaded here is left behind as
+ * each test's own is for the next one. The effects the evaluation queued run, then the mock calls
+ * made while loading are cleared.
+ */
+export async function warmModules(load: () => Promise<unknown>) {
+    await load();
+    await tick();
+    vi.clearAllMocks();
+}
+
+/**
+ * `warmModules` over the module graph the storage tests boot: the modules `bootMutations` imports
+ * and the server modules behind `StoreBackedServer` and `serverKinds.ts`. `also` loads the file's
+ * further modules.
  */
 export async function warmMutationGraph(also?: () => Promise<unknown>) {
+    await warmModules(() => loadMutationGraph(also));
+}
+
+async function loadMutationGraph(also?: () => Promise<unknown>) {
     await Promise.all([
         StoreBackedServer.preload(),
         import("../../stores.svelte"),
@@ -48,8 +62,6 @@ export async function warmMutationGraph(also?: () => Promise<unknown>) {
         import("../mutationValidation"),
     ]);
     await also?.();
-    await tick();
-    vi.clearAllMocks();
 }
 
 export async function bootMutations(install: (server: StoreBackedServer) => void) {
