@@ -1,7 +1,9 @@
 # Timing-Dependent Tests Plan
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
-and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`). Next: 4b, 5a, 6a. Source: the
+and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
+`ae024b5bb`). Next: 5b, 6b. Open user question from 6a: reset `lastEffectYieldAt` after awaited
+effects (not decided; production behavior unchanged). Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -188,6 +190,12 @@ per-test `resetModules`; the warm-up only takes the cold transform out of the ti
 
 ## Slice 4b. Client graph warm-up (_small_, `build-test-platforms.md`)
 
+Landed 2026-10-21 (`236531778`): `warmModules(load)` next to `warmMutationGraph`, 18 files. Two
+`importOriginal` partial mocks (`characters`, `pluginSafeBoot`) became per-test `vi.spyOn`: in
+Vitest 4 a mock factory runs once per file and keeps the first registry's real exports across
+`resetModules` (other files with such mocks were not audited). New row for 7b/9b: the CPU-bound
+`moduleWriters` "to an MCP module or an unknown id..." case (failed 1 of 3 overload runs).
+
 Cause 1 for the 16 other client files (`characters`, `generationJobsDelta`, `jobChannel`,
 `jobChannelBarrier`, `pluginContextSaved`, `v3SavedWrites`, `chatStatus`, `inlays`, the two
 `risuaccess` writer tests, `mcpWriters`, `serverCommands`, `stores.importOrder`, `chatToggles`,
@@ -197,6 +205,15 @@ where the graph matches. In `stores.importOrder` the warm-up must happen before 
 both import-order assertions stay meaningful.
 
 ## Slice 5a. Worker pool timing options and scriptWorker (_hard_, `self-host-server.md`)
+
+Landed 2026-10-21 (`3fa95439b`): `watchdogGraceMs` / `abortGraceMs` (`ScriptWorkerPoolOptions`),
+passed as `scriptWorkerOptions` through `createServerContext` and `createTestServer`. Deviations:
+async-wait accounting and two other cases went to slow (D2 duplicates) because no controlled
+worker clock exists; the boot-subject tests (readiness, growth, replacement, the plumbing test)
+keep real cold boots under an explicit 60 s timeout, a stated exception the user accepted. For 5b:
+the graces do not cover the 3000 ms Lua allowance and job budget and the 1000 ms native regex
+deadline (`runSetup.ts`), the sub-regex deadline (`workerPool.ts`), the regex-script allowance
+(`scripts.ts`), HypaV3's 5000 ms budget (`hypav3.ts`) or `bootMs`.
 
 Cause 3, production seam plus its main test file. `server/src/scripts/workerPool.ts`: make the
 watchdog grace (now `WATCHDOG_GRACE_MS` 1000) and the abort grace (`ABORT_GRACE_MS` 500) pool
@@ -217,6 +234,14 @@ regex sites", `luaBindings`, `promptRunner` editinput, `memoryJobs` HypaV3 split
 budgets through the runner where the budget is not the subject).
 
 ## Slice 6a. Server production timers (_hard_, `self-host-server.md`)
+
+Landed 2026-10-21 (`328634ecd`): `realmStagingTimer`, `generationEffectClock` (runner effect clock
+into `TriggerHost.now`; `triggers.ts` unchanged) and `generationAbortGraceMs` on
+`createServerContext` / `createTestServer`; proxy, login limiter, translate and the stream break
+needed only test changes. `lastEffectYieldAt` was left as is: 6a recommends resetting it after
+every awaited effect (today an alert answer followed by setters is two writes); not decided. Left:
+`app` "allows 2000 storage requests..." (7a; under overload it also fails the next test), the
+group-send `sleep(200)` in `promptRunner` (9a).
 
 Cause 5 on the server, each with a test-only seam:
 
