@@ -3,27 +3,25 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 5 (`docs/plan/phases/slices/phase-3-settings-sections/forwarding-presets-and-selection.md`)
-// rules of the selected preset, over the settings record views (`settingsViews.svelte.ts`) since
-// Phase 6 slice 10 moved them there from the removed forwarding layer (`forwarding.svelte.ts`, the
-// accessors on the whole-database aggregate). The spike (`forwardingSpike.test.ts`) proved the
-// mechanism on a test-only harness; these cases pin the shipped rules: the reads and writes by the
-// selected id (`activePreset` under the preset's own field names, the root names with their three
-// aliases through `readSettingsRoot`/`writeSettingsRoot`), tracked reads and untracked writes, the
-// resolution after a collection replacement, the fallback after a removal (a read repairs the
-// selection, a write is dropped and never redirected), the missing and `null` value rules (a read
-// never writes), the legacy flat snapshot (`rootSnapshot`: the selection indexes),
-// the index shims (`selectedPresetIndex`, `selectedLoreBookPage`), and the preset actions
-// (`presets.svelte.ts`) that changed with the layer (`changeToPreset`, `applyPresetTemplate`,
-// `copyPreset`, `importPreset`), and since the preset split (`docs/plan/split-preset.md`) the model
-// preset's own: `activeModelPreset` over the `modelPresets` collection, `changeToModelPreset`,
-// `copyModelPreset`, `removeModelPreset`, with the two selections independent of each other. Since
-// the model profiles (`docs/plan/model-profiles.md`) the model preset holds the slot choices, and the
-// profile fields (`maxContext`, ...) are served by `activeMainProfile` from the main slot's profile
-// and at root; `proxyKey` is removed (O2): it is no root name, a write of it to a model preset or a
-// profile is refused, nothing copies or cleans up a per-preset key, and an imported file's
-// `proxyKey` is ignored. The cases about the accessors themselves (their descriptors, the idempotent
-// install, `setDatabaseLite`, the index setters' input checks) were retired with the aggregate.
+// The rules of the selected preset, over the settings record views (`settingsViews.svelte.ts`), which
+// took them over from the removed forwarding layer (`forwarding.svelte.ts`, the accessors on the
+// whole-database aggregate). `forwardingBindings.test.ts` proves the mechanism on a test-only harness;
+// these cases pin the shipped rules: the reads and writes by the selected id (`activePreset` under the
+// preset's own field names, the root names with their three aliases through
+// `readSettingsRoot`/`writeSettingsRoot`), tracked reads and untracked writes, the resolution after a
+// collection replacement, the fallback after a removal (a read repairs the selection, a write is
+// dropped and never redirected), the missing and `null` value rules (a read never writes), the legacy
+// flat snapshot (`rootSnapshot`: the selection indexes), the index shims (`selectedPresetIndex`,
+// `selectedLoreBookPage`), and the preset actions (`presets.svelte.ts`) that changed with the layer
+// (`changeToPreset`, `applyPresetTemplate`, `copyPreset`, `importPreset`), and since the preset split
+// the model preset's own: `activeModelPreset` over the `modelPresets` collection,
+// `changeToModelPreset`, `copyModelPreset`, `removeModelPreset`, with the two selections independent of
+// each other. Since the model profiles the model preset holds the slot choices, and the profile fields
+// (`maxContext`, ...) are served by `activeMainProfile` from the main slot's profile and at root;
+// `proxyKey` is removed: it is no root name, a write of it to a model preset or a profile is refused,
+// nothing copies or cleans up a per-preset key, and an imported file's `proxyKey` is ignored. The cases
+// about the accessors themselves (their descriptors, the idempotent install, `setDatabaseLite`, the
+// index setters' input checks) were retired with the aggregate.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -384,7 +382,7 @@ describe("missing and null values", () => {
     });
 });
 
-describe("proxyKey (removed, Model Profiles O2)", () => {
+describe("proxyKey (removed with the model profiles)", () => {
     it("is no root name of the snapshot, and a proxyKey written to a model preset or a model profile is refused: nothing is queued or stored", () => {
         boot();
         expect(Object.hasOwn(rootSnapshot(), "proxyKey")).toBe(false);
@@ -437,7 +435,7 @@ describe("proxyKey (removed, Model Profiles O2)", () => {
         });
         const imported = presets()[3];
         expect(imported).toMatchObject({ name: "Hand", temperature: 33 });
-        // The file's credential and model fields are ignored (`docs/plan/split-preset.md`).
+        // The file's credential and model fields are ignored.
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
         expect(Object.hasOwn(imported, "aiModel")).toBe(false);
         expect(queued()).toEqual([]);
@@ -562,7 +560,7 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         expect(removeModelPreset("b")).toBe(true);
         expect(modelPresets().map((entry) => entry.id)).toEqual(["a"]);
         expect(selection.modelPresetId).toBe("a");
-        // No per-preset key exists to clean up (O2), and the shared profiles stay.
+        // No per-preset key exists to clean up, and the shared profiles stay.
         expect(queued()).toEqual([]);
         expect(modelProfiles().map((entry) => entry.id)).toEqual(["pa", "pb"]);
         // The prompt presets are untouched.

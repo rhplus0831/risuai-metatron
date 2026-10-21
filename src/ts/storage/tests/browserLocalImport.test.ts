@@ -351,7 +351,7 @@ describe("Iris dialogue and Google credentials", () => {
     });
 });
 
-describe("Iris dialogue when the save fails (Phase 6 slice 7: written through the settings views)", () => {
+describe("Iris dialogue when the save fails (written through the settings views)", () => {
     it("keeps the local dialogue until the server holds it, and deletes it on a later run once it does", async () => {
         const dialogue = [{ speaker: "Iris", text: "hi", tip: "t" }];
         table(IRIS).set("current_dialogue", dialogue);
@@ -392,7 +392,7 @@ describe("the run as a whole", () => {
     });
 });
 
-describe("the Bergamot model store (docs/plan/translation.md slice 1.5)", () => {
+describe("the Bergamot model store", () => {
     type Request = { onerror: ((event: Event) => void) | null; onsuccess: unknown; onblocked: unknown };
     const request = (): Request => ({ onerror: null, onsuccess: null, onblocked: null });
 

@@ -2,9 +2,9 @@ import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { authFetch } from "./serverAuth";
 
 /**
- * The client of the server's file imports that answer NDJSON (historical `docs/plan/large-asset-import.md`):
- * `POST /api/import/module` (`.risum`, slice 2c, `moduleImportClient.ts`) and `POST /api/import/charx`
- * (CharX, slice 2d, `charxImportClient.ts`), the transport only. The request body is the
+ * The client of the server's file imports that answer NDJSON: `POST /api/import/module` (`.risum`,
+ * `moduleImportClient.ts`) and `POST /api/import/charx` (CharX, `charxImportClient.ts`), the transport
+ * only. The request body is the
  * `File`/`Blob` itself, as `importBackup` (`resourceClient.ts`) sends its archive: the browser
  * streams it from disk with its `Content-Length` (the server checks that length against its cap
  * before reading the body), and the tab holds no copy. Never a `ReadableStream` body: Chrome streams

@@ -10,20 +10,17 @@ import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize, serverNormalizer } from "./serverKinds";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 3, slice 4 (`docs/plan/phases/slices/phase-3-settings-sections/client-section-mirrors.md`):
-// the client mirrors of the five sections and the twelve settings collections (the residual `root`
-// went in slice 6). Every boot here runs the real `loadData` sequence for the data: `readKinds`, `seedResources`,
-// the real `installBootRecords` (Phase 6 slice 10: the records and the selection, no whole-database
-// aggregate), then the adapter's boot compare pass. The convergence
-// rule of the implementation plan (A12) is the central contract: for every kind,
-// `normalize(project(install(normalized)))` equals `normalized` as text, so an unchanged record is
-// never written. The real server store (`storeBackedServer.ts`) materializes and normalizes the
-// records (the client applies no normalization backstop at boot since slice 10); the in-memory fake
-// (`fakeResourceServer.ts`) stores exactly what a test puts in it. Since
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`) `llmSecrets` is write-only: both stand-ins
-// answer it masked, the record's text is its readable siblings, the mirror's credential fields are
-// `""`, the status comes from the masked record (`llmSecretState`), and a credential write goes
-// through `/api/llm-secrets/*` after the cycle's batch, never in the record.
+// The client mirrors of the five sections and the twelve settings collections (there is no residual
+// `root` record). Every boot here runs the real `loadData` sequence for the data: `readKinds`,
+// `seedResources`, the real `installBootRecords` (the records and the selection, no whole-database
+// aggregate), then the adapter's boot compare pass. The convergence rule is the central contract:
+// for every kind, `normalize(project(install(normalized)))` equals `normalized` as text, so an
+// unchanged record is never written. The real server store (`storeBackedServer.ts`) materializes
+// and normalizes the records (the client applies no normalization backstop at boot); the in-memory
+// fake (`fakeResourceServer.ts`) stores exactly what a test puts in it. `llmSecrets` is write-only:
+// both stand-ins answer it masked, the record's text is its readable siblings, the mirror's
+// credential fields are `""`, the status comes from the masked record (`llmSecretState`), and a
+// credential write goes through `/api/llm-secrets/*` after the cycle's batch, never in the record.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -136,12 +133,13 @@ async function boot<S extends Server>(fake: S) {
 }
 
 /**
- * A fake with every materialized kind and the Phase 1 records a normal store holds. There is no
- * `root` record (slice 6): the preset and persona fields and the selection indexes are forwarded.
+ * A fake with every materialized kind and the preset, module, plugin, and plugin storage records a
+ * normal store holds. There is no `root` record: the preset and persona fields and the selection
+ * indexes are forwarded.
  */
 async function fakeStore() {
     const fake = new FakeResourceServer();
-    // As the server stores a preset list: normalized (the boot applies no normalization since slice 10).
+    // As the server stores a preset list: normalized (the boot applies no normalization).
     fake.set("presets", "main", (await serverNormalizer("presets"))([{ id: "preset-1", name: "p1" }]));
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -215,7 +213,7 @@ const customRecords: Record<string, unknown> = {
     customModels: [{ id: "m", internalId: "i", name: "M" }],
     enabledModules: ["mod"],
     statics: { messages: 3, imports: "bad" },
-    // The model fields live on the profiles (`docs/plan/model-profiles.md`); the stored preset still
+    // The model fields live on the profiles; the stored preset still
     // carries the fields that moved or were removed, which the server normalizer drops.
     modelProfiles: [
         { id: "profile-1", name: "F", modelId: "model-x", maxContext: 9000, credentialId: "cred-1" },
@@ -269,8 +267,9 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
         const store = await StoreBackedServer.create();
         try {
             const first = await boot(store);
-            // The server materialized every section, collection, and `presets`; the boot's `[]` for
-            // the two Phase 1 lists the server has none of is what the first save creates (no `root` since slice 6).
+            // The server materialized every section, collection, and `presets`; the boot's `[]` for the
+            // module and plugin lists the server has none of is what the first save creates (there is
+            // no `root`).
             expect(opKinds(first.bootBatches).sort()).toEqual(["modules", "plugins"]);
             expect(first.bootBatches.flatMap((batch) => batch.ops).every((op) => op.baseRevision === null)).toBe(true);
             for (const kind of [...Object.values(SECTION_KIND), ...Object.values(COLLECTION_KIND), "presets"]) {
@@ -343,8 +342,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
     });
 
     it("writes nothing on a boot from a store whose personas hold appended defaults, unknown fields, an own __proto__ key, and a repaired duplicate id", async () => {
-        // Slice 6: `normalizePersonas` (`shared/personas.ts`) runs on the server (at `set`); the boot
-        // applies no backstop (slice 10), and the persona fixed point is what keeps an idle boot write-free.
+        // `normalizePersonas` (`shared/personas.ts`) runs on the server (at `set`); the boot applies no
+        // backstop, and the persona fixed point is what keeps an idle boot write-free.
         const store = await StoreBackedServer.create();
         try {
             store.set("personas", "main", [
@@ -440,7 +439,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             settings.enabledModules.push("mod2");
             settings.statics.messages += 1;
             settings.globalscript.push({ comment: "s2", type: "editoutput", in: "c", out: "d", flag: "" });
-            // Forwarded fields (slices 5 and 6): the edits go to the selected (first) persona and
+            // Forwarded fields: the edits go to the selected (first) persona and
             // preset records of each owner; nothing is written under a root.
             activePersona.name = "u2";
             activePreset.temperature = 42;
@@ -632,7 +631,7 @@ describe("installBootRecords", () => {
         expect(settings.modules).toEqual([]);
         expect(settings.plugins).toEqual([]);
         expect(settings.pluginStorage).toEqual({});
-        // Phase 6 slice 9a: the installation holds the chats in the chat module and writes none onto the characters.
+        // The installation holds the chats in the chat module and writes none onto the characters.
         expect(plain(characterList())).toEqual([{ chaId: "a", name: "Alice", type: "character" }]);
         expect(settings.llmSecrets.openAIKey).toBe("");
         expect(secrets.isSecretSet(credPath("p"))).toBe(true);
@@ -640,7 +639,7 @@ describe("installBootRecords", () => {
         expect(secrets.isSecretSet(credPath("absent"))).toBe(false);
     });
 
-    it("gives the optional Phase 1 lists `[]` and leaves the plugin storage absent when the server has no record, and defaults nothing else", async () => {
+    it("gives the optional module and plugin lists `[]` and leaves the plugin storage absent when the server has no record, and defaults nothing else", async () => {
         const fake = await fakeStore();
         fake.delete("modules", "main");
         fake.delete("plugins", "main");
@@ -648,7 +647,7 @@ describe("installBootRecords", () => {
         const { client, bootstrap, settings, records, characterList } = await fresh(fake);
         bootstrap.installBootRecords(await client.readKinds(Object.values(RESOURCE_KIND)));
         expectNoForwardedField(records);
-        // The two Phase 1 lists the first save creates (slice 10: the boot's `[]`, where `setDatabase` filled them).
+        // The module and plugin lists the first save creates (the boot's `[]`).
         expect(settings.modules).toEqual([]);
         expect(settings.plugins).toEqual([]);
         expect(settings.pluginStorage).toBeUndefined();
@@ -666,9 +665,8 @@ describe("installBootRecords", () => {
     });
 });
 
-// Slice 6 removed the residual `root` (the cases here replaced "the residual root": its projection
-// and its filtering of a pre-slice root no longer exist). No root record is written or read; the
-// fields it held are forwarded to their records.
+// There is no residual `root` record (its projection and its filtering of an older root no longer
+// exist). No root record is written or read; the fields it held are forwarded to their records.
 describe("no root record", () => {
     it("writes no root: the persona fields land in the selected persona, the preset fields in the selected preset, a section field in its section", async () => {
         const { fake, sync, settings, activePreset, activePersona, views } = await boot(await fakeStore());
@@ -695,7 +693,8 @@ describe("no root record", () => {
 
     it("neither reads a stale root record nor writes it back: its keys never reach the mirror and it stays untouched", async () => {
         const fake = await fakeStore();
-        // A root from before slice 6 (a real store with one is refused at startup; the fake keeps it).
+        // A root from before the root record was removed (a real store with one is refused at startup;
+        // the fake keeps it).
         const stale = { username: "old", selectedPersona: 1, temperature: 33, zoomsize: 5, formatversion: 5 };
         const revision = fake.set("root", "main", stale);
         const { bootBatches, sync, settings, activePreset, activePersona, snapshots } = await boot(fake);
@@ -736,16 +735,16 @@ describe("watchers", () => {
             ["authRefreshes", () => s.authRefreshes.push({ url: "u" })],
             ["globalChatVariables", () => (s.globalChatVariables.x = "1")],
             ["personas", () => (s.personas[0].name = "Renamed")],
-            // The translator prompt editor writes the first step through the preset (translation slice 1.2).
+            // The translator prompt editor writes the first step through the preset.
             ["translatorPresets", () => (s.translatorPresets.items[0].steps[0].prompt = "edited")],
             ["translatorPresets", () => (s.translatorPresets.items[0].steps[0].maxResponse = 7)],
             ["hypaV3Presets", () => (s.hypaV3Presets.items[0].settings.queryChatCount = 5)],
             ["customModels", () => s.customModels.push({ id: "m", internalId: "i" })],
             ["enabledModules", () => s.enabledModules.push("mod")],
             ["statics", () => (s.statics.messages += 1)],
-            // A forwarded persona field (slice 6) is an edit of the selected persona record.
+            // A forwarded persona field is an edit of the selected persona record.
             ["personas", () => (activePersona.name = "renamed user")],
-            // A forwarded preset field (slice 5) is an edit of the selected preset record of its owner.
+            // A forwarded preset field is an edit of the selected preset record of its owner.
             ["presets", () => (activePreset.temperature = 42)],
             ["presets", () => (s.presets[0].name = "P")],
             // A forwarded profile field is an edit of the selected model preset's main profile.
@@ -806,9 +805,8 @@ describe("conflict reloads", () => {
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["ui/main"]);
         expect(settings.ui.zoomsize).toBe(77);
-        // Every declared section field is an accessor of its section view onto the record (Phase 6
-        // slice 4, `settings-ownership.md`, "Observable changes"): `in` is true and the field reads
-        // `undefined`; the deletion is in the record itself.
+        // Every declared section field is an accessor of its section view onto the record: `in` is true
+        // and the field reads `undefined`; the deletion is in the record itself.
         expect("irisDialogue" in settings.ui).toBe(true);
         expect(settings.ui.irisDialogue).toBeUndefined();
         expect(Object.hasOwn(plain(records.recordData("ui")), "irisDialogue")).toBe(false);
@@ -906,9 +904,9 @@ describe("conflict reloads", () => {
         const before = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
-        // The next edit goes as a field patch (slice 3g) on the reloaded base and lands as a normalized
-        // value. The fake applies a patch without a normalizer, so it keeps the server's key order; the
-        // real store serializes the normalizer's order.
+        // The next edit goes as a field patch on the reloaded base and lands as a normalized value. The
+        // fake applies a patch without a normalizer, so it keeps the server's key order; the real store
+        // serializes the normalizer's order.
         settings.ui.zoomsize = 67;
         await sync.flushResources();
         const stored = fake.data("ui", "main");

@@ -60,8 +60,8 @@ const refJ = { chaId: "c", chatId: "j" };
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
     const fake = await StoreBackedServer.create();
-    // The store materialized the sections and collections when it opened; there is no `root` record
-    // since slice 6, and the sample singleton edit of these tests is `ui.theme`.
+    // The store materialized the sections and collections when it opened; there is no `root` record,
+    // and the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -120,8 +120,8 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     fake.requests.length = 0;
     /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
     const characters = () => characterList() as any[];
-    // The membership (Phase 6 slice 9b): a chat another tab created is listed as a summary until it is
-    // loaded, so the compatibility view (the loaded chats only) is not the list.
+    // The membership: a chat another tab created is listed as a summary until it is loaded, so the
+    // compatibility view (the loaded chats only) is not the list.
     const mirrorIds = () => chat.chatList("c").map((entry) => entry.id);
     return { fake, client, sync, chat, bootBatches, settings, characters, selection, mirrorIds };
 }
@@ -152,9 +152,9 @@ describe("boot and mixed batches", () => {
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
         characters()[0].name = "renamed";
-        // Phase 6 slice 9a: a wrapper refuses a `chatPage` write; the selection is the chat module's.
+        // A wrapper refuses a `chatPage` write; the selection is the chat module's.
         chat.selectChat("c", 1);
-        // The write itself queues the character's save (Phase 6 slice 5: no mark).
+        // The write itself queues the character's save (no mark).
         await sync.flushResources();
         const saved = fake.record("characters", "c")!.data as any;
         expect(saved.name).toBe("renamed");
@@ -195,7 +195,7 @@ describe("boot and mixed batches", () => {
     it("creates a new character's chats exactly once, with the record holding none of them", async () => {
         const { fake, sync, characters } = await boot();
         const characterStore = await import("../characterStore.svelte");
-        // The list changes through the character module (Phase 6 slice 5: a push through the list wrapper is refused).
+        // The list changes through the character module (a push through the list wrapper is refused).
         characterStore.addCharacter({
             chaId: "d",
             name: "D",
@@ -355,7 +355,7 @@ describe("one chat's trouble does not block the rest", () => {
         expect(alerts.error.mock.calls[0][0]).toMatch(/chat k could not be saved: chats\[0\]\.ops\[0\]/);
         expect((fake.chat("c", "j")!.data as any).note).toBe("fine");
         expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section edit" });
-        // The refused value did not land: the chat keeps the server's default (-1, Phase 6 slice 5b).
+        // The refused value did not land: the chat keeps the server's default (-1).
         expect((fake.chat("c", "k")!.data as any).fmIndex).toBe(-1);
         expect(chat.hasChatWork()).toBe(false);
         chat.setChatMeta(refJ, { note: "still saving" });
@@ -422,7 +422,7 @@ describe("one chat's trouble does not block the rest", () => {
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("keeps another tab's text when this tab toggles Disable on an older base, and keeps its variables when this tab merges one: the idle refresh then converges the mirror (data-loss slice 1b)", async () => {
+    it("keeps another tab's text when this tab toggles Disable on an older base, and keeps its variables when this tab merges one: the idle refresh then converges the mirror", async () => {
         const { fake, sync, chat } = await boot();
         chat.setChatMeta(refK, { scriptstate: { $c: "3" } });
         await sync.flushResources();
@@ -501,8 +501,8 @@ describe("one chat's trouble does not block the rest", () => {
         expect(mirrorIds()).toEqual(fake.order("c")!.ids);
         expect(mirrorIds()).toContain("r");
         expect((fake.chat("c", "j")!.data as any).note).toBe("must save");
-        // Data-loss slice 4b: the refresh after the acknowledgement keeps the reorder queued after it
-        // (this client's order first, the other tab's chat after), nothing is discarded, no notice.
+        // The refresh after the acknowledgement keeps the reorder queued after it (this client's order
+        // first, the other tab's chat after), nothing is discarded, no notice.
         expect(fake.order("c")!.ids).toEqual(["local", "k", "j", "r"]);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
         expect(chat.hasChatWork()).toBe(false);
@@ -645,7 +645,7 @@ describe("pagehide", () => {
         expect(keepalive).toHaveLength(2);
         expect(keepalive.map((init) => init.keepalive)).toEqual([true, true]);
         expect(new Headers(keepalive[0].headers).get("risu-auth")).toBe("signed-token");
-        // Each with its group id (slice 6b), as every group the tab sends.
+        // Each with its group id, as every group the tab sends.
         expect(JSON.parse(keepalive[0].body as string)).toEqual({
             chats: [
                 {
@@ -722,9 +722,9 @@ describe("pagehide", () => {
     });
 });
 
-// Phase 5 cutover: a row rendered before its chat's first save had no transform context, so the
-// chat module counts the first revision it holds for a chat (`chatSaveVersion`, reactive), and
-// `Chat.svelte` renders the chat's rows again when that count moves.
+// A row rendered before its chat's first save has no transform context, so the chat module counts
+// the first revision it holds for a chat (`chatSaveVersion`, reactive), and `Chat.svelte` renders
+// the chat's rows again when that count moves.
 describe("a chat's first save (chatSaveVersion)", () => {
     const refN = { chaId: "c", chatId: "n" };
 
@@ -779,11 +779,11 @@ describe("a chat's first save (chatSaveVersion)", () => {
     });
 });
 
-// Data-loss slice 6a: a by-id edit of a message another tab removed is reported `missing` per op
-// while the rest of its group commits (no discard, no notice; the idle read drops the message from
-// the mirror), and an append after a removed anchor is re-anchored to the end after the read-back
-// instead of discarding the chat's work.
-describe("missing targets and gone anchors (data-loss slice 6a)", () => {
+// A by-id edit of a message another tab removed is reported `missing` per op while the rest of its
+// group commits (no discard, no notice; the idle read drops the message from the mirror), and an
+// append after a removed anchor is re-anchored to the end after the read-back instead of discarding
+// the chat's work.
+describe("missing targets and gone anchors", () => {
     const texts = (chat: ChatModule, ref = refK) => chat.findChat(ref)!.message.map((message) => message.data);
     /** Another tab removes `ids` from `k` on the current revision. */
     const removeElsewhere = (fake: StoreBackedServer, ids: string[]) =>
@@ -874,8 +874,8 @@ describe("missing targets and gone anchors (data-loss slice 6a)", () => {
         fake.failNext = null;
         expect(queued).toBe(true);
         expect(result.discarded).toEqual([]);
-        // The refused group, then its repair alone as the chat's resend (slice 6b: a new id, on the
-        // same base); the appends queued during the read-back were re-anchored too and wait behind it.
+        // The refused group, then its repair alone as the chat's resend (a new group id, on the same
+        // base); the appends queued during the read-back were re-anchored too and wait behind it.
         const anchors = () => sentOps(fake).map((ops) => ops.map((op: any) => [op.messages[0].chatId, op.anchor]));
         expect(anchors().slice(0, 2)).toEqual([[["d", { after: "b" }]], [["d", { end: true }]]]);
         const [refused, repaired] = sentGroups(fake);
@@ -921,7 +921,7 @@ describe("missing targets and gone anchors (data-loss slice 6a)", () => {
         const result = await sync.flushResources();
         fake.failNext = null;
         expect(queued).toBe(true);
-        // The repaired append is resent alone (slice 6b) and lands; nothing is discarded by it.
+        // The repaired append is resent alone and lands; nothing is discarded by it.
         expect(result.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
         expect(
@@ -1040,7 +1040,7 @@ describe("missing targets and gone anchors (data-loss slice 6a)", () => {
     });
 });
 
-describe("group idempotency ids (data-loss slice 6b)", () => {
+describe("group idempotency ids", () => {
     /** The groups of `chatId` the server received, in order (as sent). */
     const groupsOf = (fake: StoreBackedServer, chatId = "k") =>
         fake
@@ -1241,10 +1241,10 @@ describe("group idempotency ids (data-loss slice 6b)", () => {
     });
 });
 
-// Open-bug-fixes slice A2: a kept chat (quarantined, deleted here with a delete that cannot run) that
-// an authoritative chat list shows gone on the server keeps its draft and held revision but leaves
-// the reorders and create indices (`absentChats`), so the server accepts them as permutations.
-describe("kept absent chats leave the order (open-bug-fixes slice A2)", () => {
+// A kept chat (quarantined, deleted here with a delete that cannot run) that an authoritative chat
+// list shows gone on the server keeps its draft and held revision but leaves the reorders and
+// create indices (`absentChats`), so the server accepts them as permutations.
+describe("kept absent chats leave the order", () => {
     /** Boots with a third chat `r` the other tab created: the server order is `k, j, r`. */
     const bootWithR = () =>
         boot((fake) =>
@@ -1467,13 +1467,13 @@ describe("kept absent chats leave the order (open-bug-fixes slice A2)", () => {
     });
 });
 
-// Open-bug-fixes slice A3: this tab's deletion of a character settles its chats' work when the
-// deletion is collected (`settleCharacterDelete`), but keeps the resends whose group may have landed
-// (`parkedResends`) until the server confirms the character gone. A deletion that fails and a re-add
-// of the id then reconcile those chats like any the client knows: a landed create is deleted or
-// replaced behind its replay instead of being forgotten (it survived on the server before, or a reused
-// id conflicted), and a lost edit's replay keeps the replacement's replace off a stale base.
-describe("a deletion that fails after a lost chat group keeps the group for a same-id re-add (open-bug-fixes slice A3)", () => {
+// This tab's deletion of a character settles its chats' work when the deletion is collected
+// (`settleCharacterDelete`), but keeps the resends whose group may have landed (`parkedResends`)
+// until the server confirms the character gone. A deletion that fails and a re-add of the id then
+// reconcile those chats like any the client knows: a landed create is deleted or replaced behind
+// its replay instead of being forgotten (before the fix it survived on the server, or a reused id
+// conflicted), and a lost edit's replay keeps the replacement's replace off a stale base.
+describe("a deletion that fails after a lost chat group keeps the group for a same-id re-add", () => {
     type CharacterStoreModule = typeof import("../characterStore.svelte");
     const refX = { chaId: "c", chatId: "x" };
     const batchPath = (path: string) => path === "/api/resources/batch";
@@ -1567,7 +1567,7 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         // The re-add's reorder (`[x]`, nothing held it back) went out in the replay's batch on the
         // order base the lost create had moved, so that batch conflicted and the recovery read the
         // list: one reload notice, nothing discarded. The same happens to any reorder sent beside an
-        // in-doubt create replay (before slice A3 too); it is not of the re-add.
+        // in-doubt create replay, with or without the deletion fix; it is not of the re-add.
         expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
     });
 
@@ -1586,7 +1586,7 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.characterStore.addCharacter(replacement([chatOf("k", "Rewritten transcript")]));
         expect(await h.sync.flushResources()).toEqual({ discarded: [] });
         expect(stored(h.fake)).toEqual({ ids: ["k"], texts: { k: "Rewritten transcript" } });
-        // Before slice A3 the settled resends were forgotten and the replace went out on the base the
+        // Before the fix the settled resends were forgotten and the replace went out on the base the
         // lost edit had moved: a conflict, the notice, and the server's copy over the replacement.
         const [replayK, replaceK] = groups(h.fake).filter((group: any) => group.chatId === "k");
         expect(replayK).toEqual({ ...lostK, retry: true });

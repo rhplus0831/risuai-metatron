@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, m, plain, refK } from "./mutationStoresHarness";
 
-// Phase 4, slice 1 (`docs/plan/phases/slices/phase-4-external-contracts/character-and-collection-mutations.md`):
-// the character mutation module (`characterStore.svelte.ts`) and the relocated `checkCharOrder`
+// The character mutation module (`characterStore.svelte.ts`) and the relocated `checkCharOrder`
 // (`characterOrder.ts`) against the real server store: a refusal throws and changes nothing (mirror
 // and server compared after the next cycle), a write lands by id and is saved, the chats stay the
 // chat module's, and the selection follows a removal.
@@ -114,8 +113,8 @@ describe("updateCharacter", () => {
         expect("desc" in character("c")).toBe(false);
         expect("extra" in character("c")).toBe(false);
         await sync.flushResources();
-        // `extra` is removed from the server; `desc` is a character default (Phase 6 slice 5b), so the
-        // save cycle writes its default back before saving, and the mirror shows it.
+        // `extra` is removed from the server; `desc` is a character default, so the save cycle
+        // writes its default back before saving, and the mirror shows it.
         expect(record("characters", "c")).not.toHaveProperty("extra");
         expect(record("characters", "c").desc).toBe("");
         expect(character("c").desc).toBe("");
@@ -129,8 +128,8 @@ describe("updateCharacter", () => {
         const copy = plain(character("c"));
         expect(copy).toMatchObject({ toString: "x", constructor: 1, valueOf: "v", hasOwnProperty: 2, desc: "d" });
         expect(Object.hasOwn(character("c"), "toString")).toBe(true);
-        // The chats are the same values: the chat module still addresses them. (Phase 6 slice 9a: the
-        // facade's `chats` is a fresh array on every read, so the chats are compared one by one.)
+        // The chats are the same values: the chat module still addresses them. (The facade's `chats`
+        // is a fresh array on every read, so the chats are compared one by one.)
         expect(character("c").chats).toEqual(chatsBefore);
         character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chatsBefore[index]));
         chat.appendMessage(refK, m("d", "D"));
@@ -210,7 +209,7 @@ describe("replaceCharacterFields", () => {
         );
         expect(characterStore.replaceCharacterFields(replacement)).toBe(true);
         expect(character("c").name).toBe("Replaced");
-        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        // `chats` is a fresh array on every read; the chats are the same ones.
         expect(character("c").chats).toEqual(chatsBefore);
         character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chatsBefore[index]));
         expect(character("c").chatPage).toBe(0);
@@ -219,7 +218,7 @@ describe("replaceCharacterFields", () => {
         const saved = record("characters", "c");
         expect(saved).toMatchObject({ name: "Replaced", toString: "t", constructor: 9 });
         // The mirror keeps an own `__proto__`, and the character projection serializes the record's own
-        // keys directly (Phase 6 slice 5b; `$state.snapshot` used to drop it), so it reaches the server too.
+        // keys directly (`$state.snapshot` used to drop it), so it reaches the server too.
         expect(Object.hasOwn(saved, "__proto__")).toBe(true);
         expect(Object.getOwnPropertyDescriptor(saved, "__proto__")!.value).toEqual({ x: 1 });
         expect(saved).not.toHaveProperty("chats");
@@ -242,11 +241,11 @@ describe("replaceCharacterFields", () => {
     });
 });
 
-// Phase 4, slice 3: the render key (`reloadKeys`, never saved) is left out of the JSON check and of
+// The render key (`reloadKeys`, never saved) is left out of the JSON check and of
 // the detached copy, so a character a plugin read back after a send (where the key is a number, or
 // was `NaN` before the send stopped producing it) round-trips; the check still refuses a root that
 // is not a plain object (a `Date`, a `Map`, a class instance, an object with an inherited id) before
-// anything changes (Astra challenge point 5).
+// anything changes.
 describe("checkCharacterInput and the render key", () => {
     it("accepts a character whose reloadKeys is a number, NaN, or a list, keeps the mirror's key, and saves none", async () => {
         const { sync, characterStore, record, character, characterList } = await boot();
@@ -434,7 +433,7 @@ describe("checkCharOrder", () => {
     });
 });
 
-// Phase 6 slice 8 (`readers-characters.md`): the readers' API. Components read the selected
+// The readers' API. Components read the selected
 // character as `$derived(selectedCharacter())` and bind its fields (the editors' nested lorebook
 // entries included); a write through that wrapper is one save of that character's record. A
 // writer for another character takes its writable wrapper from `characterList()`. `characterSnapshot`
@@ -500,7 +499,7 @@ describe("the readers' API (selectedCharacter, characterList, characterSnapshot)
         const { fake, sync, characterStore, character, chat } = await boot();
         const copy = characterStore.characterSnapshot("c")!;
         expect(copy.chaId).toBe("c");
-        // Phase 6 slice 9a: the snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
+        // The snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
         expect(copy).not.toHaveProperty("chats");
         const legacy = chat.withChatsCopy(copy);
         expect(legacy.chats.map((entry) => entry.id)).toEqual(["k", "j"]);

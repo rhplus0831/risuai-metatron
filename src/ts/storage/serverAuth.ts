@@ -3,13 +3,13 @@ import { alertError, alertInput, waitAlert } from "../alert";
 import { base64url, getKeypairStore, saveKeypairStore } from "../util";
 
 /**
- * The tab's authentication with the self-host server (Phase 6 slice 10, split out of the old storage
- * client): one state for every caller (the resource client, the asset client, the proxy, the
- * sockets). This browser has a non-extractable ECDSA P-256 key pair (stored under `"node"`); a request carries a
+ * The tab's authentication with the self-host server (split out of the old storage client): one
+ * state for every caller (the resource client, the asset client, the proxy, the sockets). This
+ * browser has a non-extractable ECDSA P-256 key pair (stored under `"node"`); a request carries a
  * fresh ES256 JWT over its public key (`risu-auth`, valid five minutes). The first check asks the
  * server whether the key is known (`/api/test_auth`): on a fresh server the password is set, then
- * the key registered with it; with an unknown key the password is asked and the key registered.
- * One check runs at a time; parallel callers wait for it, and a failed one is tried again next time.
+ * the key registered with it; with an unknown key the password is asked and the key registered. One
+ * check runs at a time; parallel callers wait for it, and a failed one is tried again next time.
  */
 
 function JSONStringlifyAndbase64Url(obj: unknown) {

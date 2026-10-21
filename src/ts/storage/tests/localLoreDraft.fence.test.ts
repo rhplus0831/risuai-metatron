@@ -3,11 +3,11 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Slice 1c of `docs/plan/data-loss-concurrency.md` (audit A2), the lore draft's half
-// (`docs/structure/persistence.md` `localLoreDraft.svelte.ts`): over the real chat module, a change of
-// the selected chat's local lorebook draft is saved through `setChatMeta`, but while a send of this
-// tab (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in the chat it is refused with
-// the `chatGenerating` notice and undone in the copy, and nothing is written when the fence drops.
+// The lore draft's generation fence (`docs/structure/persistence.md` `localLoreDraft.svelte.ts`):
+// over the real chat module, a change of the selected chat's local lorebook draft is saved through
+// `setChatMeta`, but while a send of this tab (`sendingChatRef`) or a job this tab follows
+// (`followedJobs`) runs in the chat it is refused with the `chatGenerating` notice and undone in the
+// copy, and nothing is written when the fence drops.
 
 const mocks = vi.hoisted(() => ({ alertError: vi.fn() }));
 

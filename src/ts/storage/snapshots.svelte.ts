@@ -17,7 +17,7 @@ import {
 } from "./settingsViews.svelte";
 
 /**
- * The snapshot builders (Phase 6 slice 10): the consumers that need the legacy whole-database shape
+ * The snapshot builders: the consumers that need the legacy whole-database shape
  * (the plugin `getDatabase`, the settings report, the backup's asset inventory) get a fresh plain
  * object built from the records when they ask. None is reactive, cached, or written back: a builder
  * reads its records once, untracked, and copies every value it returns.

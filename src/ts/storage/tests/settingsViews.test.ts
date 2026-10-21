@@ -3,25 +3,23 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 6 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-pages.md`):
-// the settings record views (`settingsViews.svelte.ts`) that the settings pages and the registry
+// The settings record views (`settingsViews.svelte.ts`) that the settings pages and the registry
 // read and write, over the records a fixture installs (`installFlatDatabase`). The records
 // themselves (`records.svelte.ts`, read under the root names through the shared partition tables,
 // not through the views module) are the independent oracle: every view must read what the record
-// holds under the root name (the removed facade read the same: slice 10 took the aggregate away)
-// and write into the record. Covered: `activePreset` (its own field names for the three root aliases, tracked reads
-// and untracked writes, the read fallback that repairs the selection also inside a `$derived`, the
-// dropped write, the detached default of a missing field, the nullable `null`), `activePersona`
-// (the four aliases, the string defaults, a raw `largePortrait`), the record resolvers, the section
-// and collection views, the credential boundary (`llmSecrets` routed, `proxyKey` served by neither
-// the views nor the root resolver), `readSettingsRoot`/`writeSettingsRoot` over every root name and
-// their refusal of every other name, `selectedLoreBookPage`, and the registry functions over the
-// real context: every registry item's binding read and written through the views, `getValue`/
-// `bindPath`/`bindKey` precedence, a `bindPath` into a `null` container, and the custom quote items.
-// Since the model profiles (`docs/plan/model-profiles.md`) `activeModelPreset` serves the slot
-// fields, `activeMainProfile`/`activeSubProfile` the slots' profiles, and the model root names are
-// derived: `aiModel`/`subModel`/`seperateModels` the slots' model ids, the profile fields the main
-// profile's.
+// holds under the root name (the removed facade read the same) and write into the record. Covered:
+// `activePreset` (its own field names for the three root aliases, tracked reads and untracked
+// writes, the read fallback that repairs the selection also inside a `$derived`, the dropped write,
+// the detached default of a missing field, the nullable `null`), `activePersona` (the four aliases,
+// the string defaults, a raw `largePortrait`), the record resolvers, the section and collection
+// views, the credential boundary (`llmSecrets` routed, `proxyKey` served by neither the views nor
+// the root resolver), `readSettingsRoot`/`writeSettingsRoot` over every root name and their refusal
+// of every other name, `selectedLoreBookPage`, and the registry functions over the real context:
+// every registry item's binding read and written through the views, `getValue`/`bindPath`/`bindKey`
+// precedence, a `bindPath` into a `null` container, and the custom quote items. `activeModelPreset`
+// serves the slot fields, `activeMainProfile`/`activeSubProfile` the slots' profiles, and the model
+// root names are derived: `aiModel`/`subModel`/`seperateModels` the slots' model ids, the profile
+// fields the main profile's.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -148,7 +146,8 @@ const profileOfSlot = (slot: any) => (slot && "profileId" in slot ? profile(slot
 /** A slot's model id: a bare slot's own, a profile's `modelId`, "" for an unset or dangling slot. */
 const modelIdOfSlot = (slot: any): string =>
     !slot ? "" : "modelId" in slot ? slot.modelId : (profileOfSlot(slot)?.modelId ?? "");
-const phase1Kinds: Record<string, string> = {
+/** The resource kind of each list stored as records of its own (`ITEM_RECORD_FIELDS` except `characters`). */
+const itemRecordKinds: Record<string, string> = {
     botPresets: "presets",
     modules: "modules",
     plugins: "plugins",
@@ -160,8 +159,8 @@ const phase1Kinds: Record<string, string> = {
  * facade read): a section record's field; the selected preset's field (the record
  * `selection.presetId` names, else the first, as the selection rule reads; its `PRESET_DEFAULTS`
  * value when the record lacks it); the selected persona's field likewise (its string default when
- * not a string); a collection's record, or a selectable one's `items`/`selectedId`; a Phase 1
- * list's record. Throws for a name outside the partition.
+ * not a string); a collection's record, or a selectable one's `items`/`selectedId`; the record of
+ * a list stored as records of its own. Throws for a name outside the partition.
  */
 function root(key: string): unknown {
     const section = sectionOfField.get(key);
@@ -176,8 +175,8 @@ function root(key: string): unknown {
             : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[field]);
     }
     if (forwardedModelPresetKeys.has(key)) {
-        // A model root (`docs/plan/model-profiles.md`, "Compatibility"): the selected model preset's
-        // slots' model ids and toggle, and its main profile's fields, same rules.
+        // A model root: the selected model preset's slots' model ids and toggle, and its main
+        // profile's fields, same rules.
         const selected = selectedModelPreset();
         if (key === "aiModel") {
             return modelIdOfSlot(selected?.mainSlot);
@@ -206,8 +205,8 @@ function root(key: string): unknown {
             return record(kind)?.selectedId;
         }
     }
-    if (Object.hasOwn(phase1Kinds, key)) {
-        return record(phase1Kinds[key]);
+    if (Object.hasOwn(itemRecordKinds, key)) {
+        return record(itemRecordKinds[key]);
     }
     throw new Error(`${key} is not a root name of the partition`);
 }
@@ -352,7 +351,7 @@ function registryItems(): SettingItem[] {
     return out;
 }
 
-/** What the records hold for an item's binding (the walk the registry made over the facade before slice 6). */
+/** What the records hold for an item's binding (the walk the registry made over the removed facade). */
 function recordRead(item: SettingItem): unknown {
     const [first, ...rest] = (item.bindPath ?? item.bindKey!).split(".");
     let value: any = root(first);
@@ -389,8 +388,8 @@ describe("activePreset", () => {
         expect(activePreset.id).toBe("a");
         expect(activePreset.name).toBe("A");
         expect(activePreset.image).toBe("img-a");
-        // The model fields are the model preset's and the profile's (`docs/plan/model-profiles.md`), and
-        // proxyKey is a removed credential (never served).
+        // The model fields are the model preset's and the profile's, and proxyKey is a removed credential
+        // (never served).
         for (const field of [...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS, "proxyKey"]) {
             expect(field in activePreset, field).toBe(false);
         }
@@ -608,7 +607,7 @@ describe("activeModelPreset", () => {
         expect(Object.hasOwn(modelPreset("b"), "localNetworkTimeoutSec")).toBe(false);
         expect(readSettingsRoot("localNetworkTimeoutSec")).toBe(42);
         // `aiModel` is a model id: a root write naming exactly one profile points the selected model
-        // preset's main slot at it (Model Profiles O8).
+        // preset's main slot at it.
         writeSettingsRoot("aiModel", "model-sub");
         expect(modelPreset("b").mainSlot).toEqual({ profileId: "sub" });
         expect(modelPreset("a").mainSlot).toEqual({ profileId: "pa" });
@@ -896,9 +895,9 @@ describe("scopedPresetRoot (a request's captured pair)", () => {
         expect(selection.modelPresetId).toBe("b");
     });
 
-    // Astra's challenge point 1 on the implementation: a tab-run (plugin or WebLLM) request whose
-    // captured record was deleted meanwhile must be refused, never redirected to the selection.
-    it("never reads the selection for a captured pair whose record is gone (Astra challenge point 1)", () => {
+    // A tab-run (plugin or WebLLM) request whose captured record was deleted meanwhile must be
+    // refused, never redirected to the selection.
+    it("never reads the selection for a captured pair whose record is gone", () => {
         changeToPreset("b");
         changeToModelPreset("b");
         trackedRecord<any[]>("modelPresets")!.splice(0, 1);
@@ -1044,9 +1043,9 @@ describe("the registry over the views", () => {
 
     it("a model-dependent condition reads the selected model preset's main profile through ctx.modelProfile and follows a model switch, not a prompt switch", () => {
         const ctx = realCtx();
-        // The shape of the former Advanced `adv.localNetworkTimeout` item, which left the catalog in settings
-        // UI plan slice 4 (the Connections editor edits the same profile field); no catalog item has a
-        // condition on `ctx.modelProfile` now.
+        // The shape of the former Advanced `adv.localNetworkTimeout` item, which left the catalog when
+        // the Connections editor took over the same profile field; no catalog item has a condition on
+        // `ctx.modelProfile` now.
         const timeout: SettingItem = {
             id: "test.localNetworkTimeout",
             type: "number",

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refK } from "./mutationStoresHarness";
 
-// Phase 4, slice 1: `beginMutationScope` and `flushResources({ scope })` (`resourceSync.svelte.ts`).
-// The scope is a time window: the flush reports every key a conflict discarded since the scope
-// began, whether the discard happened before the flush was called or during it, for resources and
-// for chats, and including an unrelated write's discard (the documented conservative failure).
-// Without a scope, `flushResources` reports only the discards since its own call.
+// `beginMutationScope` and `flushResources({ scope })` (`resourceSync.svelte.ts`). The scope is a
+// time window: the flush reports every key a conflict discarded since the scope began, whether the
+// discard happened before the flush was called or during it, for resources and for chats, and
+// including an unrelated write's discard (the documented conservative failure). Without a scope,
+// `flushResources` reports only the discards since its own call.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },

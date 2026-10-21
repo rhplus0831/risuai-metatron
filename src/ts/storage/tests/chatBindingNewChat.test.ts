@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// `docs/plan/chat-binding.md`, slice 6: how a new chat starts (`initialChatBinding`) and how an
-// imported chat is prepared (`importedChatBinding`), over the chat module booted from summaries
-// against the real server store (nothing loaded, as `chatBinding.test.ts` boots it). Covered:
+// How a new chat starts (`initialChatBinding`) and how an imported chat is prepared
+// (`importedChatBinding`), over the chat module booted from summaries against the real server store
+// (nothing loaded, as `chatBinding.test.ts` boots it). Covered:
 // - inherit reads the character's selected chat's list entry (unloaded, no read), else its first
 //   chat in order; a character without chats or unknown gives nothing;
 // - only ids that name records that exist are copied, each omitted otherwise (a gone id, a padded

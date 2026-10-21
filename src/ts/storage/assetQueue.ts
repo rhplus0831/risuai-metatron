@@ -53,7 +53,7 @@ export async function* loadAssetsInBatches(
 }
 
 /**
- * The bounded asset save queues (large-asset-import slices 1a and 3c). {@link saveAssets} serves the
+ * The bounded asset save queues. {@link saveAssets} serves the
  * bulk import paths (the CharX-embedded `.risum`, PNG card chunks, embedded base64 assets, picked
  * files, ONNX zips): an item's bytes are not produced (`load()`) until it has a slot, and the loaded
  * items are written in batches through the batch write route, one request at a time.

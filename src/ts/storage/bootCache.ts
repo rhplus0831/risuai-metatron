@@ -13,7 +13,7 @@ import type { BOOT_CACHE_REASONS, DiagnosticEventInput } from "../../../shared/d
 import { newId } from "../../../shared/ids.ts";
 
 /**
- * The boot cache (`docs/plan/boot-resource-cache.md` slice 3): the boot read goes through
+ * The boot cache: the boot read goes through
  * `POST /api/resources/boot` with what an IndexedDB cache holds, and the answer is expanded into
  * the plain `ResourceReadKindsResult` a full read gives, so nothing after the read changes. The
  * cache holds exactly what the server sent (record texts at their revisions, item texts by their

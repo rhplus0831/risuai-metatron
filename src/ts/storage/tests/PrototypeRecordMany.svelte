@@ -1,6 +1,6 @@
 <script lang="ts">
-    // Test-only (Phase 6 spike, proof 5): one `bind:value` per field of a record wrapper (60 in the
-    // cost proof), for the mount and re-render measurements.
+    // Test-only (the cost cases): one `bind:value` per field of a record wrapper (60 in the
+    // cost measurement), for the mount and re-render measurements.
     interface Props {
         record: any;
         fields: string[];

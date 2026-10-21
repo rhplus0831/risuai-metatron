@@ -170,7 +170,7 @@ Each cause below has one fix that covers many rows. The row lists in section 2 c
    - Fix: add `"Date"` to the harness `toFake` lists, as `resourceSyncNotices`, `resourceSyncLive`
      and `resourceSyncFeedPatches` already do.
 8. **Wall-clock complexity guards.** `mcp.test.ts:1026` (8 MiB in < 5 s), `mcpSse.test.ts:127`
-   (80k events in < 3 s), `projectionSpike.test.ts:2015` (tracked/direct ratio < 10), and the
+   (80k events in < 3 s), `projectionBindings.test.ts:2015` (tracked/direct ratio < 10), and the
    100k-item cases left after the 2026-10-18 deletions (`moduleCache:297`, `assetList:145`), whose
    only budget is now the default 5 s timeout. Count the work (bytes scanned, copies) instead,
    shrink the fixtures, or move the case to slow.
@@ -1018,7 +1018,7 @@ and files fixed on 2026-10-18 are tagged in their headings.
 
 - **64;87** "sets, reads a detached copy" (first test) / "refuses a value that is not JSON data": PERF, controlled: no. **rewrite:other(warm-up beforeAll with a raised hook timeout)** (risk: high). First test cold boot 2329 ms when idle; the second does 13 refused flushes in 432 ms of CPU (about 3.9 s at 1/9 CPU), both in the default 5 s (risk: high / med)
 
-#### `src/ts/storage/tests/projectionSpike.test.ts`
+#### `src/ts/storage/tests/projectionBindings.test.ts`
 
 - **2015,2016** "1,000 sequential nested writes into the 300-entry character": PERF, controlled: no. **move-slow** (risk: low-med). the median ratio of tracked vs direct write time (real performance.now over 9 rounds) must be < 10; cost is the subject, and direct is a sub-ms sample that load noise can distort; also runs execSync("uname -a") for the report (risk: low-med)
 - **1446,1474,1721** proof 14 / round 2 point 4 / round 2 point 1: POLL, controlled: yes. **keep-poll** (risk: low). vi.waitFor on in-process held batch (releaseBatch); nextTask setTimeout(0) only closes the same-task window

@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "Implementation notes, 9b" and "After the challenge, 9b"): the chat module booted from summaries,
-// against the real server store in memory, with the save loop driven by hand (`take` → `applyChanges`
-// → `ack`, as `chatStore.test.ts` does) and the module's own reads answered by the server through
-// `authFetch`, held where a case needs an interleaving. Covered here:
+// The chat module booted from summaries, against the real server store in memory, with the save loop
+// driven by hand (`take` → `applyChanges` → `ack`, as `chatStore.test.ts` does) and the module's own
+// reads answered by the server through `authFetch`, held where a case needs an interleaving. Covered
+// here:
 // - the boot holds every chat as its summary (exact list entries, prototype-named ids, no read, no
 //   work); selecting a character reads its selected chat only; the facade view holds loaded chats;
 // - selection is immediate: a slower earlier load never selects, a failed load shows its error and a
@@ -402,7 +401,7 @@ describe("the boot from summaries", () => {
         expect(entries).toHaveLength(C_CHATS);
         expect(entries[0]).toEqual({ id: "k0", name: "K0", fmIndex: -1 });
         expect(entries[1]).toEqual({ id: "k1", name: "K1", fmIndex: 2 });
-        // The binding fields are list fields (`docs/plan/chat-binding.md`): on the summary, as stored.
+        // The binding fields are list fields: on the summary, as stored.
         expect(entries[3]).toEqual({
             id: "k3",
             name: "K3",

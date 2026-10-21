@@ -1,13 +1,14 @@
 <script lang="ts">
     // Test-only: the function-binding wrapper pattern over `SelectInput`, keeping
-    // `SettingSelect.svelte`'s hidden-option fallback (A16). The fallback is the one write that is
+    // `SettingSelect.svelte`'s hidden-option fallback. The fallback is the one write that is
     // not a user edit: when the current value is not among the visible options, the last visible
     // option is written through `setSettingValue`, exactly as the current wrapper does through its
     // `localValue`. It reads the current value untracked, as the current wrapper does, so it
     // re-runs only when the visible options change, never on a selection switch. The registry calls
-    // are the pre-slice-6 copies over the spike's root holder (`spikeRegistry.ts`), which reach the prototype.
+    // are the older registry copies over the prototype root holder (`prototypeRegistry.ts`), which
+    // reach the prototype.
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
-    import { candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
+    import { candidateGetSettingValue, candidateSetSettingValue } from "./prototypeRegistry";
     import { untrack } from "svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";

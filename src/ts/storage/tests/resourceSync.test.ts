@@ -79,7 +79,7 @@ async function boot(
 ) {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // No `root` record since slice 6: the sections and collections are the records the server
+    // There is no `root` record: the sections and collections are the records the server
     // materializes (`materialize` below); the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
@@ -158,7 +158,7 @@ describe("seeding and no echo", () => {
         const { fake, sync, characterList, selection } = await boot();
         selection.selectCharacterAt(0);
         await tick();
-        // Phase 6 slice 9a: a wrapper refuses a `chats`/`chatPage` write; the chat module holds them.
+        // A wrapper refuses a `chats`/`chatPage` write; the chat module holds them.
         const chat = await import("../chatStore.svelte");
         const alice = () => characterList()[0] as any;
         chat.installCharacterChats(
@@ -193,8 +193,8 @@ describe("dirty generations", () => {
         const [batch] = fake.batchBodies();
         expect(batch.ops).toHaveLength(1);
         expect(batch.ops[0]).toMatchObject({ kind: "ui", id: "main", baseRevision: before });
-        // The section travels as a field patch of what changed (slice 3g): no whole record, so no
-        // whole-database fields can leak into it.
+        // The section travels as a field patch of what changed: no whole record, so no whole-database
+        // fields can leak into it.
         expect(batch.ops[0]).not.toHaveProperty("data");
         expect(batch.ops[0].patch).toEqual({ set: { theme: "edited" }, remove: [] });
         expect(fake.data("ui", "main").theme).toBe("edited");
@@ -212,7 +212,7 @@ describe("dirty generations", () => {
         selection.selectCharacterAt(1);
         await tick();
         characterList()[1].name = "Bob 2";
-        // Since Phase 6 slice 5 a write to a character that is not selected is saved too (no watcher, no mark).
+        // A write to a character that is not selected is saved too (no watcher, no mark).
         characterList()[0].name = "Alice saved";
         await sync.flushResources();
         expect(fake.data("presets", "main")[0].name).toBe("renamed preset");
@@ -257,8 +257,8 @@ describe("dirty generations", () => {
 describe("membership", () => {
     it("creates a new character and deletes a removed one", async () => {
         const { fake, sync, characterStore } = await boot();
-        // The list changes through the character module (Phase 6 slice 5: a push or splice through
-        // the list wrapper is refused).
+        // The list changes through the character module (a push or splice through the list
+        // wrapper is refused).
         characterStore.addCharacter(character("c", "Carol"));
         characterStore.removeCharacter("a");
         await sync.flushResources();
@@ -282,9 +282,8 @@ describe("membership", () => {
     });
 
     it("repairs a duplicate chaId at installation and refuses one at insertion, so no record overwrites another", async () => {
-        // Since Phase 6 slice 5 the ids are unique by construction: an installed list with a repeated
-        // id gets a new id for the later entry (the save loop no longer renames), and an insertion
-        // of a taken id is refused.
+        // The ids are unique by construction: an installed list with a repeated id gets a new id for
+        // the later entry (the save loop no longer renames), and an insertion of a taken id is refused.
         const { fake, sync, characterList, characterStore } = await boot({
             // A second record of `a` in the boot read (the seed does not know it: a fixture the server could not hold).
             snapshot: (snapshot) => {
@@ -389,14 +388,14 @@ describe("conflicts", () => {
         const seen: string[] = [];
         const off = sync.onRemoteRecordApplied((kind, id) => seen.push(`${kind}/${id}`));
         fake.set("characters", "b", character("b", "Bob remote"));
-        // The write itself queues the save of `b`, which is not selected (Phase 6 slice 5: no mark).
+        // The write itself queues the save of `b`, which is not selected (no mark).
         characterList()[1].name = "Bob local";
         await sync.flushResources();
         expect(seen).toEqual(["characters/b"]);
         off();
     });
 
-    it("appends a character created here to an order another tab rewrote meanwhile: the 409 reloads the order without it, the repair reads the character (absent, an unsaved create) and both reach the server (data-loss slice 7b, D5)", async () => {
+    it("appends a character created here to an order another tab rewrote meanwhile: the 409 reloads the order without it, the repair reads the character (absent, an unsaved create) and both reach the server", async () => {
         const { fake, sync, settings, characterStore } = await boot({
             prepare: (fake) => fake.set("characterOrder", "main", ["a", "b"]),
         });
@@ -437,9 +436,8 @@ describe("conflicts", () => {
 });
 
 describe("lost acknowledgement", () => {
-    // Data-loss plan slice 6c (audit D2): the text a batch sent when its answer was lost stays in
-    // doubt until the server's copy settles it; this fake server has no change feed (the echo is in
-    // `resourceSyncPatches.test.ts`).
+    // The text a batch sent when its answer was lost stays in doubt until the server's copy settles it;
+    // this fake server has no change feed (the echo is in `resourceSyncPatches.test.ts`).
     it("saves more typing in the same field after a lost answer: the sent text is resent first, then the newer one on its revision, no notice", async () => {
         const { fake, sync, settings } = await boot();
         const base = fake.get("ui", "main")!.revision;
@@ -517,8 +515,8 @@ describe("lost acknowledgement", () => {
 describe("a generating character (the generation deferral is gone)", () => {
     /**
      * Makes `chaId` generating as the app does: a server job of this tab streams into a chat of it
-     * (the mirror's chats are local, so the chat is placed there directly; since Phase 6 slice 9a
-     * through the chat module, `installCharacterChats`). Returns the job's end.
+     * (the mirror's chats are local, so the chat is placed there directly through the chat
+     * module, `installCharacterChats`). Returns the job's end.
      */
     async function generate(characterList: () => any[], chaId: string) {
         const chat = await import("../chatStore.svelte");
@@ -554,8 +552,8 @@ describe("a generating character (the generation deferral is gone)", () => {
         fake.set("characters", "a", character("a", "remote name"));
         characterList()[0].name = "local name";
         settings.ui.theme = "saved anyway";
-        // Since Phase 6 slice 5 nothing holds a generating character back: the conflict reloads it
-        // at once, with the discard reported and the notice shown.
+        // Nothing holds a generating character back: the conflict reloads it at once, with the discard
+        // reported and the notice shown.
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/a"]);
         expect(characterList()[0].name).toBe("remote name");
@@ -670,8 +668,8 @@ describe("restore (412) and errors", () => {
     });
 
     it("shows one notice for several epoch refusals and reloads only after it is acknowledged, once", async () => {
-        // The restore-notice fix after Phase 6 slice 2: the reload waits for the notice's own
-        // acknowledgement (here a deferred `alertTerminal`), however long it takes.
+        // The restore-notice fix: the reload waits for the notice's own acknowledgement (here a
+        // deferred `alertTerminal`), however long it takes.
         let acknowledge: () => void = () => {};
         alerts.terminal.mockImplementationOnce(
             () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
@@ -778,8 +776,8 @@ describe("restore (412) and errors", () => {
     });
 });
 
-// Phase 5 cutover: a job a restore or import ended (its `maintenance` terminal comes before the
-// replacement) makes the tab read until the server answers with another epoch (`watchForRestore`).
+// A job a restore or import ended (its `maintenance` terminal comes before the replacement) makes
+// the tab read until the server answers with another epoch (`watchForRestore`).
 describe("the restore watch of a job ended by maintenance", () => {
     const watchReads = (fake: FakeResourceServer) =>
         fake.requests.filter((request) => request.method === "GET" && request.path === "/api/resources/ui/main").length;
@@ -895,7 +893,7 @@ describe("batch sizing", () => {
         // Each character is about 3 bytes per Hangul character; both fit only when measured correctly.
         (characterList()[0] as any).desc = "가".repeat(1000);
         (characterList()[1] as any).desc = "가".repeat(1000);
-        // Both writes queue their character's save (Phase 6 slice 5: no mark).
+        // Both writes queue their character's save (no mark).
         await sync.flushResources();
         expect(fake.batchCount()).toBe(1);
         expect(fake.data("characters", "a").desc).toHaveLength(1000);
@@ -905,8 +903,8 @@ describe("batch sizing", () => {
 describe("plugin storage keys", () => {
     it("saves an own `__proto__` key of the plugin storage", async () => {
         const { fake, sync } = await boot();
-        // `pluginStorage` has no watcher (Phase 4): the write goes through the store module, which
-        // marks the record. Imported after `boot` so it shares that module graph.
+        // `pluginStorage` has no watcher: the write goes through the store module, which marks the
+        // record. Imported after `boot` so it shares that module graph.
         const store: typeof import("../pluginStorageStore.svelte") = await import("../pluginStorageStore.svelte");
         store.setSafeLocalPluginValue("ordinary", 1);
         store.setSafeLocalPluginValue("__proto__", { probe: "value" });

@@ -3,21 +3,20 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 6 (`docs/plan/phases/slices/phase-3-settings-sections/forwarding-personas.md`):
-// the persona half of the selected-record rules, over the settings record views
-// (`settingsViews.svelte.ts`, `activePersona`) since Phase 6 slice 10 moved them there from the
-// removed forwarding layer (`forwarding.svelte.ts`, the accessors on the whole-database aggregate),
-// and the persona functions of `persona.ts` that changed with it. The cases pin: the four persona
-// fields and `selectedPersonaIndex` (reads and writes by the selected id, tracked reads and
-// untracked writes), the resolution after the collection is replaced or the selected persona
-// removed (a read repairs the selection, a write is dropped and never redirected), the non-string
-// read rule, the legacy flat snapshot (`rootSnapshot`), `changeUserPersona`, `selectUserImg`
-// keeping the id across its `await` (the exit criterion: a bound chat keeps its binding after an
-// icon change) and dropping the icon when the persona was deleted meanwhile, and `importUserPersona`
-// reaching the live list when the collection was replaced while its image was being saved (Astra
-// challenge point 3). The cases about the accessors themselves (their descriptors, `setDatabaseLite`,
-// the index setter's input checks) and about the removed boot backstop (`setDatabase`'s personas
-// contract; the server normalizes) were retired with the aggregate.
+// The persona half of the selected-record rules, over the settings record views
+// (`settingsViews.svelte.ts`, `activePersona`), which took them over from the removed forwarding
+// layer (`forwarding.svelte.ts`, the accessors on the whole-database aggregate), and the persona
+// functions of `persona.ts` that changed with it. The cases pin: the four persona fields and
+// `selectedPersonaIndex` (reads and writes by the selected id, tracked reads and untracked writes),
+// the resolution after the collection is replaced or the selected persona removed (a read repairs
+// the selection, a write is dropped and never redirected), the non-string read rule, the legacy
+// flat snapshot (`rootSnapshot`), `changeUserPersona`, `selectUserImg` keeping the id across its
+// `await` (so a bound chat keeps its binding after an icon change) and dropping the icon when the
+// persona was deleted meanwhile, and `importUserPersona` reaching the live list when the collection
+// was replaced while its image was being saved. The cases about the accessors themselves (their
+// descriptors, `setDatabaseLite`, the index setter's input checks) and about the removed boot
+// backstop (`setDatabase`'s personas contract; the server normalizes) were retired with the
+// aggregate.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -403,9 +402,8 @@ describe("importUserPersona", () => {
             id: expect.any(String),
         });
         expect(personas()[2].id.length).toBeGreaterThan(0);
-        // A retained wrapper follows its record across replacements (Phase 6 slice 4,
-        // `settings-ownership.md`, "Observable changes"): the list held before the replacement shows
-        // the live list.
+        // A retained wrapper follows its record across replacements: the list held before the
+        // replacement shows the live list.
         expect(detached).toHaveLength(3);
         expect(selection.personaId).toBe("u1");
     });

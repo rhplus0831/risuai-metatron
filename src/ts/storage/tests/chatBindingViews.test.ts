@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storeBackedServer";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 
-// `docs/plan/chat-binding.md`, slice 4: the settings views follow the selected chat's binding
-// (`settingsViews.svelte.ts` with the source `chatStore.svelte.ts` registers), over the chat module
-// booted from summaries against the real server store (as `chatBinding.test.ts` boots it). Covered:
+// The settings views follow the selected chat's binding (`settingsViews.svelte.ts` with the source
+// `chatStore.svelte.ts` registers), over the chat module booted from summaries against the real
+// server store (as `chatBinding.test.ts` boots it). Covered:
 // - per field, the selected chat's bound record wins over the tab's selection, and a read never writes
 //   the selection or the chat (the tab's ids stay what `tabSelectionIds` answers);
 // - a partial binding falls through per field, a pending review does not matter, and a bound record

@@ -1,19 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6 slice 10 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/aggregate-removal.md`):
-// the snapshot builders (`snapshots.svelte.ts`) that serve the legacy whole-database shape now that
+// The snapshot builders (`snapshots.svelte.ts`) that serve the legacy whole-database shape now that
 // the aggregate is gone. Each answers a fresh plain object built from the records: `rootSnapshot`
-// (every root name as an own key, `undefined` kept, no `proxyKey` since the model profiles removed it,
-// the three selection indexes),
-// `buildDatabaseSubset` (the plugin `getDatabase`: the 23 allowed keys, the characters with their
-// chats, the persona index, a hook's preset for the preset keys, an own `__proto__` storage key kept
-// as data), `buildSettingsReport` (the bug-report export: the removal list the component carried
-// before the slice, every `llmSecrets` field, and every key named like a credential, with `meta`),
-// and `buildBackupInventory` (chat-free character asset fields and the five settings). The model
-// fields of the fixture live in the model presets' main profiles (`docs/plan/model-profiles.md`). The oracle
-// for the report is the removed component's own filter, written out here, applied to the root
-// snapshot; the builders are checked to be detached (a write into a result changes and queues
-// nothing) and untracked (a read inside a `$derived` repairs a stale selection without throwing).
+// (every root name as an own key, `undefined` kept, no `proxyKey` since the model profiles removed
+// it, the three selection indexes), `buildDatabaseSubset` (the plugin `getDatabase`: the 23 allowed
+// keys, the characters with their chats, the persona index, a hook's preset for the preset keys, an
+// own `__proto__` storage key kept as data), `buildSettingsReport` (the bug-report export: the
+// removal list the component carried before the aggregate was removed, every `llmSecrets` field,
+// and every key named like a credential, with `meta`), and `buildBackupInventory` (chat-free
+// character asset fields and the five settings). The model fields of the fixture live in the model
+// presets' main profiles. The oracle for the report is the removed component's own filter, written
+// out here, applied to the root snapshot; the builders are checked to be detached (a write into a
+// result changes and queues nothing) and untracked (a read inside a `$derived` repairs a stale
+// selection without throwing).
 
 const held = vi.hoisted(() => ({
     asset: null as null | ((path: string) => void),
@@ -89,7 +88,7 @@ const ALLOWED_DB_KEYS = [
     "characterOrder",
 ] as const;
 
-/** The removal list of the component before the slice (`SettingsExportButtons.svelte`), verbatim. */
+/** The component's removal list from before the aggregate went (`SettingsExportButtons.svelte`), verbatim. */
 const COMPONENT_REMOVED_KEYS = [
     "characters",
     "irisDialogue",
@@ -104,8 +103,8 @@ const COMPONENT_REMOVED_KEYS = [
     "modules",
     "enabledModules",
     "botPresets",
-    // The model presets go with the prompt presets (`docs/plan/split-preset.md`), and the model
-    // profiles with them, as they hold URLs (`docs/plan/model-profiles.md`, "Import / export").
+    // The model presets go with the prompt presets, and the model profiles with them, as they hold
+    // URLs.
     "modelPresets",
     "modelProfiles",
     "characterOrder",
@@ -134,9 +133,8 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed after the slice: the saved toggle presets (historical `docs/plan/chat-toggles-and-presets.md`,
- * slice 3; retrieve from `154711858` via `docs/archived-plan/README.md`) hold free user text like
- * `globalChatVariables` and `customPromptTemplateToggle`.
+ * Removed later: the saved toggle presets hold free user text like `globalChatVariables` and
+ * `customPromptTemplateToggle`.
  */
 const LATER_REMOVED_KEYS = ["togglePresets"];
 

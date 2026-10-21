@@ -10,13 +10,12 @@ import {
 } from "../../../../shared/resources.ts";
 import { indexedDbBootCacheStore, itemKey, loadBootSnapshot, recordKey } from "../bootCache";
 
-// The boot cache against the real boot route (`docs/plan/boot-resource-cache.md` slice 3, the
-// oracle of Sol's plan review point 7): the snapshot a boot through the cache gives equals
-// `GET /api/resources` exactly (the JSON text of every record, the envelope, the order), on the
-// first boot, on a boot that claims everything, and after a module edit, a character edit, a
-// deleted character and a reordered module list; the cache holds the server's texts and never the
-// character with a TTS key. The adapter runs on `fake-indexeddb`; the unit and fallback cases are
-// in `bootCache.test.ts`.
+// The boot cache against the real boot route (the equivalence oracle): the snapshot a boot through
+// the cache gives equals `GET /api/resources` exactly (the JSON text of every record, the envelope,
+// the order), on the first boot, on a boot that claims everything, and after a module edit, a
+// character edit, a deleted character and a reordered module list; the cache holds the server's
+// texts and never the character with a TTS key. The adapter runs on `fake-indexeddb`; the unit and
+// fallback cases are in `bootCache.test.ts`.
 //
 // The server's test support is loaded through a computed path (as `backuplocalSnapshot.test.ts`):
 // a static import would pull the server's sources into the client's `svelte-check` program.

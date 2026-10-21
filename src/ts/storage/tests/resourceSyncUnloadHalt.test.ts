@@ -4,11 +4,11 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize } from "./serverKinds";
 
-// The Stop B fix (Phase 6): once saving halted for a restore, `beforeunload` asks for no warning, so
-// the reload the restore notice's OK starts goes through (before the fix the browser asked "Leave
-// site?" for the work a halted loop can never save, and "Stay" left a halted page without the
-// notice). Its own file, as `resourceSyncUnload.test.ts` (the unhalted warning) is: the window
-// listeners come from exactly one module graph.
+// Once saving halted for a restore, `beforeunload` asks for no warning, so the reload the restore
+// notice's OK starts goes through (before the fix the browser asked "Leave site?" for the work a
+// halted loop can never save, and "Stay" left a halted page without the notice). Its own file, as
+// `resourceSyncUnload.test.ts` (the unhalted warning) is: the window listeners come from exactly
+// one module graph.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },

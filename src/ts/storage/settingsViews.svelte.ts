@@ -51,28 +51,27 @@ import { selectLoreBookPage, selectModelPreset, selectPersona, selectPreset, sel
 import { isJsonData } from "./mutationValidation";
 
 /**
- * The settings record views (Phase 6 slice 6): what a settings reader binds to (the whole-database
- * aggregate they replaced is gone since slice 10). They resolve the selected prompt preset, model
+ * The settings record views: what a settings reader binds to (they replaced the whole-database
+ * aggregate, which is gone). They resolve the selected prompt preset, model
  * preset, and persona with the selection functions below:
  *
  * - `settings.<section>.<field>`: a section record's field (`SECTION_FIELDS`); a write is
  *   `writeRecordField` (credentials routed or refused by the records).
  * - `settings.<collection>`: a collection record's wrapper (`undefined` while absent); an assignment
  *   replaces the record. `settings.translatorPresets`/`settings.hypaV3Presets` are `{ items, selectedId }`.
- *   `settings.presets`, `settings.modules`, `settings.plugins`, `settings.pluginStorage` are the
- *   Phase 1 lists.
+ *   `settings.presets`, `settings.modules`, `settings.plugins`, `settings.pluginStorage` are
+ *   those records' wrappers.
  * - `activePreset.<field>`: the selected prompt preset under its own field names (`name`, `image`,
  *   `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...). A read resolves the
- *   selected chat's bound preset when it exists (`docs/plan/chat-binding.md`, slice 4), else the
+ *   selected chat's bound preset when it exists, else the
  *   tab's selection (the first preset when it names none, which becomes the selection), and gives a
  *   missing value its default as a fresh copy, so a change inside a default object saves nothing
  *   (assign the field whole). A write goes to the preset a read resolves now, never redirected:
  *   none, and it is dropped. The views follow the selected chat and the selection; a handler that
  *   must keep its record across an await captures `activePreset.id` (or `currentPresetRecord()`)
  *   first, and a reader that captured a chat reads that chat's ids, never the views.
- * - `activeModelPreset.<field>`: the selected model preset (`name`, `MODEL_PRESET_FIELDS`), likewise
- *   (`docs/plan/split-preset.md`); a handler that must keep it across an await captures
- *   `activeModelPreset.id`.
+ * - `activeModelPreset.<field>`: the selected model preset (`name`, `MODEL_PRESET_FIELDS`), likewise;
+ *   a handler that must keep it across an await captures `activeModelPreset.id`.
  * - `activePersona.<field>`: the selected persona, likewise (`name`, `icon`, `note`,
  *   `personaPrompt` with `PERSONA_DEFAULTS`, `largePortrait` as stored).
  *
@@ -113,13 +112,13 @@ export type ActivePersonaField = "name" | "icon" | "note" | "personaPrompt" | "l
 export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly id: string | undefined };
 
 // ---------------------------------------------------------------------------------------------
-// The selected prompt preset, model preset, and persona (Phase 3's forwarding rules, over the records)
+// The selected prompt preset, model preset, and persona (the old forwarding layer's rules, over the records)
 //
 // - Every access resolves the record anew from the current collection (nothing is cached), so a
 //   collection replaced by a conflict reload or a splice is honored at once.
-// - The selected chat's binding comes first (`docs/plan/chat-binding.md`, slice 4): per field, a
-//   bound id that names a record wins; an unset or gone one falls through to the tab's selection (the
-//   display rule; a pending review does not matter). The binding is never written to the selection.
+// - The selected chat's binding comes first: per field, a bound id that names a record wins; an
+//   unset or gone one falls through to the tab's selection (the display rule; a pending review does
+//   not matter). The binding is never written to the selection.
 // - When the tab's selected id names no record, a read falls back to the first record and makes it
 //   the selection (untracked: the read may come from a `$derived`, where a tracked write throws). A
 //   write made while the id names no record is dropped, never redirected to another record.
@@ -921,7 +920,8 @@ const rootRoutes = buildRootRoutes();
 
 /**
  * Every root name the views serve (the section fields, both presets' fields under their root names,
- * the persona fields, the collections and the selectable ones' selected ids, the Phase 1 lists):
+ * the persona fields, the collections and the selectable ones' selected ids, `presets`, `modules`, `plugins`,
+ * `pluginStorage`):
  * the flat names of the legacy database shape, for a builder of that shape (`snapshots.svelte.ts`).
  */
 export const SETTINGS_ROOT_KEYS: readonly string[] = Object.freeze([...rootRoutes.keys()]);

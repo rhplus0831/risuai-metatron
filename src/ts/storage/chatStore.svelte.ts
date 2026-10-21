@@ -32,9 +32,9 @@ import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
 
 /**
- * The chat mutation module (Phase 2 of `docs/plan/PLAN.md`). Chats are server resources of their own
+ * The chat mutation module. Chats are server resources of their own
  * (metadata plus one row per message, addressed by `Message.chatId`; each character's chat order is a
- * record of its own). This module holds them (Phase 6 slice 9): per character, its chat ids in order
+ * record of its own). This module holds them: per character, its chat ids in order
  * (the membership), each chat either loaded (the whole chat) or as its summary (the list fields),
  * reactive, outside the character records. It is the only code that writes them: every call updates
  * the held chats (the mirror) synchronously and queues an operation that the save loop
@@ -56,7 +56,7 @@ import { readRefs } from "./resourceClient";
  *   pending/in-flight work, lock, deferral, or quarantine may accept it; this is not a discard.
  * - The selected chat is per tab: `selectChat` records the chat id (`chatPage` in the facade view is
  *   its index).
- * - A server generation job (Phase 5) locks the message it writes: nothing but the job may rewrite or
+ * - A server generation job locks the message it writes: nothing but the job may rewrite or
  *   remove it. `applyServerGeneration` writes the streamed text into the mirror without queuing
  *   anything, and the job's end releases its locks. A chat `resource` event replaces the chat through
  *   `hydrateChat` (never an outgoing write). Work the server refused for a generating message
@@ -100,7 +100,7 @@ type Pending = {
 };
 
 /**
- * A group kept apart for a resend (data-loss plan slice 6b, audit D1): its ops, sequence, base, and
+ * A group kept apart for a resend: its ops, sequence, base, and
  * group id as sent. `inDoubt`: an earlier attempt may have landed (its answer was lost), so it goes
  * out with `retry` and the same id, and the server answers it as before if it did.
  */
@@ -142,7 +142,7 @@ const chatRevisions = new Map<string, string>();
 /**
  * Per chat (`keyOf`): bumped when this client first holds a revision for a chat it did not hold one
  * for (its first save landed or a landed create was recognized; not the boot seed or a restore), so
- * the rows rendered before it without a server transform context render again (Phase 5 cutover).
+ * the rows rendered before it without a server transform context render again.
  */
 const savedVersions = $state<Record<string, number>>({});
 
@@ -169,10 +169,10 @@ const absentChats = new Set<string>();
 
 /**
  * Per character id: the resends (`Pending.resend`) of its chats that this tab's deletion of the
- * character settled while their groups may have landed (open-bug-fixes slice A3), by chat key. The
+ * character settled while their groups may have landed, by chat key. The
  * deletion removes those chats once the server acknowledges it; until then a same-id re-add restores
- * them (`installCharacterChats`), so it reconciles the chats with their group ids and payloads (6b
- * replay recognition) instead of forgetting a landed create. Dropped when the server shows the
+ * them (`installCharacterChats`), so it reconciles the chats with their group ids and payloads (the
+ * in-doubt replay recognition) instead of forgetting a landed create. Dropped when the server shows the
  * character gone (`forgetCharacter`), when its deletion is acknowledged, or when an authoritative
  * chat list of the character is accepted (`acceptRemoteCollection`). A create resend is not kept
  * only when it is not in doubt and this client holds no revision of the chat (`parkResends`).
@@ -1921,7 +1921,7 @@ export function setStreamingState(
 // Chat membership and selection
 
 /**
- * A chat's defaults that come from its character (Phase 6 slice 5b): `fmIndex`, the greeting the chat
+ * A chat's defaults that come from its character: `fmIndex`, the greeting the chat
  * starts from, is the character's `firstMsgIndex` (-1: the first message) when absent, and `localLore`
  * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. Changes `chat` in place.
  */
@@ -2372,7 +2372,7 @@ export function setMessageText(ref: ChatRef, id: string, text: string) {
 }
 
 /**
- * Sets (or with `null` clears) a message's stored translation (`docs/plan/translation.md`). A
+ * Sets (or with `null` clears) a message's stored translation. A
  * translation whose `sourceHash` does not match the message's current text is not taken: nothing
  * changes and false is returned. True means taken here and queued, not saved: the server ignores it
  * when its copy of the text differs by then (`ChatGroupResult.translations`).
@@ -2483,7 +2483,7 @@ export function restoreUnsentRemoval(
 /**
  * The chat fields the server's chat normalizer (`normalizeChatMeta`) defaults: removing one, or setting
  * it to `null`, stores the default, so the client writes the default itself and holds what the server
- * holds (Phase 6 slice 5b).
+ * holds.
  */
 const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
     name: () => "",
@@ -4096,7 +4096,7 @@ export function recoverChatConflicts(
  * by-id work on the same chat incarnation: a group holding an op that needs the current revision
  * (`create`, `delete`, `replace`, a multi-id `remove`) or a `begin` would conflict again on the older
  * base, so it is left to the ordinary recovery, as is a group with a recreation queued behind it.
- * The repaired group is resent alone (slice 6b), so the newer work, whatever it holds, follows in a
+ * The repaired group is resent alone, so the newer work, whatever it holds, follows in a
  * group of its own and takes its own chances. Returns the refused group's rewritten ops, or null
  * when none of its appends had a gone anchor (the conflict has another cause; the newer work is then
  * left as it is). A retried group whose conflict has another cause finds no gone anchor on its next
@@ -4946,7 +4946,7 @@ export function acceptRemoteCollection(collection: {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Loading and eviction (Phase 6 slice 9b: chats load on demand; idle loaded chats are evicted)
+// Loading and eviction (chats load on demand; idle loaded chats are evicted)
 
 /** Whether a chat has local work or a protection that keeps its local copy as it is. */
 function isBusy(key: string): boolean {
@@ -5446,7 +5446,7 @@ export function noteMirrorReplaced() {
     mutationToken += 1;
 }
 
-// The settings views read the selected chat's binding first (`docs/plan/chat-binding.md`, slice 4):
+// The settings views read the selected chat's binding first:
 // the selected chat as `currentChatRef` names it (also while it loads; a summary has the list fields).
 // Only the four binding fields are read, so a view does not track the chat's other fields.
 setOpenChatBindingSource(() => {

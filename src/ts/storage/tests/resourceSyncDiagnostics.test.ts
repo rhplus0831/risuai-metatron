@@ -4,11 +4,10 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize } from "./serverKinds";
 
-// Request history slice 8 (`docs/plan/request-history-diagnostics.md`): the save adapter's
-// diagnostics over a stubbed collector. A 409 records one `sync conflict` with counts by category
-// (records, chats, orders; `generating` the subset a job blocked) before the recovery's first
-// read, with no id; a restore's reload records `sync reload restore` and flushes the mirror right
-// before `location.reload()`.
+// The save adapter's diagnostics over a stubbed collector. A 409 records one `sync conflict` with
+// counts by category (records, chats, orders; `generating` the subset a job blocked) before the
+// recovery's first read, with no id; a restore's reload records `sync reload restore` and flushes
+// the mirror right before `location.reload()`.
 
 const { server, alerts, diagnostics } = vi.hoisted(() => ({
     server: { current: null as any },

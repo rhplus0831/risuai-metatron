@@ -4,10 +4,10 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // A character removed and added again under the same id before the save cycle runs (a plugin's
-// `setDatabase` twice within the debounce; audit DATA-01, `docs/plan/audit-findings-perf.md` slice
-// 2d) over the real server store: the server's chat collection must end up equal to the replacement's
-// list (old chats deleted, new ones created, a reused id replaced, the order the new list's), saved
-// with the character's fields and reported as saved, so a fresh boot reads the replacement transcript.
+// `setDatabase` twice within the debounce) over the real server store: the server's chat
+// collection must end up equal to the replacement's list (old chats deleted, new ones created, a
+// reused id replaced, the order the new list's), saved with the character's fields and reported as
+// saved, so a fresh boot reads the replacement transcript.
 // Before the fix the id was persisted and present, so the loop saved only the fields and the old
 // chats stayed on the server behind a `discarded: []`.
 
@@ -266,12 +266,12 @@ it("control: a fresh id and a deletion flushed first still save their replacemen
     expect(fresh.chats.map((entry) => entry.data.message[0].data)).toEqual(["Fresh transcript"]);
 });
 
-// Data-loss plan slice 6d (audit D3): the chat state of a deleted character is forgotten when the
-// server acknowledges the deletion, not when the save loop collects it. A same-id re-add after a
-// deletion that failed, was refused for a generating message, or is still in flight finds the
-// revisions held of the old chats and reconciles the replacement's chats against them (or, once the
-// deletion lands meanwhile, creates them with the character). Before the fix the re-add queued
-// nothing: the flush reported success and the server kept the old transcript.
+// The chat state of a deleted character is forgotten when the server acknowledges the deletion, not
+// when the save loop collects it. A same-id re-add after a deletion that failed, was refused for a
+// generating message, or is still in flight finds the revisions held of the old chats and
+// reconciles the replacement's chats against them (or, once the deletion lands meanwhile, creates
+// them with the character). Before the fix the re-add queued nothing: the flush reported success
+// and the server kept the old transcript.
 
 const refK = { chaId: "c", chatId: "k" };
 const batchPath = (path: string) => path === "/api/resources/batch";
@@ -406,7 +406,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
     });
 });
 
-describe("a chat quarantined before its character's deletion (slice 6d challenge point 1)", () => {
+describe("a chat quarantined before its character's deletion", () => {
     /** Edits `k`, has the server refuse its group (a 400 naming it): the chat is quarantined. */
     async function quarantineK(h: Awaited<ReturnType<typeof boot>>) {
         await h.chat.ensureChatLoaded(refK);

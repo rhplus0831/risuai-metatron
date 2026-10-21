@@ -5,14 +5,13 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize } from "./serverKinds";
 
-// Phase 5 Stop D fixes (C1): a conflicting character or `statics` record whose server copy changed
-// only in ways this client can take (`benignChanges`, `mergeConcurrentChange` in
-// `resourceSync.svelte.ts`) is merged into the mirror and written again on the server's revision,
-// with no discard and no reload notice. Any other remote change conflicts as before. The save
-// adapter runs for real (fresh module graph per test, Svelte runes) against the in-memory fake.
-// The `lastInteraction` rule (audit item A2: a send job stamps it on the server with the server's
-// clock): the server's finite stamp is taken whenever this client left the field as saved, even an
-// earlier one; the later of two only when both sides moved it.
+// A conflicting character or `statics` record whose server copy changed only in ways this client
+// can take (`benignChanges`, `mergeConcurrentChange` in `resourceSync.svelte.ts`) is merged into
+// the mirror and written again on the server's revision, with no discard and no reload notice. Any
+// other remote change conflicts as before. The save adapter runs for real (fresh module graph per
+// test, Svelte runes) against the in-memory fake. The `lastInteraction` rule (a send job stamps it
+// on the server with the server's clock): the server's finite stamp is taken whenever this client
+// left the field as saved, even an earlier one; the later of two only when both sides moved it.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -50,7 +49,7 @@ type SettingsViews = typeof import("../settingsViews.svelte");
 type CharacterStore = typeof import("../characterStore.svelte");
 type Selection = typeof import("../selection.svelte");
 
-/** A character as the server stores it: the shared defaults filled in (Phase 6 slice 5b). */
+/** A character as the server stores it: the shared defaults filled in. */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
     return normalizeCharacter({ chaId, name, type: "character", ...extra });
 }
@@ -157,10 +156,10 @@ describe("a character another tab only opened or sent to", () => {
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "a").lastInteraction).toBe(300);
 
-        // A2: the server stamps with its own clock. A tab that only edited `desc` (its stamp is still
-        // the saved 300) takes the server's 50 even though it is earlier (the server corrected a
-        // future stamp an older client clock wrote): the unrelated edit survives, the corrected stamp
-        // is what the merged write persists, and the dirty tab does not restore the old value.
+        // The server stamps with its own clock. A tab that only edited `desc` (its stamp is still the
+        // saved 300) takes the server's 50 even though it is earlier (the server corrected a future
+        // stamp an older client clock wrote): the unrelated edit survives, the corrected stamp is what
+        // the merged write persists, and the dirty tab does not restore the old value.
         remote("characters", "a", (data) => (data.lastInteraction = 50));
         mirror("a").desc = "local 2";
         expect((await sync.flushResources()).discarded).toEqual([]);
@@ -208,7 +207,7 @@ describe("a character another tab only opened or sent to", () => {
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 
-    it("works for a character that is not selected (saved by its own write, Phase 6 slice 5) and for a group", async () => {
+    it("works for a character that is not selected (saved by its own write) and for a group", async () => {
         const { fake, sync, mirror, remote } = await boot();
         remote("characters", "b", (data) => (data.lastInteraction = 200));
         mirror("b").name = "Bob local";
@@ -440,7 +439,7 @@ describe("which remote changes are merged", () => {
 
     it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
         const { fake, sync, mirror } = await boot();
-        // The list changes through the character module (Phase 6 slice 5: a push through the list wrapper is refused).
+        // The list changes through the character module (a push through the list wrapper is refused).
         const characterStore = await import("../characterStore.svelte");
         characterStore.addCharacter(character("n", "Local new", { lastInteraction: 1 }));
         await tick();
@@ -454,10 +453,9 @@ describe("which remote changes are merged", () => {
 describe("a running generation's character (the generation deferral is gone)", () => {
     /**
      * Makes `a` generating as the app does: a server job of this tab streams into a chat of it (the
-     * mirror's chats are local, so the chat is placed there directly; since Phase 6 slice 9a through
-     * the chat module, `installCharacterChats`). Returns the job's end. Since Phase 6 slice 5 nothing
-     * holds a generating character back: the merge takes what it takes while idle, and any other
-     * change conflicts at once.
+     * mirror's chats are local, so the chat is placed there directly through the chat module,
+     * `installCharacterChats`). Returns the job's end. Nothing holds a generating character back: the
+     * merge takes what it takes while idle, and any other change conflicts at once.
      */
     async function generate(mirror: (id: string) => any) {
         const chat = await import("../chatStore.svelte");
@@ -719,7 +717,7 @@ describe("statics counts (best effort)", () => {
     });
 });
 
-describe("the pluginStorage record every plugin shares (data-loss plan slice 5a)", () => {
+describe("the pluginStorage record every plugin shares", () => {
     type PluginStorageStore = typeof import("../pluginStorageStore.svelte");
     /** The plugin storage module of the booted graph, with a discard listener recording its calls. */
     async function pluginStorage(sync: Sync) {
@@ -974,13 +972,13 @@ describe("the pluginStorage record every plugin shares (data-loss plan slice 5a)
     });
 });
 
-// Data-loss plan slice 5b (`mergeItemAdds`, `ITEM_LIST_MERGE_KINDS`, persistence.md Save step 5): a
-// conflicting item list keeps the items this client added over the server's list (its items and
-// order), appended in this client's order, with no discard and no notice; every other local change
-// of the list (an edit, removal, or reorder of a saved item, an add under an id the server added
-// with another value, a list without valid ids) conflicts as before, and so does a list of a kind
-// outside the set, whatever ids its items carry.
-describe("item lists: this tab's adds over another tab's list (data-loss plan slice 5b)", () => {
+// `mergeItemAdds` and `ITEM_LIST_MERGE_KINDS` (persistence.md Save step 5): a conflicting item list
+// keeps the items this client added over the server's list (its items and order), appended in this
+// client's order, with no discard and no notice; every other local change of the list (an edit,
+// removal, or reorder of a saved item, an add under an id the server added with another value, a
+// list without valid ids) conflicts as before, and so does a list of a kind outside the set,
+// whatever ids its items carry.
+describe("item lists: this tab's adds over another tab's list", () => {
     type CollectionStore = typeof import("../collectionStore.svelte");
     const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
     const names = (list: unknown) => (plain(list) as any[]).map((entry) => entry.name);

@@ -19,15 +19,14 @@ import { isPlainObject } from "../../../../shared/valueKinds.ts";
  * An in-memory stand-in for the server's `/api/resources` routes, with the same contract the client
  * relies on: revisions, the epoch fence (412), batch atomicity with every conflict listed (409),
  * single-record conflicts as `{ revision }`, and a body limit (413). The write-only `llmSecrets`
- * record (Phase 5 slice 7b) follows the server's contract too: it is stored as plaintext (what a
- * test puts in it, or what `/api/llm-secrets/*` writes) and answered masked on every read; a plain
- * write may carry no credential path (400) and keeps the stored credentials. A batch op may be a
- * record patch (audit item A1): a field patch `{ set?, remove? }` of an object record or an item
- * patch `{ items?, changes?, order? }` of a list with unique item ids, applied with the shared
- * helpers (`shared/recordPatch.ts`) to the record at its base revision and refused (400 naming the
- * op) as the store refuses it; the fake has no normalizers, so the patch's result is stored as it
- * is. Tests plug it in as `authFetch` and use the hooks to hold a batch, drop a response after it
- * was applied, or fail requests.
+ * record follows the server's contract too: it is stored as plaintext (what a test puts in it, or
+ * what `/api/llm-secrets/*` writes) and answered masked on every read; a plain write may carry no
+ * credential path (400) and keeps the stored credentials. A batch op may be a record patch: a field
+ * patch `{ set?, remove? }` of an object record or an item patch `{ items?, changes?, order? }` of
+ * a list with unique item ids, applied with the shared helpers (`shared/recordPatch.ts`) to the
+ * record at its base revision and refused (400 naming the op) as the store refuses it; the fake has
+ * no normalizers, so the patch's result is stored as it is. Tests plug it in as `authFetch` and use
+ * the hooks to hold a batch, drop a response after it was applied, or fail requests.
  */
 export class FakeResourceServer {
     epoch = "epoch-1";

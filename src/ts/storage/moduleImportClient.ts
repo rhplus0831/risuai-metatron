@@ -4,11 +4,11 @@ import { importFileOverServer, ServerImportAnswerError, type ServerImportOptions
 
 /**
  * The client of the server's `.risum` module import (`POST /api/import/module`,
- * `server/src/routes/importModule.ts`; historical `docs/plan/large-asset-import.md` slice 2c), the transport
+ * `server/src/routes/importModule.ts`), the transport
  * only: `importModuleFile` (`src/ts/process/modules.ts`) owns the import. The request, its answer, and
  * its errors are the shared file import client's (`serverImportClient.ts`): the `File`/`Blob` itself
  * as the body, one request never retried, the NDJSON answer (`ModuleImportLine`) read as it streams.
- * The error classes keep their slice 2c names here.
+ * The error classes keep their module-specific names here.
  */
 
 export {

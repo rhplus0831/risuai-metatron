@@ -337,12 +337,13 @@ describe("feed patches through the tab save adapter", () => {
     );
 });
 
-// Data-loss slice 2b: the change feed carries the generation locks, so a tab that does not follow the
-// job (an observer, or an owner whose follow was lost) shows the generating reply locked from the
-// job's first write's frame to its final write's (or its end's) frame, with no job socket. A feed
-// lock is a lock only: the observer keeps taking the checkpoint patches. The edit race before the
-// lock frame still goes through slice 2a's discard.
-describe("the feed's generation locks (slice 2b)", () => {
+// The change feed carries the generation locks, so a tab that does not follow the job (an observer,
+// or an owner whose follow was lost) shows the generating reply locked from the job's first write's
+// frame to its final write's (or its end's) frame, with no job socket. A feed lock is a lock only:
+// the observer keeps taking the checkpoint patches. The edit race before the lock frame still goes
+// through the refused-edit discard (a refused edit of the generating reply is dropped, not retried
+// over the final text).
+describe("the feed's generation locks", () => {
     const B = { characterId: "c", chatId: "k", messageId: "b" };
     const lockOf = (messageId: string, generationId: string, seq = 0) => ({ messageId, generationId, seq });
     const jobLock = (b: Booted, generationId = "g") => {
@@ -418,7 +419,7 @@ describe("the feed's generation locks (slice 2b)", () => {
         expect(b.fake.texts("c", "k")).toEqual(["A", "edited after", "C"]);
     });
 
-    it("an edit sent before the lock frame arrives goes through slice 2a's discard; the frame then refuses edits, the read keeps the lock, and the final reply wins", async () => {
+    it("an edit sent before the lock frame arrives goes through the refused-edit discard; the frame then refuses edits, the read keeps the lock, and the final reply wins", async () => {
         const b = await boot();
         b.live.paused = true;
         jobLock(b);

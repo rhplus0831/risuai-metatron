@@ -8,7 +8,7 @@ import {
 import { authFetch } from "./serverAuth";
 
 /**
- * The asset files on the self-host server (Phase 6 slice 10, split out of the old storage client):
+ * The asset files on the self-host server (split out of the old storage client):
  * bytes under a logical key (`assets/<id>.<ext>`), read with `GET /api/read` and written with `POST /api/write`.
  * The key travels hex-encoded (UTF-8) in the `file-path` header; the request is authenticated
  * (`authFetch`). The routes are the server's (`server/src/routes/storage.ts`). `writeAssets` and

@@ -11,7 +11,7 @@ export type ServerKind = {
     singleton?: boolean;
     materialize?: true;
     normalize(input: unknown, context: { id: string }): unknown;
-    /** The write-only kinds' hooks (Phase 5 slice 7b): the masked read, the plain-write rule. */
+    /** The write-only kinds' hooks: the masked read, the plain-write rule. */
     project?(data: unknown): unknown;
     prepareWrite?(incoming: unknown, stored: unknown | null): unknown;
 };

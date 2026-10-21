@@ -3,11 +3,11 @@ import { detach, requireJsonData, requireObject, writeEntries } from "./mutation
 import { batchRecordWrites } from "./records.svelte";
 
 /**
- * The `pluginStorage` mutations (Phase 4). `pluginCustomStorage` holds three things: the custom keys
+ * The `pluginStorage` mutations. `pluginCustomStorage` holds three things: the custom keys
  * a plugin's `setDatabase` stores at its top level, the v3 `pluginStorage` values under
  * `_pluginStorage`, and the shared `getLocalPluginStorage()` values under `_safeLocalPluginStorage`.
- * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`, Phase 6
- * slice 4), inside one `batchRecordWrites` scope, so the record's write is queued once. Reads return
+ * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`), inside
+ * one `batchRecordWrites` scope, so the record's write is queued once. Reads return
  * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).

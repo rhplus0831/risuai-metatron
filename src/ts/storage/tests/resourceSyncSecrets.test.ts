@@ -5,16 +5,15 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize, serverNormalizer } from "./serverKinds";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the credential write queue of the save
-// adapter (`resourceSync.svelte.ts` with `llmSecrets.svelte.ts`) against the in-memory stand-in of
-// the resource routes, which serves the write-only contract (`fakeResourceServer.ts`). A queued
-// set, clear, or cleanup is sent after the cycle's resource batch, one at a time on the
-// record's revision; a stale revision rereads and retries a bounded number of times; a refused
-// write (400) is a reported discard; a retryable failure keeps the write; a 412 halts; an
-// acknowledgement or a reread is adopted by the sibling text (unchanged, local-only, both changed);
-// a cleanup follows its owner's deletion (sent once saved, dropped once restored, waiting while
-// quarantined without keeping the loop running); and `awaitSecretWrites` is the barrier the
-// auxiliary calls take.
+// The credential write queue of the save adapter (`resourceSync.svelte.ts` with
+// `llmSecrets.svelte.ts`) against the in-memory stand-in of the resource routes, which serves the
+// write-only contract (`fakeResourceServer.ts`). A queued set, clear, or cleanup is sent after the
+// cycle's resource batch, one at a time on the record's revision; a stale revision rereads and
+// retries a bounded number of times; a refused write (400) is a reported discard; a retryable
+// failure keeps the write; a 412 halts; an acknowledgement or a reread is adopted by the sibling
+// text (unchanged, local-only, both changed); a cleanup follows its owner's deletion (sent once
+// saved, dropped once restored, waiting while quarantined without keeping the loop running); and
+// `awaitSecretWrites` is the barrier the auxiliary calls take.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -73,7 +72,7 @@ const onBatch = (path: string) => path === "/api/resources/batch";
 
 /**
  * Boots the adapter the way `loadData` does over a store holding two named credentials with keys
- * (the only entry map since `docs/plan/model-profiles.md` O2), a stored OpenAI key, and a readable
+ * (the only entry map), a stored OpenAI key, and a readable
  * sibling; the boot compare pass has run.
  */
 async function boot() {
@@ -228,7 +227,7 @@ describe("a queued credential write", () => {
         const log = requestLog(fake);
         const batches = fake.batchBodies();
         expect(batches).toHaveLength(2);
-        // Each batch carries its new credential as an item patch (slice 3g): the added item whole, in order.
+        // Each batch carries its new credential as an item patch: the added item whole, in order.
         expect(batches[0].ops[0].patch).toMatchObject({
             items: [expect.objectContaining({ id: "c4" })],
             order: ["c1", "c2", "c3", "c4"],

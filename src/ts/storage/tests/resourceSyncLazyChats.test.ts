@@ -3,10 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "Implementation notes, 9b"): the save adapter and the chat module booted from summaries, as
-// `loadData` boots them (`readKinds` with `chatSummaries`), against the real server store and its
-// change feed, with the save loop running for real:
+// The save adapter and the chat module booted from summaries, as `loadData` boots them (`readKinds`
+// with `chatSummaries`), against the real server store and its change feed, with the save loop
+// running for real:
 // - the boot pass writes nothing, and selecting a character reads its selected chat only;
 // - a live notice for an unloaded chat refreshes its summary through the character's list (no
 //   whole-chat read), a loaded chat is read whole; nothing is written back and no notice is shown;
@@ -281,7 +280,7 @@ describe("live updates of chats that are not loaded", () => {
         selection.selectCharacter("c");
         await settle(fake);
         fake.requests.length = 0;
-        // The binding fields travel with the summary too (`docs/plan/chat-binding.md`), `false` kept.
+        // The binding fields travel with the summary too, `false` kept.
         remoteMeta("c", "n0", { name: "N0 remote", folderId: "g", modelPresetId: "m1", bindingReview: false });
         await settle(fake);
         expect(chat.chatEntry({ chaId: "c", chatId: "n0" })).toEqual({

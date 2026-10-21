@@ -3,19 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KINDS, bootMutations, m, plain, refK } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "Validation", the review-step list): the character records under the real boot (`installBootRecords`, since slice 10),
-// the real save loop, and the real server store (`storeBackedServer.ts`), with no character watcher
-// and no dirty mark left. Covered here: a wrapper write (at depth too) and an `updateCharacter` on a
-// non-selected character each save one op on the held revision; a conflict reload replaces the
-// record raw with no echo, and a later local write (also through a retained nested wrapper) lands on
-// the server copy; a same-id replacement through the public setter (`replaceCharacterFields`) with an
-// editor's nested wrapper held; the snapshot getter; the selection by index (`selectCharacterAt`,
-// `selectedIndex`) both ways; the chat module's work (creation, streaming, hydration, selection, local
-// lore) and a plain selection saving no character; the boot's trash pruning through
-// `removeCharacters` writing the deletions once (generating characters kept) and a settled boot
-// writing nothing. Live updates and job hydrations of a character are in `resourceSyncLive.test.ts`
-// and `resourceSyncHydration.test.ts`.
+// The character records under the real boot (`installBootRecords`), the real save loop, and the
+// real server store (`storeBackedServer.ts`), with no character watcher and no dirty mark left.
+// Covered here: a wrapper write (at depth too) and an `updateCharacter` on a non-selected character
+// each save one op on the held revision; a conflict reload replaces the record raw with no echo,
+// and a later local write (also through a retained nested wrapper) lands on the server copy; a
+// same-id replacement through the public setter (`replaceCharacterFields`) with an editor's nested
+// wrapper held; the snapshot getter; the selection by index (`selectCharacterAt`, `selectedIndex`)
+// both ways; the chat module's work (creation, streaming, hydration, selection, local lore) and a
+// plain selection saving no character; the boot's trash pruning through `removeCharacters` writing
+// the deletions once (generating characters kept) and a settled boot writing nothing. Live updates
+// and job hydrations of a character are in `resourceSyncLive.test.ts` and
+// `resourceSyncHydration.test.ts`.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -125,7 +124,7 @@ describe("server copies of a character", () => {
         expect(result.discarded).toEqual(["characters/c"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(element.name).toBe("server name");
-        // The server copy's description (its default, Phase 6 slice 5b), not the conflicting local edit.
+        // The server copy's description (its default), not the conflicting local edit.
         expect(element.desc).toBe("");
         expect(entry.content).toBe("server");
         // The chats stayed the chat module's.
@@ -159,7 +158,7 @@ describe("server copies of a character", () => {
             }),
         ).toBe(true);
         expect(held.content).toBe("from the plugin");
-        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        // `chats` is a fresh array on every read; the chats are the same ones.
         expect(character("c").chats).toEqual(chats);
         character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         held.content = "edited in the editor";
@@ -168,17 +167,17 @@ describe("server copies of a character", () => {
     });
 });
 
-describe("the snapshot getter (plan review point 6)", () => {
+describe("the snapshot getter", () => {
     it("gives a detached copy (with the chats through withChatsCopy); writing into it changes and saves nothing", async () => {
         const { fake, sync, characterStore, character, selectionModule, chat } = await boot();
         selectionModule.selectCharacterAt(0);
-        // Each call is a fresh copy (Phase 6 slice 10: `characterSnapshot` replaced the facade's snapshot getters).
+        // Each `characterSnapshot` call is a fresh copy.
         for (const copy of [
             characterStore.characterSnapshot("c") as any,
             characterStore.characterSnapshot(characterStore.selectedCharacter()!.chaId) as any,
         ]) {
             expect(copy.chaId).toBe("c");
-            // Phase 6 slice 9a: a snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
+            // A snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
             expect(copy).not.toHaveProperty("chats");
             const legacy = chat.withChatsCopy(copy) as any;
             expect(legacy.chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
@@ -264,7 +263,7 @@ describe("work outside the character record", () => {
         const copy = fake.chat("c", "j")!;
         expect(chat.hydrateChat({ characterId: "c", id: "j", revision: copy.revision, data: copy.data })).toBe(true);
         // The render key is a local field too, and the chat page is the chat module's selection
-        // (Phase 6 slice 9a: a wrapper refuses a `chatPage` write).
+        // (a wrapper refuses a `chatPage` write).
         character("c").reloadKeys = (character("c").reloadKeys ?? 0) + 1;
         chat.selectChat("c", 0);
         await tick();

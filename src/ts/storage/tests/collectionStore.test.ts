@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "./mutationStoresHarness";
 
-// Phase 4, slice 1: the settings, persona, module, plugin, order, OAuth, and preset mutations
+// The settings, persona, module, plugin, order, OAuth, and preset mutations
 // (`collectionStore.svelte.ts`) against the real server store. Every refusal is checked to throw
 // and change nothing (mirror and server compared after the next cycle); every write is checked in
 // the mirror and on the server after the cycle. A forwarded settings write is a mutation carrying
-// the preset id (`PLAN.md` Decision 3).
+// the preset id.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -70,8 +70,8 @@ describe("updateSettings", () => {
             await boot();
         const [p1, p2] = settings.presets.map((preset: any) => preset.id);
         const [m1, m2] = settings.modelPresets.map((preset: any) => preset.id);
-        // `maxContext` is a profile field written into the main slot's profile
-        // (`docs/plan/model-profiles.md`): give m2 its own main profile so each owner is distinct.
+        // `maxContext` is a profile field written into the main slot's profile: give m2 its own main
+        // profile so each owner is distinct.
         const [f1] = settings.modelProfiles.map((profile: any) => profile.id);
         const f2 = collectionStore.addModelProfile({ name: "F2" });
         expect(collectionStore.setMainModelSlot(m2, f2)).toBe(true);
@@ -79,7 +79,7 @@ describe("updateSettings", () => {
         const activeMainProfile = settingsViews.activeMainProfile;
         expect(selection.presetId).toBe(p1);
         expect(selection.modelPresetId).toBe(m1);
-        // `temperature` is the prompt preset's (`docs/plan/split-preset.md`).
+        // `temperature` is the prompt preset's.
         collectionStore.updateSettings({ temperature: 5, maxContext: 1234 });
         expect(activePreset.temperature).toBe(5);
         expect(activeMainProfile.maxContext).toBe(1234);
@@ -130,7 +130,7 @@ describe("updateSettings", () => {
             hypaModel: "m",
         });
         await sync.flushResources();
-        // The `providers` section holds none of the five any more (`docs/plan/split-preset.md`).
+        // The `providers` section holds none of the five any more.
         expect(record("providers")).not.toHaveProperty("seperateModelsForAxModels");
         expect(record("providers")).not.toHaveProperty("seperateParameters");
         const modelPreset = record("modelPresets").find((preset: any) => preset.id === selection.modelPresetId);
@@ -186,7 +186,7 @@ describe("updateSettings", () => {
         collectionStore.updateSettings({ theme: "only" }, { presetId: "nope" });
         await sync.flushResources();
         expect(record("ui").theme).toBe("only");
-        // `maxContext` is the main slot's profile's (`docs/plan/model-profiles.md`).
+        // `maxContext` is the main slot's profile's.
         expect(settingsViews.activeMainProfile.maxContext).not.toBe(999);
     });
 
@@ -420,9 +420,8 @@ describe("character order, plugins, and OAuth entries", () => {
         expect(Object.getPrototypeOf(settings.plugins[1].realArg)).toBe(Object.prototype);
         await sync.flushResources();
         const saved = record("plugins");
-        // The own `__proto__` is saved too (Phase 6 slice 4, `settings-ownership.md`, "Observable
-        // changes"): the `plugins` projection serializes the record, no longer `$state.snapshot`,
-        // which dropped it.
+        // The own `__proto__` is saved too: the `plugins` projection serializes the record, no longer
+        // `$state.snapshot`, which dropped it.
         expect(saved.map((plugin: any) => plugin.realArg)).toEqual([
             { a: "2", k: "v", n: 3 },
             otherArgs,
@@ -457,7 +456,7 @@ describe("character order, plugins, and OAuth entries", () => {
         ]);
     });
 
-    it("addAuthRefresh keeps one entry per server url: a new login replaces every entry of that url in place and keeps the others (Phase 5 slice 12a)", async () => {
+    it("addAuthRefresh keeps one entry per server url: a new login replaces every entry of that url in place and keeps the others", async () => {
         const { sync, collectionStore, record, settings } = await boot();
         collectionStore.addAuthRefresh({ url: "https://a", refreshToken: "1" });
         collectionStore.addAuthRefresh({ url: "https://b", refreshToken: "2" });
@@ -479,7 +478,7 @@ describe("character order, plugins, and OAuth entries", () => {
     });
 });
 
-describe("named credentials (docs/plan/shared-api-keys.md)", () => {
+describe("named credentials", () => {
     const keyPath = (id: string) => ({ kind: "entry" as const, field: "credentials" as const, id });
 
     it("adds metadata only, takes its key through the credential route, and a delete removes both but leaves the bindings", async () => {
@@ -551,7 +550,7 @@ describe("named credentials (docs/plan/shared-api-keys.md)", () => {
     });
 
     it("sets and removes a profile's binding synchronously, never storing null or an empty id", async () => {
-        // `setProfileCredential` replaces the three former bindings (`docs/plan/model-profiles.md`).
+        // `setProfileCredential` replaces the three former bindings.
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
         const [f1] = settings.modelProfiles.map((profile: any) => profile.id);
         // A profile no slot uses too.

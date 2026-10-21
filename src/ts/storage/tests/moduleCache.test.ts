@@ -257,7 +257,7 @@ describe("module asset cache", () => {
             expect(records.isRecordWrapper(first[0])).toBe(false);
             expect(modules.getModuleAssets()).toBe(first);
             modules.getModuleAssets(refJ);
-            // An asset list is immutable: every edit replaces it whole (heap plan B1).
+            // An asset list is immutable: every edit replaces it whole.
             settings.modules[2].assets = [["off", "assets/off-edited.png", "png"]];
             settings.modules[0].lorebook![0].content = "lore only";
             expect(modules.getModuleAssets()).toBe(first);

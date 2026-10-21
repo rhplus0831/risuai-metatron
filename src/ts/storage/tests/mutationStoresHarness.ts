@@ -4,7 +4,7 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
 /**
- * The boot shared by the Phase 4 slice 1 tests (`characterStore.test.ts`, `collectionStore.test.ts`,
+ * The boot shared by the mutation store tests (`characterStore.test.ts`, `collectionStore.test.ts`,
  * `pluginStorageStore.test.ts`, `mutationScope.test.ts`): the real server store in memory with two
  * prompt presets, two model presets, one plugin, and a character `c` with chats `k` (messages a, b, c) and `j` (empty), read,
  * seeded, installed into the records through the real boot (`installBootRecords`: the records and

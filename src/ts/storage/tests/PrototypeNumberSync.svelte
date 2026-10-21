@@ -1,10 +1,11 @@
 <script lang="ts">
-    // Test-only: the replacement wrapper pattern from the spike (proof 4). No local copy and no
+    // Test-only: the replacement wrapper pattern (the same-flush switch cases). No local copy and no
     // effects: a function binding reads through `getSettingValue` on every render and writes
     // synchronously through `setSettingValue`, which calls `item.onChange` once per user edit. Both
-    // are the pre-slice-6 copies over the spike's root holder (`spikeRegistry.ts`), which reach the prototype.
+    // are the older registry copies over the prototype root holder (`prototypeRegistry.ts`), which
+    // reach the prototype.
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
-    import { candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
+    import { candidateGetSettingValue, candidateSetSettingValue } from "./prototypeRegistry";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
 
     interface Props {

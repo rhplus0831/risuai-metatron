@@ -21,11 +21,10 @@ import { v4 } from "uuid";
 import { writeEntries } from "./mutationValidation";
 
 /**
- * The settings records (Phase 6 slice 4, `settings-ownership`): the source of truth of the five
- * sections, the settings collections, and `presets`, `modules`, `plugins`, `pluginStorage`
- * (all singletons). Each record is a deep write-through record, the pattern the Phase 6 spike chose
- * and the owner confirmed at Stop A (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/
- * spike-projection-bindings.md`, "Verdict"): `trackedRecord(kind)` is a JS `Proxy` over the record's
+ * The settings records: the source of truth of the five sections, the settings collections, and
+ * `presets`, `modules`, `plugins`, `pluginStorage` (all singletons). Each record is a deep
+ * write-through record, the pattern the prototype binding tests (`tests/projectionBindings.test.ts`)
+ * chose over an accessor-backed wrapper: `trackedRecord(kind)` is a JS `Proxy` over the record's
  * `$state` data whose every trap resolves the current data; a read of a nested container returns its
  * own wrapper; a write, `delete`, or `defineProperty` at any depth goes into the `$state` data and
  * queues the record's write in the same task (`setRecordWriteListener`: the save loop's `markKey`).
@@ -40,7 +39,7 @@ import { writeEntries } from "./mutationValidation";
  * - `batchRecordWrites(fn)` runs a bulk writer: the record writes inside it are queued once per
  *   kind when it ends.
  *
- * Wrapper rules (the spike's, `src/ts/storage/tests/projectionHarness.svelte.ts`):
+ * Wrapper rules (first proven on the test prototype, `src/ts/storage/tests/projectionHarness.svelte.ts`):
  * - Identity: the root wrapper resolves its record by kind on every trap, so a retained wrapper
  *   reaches the record after a replacement. One wrapper per logical item: an object's child by its
  *   field; an element of an allowlisted by-id list (`BY_ID_FIELDS`) by its id, wherever it moved; any
@@ -56,13 +55,13 @@ import { writeEntries } from "./mutationValidation";
  *   Plain JSON written under a character or `modules` is copied. Their field-text caches are
  *   disabled by non-JSON data or state shared across cached fields; modules may move whole elements
  *   between root list slots without disabling the cache, which follows element identity, not id.
- * - A module's `assets` list is immutable (heap plan B1): every install (`applyRaw`) and adoption
+ * - A module's `assets` list is immutable: every install (`applyRaw`) and adoption
  *   freezes a list of plain JSON tuples, and a read returns the frozen list and tuples themselves,
  *   never a wrapper. An edit replaces the whole list (`module.assets = next`; unchanged frozen
  *   tuples are reused). A write into a frozen value through any path is refused with a TypeError
  *   before anything changes. A list of another shape stays mutable and wrapped.
  * - A character's `additionalAssets`, `emotionImages` (tuples) and `ccAssets` (flat records) follow
- *   the same rule (heap plan B2): frozen at `initializeRecords`, `applyRawCharacter` and
+ *   the same rule: frozen at `initializeRecords`, `applyRawCharacter` and
  *   `patchRawCharacter` (handed-over data) and, for a whole field written or stored, in a wholly owned
  *   copy (`freshAssetList`: live descriptors validated before copying, only verified entries shared).
  * - An own `__proto__` (or other inherited-name) key is rebuilt through `writeEntries`.
@@ -90,8 +89,7 @@ export type RecordKind = (typeof RECORD_KINDS)[number];
 const recordKinds = new Set<string>(RECORD_KINDS);
 
 /**
- * The character list (Phase 6 slice 5): held beside the settings records, but not a settings kind (the
- * save loop writes one `characters` resource per `chaId`, not one record).
+ * The character list: held beside the settings records, but not a settings kind (the save loop writes one `characters` resource per `chaId`, not one record).
  */
 export const CHARACTERS = "characters";
 /** A kind the wrapper machinery tracks: a settings record or the character list. */
@@ -99,7 +97,7 @@ type TrackedKind = RecordKind | typeof CHARACTERS;
 /** Fields of a character that are not part of its record: the render key. */
 const CHARACTER_LOCAL_FIELDS: ReadonlySet<string> = new Set(["reloadKeys"]);
 /**
- * The facade view's fields of a character (Phase 6 slice 9a): never stored on the record (the chat
+ * The facade view's fields of a character: never stored on the record (the chat
  * module holds the chats); a character element wrapper answers them from `setCharacterChatView`.
  */
 const CHARACTER_CHAT_FIELDS: ReadonlySet<string> = new Set(["chats", "chatPage"]);
@@ -865,7 +863,7 @@ function assertNoLlmCredential(value: unknown) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Credentials (`llmSecrets` is write-only: `shared/llmSecrets.ts`, Phase 5 slice 7b).
+// Credentials (`llmSecrets` is write-only: `shared/llmSecrets.ts`).
 //
 // Through a wrapper a credential is never stored in a record and never silently lost:
 // - `llmSecrets` holds the mirror form (`mirrorFields`: every credential field reads `""`):
@@ -1461,7 +1459,7 @@ function unwrapInto(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Frozen asset lists (heap plan B1: module `assets`; B2: a character's asset fields).
+// Frozen asset lists (a module's `assets`; a character's asset fields).
 
 /**
  * The asset lists and their entries this layer verified and froze: a list is replaced whole, never
@@ -2051,7 +2049,7 @@ function inertCopy(
 }
 
 /**
- * Drops `node`'s index child entries at `length` or past it (heap plan D1): its list shrank or now is
+ * Drops `node`'s index child entries at `length` or past it: its list shrank or now is
  * another, shorter list, so no element stands there and the entry would only keep its old object.
  * A surviving element that moved down keeps its node through `meta.children` and is rebound at its
  * next read; entries below `length` are kept (after a raw replacement they stand for the element
@@ -2090,7 +2088,7 @@ function refreshRoot(kind: string) {
 const pendingTrims = new Set<string>();
 
 /**
- * After a removal from a root list (heap plan D1): Svelte never writes a proxy's original array, which
+ * After a removal from a root list: Svelte never writes a proxy's original array, which
  * keeps every element it was installed with, so a removed one would stay reachable through it until
  * the record is replaced. Every index is read once (so each has its Svelte source and `get` never
  * falls back to the original), then the original array is overwritten with the live elements and cut
@@ -2134,8 +2132,8 @@ function trimOriginal(kind: string) {
 
 /**
  * After a raw change of the data under `node` (a server copy or an installation: its epoch moved, so
- * every node below follows its path at its next read), drops the old objects the nodes below hold
- * (heap plan D1). The nodes stay, so a retained wrapper and a fresh one remain one object; until
+ * every node below follows its path at its next read), drops the old objects the nodes below hold.
+ * The nodes stay, so a retained wrapper and a fresh one remain one object; until
  * then they would keep the replaced data alive. Never after a local change, where a moved element
  * is followed by identity.
  */
@@ -2948,16 +2946,16 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The character list (Phase 6 slice 5, `character-ownership`).
+// The character list.
 //
-// `characterList()` is the list's wrapper (`trackedCharacters`): an element is one character,
-// by id on `chaId`; a write under it (any depth, except its local field `reloadKeys`, which stays raw)
+// `characterList()` is the list's wrapper (`trackedCharacters`): an element is one character, by id
+// on `chaId`; a write under it (any depth, except its local field `reloadKeys`, which stays raw)
 // queues that character's save. Its `chats` and `chatPage` are the chat module's compatibility view
-// for the shared CBS evaluator (Phase 6 slice 9a; `setCharacterChatView`): never stored on the record, written only through the chat
-// module. The list's membership changes only
-// through the operations below, which `characterStore` calls: each validates first, changes the raw
-// list once, queues the membership change and the characters it stored, and runs the selection's hook.
-// The raw path (`applyRawCharacter`, `patchRawCharacter`) is the save loop's: it queues nothing.
+// for the shared CBS evaluator (`setCharacterChatView`): never stored on the record, written only
+// through the chat module. The list's membership changes only through the operations below, which
+// `characterStore` calls: each validates first, changes the raw list once, queues the membership
+// change and the characters it stored, and runs the selection's hook. The raw path
+// (`applyRawCharacter`, `patchRawCharacter`) is the save loop's: it queues nothing.
 
 type CharacterObject = Record<string, unknown>;
 
@@ -3050,7 +3048,7 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
 }
 
 /**
- * Drops the canonical nodes of characters that left the list (heap plan D1), so the list's node no
+ * Drops the canonical nodes of characters that left the list, so the list's node no
  * longer keeps a removed character's data. Their per-character metas stay: a retained wrapper keeps
  * its node's meta, and a same-id re-add must stamp that same one (`characterOwner`). A retained
  * wrapper of a removed character is an orphan: it throws while the id is absent and follows a

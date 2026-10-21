@@ -38,20 +38,20 @@ import { settings } from "./settingsViews.svelte";
 export { selectCharacter };
 
 /**
- * The character mutations (Phase 4): the external contracts (plugins, MCP, Lua, triggers, imports)
+ * The character mutations: the external contracts (plugins, MCP, Lua, triggers, imports)
  * write characters only through these functions. Each validates its whole input and prepares a
  * detached copy before the mirror changes (a refusal throws `MutationValidationError` and changes
- * nothing) and writes the character record by `chaId`. Since Phase 6 slice 5 the characters are
- * write-through records (`records.svelte.ts`): every write of a character's own fields queues its
+ * nothing) and writes the character record by `chaId`. The characters are write-through
+ * records (`records.svelte.ts`): every write of a character's own fields queues its
  * save, and the list's membership changes only here (add, replace at an index, remove). The chats
- * are the chat module's (`chatStore.svelte.ts`; Phase 6 slice 9a): a character new to the list hands
+ * are the chat module's (`chatStore.svelte.ts`): a character new to the list hands
  * its chats to it (`installCharacterChats`), and the records hold no chats.
  */
 
 type AnyCharacter = character | groupChat;
 
 /**
- * The client's view of a character (Phase 6 slice 9a): a character record without its chats, which
+ * The client's view of a character: a character record without its chats, which
  * the chat module holds (`chatList`, `selectedChat`, `findChat`). It keeps the render key
  * `reloadKeys`, which the UI reads and is never saved; it is not the persisted record type. The shared
  * `character`/`groupChat` shapes keep `chats`/`chatPage` for the server, cards, and plugin snapshots.
@@ -133,7 +133,7 @@ function normalizedFields<T extends Record<string, unknown>>(fields: T, key: str
 }
 
 /**
- * Prepares a character that enters the list (Phase 6 slice 5b; every creator and importer goes
+ * Prepares a character that enters the list (every creator and importer goes
  * through `addCharacter` or `replaceCharacterAt`), on a detached copy and before anything is
  * installed, so a refusal changes nothing: the checks; a `chaId` when missing; the shared defaults
  * (`normalizeCharacter`); then the creation steps, each run once here: `ttsMode` `"none"` becomes

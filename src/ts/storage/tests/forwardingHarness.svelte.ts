@@ -1,70 +1,71 @@
 import { flushSync, untrack } from "svelte";
-import { spikeRoot } from "./spikeRoot.svelte";
+import { prototypeRoot } from "./prototypeRoot.svelte";
 import type { Database } from "../database.svelte";
 
-// Test-only prototype of the Phase 3 forwarding layer (spike, slice 1). Nothing here is production
-// code: the layer that slice 5 installs on the real database is written from the verdict of
-// `forwardingSpike.test.ts`, not copied from this file.
+// Test-only prototype of a forwarding layer: accessors on the database root that forward the preset
+// and persona fields to the selected record. Nothing here is production code: the forwarding layer
+// the app once installed on the whole-database aggregate (since replaced by the settings record
+// views) was written from what `forwardingBindings.test.ts` showed, not copied from this file.
 //
-// Shape (spike "Proposed decisions"): `installForwarding(raw)` defines, on the raw object before
+// Shape: `installForwarding(raw)` defines, on the raw object before
 // Svelte proxies it, one enumerable and configurable accessor per forwarded root key. The getter
 // resolves the selected record from the selection id and the current collection on every access
 // (no cached record) and returns `record[aliasOf(rootKey)]`. The setter captures the selected id
 // synchronously, resolves the record by that id, and writes into it through the proxy. Both use
-// `this`, which is the Svelte proxy whenever the accessor is reached through `spikeRoot.db`
+// `this`, which is the Svelte proxy whenever the accessor is reached through `prototypeRoot.db`
 // (`Reflect.get(target, prop, receiver)` and `descriptor.set.call(receiver, value)` in
 // `node_modules/svelte/src/internal/client/proxy.js`), so the collection reads are tracked and the
 // record writes notify.
 //
-// A15 (lazy reconciliation inside accessor resolution): when the selected id names no record, the
+// Lazy reconciliation inside accessor resolution: when the selected id names no record, the
 // getter falls back to the first record and persists that fallback to the selection. A setter call
 // whose captured id names no record is dropped, never redirected to another record.
 
-export interface SpikePromptSettings {
+export interface PrototypePromptSettings {
     postEndInnerFormat: string;
     sendChatAsSystem: boolean;
 }
 
-export interface SpikePreset {
+export interface PrototypePreset {
     id: string;
     name: string;
     temperature: number;
     maxContext: number;
     reasonEffort: number;
-    promptSettings: SpikePromptSettings | null;
+    promptSettings: PrototypePromptSettings | null;
 }
 
-export interface SpikePersona {
+export interface PrototypePersona {
     id: string;
     name: string;
     icon: string;
     personaPrompt: string;
 }
 
-/** The forwarded root keys the harness defines. Slice 5 forwards the full lists. */
-export interface SpikeForwardedRoot {
+/** The forwarded root keys the harness defines (a subset; the production layer forwarded the full lists). */
+export interface PrototypeForwardedRoot {
     temperature: number;
     maxContext: number;
     reasoningEffort: number;
-    promptSettings: SpikePromptSettings | null;
+    promptSettings: PrototypePromptSettings | null;
     username: string;
     userIcon: string;
     personaPrompt: string;
 }
 
-export interface SpikeRawDb {
-    botPresets: SpikePreset[];
+export interface PrototypeRawDb {
+    botPresets: PrototypePreset[];
     botPresetId: string;
-    personas: SpikePersona[];
+    personas: PrototypePersona[];
     personaId: string;
     /** A plain (not forwarded) root key, to show that ordinary keys are untouched. */
     plainKey: string;
 }
 
-export type SpikeDb = SpikeRawDb & SpikeForwardedRoot;
+export type PrototypeDb = PrototypeRawDb & PrototypeForwardedRoot;
 
 interface ForwardedKey {
-    rootKey: keyof SpikeForwardedRoot;
+    rootKey: keyof PrototypeForwardedRoot;
     collection: "botPresets" | "personas";
     selection: "botPresetId" | "personaId";
     recordKey: string;
@@ -87,20 +88,20 @@ export const PERSONA_ALIASES: Readonly<Record<string, string>> = {
 
 export const FORWARDED_KEYS: readonly ForwardedKey[] = [
     ...Object.entries(PRESET_ALIASES).map(([rootKey, recordKey]): ForwardedKey => ({
-        rootKey: rootKey as keyof SpikeForwardedRoot,
+        rootKey: rootKey as keyof PrototypeForwardedRoot,
         collection: "botPresets",
         selection: "botPresetId",
         recordKey,
     })),
     ...Object.entries(PERSONA_ALIASES).map(([rootKey, recordKey]): ForwardedKey => ({
-        rootKey: rootKey as keyof SpikeForwardedRoot,
+        rootKey: rootKey as keyof PrototypeForwardedRoot,
         collection: "personas",
         selection: "personaId",
         recordKey,
     })),
 ];
 
-export function createRawDb(): SpikeRawDb {
+export function createRawDb(): PrototypeRawDb {
     return {
         botPresets: [
             {
@@ -141,7 +142,7 @@ function findRecord(list: unknown, id: unknown): Record_ | undefined {
 
 /**
  * Resolves the selected record for a getter. When the selection names no record, falls back to
- * the first record and persists that fallback to the selection (A15). The persist runs under
+ * the first record and persists that fallback to the selection. The persist runs under
  * `untrack` because a getter can be reached from a `$derived` or a block effect, where Svelte's
  * `set` guard (`state_unsafe_mutation` in `reactivity/sources.js`) forbids a tracked write.
  */
@@ -185,7 +186,7 @@ export function installForwarding<T extends object>(raw: T): T {
                 return record === undefined ? undefined : record[key.recordKey];
             },
             set(this: Record<string, unknown>, value: unknown) {
-                // Capture the selected id synchronously; a missing record drops the write (A15).
+                // Capture the selected id synchronously; a missing record drops the write.
                 const id = this[key.selection];
                 const record = findRecord(this[key.collection], id);
                 if (record === undefined) {
@@ -198,15 +199,15 @@ export function installForwarding<T extends object>(raw: T): T {
     return raw;
 }
 
-/** Installs the layer on a fresh raw object, makes it `spikeRoot.db`, and returns the proxy. */
-export function mountSpikeDb(raw: SpikeRawDb = createRawDb()): SpikeDb {
+/** Installs the layer on a fresh raw object, makes it `prototypeRoot.db`, and returns the proxy. */
+export function mountPrototypeDb(raw: PrototypeRawDb = createRawDb()): PrototypeDb {
     installForwarding(raw);
-    spikeRoot.db = raw as unknown as Database;
-    return spikeRoot.db as unknown as SpikeDb;
+    prototypeRoot.db = raw as unknown as Database;
+    return prototypeRoot.db as unknown as PrototypeDb;
 }
 
-export function currentDb(): SpikeDb {
-    return spikeRoot.db as unknown as SpikeDb;
+export function currentDb(): PrototypeDb {
+    return prototypeRoot.db as unknown as PrototypeDb;
 }
 
 /** Changes only the preset selection. No root copy (Astra P10). */
@@ -219,25 +220,25 @@ export function switchPersona(id: string): void {
     currentDb().personaId = id;
 }
 
-export function preset(id: string): SpikePreset | undefined {
+export function preset(id: string): PrototypePreset | undefined {
     return currentDb().botPresets.find((p) => p.id === id);
 }
 
-export function persona(id: string): SpikePersona | undefined {
+export function persona(id: string): PrototypePersona | undefined {
     return currentDb().personas.find((p) => p.id === id);
 }
 
-/** Harness copy of `setPluginDatabaseLite` (`src/ts/plugins/apiV3/v3.svelte.ts`): per-key assignment on the proxy, then `spikeRoot.db = db`. */
+/** Harness copy of `setPluginDatabaseLite` (`src/ts/plugins/apiV3/v3.svelte.ts`): per-key assignment on the proxy, then `prototypeRoot.db = db`. */
 export function pluginSetDatabaseLite(newDb: Record<string, unknown>): void {
-    const db = spikeRoot.db as unknown as Record<string, unknown>;
+    const db = prototypeRoot.db as unknown as Record<string, unknown>;
     for (const key of Object.keys(newDb)) {
         db[key] = newDb[key];
     }
-    spikeRoot.db = db as unknown as Database;
+    prototypeRoot.db = db as unknown as Database;
 }
 
 /** Defaults the harness copy of `setDatabase` applies where `checkNullish` finds a nullish value. */
-export const SPIKE_DEFAULTS: Readonly<Partial<SpikeForwardedRoot>> = {
+export const PROTOTYPE_DEFAULTS: Readonly<Partial<PrototypeForwardedRoot>> = {
     temperature: 80,
     maxContext: 4000,
     reasoningEffort: 0,
@@ -255,16 +256,16 @@ const checkNullish = (data: unknown) => data === undefined || data === null;
  * value is nullish (what `setDatabase` in `database.svelte.ts` does for every field).
  */
 export function pluginSetDatabase(newDb: Record<string, unknown>): void {
-    const db = spikeRoot.db as unknown as Record<string, unknown>;
+    const db = prototypeRoot.db as unknown as Record<string, unknown>;
     for (const key of Object.keys(newDb)) {
         db[key] = newDb[key];
     }
-    for (const [key, fallback] of Object.entries(SPIKE_DEFAULTS)) {
+    for (const [key, fallback] of Object.entries(PROTOTYPE_DEFAULTS)) {
         if (checkNullish(db[key])) {
             db[key] = fallback;
         }
     }
-    spikeRoot.db = db as unknown as Database;
+    prototypeRoot.db = db as unknown as Database;
 }
 
 /** `$state.snapshot` for the test file, which may not use runes (STRUCTURE.md T3). */

@@ -74,8 +74,8 @@ async function boot(server?: StoreBackedServer) {
     const characterStore = await import("../characterStore.svelte");
     const selection = await import("../selection.svelte");
     const read = server.store.readKinds([characters], { chats: true });
-    // The characters are records since Phase 6 slice 5: installed as `loadData` installs them, so the
-    // selection (by id) sees them.
+    // The characters are records, installed as `loadData` installs them, so the selection (by id)
+    // sees them.
     records.initializeRecords(
         records.takeRecordFields({ characters: read.kinds.characters.map((record) => record.data) }),
     );
@@ -85,7 +85,7 @@ async function boot(server?: StoreBackedServer) {
     const ref = { chaId: "c", chatId: "k" };
     const character = () => characterStore.characterList()[0] as any;
     const take = () => chat.takeChatWork(new Set());
-    /** The request body as the save loop sends it (`groupId` and `retry` included, slice 6b). */
+    /** The request body as the save loop sends it (`groupId` and `retry` included). */
     const bodyOf = (work: ChatModule["takeChatWork"] extends (...args: any) => infer R ? R : never) => {
         const body = chat.chatWorkBody(work);
         return {
@@ -98,8 +98,8 @@ async function boot(server?: StoreBackedServer) {
             ? { results: [], chats: [], chatOrders: [] }
             : server.store.applyChanges(bodyOf(work));
     /**
-     * Applies the work as a server that remembers no group id does (slice 6b: the id was dropped, or
-     * the chat's list of ids moved past it), so a resend meets the ordinary checks instead of the
+     * Applies the work as a server that remembers no group id does (the id was dropped, or the
+     * chat's list of ids moved past it), so a resend meets the ordinary checks instead of the
      * remembered answer.
      */
     const applyForgotten = (work: ReturnType<typeof take>) => {
@@ -202,8 +202,8 @@ describe("mirror and queue", () => {
         chat.setMessageText(ref, "a", "two");
         chat.replaceMessage(ref, m("b", "B2"));
         chat.setMessageText(ref, "b", "B3");
-        // A field the server does not default (an unset `note` is written as its default since Phase 6
-        // slice 5b, so it is no unset any more).
+        // A field the server does not default (an unset `note` is written as its default, so it would
+        // not stay an unset).
         chat.setChatMeta(ref, { scriptstate: { $a: "1" } });
         // Set then unset the same field: only the unset survives, beside the other set.
         chat.setChatMeta(ref, { name: "N" }, ["scriptstate"]);
@@ -358,7 +358,7 @@ describe("membership and selection", () => {
             [record("one"), record("two"), record("extra")],
             [{ characterId: "z", revision: "o", ids: ["two", "missing", "one"] }],
         );
-        // Phase 6 slice 9a: the chats are held in the module; nothing is written onto the characters.
+        // The chats are held in the module; nothing is written onto the characters.
         expect(chat.chatList("z").map((entry) => entry.id)).toEqual(["two", "one", "extra"]);
         expect(chat.selectedChatIndex("z")).toBe(0);
         expect(characters[0]).toEqual({ chaId: "z", chats: [], chatPage: 3 });
@@ -443,8 +443,8 @@ describe("conflict recovery", () => {
     it("keeps a chat whose create the server refused: quarantined with an alert, not dropped", async () => {
         const { server, chat, records } = await boot();
         const alert = await import("../../alert");
-        // The list changes only through its operations (Phase 6 slice 5); the raw insertion the
-        // character module makes, without its normalization.
+        // The list changes only through its operations; the raw insertion the character module makes,
+        // without its normalization.
         records.insertCharacterRecord({ chaId: "z", name: "Z", chats: [], chatPage: 0 });
         const ref = { chaId: "z", chatId: "n" };
         chat.createChat("z", { id: "n", name: "N", message: [m("u", "typed before the refusal")] } as any);
@@ -476,7 +476,7 @@ describe("conflict recovery", () => {
         const ref = { chaId: "c", chatId: "n" };
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "old")] } as any);
         const sent = take();
-        // Landed, but not remembered by its id (slice 6b): the resend is recognized by its content.
+        // Landed, but not remembered by its id: the resend is recognized by its content.
         applyForgotten(sent);
         chat.setMessageText(ref, "x", "newer edit");
         chat.setChatMeta(ref, { note: "newer note" });
@@ -531,8 +531,8 @@ describe("conflict recovery", () => {
         chat.deleteChat(ref);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
         recover(take());
-        // The recovered list brings `k` back as its summary (Phase 6 slice 9b): listed at its server
-        // position, in the facade (the loaded chats) only once it is loaded.
+        // The recovered list brings `k` back as its summary: listed at its server position, in the
+        // facade (the loaded chats) only once it is loaded.
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
         expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
         expect(server.order("c")!.ids).toEqual(["k", "j"]);
@@ -562,8 +562,8 @@ describe("conflict recovery", () => {
         expect(() => apply(reorder)).toThrow(server.errors.ResourceBatchConflictError);
         const { conflicts } = recover(reorder);
         expect(conflicts).toEqual([{ kind: "chatOrder", characterId: "c", revision: expect.any(String) }]);
-        // The collection read brings the other tab's chat in (as its summary, Phase 6 slice 9b); the
-        // server order stands.
+        // The collection read brings the other tab's chat in (as its summary); the server order
+        // stands.
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(server.order("c")!.ids);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "local", "r"]);
         expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "local"]);
@@ -591,7 +591,7 @@ describe("applyChatResult", () => {
             "D appended meanwhile",
         ]);
         const { work } = commit();
-        // The hook's change of `a` goes as a patch of the field it changed (slice 1b), not the row.
+        // The hook's change of `a` goes as a patch of the field it changed, not the row.
         expect(work.groups[0].ops.map((op) => op.op)).toEqual([
             "setText",
             "append",
@@ -620,7 +620,7 @@ describe("applyChatResult", () => {
 
     it("sets and unsets chat fields from the diff, and gives an omitted fmIndex its default", async () => {
         const { server, chat, ref, commit } = await boot();
-        // A field the result can unset: `fmIndex` is a chat default since Phase 6 slice 5b (below).
+        // A field the result can unset: `fmIndex` is a chat default (below).
         chat.setChatMeta(ref, { hypaV3Data: { summaries: [] } });
         commit();
         const baseline = chat.captureChatBaseline(ref);
@@ -638,8 +638,8 @@ describe("applyChatResult", () => {
         expect(mirror).not.toHaveProperty("hypaV3Data");
         expect(mirror.fmIndex).toBe(-1);
         const { work } = commit();
-        // `scriptstate` is a map field: the baseline lacked it (an empty map), so its entry is merged
-        // (slice 1b), folded into the same `meta` op as the set and the unset.
+        // `scriptstate` is a map field: the baseline lacked it (an empty map), so its entry is merged,
+        // folded into the same `meta` op as the set and the unset.
         expect(work.groups[0].ops).toEqual([
             {
                 op: "meta",
@@ -914,9 +914,9 @@ describe("unload work (pagehide)", () => {
         chat.setMessageText(ref, "a", "unload write");
 
         // Lost answer (the request failed, or the page did not survive to see it) after the server
-        // applied it: the group is resent alone, exactly as sent and with `retry` (slice 6b), and the
-        // server answers it as the duplicate it is; the note typed meanwhile follows in its own group
-        // on the revision the unload write produced, so nothing is stale, reloaded, or discarded.
+        // applied it: the group is resent alone, exactly as sent and with `retry`, and the server
+        // answers it as the duplicate it is; the note typed meanwhile follows in its own group on the
+        // revision the unload write produced, so nothing is stale, reloaded, or discarded.
         const [lost] = chat.unloadPendingChatWork(LIMIT);
         chat.trackUnloadWork(lost.work);
         const sentBody = JSON.parse(lost.body).chats[0];
@@ -994,7 +994,7 @@ describe("unload work (pagehide)", () => {
         // the next chat that fits still goes.
         const onlyJ = chat.unloadPendingChatWork(bytes(requestK.body) - 1);
         expect(onlyJ.map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
-        // Built again: the same request but for its fresh group id (slice 6b).
+        // Built again: the same request but for its fresh group id.
         const withoutId = (body: string) => JSON.parse(body, (key, value) => (key === "groupId" ? undefined : value));
         expect(withoutId(onlyJ[0].body)).toEqual(withoutId(requestJ.body));
         expect(bytes(onlyJ[0].body)).toBe(bytes(requestJ.body));
@@ -1073,10 +1073,9 @@ describe("streaming message identity", () => {
 describe("new characters", () => {
     it("normalizeNewCharacter gives a new character's chats and messages ids (a default chat when it has none) without queuing anything; adoptCharacter queues the creates once", async () => {
         const { server, chat, records, characterStore, selection } = await boot();
-        // The list changes only through its operations (Phase 6 slice 5): the raw insertion
-        // `addCharacter` makes, here without the normalization this case calls by hand. Since Phase 6
-        // slice 9a the record holds no chats: they are installed in the chat module first
-        // (`installCharacterChats`, as `addCharacter` does).
+        // The list changes only through its operations: the raw insertion `addCharacter` makes, here
+        // without the normalization this case calls by hand. The record holds no chats: they are
+        // installed in the chat module first (`installCharacterChats`, as `addCharacter` does).
         for (const character of [
             {
                 chaId: "n",
@@ -1160,7 +1159,7 @@ describe("new characters", () => {
     });
 });
 
-describe("map merges (slice 11b)", () => {
+describe("map merges", () => {
     const record = (id: string) => ({ call: { id, name: "tool", arg: {} }, response: [{ type: "text", text: id }] });
     const stored = (server: Awaited<ReturnType<typeof boot>>["server"]) =>
         (server.chat("c", "k")!.data as { toolCalls?: Record<string, unknown> }).toolCalls;
@@ -1236,7 +1235,7 @@ describe("map merges (slice 11b)", () => {
     });
 });
 
-describe("field patches and entry removals (data-loss slice 1b)", () => {
+describe("field patches and entry removals", () => {
     const LIMIT = 60 * 1024;
     const stored = (server: Awaited<ReturnType<typeof boot>>["server"], chatId: string, id: string) =>
         server.chat("c", chatId)!.data.message.find((message) => message.chatId === id) as unknown as Record<
@@ -1494,7 +1493,7 @@ describe("field patches and entry removals (data-loss slice 1b)", () => {
     });
 });
 
-describe("message translations (translation slice 1.1)", () => {
+describe("message translations", () => {
     const tr = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
         text,
         sourceHash: translationSourceHash(source),
@@ -1637,7 +1636,7 @@ describe("message translations (translation slice 1.1)", () => {
         expect(message(chat, ref, "x")).not.toHaveProperty("translation");
         expect(message(chat, ref, "y")).not.toHaveProperty("translation");
         const sent = take();
-        // Landed, but not remembered by its id (slice 6b): the retry below meets the ordinary checks.
+        // Landed, but not remembered by its id: the retry below meets the ordinary checks.
         applyForgotten(sent);
         expect(translations(server.chat("c", "n")!.data.message)).toEqual([undefined, undefined, T, stale]);
         expect(stored(server, "n", "x")).toEqual(m("x", "old"));
@@ -1756,7 +1755,7 @@ describe("stream updates per frame", () => {
     });
 });
 
-describe("a lost delete with the chat created again under its id, and a lost create (data-loss slice 6b)", () => {
+describe("a lost delete with the chat created again under its id, and a lost create", () => {
     const refJ = { chaId: "c", chatId: "j" };
     const chatJ = { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X")] } as any;
     /** `k` deleted here with its answer lost (`landed`: the server applied it), then created again under its id. */

@@ -173,7 +173,7 @@ describe("cache reuse", { timeout: INTEGRATION_TIMEOUT }, () => {
         agree("a");
     });
 
-    it("an asset list (heap plan B2): its frozen text is reused by identity and stamp, a replacement patches its field, raw paths freeze without an echo, and the canonical default is installed frozen", async () => {
+    it("an asset list: its frozen text is reused by identity and stamp, a replacement patches its field, raw paths freeze without an echo, and the canonical default is installed frozen", async () => {
         const tuples = (count: number, prefix = "Asset") =>
             Array.from({ length: count }, (_, i) => [`${prefix} ${i}`, `assets/${prefix}-${i}.png`, "png"]);
         const { fake, c, rawOf, records, flush, ops, serialized, agree } = await boot((fake) => {

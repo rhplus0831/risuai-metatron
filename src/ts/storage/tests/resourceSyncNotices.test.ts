@@ -5,14 +5,13 @@ import type { Chat } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 5 Stop D fixes, retargeted to Phase 6's live updates. C3: another writer's commit reaches
-// this tab as a change set from the server's live-update feed (`network/eventFeed.ts` hands each
-// `change` frame of the loaded epoch to `noteRemoteChanges`), and the chat is read again once it is
-// idle here (`noteRemoteChat` with the announced revision, `idleChatRefreshes`,
-// `finishIdleChatRefresh` with the notice sequence taken before the read). The tests call
-// `noteRemoteChanges` directly at that boundary with the revision the server store holds; the
-// socket, its epoch filtering, and its frame parsing are outside this file. C2: a send whose flush is
-// refused because a change waits for another tab's job shows `chatGenerating`
+// Another writer's commit reaches this tab as a change set from the server's live-update feed
+// (`network/eventFeed.ts` hands each `change` frame of the loaded epoch to `noteRemoteChanges`),
+// and the chat is read again once it is idle here (`noteRemoteChat` with the announced revision,
+// `idleChatRefreshes`, `finishIdleChatRefresh` with the notice sequence taken before the read). The
+// tests call `noteRemoteChanges` directly at that boundary with the revision the server store
+// holds; the socket, its epoch filtering, and its frame parsing are outside this file. A send whose
+// flush is refused because a change waits for another tab's job shows `chatGenerating`
 // (`GenerationBlockedError`). The save adapter, the chat module, the job transport, and
 // `runServerJob` run for real against the real server store guarded by the real generation lock.
 
@@ -78,7 +77,7 @@ async function boot() {
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
-    // Chat `k` is bound to the stored records (`docs/plan/chat-binding.md`): a send runs on its binding.
+    // Chat `k` is bound to the stored records: a send runs on its binding.
     const firstId = (kind: string) => (fake.record(kind, "main")!.data as { id: string }[])[0].id;
     fake.store.applyChanges({
         ops: [{ kind: fake.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
@@ -124,7 +123,7 @@ async function boot() {
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    // Installed as `loadData` installs it (the records, Phase 6 slices 4, 5 and 10).
+    // Installed as `loadData` installs it (the records).
     bootstrap.installBootRecords(snapshot);
     selection.selectCharacterAt(0);
     chat.initializeChats();
@@ -220,8 +219,8 @@ describe("a chat another tab announced", () => {
         const { fake, sync, chat, mirrorChat, notify } = await boot();
         fake.lock!.addToken("T");
         fake.lock!.acquire(B, { jobId: "J", generationId: "g1", token: "T" });
-        // The edit of the locked message is dropped (data-loss slice 2a); the edit of another
-        // message in the same group is the work the job blocks.
+        // The edit of the locked message is dropped; the edit of another message in the same group is
+        // the work the job blocks.
         chat.setMessageText(refK, "b", "edited");
         chat.setMessageText(refK, "a", "mine");
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
@@ -244,8 +243,8 @@ describe("a chat another tab announced", () => {
         expect(readsOf(fake)).toBe(reads);
         // Short timers that were not cancelled (each notice's `schedule(50)` replaces the chat work
         // listener's `schedule(500)` before it fires): at most one cycle per notice, no polling. The
-        // chat module's trim after a cycle (`scheduleTrim`, Phase 6 slice 9b) is not a save timer: it
-        // reads nothing, so it is told apart by its callback and left out of the count.
+        // chat module's trim after a cycle (`scheduleTrim`) is not a save timer: it reads nothing, so
+        // it is told apart by its callback and left out of the count.
         const cleared = new Set(clears.mock.calls.map(([handle]) => handle));
         const isTrim = (callback: unknown) => String(callback).includes("trimLoadedChats");
         const short = timeouts.mock.calls.filter(
@@ -327,14 +326,14 @@ describe("a chat another tab announced", () => {
     });
 });
 
-describe("a send while another tab's job holds the chat (C2)", () => {
+describe("a send while another tab's job holds the chat", () => {
     it("refuses pending locked work through the typed error with one notice per send, posts no job, and keeps the work", async () => {
         const { fake, sync, chat, character } = await boot();
         const commands = await import("../../process/serverCommands");
         fake.lock!.addToken("T");
         fake.lock!.acquire(B, { jobId: "J", generationId: "g1", token: "T" });
-        // The edit of the locked message is dropped with the reload notice (data-loss slice 2a);
-        // the edit of another message in the group is the pending work the job blocks.
+        // The edit of the locked message is dropped with the reload notice; the edit of another message
+        // in the group is the pending work the job blocks.
         chat.setMessageText(refK, "b", "edited");
         chat.setMessageText(refK, "a", "mine");
         const first = await commands.runServerJob(character(), refK, {
@@ -368,7 +367,7 @@ describe("a send while another tab's job holds the chat (C2)", () => {
     });
 });
 
-describe("a send on a clean tab (audit item A2)", () => {
+describe("a send on a clean tab", () => {
     it("uploads no character record before the job is created: the `lastInteraction` stamp is the server job's", async () => {
         const { fake, character } = await boot();
         const commands = await import("../../process/serverCommands");
@@ -387,7 +386,7 @@ describe("a send on a clean tab (audit item A2)", () => {
     });
 });
 
-describe("the reload notice (audit item B2)", () => {
+describe("the reload notice", () => {
     it("reaches the user for a discard episode after the notice was dismissed, and stays through one while it is shown", async () => {
         const { fake, sync, character } = await boot();
         const { reloadNotice, dismissReloadNotice } = await import("../../alert");
@@ -419,7 +418,7 @@ describe("the reload notice (audit item B2)", () => {
         // A job of this tab streams into `k`; another tab edits `b`, and this tab removes `a` and `b`
         // (a bulk removal needs the current revision): the removal conflicts and the chat's reload
         // waits for the job. (An edit of a message the other tab removed would be acknowledged as
-        // `missing` instead, with no reload: data-loss slice 6a.)
+        // `missing` instead, with no reload.)
         chat.applyServerGeneration(refK, { jobId: "J", messageId: "c", generationId: "cg", text: "so far", seq: 0 });
         fake.chatBatch([
             {

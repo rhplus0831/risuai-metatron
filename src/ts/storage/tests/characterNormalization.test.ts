@@ -4,17 +4,17 @@ import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 5b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "5b as built", "Validation") under the real boot, the real save loop, the real chat module, and the
+// Character normalization under the real boot, the real save loop, the real chat module, and the
 // real server store with its change feed (`storeBackedServer.ts`; each commit is handed to
-// `noteRemoteChanges` as the live-update socket would): the creation boundary (`prepareNewCharacter`
-// through `addCharacter` and `replaceCharacterAt`: each creation step once, the input untouched, a
-// refusal changing nothing), canonical character text (a partial same-id replacement, a deleted or
-// nulled default, a group whose companion arrays no longer fit, with a retained wrapper, the own
-// save's echo, another writer's partial record, a local edit during an outstanding save, and another
-// tab's send stamp merged), the chat defaults at every client entry and in `setChatMeta`, a create
-// whose answer was lost, and a selection (`changeChar`) that writes nothing. In every case the mirror,
-// the server, and the held baseline agree and no further save follows.
+// `noteRemoteChanges` as the live-update socket would): the creation boundary
+// (`prepareNewCharacter` through `addCharacter` and `replaceCharacterAt`: each creation step once,
+// the input untouched, a refusal changing nothing), canonical character text (a partial same-id
+// replacement, a deleted or nulled default, a group whose companion arrays no longer fit, with a
+// retained wrapper, the own save's echo, another writer's partial record, a local edit during an
+// outstanding save, and another tab's send stamp merged), the chat defaults at every client entry
+// and in `setChatMeta`, a create whose answer was lost, and a selection (`changeChar`) that writes
+// nothing. In every case the mirror, the server, and the held baseline agree and no further save
+// follows.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -156,7 +156,7 @@ async function boot() {
         JSON.stringify(Object.fromEntries(Object.entries(plain(character(id))).filter(([key]) => !LOCAL.has(key))));
     /**
      * Mirror and server hold the same character (as JSON values: a field patch's result keeps the
-     * server's key order, audit item A1), the server's text is its normalized form, and the held
+     * server's key order), the server's text is its normalized form, and the held
      * revision is the server's.
      */
     const agree = (id: string) => {
@@ -252,7 +252,7 @@ describe("a character's creation (prepareNewCharacter)", () => {
             postHistoryInstructions: "",
             globalLore: [convertedEntry],
         });
-        // Phase 6 slice 9a: `chatPage` is the facade view, not an own key of the record.
+        // `chatPage` is the facade view, not an own key of the record.
         expect(created.chatPage).toBe(0);
         expect(created.creation_date).toBeGreaterThanOrEqual(started);
         expect(created.chats).toHaveLength(1);
@@ -305,9 +305,9 @@ describe("a character's creation (prepareNewCharacter)", () => {
             expect(mirrorMeta(id, character(id).chats[0].id).note, String(chatPage)).toBe("first\nnote");
             expect(mirrorMeta(id, character(id).chats[1].id).note, String(chatPage)).toBe("second");
         }
-        // The fixture holds more loaded chats than the trim keeps after a save cycle (Phase 6 slice
-        // 9b): `page` is pinned so the comparison below is on the mirror's copy as it was normalized
-        // here, not on a copy read back from the server.
+        // The fixture holds more loaded chats than the trim keeps after a save cycle: `page` is
+        // pinned so the comparison below is on the mirror's copy as it was normalized here, not on
+        // a copy read back from the server.
         const release = chat.pinChats(page);
         await settle();
         agree(page);
@@ -379,11 +379,11 @@ describe("canonical character text", () => {
         expect(characterStore.replaceCharacterFields({ chaId: "c", name: "Replaced", extra: 1 })).toBe(true);
         // The defaults are in the mirror before any save; the chats stay the chat module's.
         expect(character("c")).toMatchObject({ name: "Replaced", desc: "", firstMsgIndex: -1, extra: 1 });
-        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        // `chats` is a fresh array on every read; the chats are the same ones.
         expect(character("c").chats).toEqual(chats);
         character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         await settle();
-        // The save is a field patch of the held record (audit item A1): the replaced name and the new
+        // The save is a field patch of the held record: the replaced name and the new
         // field; the defaults the replacement got are the base's values, so they are not sent.
         expect(characterOps(fake)).toEqual([
             {
@@ -487,7 +487,7 @@ describe("canonical character text", () => {
         element.scenario = "with a real change";
         const flushing = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        // The held save is a field patch of the canonical record (audit item A1): the real change
+        // The held save is a field patch of the canonical record: the real change
         // only; the default written back equals the base's value (its key moved, which a patch does
         // not carry), and the edit below is not in it.
         expect(fake.batchBodies()[0].ops[0].patch).toEqual({ set: { scenario: "with a real change" }, remove: [] });

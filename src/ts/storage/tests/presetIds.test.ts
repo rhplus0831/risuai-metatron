@@ -4,21 +4,19 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 2 (`docs/plan/phases/slices/phase-3-settings-sections/shared-schema-and-ids.md`):
-// the client preset paths that build on `normalizePreset`: `copyPreset` and every `importPreset`
-// path assign fresh ids, and `downloadPreset` strips the id. Since slice 5
-// (`forwarding-presets-and-selection.md`) the preset fields are served from the preset this client
-// selected (`selection.svelte.ts`, never persisted; `activePreset` since Phase 6 slice 10, where the
-// whole-database aggregate and its boot normalization backstop went away: the server normalizes, so
-// the fixtures here are normalized by the shared normalizer), `changeToPreset`, `copyPreset`, and
-// `downloadPreset` take ids. The actions live in `presets.svelte.ts`. Since the preset split
-// (`docs/plan/split-preset.md`) the stored prompt preset and the `.risup` export carry the prompt
-// fields only, and a fixture's model fields live in the model preset of the same id
-// (`installFlatDatabase`); since the model profiles (`docs/plan/model-profiles.md`) that model
-// preset names its profiles by slot, and the connection fields (`maxContext`) live on the profiles. The step-0 fixtures (`fixtures/boot/*.risup`, captured before any
-// Phase 3 change) pin the `.risup` reader contract: an import followed by an export decodes to the
-// fixture preset's prompt fields apart from `id` (Astra challenge point 1
-// found `seperateModels` gained a default here before the keep-on-switch rule).
+// The client preset paths that build on `normalizePreset`: `copyPreset` and every `importPreset`
+// path assign fresh ids, and `downloadPreset` strips the id. The preset fields are served from the
+// preset this client selected (`selection.svelte.ts`, never persisted; `activePreset`; there is no
+// whole-database aggregate and no boot normalization backstop: the server normalizes, so the
+// fixtures here are normalized by the shared normalizer), and `changeToPreset`, `copyPreset`, and
+// `downloadPreset` take ids. The actions live in `presets.svelte.ts`. The stored prompt preset and
+// the `.risup` export carry the prompt fields only, and a fixture's model fields live in the model
+// preset of the same id (`installFlatDatabase`); that model preset names its profiles by slot, and
+// the connection fields (`maxContext`) live on the profiles. The captured fixtures
+// (`fixtures/boot/*.risup`, captured before the settings were split into section records) pin the
+// `.risup` reader contract: an import followed by an export decodes to the fixture preset's prompt
+// fields apart from `id` (this check is what caught `seperateModels` gaining a default here before
+// the keep-on-switch rule).
 
 // As in the browser, the `buffer` polyfill is the global `Buffer` before msgpackr loads. msgpackr
 // binds its string encoder at load time: with Node's `Buffer` it takes the `utf8Write` path, which
@@ -112,7 +110,7 @@ function ownKeys(value: object): string[] {
 
 /**
  * Installs a legacy save into the records, its presets normalized by the shared normalizers as the
- * server normalizes what it serves (the boot's backstop is gone since slice 10): the prompt presets
+ * server normalizes what it serves (the boot has no normalization backstop): the prompt presets
  * and the model presets of the same ids from the same fixture entries (each keeps its own fields),
  * and the model profiles (`modelProfiles`); a save without presets or profiles gets the one default
  * record of each kind (the default model preset's slots name the default profile), and the
@@ -128,7 +126,7 @@ function bootWith(extra: Record<string, unknown> = {}) {
     } as unknown as Database);
 }
 
-/** The keys a `.risup` carries since the split: `name`, `image`, and the prompt fields (D5). */
+/** The keys a `.risup` carries since the split: `name`, `image`, and the prompt fields. */
 const EXPORTED_KEYS = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS] as readonly string[];
 
 /** `value` restricted to the exported keys, an absent one as an explicit `undefined` key. */
@@ -162,7 +160,7 @@ describe("the selected preset over a normalized list", () => {
         selectModelPreset("");
     });
 
-    it("fills an omitted sampling field but keeps an explicit null (Astra challenge point 2)", () => {
+    it("fills an omitted sampling field but keeps an explicit null", () => {
         bootWith({
             botPresets: [
                 {
@@ -386,7 +384,7 @@ describe("copyPreset and importPreset", () => {
     });
 });
 
-describe(".risup round trip against the step-0 fixtures", () => {
+describe(".risup round trip against the captured fixtures", () => {
     beforeEach(() => {
         // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
@@ -407,7 +405,7 @@ describe(".risup round trip against the step-0 fixtures", () => {
             const exported = await downloadPreset(imported.id, "return");
             expect(exported.buf).toBeInstanceOf(Uint8Array);
             expect(ownKeys(exported.data)).not.toContain("id");
-            // A prompt preset file (`docs/plan/split-preset.md`): no credential, and no model field
+            // A prompt preset file: no credential, and no model field
             // but the compatibility `maxContext`: the main model's effective size, here the main
             // profile's since the override is off.
             for (const key of ["openAIKey", "proxyKey", "forceReplaceUrl", "aiModel"]) {
@@ -419,7 +417,7 @@ describe(".risup round trip against the step-0 fixtures", () => {
             expect(ownKeys(decoded)).not.toContain("id");
             expect(decoded).toEqual(exportOf(fixture));
             // The import itself, apart from the id, is the fixture preset's prompt fields: the
-            // normalizer changed nothing the pre-phase reader wrote (no explicit value replaced), and
+            // normalizer changed nothing the legacy reader wrote (no explicit value replaced), and
             // the record carries no model field (not the file's `maxContext`) and no credential. The
             // only additions are the two override fields the fixture predates: the flag off, the size
             // seeded from the file's `maxContext`.
@@ -448,11 +446,12 @@ describe(".risup round trip against the step-0 fixtures", () => {
 });
 
 /**
- * The pre-Phase 3 `importPreset` logic for a decoded `.risup` preset (commit `577c43ae`): the
- * template spread under the file, the prompt template normalized, and the object stored as it is
- * (no canonical list, so every key the file carries, an explicit `undefined` included, lands in the
- * stored preset; the old `setPreset` kept the working value for an `undefined` field and applied a
- * `false`). `presetTemplate` is the pre-phase template unchanged.
+ * The legacy `importPreset` logic for a decoded `.risup` preset (commit `577c43ae`, before the
+ * settings were split into section records): the template spread under the file, the prompt
+ * template normalized, and the object stored as it is (no canonical list, so every key the file
+ * carries, an explicit `undefined` included, lands in the stored preset; the old `setPreset` kept
+ * the working value for an `undefined` field and applied a `false`). `presetTemplate` is the
+ * legacy template unchanged.
  */
 function legacyImportPreset(decoded: Record<string, unknown>): Record<string, unknown> {
     const pre: Record<string, unknown> = { ...presetTemplate, ...decoded };
@@ -462,17 +461,17 @@ function legacyImportPreset(decoded: Record<string, unknown>): Record<string, un
     return pre;
 }
 
-describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
+describe(".risup compatibility with the legacy reader", () => {
     beforeEach(() => {
         selectPreset("");
     });
 
     for (const name of ["default.risup", "custom.risup"]) {
-        it(`${name}: the export carries exactly the fixture's keys and values, explicit undefined included, over two cycles, and the pre-phase reader stores the same preset`, async () => {
+        it(`${name}: the export carries exactly the fixture's keys and values, explicit undefined included, over two cycles, and the legacy reader stores the same preset`, async () => {
             bootWith();
             const fixture = await decodeRisup(readFixture(name));
-            // The pre-phase export carried the unset fields as explicit `undefined` keys: the check
-            // below is about them, so they must exist in the fixture (Astra slice 7 challenge point 1).
+            // The legacy export carried the unset fields as explicit `undefined` keys: the check
+            // below is about them, so they must exist in the fixture.
             const unsetInFixture = Object.keys(fixture)
                 .filter((key) => fixture[key] === undefined)
                 .sort();
@@ -507,13 +506,13 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
             const second = await downloadPreset(settings.presets[2].id, "return");
             expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(exportOf(fixture, 12345));
 
-            // The pre-phase reader stores the same prompt fields from the new export as from the
+            // The legacy reader stores the same prompt fields from the new export as from the
             // fixture: in particular `promptPreprocess` stays `undefined` (its working value kept),
             // not the template's `false` an absent key would have given it. The two override fields
-            // are the one addition (that reader's template has neither). The model fields the export
-            // no longer carries come from that reader's template (the upstream contract of
-            // `docs/plan/split-preset.md`, "Import / export"), except `maxContext`, which the export
-            // carries so that upstream's `setPreset` applies the size the preset was used with.
+            // are the one addition (that reader's template has neither). The model fields the
+            // export no longer carries come from that reader's template (the upstream contract),
+            // except `maxContext`, which the export carries so that upstream's `setPreset` applies
+            // the size the preset was used with.
             const fromExport = legacyImportPreset(decodedFirst);
             expect(promptOnly(fromExport)).toStrictEqual({
                 ...promptOnly(legacyImportPreset(fixture)),
@@ -530,7 +529,7 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
         });
     }
 
-    it("the JSON export drops the unset fields, as the pre-phase JSON export did (JSON has no undefined)", async () => {
+    it("the JSON export drops the unset fields, as the legacy JSON export did (JSON has no undefined)", async () => {
         bootWith();
         await importPreset({ name: "default.risup", data: readFixture("default.risup") });
         const exported = await downloadPreset(settings.presets[1].id, "json");
@@ -587,7 +586,7 @@ describe("the context size override in import and export", () => {
         const upstream = await importJson({ maxContext: 6000 });
         expect(upstream.maxContextOverride).toBe(false);
         expect(upstream.maxContextOverrideSize).toBe(6000);
-        // Not finite, negative, or not a number: the file's `maxContext` instead (Astra point 6).
+        // Not finite, negative, or not a number: the file's `maxContext` instead.
         for (const size of [Infinity, -1, "9000", null]) {
             const seeded = await importJson({
                 maxContextOverride: true,
@@ -647,14 +646,13 @@ describe("the context size override in import and export", () => {
 });
 
 /**
- * Phase 4, slice 7 (`imports-through-the-module.md`, A24): every `importPreset` path adds its preset
- * through `addPreset` after `normalizePreset`, so a converted value the file lacks (the ST
- * `presence_penalty` arithmetic gives `NaN`, which `addPreset`'s JSON check would refuse) gets the
- * field's default, the preset lands under the fresh id `addPreset` returns, a `proxyKey` a JSON file
- * carries is ignored (`docs/plan/split-preset.md`: the key belongs to a model preset), and the
- * selection stays where it was.
+ * Every `importPreset` path adds its preset through `addPreset` after `normalizePreset`, so a
+ * converted value the file lacks (the ST `presence_penalty` arithmetic gives `NaN`, which
+ * `addPreset`'s JSON check would refuse) gets the field's default, the preset lands under the
+ * fresh id `addPreset` returns, a `proxyKey` a JSON file carries is ignored (the key belongs to a
+ * model preset), and the selection stays where it was.
  */
-describe("importPreset through addPreset (Phase 4 slice 7)", () => {
+describe("importPreset through addPreset", () => {
     beforeEach(() => {
         selectPreset("");
     });

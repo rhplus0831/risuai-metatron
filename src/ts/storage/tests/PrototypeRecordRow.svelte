@@ -1,5 +1,5 @@
 <script lang="ts">
-    // Test-only (Phase 6 spike, round 2, point 5): one keyed row; `name` through a plain input,
+    // Test-only (the keyed-rows cases): one keyed row; `name` through a plain input,
     // `flag` through the real `CheckInput.svelte` (a nested `bind:check` on a `$bindable` prop).
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
 

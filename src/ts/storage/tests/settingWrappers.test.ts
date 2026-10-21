@@ -3,20 +3,19 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 5: the seven declarative settings wrappers (`src/lib/Setting/Wrappers/`) over the
-// production forwarding layer. Each binds its input with a function binding, so a user edit is
-// written synchronously into the preset selected at that moment (`updateSettingValue`), `onChange`
-// fires once per edit and never on a switch re-render (plan amendment A16), and a switch shows the
-// other preset's value. `SettingNumber` also keeps a cleared input empty (the record holds `null`;
-// Astra challenge point 3), and `SettingSelect` still writes its hidden-option fallback once.
-// Since Phase 6 slice 6 the wrappers get the real context (the settings record views), and
-// `SettingSegmented` binds through the registry like the others (it bound the aggregate's field);
+// The seven declarative settings wrappers (`src/lib/Setting/Wrappers/`) over the production
+// forwarding layer. Each binds its input with a function binding, so a user edit is written
+// synchronously into the preset selected at that moment (`updateSettingValue`), `onChange` fires
+// once per edit and never on a switch re-render, and a switch shows the other preset's value.
+// `SettingNumber` also keeps a cleared input empty (the record holds `null`), and `SettingSelect`
+// still writes its hidden-option fallback once. The wrappers get the real context (the settings
+// record views), and `SettingSegmented` binds through the registry like the others;
 // `SettingRenderer` builds that context and shows an item by its condition over the views. The
-// fixture is installed into the records (slice 10: no aggregate), and the presets are read back
-// through `settings.presets`. Since the model profiles (`docs/plan/model-profiles.md`) the model-side
-// fields (`useInstructPrompt`, `instructChatTemplate`, `forceReplaceUrl`, ...) belong to the selected
-// model preset's main profile (`activeMainProfile`, the context's `modelProfile`): a write lands in
-// that profile, and a model preset switch shows the other main profile's value.
+// fixture is installed into the records, and the presets are read back through `settings.presets`.
+// The model-side fields (`useInstructPrompt`, `instructChatTemplate`, `forceReplaceUrl`, ...)
+// belong to the selected model preset's main profile (`activeMainProfile`, the context's
+// `modelProfile`): a write lands in that profile, and a model preset switch shows the other main
+// profile's value.
 
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
@@ -62,7 +61,7 @@ const preset = (id: string) => (settings.presets as unknown as Record<string, an
 const profile = (id: string) =>
     (settings.modelProfiles as unknown as Record<string, any>[]).find((entry) => entry.id === id)!;
 
-/** The context `SettingRenderer` builds: the settings record views (Phase 6 slice 6). */
+/** The context `SettingRenderer` builds: the settings record views. */
 function ctx(): SettingContext {
     return {
         settings,
@@ -283,7 +282,7 @@ describe("SettingCheck", () => {
 
 describe("SettingText", () => {
     it("writes each keystroke synchronously into the selected model preset's main profile and follows a switch", () => {
-        // `aiModel` is a derived root now (a write must name exactly one profile, O8), so the free
+        // `aiModel` is a derived root now (a write must name exactly one profile), so the free
         // text goes to a profile field served at root.
         const text = item({ type: "text", bindKey: "forceReplaceUrl" });
         const { query } = render(SettingText, { item: text, ctx: ctx() });
@@ -467,9 +466,9 @@ describe("SettingSegmented", () => {
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
     });
 
-    // Open bug fixes plan slice C8: a switch to a preset holding a hidden option leaves its value. The
-    // model info is rebuilt on every switch, as `SettingRenderer`'s context is when a chat's prompt
-    // binding changes: equal visible options do not run the reset again.
+    // A switch to a preset holding a hidden option leaves its value. The model info is rebuilt on
+    // every switch, as `SettingRenderer`'s context is when a chat's prompt binding changes: equal
+    // visible options do not run the reset again.
     it("leaves a hidden value in a newly selected preset, also when the switch rebuilds equal options", () => {
         const thinking = modelSpecificParameterItems.find((entry) => entry.id === "params.thinkingType")!;
         preset("a").thinkingType = "adaptive";
@@ -501,9 +500,9 @@ describe("SettingSegmented", () => {
         expect(preset("b").thinkingType).toBe("budget");
     });
 
-    // `docs/plan/chat-binding.md`, slice 6: the new-chat binding choice shows anything but `empty` as
-    // inherit, as `initialChatBinding` reads it, so an unset or unexpected `ui` value is not rewritten
-    // by the hidden-option fallback when the page opens; a choice writes the `ui` record.
+    // The new-chat binding choice shows anything but `empty` as inherit, as `initialChatBinding`
+    // reads it, so an unset or unexpected `ui` value is not rewritten by the hidden-option fallback
+    // when the page opens; a choice writes the `ui` record.
     it("acc.newChatBinding shows an unset or unexpected value as inherit without a write, and writes a choice into the ui record", () => {
         const segmented = interactionSettingsItems.find((entry) => entry.id === "acc.newChatBinding")!;
         // The fixture has no `ui` record until a write creates it.

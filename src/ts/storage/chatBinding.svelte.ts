@@ -15,7 +15,7 @@ import { trackedRecord, type RecordKind } from "./records.svelte";
 import { settings, tabSelectionIds } from "./settingsViews.svelte";
 
 /*
- * A chat's binding on the client (`docs/plan/chat-binding.md`): read from the chat's list entry, so
+ * A chat's binding on the client: read from the chat's list entry, so
  * it resolves synchronously also for a chat that is not loaded. `undefined` means the chat is not a
  * member (gone or not listed), never "use the tab's selection". `settingsViews.svelte.ts` must not
  * import this module (`chatStore.svelte.ts` imports the views): the views get the selected chat's
@@ -165,7 +165,7 @@ export function chatsBoundTo(field: ChatBindingField, id: string): number {
 export type InitialChatBinding = Pick<Chat, "modelPresetId" | "promptPresetId" | "bindedPersona">;
 
 /**
- * How a fresh chat of `chaId` starts (`docs/plan/chat-binding.md`, decision 4), read before the chat
+ * How a fresh chat of `chaId` starts, read before the chat
  * is created: with `newChatBinding` `inherit` (anything but `empty`, the normalizer's default) the
  * binding of the character's selected chat (else its first, as `selectedChatId` answers), keeping
  * only ids that name records that exist and never `bindingReview` (a source still awaiting its
@@ -197,7 +197,7 @@ export function initialChatBinding(chaId: string): InitialChatBinding {
 }
 
 /**
- * Prepares an imported chat's binding before it is created (decision 6): drops each bound id that
+ * Prepares an imported chat's binding before it is created: drops each bound id that
  * does not name a record here (or is not a non-blank string) and sets `bindingReview`, so the chat
  * waits for the user's confirmation before its first send. Mutates `chat`. Untracked.
  */

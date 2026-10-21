@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The asset client (`assetClient.ts`, Phase 6 slice 10: the asset half of the removed storage
-// client) against a fake of the server's `/api/read` and `/api/write` routes, reached through
-// `authFetch` (mocked: the authentication is `serverAuth.test.ts`'s). The wire contract is the old
-// one: the key travels hex-encoded in the `file-path` header, a write is an octet-stream `POST`, a
-// non-2xx answer throws the old error strings, a 2xx answer carrying `error` throws it, and a
-// missing or empty file reads as `null`.
+// The asset client (`assetClient.ts`, the asset half of the removed storage client) against a fake
+// of the server's `/api/read` and `/api/write` routes, reached through `authFetch` (mocked: the
+// authentication is `serverAuth.test.ts`'s). The wire contract is the old one: the key travels
+// hex-encoded in the `file-path` header, a write is an octet-stream `POST`, a non-2xx answer throws
+// the old error strings, a 2xx answer carrying `error` throws it, and a missing or empty file reads
+// as `null`.
 
 const { calls, answer } = vi.hoisted(() => ({
     calls: [] as { path: string; init: RequestInit }[],

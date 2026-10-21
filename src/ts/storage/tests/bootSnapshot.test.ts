@@ -19,19 +19,16 @@ import {
 } from "../../../../shared/sections.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 3, slice 7 (`docs/plan/phases/slices/phase-3-settings-sections/credentials-and-closeout.md`,
-// "Boot-snapshot comparison rule", amended by A10 of `implementation-plan.md`): the Safety Contract's
-// oracle, kept as a test. `fixtures/boot/boot-snapshot.json` is the hand-maintained record of
-// fresh-boot defaults (see the fixture README). Here the client boots the way `loadData` does against
-// the real server store (`storeBackedServer.ts`: the server normalizers materialize every section
-// and collection, so what `installBootRecords` receives is what a fresh server holds), and the same
-// shape (`rootSnapshot()`, the legacy flat settings with the three selection indexes, plus the
-// characters; Phase 6 slice 10) is compared by the rule:
+// The boot-snapshot comparison rule, kept as a test. `fixtures/boot/boot-snapshot.json` is the
+// hand-maintained record of fresh-boot defaults (see the fixture README). Here the client boots the
+// way `loadData` does against the real server store (`storeBackedServer.ts`: the server normalizers
+// materialize every section and collection, so what `installBootRecords` receives is what a fresh
+// server holds), and the same shape (`rootSnapshot()`, the legacy flat settings with the three
+// selection indexes, plus the characters) is compared by the rule:
 //
 // 1. every root field of the fixture outside `DROPPED_FIELDS` and the selection keys equals the
-//    post-phase value, a forwarded field read through the layer (the model ids derived from the
-//    selected model preset's slots and the profile fields from its main profile since the model
-//    profiles, `docs/plan/model-profiles.md`);
+//    booted value, a forwarded field read through the layer (the model ids derived from the
+//    selected model preset's slots and the profile fields from its main profile);
 // 2. the selected prompt preset equals the fixture's effective root (the root working copy, not
 //    the dormant `botPresets[0]` template payload) through `PRESET_ROOT_ALIASES` for the prompt
 //    fields, the selected model preset for its toggle, and its main profile for the profile fields
@@ -42,10 +39,9 @@ import { StoreBackedServer } from "./storeBackedServer";
 // 5. every other collection deep-equal.
 //
 // The only value differences are the four `llmSecrets` credential fields the server record leaves
-// absent while the write-only mirror holds them as `""` (Phase 5 slice 7b,
-// `request-layer-and-llm-secrets.md`; `mirrorFields` reads every credential field as `""`). A field
-// intentionally absent from the fixture that is still `undefined` is equal. Anything else is a
-// regression.
+// absent while the write-only mirror holds them as `""` (`mirrorFields` reads every credential
+// field as `""`). A field intentionally absent from the fixture that is still `undefined` is equal.
+// Anything else is a regression.
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
@@ -70,11 +66,12 @@ const fixture: Record<string, any> = JSON.parse(
 
 /**
  * The fixture omits these four fields because the server record has no credential default, while
- * the write-only `llmSecrets` client mirror reads every credential field as `""` (7b).
+ * the write-only `llmSecrets` client mirror reads every credential field as `""`.
  */
 const EMPTY_CREDENTIALS = ["claudeAPIKey", "mistralKey", "cohereAPIKey", "novellistAPI"];
 
-const PHASE1_LISTS = ["botPresets", "characters", "modules", "plugins", "pluginCustomStorage"];
+/** The lists stored as records of their own (`ITEM_RECORD_FIELDS`). */
+const ITEM_RECORD_LISTS = ["botPresets", "characters", "modules", "plugins", "pluginCustomStorage"];
 /** The collections compared without their ids (random in the capture, or never captured). */
 const SELECTABLE = ["personas", "modelPresets", "translatorPresets", "hypaV3Presets"];
 
@@ -148,7 +145,7 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
                 ...SELECTION_KEYS,
                 ...Object.values(COLLECTION_FIELDS),
                 ...Object.values(COLLECTION_SELECTION_FIELDS),
-                ...PHASE1_LISTS,
+                ...ITEM_RECORD_LISTS,
             ]);
             const unexpected: unknown[] = [];
 
@@ -225,22 +222,21 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
             }
 
             // (5) Every other collection (the one default model profile, whose id is fixed, among them),
-            // and the Phase 1 lists, deep-equal.
+            // and the lists stored as records of their own, deep-equal.
             for (const key of Object.values(COLLECTION_FIELDS)) {
                 if (SELECTABLE.includes(key)) continue;
                 expect(snapshot[key], key).toEqual(fixture[key]);
             }
-            for (const key of PHASE1_LISTS) {
+            for (const key of ITEM_RECORD_LISTS) {
                 if (key === "botPresets") continue;
                 expect(snapshot[key], key).toEqual(fixture[key]);
             }
 
             expect(unexpected).toEqual([]);
-            // The write-only mirror's `""` for the four credentials the server leaves absent (7b).
+            // The write-only mirror's `""` for the four credentials the server leaves absent.
             expect(absentNowEmptyCredential.sort()).toEqual([...EMPTY_CREDENTIALS].sort());
-            // Every declared section field is an accessor onto its record (Phase 6 slice 4,
-            // `settings-ownership.md`, "Observable changes"): the snapshot lists it, `undefined`
-            // when the record lacks it. Each such field is one its record does not hold.
+            // Every declared section field is an accessor onto its record: the snapshot lists it,
+            // `undefined` when the record lacks it. Each such field is one its record does not hold.
             const sectionOf = new Map<string, string>(
                 Object.entries(SECTION_FIELDS).flatMap(([section, fields]) =>
                     (fields as readonly string[]).map((field) => [field, section] as [string, string]),

@@ -13,7 +13,7 @@ import {
 } from "../../../shared/llmSecrets.ts";
 
 /**
- * The tab's view of the write-only `llmSecrets` record (Phase 5 slice 7b, `shared/llmSecrets.ts`):
+ * The tab's view of the write-only `llmSecrets` record (`shared/llmSecrets.ts`):
  * the masked record the server last answered (each credential's `{ set, hint }`; the readable
  * siblings are held in the `llmSecrets` record like any section field, the credential fields there
  * are always `""`), a version per credential path (bumped whenever its acknowledged status changes, so

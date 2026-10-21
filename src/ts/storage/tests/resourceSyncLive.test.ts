@@ -4,14 +4,14 @@ import { secretPathKey } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 2 (live updates) over the real server store and its real change feed: every commit
-// "another tab" (or a server job) makes is published by the store and handed to the client's
-// `noteRemoteChanges` the way `network/eventFeed.ts` hands it a `change` frame of the loaded epoch
-// (synchronously by default, right after the commit, so an echo of this tab's own save arrives
-// before its acknowledgement; paused where a test needs a delay). The save adapter, the chat module,
-// and the selection module run for real; the socket is in `network/eventFeed.test.ts`. Every case
-// checks that a remote change becomes neither an outgoing write nor a discard: a local edit is lost
-// only through a 409 with its notice.
+// Live updates over the real server store and its real change feed: every commit "another tab" (or
+// a server job) makes is published by the store and handed to the client's `noteRemoteChanges` the
+// way `network/eventFeed.ts` hands it a `change` frame of the loaded epoch (synchronously by
+// default, right after the commit, so an echo of this tab's own save arrives before its
+// acknowledgement; paused where a test needs a delay). The save adapter, the chat module, and the
+// selection module run for real; the socket is in `network/eventFeed.test.ts`. Every case checks
+// that a remote change becomes neither an outgoing write nor a discard: a local edit is lost only
+// through a 409 with its notice.
 
 const { server, alerts, dispatch } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -187,12 +187,12 @@ async function boot(options: { secret?: boolean; prepare?: (fake: StoreBackedSer
     /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
     const characters = () => characterList() as any[];
     const character = (id = "c") => characters().find((entry: any) => entry.chaId === id);
-    // The membership (Phase 6 slice 9b): a chat another writer created is listed as a summary until it
-    // is loaded, so the compatibility view (the loaded chats only) is not the list.
+    // The membership: a chat another writer created is listed as a summary until it is loaded, so the
+    // compatibility view (the loaded chats only) is not the list.
     const chatIds = (id = "c") => chatModule.chatList(id).map((entry) => entry.id);
-    // The chat module's own read of a loaded chat (Phase 6 slice 9a): the wrapper's `chats` builds a
-    // fresh list on every read, which a check over a thousand chats would rebuild once per chat. A
-    // case reading a chat that arrived as a summary loads it first (`ensureChatLoaded`).
+    // The chat module's own read of a loaded chat: the wrapper's `chats` builds a fresh list on every
+    // read, which a check over a thousand chats would rebuild once per chat. A case reading a chat that
+    // arrived as a summary loads it first (`ensureChatLoaded`).
     const texts = (chaId: string, chatId: string) =>
         chatModule.findChat({ chaId, chatId })!.message.map((message: any) => message.data);
     return {
@@ -262,7 +262,7 @@ describe("records another writer committed", () => {
         expect(await sync.flushResources()).toEqual({ discarded: [] });
     });
 
-    it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision (Phase 6 slice 5a)", async () => {
+    it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision", async () => {
         const { fake, sync, characters, character } = await boot();
         // `d` is not selected (`c` is): its record's own writes are saved all the same.
         expect(characters()[0].chaId).toBe("c");
@@ -283,7 +283,7 @@ describe("records another writer committed", () => {
         await settle(fake);
         expect(element.name).toBe("D remote");
         expect(entry.content).toBe("remote");
-        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        // `chats` is a fresh array on every read; the chats are the same ones.
         expect(element.chats).toEqual(chats);
         element.chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         expect(fake.batchCount()).toBe(batches);
@@ -454,7 +454,7 @@ describe("characters another writer created or deleted", () => {
         await settle(fake);
         expect(character("n").name).toBe("N");
         expect(chatIds("n")).toEqual(["q"]);
-        // The new character's chat arrived as a summary (Phase 6 slice 9b): loaded to read its messages.
+        // The new character's chat arrived as a summary: loaded to read its messages.
         expect(chat.findChat({ chaId: "n", chatId: "q" })).toBeUndefined();
         await chat.ensureChatLoaded({ chaId: "n", chatId: "q" });
         expect(texts("n", "q")).toEqual(["Y"]);
@@ -462,7 +462,7 @@ describe("characters another writer created or deleted", () => {
         noNotice();
     });
 
-    it("holds the empty chat order of a new character created without chats, so this tab's first chat for it is saved without a reload (Stop B fix)", async () => {
+    it("holds the empty chat order of a new character created without chats, so this tab's first chat for it is saved without a reload", async () => {
         // Before the fix the empty list left the order unheld: the character never counted as known
         // to the server, and its first chat's create waited forever (nothing saved, no notice).
         const { fake, chat, sync, character, chatIds } = await boot();
@@ -606,8 +606,8 @@ describe("characters another writer created or deleted", () => {
         ]);
         intercept.release!();
         await settle(fake);
-        // The chat arrived as a summary (Phase 6 slice 9b): the notice that reached the tab while the
-        // read was out refreshed its summary (held at the server's revision), without loading it.
+        // The chat arrived as a summary: the notice that reached the tab while the read was out
+        // refreshed its summary (held at the server's revision), without loading it.
         expect(chat.findChat({ chaId: "e", chatId: "e1" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "e", chatId: "e1" })).toBe(fake.chat("e", "e1")!.revision);
         await chat.ensureChatLoaded({ chaId: "e", chatId: "e1" });
@@ -915,8 +915,8 @@ describe("chats and chat lists another writer changed", () => {
 describe("work that waits", () => {
     it("applies a generating character's update at once, without a write (the generation deferral is gone)", async () => {
         const { fake, sync, chat, character } = await boot();
-        // A server job of this tab streams into `d`'s chat: `d` is generating. Since Phase 6 slice 5
-        // nothing holds a generating character's record back; the job keeps its chat locked.
+        // A server job of this tab streams into `d`'s chat: `d` is generating. Nothing holds a
+        // generating character's record back; the job keeps its chat locked.
         chat.applyServerGeneration(
             { chaId: "d", chatId: "m" },
             { jobId: "J", messageId: "x", generationId: "g1", text: "X", seq: 0 },
@@ -945,8 +945,8 @@ describe("work that waits", () => {
         await settle(fake);
         expect(chatIds("d")).toHaveLength(1002);
         // The announced chats are read whole only while they are loaded (an unloaded one is refreshed
-        // through its character's summary list, Phase 6 slice 9b): loaded here, and pinned so the
-        // trim keeps them, as a reader of a thousand chats would hold them.
+        // through its character's summary list): loaded here, and pinned so the trim keeps them, as a
+        // reader of a thousand chats would hold them.
         const release = chat.pinChats("d");
         await chat.loadChats("d");
         fake.requests.length = 0;
@@ -1051,7 +1051,7 @@ describe("halting for a restore", () => {
     });
 });
 
-/** A send job's write on the server (audit item A2): a field patch of the character at its current revision. */
+/** A send job's write on the server: a field patch of the character at its current revision. */
 const patchCharacter = (
     fake: StoreBackedServer,
     id: string,
@@ -1061,9 +1061,9 @@ const patchCharacter = (
         ops: [{ kind: fake.kind("characters"), id, baseRevision: fake.record("characters", id)!.revision, patch }],
     }).results[0].revision!;
 
-// Audit item A2: a change-feed entry with a `RecordFieldPatch` (a send job's `lastInteraction`
-// stamp) is applied by `applyRemotePatch` without a read when this tab holds exactly its base and
-// has no unsent change of the character; anything else is read whole as before.
+// A change-feed entry with a `RecordFieldPatch` (a send job's `lastInteraction` stamp) is applied
+// by `applyRemotePatch` without a read when this tab holds exactly its base and has no unsent
+// change of the character; anything else is read whole as before.
 describe("field patches another writer committed", () => {
     it("applies a send job's stamp at once: no read, no write, no notice, no listener; the next local edit writes on the new revision", async () => {
         const { fake, sync, character } = await boot();
@@ -1280,13 +1280,13 @@ describe("field patches another writer committed", () => {
     });
 });
 
-// Data-loss plan slice 7b (audit D5, E5): after another writer's `characterOrder` reached the mirror
-// (a whole read or the feed's item patch), the add-only repair `loadData` registers through
-// `watchRemoteRecords` appends a live character this tab holds that the order lacks, confirmed by
-// a read of the server copy, and never removes an entry: an id this tab cannot resolve yet keeps
-// its folder. A read answered while a newer order arrived (remotely, even with the same text, or
-// locally) is dropped and the repair reads again from the newest order.
-describe("the character order another writer replaced (data-loss slice 7b)", () => {
+// After another writer's `characterOrder` reached the mirror (a whole read or the feed's item
+// patch), the add-only repair `loadData` registers through `watchRemoteRecords` appends a live
+// character this tab holds that the order lacks, confirmed by a read of the server copy, and never
+// removes an entry: an id this tab cannot resolve yet keeps its folder. A read answered while a
+// newer order arrived (remotely, even with the same text, or locally) is dropped and the repair
+// reads again from the newest order.
+describe("the character order another writer replaced", () => {
     const FOLDER_ORDER = [
         { id: "f1", name: "F1", data: ["c"] },
         { id: "f2", name: "F2", data: ["d"] },
@@ -1337,7 +1337,7 @@ describe("the character order another writer replaced (data-loss slice 7b)", () 
         await settle(fake);
     };
 
-    it("keeps an id it cannot resolve yet in its folder after a whole-record replacement, writes nothing, and the character then arrives in that folder (E5)", async () => {
+    it("keeps an id it cannot resolve yet in its folder after a whole-record replacement, writes nothing, and the character then arrives in that folder", async () => {
         const { fake, sync, live, flushFeed, settings, characters } = await bootWithOrder(["c", "d"]);
         createUnannounced(fake, live, "e");
         const replaced = ["c", { id: "f", name: "F", data: ["d", "e"] }];
@@ -1362,7 +1362,7 @@ describe("the character order another writer replaced (data-loss slice 7b)", () 
         noNotice();
     });
 
-    it("applies the feed's item patch of a folder order without a read and keeps the unresolved id in its folder (E5)", async () => {
+    it("applies the feed's item patch of a folder order without a read and keeps the unresolved id in its folder", async () => {
         const { fake, sync, live, flushFeed, settings, characters } = await bootWithOrder(FOLDER_ORDER);
         createUnannounced(fake, live, "e");
         fake.store.applyChanges({
@@ -1392,7 +1392,7 @@ describe("the character order another writer replaced (data-loss slice 7b)", () 
         noNotice();
     });
 
-    it("appends a live character this tab holds that another writer's order lacks: one read of the candidate, one order write, nothing echoed (D5)", async () => {
+    it("appends a live character this tab holds that another writer's order lacks: one read of the candidate, one order write, nothing echoed", async () => {
         const { fake, sync, settings } = await bootWithOrder(["c", "d"]);
         fake.set("characterOrder", "main", ["c"]);
         await settleRepair(fake);

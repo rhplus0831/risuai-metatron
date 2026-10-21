@@ -68,8 +68,7 @@ beforeAll(async () => {
         ],
     });
     const read = server.store.readKinds([characters], { chats: true });
-    // The chat module checks a character through the records (Phase 6 slice 9a): installed as
-    // `loadData` installs them.
+    // The chat module checks a character through the records: installed as `loadData` installs them.
     initializeRecords(takeRecordFields({ characters: read.kinds.characters.map((record) => record.data) }));
     chat.seedChats(read.chats!, read.chatOrders!);
     chat.assembleChats(characterList() as any, read.chats!, read.chatOrders!);

@@ -56,13 +56,10 @@ import {
 } from "../../../../shared/sections.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 
-// Phase 3, slice 2 (`docs/plan/phases/slices/phase-3-settings-sections/shared-schema-and-ids.md`,
-// "Review-step tests"): the canonical preset schema, its normalizers, the id helpers, and the
-// field-to-resource partition; since the preset split (`docs/plan/split-preset.md`) and the model
-// profiles (`docs/plan/model-profiles.md`) the schema is one table with three owners, the prompt
-// preset (`presets`), the model preset (`modelPresets`, the slot choices), and the model profile
-// (`modelProfiles`), each normalized to its own fields. Everything here is pure `shared/` code, so
-// the file runs in node.
+// The canonical preset schema, its normalizers, the id helpers, and the field-to-resource
+// partition. The schema is one table with three owners, the prompt preset (`presets`), the model
+// preset (`modelPresets`, the slot choices), and the model profile (`modelProfiles`), each
+// normalized to its own fields. Everything here is pure `shared/` code, so the file runs in node.
 
 const fixtureDir = path.resolve(import.meta.dirname, "fixtures/boot");
 const bootSnapshot = JSON.parse(readFileSync(path.join(fixtureDir, "boot-snapshot.json"), "utf-8")) as Record<
@@ -116,7 +113,7 @@ describe("PRESET_DEFAULTS", () => {
         expect(PRESET_FIELDS).not.toContain("autoSuggestPrefix");
         expect(PRESET_FIELDS).not.toContain("autoSuggestClean");
         // `openAIKey` lives in `llmSecrets`; `proxyKey`, its binding `proxyCredentialId`, and `apiType`
-        // are dropped (Model Profiles O2, O9): a profile's optional `credentialId` names a key instead.
+        // are dropped: a profile's optional `credentialId` names a key instead.
         expect(PRESET_FIELDS).not.toContain("proxyKey");
         expect(PRESET_FIELDS).not.toContain("proxyCredentialId");
         expect(PRESET_FIELDS).not.toContain("apiType");
@@ -241,7 +238,7 @@ describe("normalizePreset", () => {
         }
     });
 
-    it("keeps an explicit null and fills only absent or undefined fields (Astra challenge points 1 and 2)", () => {
+    it("keeps an explicit null and fills only absent or undefined fields", () => {
         const withNulls = normalizePreset({
             min_p: null,
             top_a: null,
@@ -300,7 +297,7 @@ describe("normalizePreset", () => {
         });
         expect(model.auxSlots).toEqual(slots);
         expect(model.seperateModelsForAxModels).toBe(true);
-        // The removed fallback models and the old stored auxiliary model ids: dropped, never migrated (O6).
+        // The removed fallback models and the old stored auxiliary model ids: dropped, never migrated.
         for (const field of ["fallbackModels", "fallbackWhenBlankResponse", "seperateModels"]) {
             expect(Object.hasOwn(model, field), field).toBe(false);
         }
@@ -429,7 +426,7 @@ describe("normalizeModelPreset", () => {
         for (const field of ["image", ...PROMPT_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS]) {
             expect(Object.hasOwn(preset, field), field).toBe(false);
         }
-        // Every model preset field has a default: the main and sub slots name the default profile (O4).
+        // Every model preset field has a default: the main and sub slots name the default profile.
         expect(MODEL_PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined)).toEqual([]);
         expect(preset.mainSlot).toEqual({ profileId: DEFAULT_MODEL_PROFILE_ID });
         expect(preset.subSlot).toEqual({ profileId: DEFAULT_MODEL_PROFILE_ID });
@@ -587,7 +584,7 @@ describe("ids", () => {
 
     it("createTranslatorPreset keeps a valid id and assigns one otherwise", () => {
         // The shape before steps (`prompt`, `maxResponse`) becomes one inherited step with its own id
-        // (translation slice 1.2; `shared/tests/translatorPresets.test.ts` has the step rules).
+        // (`shared/tests/translatorPresets.test.ts` has the step rules).
         expect(createTranslatorPreset("n", { id: "keep", prompt: "p", maxResponse: 5 })).toEqual({
             id: "keep",
             name: "n",
@@ -620,12 +617,11 @@ describe("ids", () => {
     });
 });
 
-// The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slices 5 and 6 forwarded
-// the whole root; the preset split, `docs/plan/split-preset.md`, gave the root preset keys two
-// owners, and the model profiles, `docs/plan/model-profiles.md`, a third): the five sections, the
-// fifteen collections with their two selection fields, the
-// forwarded root keys (served by the client forwarding layer, never stored), the dropped fields, and
-// the Phase 1 fields cover `keyof Database` exactly once. The type-level half below is checked by
+// The partition: the five sections, the fifteen collections with their two selection fields, the
+// forwarded root keys (the whole former root, served by the client forwarding layer and never
+// stored; the root preset keys have two owners, the prompt and the model preset, and the profile
+// fields a third), the dropped fields, and the `ITEM_RECORD_FIELDS` collections cover `keyof Database`
+// exactly once. The type-level half below is checked by
 // `pnpm check`; the runtime half checks the counts derived from the lists and the keys the
 // maintained fresh-boot fixture actually holds.
 
@@ -656,7 +652,7 @@ type ListedKey =
     | (typeof DROPPED_FIELDS)[number]
     | (typeof ITEM_RECORD_FIELDS)[number];
 type UnlistedDatabaseKey = Exclude<keyof Database, ListedKey>;
-// `modelCredentials` left `Database` (Model Profiles decision 3) but stays listed as dropped by name.
+// `modelCredentials` left `Database` but stays listed as dropped by name.
 type NotADatabaseKey = Exclude<ListedKey, keyof Database | "modelCredentials">;
 // Both resolve to `never` when the lists partition `keyof Database`; a new `Database` field that
 // no list names, or a listed name that is not a `Database` field, fails `pnpm check` here.
@@ -691,7 +687,7 @@ describe("field-to-resource partition", () => {
         ["collection selections", selectionFields],
         ["forwarded root", FORWARDED_ROOT_KEYS],
         ["dropped", DROPPED_FIELDS],
-        ["phase 1", ITEM_RECORD_FIELDS],
+        ["item records", ITEM_RECORD_FIELDS],
     ];
     const union = allLists.flatMap(([, keys]) => keys);
 
@@ -757,9 +753,9 @@ describe("field-to-resource partition", () => {
                 );
             }
         }
-        // The field partition of `docs/plan/model-profiles.md` ("Data model"): the model preset holds
-        // the slot choices and the toggle; the profile the definition, the key binding, the connection,
-        // routing, compatibility, and capacity fields, plus the O7 provider fields.
+        // The model field partition: the model preset holds the slot choices and the toggle; the
+        // profile the definition, the key binding, the connection, routing, compatibility, and
+        // capacity fields, plus the provider fields.
         expect([...MODEL_PRESET_FIELDS].sort()).toEqual(
             ["mainSlot", "subSlot", "auxSlots", "seperateModelsForAxModels"].sort(),
         );
@@ -803,7 +799,7 @@ describe("field-to-resource partition", () => {
                 "customTokenizer",
             ].sort(),
         );
-        // The dropped fields (O9, decision 3) and the derived model ids are in no owner.
+        // The dropped fields and the derived model ids are in no owner.
         for (const field of ["apiType", "proxyKey", "proxyCredentialId", "aiModel", "subModel", "seperateModels"]) {
             expect(PRESET_FIELDS as readonly string[], field).not.toContain(field);
         }
@@ -875,8 +871,8 @@ describe("field-to-resource partition", () => {
             personaPrompt: "personaPrompt",
         });
         expect(SELECTION_KEYS).toEqual(["botPresetsId", "selectedPersona", "loreBookPage"]);
-        // Slice 6: the persona keys and all three selections are forwarded; no residual root is left.
-        // `proxyKey` is no longer forwarded (O2): it is a dropped field.
+        // The persona keys and all three selections are forwarded; no residual root is left.
+        // `proxyKey` is no longer forwarded: it is a dropped field.
         expect(FORWARDED_ROOT_KEYS).toEqual([
             ...FORWARDED_PRESET_KEYS,
             ...FORWARDED_MODEL_PRESET_KEYS,
@@ -1027,9 +1023,9 @@ describe("field-to-resource partition", () => {
     });
 
     it("places the review corrections: the former keep-on-switch group in the presets, auto-suggest in ui, supaMemoryKey in llmSecrets, hypaMemoryKey dropped", () => {
-        // The preset split (`docs/plan/split-preset.md`, "Keep-on-switch retires"): the fields are
-        // preset fields, their three toggles are gone from `providers` and from the schema. The
-        // fallback models were removed afterwards: they are in no section and no preset.
+        // The former keep-on-switch fields are preset fields, their three toggles are gone from
+        // `providers` and from the schema. The fallback models were removed afterwards: they are in
+        // no section and no preset.
         for (const field of ["seperateModels", "seperateModelsForAxModels"]) {
             expect(SECTION_FIELDS.providers as readonly string[], field).not.toContain(field);
         }
@@ -1072,17 +1068,17 @@ describe("field-to-resource partition", () => {
             translatorPresets: "translatorPresetId",
             hypaV3Presets: "hypaV3PresetId",
         });
-        // Its own literal since slice 6 (`ROOT_EXCLUDED_KEYS` went with the `root` resource).
+        // Its own literal (`ROOT_EXCLUDED_KEYS` went with the removed `root` resource).
         expect(ITEM_RECORD_FIELDS).toEqual(["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"]);
     });
 });
 
-// Slice 5 (`forwarding-presets-and-selection.md`, "Missing and null values"): the normalizers keep an
-// explicit `null` only where it is a value the readers handle (`PRESET_NULLABLE_FIELDS`); any other
-// `null` gets the default, as `setPreset` gave the root working copy before Phase 3 (the former
-// keep-on-switch `null` marker went with the split). The server `presets`, `modelPresets`, and
-// `modelProfiles` normalizers run the same functions, so a cleared number comes back as its default after a reload.
-// This replaces slice 2's rule, which kept every `null` (Astra challenge point 4).
+// The normalizers keep an explicit `null` only where it is a value the readers handle
+// (`PRESET_NULLABLE_FIELDS`); any other `null` gets the default, as `setPreset` gave the root
+// working copy before the settings were split into section records (the former keep-on-switch
+// `null` marker went with the preset split). The server `presets`, `modelPresets`, and
+// `modelProfiles` normalizers run the same functions, so a cleared number comes back as its default
+// after a reload.
 describe("null canonicalization", () => {
     it("lists the nullable fields as schema fields of their owners", () => {
         expect(PRESET_NULLABLE_FIELDS).toEqual([

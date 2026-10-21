@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "./mutationStoresHarness";
 
-// Phase 4, slice 1: the `pluginStorage` mutations (`pluginStorageStore.svelte.ts`) against the real
-// server store. Every function is sent (the `pluginCustomStorage` watcher still exists in this slice;
-// `plugin-host-setters` deletes it and adds the "without the watcher" case), reads are detached
-// copies, and any string is a valid key: an own `__proto__` and the names of `Object.prototype`
-// members land as own properties and reach the server.
+// The `pluginStorage` mutations (`pluginStorageStore.svelte.ts`) against the real server store.
+// Every function is sent (there is no `pluginCustomStorage` watcher; `v3SavedWrites.test.ts` has
+// the "without the watcher" case), reads are detached copies, and any string is a valid key: an own
+// `__proto__` and the names of `Object.prototype` members land as own properties and reach the
+// server.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },

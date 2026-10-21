@@ -4,15 +4,14 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { bootMutations, plain } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`,
-// "Validation"): the settings records under the real boot (`installBootRecords`, since slice 10), the real save loop, and
-// the real server store (`storeBackedServer.ts`), with no settings watcher left. Covered here: a
-// nested view write and a direct record write saved on the held revision; reactive reads across a
-// server copy; the root snapshot and the views' JSON; an absent plugin storage record staying absent under
-// reads; `reconcileSelection` after a `presets` or `personas` replacement
-// on the conflict-reload and hydration paths, with a retained wrapper then writing into the new
-// record; the record notification counts of the bulk writers (one per record they change); and the
-// module mutations keeping lorebook content verbatim (the old-format conversion is an import step).
+// The settings records under the real boot (`installBootRecords`), the real save loop, and the real
+// server store (`storeBackedServer.ts`), with no settings watcher left. Covered here: a nested view
+// write and a direct record write saved on the held revision; reactive reads across a server copy;
+// the root snapshot and the views' JSON; an absent plugin storage record staying absent under
+// reads; `reconcileSelection` after a `presets` or `personas` replacement on the conflict-reload
+// and hydration paths, with a retained wrapper then writing into the new record; the record
+// notification counts of the bulk writers (one per record they change); and the module mutations
+// keeping lorebook content verbatim (the old-format conversion is an import step).
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -137,7 +136,7 @@ describe("writes through the views and the records", () => {
     it("leaves reads, the root snapshot, and JSON writing nothing, and gives detached plain copies", async () => {
         const { fake, sync, snapshots, records, settings } = await boot();
         const snapshot = snapshots.rootSnapshot() as any;
-        // The views' wrappers serialize like the records they read (Phase 6 slice 10: no aggregate object).
+        // The views' wrappers serialize like the records they read (there is no aggregate object).
         const json = JSON.parse(
             JSON.stringify({
                 zoomsize: settings.ui.zoomsize,
@@ -219,7 +218,7 @@ describe("writes through the views and the records", () => {
 });
 
 describe("entry credentials over the save loop", () => {
-    it("refuse a custom model's key and a model preset's or profile's proxyKey: nothing is queued or sent (Model Profiles O2)", async () => {
+    it("refuse a custom model's key and a model preset's or profile's proxyKey: nothing is queued or sent", async () => {
         const { fake, sync, settings, record, mirrorText, records } = await boot();
         const SECRET = "sk-entry-SENTINEL";
         settings.customModels.push({ id: "m1", internalId: "i1", name: "M1" } as any);
@@ -381,8 +380,7 @@ describe("bulk writers notify once per record they change", () => {
         const [, p2] = settings.presets.map((preset: any) => preset.id);
         const [, m2] = settings.modelPresets.map((preset: any) => preset.id);
         const notified = countNotifications();
-        // `seperateModelsForAxModels` is the model preset's (`docs/plan/split-preset.md`); `maxContext` is
-        // the main slot's profile's (`docs/plan/model-profiles.md`).
+        // `seperateModelsForAxModels` is the model preset's; `maxContext` is the main slot's profile's.
         collectionStore.updateSettings({
             temperature: 5,
             maxContext: 1234,

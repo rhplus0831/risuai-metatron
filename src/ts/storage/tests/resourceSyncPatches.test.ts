@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Audit item A1 (`docs/structure/persistence.md`, save loop steps 2, 3, 5, and 9): a held character
-// or `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch
-// is applied from the change feed without a read (`applyModulesPatch`), under the real boot, the
-// real save loop, the real mutation modules, and the real server store with its normalizers and
-// change feed (`storeBackedServer.ts`; every commit is handed to `noteRemoteChanges` as the
-// live-update socket would). The patch helpers themselves are in `shared/tests/recordPatch.test.ts`,
-// the store and the route in `server/src/tests/{resourceStore,changeFeed,resourcesBatch}.test.ts`.
+// Per `docs/structure/persistence.md` (save loop steps 2, 3, 5, and 9), a held character or
+// `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
+// applied from the change feed without a read (`applyModulesPatch`), under the real boot, the real
+// save loop, the real mutation modules, and the real server store with its normalizers and change
+// feed (`storeBackedServer.ts`; every commit is handed to `noteRemoteChanges` as the live-update
+// socket would). The patch helpers themselves are in `shared/tests/recordPatch.test.ts`, the store
+// and the route in `server/src/tests/{resourceStore,changeFeed,resourcesBatch}.test.ts`.
 
 const { server, alerts, bodies } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -725,7 +725,7 @@ describe("lost acknowledgements", () => {
         await vi.advanceTimersByTimeAsync(2000);
         expect(fake.batchCount()).toBe(2);
     }, 20_000);
-    it("takes the feed echo of a lost write as the saved base (data-loss slice 6c): more typing goes as one patch on its revision, no 409, no notice", async () => {
+    it("takes the feed echo of a lost write as the saved base: more typing goes as one patch on its revision, no 409, no notice", async () => {
         const { fake, sync, character, record, revision, ops, reads, agree, noNotice } = await boot();
         const element = character("c");
         const base = revision("characters", "c");
@@ -908,7 +908,7 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(0);
         noNotice();
     }, 20_000);
-    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts, data-loss plan slice 5b)", async () => {
+    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts)", async () => {
         const { fake, sync, settings, changed, record, reads, patchModules, agree } = await boot();
         settings.modules[2].name = "mine";
         await tick();
@@ -927,9 +927,9 @@ describe("modules item patches another tab committed", () => {
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
     }, 20_000);
-    // Data-loss plan slice 5b (`mergeItemAdds`, persistence.md Save step 5): an item this tab added
-    // goes over another tab's list; the feed patch still waits behind the unsent add, and the
-    // conflict's recovery rebuilds the server's record from it and merges.
+    // `mergeItemAdds` (persistence.md Save step 5): an item this tab added goes over another tab's
+    // list; the feed patch still waits behind the unsent add, and the conflict's recovery rebuilds the
+    // server's record from it and merges.
     it("rebases an unsent module add over another tab's rename of a different module: both changes kept, the retry on the server's revision, no discard, no notice, no read, no echo; the added module is then patched like any other", async () => {
         const {
             fake,
@@ -1076,7 +1076,7 @@ describe("modules item patches another tab committed", () => {
     }, 20_000);
 });
 
-// General record patches (audit slice 3g). Expectations describe the wire contract, not a diff helper.
+// General record patches. Expectations describe the wire contract, not a diff helper.
 const idKinds = ["presets", "modelPresets", "modelProfiles", "personas", "credentials", "plugins"] as const;
 describe("patches of the other mirrored records", () => {
     it.each(idKinds)("saves and receives %s item patches, including membership and selection changes", async (kind) => {

@@ -3,12 +3,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refJ, refK } from "./mutationStoresHarness";
 
-// `docs/plan/chat-binding.md`, slice 4: the readers that take a chat ref read that chat's display ids
-// (its bound records, else the tab's selection), never the selected chat's binding, over the real
-// stores (`mutationStoresHarness.ts`: character `c` with chats `k` and `j`). Covered: the persona
-// helpers (`util.ts`), a plugin's `updateSettings` without captured ids (the record a view shows),
-// `getChatVarOf` (the chat's preset defaults), and `getModules(chatRef)` (the chat's preset's
-// integration list).
+// The readers that take a chat ref read that chat's display ids (its bound records, else the tab's
+// selection), never the selected chat's binding, over the real stores (`mutationStoresHarness.ts`:
+// character `c` with chats `k` and `j`). Covered: the persona helpers (`util.ts`), a plugin's
+// `updateSettings` without captured ids (the record a view shows), `getChatVarOf` (the chat's
+// preset defaults), and `getModules(chatRef)` (the chat's preset's integration list).
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },

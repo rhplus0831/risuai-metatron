@@ -29,11 +29,11 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
  * memory), for tests of the chat module and the save loop that need the real chat contract:
  * revision tokens, the stale-by-id rule and `stale` results, the generation fence outcomes, the
  * 409 union, the 400 validation messages, and the request cap. The route layer is reduced to what
- * the client relies on: the epoch fence, the operation count, the error mapping, and (Phase 5
- * slice 7b) the write-only kinds' contract: a kind's `project` on every read, its `prepareWrite` on
- * every plain write, and `/api/llm-secrets/*` for the credential writes; and (large-asset-import
- * slice 2c) `POST /api/import/module`, the `.risum` import's answer without its asset store, and
- * (slice 2d) `POST /api/import/charx`, the CharX import's answer without its asset store. The
+ * the client relies on: the epoch fence, the operation count, the error mapping, and the write-only
+ * kinds' contract: a kind's `project` on every read, its `prepareWrite` on every plain write, and
+ * `/api/llm-secrets/*` for the credential writes; and `POST /api/import/module`, the `.risum`
+ * import's answer without its asset store, and `POST /api/import/charx`, the CharX import's answer
+ * without its asset store. The
  * hooks mirror `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied,
  * fail requests.
  *
@@ -79,7 +79,7 @@ export type ServerStore = {
         options?: {
             epoch?: string;
             jobToken?: string;
-            /** A generation job's post-commit hook (slice 2b): its lists ride on the published change. */
+            /** A generation job's post-commit hook: its lists ride on the published change. */
             committed?: (applied: unknown) => readonly ServerChatStreaming[];
         },
     ): {
@@ -87,9 +87,9 @@ export type ServerStore = {
         chats: any[];
         chatOrders: any[];
     };
-    /** A job's end: its released locks published without a write (slice 2b). */
+    /** A job's end: its released locks published without a write. */
     publishStreaming(entries: readonly ServerChatStreaming[]): void;
-    /** The revision listing (`GET /api/resources/revisions`, Phase 6 live updates). */
+    /** The revision listing (`GET /api/resources/revisions`, for live updates). */
     listRevisions(): ResourceRevisionListing;
     transaction<T>(fn: () => T): T;
 };
@@ -565,8 +565,8 @@ export class StoreBackedServer {
             try {
                 const resolved = ops.map((op) => ({ ...op, kind: this.kind(op.kind) }));
                 for (const op of resolved) {
-                    // A patch op (audit item A1) goes to the store as sent; the store refuses one
-                    // of a kind with `prepareWrite`, as the real route leaves it to.
+                    // A patch op goes to the store as sent; the store refuses one of a kind with
+                    // `prepareWrite`, as the real route leaves it to.
                     if (!op.delete && !Object.hasOwn(op, "patch")) {
                         op.data = this.prepareWrite(op.kind, op.id, op.data);
                     }

@@ -1,8 +1,8 @@
 import { flushSync } from "svelte";
 
-// Test-only helpers for the forwarding-layer tests (Phase 3, slice 5): a `$derived` and an `$effect`
-// over a read, and an `$effect` around a write, so the tests can tell a tracked read from an
-// untracked write without a component.
+// Test-only helpers for the reactive view tests: a `$derived` and an `$effect` over a read, and an
+// `$effect` around a write, so the tests can tell a tracked read from an untracked write without a
+// component.
 
 export interface Probe<T> {
     /** Every value the effect saw, in order. */

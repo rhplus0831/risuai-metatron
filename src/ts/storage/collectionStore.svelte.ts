@@ -59,15 +59,15 @@ import { selection } from "./selection.svelte";
 import { deleteEntrySecret } from "./llmSecrets.svelte";
 
 /**
- * The mutations of the settings sections, the small collections, presets, modules, and plugins
- * (Phase 4). The external contracts write these records only through the functions here. Each
+ * The mutations of the settings sections, the small collections, presets, modules, and plugins.
+ * The external contracts write these records only through the functions here. Each
  * validates its whole input before the mirror changes (a refusal throws `MutationValidationError`
  * and changes nothing), detaches the caller's data, and writes by id into the settings records
- * (`records.svelte.ts`, Phase 6 slice 4) through their views (`settingsViews.svelte.ts`): a write
+ * (`records.svelte.ts`) through their views (`settingsViews.svelte.ts`): a write
  * queues its record's save, and a function that writes several times does so in one `batchRecordWrites` scope, so each
  * record it changed is queued once. The checks refuse what they can see (JSON data, the kind of a preset field,
  * the shape of a list); the server's normalizers may still rewrite a value that passes (a
- * non-canonical one then stays different in the mirror until reload, as Phase 3 accepted).
+ * non-canonical one then stays different in the mirror until reload, an accepted limit).
  */
 
 const SETTING_SECTIONS = ["providers", "ui", "memoryTranslateMedia", "secrets"] as const;

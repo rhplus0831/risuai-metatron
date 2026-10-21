@@ -3,12 +3,12 @@ import { writable } from "svelte/store";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
 
 /**
- * The per-client selection (Phase 3, `PLAN.md` Decision 3): which prompt preset, model preset
- * (`docs/plan/split-preset.md`), and persona this browser uses, which global lorebook page it shows, and (Phase 6 slice 5) which character this tab shows. It is not shared data and is never saved to the server. Each
- * change is kept in `sessionStorage`, so a reload restores this tab's selection even when another
- * tab of the same browser chose differently, and in `localStorage`, the starting selection of a new
- * tab (the last choice made in any tab). The settings views
- * (`settingsViews.svelte.ts`) resolve every read against the current collections, so an id that names
+ * The per-client selection: which prompt preset, model preset, and persona this browser uses, which
+ * global lorebook page it shows, and which character this tab shows. It is not shared data and is
+ * never saved to the server. Each change is kept in `sessionStorage`, so a reload restores this
+ * tab's selection even when another tab of the same browser chose differently, and in
+ * `localStorage`, the starting selection of a new tab (the last choice made in any tab). The
+ * settings views (`settingsViews.svelte.ts`) resolve every read against the current collections, so an id that names
  * no record (deleted here, by another client, or by a plugin) falls back to the first record there.
  */
 export interface Selection {
@@ -60,7 +60,7 @@ function save() {
 
 /**
  * Stores a selection for this tab's next load (and a new tab's) without applying it here: the upstream
- * RisuAI import's selection (D4 of `docs/plan/upstream-bin-compat.md`), written right before the reload
+ * RisuAI import's selection, written right before the reload
  * that loads the imported data. The lorebook page starts at the first.
  */
 export function persistSelection(next: { presetId: string; modelPresetId: string; personaId: string }) {
@@ -126,7 +126,7 @@ export function selectLoreBookPage(page: number) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The selected character (Phase 6 slice 5), by id: `selection.characterId` (`null`: home).
+// The selected character, by id: `selection.characterId` (`null`: home).
 // `selectedIndex()` is its index in the character list, tracked; a completed membership change of
 // the list that removes the selected character selects home (the records' hook below).
 

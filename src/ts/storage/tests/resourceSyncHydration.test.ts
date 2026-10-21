@@ -5,12 +5,12 @@ import type { GenerationEvent } from "../../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// Phase 5 slice 5 on the client: a server generation job's events mirrored without any outgoing
-// write (`applyHydration`, `hydrateChat`, `applyServerGeneration`, the stream watermarks and
-// buffer, the job-scoped locks), and the save loop's handling of a 409 `reason: "generating"`
-// (work kept and retried after `JOB_RETRY_MS`, no empty polling, unsaved accounting, the flush
-// refusal). The save adapter and the chat module run for real, with their Svelte watchers, against
-// the real server store guarded by the real generation lock (`StoreBackedServer.create({ lock })`).
+// A server generation job's events mirrored on the client without any outgoing write
+// (`applyHydration`, `hydrateChat`, `applyServerGeneration`, the stream watermarks and buffer, the
+// job-scoped locks), and the save loop's handling of a 409 `reason: "generating"` (work kept and
+// retried after `JOB_RETRY_MS`, no empty polling, unsaved accounting, the flush refusal). The save
+// adapter and the chat module run for real, with their Svelte watchers, against the real server
+// store guarded by the real generation lock (`StoreBackedServer.create({ lock })`).
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -651,8 +651,8 @@ describe("a job's reply in the mirror", () => {
     });
 });
 
-// Phase 5 cutover: the job's chat event can come before its `accepted` (a reply appended with
-// `begin`), and the reply is locked from that event on (`hydrateChat`), holding no stream update yet.
+// The job's chat event can come before its `accepted` (a reply appended with `begin`), and the
+// reply is locked from that event on (`hydrateChat`), holding no stream update yet.
 describe("a reply locked by its job's chat event, before its stream", () => {
     /** The `accepted` snapshot carrying the text the job had streamed so far. */
 
@@ -782,9 +782,9 @@ describe("a reply locked by its job's chat event, before its stream", () => {
     });
 });
 
-// Phase 6 slice 3 (owner decision 3): the streaming display optimization follows the server stream.
-// A generation's first stream update makes its message `streamingState`, with the configured mode;
-// every release of that generation's lock clears it.
+// The streaming display optimization follows the server stream. A generation's first stream update
+// makes its message `streamingState`, with the configured mode; every release of that generation's
+// lock clears it.
 describe("the streaming state follows a job's stream", () => {
     const state = (chat: ChatModule) => ({ ...chat.streamingState });
     const none = { chaId: null, chatId: null, messageId: null, mode: undefined };
@@ -996,10 +996,9 @@ describe("a refusal for a generating message", () => {
         const characterStore = await import("../characterStore.svelte");
         lockB(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
-        // The list changes through the character module (Phase 6 slice 5: a splice through the
-        // list wrapper is refused); removing the selected character selects home.
-        // Phase 6 slice 9a: a copy of the record carries no chats; the legacy shape with them is
-        // built with `withChatsCopy`.
+        // The list changes through the character module (a splice through the list wrapper is refused);
+        // removing the selected character selects home. A copy of the record carries no chats; the
+        // legacy shape with them is built with `withChatsCopy`.
         const removed = chat.withChatsCopy(JSON.parse(JSON.stringify(characters()[0])));
         expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
@@ -1016,14 +1015,13 @@ describe("a refusal for a generating message", () => {
         expect(fake.batchCount()).toBe(1);
         expect(timeouts.mock.calls.filter(([, delay]) => typeof delay === "number" && delay <= 500)).toEqual([]);
         // Undo: the character is back. Added back through the character module, it also enters the
-        // character order (the fixture's order is `[]`), and it is prepared as a creation (Phase 6
-        // slice 5b), which stamps the `creation_date` the fixture's record lacks: the character's
-        // write is a field patch (audit item A1) of that one stamp on the server's record at its held
-        // revision, no delete. Data-loss slice 6d: the revisions held of its chats stayed through the
-        // refused deletion, so the re-added chats are reconciled by id, each sent back as a whole
-        // `replace` with a reorder. The job still locks `k`: its replace is refused for the
-        // generation (the batch rolls back), kept and blocked until the retry, while the rest of the
-        // batch goes out again at once.
+        // character order (the fixture's order is `[]`), and it is prepared as a creation, which stamps
+        // the `creation_date` the fixture's record lacks: the character's write is a field patch of
+        // that one stamp on the server's record at its held revision, no delete. The revisions held of
+        // its chats stayed through the refused deletion, so the re-added chats are reconciled by id,
+        // each sent back as a whole `replace` with a reorder. The job still locks `k`: its replace is
+        // refused for the generation (the batch rolls back), kept and blocked until the retry, while
+        // the rest of the batch goes out again at once.
         const stored = fake.record("characters", "c")!;
         characterStore.addCharacter(removed);
         await tick();
@@ -1107,9 +1105,9 @@ describe("a refusal for a generating message", () => {
     });
 });
 
-// Data-loss slice 4b: a chat another device deleted while this tab generates in a sibling chat of
-// the same character. Its conflicting edit is discarded with the notice at once, although the
-// character's list read waits for the job; the list read after the job reports what it discards.
+// A chat another device deleted while this tab generates in a sibling chat of the same character.
+// Its conflicting edit is discarded with the notice at once, although the character's list read
+// waits for the job; the list read after the job reports what it discards.
 describe("a sibling chat deleted during this tab's generation", () => {
     const refJ = { chaId: "c", chatId: "j" };
     const mirrorIds = (chat: ChatModule) => chat.chatList("c").map((entry) => entry.id);
@@ -1161,11 +1159,11 @@ describe("a sibling chat deleted during this tab's generation", () => {
     });
 });
 
-// Data-loss slice 2a: a group the server refused for a generating message names the locked
-// messages it targets (`messageIds`); the edits of those messages are dropped (the flush report, the
-// reload notice, the chat marked stale and read back when idle) instead of being retried over the
-// finished reply, while the rest of the group waits for the retry. The reroll's rollback
-// (`restoreUnsentRemoval`) puts a removed tail back while its `remove` is still pending.
+// A group the server refused for a generating message names the locked messages it targets
+// (`messageIds`); the edits of those messages are dropped (the flush report, the reload notice, the
+// chat marked stale and read back when idle) instead of being retried over the finished reply,
+// while the rest of the group waits for the retry. The reroll's rollback (`restoreUnsentRemoval`)
+// puts a removed tail back while its `remove` is still pending.
 describe("a refused edit of the locked message is dropped", () => {
     const lockB = (fake: StoreBackedServer) => {
         fake.lock!.addToken("T");
@@ -1784,13 +1782,12 @@ describe("a job's chat patch", () => {
     });
 });
 
-// The fix round of the `chatPatch` change (Astra's challenge points 1 to 4): the recovery after a
-// patch the mirror could not take. The send path (`runServerJob`: `flushResources`, then
-// `refreshStaleChat`) brings a chat this tab knows is behind current before a job is created; a
-// stale mark wakes the save loop even without a lock to release; a very large chat takes a patch
-// without the list being read or rewritten whole. The transport's recovery (a `busy` copy saved,
-// then `resync`) is covered in `src/ts/network/generationJobs.test.ts` over stubs; here the events
-// are applied without a follow, so the send path is exercised alone.
+// The recovery after a patch the mirror could not take. The send path (`runServerJob`:
+// `flushResources`, then `refreshStaleChat`) brings a chat this tab knows is behind current before
+// a job is created; a stale mark wakes the save loop even without a lock to release; a very large
+// chat takes a patch without the list being read or rewritten whole. The transport's recovery (a
+// `busy` copy saved, then `resync`) is covered in `src/ts/network/generationJobs.test.ts` over
+// stubs; here the events are applied without a follow, so the send path is exercised alone.
 describe("recovery after a refused chat patch", () => {
     /**
      * A reply streams while a local edit pends; the checkpoint patch is `busy`, the edit then lands on
@@ -1937,8 +1934,8 @@ describe("recovery after a refused chat patch", () => {
         expect(chat.heldChatRevision(refK)).toBe(r0);
         expect(chat.isChatStale(refK)).toBe(true);
         expect(chat.chatHydrationHold(refK)).toBe("none");
-        // A message edit refused for a generating message: its edit of the locked message is
-        // dropped (slice 2a), the edit of another message in the group is held until the job ends.
+        // A message edit refused for a generating message: its edit of the locked message is dropped,
+        // the edit of another message in the group is held until the job ends.
         fake.lock!.addToken("T");
         fake.lock!.acquire({ ...B, messageId: "c" }, { jobId: "J", generationId: "g1", token: "T" });
         chat.setMessageText(refK, "c", "edited");
@@ -2086,12 +2083,12 @@ describe("recovery after a refused chat patch", () => {
     });
 });
 
-// Data-loss plan slice 6d (audit D4): a stale acknowledgement keeps the older held revision, so a
-// server copy read or sent before the acknowledgement passes the "not older than held" checks
-// although it lacks the edit the server holds from the acknowledged revision on. The acknowledged
-// revision is a floor: no copy below it is installed (an idle or `refreshStaleChat` read, a job's
-// whole copy or patch), the edit stays in the mirror and the stale mark stays for a newer read.
-// Before the fix the older copy replaced the mirror without the edit and cleared the mark.
+// A stale acknowledgement keeps the older held revision, so a server copy read or sent before the
+// acknowledgement passes the "not older than held" checks although it lacks the edit the server
+// holds from the acknowledged revision on. The acknowledged revision is a floor: no copy below it
+// is installed (an idle or `refreshStaleChat` read, a job's whole copy or patch), the edit stays in
+// the mirror and the stale mark stays for a newer read. Before the fix the older copy replaced the
+// mirror without the edit and cleared the mark.
 describe("an acknowledged-revision floor after a stale acknowledgement", () => {
     /**
      * Puts an `authFetch` over the fake that, once started, holds every `/api/resources/read`
@@ -2329,7 +2326,7 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
     });
 });
 
-describe("a recovery's list read that finds its character gone (open bug fixes B1)", () => {
+describe("a recovery's list read that finds its character gone", () => {
     /**
      * Puts an `authFetch` over the fake that holds the next `/api/resources/read` answer (computed
      * when the request arrives) until `release`; later reads pass.

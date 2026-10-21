@@ -5,25 +5,26 @@ import { readFileSync } from "node:fs";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 6, slice 1: the projection binding spike
-// (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/spike-projection-bindings.md`). Every
-// case runs over the test-only prototype in `projectionHarness.svelte.ts`: per-resource records
-// held as `$state`, the two wrapper candidates (`projectRecord`, accessor-backed; `trackedRecord`,
-// deep write-through), a root facade installed on the real `spikeRoot.db` (so the real
-// `customQuotesData` items and real components run against it), and a prototype transport over the
-// real server store (`StoreBackedServer`). Since Phase 6 slice 6 the real `getSettingValue` /
-// `setSettingValue` resolve `bindKey`/`bindPath` through the settings record views (the real
-// records), which the prototype does not back: the registry proofs run the pre-slice-6 registry copy
-// over `spikeRoot.db` (`spikeRegistry.ts`), and the items' callbacks get a context over the facade.
+// Svelte bindings, snapshots, and writes through per-resource record wrappers: the cases that chose
+// the deep write-through wrapper `records.svelte.ts` uses. Every case runs over the test-only
+// prototype in `projectionHarness.svelte.ts`: per-resource records held as `$state`, the two wrapper
+// candidates (`projectRecord`, accessor-backed; `trackedRecord`, deep write-through), a root facade
+// installed on the real `prototypeRoot.db` (so the real `customQuotesData` items and real components
+// run against it), and a prototype transport over the real server store (`StoreBackedServer`). The
+// real `getSettingValue` / `setSettingValue` resolve `bindKey`/`bindPath` through the settings record
+// views (the real records), which the prototype does not back: the registry cases run a copy of the
+// registry's older resolution over `prototypeRoot.db` (`prototypeRegistry.ts`), and the items'
+// callbacks get a context over the facade.
 //
-// Every per-candidate proof runs three times: `accessor` (candidate 1), `tracked` (candidate 2,
+// Every per-candidate case runs three times: `accessor` (candidate 1), `tracked` (candidate 2,
 // validating its path on every access), and `tracked-cached` (candidate 2 with the resolve cache).
 //
-// A proof that a candidate fails is asserted as the observed result (the failing candidate's
+// A case that a candidate fails is asserted as the observed result (the failing candidate's
 // expectation is the measured failure), so the suite stays green while recording each result.
 //
-// The module mocks are the Phase 3 spike's (`forwardingSpike.test.ts`): `stores.svelte.ts` wires
-// module updates into a module-level effect, and the settings registry reaches the alert module.
+// The module mocks are the forwarding binding suite's (`forwardingBindings.test.ts`):
+// `stores.svelte.ts` wires module updates into a module-level effect, and the settings registry reaches
+// the alert module.
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -37,7 +38,7 @@ vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).crea
 import type { character } from "../../../../shared/database.ts";
 import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
 import type { SettingContext, SettingItem } from "../../setting/types";
-import { spikeRoot } from "./spikeRoot.svelte";
+import { prototypeRoot } from "./prototypeRoot.svelte";
 import { isSecretSet, llmSecretState, secretStatus } from "../llmSecrets.svelte";
 import { safeStructuredClone } from "../../polyfill";
 import { writeEntries } from "../mutationValidation";
@@ -80,11 +81,11 @@ import {
     trackedRecord,
     type Candidate,
 } from "./projectionHarness.svelte";
-import SpikeRecordInput from "./SpikeRecordInput.svelte";
-import SpikeRecordList from "./SpikeRecordList.svelte";
-import SpikeRecordMany from "./SpikeRecordMany.svelte";
-import SpikeRecordSync from "./SpikeRecordSync.svelte";
-import { candidateContext, candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
+import PrototypeRecordInput from "./PrototypeRecordInput.svelte";
+import PrototypeRecordList from "./PrototypeRecordList.svelte";
+import PrototypeRecordMany from "./PrototypeRecordMany.svelte";
+import PrototypeRecordSync from "./PrototypeRecordSync.svelte";
+import { candidateContext, candidateGetSettingValue, candidateSetSettingValue } from "./prototypeRegistry";
 import { StoreBackedServer } from "./storeBackedServer";
 
 type Mounted = ReturnType<typeof mount>;
@@ -162,7 +163,7 @@ function seed(server: StoreBackedServer) {
             maxResponse: 8000,
             reverseProxyOobaArgs: { mode: "chat", name1_instruct: "b-user" },
             // A `null` container the normalizer keeps (`PRESET_NULLABLE_FIELDS`); a prompt field, since
-            // the spike's `presets` record stores prompt fields only (`docs/plan/split-preset.md`).
+            // the prototype's `presets` record stores prompt fields only.
             dynamicOutput: null,
         },
     ]);
@@ -172,8 +173,8 @@ function seed(server: StoreBackedServer) {
         name: "Spike",
         desc: "the description",
         firstMessage: "hello",
-        // A field that is not a character default (Phase 6 slice 5b: a deleted default is saved as its
-        // default), for the delete proof.
+        // A field that is not a character default (a deleted default is saved as its default), for the
+        // delete case.
         replaceGlobalNote: "the note",
         globalLore: Array.from({ length: LORE_SIZE }, (_, index) => loreEntry(index)),
     });
@@ -197,7 +198,7 @@ afterEach(async () => {
     resetProjection();
 });
 
-/** The candidate's settings context (`spikeRegistry.ts`): every section view is the facade on `spikeRoot.db`. */
+/** The candidate's settings context (`prototypeRegistry.ts`): every section view is the facade on `prototypeRoot.db`. */
 function ctx(): SettingContext {
     return candidateContext();
 }
@@ -241,12 +242,12 @@ function edited(kind: string, id: string, edit: (data: any) => void): any {
 async function capture(key: string) {
     const calls = stats.queueCalls.get(key) ?? 0;
     const otherKeys = queuedKeys().filter((other) => other !== key);
-    // Round 2, point 2: the live records (not a snapshot) hold no wrapper or view, after every
-    // write any proof captures.
+    // The live records (not a snapshot) hold no wrapper or view, after every write any case
+    // captures.
     expect(findLiveWrappers()).toEqual([]);
     const sent = stats.bodies.length;
     const report = await flush();
-    // Round 2, point 3: every body this flush sent, checked before any counter reset.
+    // Every body this flush sent, checked before any counter reset.
     for (const body of stats.bodies.slice(sent)) {
         expectNoCredential(body);
     }
@@ -359,8 +360,8 @@ describe("Svelte 5.57.1 facts the pattern relies on", () => {
         // A raw write (not through a wrapper, which unwraps) keeps the wrapper object inside the state.
         liveRecord<any>("providers", "main").leaked = wrapper;
         expect(isTrackedWrapper(liveRecord<any>("providers", "main").leaked)).toBe(true);
-        // Through a wrapper of another record it is stored as a detached copy (round 2: no record
-        // aliases another record's state) ...
+        // Through a wrapper of another record it is stored as a detached copy (no record aliases
+        // another record's state) ...
         trackedRecord<any>("providers", "main").unwrapped = wrapper;
         const stored = liveRecord<any>("providers", "main").unwrapped;
         expect(isTrackedWrapper(stored)).toBe(false);
@@ -384,9 +385,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         resetCounters();
     });
 
-    describe("proof 1: binding", () => {
+    describe("binding", () => {
         it("bind:value on a top-level section field writes the record, captured as one write; edits coalesce; applyRaw re-renders", async () => {
-            const { input } = render(SpikeRecordInput, { record: view("ui"), field: "customCSS", id: "p1-top" });
+            const { input } = render(PrototypeRecordInput, { record: view("ui"), field: "customCSS", id: "p1-top" });
             const element = input();
             expect(element.value).toBe("body { color: red; }");
 
@@ -411,7 +412,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
 
         it("bind:value on a nested field (`reverseProxyOobaArgs.name1_instruct` through the facade)", async () => {
-            const { input } = render(SpikeRecordInput, {
+            const { input } = render(PrototypeRecordInput, {
                 get record() {
                     return db.reverseProxyOobaArgs;
                 },
@@ -447,7 +448,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
 
         it("bind:value on an array element field (`globalLore[3].content`)", async () => {
-            const { input } = render(SpikeRecordInput, {
+            const { input } = render(PrototypeRecordInput, {
                 get record() {
                     return db.characters[0].globalLore[3];
                 },
@@ -477,7 +478,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(queuedKeys()).toEqual([]);
         });
 
-        it("the function binding over the registry resolution (the pre-slice-6 copy): bindKey, bindPath, and item callbacks", async () => {
+        it("the function binding over the registry resolution (the older registry copy): bindKey, bindPath, and item callbacks", async () => {
             const items: { item: SettingItem; key: string; nested: boolean; read: () => unknown; raw: () => void }[] = [
                 {
                     item: { id: "spike.customCSS", type: "text", bindKey: "customCSS" },
@@ -511,10 +512,10 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                     item: {
                         id: "spike.lore3",
                         type: "text",
-                        // Item callbacks take the context since slice 6; the character is the facade's.
-                        getValue: () => (spikeRoot.db.characters[0] as character).globalLore[3].content,
+                        // Item callbacks take the context; the character is the facade's.
+                        getValue: () => (prototypeRoot.db.characters[0] as character).globalLore[3].content,
                         setValue: (value: string) => {
-                            (spikeRoot.db.characters[0] as character).globalLore[3].content = value;
+                            (prototypeRoot.db.characters[0] as character).globalLore[3].content = value;
                         },
                     },
                     key: CHAR,
@@ -530,7 +531,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             ];
             for (const [index, entry] of items.entries()) {
                 resetCounters();
-                const { input } = render(SpikeRecordSync, { item: entry.item, ctx: ctx(), id: `p1-sync-${index}` });
+                const { input } = render(PrototypeRecordSync, { item: entry.item, ctx: ctx(), id: `p1-sync-${index}` });
                 const element = input(`#p1-sync-${index}`);
                 typeInto(element, `fn-${index}-1`);
                 typeInto(element, `fn-${index}-2`);
@@ -547,9 +548,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 2: snapshots", () => {
+    describe("snapshots", () => {
         it("snapshot, JSON, keys, for-in, and a JSON clone of a wrapper and of the facade give plain data equal to the record; nothing queues", () => {
-            render(SpikeRecordInput, { record: view("ui"), field: "customCSS" });
+            render(PrototypeRecordInput, { record: view("ui"), field: "customCSS" });
             for (const [kind, id] of [
                 ["ui", "main"],
                 [PRESETS_KIND, "main"],
@@ -569,7 +570,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 expect(Array.isArray(wrapper), kind).toBe(Array.isArray(expected));
             }
 
-            const facade = snapshot(spikeRoot.db) as any;
+            const facade = snapshot(prototypeRoot.db) as any;
             expect(leaks(facade)).toEqual([]);
             expect(() => structuredClone(facade)).not.toThrow();
             expect(facade.customCSS).toBe("body { color: red; }");
@@ -578,20 +579,20 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(facade.characters).toEqual([recordJson(CHARACTERS_KIND, CHA)]);
             expect(facade.temperature).toBe(80);
             expect(facade.reverseProxyOobaArgs).toEqual({ mode: "instruct", name1_instruct: "a-user" });
-            const json = JSON.parse(JSON.stringify(spikeRoot.db));
+            const json = JSON.parse(JSON.stringify(prototypeRoot.db));
             expect(json.botPresets).toEqual(facade.botPresets);
             expect(json.characters).toEqual(facade.characters);
             expect(json.customQuotesData).toEqual(["«", "»", "‹", "›"]);
-            expect(Object.keys(spikeRoot.db)).toContain("botPresets");
-            expect(Object.keys(spikeRoot.db)).toContain("temperature");
-            expect(forInKeys(spikeRoot.db)).toEqual(Object.keys(spikeRoot.db));
+            expect(Object.keys(prototypeRoot.db)).toContain("botPresets");
+            expect(Object.keys(prototypeRoot.db)).toContain("temperature");
+            expect(forInKeys(prototypeRoot.db)).toEqual(Object.keys(prototypeRoot.db));
 
             expect(stats.queueCalls.size).toBe(0);
             expect(dirtyKeys()).toEqual([]);
         });
     });
 
-    describe("proof 3: every write shape", () => {
+    describe("every write shape", () => {
         it("a handler assignment of a section field and of a nested lore field", async () => {
             db.customCSS = "handler {}";
             const top = await capture(UI);
@@ -673,7 +674,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
 
         it("the cast form `(db.characters[i] as character).x = v`", async () => {
-            (spikeRoot.db.characters[0] as character).desc = "cast";
+            (prototypeRoot.db.characters[0] as character).desc = "cast";
             expect(liveChar().desc).toBe("cast");
             const result = await capture(CHAR);
             expect(result.captured).toBe(true);
@@ -744,7 +745,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 4: the registry", () => {
+    describe("the registry", () => {
         const customQuotes = () => displaySettingsItems.find((item) => item.id === "display.customQuotes")!;
         const quoteItems = () =>
             [
@@ -771,9 +772,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             const after = items.map((item) => candidateGetSettingValue(item, ctx()));
             const fields = JSON.parse(
                 JSON.stringify({
-                    customQuotes: spikeRoot.db.customQuotes,
-                    customQuotesData: spikeRoot.db.customQuotesData,
-                    deeplXOptions: spikeRoot.db.deeplXOptions,
+                    customQuotes: prototypeRoot.db.customQuotes,
+                    customQuotesData: prototypeRoot.db.customQuotesData,
+                    deeplXOptions: prototypeRoot.db.deeplXOptions,
                 }),
             );
             return { before, after, fields };
@@ -788,7 +789,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(liveRecord<any>("secrets").deeplXOptions.url).toBe("https://changed");
 
             // The same sequence over a plain object holding the seeded values.
-            spikeRoot.db = {
+            prototypeRoot.db = {
                 customQuotes: true,
                 customQuotesData: ["«", "»", "‹", "›"],
                 deeplXOptions: { url: "https://deeplx.local", token: "" },
@@ -854,7 +855,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 6: edit then same-task selection switch", () => {
+    describe("edit then same-task selection switch", () => {
         it("a facade edit of `temperature` then a switch to `b` lands in `a`; `b` is unchanged; the flush sends it", async () => {
             db.temperature = 33;
             switchPreset("b");
@@ -872,7 +873,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
 
         it("the same through the function binding, the switch in the input's task", async () => {
             const item: SettingItem = { id: "spike.temperature", type: "text", bindKey: "temperature" };
-            const { input } = render(SpikeRecordSync, { item, ctx: ctx() });
+            const { input } = render(PrototypeRecordSync, { item, ctx: ctx() });
             const element = input();
             expect(element.value).toBe("80");
             typeInto(element, "44");
@@ -886,11 +887,11 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 7: live replacement", () => {
+    describe("live replacement", () => {
         for (const path of ["reload (applyRaw)", "applyRemote"] as const) {
             it(`replacing the character through ${path} while bound re-renders, queues and sends nothing; a later write through the cached wrapper targets the new record`, async () => {
                 const cached = view(CHARACTERS_KIND, CHA);
-                const { input } = render(SpikeRecordInput, {
+                const { input } = render(PrototypeRecordInput, {
                     get record() {
                         return cached.globalLore[3];
                     },
@@ -937,7 +938,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         }
     });
 
-    describe("proof 8: an own `__proto__` key in a user-keyed map", () => {
+    describe("an own `__proto__` key in a user-keyed map", () => {
         const withProto = () =>
             JSON.parse(
                 JSON.stringify(liveRecord(PRESETS_KIND)).replace(
@@ -1008,7 +1009,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 9: the llmSecrets siblings and the credential boundary", () => {
+    describe("the llmSecrets siblings and the credential boundary", () => {
         const llm = () => view("llmSecrets");
         const queued = () => llmSecretState.queue.map((op) => op.request);
         const recordText = () => JSON.stringify(liveRecord("llmSecrets"));
@@ -1213,7 +1214,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 10: indexed replacement and retained references", () => {
+    describe("indexed replacement and retained references", () => {
         it("`presets[0] = { ...a, temperature: 1 }` is captured; a retained wrapper of `a` still reads and writes `a`", async () => {
             const retained = view(PRESETS_KIND)[0];
             const presets = view(PRESETS_KIND);
@@ -1337,7 +1338,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         }
     });
 
-    describe("proof 11: a retained preset wrapper never redirects", () => {
+    describe("a retained preset wrapper never redirects", () => {
         it("a wrapper of `a` taken while selected, a switch to `b`, then a write: lands in `a`", async () => {
             const retained = view(PRESETS_KIND)[presetIndex("a")];
             switchPreset("b");
@@ -1349,11 +1350,11 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 12: hydration queues nothing", () => {
+    describe("hydration queues nothing", () => {
         it("an applyRemote replacement while wrappers are cached and bound makes no queue call and sends nothing", async () => {
             const cachedRoot = view(CHARACTERS_KIND, CHA);
             const cachedLore = cachedRoot.globalLore[7];
-            const { input } = render(SpikeRecordInput, {
+            const { input } = render(PrototypeRecordInput, {
                 get record() {
                     return view(CHARACTERS_KIND, CHA).globalLore[7];
                 },
@@ -1380,7 +1381,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 13: edit, remote notice, flush (R15)", () => {
+    describe("edit, remote notice, flush", () => {
         it("an unflushed edit keeps a newer remote record out; the flush sends the old base and the 409 reloads", async () => {
             const before = persistedOf(CHARACTERS_KIND, CHA)!.revision;
             view(CHARACTERS_KIND, CHA).desc = "local edit";
@@ -1432,7 +1433,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("proof 14: an edit during its own acknowledgement (R15)", () => {
+    describe("an edit during its own acknowledgement", () => {
         it("stays dirty after the ack; the next flush sends it on the acknowledged revision and the server takes both edits", async () => {
             const character = view(CHARACTERS_KIND, CHA);
             character.desc = "first";
@@ -1459,7 +1460,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("round 2, point 4: the in-flight hydration fence", () => {
+    describe("the in-flight hydration fence", () => {
         it("a newer remote record is not applied while its record's batch is in flight, even with the text back at the saved text", async () => {
             const character = view(CHARACTERS_KIND, CHA);
             const saved = persistedOf(CHARACTERS_KIND, CHA)!;
@@ -1497,9 +1498,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("round 2, point 5: keyed rows with child bindings across a swap and a hydration", () => {
+    describe("keyed rows with child bindings across a swap and a hydration", () => {
         it("the CustomModelsSettings swap, a hydration, then an edit of the same DOM row lands in its id", async () => {
-            const { target } = render(SpikeRecordList, {
+            const { target } = render(PrototypeRecordList, {
                 get list() {
                     return db.botPresets;
                 },
@@ -1601,7 +1602,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
     });
 
-    describe("round 2, point 6: clone and assignment boundaries", () => {
+    describe("clone and assignment boundaries", () => {
         it("the production safeStructuredClone (its rfdc fallback) on a wrapper: detached values, nothing written or queued", () => {
             applyRaw(
                 PRESETS_KIND,
@@ -1668,7 +1669,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
     });
 
     if (candidate !== "accessor") {
-        describe("round 2, point 1: assigning a retained wrapper", () => {
+        describe("assigning a retained wrapper", () => {
             it("directly, after a local replacement, without an intervening read: the current object, never the old one", async () => {
                 const presets = trackedRecord(PRESETS_KIND);
                 const retained = presets[0];
@@ -1756,7 +1757,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             });
         });
 
-        describe("round 3: the narrowed identity rule", () => {
+        describe("the allowlisted by-id identity rule", () => {
             /** Entries 5 and 9 share `id: "dup"` (a re-imported lorebook), applied and saved as the server holds it. */
             async function seedDuplicateIds() {
                 server.set(
@@ -1789,14 +1790,14 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
 
             it("duplicate ids, two bound rows: an edit in row 5 lands in element 5 only, and the flush sends exactly that", async () => {
                 await seedDuplicateIds();
-                const row5 = render(SpikeRecordInput, {
+                const row5 = render(PrototypeRecordInput, {
                     get record() {
                         return db.characters[0].globalLore[5];
                     },
                     field: "content",
                     id: "row-5",
                 }).input("#row-5");
-                const row9 = render(SpikeRecordInput, {
+                const row9 = render(PrototypeRecordInput, {
                     get record() {
                         return db.characters[0].globalLore[9];
                     },
@@ -1866,7 +1867,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             });
         });
 
-        describe("round 2, point 2: no wrapper is ever stored in a live record", () => {
+        describe("no wrapper is ever stored in a live record", () => {
             it("a plain container holding nested wrappers (fields and array elements); later edits queue only the intended record", async () => {
                 const character = trackedRecord(CHARACTERS_KIND, CHA);
                 const presets = trackedRecord(PRESETS_KIND);
@@ -1944,7 +1945,7 @@ function machine(): string {
     return `uname: ${uname}\ncpu: ${cpu}\nnode ${process.version}, svelte ${svelte}, vitest ${vitest}`;
 }
 
-describe("proof 5: cost", () => {
+describe("cost", () => {
     const WRITES = 1000;
     const ROUNDS = 9;
 
@@ -1999,19 +2000,19 @@ describe("proof 5: cost", () => {
 
         console.info(
             [
-                "[projection spike] proof 5, 1,000 nested writes (median of 9 rounds, ms):",
+                "[projection bindings] 1,000 nested writes (median of 9 rounds, ms):",
                 ...Object.keys(targets).map(
                     (name) => `  ${name}: ${medians[name].toFixed(3)} ms (x${ratio(name).toFixed(2)} of direct)`,
                 ),
                 machine(),
             ].join("\n"),
         );
-        // The verdict rule asks for candidate 2 within 2x; the assertion is generous so it does not flake.
+        // The target is candidate 2 within 2x; the assertion is generous so it does not flake.
         expect(ratio("tracked")).toBeLessThan(10);
         expect(ratio("tracked-cached")).toBeLessThan(10);
     });
 
-    it("bulk (round 2, point 7): the lorebook drag rebuild and the preset reorder, candidate 2 against direct $state", () => {
+    it("bulk: the lorebook drag rebuild and the preset reorder, candidate 2 against direct $state", () => {
         // `LoreBookList.svelte:209-296`: copy the array (here with a new object per item), move one
         // item as a copy, regroup by folder, then replace the field.
         function drag(lore: any[], assign: (next: any[]) => void) {
@@ -2093,7 +2094,7 @@ describe("proof 5: cost", () => {
         );
         console.info(
             [
-                "[projection spike] round 2, bulk paths (median of 9 rounds, ms; dev-mode Svelte under vitest):",
+                "[projection bindings] bulk paths (median of 9 rounds, ms; dev-mode Svelte under vitest):",
                 ...Object.entries(medians).map(
                     ([name, value]) =>
                         `  ${name}: lorebook drag (300 new items) ${value.drag.toFixed(3)} (x${(value.drag / medians.direct.drag).toFixed(2)}), preset reorder (50) ${value.move.toFixed(3)} (x${(value.move / medians.direct.move).toFixed(2)})`,
@@ -2104,7 +2105,7 @@ describe("proof 5: cost", () => {
 
     it("mounting and re-rendering a component bound to 60 fields", () => {
         // A 60-field record of the section fields' primitive values (the `ui` record holds 58), held
-        // as one record so the direct baseline is one `$state` object, as `spikeRoot.db` is today.
+        // as one record so the direct baseline is one `$state` object, as `prototypeRoot.db` is today.
         const primitives = (data: Record<string, unknown>) =>
             Object.entries(data).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value));
         const bench = Object.fromEntries(
@@ -2130,7 +2131,7 @@ describe("proof 5: cost", () => {
                 const target = document.createElement("div");
                 document.body.appendChild(target);
                 let start = performance.now();
-                const instance = mount(SpikeRecordMany, {
+                const instance = mount(PrototypeRecordMany, {
                     target,
                     props: {
                         get record() {
@@ -2169,7 +2170,7 @@ describe("proof 5: cost", () => {
         expect([...stats.queueCalls.keys()]).toEqual([keyOf("ui", "bench")]);
         console.info(
             [
-                "[projection spike] proof 5, 60 bound fields (median of 5 rounds, ms): mount / whole-record re-render / one-field re-render",
+                "[projection bindings] 60 bound fields (median of 5 rounds, ms): mount / whole-record re-render / one-field re-render",
                 ...Object.entries(results).map(
                     ([name, list]) =>
                         `  ${name}: ${median(list.mount).toFixed(2)} / ${median(list.rerender).toFixed(2)} / ${median(list.single).toFixed(3)}`,

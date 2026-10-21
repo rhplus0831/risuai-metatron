@@ -4,13 +4,13 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // A tab that booted while the server had no `pluginStorage/main` record (the one mirrored singleton
-// that exists only once a plugin writes it; audit PERSIST-01, `docs/plan/audit-findings-perf.md`
-// slice 2d) over the real store and its change feed: another client's creation of the record is
-// adopted from the live update and from a reconnect's revision listing, with no outgoing write, and
-// a later local plugin write is an update on the held revision. A tab that wrote its own record
-// first meets the other tab's creation as a conflict: since data-loss plan slice 5a the two creates
-// are merged key by key against an empty base (both keys stay, no notice); only the same key written
-// to two values keeps the old policy (the server copy wins, the discard reported to the plugins).
+// that exists only once a plugin writes it) over the real store and its change feed: another
+// client's creation of the record is adopted from the live update and from a reconnect's revision
+// listing, with no outgoing write, and a later local plugin write is an update on the held revision.
+// A tab that wrote its own record first meets the other tab's creation as a conflict: the two
+// creates are merged key by key against an empty base (both keys stay, no notice); only the same
+// key written to two values keeps the conflicting-create policy (the server copy wins, the discard
+// reported to the plugins).
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },

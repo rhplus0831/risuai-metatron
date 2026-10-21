@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// `docs/plan/chat-binding.md`, slice 5: the pickers' action (`chatBindingPick.ts` `pickBinding`), the
-// picker highlight (`pickedId`), and the deletion count (`chatsBoundTo` over `countChatEntries`), over
-// the chat module booted from summaries against the real server store (nothing loaded, as
-// `chatBindingViews.test.ts` boots it). Covered:
+// The pickers' action (`chatBindingPick.ts` `pickBinding`), the picker highlight (`pickedId`), and
+// the deletion count (`chatsBoundTo` over `countChatEntries`), over the chat module booted from
+// summaries against the real server store (nothing loaded, as `chatBindingViews.test.ts` boots it).
+// Covered:
 // - the target rule: `undefined` is the open chat at the call, else the tab's selection at home;
 //   `null` is the tab's selection even while a chat is open; a ref is that chat, selected or not,
 //   loaded or not;

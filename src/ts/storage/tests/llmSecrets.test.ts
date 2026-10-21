@@ -13,14 +13,12 @@ import {
     setSecret,
 } from "../llmSecrets.svelte";
 
-// Phase 3, slice 4, rewritten for Phase 5 slice 7b (`request-layer-and-llm-secrets.md`, write-only
-// `llmSecrets`): the client state of the record is the masked record the server answered, a version
-// per credential path, and the queue of credential writes the save adapter sends. The tab never
-// holds a key: a write is queued and the status a view shows is the masked record with the queue
-// applied over it. The `credentials` map is keyed by named credential id (`docs/plan/shared-api-keys.md`;
-// the former `modelPresets` and `customModels` maps are gone, `docs/plan/model-profiles.md` O2), and an
-// id is any non-empty string (`isRecordId`), so `__proto__` is a valid key: every operation must treat
-// it as an ordinary own key (slice 3 Astra point 4, slice 4 Astra point 2).
+// The write-only `llmSecrets` record: the client state of the record is the masked record the server
+// answered, a version per credential path, and the queue of credential writes the save adapter sends.
+// The tab never holds a key: a write is queued and the status a view shows is the masked record with
+// the queue applied over it. The `credentials` map is keyed by named credential id (the former
+// `modelPresets` and `customModels` maps are gone), and an id is any non-empty string (`isRecordId`),
+// so `__proto__` is a valid key: every operation must treat it as an ordinary own key.
 
 const credentials = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 /** The queued requests, in order. */
@@ -184,8 +182,8 @@ describe("setMaskedSecrets (boot, an acknowledgement, and a conflict reload)", (
             setMaskedSecrets({ credentials: value } as never);
             expect(isSecretSet(credentials("a")), String(value)).toBe(false);
         }
-        // A record stored before Model Profiles O2 held the per-record maps: they carry no entry
-        // and are not exposed.
+        // A record stored before the named `credentials` map held the per-record maps: they carry no
+        // entry and are not exposed.
         const masked = maskLlmSecrets({
             modelPresets: { a: { proxyKey: "k" } },
             customModels: { a: { key: "k" } },

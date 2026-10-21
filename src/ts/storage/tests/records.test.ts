@@ -21,13 +21,12 @@ import {
 } from "../records.svelte";
 import { llmSecretState } from "../llmSecrets.svelte";
 
-// Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`):
-// the production records module (`records.svelte.ts`), checked directly. These are the regressions
-// for the reproductions of Astra's challenge and its first re-check (mutator resurrection and stale
-// insertion, credential routing on every write shape, descriptor writes, whole `llmSecrets`
-// replacements, list replacement displacement, absent-section creation, the reset), and the record
-// notification contract (`batchRecordWrites`). A refusal is checked for zero side effects: the record
-// text unchanged, no record notification, no credential operation.
+// The production records module (`records.svelte.ts`), checked directly. These are regressions for
+// mutator resurrection and stale insertion, credential routing on every write shape, descriptor
+// writes, whole `llmSecrets` replacements, list replacement displacement, absent-section creation,
+// and the reset, and the record notification contract (`batchRecordWrites`). A refusal is checked
+// for zero side effects: the record text unchanged, no record notification, no credential
+// operation.
 
 let notified: RecordKind[] = [];
 
@@ -63,7 +62,7 @@ afterEach(() => {
     llmSecretState.queue.splice(0);
 });
 
-describe("array mutators (challenge point 1)", () => {
+describe("array mutators", () => {
     it("refuses to re-insert a removed element's wrapper once its displacement expired", async () => {
         initializeRecords({
             modules: [
@@ -122,7 +121,7 @@ describe("array mutators (challenge point 1)", () => {
     });
 });
 
-describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () => {
+describe("entry credentials", () => {
     it("routes a credential inserted through push, unshift, and splice, and never stores it", () => {
         initializeRecords({ credentials: [{ id: "a", name: "A" }] });
         const credentials = trackedRecord<any[]>("credentials")!;
@@ -229,8 +228,8 @@ describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () 
     });
 
     it("refuses the removed inline secrets (a custom model's key, a model preset's or profile's proxyKey), and treats a prompt preset's as plain data", () => {
-        // Model Profiles O2 (`docs/plan/model-profiles.md`): a profile names a credential instead,
-        // so these fields are no longer routed and must never become record data.
+        // A profile names a credential instead, so these fields are no longer routed and must never
+        // become record data.
         initializeRecords({
             customModels: [{ id: "c1", name: "C1" }],
             modelPresets: [{ id: "m1", name: "M1" }],
@@ -263,7 +262,7 @@ describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () 
             CredentialRefusedError,
         );
         expect(text("modelPresets")).not.toContain("proxyKey");
-        // The prompt preset owns no credential since the split (`docs/plan/split-preset.md`): a
+        // The prompt preset owns no credential since the model preset was split from it: a
         // `proxyKey` written there is an ordinary field the server normalizer drops, not a routed secret.
         const presets = trackedRecord<any[]>("presets")!;
         presets[0].proxyKey = "plain";
@@ -272,7 +271,7 @@ describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () 
     });
 });
 
-describe("descriptor writes (challenge point 3)", () => {
+describe("descriptor writes", () => {
     it("refuses an unsupported descriptor before routing or storing, and routes a plain data property", () => {
         initializeRecords({ credentials: [{ id: "a" }], ui: { zoomsize: 1 } });
         const credential = trackedRecord<any[]>("credentials")![0];
@@ -297,7 +296,7 @@ describe("descriptor writes (challenge point 3)", () => {
     });
 });
 
-describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => {
+describe("the llmSecrets record", () => {
     const mirror = () => ({
         openAIKey: "",
         google: { projectId: "proj", accessToken: "" },
@@ -358,7 +357,7 @@ describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => 
     });
 });
 
-describe("whole-list helpers (challenge point 7)", () => {
+describe("whole-list helpers", () => {
     it("replaceRecordList writes once and lets a dropped element be re-inserted in the same task", () => {
         initializeRecords({ loreBook: [{ name: "a" }, { name: "b" }] });
         const list = trackedRecord<any[]>("loreBook")!;
@@ -465,7 +464,7 @@ describe("identity", () => {
     });
 });
 
-describe("absent records (challenge point 9)", () => {
+describe("absent records", () => {
     it("wraps nothing and creates nothing while a record is absent", () => {
         initializeRecords({});
         expect(hasRecord("pluginStorage")).toBe(false);
@@ -543,7 +542,7 @@ describe("notifications", () => {
         expect(notified).toEqual(["ui"]);
     });
 
-    it("resetRecords drops the write listener (challenge point 10)", () => {
+    it("resetRecords drops the write listener", () => {
         const previous = vi.fn();
         setRecordWriteListener(previous);
         resetRecords();
@@ -553,7 +552,7 @@ describe("notifications", () => {
     });
 });
 
-describe("frozen module asset lists (heap plan B1)", () => {
+describe("frozen module asset lists", () => {
     const tuple = (name: string): [string, string, string] => [name, `assets/${name}.png`, "png"];
     const stamps = () => {
         const element = recordData<any[]>("modules")![0];

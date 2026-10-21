@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "./storeBackedServer";
 
-// `docs/plan/chat-binding.md`, slice 1: the client side of a chat's binding
-// (`src/ts/storage/chatBinding.svelte.ts`) over the chat module booted from summaries against the
-// real server store, with the save loop driven by hand (`take` → `applyChanges` → `ack`, as
-// `chatLazyLoading.test.ts` does). Covered here:
+// The client side of a chat's binding (`src/ts/storage/chatBinding.svelte.ts`) over the chat module
+// booted from summaries against the real server store, with the save loop driven by hand (`take` →
+// `applyChanges` → `ack`, as `chatLazyLoading.test.ts` does). Covered here:
 // - `chatBinding` and `chatBindingIds` answer `undefined` for a chat that is not a member, never the
 //   tab's selection; `chatBindingPatch` on one throws as `setChatMeta` does;
 // - the binding of an unloaded chat resolves from its summary and is written through one `meta` op
@@ -361,7 +360,7 @@ describe("the binding of an unloaded chat", () => {
     });
 });
 
-// Slice 3: the ids a context names and the display rule (`chatContextIds`, `chatDisplayIds`), and the
+// The ids a context names and the display rule (`chatContextIds`, `chatDisplayIds`), and the
 // refusal text of the send guard (`chatBindingRefusalText`, `chatBindingProblems`).
 describe("the context ids and the display rule", () => {
     it("chatContextIds names the prompt preset as presetId; chatDisplayIds takes each bound id that names a record, else the tab's", async () => {

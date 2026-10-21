@@ -32,15 +32,14 @@ import {
     whenBootCacheSettled,
 } from "../bootCache";
 
-// The boot cache (`docs/plan/boot-resource-cache.md` slice 3): the pure parts (entry checks, the
-// request, the expansion against the advertised claims, the write diff) and the whole boot
-// (`loadBootSnapshot`) over the real IndexedDB adapter on `fake-indexeddb`, with a fake server
-// that answers the boot contract from a state (`cached`, `items` by hash, whole). Covered: the
-// equivalence with the full read, the fallback paths (each one plain read, the unusable answer's
-// immediate fenced clear), the generation fences (another tab's write, and the `null` expectation
-// after a clear), GC, an `appVer` change, the open timeout, a late connection, a newer database,
-// the operation reporting, and the idle scheduler. The server equivalence over the real route is
-// `bootCacheServer.test.ts`.
+// The boot cache: the pure parts (entry checks, the request, the expansion against the advertised
+// claims, the write diff) and the whole boot (`loadBootSnapshot`) over the real IndexedDB adapter
+// on `fake-indexeddb`, with a fake server that answers the boot contract from a state (`cached`,
+// `items` by hash, whole). Covered: the equivalence with the full read, the fallback paths (each
+// one plain read, the unusable answer's immediate fenced clear), the generation fences (another
+// tab's write, and the `null` expectation after a clear), GC, an `appVer` change, the open timeout,
+// a late connection, a newer database, the operation reporting, and the idle scheduler. The server
+// equivalence over the real route is `bootCacheServer.test.ts`.
 
 const DB_NAME = "risu-boot-cache";
 const APP = "v1";

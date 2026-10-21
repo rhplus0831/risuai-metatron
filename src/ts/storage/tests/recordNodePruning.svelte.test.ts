@@ -20,18 +20,17 @@ import {
     trackedRecord,
 } from "../records.svelte";
 
-// Heap plan D1 (archived `docs/plan/heap-memory.md`): the record wrapper nodes no longer keep removed data.
-// These are the behavioral contracts of that change (the retention itself is proved by the heap
-// driver, `util/playwright/measureHeap.mjs`, and its retainer analysis, not here): a retained wrapper
-// of a character that left the list through any of the four membership paths throws while the id is
-// absent and follows a same-id re-add (as another object than the fresh wrapper, stamping the same
-// meta); a retained nested wrapper under a raw change (`applyRawCharacter`, `patchRawCharacter`,
-// `applyRaw`, a reinstallation) follows by path, stays one object with a fresh read, and its writes
-// reach the save cache's stamps; a local shrink (a mutator, a direct `length` write,
-// `replaceRecordList`) keeps the survivors' identity; the reviewer's challenge reproductions (a raw
-// change inside a comparator, a same-task displaced re-insertion after a raw change, a truncation of
-// another list inside a comparator, an effect teardown's reads of a shrunk root list before the
-// deferred trim of its original array); and both orders of a raw regrowth after a prune.
+// The record wrapper nodes keep no removed data. These are the behavioral contracts of the pruning
+// (the retention itself is proved by the heap driver, `util/playwright/measureHeap.mjs`, and its
+// retainer analysis, not here): a retained wrapper of a character that left the list through any of
+// the four membership paths throws while the id is absent and follows a same-id re-add (as another
+// object than the fresh wrapper, stamping the same meta); a retained nested wrapper under a raw
+// change (`applyRawCharacter`, `patchRawCharacter`, `applyRaw`, a reinstallation) follows by path,
+// stays one object with a fresh read, and its writes reach the save cache's stamps; a local shrink (a
+// mutator, a direct `length` write, `replaceRecordList`) keeps the survivors' identity; the edge
+// cases (a raw change inside a comparator, a same-task displaced re-insertion after a raw change, a
+// truncation of another list inside a comparator, an effect teardown's reads of a shrunk root list
+// before the deferred trim of its original array); and both orders of a raw regrowth after a prune.
 
 let notified: string[] = [];
 
@@ -104,7 +103,7 @@ function detachedAndReadded(remove: () => void, nestedFollows = true) {
     expect(fresh.name).toBe("A3");
 }
 
-describe("a character leaving the list (D1: its canonical node is dropped)", () => {
+describe("a character leaving the list (its canonical node is dropped)", () => {
     it("removeCharacterRecords: the retained wrappers throw, then follow a same-id re-add", () => {
         detachedAndReadded(() => {
             expect(removeCharacterRecords(["a"])).toEqual(["a"]);
@@ -116,7 +115,7 @@ describe("a character leaving the list (D1: its canonical node is dropped)", () 
     });
 
     it("replaceCharacterRecordAt with another id: the character that was there left", () => {
-        // Pre-existing (not D1): this path bumps no epoch of the leaving character, so its retained
+        // Independent of the pruning: this path bumps no epoch of the leaving character, so its retained
         // nested wrappers resolve by identity after a same-id re-add and throw; the element follows.
         detachedAndReadded(() => {
             replaceCharacterRecordAt(0, { chaId: "c", name: "C" });
@@ -147,7 +146,7 @@ describe("a character leaving the list (D1: its canonical node is dropped)", () 
     });
 });
 
-describe("raw changes under a retained wrapper (D1: cached nodes let go of the old data, keep their paths)", () => {
+describe("raw changes under a retained wrapper (cached nodes let go of the old data, keep their paths)", () => {
     it("a same-id server copy: a retained nested wrapper reads the copy, is the fresh wrapper, and its write stamps the field", () => {
         initializeRecords({ characters: [character("a")] });
         const element = byId("a");
@@ -215,7 +214,7 @@ describe("raw changes under a retained wrapper (D1: cached nodes let go of the o
     });
 });
 
-describe("local shrinks (D1: the index tail is pruned, survivors keep their identity)", () => {
+describe("local shrinks (the index tail is pruned, survivors keep their identity)", () => {
     it("a nested list's splice: the survivor's retained wrapper is the fresh one, the removed one's throws", () => {
         initializeRecords({ characters: [character("a", { lore: [{ x: 1 }, { x: 2 }, { x: 3 }] })] });
         const lore = byId("a").lore;
@@ -288,7 +287,7 @@ describe("local shrinks (D1: the index tail is pruned, survivors keep their iden
     });
 });
 
-describe("the challenge's reproductions", () => {
+describe("raw changes and truncations inside comparators and teardowns", () => {
     it("a server copy inside a sort comparator: the mutator still writes back the objects it read", () => {
         initializeRecords({
             modules: [

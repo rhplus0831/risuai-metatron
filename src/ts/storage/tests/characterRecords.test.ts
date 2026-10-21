@@ -31,18 +31,16 @@ import {
 import { evaluateInDerived } from "./derivedProbe.svelte";
 import { assembleChats, findChat } from "../chatStore.svelte";
 
-// Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "5a as built" and "After the challenge"): the character list of the production records module and
-// the tab's character selection, checked directly. These are the regressions for Astra's challenge
-// reproductions and its first re-check (a raw merge after a local reorder or removal, orphaned
-// wrappers across a field patch and a whole replacement, a same-id local replacement with a held
-// nested wrapper, a repeated object at installation, the reset, a removal before the selected
-// character, the selection read inside its listener and a reentrant selection, a removal inside a
-// `$derived`), and the contracts the plan review asked for: per-character ownership (a value of A
-// assigned into B is a copy), the local-field policy on every trap, the list's structural refusals
-// with nothing changed, and the notification contract (`setCharacterWriteListener`). A refusal is
-// checked for no side effect: the raw list text unchanged and no notification. The selection is by
-// index through `selectCharacterAt`/`selectedIndex` (Phase 6 slice 10: the index store is gone).
+// The character list of the production records module and the tab's character selection, checked
+// directly. These are regressions for a raw merge after a local reorder or removal, orphaned wrappers
+// across a field patch and a whole replacement, a same-id local replacement with a held nested
+// wrapper, a repeated object at installation, the reset, a removal before the selected character,
+// the selection read inside its listener and a reentrant selection, and a removal inside a
+// `$derived`; and the contracts: per-character ownership (a value of A assigned into B is a copy), the
+// local-field policy on every trap, the list's structural refusals with nothing changed, and the
+// notification contract (`setCharacterWriteListener`). A refusal is checked for no side effect: the
+// raw list text unchanged and no notification. The selection is by index through
+// `selectCharacterAt`/`selectedIndex` (there is no separate index store).
 
 let notified: string[] = [];
 
@@ -59,8 +57,8 @@ const character = (chaId: string, extra: Record<string, unknown> = {}) => ({
 });
 
 /**
- * Holds the fixture characters' chats in the chat module the way boot does (Phase 6 slice 9a: the
- * records hold none; a wrapper answers `chats`/`chatPage` from the chat module).
+ * Holds the fixture characters' chats in the chat module the way boot does (the records hold none; a
+ * wrapper answers `chats`/`chatPage` from the chat module).
  */
 function holdChats(characters: { chaId: string; chats: any[] }[]) {
     assembleChats(
@@ -101,7 +99,7 @@ afterEach(() => {
     selectCharacter(null);
 });
 
-describe("raw merges and replacements (challenge point 1, re-check 1 point 1)", () => {
+describe("raw merges and replacements", () => {
     it("a raw scalar patch after a local reorder leaves a retained lore entry on its own entry", () => {
         initializeRecords({ characters: [character("a", { lore: [{ x: 1 }, { x: 2 }] })] });
         const lore = byId("a").lore;
@@ -182,7 +180,7 @@ describe("raw merges and replacements (challenge point 1, re-check 1 point 1)", 
     });
 });
 
-describe("same-id local replacement (challenge point 2)", () => {
+describe("same-id local replacement", () => {
     it("a held nested wrapper reads and writes the replacement, and the replacement queues its character", () => {
         initializeRecords({ characters: [character("a", { globalLore: [{ content: "old" }] })] });
         const held = byId("a").globalLore[0];
@@ -208,7 +206,7 @@ describe("same-id local replacement (challenge point 2)", () => {
     });
 });
 
-describe("installation and reset (challenge points 3 and 5)", () => {
+describe("installation and reset", () => {
     it("refuses a list holding one object twice before anything is installed", () => {
         initializeRecords({ ui: { zoomsize: 1 }, characters: [character("a")] });
         const before = text();
@@ -261,7 +259,7 @@ describe("installation and reset (challenge points 3 and 5)", () => {
     });
 });
 
-describe("ownership across characters (plan review point 1)", () => {
+describe("ownership across characters", () => {
     it("stores a value of A assigned into B as a copy; edits stay with their owner and queue only it", () => {
         initializeRecords({
             characters: [character("a", { globalLore: [{ content: "a1" }] }), character("b", { globalLore: [] })],
@@ -302,12 +300,12 @@ describe("ownership across characters (plan review point 1)", () => {
     });
 });
 
-describe("the local fields (plan review point 3)", () => {
+describe("the local fields", () => {
     it("reads chats, chatPage, and reloadKeys raw through every trap, and writes them raw with no notification", () => {
         initializeRecords({ characters: [character("a", { reloadKeys: 0 })] });
         holdChats([character("a")]);
         const a = byId("a");
-        // Phase 6 slice 9a: the record holds no chats; the wrapper answers them from the chat module.
+        // The record holds no chats; the wrapper answers them from the chat module.
         expect(raw("a").chats).toBeUndefined();
         expect(raw("a").chatPage).toBeUndefined();
         const held = findChat({ chaId: "a", chatId: "ka" });
@@ -366,7 +364,7 @@ describe("the local fields (plan review point 3)", () => {
         holdChats([character("a")]);
         const chats = byId("a").chats;
         insertCharacterRecord({ chaId: "b", name: "B", chats, chatPage: 0 });
-        // Phase 6 slice 9a: the record drops them; b holds no chats until the chat module installs some.
+        // The record drops them; b holds no chats until the chat module installs some.
         expect(raw("b").chats).toBeUndefined();
         expect(byId("b").chats).toEqual([]);
         expect(byId("a").chats).toEqual(chats);
@@ -379,8 +377,7 @@ describe("the local fields (plan review point 3)", () => {
         applyRawCharacter("n", { chaId: "n", name: "N", chats: [{ id: "ignored" }] });
         expect(raw("n")).toEqual({ chaId: "n", name: "N" });
         expect(byId("n").chats).toEqual([]);
-        // The facade's `chatPage` is the selected chat's index among the loaded chats, -1 with none
-        // (Phase 6 slice 9b).
+        // The facade's `chatPage` is the selected chat's index among the loaded chats, -1 with none.
         expect(byId("n").chatPage).toBe(-1);
         applyRawCharacter("n", null);
         expect(raw("n")).toBeUndefined();
@@ -388,7 +385,7 @@ describe("the local fields (plan review point 3)", () => {
     });
 });
 
-describe("structural writes through the list wrapper (plan review point 7) and the immutable chaId (point 9)", () => {
+describe("structural writes through the list wrapper and the immutable chaId", () => {
     it("refuses every list mutator, index and length writes, delete, defineProperty, and list assignment, with nothing changed", () => {
         initializeRecords({ characters: [character("a"), character("b")] });
         const characters = list();
@@ -493,7 +490,7 @@ describe("notifications (setCharacterWriteListener)", () => {
     });
 });
 
-describe("the selection (plan review points 4 and 5)", () => {
+describe("the selection", () => {
     it("answers the index synchronously after every membership change, local or raw, and follows its character; the listeners hear every selection", () => {
         initializeRecords({ characters: [character("a"), character("b"), character("c")] });
         const seen: number[] = [];
@@ -624,7 +621,7 @@ describe("the selection (plan review points 4 and 5)", () => {
         off();
     });
 
-    it("completes a removal made inside a $derived, with the selection reconciled to home (re-check 1 point 3)", () => {
+    it("completes a removal made inside a $derived, with the selection reconciled to home", () => {
         initializeRecords({ characters: [character("a"), character("b")] });
         selectCharacter("a");
         const removed = evaluateInDerived(() => removeCharacterRecords(["a"]));

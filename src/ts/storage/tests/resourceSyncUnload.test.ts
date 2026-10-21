@@ -7,8 +7,8 @@ import { StoreBackedServer } from "./storeBackedServer";
 
 // The save adapter's page lifecycle handlers: a hidden page saves at once, and `beforeunload` asks
 // for the browser's warning only while work is unsaved; and the answer to an unload request that
-// arrives after the chat's character or work is gone (slice A3). Its own file, away from the many
-// graphs `resourceSync.test.ts` boots: every test here boots one module graph and leaves it with no
+// arrives after the chat's character or work is gone. Its own file, away from the many graphs
+// `resourceSync.test.ts` boots: every test here boots one module graph and leaves it with no
 // unsaved work, so the listeners earlier tests left on the shared window warn for nothing and send
 // nothing, and the keepalive requests of a test are told apart by its server's epoch.
 
@@ -53,7 +53,7 @@ type Selection = typeof import("../selection.svelte");
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // No `root` record since slice 6: the sections and collections are the records the server
+    // There is no `root` record: the sections and collections are the records the server
     // materializes; the sample edit is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
@@ -125,11 +125,11 @@ describe("page lifecycle", () => {
     });
 });
 
-// Open-bug-fixes slice A3: an unload request's group leaves the in-flight set when the server
-// confirms its character gone (this tab's acknowledged deletion or another writer's) or when an
-// authoritative list discards its chat's work; `settleUnloadWork` then ignores the group's late
-// answer instead of holding the deleted chat's revision again or queuing its work once more.
-describe("a late unload answer after the chat's character or work is gone (open-bug-fixes slice A3)", () => {
+// An unload request's group leaves the in-flight set when the server confirms its character gone
+// (this tab's acknowledged deletion or another writer's) or when an authoritative list discards its
+// chat's work; `settleUnloadWork` then ignores the group's late answer instead of holding the
+// deleted chat's revision again or queuing its work once more.
+describe("a late unload answer after the chat's character or work is gone", () => {
     const refK = { chaId: "c", chatId: "k" };
     const m = (id: string, data: string) => ({ role: "user", data, chatId: id }) as any;
     const chatOf = (id: string, text: string) =>
@@ -247,7 +247,7 @@ describe("a late unload answer after the chat's character or work is gone (open-
             expect(warns()).toBe(false);
             const batches = h.fake.batchCount();
 
-            // Before slice A3 the answer held the deleted chat's revision again, and a failed request
+            // Before the fix the answer held the deleted chat's revision again, and a failed request
             // put its ops back in front of the queue as a resend for a chat the cascade removed.
             await releaseUnloadAnswer(h);
             await expectNothingLeft(h, batches);
@@ -295,7 +295,7 @@ describe("a late unload answer after the chat's character or work is gone (open-
         });
         h.fake.releaseBatch!();
         // The acknowledged deletion retires the old `k`'s unload group with the deleted chats, so the
-        // replacement's `k` is created with the character in the follow-up cycle (before slice A3 its
+        // replacement's `k` is created with the character in the follow-up cycle (before the fix its
         // create waited for the group in flight under the same key).
         expect(await deleting).toEqual({ discarded: [] });
         expect(h.fake.record("characters", "c")!.data.name).toBe("Replacement");

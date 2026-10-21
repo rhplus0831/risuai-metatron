@@ -274,7 +274,7 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
 }
 
 /**
- * One credential write of the write-only `llmSecrets` record (Phase 5 slice 7b): a set (`value`;
+ * One credential write of the write-only `llmSecrets` record: a set (`value`;
  * empty clears), on the record's `baseRevision`. Answers the new revision and the
  * masked record; a stale revision throws `ResourceConflictError`.
  */

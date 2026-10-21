@@ -25,9 +25,8 @@ import { activeMainProfile, currentPresetRecord, settings } from "./settingsView
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
 /*
- * The preset actions of the preset lists (Phase 6 slice 10, out of
- * `database.svelte.ts`; split into prompt and model presets by `docs/plan/split-preset.md`): copy,
- * switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
+ * The preset actions of the preset lists (moved out of `database.svelte.ts`; split into prompt and
+ * model presets): copy, switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
  * `modelPresets` collection (`settingsViews.svelte.ts`). Every preset field lives in its own preset
  * (the views write them there directly), so a switch only changes this tab's selection.
  */
@@ -118,10 +117,10 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
         return;
     }
     const stored = plainClone(source) as unknown as Record<string, unknown>;
-    // A prompt preset file (`docs/plan/split-preset.md`): `name`, `image`, and every prompt field,
-    // an unset one as an explicit `undefined`, as the pre-Phase 3 export did (the JSON copy drops
-    // them): an importer spreads `presetTemplate` under the file, so an absent key would take the
-    // template's value instead (`promptPreprocess: false`). No id (D5), no credential, and one model
+    // A prompt preset file: `name`, `image`, and every prompt field, an unset one as an explicit
+    // `undefined`, as the export did before the settings were split into section records (the JSON
+    // copy drops them): an importer spreads `presetTemplate` under the file, so an absent key would take the
+    // template's value instead (`promptPreprocess: false`). No id, no credential, and one model
     // field: `maxContext`, which upstream RisuAI applies on a preset switch, as the main model's
     // effective size (the override, else the main profile's; never 0, which caps every prompt).
     const pres: Record<string, unknown> = {};
@@ -329,12 +328,12 @@ export async function importPreset(
     if (!isPositiveSize(pre.maxContextOverrideSize) && isPositiveSize(pre.maxContext)) {
         pre.maxContextOverrideSize = pre.maxContext;
     }
-    // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). It is
-    // a prompt preset: the model fields and a `proxyKey` the file carries are ignored
-    // (`docs/plan/split-preset.md`). Normalized first, as before: a converted value the file lacks (a
-    // `NaN` from arithmetic on a missing parameter) becomes the field's default instead of refusing
-    // the import. A file's `archived` (another fork exports it) is list metadata of the exporting
-    // install: an imported preset starts active.
+    // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). It
+    // is a prompt preset: the model fields and a `proxyKey` the file carries are ignored.
+    // Normalized first, as before: a converted value the file lacks (a `NaN` from arithmetic on a
+    // missing parameter) becomes the field's default instead of refusing the import. A file's
+    // `archived` (another fork exports it) is list metadata of the exporting install: an imported
+    // preset starts active.
     delete pre.archived;
     return addPreset(normalizePreset(pre));
 }

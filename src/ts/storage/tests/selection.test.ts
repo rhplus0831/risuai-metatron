@@ -2,12 +2,12 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-// Phase 3, slices 5 and 6: the per-client selection store (`selection.svelte.ts`). It is browser
-// state, never sent to the server: `sessionStorage` holds this tab's choice (read first),
-// `localStorage` the browser's last choice (the start of a new tab). Storage that is missing,
-// throws, or holds junk must never break the app: the selection then starts empty and the forwarding
-// layer resolves it against the collections (Astra challenge point 6 and its testing advice). Slice 6
-// added `personaId` to the stored shape; the preset split (`docs/plan/split-preset.md`) `modelPresetId`.
+// The per-client selection store (`selection.svelte.ts`). It is browser state, never sent to the
+// server: `sessionStorage` holds this tab's choice (read first), `localStorage` the browser's last
+// choice (the start of a new tab). Storage that is missing, throws, or holds junk must never break
+// the app: the selection then starts empty and is resolved against the collections
+// (`reconcileSelection`). The stored shape holds the prompt preset, the model preset, the persona,
+// and the lorebook page.
 
 import {
     loadSelection,
@@ -21,7 +21,7 @@ import {
 
 const KEY = "risu-selection";
 const stored = (storage: Storage) => JSON.parse(storage.getItem(KEY) ?? "null");
-// The in-memory selection also holds the tab's character (Phase 6 slice 5), which is never stored.
+// The in-memory selection also holds the tab's character, which is never stored.
 const empty = { presetId: "", modelPresetId: "", personaId: "", loreBookPage: 0, characterId: null, chatOpen: false };
 
 /** Runs `run` while both storages throw on every call (a quota error, a denied private mode). */
@@ -167,7 +167,7 @@ describe("selectPreset, selectModelPreset, selectPersona, and selectLoreBookPage
         expect(stored(sessionStorage)).toEqual({ presetId: "p1", modelPresetId: "", personaId: "", loreBookPage: 0 });
         expect(stored(localStorage)).toEqual({ presetId: "p1", modelPresetId: "", personaId: "", loreBookPage: 0 });
 
-        // The model preset is selected independently of the prompt preset (`docs/plan/split-preset.md`).
+        // The model preset is selected independently of the prompt preset.
         selectModelPreset("m1");
         expect(stored(sessionStorage)).toEqual({ presetId: "p1", modelPresetId: "m1", personaId: "", loreBookPage: 0 });
         expect(selection.presetId).toBe("p1");

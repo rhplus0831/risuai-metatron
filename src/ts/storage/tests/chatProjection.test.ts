@@ -2,10 +2,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { isRecordWrapper } from "../records.svelte";
 import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
 
-// Phase 6 slice 9a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "Implementation notes, 9a" and "After the challenge"): the chats left the character records for
-// the chat module's own store. Against the real save adapter and server store
-// (`storeBackedServer.ts`): character `c` with chats `k` (messages A, B, C) and `j` (empty).
+// The chats live in the chat module's own store, not in the character records. Against the real
+// save adapter and server store (`storeBackedServer.ts`): character `c` with chats `k` (messages A,
+// B, C) and `j` (empty).
 // - The records are chat-free: a wrapper's keys, spread, and JSON carry no chats, the facade view
 //   answers them, a write of either field is refused, and the saved record has none.
 // - `chatList` follows the listed fields, the membership, and the order, not a message; the
@@ -407,8 +406,8 @@ describe("membership of the store", () => {
         expect(chat.applyRemoteCollection(collection())).toBe(true);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j", "n", "k"]);
         expect(chat.findChat(refK)).toBe(heldK);
-        // The new chat is held as its summary (Phase 6 slice 9b): listed, in the facade (the loaded
-        // chats) only once it is loaded.
+        // The new chat is held as its summary: listed, in the facade (the loaded chats) only once it is
+        // loaded.
         expect(chat.findChat({ chaId: "c", chatId: "n" })).toBeUndefined();
         expect(character("c").chats.map((entry: any) => entry.id)).toEqual(["j", "k"]);
         await chat.ensureChatLoaded({ chaId: "c", chatId: "n" });

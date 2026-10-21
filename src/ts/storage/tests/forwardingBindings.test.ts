@@ -4,18 +4,18 @@ import rfdc from "rfdc";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 1: the forwarding-layer spike (`docs/plan/phases/slices/phase-3-settings-sections/
-// spike-forwarding-layer.md`). Every case runs over the test-only prototype layer in
-// `forwardingHarness.svelte.ts`, installed on the spike's own `$state` holder (`spikeRoot.svelte.ts`;
-// it stood on the aggregate until Phase 6 slice 10 removed it). Since Phase 6 slice 6 the real
-// `getSettingValue` / `setSettingValue` resolve `bindKey`/`bindPath` through the settings record
-// views (the real records), which the prototype does not back: the spike's wrapper components bind
-// through the pre-slice-6 registry copy over the holder (`spikeRegistry.ts`), and the real
-// `SettingNumber.svelte` case (proof 4) runs over the production records, installed as the app does.
-// The cases about installing accessors on a database object (the install's descriptors and
+// Svelte bindings through a forwarding layer: accessors on the root that forward the preset and
+// persona fields to the selected record. Every case runs over the test-only prototype layer in
+// `forwardingHarness.svelte.ts`, installed on its own `$state` holder (`prototypeRoot.svelte.ts`,
+// standing where the removed whole-database aggregate stood). The real `getSettingValue` /
+// `setSettingValue` resolve `bindKey`/`bindPath` through the settings record views (the real
+// records), which the prototype does not back: the wrapper components here bind through a copy of
+// the registry's older resolution over the holder (`prototypeRegistry.ts`), and the real
+// `SettingNumber.svelte` case (same-flush switch) runs over the production records, installed as the
+// app does. The cases about installing accessors on a database object (the install's descriptors and
 // idempotence through the proxy, the shadowing `delete`, the plugin setters' root assignment) were
-// retired with the aggregate in slice 10; the kept rules they also showed (tracked reads, untracked
-// writes into the selected record) are pinned on the views (`presetViews.test.ts`).
+// retired with the aggregate; the kept rules they also showed (tracked reads, untracked writes into
+// the selected record) are pinned on the views (`presetViews.test.ts`).
 //
 // `stores.svelte.ts` wires module updates into a module-level effect, `Help.svelte` (reached
 // through the real wrapper) imports the alert module, and `database.svelte.ts` (reached through
@@ -40,25 +40,25 @@ import {
     createRawDb,
     currentDb,
     FORWARDED_KEYS,
-    mountSpikeDb,
+    mountPrototypeDb,
     persona,
     preset,
     snapshot,
     switchPersona,
     switchTo,
-    type SpikeDb,
+    type PrototypeDb,
 } from "./forwardingHarness.svelte";
-import { candidateContext } from "./spikeRegistry";
-import SpikeNumberSync from "./SpikeNumberSync.svelte";
-import SpikeSelectSync from "./SpikeSelectSync.svelte";
-import SpikeTextSync from "./SpikeTextSync.svelte";
+import { candidateContext } from "./prototypeRegistry";
+import PrototypeNumberSync from "./PrototypeNumberSync.svelte";
+import PrototypeSelectSync from "./PrototypeSelectSync.svelte";
+import PrototypeTextSync from "./PrototypeTextSync.svelte";
 
 type Mounted = ReturnType<typeof mount>;
 
 const mounted: Mounted[] = [];
-let db: SpikeDb;
+let db: PrototypeDb;
 
-/** The context the spike's wrapper components get: the candidate (`spikeRegistry.ts`). */
+/** The context the prototype's wrapper components get: the candidate (`prototypeRegistry.ts`). */
 function ctx(): SettingContext {
     return candidateContext();
 }
@@ -124,22 +124,22 @@ function numberItem(overrides: Partial<SettingItem> = {}): SettingItem {
 }
 
 beforeEach(() => {
-    db = mountSpikeDb();
+    db = mountPrototypeDb();
 });
 
 afterEach(async () => {
     const instances = mounted.splice(0);
     await Promise.all(instances.map((instance) => unmount(instance)));
     document.body.replaceChildren();
-    // Proof 4's real-wrapper case installs the production layer; forget its records and selection.
+    // The real-wrapper case installs the production records; forget its records and selection.
     selectPreset("");
     resetRecords();
 });
 
-describe("proof 1: bind:value on a top-level and a nested forwarded key writes the selected record", () => {
+describe("bind:value on a top-level and a nested forwarded key writes the selected record", () => {
     it("top-level `temperature` through the number wrapper", () => {
         const item = numberItem();
-        const { input } = render(SpikeNumberSync, { item, ctx: ctx(), id: "p1-number" });
+        const { input } = render(PrototypeNumberSync, { item, ctx: ctx(), id: "p1-number" });
         const element = input<HTMLInputElement>("input#p1-number");
         expect(element.value).toBe("80");
 
@@ -165,7 +165,7 @@ describe("proof 1: bind:value on a top-level and a nested forwarded key writes t
             fallbackLabel: "Post end inner format",
             bindPath: "promptSettings.postEndInnerFormat",
         };
-        const { input } = render(SpikeTextSync, { item, ctx: ctx(), id: "p1-text" });
+        const { input } = render(PrototypeTextSync, { item, ctx: ctx(), id: "p1-text" });
         const element = input<HTMLInputElement>("input#p1-text");
         expect(element.value).toBe("a-format");
 
@@ -194,7 +194,7 @@ describe("proof 1: bind:value on a top-level and a nested forwarded key writes t
             fallbackLabel: "Name",
             bindKey: "username",
         };
-        const { input } = render(SpikeTextSync, { item, ctx: ctx(), id: "p1-persona" });
+        const { input } = render(PrototypeTextSync, { item, ctx: ctx(), id: "p1-persona" });
         const element = input<HTMLInputElement>("input#p1-persona");
         expect(element.value).toBe("User One");
 
@@ -216,7 +216,7 @@ describe("proof 1: bind:value on a top-level and a nested forwarded key writes t
     });
 });
 
-describe("proof 2: snapshots, JSON, and key enumeration see forwarded values as plain properties", () => {
+describe("snapshots, JSON, and key enumeration see forwarded values as plain properties", () => {
     it("$state.snapshot(db), JSON.stringify(db), Object.keys(db), for...in, and rfdc", () => {
         const forwarded = FORWARDED_KEYS.map((key) => key.rootKey);
 
@@ -270,14 +270,14 @@ describe("proof 2: snapshots, JSON, and key enumeration see forwarded values as 
     });
 });
 
-describe("proof 4: a wrapper write made in the same flush as a switch must land in the record selected at the time", () => {
-    it("the real SettingNumber.svelte (a function binding since slice 5): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {
-        // The spike's proof 4 showed that the old wrapper (`localValue` + two effects) lost this
-        // edit: the DB-to-local effect ran first and overwrote `localValue` with b's value, so the
-        // guarded write-back had nothing to write. Slice 5 rewrote the wrapper to the replacement
-        // pattern below; this is the regression test for the real wrapper. Since slice 6 its
-        // registry reads the real records, so it runs over the production records (presets `a` at 80
-        // and `b` at 50, as in the harness), installed as the app does; the switch is the selection.
+describe("a wrapper write made in the same flush as a switch must land in the record selected at the time", () => {
+    it("the real SettingNumber.svelte (a function binding): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {
+        // The old wrapper (`localValue` + two effects) lost this edit: the DB-to-local effect ran
+        // first and overwrote `localValue` with b's value, so the guarded write-back had nothing to
+        // write. The wrapper now uses the replacement pattern below; this is the regression test for
+        // the real wrapper. Its registry reads the real records, so it runs over the production
+        // records (presets `a` at 80 and `b` at 50, as in the harness), installed as the app does; the
+        // switch is the selection.
         selectPreset("");
         initializeRecords(
             takeRecordFields({
@@ -308,7 +308,7 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
 
     it("replacement pattern (function binding, synchronous setSettingValue): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {
         const item = numberItem();
-        const { input } = render(SpikeNumberSync, { item, ctx: ctx(), id: "p4-sync" });
+        const { input } = render(PrototypeNumberSync, { item, ctx: ctx(), id: "p4-sync" });
         const element = input<HTMLInputElement>("input#p4-sync");
         expect(item.onChange).not.toHaveBeenCalled();
 
@@ -335,7 +335,7 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
         expect(item.onChange).toHaveBeenCalledTimes(2);
     });
 
-    it("select variant (A16): onChange fires once per user edit, not on a switch; the hidden-option fallback still writes", () => {
+    it("select variant: onChange fires once per user edit, not on a switch; the hidden-option fallback still writes", () => {
         const item: SettingItem = {
             id: "spike.username.select",
             type: "select",
@@ -350,7 +350,7 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
                 ],
             },
         };
-        const { target } = render(SpikeSelectSync, { item, ctx: ctx() });
+        const { target } = render(PrototypeSelectSync, { item, ctx: ctx() });
         const select = target.querySelector<HTMLSelectElement>("select")!;
         expect(select.value).toBe("User One");
         expect(item.onChange).not.toHaveBeenCalled();
@@ -379,7 +379,7 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
                 ],
             },
         };
-        const second = render(SpikeSelectSync, { item: hidden, ctx: ctx() });
+        const second = render(PrototypeSelectSync, { item: hidden, ctx: ctx() });
         const secondSelect = second.target.querySelector<HTMLSelectElement>("select")!;
         expect(persona("p2")!.name).toBe("Y");
         expect(persona("p1")!.name).toBe("Someone");
@@ -388,12 +388,12 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
     });
 });
 
-describe("proof 5: collection replacement and removal (A15)", () => {
+describe("collection replacement and removal", () => {
     it("after `db.botPresets` is replaced by a new array with the same ids, the accessor reads and writes the new records", () => {
         const probe = createProbe(() => db.temperature);
         const oldA = preset("a")!;
 
-        const replacement = JSON.parse(JSON.stringify(snapshot(db.botPresets))) as SpikeDb["botPresets"];
+        const replacement = JSON.parse(JSON.stringify(snapshot(db.botPresets))) as PrototypeDb["botPresets"];
         replacement[0].temperature = 77;
         db.botPresets = replacement;
         flushSync();
@@ -430,7 +430,7 @@ describe("proof 5: collection replacement and removal (A15)", () => {
 
     it("the fallback persist must be untracked: a tracked write to the selection inside a $derived throws", () => {
         // Why the harness wraps `db[selection] = first.id` in `untrack`: Svelte's `set` guard
-        // (`reactivity/sources.js`) rejects a tracked write from a DERIVED reaction. Slice 5 must
+        // (`reactivity/sources.js`) rejects a tracked write from a DERIVED reaction. A real layer must
         // keep the untrack, or the first read after a removal throws from any `$derived`.
         const tracked = createProbe(() => {
             db.botPresetId = "b";
@@ -467,10 +467,10 @@ describe("proof 5: collection replacement and removal (A15)", () => {
     });
 });
 
-describe("proof 6: edit, switch, serialize, rebuild", () => {
+describe("edit, switch, serialize, rebuild", () => {
     it("the edit is in `a` and `b` is unchanged after the mirror is rebuilt from the serialized collection", () => {
         const item = numberItem();
-        const { input } = render(SpikeNumberSync, { item, ctx: ctx(), id: "p6" });
+        const { input } = render(PrototypeNumberSync, { item, ctx: ctx(), id: "p6" });
         typeInto(input<HTMLInputElement>("input#p6"), "91");
         switchTo("b");
         flushSync();
@@ -478,7 +478,7 @@ describe("proof 6: edit, switch, serialize, rebuild", () => {
         const text = JSON.stringify(snapshot(db.botPresets));
         const selection = db.botPresetId;
 
-        const rebuilt = mountSpikeDb({ ...createRawDb(), botPresets: JSON.parse(text), botPresetId: selection });
+        const rebuilt = mountPrototypeDb({ ...createRawDb(), botPresets: JSON.parse(text), botPresetId: selection });
         expect(rebuilt).toBe(currentDb());
         expect(rebuilt.botPresetId).toBe("b");
         expect(rebuilt.temperature).toBe(50);

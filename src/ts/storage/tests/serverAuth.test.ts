@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The tab's server authentication (`serverAuth.ts`, Phase 6 slice 10: the auth half of the removed
-// storage client, one module-level state for every caller) against a fake of the server's auth
-// routes: the first run sets the password and registers this browser's key with the same digest (so
-// the very next request is authorized), a wrong-key browser logs in once, parallel requests share
-// one check, a failed check is tried again, and `authFetch` signs every request. The state is the
-// module's, so every test boots the module afresh (`vi.resetModules()`): what the old per-instance
-// `authChecked` flag showed is observed as whether the next call sends `/api/test_auth` again.
+// The tab's server authentication (`serverAuth.ts`, the auth half of the removed storage client,
+// one module-level state for every caller) against a fake of the server's auth routes: the first
+// run sets the password and registers this browser's key with the same digest (so the very next
+// request is authorized), a wrong-key browser logs in once, parallel requests share one check, a
+// failed check is tried again, and `authFetch` signs every request. The state is the module's, so
+// every test boots the module afresh (`vi.resetModules()`): what the old per-instance `authChecked`
+// flag showed is observed as whether the next call sends `/api/test_auth` again.
 
 const { prompts, alerts, keypairs } = vi.hoisted(() => ({
     prompts: { answers: [] as string[], asked: [] as string[] },

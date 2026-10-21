@@ -2,10 +2,10 @@ import crc32 from "crc/crc32";
 import * as fflate from "fflate";
 
 /**
- * Files for the import tests of Phase 4 slice 7 (`imports-through-the-module.md`): a PNG that
- * carries card or persona `tEXt` chunks the way `PngChunk.readGenerator` reads them, a CharX zip
- * (`card.json`, optionally `module.risum`), and minimal V2 and V3 cards. The image data is a
- * placeholder `IHDR` chunk: the readers never decode pixels, and `saveAsset` is mocked.
+ * Files for the import tests: a PNG that carries card or persona `tEXt` chunks the way
+ * `PngChunk.readGenerator` reads them, a CharX zip (`card.json`, optionally `module.risum`), and
+ * minimal V2 and V3 cards. The image data is a placeholder `IHDR` chunk: the readers never decode
+ * pixels, and `saveAsset` is mocked.
  */
 
 const PNG_SIGNATURE = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

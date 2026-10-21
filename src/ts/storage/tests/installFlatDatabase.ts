@@ -23,11 +23,11 @@ export function takeRootPresetFields(raw: Record<string, unknown>): Record<strin
 }
 
 /**
- * The model preset and profiles a legacy preset implies (`docs/plan/model-profiles.md`): the model
- * preset keeps the preset's id and name; its main slot names a profile of the same id holding
- * `aiModel` and the profile fields, its sub slot that profile or, for a different `subModel`, a
- * `<id>-sub` profile with the same fields; each non-empty `seperateModels` entry becomes a bare
- * auxiliary slot. A preset without `aiModel` uses the default profile.
+ * The model preset and profiles a legacy preset implies: the model preset keeps the preset's id and
+ * name; its main slot names a profile of the same id holding `aiModel` and the profile fields, its
+ * sub slot that profile or, for a different `subModel`, a `<id>-sub` profile with the same fields;
+ * each non-empty `seperateModels` entry becomes a bare auxiliary slot. A preset without `aiModel`
+ * uses the default profile.
  */
 export function modelRecordsOf(preset: Record<string, unknown>): {
     modelPreset: Record<string, unknown>;
@@ -59,19 +59,20 @@ export function modelRecordsOf(preset: Record<string, unknown>): {
 }
 
 /**
- * Installs a flat database fixture (the legacy whole-database shape the pre-slice-10 tests read:
- * the selected preset's fields on the root) into the records, as the removed `setDatabaseLite`
- * installed one: the root preset fields, if any, become the one preset's (`presetId`; a fixture
- * with `botPresets` has none on its root), every record field moves into the records
+ * Installs a flat database fixture (the legacy whole-database shape older tests read: the selected
+ * preset's fields on the root) into the records, as the removed `setDatabaseLite` installed one:
+ * the root preset fields, if any, become the one preset's (`presetId`; a fixture with `botPresets`
+ * has none on its root), every record field moves into the records
  * (`initializeRecords(takeRecordFields(raw))`: the fields are removed from `raw`), and the
  * selection is resolved (`reconcileSelection`). Nothing is normalized: a fixture gives valid data,
  * except the model presets and profiles of a fixture without `modelPresets`: one model preset per
- * `botPresets` entry under the same id, with the profiles its model fields imply (`modelRecordsOf`),
- * so a legacy fixture whose preset `a` carries `maxContext` reads it through `activeMainProfile`
- * once model preset `a` is selected; a fixture without presets gets one default model preset. A
- * fixture without `modelProfiles` gets those profiles plus the default one. The test then reads
- * the views (`settings`, `activePreset`, `activeModelPreset`, `activeMainProfile`, `activePersona`,
- * `characterList()`, `rootSnapshot()`), never `raw`. Returns the installed preset's id.
+ * `botPresets` entry under the same id, with the profiles its model fields imply
+ * (`modelRecordsOf`), so a legacy fixture whose preset `a` carries `maxContext` reads it through
+ * `activeMainProfile` once model preset `a` is selected; a fixture without presets gets one default
+ * model preset. A fixture without `modelProfiles` gets those profiles plus the default one. The
+ * test then reads the views (`settings`, `activePreset`, `activeModelPreset`, `activeMainProfile`,
+ * `activePersona`, `characterList()`, `rootSnapshot()`), never `raw`. Returns the installed
+ * preset's id.
  */
 export function installFlatDatabase(raw: object, presetId = "fixture-preset"): string {
     const fields = raw as Record<string, unknown>;
@@ -102,10 +103,10 @@ type FixtureCharacter = { chaId: string; chats?: FixtureChat[]; chatPage?: numbe
 
 /**
  * `installFlatDatabase` for a fixture whose characters carry their chats in the legacy shape
- * (`chats`, `chatPage`): the records hold no chats (Phase 6 slice 9a), so each character's chats
- * are held in the chat module as boot assembles them (`assembleChats`, every chat loaded, in the
- * fixture's order), before the installation strips them off the character objects. The chat
- * selection is not made here (`initializeChats` or `selectChat`).
+ * (`chats`, `chatPage`): the records hold no chats, so each character's chats are held in the chat
+ * module as boot assembles them (`assembleChats`, every chat loaded, in the fixture's order),
+ * before the installation strips them off the character objects. The chat selection is not made
+ * here (`initializeChats` or `selectChat`).
  */
 export function installFlatDatabaseWithChats(raw: object, presetId = "fixture-preset"): string {
     const fields = raw as Record<string, unknown>;

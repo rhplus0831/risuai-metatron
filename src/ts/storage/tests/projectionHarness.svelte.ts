@@ -10,7 +10,7 @@ import {
 import { PRESET_ROOT_ALIASES } from "../../../../shared/presets.ts";
 import { compareRevision, RESOURCE_EPOCH_HEADER, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import { FORWARDED_PRESET_KEYS, SECTION_FIELDS, SECTION_KIND, type SectionKind } from "../../../../shared/sections.ts";
-import { spikeRoot } from "./spikeRoot.svelte";
+import { prototypeRoot } from "./prototypeRoot.svelte";
 import type { Database } from "../database.svelte";
 import {
     clearSecret,
@@ -23,16 +23,14 @@ import {
 import { writeEntries } from "../mutationValidation";
 import type { StoreBackedServer } from "./storeBackedServer";
 
-// Test-only prototype of the Phase 6 per-resource records (spike, slice 1:
-// `docs/plan/phases/slices/phase-6-thin-client-and-closeout/spike-projection-bindings.md`).
-// Nothing here is production code: slice 4 (`settings-ownership`) writes
-// `src/ts/storage/records.svelte.ts` and the real save loop from the verdict of
-// `projectionSpike.test.ts`, not by copying this file.
+// Test-only prototype of the per-resource records. Nothing here is production code:
+// `src/ts/storage/records.svelte.ts` and the real save loop were written from what
+// `projectionBindings.test.ts` showed, not by copying this file.
 //
 // Pieces:
 // - The record store: one `$state` slot per `(kind, id)`, holding the record's data. `applyRaw`
 //   replaces a slot (boot, hydration, conflict reload) and never queues a write.
-// - Two wrapper candidates over a record, measured on the same proofs:
+// - Two wrapper candidates over a record, measured on the same cases:
 //   1. `projectRecord(kind, id)`, accessor-backed: a plain object (an array for an array record)
 //      with one enumerable accessor per top-level field (per index); the setter writes the field
 //      and calls `queueRecordWrite`. Nested containers are the raw `$state` sub-objects, so a nested
@@ -42,13 +40,13 @@ import type { StoreBackedServer } from "./storeBackedServer";
 //      `deleteProperty`, and `defineProperty` forward to the Svelte proxy and call
 //      `queueRecordWrite` in the same task. Array mutators run through the traps.
 // - The root facade (`mountFacade`): a raw object with enumerable accessors, installed before
-//   `spikeRoot.db = raw` proxies it (as `src/ts/storage/forwarding.svelte.ts` does), so the real
+//   `prototypeRoot.db = raw` proxies it (as the removed `forwarding.svelte.ts` did), so the real
 //   `getSettingValue`/`setSettingValue` and real components run against it.
 // - `queueRecordWrite` and a reduced transport prototype over `StoreBackedServer` that mirrors the
 //   save loop's capture, flush, acknowledgement, conflict, and hydration rules
 //   (`src/ts/storage/resourceSync.svelte.ts`, cited at each rule). Not modeled: quarantine,
 //   generation blocks, restore (epoch) handling, the credential writes' acknowledgement, and the
-//   batching limits; those stay slice 4 integration obligations.
+//   batching limits; the production save loop's own tests cover those.
 
 /**
  * `accessor` is candidate 1; `tracked` is candidate 2 validating its path on every access;
@@ -262,7 +260,7 @@ let epoch = "";
 let server: StoreBackedServer | null = null;
 
 /**
- * Marks a record for the next flush: the record identity is captured here, at the write (R15);
+ * Marks a record for the next flush: the record identity is captured here, at the write;
  * its text and base revision are taken at flush. Like `markKey` (`resourceSync.svelte.ts:276`).
  */
 export function queueRecordWrite(kind: string, id: string): void {
@@ -330,7 +328,7 @@ export function resetProjection(): void {
     structureVersion = 0;
 }
 
-/** Clears the counters only (after boot and setup, so a proof counts its own writes). */
+/** Clears the counters only (after boot and setup, so a case counts its own writes). */
 export function resetCounters(): void {
     stats.queueCalls.clear();
     stats.serializations = 0;
@@ -517,9 +515,9 @@ async function cycle(): Promise<FlushReport> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Credentials (`llmSecrets` is write-only: `shared/llmSecrets.ts`, Phase 5 slice 7b).
+// Credentials (`llmSecrets` is write-only: `shared/llmSecrets.ts`).
 //
-// The boundary slice 4 plans: through a record wrapper a credential is never stored in the record
+// The boundary: through a record wrapper a credential is never stored in the record
 // and never silently lost. The record holds the mirror form (`mirrorFields`: every credential
 // field reads `""`), the masked status lives in `llmSecretState` (read-only here), and a credential
 // reaches the server only through `setSecret` / `clearSecret`. Each credential path is either
@@ -534,7 +532,7 @@ async function cycle(): Promise<FlushReport> {
 // - `OaiCompAPIKeys.<id>` (and a whole `OaiCompAPIKeys` map, entry by entry): as a flat credential;
 // - the entry maps (`presets`, `customModels`) are not in the mirror record: a write of them is
 //   refused; a preset's key goes through the facade's `proxyKey` (`forwarding.svelte.ts`);
-//   `customModels.<id>.key` belongs to slice 4 and is not modeled;
+//   `customModels.<id>.key` is not modeled;
 // - `delete` of any credential path (a flat field, a leaf, a container holding a leaf, the map or
 //   one of its entries) is refused: use `clearSecret`.
 
@@ -1044,7 +1042,7 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
 }
 
 /**
- * Round 3: the record fields whose array elements get by-id identity. Only a field whose ids the
+ * The record fields whose array elements get by-id identity. Only a field whose ids the
  * server normalizer makes unique (a repeated id is re-keyed) is listed. Every other array element,
  * with or without an `id` (lorebook entries: `loreBook.id` is optional, an export keeps it, and a
  * re-import duplicates it; no normalizer dedupes `globalLore`), uses object/path identity.
@@ -1473,13 +1471,13 @@ function defineAccessor(raw: object, key: string, get: () => unknown, set: (valu
 }
 
 /**
- * Builds the facade for `candidate` and makes it `spikeRoot.db`:
+ * Builds the facade for `candidate` and makes it `prototypeRoot.db`:
  * - each section field forwards to its section record's wrapper;
  * - `botPresets` is the presets record wrapper (an assignment replaces the record locally, queued);
  * - each forwarded preset field (by its root name, `PRESET_ROOT_ALIASES`) reads the selected preset
  *   and writes the preset selected at the write (resolved untracked), through the presets wrapper;
- * - `characters` is a read-only list of the character record wrappers (membership moves to
- *   explicit mutation functions in slice 5).
+ * - `characters` is a read-only list of the character record wrappers (membership changes only
+ *   through explicit mutation functions, as in production).
  */
 export function mountFacade(candidate: Candidate, characterIds: readonly string[]): Database {
     setResolveCache(candidate === "tracked-cached");
@@ -1521,13 +1519,13 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
             },
         );
     }
-    // `proxyKey` (`forwarding.svelte.ts:156`): reads `""` (the tab never holds the key; the read
-    // still resolves the selection), a write goes to the selected preset's `llmSecrets` entry
-    // through `setSecret` (a blank or non-string value clears it), resolved untracked. The spike
-    // predates the preset split: its one presets record stands in for the model preset that owns the
-    // entry (`docs/plan/split-preset.md`), so the path names the `modelPresets` map. Production has
-    // no such map since Model Profiles O2 (`docs/plan/model-profiles.md`); the spike keeps its
-    // historical model, so the path is cast (the queue it reaches is never sent here).
+    // `proxyKey` (as the removed `forwarding.svelte.ts` served it): reads `""` (the tab never holds
+    // the key; the read still resolves the selection), a write goes to the selected preset's
+    // `llmSecrets` entry through `setSecret` (a blank or non-string value clears it), resolved
+    // untracked. The prototype predates the preset split: its one presets record stands in for the
+    // model preset that owns the entry, so the path names the `modelPresets` map. Production has no
+    // such map since the model profiles replaced per-preset keys; the prototype keeps its historical
+    // model, so the path is cast (the queue it reaches is never sent here).
     defineAccessor(
         raw,
         "proxyKey",
@@ -1556,11 +1554,11 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
         "characters",
         () => characters,
         () => {
-            throw new TypeError("character membership is not a facade write (slice 5)");
+            throw new TypeError("character membership is not a facade write");
         },
     );
-    spikeRoot.db = raw as unknown as Database;
-    return spikeRoot.db;
+    prototypeRoot.db = raw as unknown as Database;
+    return prototypeRoot.db;
 }
 
 /** Switches the preset selection only (no copy). */

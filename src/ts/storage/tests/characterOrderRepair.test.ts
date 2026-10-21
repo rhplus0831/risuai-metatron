@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Data-loss plan slice 7b: the add-only order repair (`queueRemoteCharOrderRepair`,
-// `characterOrder.ts`) over stubbed stores and a controlled `readRefs`, for what the adapter
-// fixtures cannot drive: the read chunking under the server's 5,000-entry cap, invalidation and
-// failure in a later chunk, failure coalescing, and the per-candidate eligibility rule. The
-// integration cases are in `resourceSyncLive.test.ts` and `resourceSync.test.ts` ("conflicts").
+// The add-only order repair (`queueRemoteCharOrderRepair`, `characterOrder.ts`) over stubbed stores
+// and a controlled `readRefs`, for what the adapter fixtures cannot drive: the read chunking under
+// the server's 5,000-entry cap, invalidation and failure in a later chunk, failure coalescing, and
+// the per-candidate eligibility rule. The integration cases are in `resourceSyncLive.test.ts` and
+// `resourceSync.test.ts` ("conflicts").
 
 const { client, stores } = vi.hoisted(() => {
     const stores = {

@@ -78,7 +78,7 @@ const DETACHED_READ_CHUNK = 500;
 
 /**
  * Every chat of the characters `chaIds`, as plain copies in their server order, read from the server
- * after saving what is queued (Phase 6 slice 9a: for exports; complete whatever this tab has
+ * after saving what is queued (for exports; complete whatever this tab has
  * loaded). The save comes first, so the copies hold this tab's changes: when it fails, or a conflict
  * discarded a local change of one of these characters or their chats, nothing is read and this
  * throws (a stale server copy is never returned instead). A character the server has no chat order

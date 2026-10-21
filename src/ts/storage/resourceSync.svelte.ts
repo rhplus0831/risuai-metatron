@@ -137,19 +137,18 @@ import {
 } from "./resourceClient";
 
 /**
- * The write adapter of PLAN invariant 2: the records (`records.svelte.ts`) and the chat module are
- * the live model, and this module writes them back to the server resources per collection: the
- * Phase 3 sections and collections (`shared/sections.ts`; `llmSecrets` also carries
- * `llmSecretPresets`), `presets`, `modules`, `plugins`, `pluginStorage`, and one `characters`
- * record per `chaId`. Chats are not part of a
- * character record (Phase 2): the chat module (`chatStore.svelte.ts`) queues explicit chat
- * operations, and each cycle sends them in the same batch, after the resource ops.
+ * The write adapter: the records (`records.svelte.ts`) and the chat module are the live model, and
+ * this module writes them back to the server resources per collection: the settings sections and
+ * collections (`shared/sections.ts`; `llmSecrets` also carries `llmSecretPresets`), `presets`,
+ * `modules`, `plugins`, `pluginStorage`, and one `characters` record per `chaId`. Chats are not part
+ * of a character record: the chat module (`chatStore.svelte.ts`) queues explicit chat operations,
+ * and each cycle sends them in the same batch, after the resource ops.
  *
  * - The settings records (the sections, the collections, `presets`, `modules`, `plugins`,
- *   `pluginStorage`) are write-through records (`records.svelte.ts`, Phase 6 slice 4): every local
- *   write of one marks it here at once (`setRecordWriteListener`), and every server copy goes in
- *   through `applyRaw`, which marks nothing. The characters are write-through records too (Phase 6
- *   slice 5): a write of a character's own fields marks it (`setCharacterWriteListener`), a
+ *   `pluginStorage`) are write-through records (`records.svelte.ts`): every local write of one
+ *   marks it here at once (`setRecordWriteListener`), and every server copy goes in through
+ *   `applyRaw`, which marks nothing. The characters are write-through records too: a write of a
+ *   character's own fields marks it (`setCharacterWriteListener`), a
  *   membership change (add, replace, remove through `characterStore`) wakes the loop, and a server
  *   copy goes in through `applyRawCharacter`/`patchRawCharacter`, which mark nothing.
  * - A cycle serializes each dirty collection and skips it when the text equals what the server
@@ -175,8 +174,8 @@ import {
  * Transport state here is plain (no runes); only `saving` is reactive.
  */
 
-type Phase1Collection = "presets" | "modules" | "plugins" | "pluginStorage";
-type Collection = Phase1Collection | SectionKind | CollectionKind;
+type ListCollection = "presets" | "modules" | "plugins" | "pluginStorage";
+type Collection = ListCollection | SectionKind | CollectionKind;
 
 /** A top-level field of a record's text: its name, and where its value's JSON text is in that text. */
 type FieldSpan = [key: string, start: number, end: number];
@@ -841,7 +840,7 @@ function canonicalChanges(own: Record<string, unknown>): (readonly [string, unkn
 }
 
 /**
- * A character about to be written, made canonical (Phase 6 slice 5b): the server stores
+ * A character about to be written, made canonical: the server stores
  * `normalizeCharacter` of what it gets, so when a local write removed or never set a default, the
  * differing fields are written into the mirror raw first (`patchRawCharacter`: no mark, no echo) and the
  * canonical text is sent and held. Then the held text is the server's, and a later conflict merges
@@ -3538,7 +3537,7 @@ export type HydrationRecord = {
 
 /**
  * Applies a record a server generation job sent, as the server holds it, without it ever becoming
- * an outgoing write (PLAN invariant 2): no discard, no `discardSequence` bump, no settled key, no
+ * an outgoing write: no discard, no `discardSequence` bump, no settled key, no
  * notice. Applied only when the token is of the loaded epoch and newer by `(seq, revision)` than
  * the one this client holds, and the client has no local change of it: not in the batch in flight,
  * its projection still equal to the saved text (a dirty mark alone is no change), and not a character

@@ -11,7 +11,7 @@ import { bootMutations, plain, refJ, refK } from "./mutationStoresHarness";
 // and for a chat passed by ref; a link change is seen at once (the cache keys the links apart from
 // the legacy id lists, and the legacy lists apart from each other); `moduleUpdate` clears the
 // background embedding when the last module with one is unlinked; `updatePersona` stores the
-// canonical links and the server text equals the mirror (D2). The server's `jobModules` answers the
+// canonical links and the server text equals the mirror. The server's `jobModules` answers the
 // same lists for the same data (`server/src/tests/jobModules.test.ts`).
 
 const { server, alerts } = vi.hoisted(() => ({
@@ -252,7 +252,7 @@ describe("updatePersona with modules", () => {
         expect(mina().modules).toEqual(["b", "a"]);
         await sync.flushResources();
         expect(stored().modules).toEqual(["b", "a"]);
-        // D2: the server's normalized text is the client's projection.
+        // The server's normalized text is the client's projection.
         expect(record("personas")).toEqual(plain(settings.personas));
 
         collectionStore.updatePersona(minaId, { modules: [] });
