@@ -2,8 +2,8 @@
 
 Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
 and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`). Next: 5b, 6b. Open user question from 6a: reset `lastEffectYieldAt` after awaited
-effects (not decided; production behavior unchanged). Source: the
+`ae024b5bb`). Next: 5b, 6b. The 6a follow-up on `lastEffectYieldAt` landed in `e3ba64355`.
+Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -238,8 +238,10 @@ budgets through the runner where the budget is not the subject).
 Landed 2026-10-21 (`328634ecd`): `realmStagingTimer`, `generationEffectClock` (runner effect clock
 into `TriggerHost.now`; `triggers.ts` unchanged) and `generationAbortGraceMs` on
 `createServerContext` / `createTestServer`; proxy, login limiter, translate and the stream break
-needed only test changes. `lastEffectYieldAt` was left as is: 6a recommends resetting it after
-every awaited effect (today an alert answer followed by setters is two writes); not decided. Left:
+needed only test changes. Follow-up `e3ba64355` (user decision): the effect clock restarts where an
+alert answer, a `v2Wait` or a worker regex resumed after the event loop ran during that await, so an
+answer and the setters after it are one write; Lua, commands, images, similarity, LLM calls and token
+counts keep charging (they compute after their own await). Left:
 `app` "allows 2000 storage requests..." (7a; under overload it also fails the next test), the
 group-send `sleep(200)` in `promptRunner` (9a).
 

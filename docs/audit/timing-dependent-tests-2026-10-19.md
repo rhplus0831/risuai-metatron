@@ -225,7 +225,8 @@ the reach given here is as of the refresh.
      "keeps %s transcript reads and writes bounded...": the trigger effect loop yields on a real
      50 ms `performance.now` window that the job runner never injects (`triggers.ts:261-266`,
      `runSetup.ts:385-408`), and `lastEffectYieldAt` is not reset after the alert-input answer, so
-     a stall splits one coalesced write into two. This is the mechanism of the known
+     a stall splits one coalesced write into two (both fixed: 6a `328634ecd` injects the clock,
+     `e3ba64355` restarts it after the answer). This is the mechanism of the known
      off-by-one transaction-count flake.
    - `storedTranslation.test.ts` (production 15 s Date.now sync deadline and 100 ms poll against
      `vi.waitFor`'s 1 s), now also reached from `Chat.test.ts` "the toggle requests a translation
@@ -237,7 +238,7 @@ the reach given here is as of the refresh.
      margin); the safe-boot guest-ready deadline (see cause 7).
    - Fix: inject the timer or clock (a staging `expire()` hook, `host.now` through the runner) or
      hold the provider on a latch.
-     Slice 6a (328634ecd) fixed the server rows here through test seams on `createServerContext`/`createTestServer` (`realmStagingTimer`, `generationEffectClock` from `GenerationRunnerDeps.effectClock` into `TriggerHost.now`, and `generationAbortGraceMs`), while proxy, the login limiter, translate and the stream break needed no production change; whether `lastEffectYieldAt` should reset after awaited effects stays an open behavior question (6a recommends after every awaited effect), and the client rows remain for slice 6b.
+     Slice 6a (328634ecd) fixed the server rows here through test seams on `createServerContext`/`createTestServer` (`realmStagingTimer`, `generationEffectClock` from `GenerationRunnerDeps.effectClock` into `TriggerHost.now`, and `generationAbortGraceMs`), while proxy, the login limiter, translate and the stream break needed no production change; the user then chose to restart the effect clock where an alert answer, a `v2Wait` or a worker regex resumed after the event loop ran during that await (`e3ba64355`, tested in `chatMetadataCoalescing.test.ts`), and the client rows remain for slice 6b.
 
 6. **Pure duration assertions.** `mcp.test.ts` (401-404, 585-587), `luaRuntime.test.ts`
    (184-189, 283-292), `bootCache.test.ts:893`, `scriptWorker.test.ts` (six DUR rows:
