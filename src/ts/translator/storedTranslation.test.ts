@@ -260,6 +260,8 @@ describe("requestStoredTranslation: before the request", () => {
 
 describe("requestStoredTranslation: the request and the wait", () => {
     it("POSTs the ids the chat displays with and the epoch header, joins a second call, and stays pending after the answer until the held message holds that translation", async () => {
+        // The wait polls the held message every 100 ms against a 15 s Date.now deadline: both faked.
+        vi.useFakeTimers();
         const { stored, held, hydrate } = await boot();
         const answer = deferred<Response>();
         answerWith(() => answer.promise);
@@ -290,14 +292,16 @@ describe("requestStoredTranslation: the request and the wait", () => {
             settled = value;
         });
         answer.resolve(json(200, { outcome: "applied", translation: T }));
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await vi.advanceTimersByTimeAsync(250);
         // The answer alone shows nothing: the held message is still bare and the request pending.
         expect(settled).toBeNull();
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
         expect(held()!.translation).toBeUndefined();
 
+        // The refresh lands: the next poll sees it.
         expect(hydrate("a", T)).toBe(true);
-        await expect(first).resolves.toBe(true);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(settled).toBe(true);
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(false);
         expect(stored.freshTranslation(held()!)).toEqual(T);
         expect(hoisted.alerts.error).not.toHaveBeenCalled();
@@ -433,6 +437,8 @@ describe("following a server hand-off", () => {
     const follow = () => ({ report: vi.fn<(message: string) => void>() });
 
     it("posts an unforced request per id at once, without the save barrier or the stability checks, and holds the row pending until the translation arrives; `ignored` and a missing context say nothing", async () => {
+        // The sync poll (100 ms) and its 15 s Date.now deadline run on fake time.
+        vi.useFakeTimers();
         const { stored, held, hydrate } = await boot();
         const flush = vi.fn(async () => ({ discarded: [] }));
         hoisted.flush.run = flush;
@@ -473,10 +479,11 @@ describe("following a server hand-off", () => {
         // The run's write lands through the chat refresh: pending until then, then shown.
         const T = tr("ㄱ", "A", { translatedAt: 5 });
         answers.get("a")!.resolve(json(200, { outcome: "applied", translation: T }));
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await vi.advanceTimersByTimeAsync(150);
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
         expect(hydrate("a", T)).toBe(true);
-        await vi.waitFor(() => expect(stored.isStoredTranslationPending(ref, "a")).toBe(false));
+        await vi.advanceTimersByTimeAsync(100);
+        expect(stored.isStoredTranslationPending(ref, "a")).toBe(false);
         expect(stored.freshTranslation(held("a")!)).toEqual(T);
         // The user edited the text meanwhile: the run's `ignored` is not a failure to report.
         answers.get("b")!.resolve(json(200, { outcome: "ignored", translation: null }));
@@ -489,7 +496,7 @@ describe("following a server hand-off", () => {
         const { stored: bare } = await boot({ persona: false });
         answerWith(async () => json(200, { outcome: "fresh", translation: T }));
         bare.followStoredTranslations(ref, ["a"], reporter);
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await vi.advanceTimersByTimeAsync(50);
         expect(bare.isStoredTranslationPending(ref, "a")).toBe(false);
         expect(fetchCalls).toHaveLength(2);
 
@@ -555,6 +562,7 @@ describe("following a server hand-off", () => {
     });
 
     it("a hand-off that arrives while a request for the message runs follows again once it settles (the row pending throughout), reporting through the newer follow; a plain second call does not", async () => {
+        vi.useFakeTimers();
         const { stored, held, hydrate } = await boot();
         const answers: ReturnType<typeof deferred<Response>>[] = [];
         answerWith(async () => {
@@ -568,7 +576,7 @@ describe("following a server hand-off", () => {
         await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
         // A Continue's hand-off arrives: the running request may have joined the older text's run.
         stored.followStoredTranslations(ref, ["a"], second);
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await vi.advanceTimersByTimeAsync(20);
         expect(fetchCalls).toHaveLength(1);
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(true);
 
@@ -596,7 +604,7 @@ describe("following a server hand-off", () => {
         answers[2].resolve(json(200, { outcome: "applied", translation: T }));
         hydrate("a", T);
         await expect(joined).resolves.toBe(true);
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await vi.advanceTimersByTimeAsync(50);
         expect(fetchCalls).toHaveLength(3);
         expect(stored.isStoredTranslationPending(ref, "a")).toBe(false);
         expect(stored.freshTranslation(held("a")!)).toEqual(T);
