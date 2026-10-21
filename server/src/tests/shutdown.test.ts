@@ -1,4 +1,5 @@
 // @vitest-environment node
+/** @module-tag slow */
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -13,7 +14,6 @@ import {
     buildArchive,
     createResourceTestClient,
     createSigner,
-    sleep,
     TEST_INDEX_HTML,
     waitFor,
 } from "./testSupport.ts";
@@ -127,7 +127,8 @@ describe("main.ts graceful shutdown", () => {
         await waitFor(() => readdirSync(path.join(server.savePath, ".tmp")).some((n) => n.startsWith("import-")));
 
         child!.kill("SIGTERM");
-        await sleep(150);
+        // The rest of the body arrives during the drain, not before the signal was handled.
+        await waitFor(() => server.output().includes("SIGTERM received"), 5000);
         request.end(archive.subarray(16));
         const code = await server.exited;
         request.destroy();

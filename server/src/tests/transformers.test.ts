@@ -458,7 +458,12 @@ describe("the real worker process", () => {
     // rewrites every task to a kind the worker does not know, which it answers `ok` without loading
     // the package or a model. So the fork, the IPC channel, the idle kill, the exit, and the restart
     // are the real ones, and nothing reaches the network.
-    function realWorker(): TransformersWorkerLike & { pid(): number | undefined; signal(): string | null } {
+    function realWorker(): TransformersWorkerLike & {
+        pid(): number | undefined;
+        signal(): string | null;
+        /** Settles once the process has exited (its `signalCode` is set by then). */
+        exited: Promise<void>;
+    } {
         const child = fork(fileURLToPath(new URL("../prompt/transformersWorker.ts", import.meta.url)), ["/unused"], {
             serialization: "advanced",
             execArgv: [],
@@ -480,6 +485,7 @@ describe("the real worker process", () => {
         return {
             pid: () => child.pid,
             signal: () => child.signalCode,
+            exited,
             send: (message) => child.send({ id: message.id, task: { kind: "noop" } }),
             onMessage: (listener) => child.on("message", (message) => listener(message as TransformersResponse)),
             onEnd: (listener) => ends.push(listener),
@@ -494,28 +500,32 @@ describe("the real worker process", () => {
         };
     }
 
-    it("forks transformersWorker.ts, answers over IPC, is killed when idle, forks again for the next task, and is gone after dispose", async () => {
-        const forked: ReturnType<typeof realWorker>[] = [];
-        const service = createTransformers({
-            cacheDir: "/unused",
-            idleMs: 150,
-            spawn: () => {
-                const worker = realWorker();
-                forked.push(worker);
-                return worker;
-            },
-        });
-        services.push(service);
-        expect(await service.runSummarizer("unused")).toBe("");
-        expect(forked).toHaveLength(1);
-        expect(forked[0].pid()).toBeGreaterThan(0);
-        // Idle past the limit: killed.
-        await tick(600);
-        expect(forked[0].signal()).toBe("SIGKILL");
-        expect(await service.runSummarizer("unused again")).toBe("");
-        expect(forked).toHaveLength(2);
-        expect(forked[1].pid()).not.toBe(forked[0].pid());
-        await service.dispose();
-        expect(forked[1].signal()).toBe("SIGKILL");
-    }, 30_000);
+    it(
+        "forks transformersWorker.ts, answers over IPC, is killed when idle, forks again for the next task, and is gone after dispose",
+        { tags: ["slow"], timeout: 30_000 },
+        async () => {
+            const forked: ReturnType<typeof realWorker>[] = [];
+            const service = createTransformers({
+                cacheDir: "/unused",
+                idleMs: 150,
+                spawn: () => {
+                    const worker = realWorker();
+                    forked.push(worker);
+                    return worker;
+                },
+            });
+            services.push(service);
+            expect(await service.runSummarizer("unused")).toBe("");
+            expect(forked).toHaveLength(1);
+            expect(forked[0].pid()).toBeGreaterThan(0);
+            // Idle past the limit: killed (a process that is never killed fails on the test's timeout).
+            await forked[0].exited;
+            expect(forked[0].signal()).toBe("SIGKILL");
+            expect(await service.runSummarizer("unused again")).toBe("");
+            expect(forked).toHaveLength(2);
+            expect(forked[1].pid()).not.toBe(forked[0].pid());
+            await service.dispose();
+            expect(forked[1].signal()).toBe("SIGKILL");
+        },
+    );
 });

@@ -389,12 +389,15 @@ console.log(JSON.stringify({ ok, redirect, big, cut, slow, wrongHost, e2e: JSON.
 });
 
 describe("the engine lifecycle inside a worker (plain Node)", () => {
-    it("keeps the wasm function table flat across runs with awaits, raises the budget inside a resumed coroutine, and runs one task at a time", async () => {
-        const dir = makeTempDir("risu-lua-runtime-");
-        const script = path.join(dir, "runtime.mjs");
-        writeFileSync(
-            script,
-            `import { readFileSync } from "node:fs";
+    it(
+        "keeps the wasm function table flat across runs with awaits, raises the budget inside a resumed coroutine, and runs one task at a time",
+        { tags: ["slow"], timeout: 60_000 },
+        async () => {
+            const dir = makeTempDir("risu-lua-runtime-");
+            const script = path.join(dir, "runtime.mjs");
+            writeFileSync(
+                script,
+                `import { readFileSync } from "node:fs";
 import { LuaFactory } from ${JSON.stringify(path.join(REPO_ROOT, "node_modules/wasmoon/dist/index.js"))};
 import { createLuaRuntime } from ${JSON.stringify(path.join(REPO_ROOT, "server/src/lua/runtime.ts"))};
 let adds = 0, removes = 0;
@@ -431,20 +434,21 @@ const concurrent = run("function probe(id) return 1 end");
 const overlap = await run("function probe(id) return 2 end").catch((error) => error.message);
 console.log(JSON.stringify({ net, resumed: { error: resumed.error, timedOut: resumed.timedOut, cpuMs: resumed.cpuMs }, overlap, concurrent: (await concurrent).res }));
 `,
-        );
-        const result = await runNode([script]);
-        expect(result.stderr).toBe("");
-        expect(result.code).toBe(0);
-        const out = JSON.parse(result.stdout.trim()) as {
-            net: number[];
-            resumed: { error?: string; timedOut?: boolean; cpuMs: number };
-            overlap: string;
-            concurrent: unknown;
-        };
-        expect(out.net).toEqual([0, 0, 0]);
-        expect(out.resumed).toMatchObject({ error: "Lua CPU budget exceeded (timeout)", timedOut: true });
-        expect(out.resumed.cpuMs).toBeGreaterThanOrEqual(150);
-        expect(out.overlap).toBe("A Lua run is already active in this worker");
-        expect(out.concurrent).toBe(1);
-    }, 60_000);
+            );
+            const result = await runNode([script]);
+            expect(result.stderr).toBe("");
+            expect(result.code).toBe(0);
+            const out = JSON.parse(result.stdout.trim()) as {
+                net: number[];
+                resumed: { error?: string; timedOut?: boolean; cpuMs: number };
+                overlap: string;
+                concurrent: unknown;
+            };
+            expect(out.net).toEqual([0, 0, 0]);
+            expect(out.resumed).toMatchObject({ error: "Lua CPU budget exceeded (timeout)", timedOut: true });
+            expect(out.resumed.cpuMs).toBeGreaterThanOrEqual(150);
+            expect(out.overlap).toBe("A Lua run is already active in this worker");
+            expect(out.concurrent).toBe(1);
+        },
+    );
 });

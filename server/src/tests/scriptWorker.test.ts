@@ -797,34 +797,38 @@ describe("the shared pool", () => {
             expect(parts).toEqual({ error: "More than 100000 parts" });
         });
 
-        it("terminates a ReDoS regex at its deadline while HTTP stays responsive, and recovers", async () => {
-            const server = http.createServer((_req, res) => res.end("ok"));
-            await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-            allowListenerOrigin(server);
-            const port = (server.address() as AddressInfo).port;
-            try {
-                const [runaway, ms] = await timed(async () => {
-                    const pending = pool.regex(REDOS);
-                    const latencies: number[] = [];
-                    for (let i = 0; i < 10; i++) {
-                        const [, latency] = await timed(() =>
-                            fetch(`http://127.0.0.1:${port}/`).then((res) => res.text()),
-                        );
-                        latencies.push(latency);
-                        await sleep(60);
-                    }
-                    expect(Math.max(...latencies)).toBeLessThan(500);
-                    return pending;
-                });
-                expect(runaway).toEqual({ error: "Regex timed out", timedOut: true });
-                expect(ms).toBeLessThan(3000);
-                expect(await pool.regex({ op: "test", pattern: "b$", flags: "", input: "ab" })).toEqual({
-                    value: true,
-                });
-            } finally {
-                server.close();
-            }
-        });
+        it(
+            "terminates a ReDoS regex at its deadline while HTTP stays responsive, and recovers",
+            { tags: ["slow"], timeout: 20_000 },
+            async () => {
+                const server = http.createServer((_req, res) => res.end("ok"));
+                await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+                allowListenerOrigin(server);
+                const port = (server.address() as AddressInfo).port;
+                try {
+                    const [runaway, ms] = await timed(async () => {
+                        const pending = pool.regex(REDOS);
+                        const latencies: number[] = [];
+                        for (let i = 0; i < 10; i++) {
+                            const [, latency] = await timed(() =>
+                                fetch(`http://127.0.0.1:${port}/`).then((res) => res.text()),
+                            );
+                            latencies.push(latency);
+                            await sleep(60);
+                        }
+                        expect(Math.max(...latencies)).toBeLessThan(500);
+                        return pending;
+                    });
+                    expect(runaway).toEqual({ error: "Regex timed out", timedOut: true });
+                    expect(ms).toBeLessThan(3000);
+                    expect(await pool.regex({ op: "test", pattern: "b$", flags: "", input: "ab" })).toEqual({
+                        value: true,
+                    });
+                } finally {
+                    server.close();
+                }
+            },
+        );
 
         it("fails the task past the queue cap at once", async () => {
             const one = makePool({ size: 1, maxSize: 1 });
@@ -1224,26 +1228,30 @@ describe("pool lifecycle", () => {
         }
     });
 
-    it("lets a plain Node process that never disposes the pool exit on its own", async () => {
-        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-pool-exit-"));
-        try {
-            const script = path.join(dir, "exit.mjs");
-            writeFileSync(
-                script,
-                `import { createScriptWorkerPool } from ${JSON.stringify(path.join(REPO_ROOT, "server/src/scripts/workerPool.ts"))};
+    it(
+        "lets a plain Node process that never disposes the pool exit on its own",
+        { tags: ["slow"], timeout: 30_000 },
+        async () => {
+            const dir = mkdtempSync(path.join(os.tmpdir(), "risu-pool-exit-"));
+            try {
+                const script = path.join(dir, "exit.mjs");
+                writeFileSync(
+                    script,
+                    `import { createScriptWorkerPool } from ${JSON.stringify(path.join(REPO_ROOT, "server/src/scripts/workerPool.ts"))};
 const pool = createScriptWorkerPool({ rootDir: ${JSON.stringify(REPO_ROOT)} });
 const regex = await pool.regex({ op: "test", pattern: "a", flags: "", input: "a" });
 const lua = await pool.runLua({ identity: { characterId: null, chatId: null, presetId: null, personaId: null }, code: "function probe(id) return 'ran' end", mode: "probe" });
 console.log(JSON.stringify({ regex, lua: lua.res }));
 `,
-            );
-            const [result, ms] = await timed(() => runNode([script], REPO_ROOT));
-            expect(result.stderr).toBe("");
-            expect(result.code).toBe(0);
-            expect(JSON.parse(result.stdout.trim())).toEqual({ regex: { value: true }, lua: "ran" });
-            expect(ms).toBeLessThan(15_000);
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
-        }
-    }, 30_000);
+                );
+                const [result, ms] = await timed(() => runNode([script], REPO_ROOT));
+                expect(result.stderr).toBe("");
+                expect(result.code).toBe(0);
+                expect(JSON.parse(result.stdout.trim())).toEqual({ regex: { value: true }, lua: "ran" });
+                expect(ms).toBeLessThan(15_000);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        },
+    );
 });

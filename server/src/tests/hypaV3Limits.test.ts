@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat, character } from "../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -62,7 +62,11 @@ describe("createHypaV3Preset limits", () => {
 });
 
 describe("summarization without progress", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "hypav3-limits-"));
+    // Made in a hook, not at collection, so a run that skips these cases leaves nothing behind.
+    let dir = "";
+    beforeAll(() => {
+        dir = mkdtempSync(path.join(os.tmpdir(), "hypav3-limits-"));
+    });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
     /**
@@ -111,12 +115,16 @@ describe("summarization without progress", () => {
         return JSON.parse(run.stdout);
     }
 
-    it.each(MODES)("the %s loop ends with an error instead of spinning", (_, experimental) => {
-        expect(runWithZeroBatch(experimental)).toEqual({
-            error: "[HypaV3] Summarization made no progress at start index 0 with maxChatsPerSummary 0.",
-            summaries: 0,
-        });
-    });
+    it.each(MODES)(
+        "the %s loop ends with an error instead of spinning",
+        { tags: ["slow"], timeout: 60_000 },
+        (_, experimental) => {
+            expect(runWithZeroBatch(experimental)).toEqual({
+                error: "[HypaV3] Summarization made no progress at start index 0 with maxChatsPerSummary 0.",
+                summaries: 0,
+            });
+        },
+    );
 });
 
 describe("summary chunk separator", () => {

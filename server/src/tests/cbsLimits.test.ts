@@ -672,11 +672,15 @@ describe("runaway templates end (in a child process, so a broken limit cannot ha
         },
     );
 
-    it("a non-advancing range answers [] under the server's limits (it used to spend the whole work budget)", () => {
-        const result = probe("{{range::[0,1,0]}}");
-        expect(result.error).toBeUndefined();
-        expect(result.length).toBe("[]".length);
-    });
+    it(
+        "a non-advancing range answers [] under the server's limits (it used to spend the whole work budget)",
+        { tags: ["slow"], timeout: 120_000 },
+        () => {
+            const result = probe("{{range::[0,1,0]}}");
+            expect(result.error).toBeUndefined();
+            expect(result.length).toBe("[]".length);
+        },
+    );
 
     it("an ordinary large text passes under the server's limits", { tags: ["slow"], timeout: 120_000 }, () => {
         const result = probe("{{char}} ".repeat(100_000) + "x".repeat(SERVER_CBS_MAX_WORK / 4));
