@@ -23,6 +23,12 @@
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
     import { maxContextOverrideOf } from "../../../../shared/sections.ts";
+    import {
+        VOYAGE_CONTEXT_MODELS,
+        VOYAGE_EMBEDDING_MODELS,
+        isVoyageContextModel,
+        isVoyageEmbeddingModel,
+    } from "../../../../shared/memory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
@@ -39,6 +45,10 @@
     );
     const embeddingUsesOpenAI = $derived(
         ["openai3small", "openai3large", "ada"].includes(settings.memoryTranslateMedia.hypaModel),
+    );
+    const embeddingUsesVoyage = $derived(
+        isVoyageContextModel(settings.memoryTranslateMedia.hypaModel) ||
+            isVoyageEmbeddingModel(settings.memoryTranslateMedia.hypaModel),
     );
     const revealMemoryKey = takeCredentialRequest("supaMemoryKey");
     onMount(() => {
@@ -532,7 +542,12 @@
     <OptionInput value="openai3small">OpenAI text-embedding-3-small</OptionInput>
     <OptionInput value="openai3large">OpenAI text-embedding-3-large</OptionInput>
     <OptionInput value="ada">OpenAI Ada</OptionInput>
-    <OptionInput value="voyageContext3">Voyage Context 3</OptionInput>
+    {#each Object.entries(VOYAGE_EMBEDDING_MODELS) as [value, model] (value)}
+        <OptionInput {value}>{model.name}</OptionInput>
+    {/each}
+    {#each Object.entries(VOYAGE_CONTEXT_MODELS) as [value, model] (value)}
+        <OptionInput {value}>{model.name}</OptionInput>
+    {/each}
     <OptionInput value="custom">Custom (OpenAI-compatible)</OptionInput>
 </SelectInput>
 
@@ -552,7 +567,7 @@
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.model} />
 {/if}
 
-{#if settings.memoryTranslateMedia.hypaModel === "voyageContext3"}
+{#if embeddingUsesVoyage}
     <span class="text-textcolor">Voyage API Key</span>
     <TextInput size="sm" marginBottom hideText={settings.ui.hideApiKey} bind:value={settings.secrets.voyageApiKey} />
 {/if}

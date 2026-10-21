@@ -345,3 +345,83 @@ describe("the summary requests carry the send's or the action's context", () => 
         });
     });
 });
+
+describe("the tab's Voyage embedding processors", () => {
+    function voyageWorld(hypaModel: string): World {
+        const scenario: Scenario = {
+            name: `voyage-${hypaModel}`,
+            algorithm: "v3",
+            settings: { hypaModel },
+            chats: [],
+            room: {},
+            char: { type: "character", name: "Mira" },
+            maxContextTokens: 1000,
+        };
+        const world = createWorld(scenario);
+        Object.assign(world.db, settingsOf(scenario));
+        installWorld(world);
+        current = world;
+        return world;
+    }
+
+    it("HypaProcesser sends Voyage 4 documents and queries to /v1/embeddings with their input_type", async () => {
+        const world = voyageWorld("voyage4Large");
+        const { HypaProcesser } = await import("./hypamemory");
+        const processer = new HypaProcesser();
+        await processer.addText(["a", "b"]);
+        await processer.similaritySearchScored("q");
+        expect(world.log.http).toEqual([
+            {
+                url: "https://api.voyageai.com/v1/embeddings",
+                body: { input: ["a", "b"], model: "voyage-4-large", input_type: "document" },
+            },
+            {
+                url: "https://api.voyageai.com/v1/embeddings",
+                body: { input: "q", model: "voyage-4-large", input_type: "query" },
+            },
+        ]);
+        expect([...world.log.cacheKeys]).toEqual(["a|voyage4Large", "b|voyage4Large"]);
+    });
+
+    it("HypaProcessorV2 keeps a Voyage 4 query vector under its own key", async () => {
+        const world = voyageWorld("voyage4Lite");
+        const { HypaProcessorV2 } = await import("./hypamemoryv2");
+        const processor = new HypaProcessorV2<string>();
+        await processor.addTexts([{ id: "d1", content: "same text" }]);
+        await processor.similaritySearchScored("same text");
+        expect(world.log.http.map((call) => call.body)).toEqual([
+            { input: ["same text"], model: "voyage-4-lite", input_type: "document" },
+            { input: ["same text"], model: "voyage-4-lite", input_type: "query" },
+        ]);
+        expect([...world.log.cacheKeys]).toEqual(["same text|voyage4Lite", "same text|voyage4Lite|query"]);
+    });
+
+    it("HypaProcessorV2 keeps a contextual query vector apart from a one-text group's document vector", async () => {
+        const world = voyageWorld("voyageContext4");
+        const { HypaProcessorV2 } = await import("./hypamemoryv2");
+        const processor = new HypaProcessorV2<string>();
+        await processor.addTexts([{ id: "d1", content: "same text" }]);
+        await processor.similaritySearchScored("same text");
+        expect(world.log.http.map((call) => (call.body as { input_type: string }).input_type)).toEqual([
+            "document",
+            "query",
+        ]);
+        expect([...world.log.cacheKeys]).toEqual([
+            "same text|voyageContext4|voyageContext4",
+            "same text|voyageContext4|voyageContext4|query",
+        ]);
+    });
+
+    it("Voyage Context 4 uses its model id and names itself in the cache key", async () => {
+        const world = voyageWorld("voyageContext4");
+        const { HypaProcesser } = await import("./hypamemory");
+        await new HypaProcesser().addText(["a"]);
+        expect(world.log.http).toEqual([
+            {
+                url: "https://api.voyageai.com/v1/contextualizedembeddings",
+                body: { model: "voyage-context-4", inputs: [["a"]], input_type: "document" },
+            },
+        ]);
+        expect([...world.log.cacheKeys]).toEqual(["a|voyageContext4"]);
+    });
+});

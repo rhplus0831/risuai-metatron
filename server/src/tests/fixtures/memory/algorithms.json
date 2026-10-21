@@ -3679,9 +3679,9 @@
       ],
       "embeds": [],
       "cacheKeys": [
-        "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3",
-        "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3",
-        "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3",
+        "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3|query",
+        "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3|query",
+        "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3|query",
         "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:1t4y9hp",
         "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:shczrm",
         "The harbor was silent.|voyageContext3|voyageContext3|ctx:shczrm",

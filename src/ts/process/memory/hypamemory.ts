@@ -5,7 +5,12 @@ import { globalFetch } from "src/ts/globalApi.svelte";
 import { runEmbedding } from "../transformers";
 import { appendLastPath } from "src/ts/util";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
-import type { HypaModel } from "../../../../shared/memory.ts";
+import {
+    type HypaModel,
+    VOYAGE_EMBEDDING_MODELS,
+    isVoyageEmbeddingModel,
+    voyageKeyMissing,
+} from "../../../../shared/memory.ts";
 
 export type { HypaModel } from "../../../../shared/memory.ts";
 
@@ -29,6 +34,25 @@ export const localModels = {
     },
     gpuModels: ["MiniLMGPU", "nomicGPU", "bgeSmallEnGPU", "bgem3GPU", "multiMiniLMGPU", "bgeM3KoGPU"],
 };
+
+/**
+ * The Voyage `/v1/embeddings` request for a `VOYAGE_EMBEDDING_MODELS` model, with `voyageApiKey`.
+ * The answer has the OpenAI shape (`data[].embedding`).
+ */
+export async function voyageEmbeds(model: string, input: string[] | string, inputType: "query" | "document") {
+    const apiKey = settings.secrets.voyageApiKey?.trim();
+    if (!apiKey) {
+        throw voyageKeyMissing(model);
+    }
+    return await globalFetch("https://api.voyageai.com/v1/embeddings", {
+        headers: { Authorization: "Bearer " + apiKey },
+        body: {
+            input: input,
+            model: VOYAGE_EMBEDDING_MODELS[model].id,
+            input_type: inputType,
+        },
+    });
+}
 
 export class HypaProcesser {
     oaikey: string;
@@ -134,6 +158,9 @@ export class HypaProcesser {
                       method: "POST",
                       body,
                   });
+        }
+        if (isVoyageEmbeddingModel(this.model)) {
+            gf = await voyageEmbeds(this.model, input, inputType);
         }
         const data = gf.data;
 

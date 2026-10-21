@@ -1,6 +1,13 @@
 import os from "node:os";
 import type { Database } from "../../../shared/database.ts";
-import type { HypaModel } from "../../../shared/memory.ts";
+import {
+    type HypaModel,
+    VOYAGE_CONTEXT_MODELS,
+    VOYAGE_EMBEDDING_MODELS,
+    isVoyageContextModel,
+    isVoyageEmbeddingModel,
+    voyageKeyMissing,
+} from "../../../shared/memory.ts";
 import { type BatchResult, TaskCanceledError, TaskRateLimiter } from "../../../shared/taskRateLimiter.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
 import { createRedactor } from "../llm/redact.ts";
@@ -8,7 +15,7 @@ import type { TransformersService } from "./transformers.ts";
 
 /**
  * The server's embeddings: `HypaProcesser` (`src/ts/process/memory/hypamemory.ts`),
- * `HypaProcessorV2` (`hypamemoryv2.ts`), and the Voyage contextual provider
+ * `HypaProcessorV2` (`hypamemoryv2.ts`), and the Voyage contextual providers
  * (`contextualEmbedding.ts`), ported statement for statement with an `EmbeddingEnv` in place of the
  * client's module state. One env is bound to one job (`createEmbeddings(...).forJob`).
  *
@@ -229,35 +236,33 @@ export interface ContextualEmbeddingProvider {
 }
 
 export function isContextModel(model: string): boolean {
-    return model === "voyageContext3";
+    return isVoyageContextModel(model);
 }
 
 export function getContextProvider(env: EmbeddingEnv, model: string): ContextualEmbeddingProvider | null {
-    switch (model) {
-        case "voyageContext3":
-            return new VoyageContext3Provider(env);
-        default:
-            return null;
-    }
+    return isVoyageContextModel(model) ? new VoyageContextProvider(env, model) : null;
 }
 
 const VOYAGE_API_URL = "https://api.voyageai.com/v1/contextualizedembeddings";
-const VOYAGE_MODEL = "voyage-context-3";
 const MAX_CHUNKS_PER_REQUEST = 16000;
 const MAX_INPUTS_PER_REQUEST = 1000;
 
-class VoyageContext3Provider implements ContextualEmbeddingProvider {
-    readonly modelId = VOYAGE_MODEL;
+class VoyageContextProvider implements ContextualEmbeddingProvider {
+    readonly modelId: string;
+    /** The `hypaModel` value, which names the vectors in the cache keys. */
+    private readonly model: string;
     private env: EmbeddingEnv;
 
-    constructor(env: EmbeddingEnv) {
+    constructor(env: EmbeddingEnv, model: string) {
         this.env = env;
+        this.model = model;
+        this.modelId = VOYAGE_CONTEXT_MODELS[model].id;
     }
 
     private getApiKey(): string {
         const apiKey = this.env.db.voyageApiKey?.trim();
         if (!apiKey) {
-            throw new Error("Voyage Context 3 requires a Voyage API Key");
+            throw voyageKeyMissing(this.model);
         }
         return apiKey;
     }
@@ -274,7 +279,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
                     Authorization: "Bearer " + apiKey,
                 },
                 body: {
-                    model: VOYAGE_MODEL,
+                    model: this.modelId,
                     inputs: batch,
                     input_type: "document",
                 },
@@ -308,7 +313,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
             },
             body: {
                 inputs: queries.map((s) => [s]),
-                model: VOYAGE_MODEL,
+                model: this.modelId,
                 input_type: "query",
             },
         });
@@ -325,7 +330,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
 
     getCacheKeySuffix(contextTexts?: string[]): string {
         const ctxPart = contextTexts && contextTexts.length > 1 ? `|ctx:${contextHash(contextTexts)}` : "";
-        return `|voyageContext3${ctxPart}`;
+        return `|${this.model}${ctxPart}`;
     }
 
     private batchGroups(groups: string[][]): string[][][] {
@@ -390,6 +395,27 @@ async function openAIEmbeds(env: EmbeddingEnv, model: string, input: string[] | 
     });
 }
 
+/** The Voyage `/v1/embeddings` request (`voyageEmbeds` of the client's `hypamemory.ts`). */
+async function voyageEmbeds(
+    env: EmbeddingEnv,
+    model: string,
+    input: string[] | string,
+    inputType: "query" | "document",
+): Promise<FetchResult> {
+    const apiKey = env.db.voyageApiKey?.trim();
+    if (!apiKey) {
+        throw voyageKeyMissing(model);
+    }
+    return await postJson(env, "https://api.voyageai.com/v1/embeddings", {
+        headers: { Authorization: "Bearer " + apiKey },
+        body: {
+            input: input,
+            model: VOYAGE_EMBEDDING_MODELS[model].id,
+            input_type: inputType,
+        },
+    });
+}
+
 export class HypaProcesser {
     oaikey: string | undefined;
     vectors: memoryVector[];
@@ -446,6 +472,9 @@ export class HypaProcesser {
         }
         if (this.model === "ada" || this.model === "openai3small" || this.model === "openai3large") {
             gf = await openAIEmbeds(this.env, this.model, input, this.oaikey);
+        }
+        if (isVoyageEmbeddingModel(this.model)) {
+            gf = await voyageEmbeds(this.env, this.model, input, inputType);
         }
         if (!gf) {
             // The client reads `gf.data` of null here (a TypeError); the model has no provider.
@@ -687,6 +716,8 @@ export class HypaProcessorV2<TMetadata> {
 
         const resultMap: Map<string, EmbeddingResult<TMetadata>> = new Map();
         const toEmbed: EmbeddingText<TMetadata>[] = [];
+        // Stored texts are documents; the texts of a search (not kept) are its queries.
+        const inputType = saveToMemory ? "document" : "query";
 
         const ctxProvider = isContextModel(this.options.model)
             ? getContextProvider(this.env, this.options.model)
@@ -718,7 +749,7 @@ export class HypaProcessorV2<TMetadata> {
             }
 
             // The client's cached object is `{ content, embedding }`: a hit has no `id` of its own.
-            const cached = loadVector(this.env, this.getCacheKey(content, ctxGroups.get(id)), content) as
+            const cached = loadVector(this.env, this.getCacheKey(content, ctxGroups.get(id), inputType), content) as
                 (memoryVector & { metadata?: TMetadata }) | null;
 
             if (cached) {
@@ -835,7 +866,7 @@ export class HypaProcessorV2<TMetadata> {
             const embeddingTasks = chunks.map((chunk) => {
                 const contents = chunk.map((item) => item.content);
 
-                return () => this.getAPIEmbeds(contents);
+                return () => this.getAPIEmbeds(contents, inputType);
             });
 
             // Progress callback
@@ -878,7 +909,7 @@ export class HypaProcessorV2<TMetadata> {
                     };
 
                     // Save to DB
-                    saveVector(this.env, this.getCacheKey(content), embedding);
+                    saveVector(this.env, this.getCacheKey(content, undefined, inputType), embedding);
 
                     // Save to memory
                     if (saveToMemory) {
@@ -914,7 +945,16 @@ export class HypaProcessorV2<TMetadata> {
         return dot / (Math.sqrt(magA) * Math.sqrt(magB));
     }
 
-    private getCacheKey(content: string, contextTexts?: string[]): string {
+    /**
+     * The vector's cache key: the text and the model (with the custom model, or the contextual group).
+     * A Voyage `/v1/embeddings` model embeds queries and documents differently (`input_type`), so its
+     * query vectors are kept under their own key.
+     */
+    private getCacheKey(
+        content: string,
+        contextTexts?: string[],
+        inputType: "query" | "document" = "document",
+    ): string {
         const db = this.env.db;
         const suffix =
             this.options.model === "custom" && db.hypaCustomSettings?.model?.trim()
@@ -926,7 +966,12 @@ export class HypaProcessorV2<TMetadata> {
             : null;
         const ctxSuffix = ctxProvider ? ctxProvider.getCacheKeySuffix(contextTexts) : "";
 
-        return `${content}|${this.options.model}${suffix}${ctxSuffix}`;
+        const querySuffix =
+            inputType === "query" && (isVoyageEmbeddingModel(this.options.model) || isContextModel(this.options.model))
+                ? "|query"
+                : "";
+
+        return `${content}|${this.options.model}${suffix}${ctxSuffix}${querySuffix}`;
     }
 
     /**
@@ -962,13 +1007,15 @@ export class HypaProcessorV2<TMetadata> {
         return await localEmbeds(this.env, this.options.model, contents);
     }
 
-    private async getAPIEmbeds(contents: string[]): Promise<EmbeddingVector[]> {
+    private async getAPIEmbeds(contents: string[], inputType: "query" | "document"): Promise<EmbeddingVector[]> {
         let response: FetchResult;
 
         if (this.options.model === "custom") {
             response = await customEmbeds(this.env, this.options.customEmbeddingUrl, contents);
         } else if (["ada", "openai3small", "openai3large"].includes(this.options.model)) {
             response = await openAIEmbeds(this.env, this.options.model, contents, this.options.oaiKey);
+        } else if (isVoyageEmbeddingModel(this.options.model)) {
+            response = await voyageEmbeds(this.env, this.options.model, contents, inputType);
         } else if (isContextModel(this.options.model)) {
             const provider = getContextProvider(this.env, this.options.model)!;
             return await provider.embedQueries(contents);

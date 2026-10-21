@@ -18,8 +18,9 @@ import type { TransformersService } from "../prompt/transformers.ts";
 // The server embeddings (`server/src/prompt/embeddings.ts`) over a fake `fetch`, a fake model
 // process, and a real vector cache in a temporary file. The providers: the custom URL (`/embeddings`
 // appended unless present, the settings' model and trimmed key, the `-<model>` key suffix), OpenAI
-// (the stored memory key, or the processor's own), Voyage (document groups and queries, the
-// `|voyageContext3` and `|ctx:` suffixes, the missing-key error), a local model (the model process,
+// (the stored memory key, or the processor's own), Voyage contextual (document groups and queries,
+// the `|voyageContext3` and `|ctx:` suffixes, the missing-key error; Context 4 under its own model
+// and suffix), Voyage `/v1/embeddings` (`input_type`, the `|query` key of a V2 query), a local model (the model process,
 // `Float32Array` vectors stored as float32). The cache: cold and warm request counts, the batches of
 // 50, duplicates, a `HypaProcessorV2` hit without an `id`, a contextual group with a partial miss
 // embedded whole. The checks: malformed answers refused and not cached; error texts without the keys
@@ -224,6 +225,41 @@ describe("HypaProcesser over the providers", () => {
         await expect(new HypaProcesser(keyless).addText(["c"])).rejects.toThrow(
             "Voyage Context 3 requires a Voyage API Key",
         );
+    });
+
+    it("calls Voyage Context 4 under its own model id and key suffix", async () => {
+        const calls: Call[] = [];
+        const e = env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyageContext4" } });
+        await new HypaProcesser(e).addText(["a"]);
+        expect(calls[0].url).toBe("https://api.voyageai.com/v1/contextualizedembeddings");
+        expect(calls[0].body).toEqual({ model: "voyage-context-4", inputs: [["a"]], input_type: "document" });
+        expect(e.cache.get("a|voyageContext4")).toEqual(vector("a"));
+        const keyless = env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyageContext4", voyageApiKey: "" } });
+        await expect(new HypaProcesser(keyless).addText(["c"])).rejects.toThrow(
+            "Voyage Context 4 requires a Voyage API Key",
+        );
+    });
+
+    it("calls Voyage /v1/embeddings with the trimmed key, the model id, and documents or queries as input_type", async () => {
+        const calls: Call[] = [];
+        const e = env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyage4Large" } });
+        const processer = new HypaProcesser(e);
+        await processer.addText(["a", "b"]);
+        expect(calls[0].url).toBe("https://api.voyageai.com/v1/embeddings");
+        expect(calls[0].headers.Authorization).toBe(`Bearer ${VOYAGE_KEY}`);
+        expect(calls[0].body).toEqual({ input: ["a", "b"], model: "voyage-4-large", input_type: "document" });
+        expect(e.cache.get("a|voyage4Large")).toEqual(vector("a"));
+        await processer.similaritySearch("q");
+        expect(calls[1].body).toEqual({ input: "q", model: "voyage-4-large", input_type: "query" });
+        await new HypaProcesser(e, "voyage4").addText(["c"]);
+        expect(calls[2].body.model).toBe("voyage-4");
+        await new HypaProcesser(e, "voyage4Lite").addText(["d"]);
+        expect(calls[3].body.model).toBe("voyage-4-lite");
+        const keyless = env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyage4Lite", voyageApiKey: " " } });
+        await expect(new HypaProcesser(keyless).addText(["e"])).rejects.toThrow(
+            "Voyage 4 Lite requires a Voyage API Key",
+        );
+        expect(calls).toHaveLength(4);
     });
 
     it("runs a local model in the model process (the GPU variant on the same model) and stores Float32Array vectors as float32", async () => {
@@ -525,6 +561,44 @@ describe("HypaProcessorV2", () => {
         // A query has no group: `input_type: "query"`, the plain suffix.
         await grown.similaritySearchScored("find alpha");
         expect(calls[2].body).toEqual({ inputs: [["find alpha"]], model: "voyage-context-3", input_type: "query" });
+    });
+
+    it("keeps a Voyage /v1/embeddings query vector apart from the document vector of the same text", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({ cache: shared, fetch: fakeFetch({ calls }), db: { hypaModel: "voyage4" } });
+        const processor = new HypaProcessorV2<Meta>(e);
+        await processor.addTexts([{ id: "d1", content: "same text" }]);
+        expect(calls[0].body).toEqual({ input: ["same text"], model: "voyage-4", input_type: "document" });
+        expect(shared.get("same text|voyage4")).toEqual(vector("same text"));
+        // The cached document vector does not serve the query: it is asked for and kept under `|query`.
+        await processor.similaritySearchScored("same text");
+        expect(calls[1].body).toEqual({ input: ["same text"], model: "voyage-4", input_type: "query" });
+        expect(shared.get("same text|voyage4|query")).toEqual(vector("same text"));
+        // Warm, neither is asked again.
+        const warm = new HypaProcessorV2<Meta>(e);
+        await warm.addTexts([{ id: "d1", content: "same text" }]);
+        await warm.similaritySearchScored("same text");
+        expect(calls).toHaveLength(2);
+    });
+
+    it("keeps a contextual query vector apart from the document vector of a one-text group", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({ cache: shared, fetch: fakeFetch({ calls }), db: { hypaModel: "voyageContext4" } });
+        const processor = new HypaProcessorV2<Meta>(e);
+        await processor.addTexts([{ id: "d1", content: "same text" }]);
+        expect(calls[0].body).toEqual({ model: "voyage-context-4", inputs: [["same text"]], input_type: "document" });
+        expect(shared.get("same text|voyageContext4|voyageContext4")).toEqual(vector("same text"));
+        await processor.similaritySearchScored("same text");
+        expect(calls[1].body).toEqual({ inputs: [["same text"]], model: "voyage-context-4", input_type: "query" });
+        expect(shared.get("same text|voyageContext4|voyageContext4|query")).toEqual(vector("same text"));
+        // Query first, in a fresh cache: the document is still asked for.
+        const queryFirst = env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyageContext4" } });
+        const other = new HypaProcessorV2<Meta>(queryFirst);
+        await other.similaritySearchScored("same text");
+        await other.addTexts([{ id: "d1", content: "same text" }]);
+        expect(calls.slice(2).map((call) => call.body.input_type)).toEqual(["query", "document"]);
     });
 
     it("an abort during a rate-limited batch ends the waiting tasks and rejects with the reason", async () => {

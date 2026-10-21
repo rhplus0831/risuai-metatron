@@ -1,7 +1,8 @@
 import { settings } from "../../storage/settingsViews.svelte";
 import { auxFetchJson } from "../../network/auxFetch";
 import localforage from "localforage";
-import { type HypaModel, localModels } from "./hypamemory";
+import { type HypaModel, localModels, voyageEmbeds } from "./hypamemory";
+import { isVoyageEmbeddingModel } from "../../../../shared/memory.ts";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter, TaskCanceledError } from "./taskRateLimiter";
 import { runEmbedding } from "../transformers";
@@ -103,6 +104,8 @@ export class HypaProcessorV2<TMetadata> {
 
         const resultMap: Map<string, EmbeddingResult<TMetadata>> = new Map();
         const toEmbed: EmbeddingText<TMetadata>[] = [];
+        // Stored texts are documents; the texts of a search (not kept) are its queries.
+        const inputType = saveToMemory ? "document" : "query";
 
         const ctxProvider = isContextModel(this.options.model) ? getContextProvider(this.options.model) : null;
         const ctxGroups = new Map<string, string[]>();
@@ -133,7 +136,7 @@ export class HypaProcessorV2<TMetadata> {
 
             try {
                 const cached = await this.forage.getItem<EmbeddingResult<TMetadata>>(
-                    this.getCacheKey(content, ctxGroups.get(id)),
+                    this.getCacheKey(content, ctxGroups.get(id), inputType),
                 );
 
                 if (cached) {
@@ -272,7 +275,7 @@ export class HypaProcessorV2<TMetadata> {
             const embeddingTasks = chunks.map((chunk) => {
                 const contents = chunk.map((item) => item.content);
 
-                return () => this.getAPIEmbeds(contents);
+                return () => this.getAPIEmbeds(contents, inputType);
             });
 
             // Progress callback
@@ -304,7 +307,7 @@ export class HypaProcessorV2<TMetadata> {
                     };
 
                     // Save to DB
-                    await this.forage.setItem(this.getCacheKey(content), {
+                    await this.forage.setItem(this.getCacheKey(content, undefined, inputType), {
                         content,
                         embedding,
                     });
@@ -347,7 +350,16 @@ export class HypaProcessorV2<TMetadata> {
         return dot / (Math.sqrt(magA) * Math.sqrt(magB));
     }
 
-    private getCacheKey(content: string, contextTexts?: string[]): string {
+    /**
+     * The vector's cache key: the text and the model (with the custom model, or the contextual group).
+     * A Voyage `/v1/embeddings` model embeds queries and documents differently (`input_type`), so its
+     * query vectors are kept under their own key.
+     */
+    private getCacheKey(
+        content: string,
+        contextTexts?: string[],
+        inputType: "query" | "document" = "document",
+    ): string {
         const suffix =
             this.options.model === "custom" && settings.secrets.hypaCustomSettings?.model?.trim()
                 ? `-${settings.secrets.hypaCustomSettings.model.trim()}`
@@ -356,7 +368,12 @@ export class HypaProcessorV2<TMetadata> {
         const ctxProvider = isContextModel(this.options.model) ? getContextProvider(this.options.model) : null;
         const ctxSuffix = ctxProvider ? ctxProvider.getCacheKeySuffix(contextTexts) : "";
 
-        return `${content}|${this.options.model}${suffix}${ctxSuffix}`;
+        const querySuffix =
+            inputType === "query" && (isVoyageEmbeddingModel(this.options.model) || isContextModel(this.options.model))
+                ? "|query"
+                : "";
+
+        return `${content}|${this.options.model}${suffix}${ctxSuffix}${querySuffix}`;
     }
 
     private getOptimalChunkSize(): number {
@@ -401,7 +418,7 @@ export class HypaProcessorV2<TMetadata> {
         return results;
     }
 
-    private async getAPIEmbeds(contents: string[]): Promise<EmbeddingVector[]> {
+    private async getAPIEmbeds(contents: string[], inputType: "query" | "document"): Promise<EmbeddingVector[]> {
         let response = null;
 
         if (this.options.model === "custom") {
@@ -450,6 +467,8 @@ export class HypaProcessorV2<TMetadata> {
                       method: "POST",
                       body,
                   });
+        } else if (isVoyageEmbeddingModel(this.options.model)) {
+            response = await voyageEmbeds(this.options.model, contents, inputType);
         } else if (isContextModel(this.options.model)) {
             const provider = getContextProvider(this.options.model);
             return await provider.embedQueries(contents);

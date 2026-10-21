@@ -25,7 +25,42 @@ export type HypaModel =
     | "multiMiniLMGPU"
     | "bgeM3Ko"
     | "bgeM3KoGPU"
-    | "voyageContext3";
+    | "voyageContext3"
+    | "voyageContext4"
+    | "voyage4Large"
+    | "voyage4"
+    | "voyage4Lite";
+
+/**
+ * The Voyage models, by `hypaModel` value: the API model id and the name the settings show. All use
+ * `voyageApiKey`. The contextual ones answer `/v1/contextualizedembeddings` (a vector per chunk, with
+ * the chunk's group as its context); the others `/v1/embeddings` (a vector per text, with
+ * `input_type` query or document; the Voyage 4 models share one embedding space).
+ */
+export const VOYAGE_CONTEXT_MODELS: Record<string, { id: string; name: string }> = {
+    voyageContext3: { id: "voyage-context-3", name: "Voyage Context 3" },
+    voyageContext4: { id: "voyage-context-4", name: "Voyage Context 4" },
+};
+
+export const VOYAGE_EMBEDDING_MODELS: Record<string, { id: string; name: string }> = {
+    voyage4Large: { id: "voyage-4-large", name: "Voyage 4 Large" },
+    voyage4: { id: "voyage-4", name: "Voyage 4" },
+    voyage4Lite: { id: "voyage-4-lite", name: "Voyage 4 Lite" },
+};
+
+export function isVoyageContextModel(model: string): boolean {
+    return Object.hasOwn(VOYAGE_CONTEXT_MODELS, model);
+}
+
+export function isVoyageEmbeddingModel(model: string): boolean {
+    return Object.hasOwn(VOYAGE_EMBEDDING_MODELS, model);
+}
+
+/** The error of a Voyage model without `voyageApiKey`. */
+export function voyageKeyMissing(model: string): Error {
+    const name = (VOYAGE_CONTEXT_MODELS[model] ?? VOYAGE_EMBEDDING_MODELS[model])?.name ?? "Voyage";
+    return new Error(`${name} requires a Voyage API Key`);
+}
 
 export interface HypaV2Data {
     lastMainChunkID: number; // can be removed, but exists to more readability of the code.

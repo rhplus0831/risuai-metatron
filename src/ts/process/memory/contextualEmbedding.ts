@@ -1,6 +1,7 @@
 import { settings } from "../../storage/settingsViews.svelte";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { contextHash, type VectorArray } from "./hypamemory";
+import { VOYAGE_CONTEXT_MODELS, isVoyageContextModel, voyageKeyMissing } from "../../../../shared/memory.ts";
 
 export interface ContextualEmbeddingProvider {
     readonly modelId: string;
@@ -10,30 +11,31 @@ export interface ContextualEmbeddingProvider {
 }
 
 export function isContextModel(model: string): boolean {
-    return model === "voyageContext3";
+    return isVoyageContextModel(model);
 }
 
 export function getContextProvider(model: string): ContextualEmbeddingProvider | null {
-    switch (model) {
-        case "voyageContext3":
-            return new VoyageContext3Provider();
-        default:
-            return null;
-    }
+    return isVoyageContextModel(model) ? new VoyageContextProvider(model) : null;
 }
 
 const VOYAGE_API_URL = "https://api.voyageai.com/v1/contextualizedembeddings";
-const VOYAGE_MODEL = "voyage-context-3";
 const MAX_CHUNKS_PER_REQUEST = 16000;
 const MAX_INPUTS_PER_REQUEST = 1000;
 
-class VoyageContext3Provider implements ContextualEmbeddingProvider {
-    readonly modelId = VOYAGE_MODEL;
+class VoyageContextProvider implements ContextualEmbeddingProvider {
+    readonly modelId: string;
+    /** The `hypaModel` value, which names the vectors in the cache keys. */
+    private readonly model: string;
+
+    constructor(model: string) {
+        this.model = model;
+        this.modelId = VOYAGE_CONTEXT_MODELS[model].id;
+    }
 
     private getApiKey(): string {
         const apiKey = settings.secrets.voyageApiKey?.trim();
         if (!apiKey) {
-            throw new Error("Voyage Context 3 requires a Voyage API Key");
+            throw voyageKeyMissing(this.model);
         }
         return apiKey;
     }
@@ -51,7 +53,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
                     "Content-Type": "application/json",
                 },
                 body: {
-                    model: VOYAGE_MODEL,
+                    model: this.modelId,
                     inputs: batch,
                     input_type: "document",
                 },
@@ -83,7 +85,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
             },
             body: {
                 inputs: queries.map((s) => [s]),
-                model: VOYAGE_MODEL,
+                model: this.modelId,
                 input_type: "query",
             },
         });
@@ -97,7 +99,7 @@ class VoyageContext3Provider implements ContextualEmbeddingProvider {
 
     getCacheKeySuffix(contextTexts?: string[]): string {
         const ctxPart = contextTexts && contextTexts.length > 1 ? `|ctx:${contextHash(contextTexts)}` : "";
-        return `|voyageContext3${ctxPart}`;
+        return `|${this.model}${ctxPart}`;
     }
 
     private batchGroups(groups: string[][]): string[][][] {

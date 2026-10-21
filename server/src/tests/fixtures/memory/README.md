@@ -23,3 +23,8 @@ commit message says which case changed and why.
 The `hanurai-plain` and `hanurai-split-paragraphs` cases were hand-edited on 2026-10-17 to record the
 corrected results: retained messages are excluded, dropped messages appear once in ranking order,
 and returned card text has no stray leading space.
+
+The `v3exp-existing-voyage-groups` case was hand-edited on 2026-10-21: `HypaProcessorV2` now caches
+a contextual model's query vectors under a `|query` suffix, so its three query cache keys end in
+`|query`. Without it, a query and a one-text document group of the same text shared one key and each
+reused the other's vector (embedded with the other `input_type`). The requests are unchanged.
