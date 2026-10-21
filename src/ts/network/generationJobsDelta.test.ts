@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
-import { bootMutations, m, refK } from "../storage/tests/mutationStoresHarness";
+import { bootMutations, m, refK, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
@@ -48,6 +48,8 @@ class Socket {
         this.onclose?.({ code: 1000 });
     }
 }
+
+beforeAll(() => warmMutationGraph(() => import("./generationJobs")), 60_000);
 
 beforeEach(() => {
     vi.resetModules();

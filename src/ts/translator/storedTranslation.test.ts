@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The tab side of the stored translation: `requestStoredTranslation` against a real chat module and
 // settings records, with the transport (`authFetch`) and the save barrier (`flushResources`)
@@ -165,6 +166,23 @@ function answerWith(answer: (call: FetchCall, index: number) => Promise<Response
         return answer(call, fetchCalls.length - 1);
     };
 }
+
+beforeAll(
+    () =>
+        warmModules(() =>
+            Promise.all([
+                import("../storage/tests/installFlatDatabase"),
+                import("../storage/selection.svelte"),
+                import("../storage/chatStore.svelte"),
+                import("../storage/characterStore.svelte"),
+                import("../storage/resourceClient"),
+                import("../storage/settingsViews.svelte"),
+                import("./storedTranslation.svelte"),
+                import("../storage/resourceSync.svelte"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     fetchCalls.length = 0;

@@ -1,7 +1,8 @@
 import fc from "fast-check";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import type { InlayResource } from "../../../../../shared/resources.ts";
 import { FakeResourceServer } from "../../../storage/tests/fakeResourceServer";
+import { warmModules } from "../../../storage/tests/mutationStoresHarness";
 import type { InlayAsset } from "../inlays";
 
 // Inlays over the server: metadata in the `inlays` resource, media bytes as content-addressed
@@ -93,6 +94,11 @@ const image = (data: string | Blob, name = "pic.png"): InlayAsset => ({
 });
 
 let fake: FakeResourceServer;
+
+beforeAll(
+    () => warmModules(() => Promise.all([import("../../../storage/resourceClient"), import("../inlays")])),
+    60_000,
+);
 
 beforeEach(async () => {
     vi.resetModules();

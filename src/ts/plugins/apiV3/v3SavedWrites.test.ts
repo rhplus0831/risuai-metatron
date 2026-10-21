@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 
 // The plugin host API against the real save adapter and the real server store
 // (`storeBackedServer.ts`), with no deep `pluginCustomStorage` watcher (`pluginStorage` is written
@@ -98,6 +98,8 @@ async function boot() {
 
 /** Lets the not-awaited listener calls of a discard run. */
 const settled = () => vi.advanceTimersByTimeAsync(0);
+
+beforeAll(() => warmMutationGraph(() => import("./v3.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

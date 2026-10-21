@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
 import type { ChannelAnswer, GenerationCallbackEvent, GenerationEvent } from "../../../shared/jobs.ts";
-import { bootMutations, m, refK } from "../storage/tests/mutationStoresHarness";
+import { bootMutations, m, refK, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
 
 // The callback barrier of the job channel over the real stores: the save adapter, the chat module,
 // the transport (`generationJobs.ts`, whose chain loads the dispatcher lazily and remembers every
@@ -108,6 +108,14 @@ async function boot() {
         answered,
     };
 }
+
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([import("./generationJobs"), import("./jobChannel"), import("../plugins/pluginHooks")]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

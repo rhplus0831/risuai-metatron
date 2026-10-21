@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
+import { warmModules } from "../storage/tests/mutationStoresHarness";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // A chat's translation settings on the tab (`src/ts/translator/chatTranslation.svelte.ts`), over
@@ -217,6 +218,24 @@ async function boot() {
         newChat,
     };
 }
+
+// The modules `boot` imports, once (not the whole storage graph: it does not reach `stores.svelte`).
+beforeAll(
+    () =>
+        warmModules(() =>
+            Promise.all([
+                StoreBackedServer.preload(),
+                import("../storage/chatStore.svelte"),
+                import("./chatTranslation.svelte"),
+                import("../storage/records.svelte"),
+                import("../storage/settingsViews.svelte"),
+                import("../storage/selection.svelte"),
+                import("../storage/characterStore.svelte"),
+                import("../storage/tests/reactiveProbe.svelte"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

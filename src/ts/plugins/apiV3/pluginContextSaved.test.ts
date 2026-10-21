@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, refJ, refK } from "src/ts/storage/tests/mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, refJ, refK, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 
 // The plugin call context against the real save adapter and the real server store
 // (`storeBackedServer.ts`, the `v3SavedWrites.test.ts` harness): what a hook writes for its own
@@ -108,6 +108,14 @@ async function boot(hook: (api: CapturedApi) => Promise<void>) {
     const run = (ref: { chaId: string; chatId: string }) => runWith(capture(ref));
     return { ...booted, api, capture, runWith, run };
 }
+
+beforeAll(
+    () =>
+        warmMutationGraph(() =>
+            Promise.all([import("./v3.svelte"), import("./pluginContext"), import("../pluginHooks")]),
+        ),
+    60_000,
+);
 
 beforeEach(() => {
     localStorage.clear();

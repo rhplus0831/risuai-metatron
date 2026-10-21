@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, plain, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import type { RPCToolCallContent } from "../../mcplib";
 
 // The RisuAccess module write tools (`modules.ts`) against the real save adapter and the real
@@ -144,6 +144,8 @@ async function boot() {
     const module = (id = "m") => booted.collectionStore.findModule(id) as any;
     return { ...booted, handler, call, hold, unchanged, savedModule, module };
 }
+
+beforeAll(() => warmMutationGraph(() => import("../modules")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();

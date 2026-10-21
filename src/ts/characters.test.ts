@@ -1,7 +1,8 @@
 import { tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../shared/resources.ts";
 import { FakeResourceServer } from "./storage/tests/fakeResourceServer";
+import { warmMutationGraph } from "./storage/tests/mutationStoresHarness";
 import { materialize } from "./storage/tests/serverKinds";
 
 // `removeChar` (trash) and `restoreChar` against the save adapter: both write `trashTime` on a
@@ -44,12 +45,10 @@ vi.mock("./process/index.svelte", () => ({ doingChat: { set: vi.fn(), subscribe:
 vi.mock("./translator/translator", () => ({ translateHTML: vi.fn() }));
 vi.mock("./process/inlayScreen", () => ({ updateInlayScreen: vi.fn() }));
 vi.mock("./characterCards", () => ({ importCharacter: vi.fn() }));
-// The emotion picker and the save queue are doubled for `addCharEmotion`.
+// The emotion picker and the save queue are doubled for `addCharEmotion`. The picker is a spy on
+// each boot's own `util` module (`boot`): a mocked module outlives `vi.resetModules()`, so a partial
+// mock of `util` would keep the readers of the first registry that loaded it (the warm-up's).
 const { picker } = vi.hoisted(() => ({ picker: { current: async (): Promise<File[]> => [] } }));
-vi.mock("./util", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("./util")>()),
-    selectMultipleFileHandles: () => picker.current(),
-}));
 vi.mock("./storage/assetQueue", () => ({
     savePickedFiles: async (files: File[]) => files.map((file) => `key-${file.name}`),
 }));
@@ -85,6 +84,7 @@ async function boot() {
     const bootstrap: Bootstrap = await import("./bootstrap");
     const characterStore: CharacterStore = await import("./storage/characterStore.svelte");
     const selectionModule: SelectionModule = await import("./storage/selection.svelte");
+    vi.spyOn(await import("./util"), "selectMultipleFileHandles").mockImplementation(() => picker.current());
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
@@ -98,6 +98,11 @@ async function boot() {
     fake.requests.length = 0;
     return { fake, sync, characters, characterList: () => characterStore.characterList() as any[] };
 }
+
+beforeAll(
+    () => warmMutationGraph(() => Promise.all([import("./characters"), import("./storage/records.svelte")])),
+    60_000,
+);
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });

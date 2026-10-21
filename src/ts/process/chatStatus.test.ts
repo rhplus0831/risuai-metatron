@@ -1,7 +1,8 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
+import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // Real chat selection and generation locks, with only the job transport and unrelated UI/network
 // services stubbed. Terminal marks are produced by followJobToEnd; direct status writes below
@@ -112,6 +113,21 @@ function expectMarks(keys: string[]) {
     expect(get(status.unseenChatKeys)).toEqual(new Set(keys));
     expect(new Set(get(status.recoveryChatKeys).keys())).toEqual(new Set(keys));
 }
+
+beforeAll(
+    () =>
+        warmModules(() =>
+            Promise.all([
+                import("../storage/chatStore.svelte"),
+                import("../storage/selection.svelte"),
+                import("../storage/tests/installFlatDatabase"),
+                import("../storage/tests/reactiveProbe.svelte"),
+                import("./serverCommands"),
+                import("./chatStatus.svelte"),
+            ]),
+        ),
+    60_000,
+);
 
 beforeEach(async () => {
     vi.resetModules();
