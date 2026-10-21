@@ -17,7 +17,7 @@ import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.t
 import { type JobScope, jobScopeKinds, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
-import { createLuaBudget, type LuaBudget } from "../scripts/workerPool.ts";
+import type { LuaBudget } from "../scripts/workerPool.ts";
 import { runLuaEdit, runScriptTail } from "./scripts.ts";
 import { createTransformCache } from "./transformCache.ts";
 import { TriggerEffectLimitError } from "./triggers.ts";
@@ -475,7 +475,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             throw new Error("The target's character no longer exists");
         }
         const job = readOnlyJob(context, life.controller.signal, life.epoch);
-        const state = { ...createJobRunState(job), budget: shared.budget, cbsUsage: shared.cbsUsage };
+        const state = { ...createJobRunState(job, shared.budget), cbsUsage: shared.cbsUsage };
         const setup = createRunSetup(
             job,
             deps,
@@ -611,7 +611,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 characters: () => request.targets.map((target) => target.sourceId),
             });
             const chat = scopeChat(scope)!;
-            const shared: Shared = { budget: createLuaBudget(), cbsUsage: { usedMs: 0 } };
+            const shared: Shared = { budget: deps.scriptWorkers.createBudget(), cbsUsage: { usedMs: 0 } };
             const base = baseKey(request, scope.revisions, scope.characterId, scopeMembers(scope), life.epoch, chat);
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];

@@ -36,8 +36,8 @@ describe("shutdown admission for resource requests", () => {
                 duplex: "half",
             } as RequestInit),
         );
-        // The handler is admitted and waits for the rest of its body.
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        // Admission happens inside app.request(), before the handler's first await: shutdown begins
+        // right after it, while the handler waits for the rest of its body.
         s.context.beginShutdown();
         let disposed = false;
         const disposing = s.context.dispose().then(() => {

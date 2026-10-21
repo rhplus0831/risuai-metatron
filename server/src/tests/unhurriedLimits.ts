@@ -1,5 +1,6 @@
 // Time limits for tests whose subject is not a limit (not a test file itself). No server import:
 // a test that builds its own pool takes them without the server's module graph.
+import type { ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
 import type { ScriptWorkerTimingOptions } from "../scripts/workerPool.ts";
 
@@ -24,3 +25,9 @@ export const UNHURRIED_HYPAV3_SEPARATOR = {
     budgetMs: 600_000,
     regexDeadlineMs: 600_000,
 } satisfies HypaV3SeparatorLimits;
+
+/** CBS wall times for tests whose subject is not a CBS limit: ten minutes per template, a hundred per job. */
+export const UNHURRIED_CBS = {
+    templateMs: 600_000,
+    jobMs: 6_000_000,
+} satisfies ServerCbsTimeLimits;

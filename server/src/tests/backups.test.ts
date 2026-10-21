@@ -1310,7 +1310,6 @@ describe("shutdown admission", () => {
         const holding = defer();
         s.context.snapshots.track(() => holding.promise);
         const disposing = s.context.dispose();
-        await sleep(10);
 
         for (const res of [
             await restore(s, snapshot.id),

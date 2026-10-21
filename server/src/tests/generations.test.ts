@@ -37,24 +37,36 @@ describe("generation jobs over HTTP and WebSocket", () => {
     let wake: (() => void) | null = null;
     let runners: Promise<void>[] = [];
 
-    /** Runs the test's steps as they arrive, until one returns `"end"` or the job is aborted. */
+    /**
+     * Runs the test's steps as they arrive, until one returns `"end"` or the job is aborted. A job's
+     * abort wakes its own run, so a job a test leaves running ends at teardown instead of waiting out
+     * the abort grace.
+     */
     const runner = async (job: RunningJob) => {
         const run = (async () => {
-            job.signal.addEventListener("abort", () => wake?.());
-            for (;;) {
-                if (steps.length === 0) {
-                    if (job.signal.aborted) {
+            let wakeSelf: (() => void) | null = null;
+            const onAbort = () => wakeSelf?.();
+            job.signal.addEventListener("abort", onAbort);
+            try {
+                for (;;) {
+                    if (steps.length === 0) {
+                        if (job.signal.aborted) {
+                            return;
+                        }
+                        await new Promise<void>((resolve) => {
+                            wake = resolve;
+                            wakeSelf = resolve;
+                        });
+                        wakeSelf = null;
+                        continue;
+                    }
+                    const step = steps.shift()!;
+                    if ((await step(job)) === ("end" as never)) {
                         return;
                     }
-                    await new Promise<void>((resolve) => {
-                        wake = resolve;
-                    });
-                    continue;
                 }
-                const step = steps.shift()!;
-                if ((await step(job)) === ("end" as never)) {
-                    return;
-                }
+            } finally {
+                job.signal.removeEventListener("abort", onAbort);
             }
         })();
         runners.push(run);
@@ -66,14 +78,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         wake = null;
     };
 
-    beforeAll(() => {
-        vi.spyOn(console, "log").mockImplementation(() => {});
-        vi.spyOn(console, "error").mockImplementation(() => {});
-    });
-    afterAll(() => {
-        vi.restoreAllMocks();
-    });
-    afterEach(async () => {
+    async function closeServer() {
         steps = [];
         wake = null;
         runners = [];
@@ -83,7 +88,20 @@ describe("generation jobs over HTTP and WebSocket", () => {
             await new Promise((resolve) => node?.close(resolve));
             node = undefined;
         }
+    }
+
+    beforeAll(async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        // One boot, login, and seed before the first test: its cold cost (module code, the first
+        // ECDSA key, SQLite, the sockets) stays out of every test's timeout.
+        await listen();
+        await closeServer();
+    }, 60_000);
+    afterAll(() => {
+        vi.restoreAllMocks();
     });
+    afterEach(closeServer);
 
     async function listen() {
         server = createTestServer({ password: "pw", generationRunner: runner });

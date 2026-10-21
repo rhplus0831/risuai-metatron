@@ -19,7 +19,7 @@ import { itemIds } from "../../../shared/recordPatch.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
-import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits } from "../jobs/cbsHost.ts";
+import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
 import {
@@ -103,6 +103,8 @@ export type LuaBindingDeps = {
      * failure of the target), and the run's character is the scope's.
      */
     frozen?: boolean;
+    /** The CBS wall times (`serverCbsLimits`; default the production ones, tests lengthen them). */
+    cbsTimeLimits?: ServerCbsTimeLimits;
 };
 
 /**
@@ -472,7 +474,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         setChatVar: (key, value) => setChatVar(key, value),
         client: job.context.client,
         triggerId: deps.triggerId ?? null,
-        limits: serverCbsLimits(deps.cbsUsage ?? { usedMs: 0 }),
+        limits: serverCbsLimits(deps.cbsUsage ?? { usedMs: 0 }, deps.cbsTimeLimits),
     });
     const bounded = createCbsEvaluator(cbsHost);
     /**

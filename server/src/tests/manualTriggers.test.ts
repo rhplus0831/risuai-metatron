@@ -7,7 +7,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
-import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A manual trigger as a server `command` job end to end on a real listening server with the default
 // runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the trigger runtime, the command
@@ -66,7 +66,7 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS });
+    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS, cbsTimeLimits: UNHURRIED_CBS });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);

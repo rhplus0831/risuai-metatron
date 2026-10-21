@@ -524,7 +524,7 @@ describe("Anthropic stream lifecycle", () => {
         ]);
     });
 
-    it("errors on upstream body failure before the abort deadline", async () => {
+    it("errors on an upstream body failure without waiting for an abort", async () => {
         let upstream!: ReadableStreamDefaultController<Uint8Array>;
         const controller = new AbortController();
         const run = await start(
@@ -542,23 +542,16 @@ describe("Anthropic stream lifecycle", () => {
         );
         const reader = run.stream.getReader();
         expect(await reader.read()).toEqual({ done: false, value: { "0": "partial" } });
-        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            const deadline = new Promise((resolve) => {
-                timer = setTimeout(() => {
-                    controller.abort();
-                    resolve("abort deadline");
-                }, 100);
-            });
+            // Nothing aborts the request: a failure that surfaced only on an abort would never settle.
             const reading = reader.read().then(
                 () => "unexpected success",
                 (error) => error.message,
             );
             upstream.error(new Error("synthetic upstream socket reset"));
-            expect(await Promise.race([reading, deadline])).toBe("synthetic upstream socket reset");
+            expect(await reading).toBe("synthetic upstream socket reset");
             expect(controller.signal.aborted).toBe(false);
         } finally {
-            clearTimeout(timer);
             controller.abort();
             await reader.cancel().catch(() => {});
         }

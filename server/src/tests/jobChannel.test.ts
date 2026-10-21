@@ -2,6 +2,7 @@
 import type http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket as WsSocket } from "ws";
 import type {
     CallbackResult,
     GenerationChannelEvent,
@@ -20,7 +21,7 @@ import {
     QUESTION_TIMEOUT_MS,
 } from "../jobs/channel.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 
 // The server side of the job channel. First the hub in isolation (`server/src/jobs/channel.ts`) over
 // a recording transport with an injected clock: the hook list validation, notices, the request
@@ -803,6 +804,36 @@ describe("the registry over a real socket", () => {
             },
         };
     }
+    /** The owner socket on the `ws` client, whose reads can be paused (`ws.pause()`). */
+    async function connectStale(jobId: string, attach: number) {
+        const ws = new WsSocket(
+            `${base.replace("http", "ws")}/api/generations/${jobId}/ws?risu-auth=${encodeURIComponent(
+                await signer.jwt(),
+            )}&clientId=tab&attach=${attach}`,
+        );
+        const events: GenerationEvent[] = [];
+        const taken = new Set<GenerationEvent>();
+        ws.on("message", (data) => {
+            const event = JSON.parse(String(data)) as GenerationEvent;
+            if (event.type !== "ping") {
+                events.push(event);
+            }
+        });
+        ws.on("error", () => {});
+        await new Promise<void>((resolve) => ws.once("open", () => resolve()));
+        return {
+            ws,
+            async next<T extends GenerationEvent["type"]>(type: T): Promise<Extract<GenerationEvent, { type: T }>> {
+                let found: GenerationEvent | undefined;
+                await waitFor(() => {
+                    found = events.find((event) => event.type === type && !taken.has(event));
+                    return found !== undefined;
+                });
+                taken.add(found!);
+                return found as never;
+            },
+        };
+    }
     const types = (events: GenerationEvent[]) => events.map((event) => event.type);
 
     it("answers 400 for a malformed hook list and admits a job without one", async () => {
@@ -819,14 +850,21 @@ describe("the registry over a real socket", () => {
     it("delivers a callback requested before the owner attaches as a first delivery, hydrated right before it, and takes its answer", async () => {
         await listen();
         const outcome: { result?: CallbackResult; receipts?: HydrationReceipt[] } = {};
+        let requested!: () => void;
+        const callbackRequested = new Promise<void>((resolve) => {
+            requested = resolve;
+        });
         step(async (job) => {
             outcome.receipts = job.emitRecords({ refs: [{ kind: "characters", id: "c" }] });
-            outcome.result = await job.channel.callback("editoutput", { text: "early" });
+            const callback = job.channel.callback("editoutput", { text: "early" });
+            requested();
+            outcome.result = await callback;
             return "end" as never;
         });
         const { body } = await create();
         const jobId = body.jobId as string;
-        await sleep(50);
+        // The owner attaches only once the job has requested its callback.
+        await callbackRequested;
         const owner = await connect(jobId);
         const callback = await owner.next("callback");
         expect(callback.replay).toBeUndefined();
@@ -897,24 +935,42 @@ describe("the registry over a real socket", () => {
             return "end" as never;
         });
         const jobId = (await create()).body.jobId as string;
-        const first = await connect(jobId, 1);
-        const q1 = await first.next("question");
-        const second = await connect(jobId, 2);
-        const q2 = await second.next("question");
-        expect(q2).toEqual({ ...q1, replay: true });
-        first.send({ type: "answer", id: q1.id, outcome: "answered", value: false });
-        await sleep(100);
-        expect(outcome.first).toBeUndefined();
-        second.send({ type: "answer", id: q1.id, outcome: "answered", value: true });
-        await waitFor(() => outcome.first !== undefined);
-        expect(outcome.first).toEqual({ outcome: "answered", value: true });
-        const q3 = await second.next("question");
-        const cancel = await second.next("cancel");
-        expect(cancel.id).toBe(q3.id);
-        await second.next("done");
-        expect(outcome.second).toMatchObject({ outcome: "timedOut" });
-        // The job chat on the attach and at the end goes as a `chatPatch` (the job's own chat events).
-        expect(types(second.events)).toEqual(["chatPatch", "question", "question", "cancel", "chatPatch", "done"]);
+        // The server closes a superseded socket (4001); the spy keeps the server side of it.
+        const closes = vi.spyOn(WsSocket.prototype, "close");
+        const first = await connectStale(jobId, 1);
+        try {
+            const q1 = await first.next("question");
+            // The first socket stops reading, so it never sees the server's close frame and stays open:
+            // its answer below really reaches the server after the second attach.
+            first.ws.pause();
+            const second = await connect(jobId, 2);
+            const q2 = await second.next("question");
+            expect(q2).toEqual({ ...q1, replay: true });
+            const supersededAt = closes.mock.calls.findIndex(([code]) => code === 4001);
+            expect(supersededAt).toBeGreaterThanOrEqual(0);
+            const superseded = closes.mock.contexts[supersededAt] as WsSocket;
+            // Registered after the job's own message listener, so it runs once that one handled the frame.
+            const handled = new Promise<void>((resolve) => superseded.once("message", () => resolve()));
+            first.ws.send(JSON.stringify({ type: "answer", id: q1.id, outcome: "answered", value: false }));
+            await handled;
+            // Every continuation of a taken answer has run by the next macrotask.
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(outcome.first).toBeUndefined();
+            first.ws.resume();
+            second.send({ type: "answer", id: q1.id, outcome: "answered", value: true });
+            await waitFor(() => outcome.first !== undefined);
+            expect(outcome.first).toEqual({ outcome: "answered", value: true });
+            const q3 = await second.next("question");
+            const cancel = await second.next("cancel");
+            expect(cancel.id).toBe(q3.id);
+            await second.next("done");
+            expect(outcome.second).toMatchObject({ outcome: "timedOut" });
+            // The job chat on the attach and at the end goes as a `chatPatch` (the job's own chat events).
+            expect(types(second.events)).toEqual(["chatPatch", "question", "question", "cancel", "chatPatch", "done"]);
+        } finally {
+            closes.mockRestore();
+            first.ws.terminate();
+        }
     });
 
     it("reports a disconnect for a question nobody could answer", async () => {

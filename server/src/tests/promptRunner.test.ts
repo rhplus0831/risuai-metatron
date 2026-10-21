@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, v
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
-import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
 // `server/src/prompt/scripts.ts`, `server/src/jobs/runSetup.ts`) on a real listening server with the
@@ -458,6 +458,7 @@ beforeAll(async () => {
         generationRandom: () => 0,
         generationAbortGraceMs: 10 * 60_000,
         scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+        cbsTimeLimits: UNHURRIED_CBS,
     });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
@@ -1404,17 +1405,25 @@ describe("automatic translation of a send's messages", () => {
             ]);
 
             const plain = await seedCharacter({ name: "Ann" });
-            const before = bodies.length;
-            const off = await job("send", plain, { input: "hi", userMessageId: "u1" });
-            expect(off.terminal?.type).toBe("done");
-            expect(translating(off.events)).toEqual([]);
-            await sleep(200);
-            expect(bodies.length).toBe(before + 1);
-            expect(translations(await readChat(plain))).toEqual([
-                ["u1", null],
-                [(off.terminal as any).messageId, null],
-            ]);
             await waitFor(() => server.context.translationRunner.runningCount() === 0);
+            const before = bodies.length;
+            // The handover is decided by the runner before `done`, and a run it starts counts at once.
+            const handOff = vi.spyOn(server.context.translationRunner, "handOff");
+            try {
+                const off = await job("send", plain, { input: "hi", userMessageId: "u1" });
+                expect(off.terminal?.type).toBe("done");
+                expect(translating(off.events)).toEqual([]);
+                expect(handOff).toHaveBeenCalledTimes(1);
+                expect(handOff.mock.results[0]).toEqual({ type: "return", value: [] });
+                expect(server.context.translationRunner.runningCount()).toBe(0);
+                expect(bodies.length).toBe(before + 1);
+                expect(translations(await readChat(plain))).toEqual([
+                    ["u1", null],
+                    [(off.terminal as any).messageId, null],
+                ]);
+            } finally {
+                handOff.mockRestore();
+            }
         },
         SLOW,
     );

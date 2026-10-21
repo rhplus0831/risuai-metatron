@@ -43,12 +43,21 @@ function defer() {
 }
 
 describe("snapshot files", () => {
+    // Only `Date` is fake: a snapshot is stamped with the time it is taken; its I/O stays real.
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     it("publishes a complete single-file copy under a stamped name and lists only such files, newest first", async () => {
         const { store, manager, backups } = setup();
         store.put(docs, "a", { v: 1 }, null);
+        vi.setSystemTime(new Date("2026-10-21T12:34:56.007Z"));
         const first = await manager.snapshotNow();
-        expect(first.id).toMatch(/^resources-\d{8}T\d{9}Z-[0-9a-f]{8}$/);
-        expect(first.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+        expect(first.id).toMatch(/^resources-20261021T123456007Z-[0-9a-f]{8}$/);
+        expect(first.createdAt).toBe("2026-10-21T12:34:56.007Z");
         expect(first.size).toBeGreaterThan(0);
         // One file, no journal or WAL side files, readable as a resource database on its own.
         expect(readdirSync(backups)).toEqual([`${first.id}.sqlite`]);
@@ -61,8 +70,9 @@ describe("snapshot files", () => {
         }
         expect(store.readSnapshot(path.join(backups, `${first.id}.sqlite`)).rows.map((r) => r.id)).toEqual(["a"]);
 
-        await sleep(2);
+        vi.setSystemTime(new Date("2026-10-21T12:34:56.008Z"));
         const second = await manager.snapshotNow();
+        expect(second.id).toMatch(/^resources-20261021T123456008Z-[0-9a-f]{8}$/);
         // Unfinished, foreign, and non-file entries are not snapshots.
         writeFileSync(path.join(backups, `.${second.id}.sqlite.tmp`), "half");
         writeFileSync(path.join(backups, "notes.txt"), "x");
@@ -85,8 +95,8 @@ describe("snapshot files", () => {
         const { manager } = setup({ keep: 2 });
         const ids: string[] = [];
         for (let i = 0; i < 4; i++) {
+            vi.setSystemTime(Date.UTC(2026, 9, 21, 12, 0, 0, i));
             ids.push((await manager.snapshotNow()).id);
-            await sleep(2);
         }
         expect(manager.list().map((s) => s.id)).toEqual([ids[3], ids[2]]);
     });
