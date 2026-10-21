@@ -1,12 +1,13 @@
 // @vitest-environment node
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createLuaBudget,
     createScriptWorkerPool,
@@ -18,17 +19,30 @@ import {
     MAX_REGEX_PATTERN_CHARS,
     type ScriptWorkerPool,
 } from "../scripts/workerPool.ts";
-import { allowListenerOrigin } from "./testSupport.ts";
+import { allowListenerOrigin, createTestServer } from "./testSupport.ts";
 
 /**
- * The script worker pool under the real `worker.ts` workers. Timing bounds are generous: a budget of
- * a few hundred milliseconds is checked against seconds.
+ * The script worker pool under the real `worker.ts` workers. A worker's Lua budget is its thread's
+ * busy time, which a descheduled thread keeps accruing, so no gated case races a small real budget:
+ * ordinary runs get `LONG_MS` of allowance and the shared pools' graces, a test checks a charge as a
+ * relation (a run cut past its allowance, a synchronous wait outside the charge) or holds its runs on
+ * host-entry deferreds, and pools are warmed before their tests. A case whose subject is a small real
+ * budget, a long real wait, or the throughput of a full queue is tagged `slow`.
  */
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const identity = { characterId: "c1", chatId: "chat1", presetId: "p1", personaId: null };
 const REDOS = { op: "test" as const, pattern: "(a+)+$", flags: "", input: "a".repeat(40) + "b" };
 /** A C-level runaway: `string.find` with a pathological pattern never returns to the Lua hook. */
 const C_RUNAWAY = `("a"):rep(30000):find(("a-"):rep(20) .. "b")`;
+/** An allowance, grace, or deadline no case reaches: the subject is not the limit. */
+const LONG_MS = 60_000;
+/** For a hook that warms pools, and a case whose subject is a real worker boot (seconds under load). */
+const BOOT_TIMEOUT_MS = 60_000;
+/** A regex that must succeed: its deadline is not the subject. */
+const SANE = { deadlineMs: LONG_MS };
+const LUA_BUDGET_ERROR = "Lua CPU budget exceeded (timeout)";
+const WATCHDOG_ERROR = "Lua execution limit exceeded (worker terminated)";
+const AGGREGATE_ERROR = "aggregate Lua execution budget exhausted";
 const ASYNC = `
 function slowDone(ms)
     return slowHost(ms):await()
@@ -39,6 +53,7 @@ const task = (code: string, mode = "probe", extra: Partial<LuaTask> = {}): LuaTa
     code,
     mode,
     identity,
+    cpuMs: LONG_MS,
     ...extra,
 });
 /** Busy Lua for about `seconds` of CPU. */
@@ -63,9 +78,25 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+/** A host function that resolves `entered` and answers only when the test releases it. */
+function heldHost(name = "hold") {
+    const entered = deferred<void>();
+    const answer = deferred<string>();
+    const host: LuaHost = {
+        async: {
+            [name]: () => {
+                entered.resolve();
+                return answer.promise;
+            },
+        },
+    };
+    return { host, entered: entered.promise, release: (value = "go") => answer.resolve(value) };
+}
+
 const pools: ScriptWorkerPool[] = [];
 function makePool(options: Omit<Parameters<typeof createScriptWorkerPool>[0], "rootDir"> & { rootDir?: string } = {}) {
-    const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, ...options });
+    // No case waits for the pool's own boot cap: a real boot is bounded by the case's timeout.
+    const pool = createScriptWorkerPool({ rootDir: REPO_ROOT, bootMs: LONG_MS, ...options });
     pools.push(pool);
     return pool;
 }
@@ -98,7 +129,14 @@ async function runNode(args: string[], cwd: string): Promise<{ code: number | nu
 }
 
 describe("the shared pool", () => {
-    const pool = makePool();
+    // Only the worker's own hook can stop a run here: neither grace ends a run in any case.
+    const pool = makePool({ watchdogGraceMs: LONG_MS, abortGraceMs: LONG_MS });
+    // One slot, so a held run makes the next ones queue.
+    const single = makePool({ size: 1, maxSize: 1, watchdogGraceMs: LONG_MS, abortGraceMs: LONG_MS });
+    // The production graces, for the slow cases whose subject is a small real budget.
+    const defaults = makePool({ size: 1, maxSize: 1 });
+    beforeAll(() => Promise.all([pool.warm(), single.warm()]), BOOT_TIMEOUT_MS);
+    afterAll(() => Promise.all([pool.dispose(), single.dispose(), defaults.dispose()]));
 
     describe("hardening", () => {
         it("removes io, debug, the file searchers, os process functions, and binary chunks; keeps json, text load, and traceback", async () => {
@@ -273,39 +311,49 @@ describe("the shared pool", () => {
                 { host },
             );
             expect(second.res).toBe("string,nil");
-            expect(await pool.regex({ op: "test", pattern: "a", flags: "", input: "a" })).toEqual({ value: true });
+            expect(await pool.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE)).toEqual({
+                value: true,
+            });
         });
     });
 
     describe("budget and execution state", () => {
+        // A short grace, so the C-level loop is cut soon after its 300 ms allowance.
+        const watchdog = makePool({ size: 1, maxSize: 1, watchdogGraceMs: 100 });
+        beforeAll(() => watchdog.warm(), BOOT_TIMEOUT_MS);
+        afterAll(() => watchdog.dispose());
+
         it("stops a top-level runaway and a handler runaway at the per-run budget without a termination", async () => {
             const before = pool.stats().terminated;
-            const [top, topMs] = await timed(() => pool.runLua(task("while true do end", "probe", { cpuMs: 300 })));
+            const top = await pool.runLua(task("while true do end", "probe", { cpuMs: 300 }));
             expect(top.timedOut).toBe(true);
-            expect(top.error).toBe("Lua CPU budget exceeded (timeout)");
+            expect(top.error).toBe(LUA_BUDGET_ERROR);
             expect(top.cpuMs).toBeGreaterThanOrEqual(250);
-            expect(topMs).toBeLessThan(3000);
-            const [handler, handlerMs] = await timed(() =>
-                pool.runLua(task("function onInput(id) while true do end end", "input", { cpuMs: 300 })),
+            const handler = await pool.runLua(
+                task("function onInput(id) while true do end end", "input", { cpuMs: 300 }),
             );
             expect(handler.timedOut).toBe(true);
-            expect(handlerMs).toBeLessThan(3000);
+            expect(handler.error).toBe(LUA_BUDGET_ERROR);
             expect(pool.stats().terminated).toBe(before);
         });
 
         it("terminates a C-level runaway started after an unawaited host call", async () => {
+            const before = watchdog.stats().terminated;
             const host: LuaHost = { async: { hold: () => new Promise(() => {}) } };
-            const [r, ms] = await timed(() =>
-                pool.runLua(task(`function probe(id) hold(id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }), {
-                    host,
-                }),
+            const r = await watchdog.runLua(
+                task(`function probe(id) hold(id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 300 }),
+                { host },
             );
             expect(r.timedOut).toBe(true);
-            expect(r.error).toBe("Lua execution limit exceeded (worker terminated)");
-            expect(ms).toBeLessThan(4000);
+            // The hook can only win when a deschedule before the C call used up the allowance; the
+            // C call itself never returns to it, so only the watchdog ends the run once it started.
+            expect([WATCHDOG_ERROR, LUA_BUDGET_ERROR]).toContain(r.error);
+            expect(watchdog.stats().terminated).toBe(before + (r.error === WATCHDOG_ERROR ? 1 : 0));
         });
 
-        it("charges the CPU spent between host calls, not the waits", async () => {
+        it("charges the CPU spent between host calls, summed across them", async () => {
+            // Each segment's spin is far under the allowance, together four times over it: a charge
+            // that restarted at each host call would let an unloaded run finish.
             const charged = await pool.runLua(
                 task(
                     `${ASYNC} probe = async(function(id)
@@ -319,89 +367,132 @@ describe("the shared pool", () => {
             );
             expect(charged.timedOut).toBe(true);
             expect(charged.res).toBeUndefined();
-            const [waited, ms] = await timed(() =>
-                pool.runLua(
-                    task(`${ASYNC} probe = async(function(id) return slowDone(1000) end)`, "probe", { cpuMs: 100 }),
-                    {
-                        host: slowHost,
-                    },
-                ),
-            );
-            expect(waited.res).toBe("done");
-            expect(ms).toBeGreaterThanOrEqual(1000);
-            expect(waited.cpuMs).toBeLessThan(100);
         });
 
-        it("charges a coroutine resumed after a long wait only its own compute, in a handler and at the top level", async () => {
-            const a = await pool.runLua(
-                task(`${ASYNC} probe = async(function(id) slowDone(350) ${spin(0.02)} return "after" end)`, "probe", {
-                    cpuMs: 100,
-                }),
-                { host: slowHost },
-            );
-            expect(a.res).toBe("after");
-            const b = await pool.runLua(
-                task(
-                    `${ASYNC} pending = async(function() slowDone(350) ${spin(0.02)} return "top" end)()
-                    probe = async(function(id) return pending:await() end)`,
-                    "probe",
-                    { cpuMs: 100 },
-                ),
-                { host: slowHost },
-            );
-            expect(b.res).toBe("top");
-        });
+        it(
+            "does not charge an asynchronous wait, even one longer than the budget",
+            { tags: ["slow"], timeout: 20_000 },
+            async () => {
+                const [waited, ms] = await timed(() =>
+                    defaults.runLua(
+                        task(`${ASYNC} probe = async(function(id) return slowDone(1000) end)`, "probe", {
+                            cpuMs: 100,
+                        }),
+                        { host: slowHost },
+                    ),
+                );
+                expect(waited.res).toBe("done");
+                expect(ms).toBeGreaterThanOrEqual(1000);
+                expect(waited.cpuMs).toBeLessThan(100);
+            },
+        );
 
-        it("stops a runaway right after a resumption at the budget", async () => {
-            const [r, ms] = await timed(() =>
-                pool.runLua(
-                    task(`${ASYNC} probe = async(function(id) slowDone(200) while true do end end)`, "probe", {
-                        cpuMs: 200,
-                    }),
-                    {
-                        host: slowHost,
-                    },
-                ),
-            );
-            expect(r.timedOut).toBe(true);
-            expect(ms).toBeLessThan(4000);
-        });
-
-        it("serves concurrent host calls in their own completion order", async () => {
-            const host: LuaHost = {
-                async: { echo: ([, ms, tag]) => new Promise((resolve) => setTimeout(() => resolve(tag), Number(ms))) },
-            };
-            const [r, ms] = await timed(() =>
-                pool.runLua(
+        it(
+            "charges a coroutine resumed after a long wait only its own compute, in a handler and at the top level",
+            { tags: ["slow"], timeout: 20_000 },
+            async () => {
+                const a = await defaults.runLua(
                     task(
-                        `probe = async(function(id)
-                            local a = echo(id, 300, "a")
-                            local b = echo(id, 50, "b")
-                            return b:await() .. a:await()
-                        end)`,
+                        `${ASYNC} probe = async(function(id) slowDone(350) ${spin(0.02)} return "after" end)`,
                         "probe",
                         { cpuMs: 100 },
                     ),
-                    { host },
-                ),
+                    { host: slowHost },
+                );
+                expect(a.res).toBe("after");
+                const b = await defaults.runLua(
+                    task(
+                        `${ASYNC} pending = async(function() slowDone(350) ${spin(0.02)} return "top" end)()
+                        probe = async(function(id) return pending:await() end)`,
+                        "probe",
+                        { cpuMs: 100 },
+                    ),
+                    { host: slowHost },
+                );
+                expect(b.res).toBe("top");
+            },
+        );
+
+        it("stops a runaway right after a resumption at the budget", async () => {
+            const r = await pool.runLua(
+                task(`${ASYNC} probe = async(function(id) slowDone(200) while true do end end)`, "probe", {
+                    cpuMs: 200,
+                }),
+                { host: slowHost },
             );
-            expect(r.res).toBe("ba");
-            expect(ms).toBeGreaterThanOrEqual(300);
-            expect(ms).toBeLessThan(1000);
+            expect(r.timedOut).toBe(true);
+            expect(r.error).toBe(LUA_BUDGET_ERROR);
         });
 
-        it("does not charge a synchronous wait, even one longer than the budget", async () => {
+        it("serves concurrent host calls in their own completion order", async () => {
+            const entered = { a: deferred<void>(), b: deferred<void>() };
+            const answers = { a: deferred<string>(), b: deferred<string>() };
+            const arrived = deferred<string>();
             const host: LuaHost = {
-                sync: { slow: () => new Promise((resolve) => setTimeout(() => resolve("v"), 1500)) },
+                async: {
+                    echo: ([, tag]) => {
+                        const key = tag as "a" | "b";
+                        entered[key].resolve();
+                        return answers[key].promise;
+                    },
+                },
+                sync: { arrived: ([, value]) => void arrived.resolve(String(value)) },
             };
-            const r = await pool.runLua(
-                task(`local v = slow() ${spin(0.02)} function probe(id) return v end`, "probe", { cpuMs: 100 }),
+            const run = pool.runLua(
+                task(`probe = async(function(id)
+                    local a = echo(id, "a")
+                    local b = echo(id, "b")
+                    local bv = b:await()
+                    arrived(id, bv)
+                    return bv .. a:await()
+                end)`),
                 { host },
+            );
+            try {
+                // Both calls are outstanding at once, and b's answer reaches Lua while a's is held.
+                await Promise.all([entered.a.promise, entered.b.promise]);
+                answers.b.resolve("b");
+                expect(await arrived.promise).toBe("b");
+            } finally {
+                answers.b.resolve("b");
+                answers.a.resolve("a");
+            }
+            expect((await run).res).toBe("ba");
+        });
+
+        it("does not charge a synchronous wait", async () => {
+            const host: LuaHost = {
+                sync: { slow: () => new Promise((resolve) => setTimeout(() => resolve("v"), 1000)) },
+            };
+            const [r, ms] = await timed(() =>
+                pool.runLua(task(`local v = slow() ${spin(0.02)} function probe(id) return v end`), { host }),
             );
             expect(r.res).toBe("v");
             expect(r.error).toBeUndefined();
-            expect(r.cpuMs).toBeLessThan(100);
+            // The worker leaves out the whole blocking call, which holds the main thread's 1000 ms
+            // answer, and the run's charge lies inside `ms` beside it: whatever the load, the gap
+            // includes the wait.
+            expect(ms - r.cpuMs).toBeGreaterThanOrEqual(995);
         });
+
+        it(
+            "does not charge a synchronous wait, even one longer than the budget",
+            { tags: ["slow"], timeout: 20_000 },
+            async () => {
+                // The wait is also longer than the budget plus the watchdog's grace, so the main
+                // thread's watchdog must leave it out too.
+                const host: LuaHost = {
+                    sync: { slow: () => new Promise((resolve) => setTimeout(() => resolve("v"), 1500)) },
+                };
+                const r = await defaults.runLua(
+                    task(`local v = slow() ${spin(0.02)} function probe(id) return v end`, "probe", { cpuMs: 100 }),
+                    { host },
+                );
+                expect(r.res).toBe("v");
+                expect(r.error).toBeUndefined();
+                expect(r.cpuMs).toBeLessThan(100);
+            },
+        );
 
         it("stops a huge string.rep at the Lua memory cap", async () => {
             const r = await pool.runLua(task(`local s = string.rep("x", 1000000000) return #s`));
@@ -410,6 +501,14 @@ describe("the shared pool", () => {
     });
 
     describe("abort and lifetimes", () => {
+        // The abort grace is the subject of one case; its timer is faked there.
+        const abortGrace = makePool({ size: 1, maxSize: 1, abortGraceMs: 10 });
+        // Two workers each: one is killed, the other serves the case's other run.
+        const owners = makePool({ size: 2, maxSize: 2 });
+        const killed = makePool({ size: 2, maxSize: 2 });
+        beforeAll(() => Promise.all([abortGrace.warm(), owners.warm(), killed.warm()]), BOOT_TIMEOUT_MS);
+        afterAll(() => Promise.all([abortGrace.dispose(), owners.dispose(), killed.dispose()]));
+
         it("returns an already-aborted signal without a run", async () => {
             const before = pool.stats();
             const r = await pool.runLua(task("function probe(id) return 1 end"), { signal: AbortSignal.abort() });
@@ -421,14 +520,47 @@ describe("the shared pool", () => {
         it("stops a running loop on abort without terminating the worker", async () => {
             const before = pool.stats().terminated;
             const controller = new AbortController();
-            setTimeout(() => controller.abort(), 200);
-            const [r, ms] = await timed(() =>
-                pool.runLua(task("function probe(id) while true do end end"), { signal: controller.signal }),
-            );
+            const entered = deferred<void>();
+            const host: LuaHost = { async: { entered: async () => void entered.resolve() } };
+            const run = pool.runLua(task("function probe(id) entered(id) while true do end end"), {
+                host,
+                signal: controller.signal,
+            });
+            await entered.promise;
+            controller.abort();
+            // The shared pool's abort grace never ends a run, so only the hook can stop this one.
+            const r = await run;
             expect(r.aborted).toBe(true);
             expect(r.res).toBeUndefined();
-            expect(ms).toBeLessThan(1500);
             expect(pool.stats().terminated).toBe(before);
+        });
+
+        it("terminates the worker of an aborted run that has not stopped once the abort grace passes", async () => {
+            const before = abortGrace.stats().terminated;
+            const controller = new AbortController();
+            const { host, entered } = heldHost();
+            const run = abortGrace.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host,
+                signal: controller.signal,
+            });
+            await entered;
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            let disposing: Promise<void> | undefined;
+            try {
+                // Nothing yields from the abort on, so the worker's own stop cannot reach this thread:
+                // only the grace's timer ends the run.
+                controller.abort();
+                vi.advanceTimersByTime(9);
+                expect(abortGrace.stats().terminated).toBe(before);
+                vi.advanceTimersByTime(1);
+                expect(abortGrace.stats().terminated).toBe(before + 1);
+            } finally {
+                // The warm pool's replacement holds a faked boot timer: dispose before restoring.
+                disposing = abortGrace.dispose();
+                vi.useRealTimers();
+            }
+            await disposing;
+            expect(await run).toMatchObject({ aborted: true, error: "request aborted", res: undefined });
         });
 
         it("aborts the outstanding host call's signal and the run", async () => {
@@ -484,19 +616,15 @@ describe("the shared pool", () => {
         });
 
         it("aborts an unawaited host call's signal when its run completes and drops the late answer", async () => {
-            let settled: Promise<boolean> | null = null;
-            const host: LuaHost = {
-                async: {
-                    slowHost: (_args, ctx) => {
-                        settled = new Promise((resolve) => setTimeout(() => resolve(ctx.signal.aborted), 250));
-                        return settled.then(() => "late");
-                    },
-                },
-            };
+            let held: AbortSignal | null = null;
+            const late = deferred<string>();
+            const host: LuaHost = { async: { slowHost: (_args, ctx) => ((held = ctx.signal), late.promise) } };
             const r = await pool.runLua(task(`function probe(id) slowHost(id) return "done" end`), { host });
             expect(r.res).toBe("done");
-            expect(await settled!).toBe(true);
-            await sleep(50);
+            expect(held!.aborted).toBe(true);
+            // The answer after the run's end goes nowhere: no reply, and no rejection on this thread.
+            late.resolve("late");
+            await nextTurn();
         });
 
         it("refuses a host context's regex after its run ended and leaves the next run alone", async () => {
@@ -511,7 +639,6 @@ describe("the shared pool", () => {
         });
 
         it("kills only the owner when a spawned regex times out, and cancels that run's host calls", async () => {
-            const two = makePool({ size: 2, maxSize: 2 });
             let hostAborted = false;
             const lore: LuaHost = {
                 async: {
@@ -521,38 +648,48 @@ describe("the shared pool", () => {
                     },
                 },
             };
-            const [victim, bystander] = await Promise.all([
-                two.runLua(task("probe = async(function(id) return lore():await() end)"), { host: lore }),
-                two.runLua(task(`${ASYNC} probe = async(function(id) return slowDone(1500) end)`), { host: slowHost }),
-            ]);
-            expect(victim.res).toBeUndefined();
-            expect(victim.error).toBe("Regex timed out");
-            expect(hostAborted).toBe(true);
-            expect(bystander.res).toBe("done");
-            expect(two.stats().terminated).toBe(1);
+            const before = owners.stats().terminated;
+            const bystander = heldHost();
+            const kept = owners.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host: bystander.host,
+            });
+            try {
+                // The bystander is running on the other worker when the owner's worker is killed.
+                await bystander.entered;
+                const victim = await owners.runLua(task("probe = async(function(id) return lore():await() end)"), {
+                    host: lore,
+                });
+                expect(victim.res).toBeUndefined();
+                expect(victim.error).toBe("Regex timed out");
+                expect(hostAborted).toBe(true);
+                expect(owners.stats().terminated).toBe(before + 1);
+            } finally {
+                bystander.release("done");
+            }
+            expect((await kept).res).toBe("done");
         });
 
         it("ignores a host answer that arrives after its worker was killed", async () => {
-            let lateSignal: AbortSignal | null = null;
+            let held: HostContext | null = null;
+            const entered = deferred<void>();
+            const late = deferred<string>();
             const host: LuaHost = {
-                async: {
-                    hold: (_args, ctx) =>
-                        new Promise((resolve) => {
-                            lateSignal = ctx.signal;
-                            setTimeout(() => resolve("late"), 1500);
-                        }),
-                },
+                async: { hold: (_args, ctx) => ((held = ctx), entered.resolve(), late.promise) },
             };
-            const r = await pool.runLua(
-                task(`function probe(id) hold(id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }),
-                {
-                    host,
-                },
-            );
-            expect(r.timedOut).toBe(true);
-            expect(lateSignal!.aborted).toBe(true);
-            await sleep(1600);
-            const next = await pool.runLua(task("function probe(id) return 'next' end"));
+            const before = killed.stats().terminated;
+            const run = killed.runLua(task("probe = async(function(id) return hold():await() end)"), { host });
+            await entered.promise;
+            // A regex on the run's own worker that never ends: its deadline kills that worker while
+            // the host call is still unanswered.
+            expect(await held!.regex(REDOS)).toEqual({ error: "Script worker terminated", timedOut: true });
+            expect(await run).toMatchObject({ timedOut: true, error: "Regex timed out", res: undefined });
+            expect(killed.stats().terminated).toBe(before + 1);
+            expect(held!.signal.aborted).toBe(true);
+            // The late answer reaches no worker and leaves no rejection on this thread; the pool's
+            // other worker serves the next run.
+            late.resolve("late");
+            await nextTurn();
+            const next = await killed.runLua(task("function probe(id) return 'next' end"));
             expect(next.res).toBe("next");
         });
 
@@ -595,33 +732,50 @@ describe("the shared pool", () => {
         });
 
         it("lets queued runs sharing a budget spend it once", async () => {
-            const one = makePool({ size: 1, maxSize: 1 });
             const budget = createLuaBudget(100);
-            const results = await Promise.all(
-                Array.from({ length: 4 }, () =>
-                    one.runLua(task(`function probe(id) ${spin(0.075)} return 'done' end`), { budget }),
-                ),
-            );
-            expect(results.filter((r) => r.res === "done")).toHaveLength(1);
-            expect(results.filter((r) => r.error === "aggregate Lua execution budget exhausted")).toHaveLength(3);
+            const blocker = heldHost();
+            // An unbudgeted run holds the only slot, so all four budgeted runs queue unreserved.
+            const held = single.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host: blocker.host,
+            });
+            let runs: ReturnType<ScriptWorkerPool["runLua"]>[] = [];
+            try {
+                await blocker.entered;
+                runs = Array.from({ length: 4 }, () => single.runLua(task("while true do end"), { budget }));
+                expect(single.stats().queued).toBe(4);
+                expect(budget).toMatchObject({ usedMs: 0, reservedMs: 0 });
+            } finally {
+                blocker.release();
+            }
+            expect((await held).res).toBe("go");
+            const results = await Promise.all(runs);
+            // The first takes the whole allowance and is cut past it (only the hook can cut here);
+            // the others start after its charge and find nothing left.
+            expect(results[0]).toMatchObject({ timedOut: true, error: LUA_BUDGET_ERROR });
+            expect(results[0].cpuMs).toBeGreaterThanOrEqual(100);
+            for (const refused of results.slice(1)) {
+                expect(refused).toMatchObject({ timedOut: true, error: AGGREGATE_ERROR, cpuMs: 0 });
+            }
             expect(budget.reservedMs).toBe(0);
-            expect(budget.usedMs).toBeLessThanOrEqual(200);
+            expect(budget.usedMs).toBe(results.reduce((sum, r) => sum + r.cpuMs, 0));
         });
 
         it("reserves each concurrent run's allowance so two workers cannot overspend", async () => {
-            const two = makePool({ size: 2, maxSize: 2 });
             const budget = createLuaBudget(100);
+            const before = pool.stats();
             // An unbounded loop ends only through the worker's count hook. A spin bounded by wall time
             // can outrun a starved hook: a scheduling gap that straddles the allowance and the spin's
             // end lets the run return before the hook observed the limit.
-            const results = await Promise.all(
-                Array.from({ length: 4 }, () =>
-                    two.runLua(task("function probe(id) while true do end end", "probe", { cpuMs: 50 }), { budget }),
-                ),
+            const runs = Array.from({ length: 4 }, () =>
+                pool.runLua(task("function probe(id) while true do end end", "probe", { cpuMs: 50 }), { budget }),
             );
+            // The two allowances are reserved as the runs start, so the other two are refused at once:
+            // neither queued nor given a worker of their own.
+            expect(pool.stats()).toMatchObject({ busy: before.busy + 2, queued: 0, spawned: before.spawned });
+            const results = await Promise.all(runs);
             expect(results.every((r) => r.timedOut === true)).toBe(true);
-            const refused = results.filter((r) => r.error === "aggregate Lua execution budget exhausted");
-            const cut = results.filter((r) => r.error === "Lua CPU budget exceeded (timeout)");
+            const refused = results.filter((r) => r.error === AGGREGATE_ERROR);
+            const cut = results.filter((r) => r.error === LUA_BUDGET_ERROR);
             expect(refused).toHaveLength(2);
             // Each admitted run is cut once past its own allowance; the charge grows only with the gap
             // between the hook's checks, never with a second allowance.
@@ -631,23 +785,29 @@ describe("the shared pool", () => {
         });
 
         it("releases the reservation of an aborted run", async () => {
-            const budget = createLuaBudget(1000);
+            const budget = createLuaBudget(LONG_MS);
             const controller = new AbortController();
-            setTimeout(() => controller.abort(), 50);
-            const aborted = await pool.runLua(task(`${ASYNC} probe = async(function(id) return slowDone(5000) end)`), {
-                host: slowHost,
+            const { host, entered } = heldHost();
+            const run = pool.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host,
                 budget,
                 signal: controller.signal,
             });
+            await entered;
+            expect(budget.reservedMs).toBe(LONG_MS);
+            controller.abort();
+            const aborted = await run;
             expect(aborted.aborted).toBe(true);
             expect(budget.reservedMs).toBe(0);
-            expect(budget.usedMs).toBeLessThan(100);
+            // Charged what it ran, not the reservation.
+            expect(budget.usedMs).toBe(aborted.cpuMs);
+            expect(budget.usedMs).toBeLessThan(LONG_MS);
             const next = await pool.runLua(task("function probe(id) return 'ok' end"), { budget });
             expect(next.res).toBe("ok");
         });
 
         it("charges a run whose result is dropped as invalid", async () => {
-            const budget = createLuaBudget(1000);
+            const budget = createLuaBudget(LONG_MS);
             const r = await pool.runLua(
                 task(`function onInput(id) ${spin(0.075)} return function() end end`, "input"),
                 {
@@ -657,26 +817,32 @@ describe("the shared pool", () => {
             expect(r.res).toBeUndefined();
             expect(r.error).toBeUndefined();
             expect(r.cpuMs).toBeGreaterThanOrEqual(50);
-            expect(budget.usedMs).toBeGreaterThanOrEqual(50);
+            expect(budget.usedMs).toBe(r.cpuMs);
             expect(budget.reservedMs).toBe(0);
         });
 
         it("charges the job budget across runs and refuses the run past it", async () => {
-            const budget = createLuaBudget(400);
-            const first = await pool.runLua(task("while true do end", "probe", { cpuMs: 300 }), { budget });
-            const second = await pool.runLua(task("while true do end", "probe", { cpuMs: 300 }), { budget });
+            // Earlier runs of the job have used 700 ms of 1000.
+            const budget = { ...createLuaBudget(1000), usedMs: 700 };
+            const run = pool.runLua(task("while true do end"), { budget });
+            // A run asking for far more is given the remainder, reserved as it starts.
+            expect(budget.reservedMs).toBe(300);
+            const second = await run;
+            expect(second).toMatchObject({ timedOut: true, error: LUA_BUDGET_ERROR });
+            expect(second.cpuMs).toBeGreaterThanOrEqual(300);
+            expect(budget.usedMs).toBe(700 + second.cpuMs);
             const third = await pool.runLua(task("function probe(id) return 1 end"), { budget });
-            expect(first.timedOut).toBe(true);
-            expect(first.cpuMs).toBeGreaterThanOrEqual(250);
-            expect(second.timedOut).toBe(true);
-            expect(second.cpuMs).toBeLessThan(250);
-            expect(third.error).toBe("aggregate Lua execution budget exhausted");
-            expect(budget.usedMs).toBeGreaterThanOrEqual(400);
+            expect(third.error).toBe(AGGREGATE_ERROR);
             expect(budget.reservedMs).toBe(0);
         });
     });
 
     describe("transport and caps", () => {
+        // A one-slot pool the queue-cap case disposes with its queue full.
+        const queueCap = makePool({ size: 1, maxSize: 1 });
+        beforeAll(() => queueCap.warm(), BOOT_TIMEOUT_MS);
+        afterAll(() => queueCap.dispose());
+
         it("fails only the call for a host answer that cannot cross, with no unhandled rejection", async () => {
             const host: LuaHost = { async: { fn: async () => () => 42 } };
             const r = await pool.runLua(
@@ -686,7 +852,8 @@ describe("the shared pool", () => {
                 { host },
             );
             expect(r.res).toBe("falsefn: host function result must be a string, number, boolean, or nil");
-            await sleep(20);
+            // Let this thread report a rejection the refused answer could have left behind.
+            await nextTurn();
         });
 
         it("drops a non-primitive result in every dispatch mode", async () => {
@@ -769,31 +936,37 @@ describe("the shared pool", () => {
         });
 
         it("answers regex operations with groups, and caps amplified captures and entry counts", async () => {
-            expect(await pool.regex({ op: "exec", pattern: "(?<word>b)(c)?", flags: "", input: "abc" })).toEqual({
+            expect(await pool.regex({ op: "exec", pattern: "(?<word>b)(c)?", flags: "", input: "abc" }, SANE)).toEqual({
                 value: { index: 1, match: "bc", groups: ["b", "c"], named: { word: "b" } },
             });
-            expect(await pool.regex({ op: "split", pattern: ",", flags: "", input: "a,b" })).toEqual({
+            expect(await pool.regex({ op: "split", pattern: ",", flags: "", input: "a,b" }, SANE)).toEqual({
                 value: ["a", "b"],
             });
-            expect(await pool.regex({ op: "matches", pattern: "a", flags: "g", input: "aXa" })).toEqual({
+            expect(await pool.regex({ op: "matches", pattern: "a", flags: "g", input: "aXa" }, SANE)).toEqual({
                 value: [
                     { index: 0, match: "a", groups: [], named: null },
                     { index: 2, match: "a", groups: [], named: null },
                 ],
             });
-            expect(await pool.regex({ op: "matches", pattern: "a", flags: "", input: "aXa" })).toEqual({
+            expect(await pool.regex({ op: "matches", pattern: "a", flags: "", input: "aXa" }, SANE)).toEqual({
                 value: [{ index: 0, match: "a", groups: [], named: null }],
             });
-            const invalid = await pool.regex({ op: "test", pattern: "(", flags: "", input: "" });
+            const invalid = await pool.regex({ op: "test", pattern: "(", flags: "", input: "" }, SANE);
             expect("error" in invalid && /Invalid regular expression/.test(invalid.error)).toBe(true);
-            const amplified = await pool.regex({
-                op: "matches",
-                pattern: "(?=(.{5000}))",
-                flags: "g",
-                input: "x".repeat(10_000),
-            });
+            const amplified = await pool.regex(
+                {
+                    op: "matches",
+                    pattern: "(?=(.{5000}))",
+                    flags: "g",
+                    input: "x".repeat(10_000),
+                },
+                SANE,
+            );
             expect("error" in amplified && /larger than/.test(amplified.error)).toBe(true);
-            const parts = await pool.regex({ op: "split", pattern: "(b)", flags: "", input: "ab".repeat(200_000) });
+            const parts = await pool.regex(
+                { op: "split", pattern: "(b)", flags: "", input: "ab".repeat(200_000) },
+                SANE,
+            );
             expect(parts).toEqual({ error: "More than 100000 parts" });
         });
 
@@ -831,32 +1004,47 @@ describe("the shared pool", () => {
         );
 
         it("fails the task past the queue cap at once", async () => {
-            const one = makePool({ size: 1, maxSize: 1 });
-            let release!: () => void;
-            const host: LuaHost = {
-                async: { hold: () => new Promise<string>((resolve) => (release = () => resolve("go"))) },
-            };
-            const blocker = one.runLua(task("probe = async(function(id) return hold():await() end)"), { host });
-            // The worker holds the slot once it called `hold` (a fixed wait is too short under load).
-            for (let i = 0; i < 400 && release === undefined; i++) {
-                await sleep(25);
-            }
-            expect(release).toBeDefined();
+            const blocker = heldHost();
+            const held = queueCap.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host: blocker.host,
+            });
+            await blocker.entered;
             const queued = Array.from({ length: MAX_QUEUED_TASKS }, () =>
-                one.regex({ op: "test", pattern: "a", flags: "", input: "a" }),
+                queueCap.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE),
             );
-            expect(one.stats().queued).toBe(MAX_QUEUED_TASKS);
-            expect(await one.regex({ op: "test", pattern: "a", flags: "", input: "a" })).toEqual({
+            expect(queueCap.stats().queued).toBe(MAX_QUEUED_TASKS);
+            expect(await queueCap.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE)).toEqual({
                 error: "The script queue is full",
             });
-            release();
-            expect((await blocker).res).toBe("go");
+            // Disposal settles the full queue without running it (running it is the slow case below).
+            await queueCap.dispose();
+            expect((await held).error).toBe("The script workers are disposed");
+            const results = await Promise.all(queued);
+            expect(results.every((r) => "error" in r && r.error === "The script workers are disposed")).toBe(true);
+        });
+
+        it("runs every task the full queue held once the slot frees", { tags: ["slow"], timeout: 20_000 }, async () => {
+            const blocker = heldHost();
+            const held = single.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                host: blocker.host,
+            });
+            await blocker.entered;
+            const queued = Array.from({ length: MAX_QUEUED_TASKS }, () =>
+                single.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE),
+            );
+            expect(single.stats().queued).toBe(MAX_QUEUED_TASKS);
+            blocker.release();
+            expect((await held).res).toBe("go");
             const results = await Promise.all(queued);
             expect(results.every((r) => "value" in r && r.value === true)).toBe(true);
         });
     });
 
     describe("egress through the pool", () => {
+        const capped = makePool({ size: 1, maxSize: 1, sleepCaps: { perCallMs: 200, perRunMs: 600 } });
+        beforeAll(() => capped.warm(), BOOT_TIMEOUT_MS);
+        afterAll(() => capped.dispose());
+
         it("gives request to low-level runs only, through the guard and the pool's own window", async () => {
             let fetches = 0;
             const guarded = makePool({
@@ -909,8 +1097,6 @@ describe("the shared pool", () => {
         });
 
         it("caps sleep per call and per run at the pool's sleepCaps", async () => {
-            const capped = makePool({ size: 1, maxSize: 1, sleepCaps: { perCallMs: 200, perRunMs: 600 } });
-            await capped.warm();
             const timers = vi.spyOn(globalThis, "setTimeout");
             try {
                 const [r, ms] = await timed(() =>
@@ -934,6 +1120,131 @@ describe("the shared pool", () => {
     });
 });
 
+describe("the watchdog on a controlled busy time", () => {
+    const graced = makePool({ size: 1, maxSize: 1, watchdogGraceMs: 50 });
+    const givingUp = makePool({ size: 1, maxSize: 1, watchdogGraceMs: 100, syncHostTimeoutMs: 30_000 });
+    beforeAll(() => Promise.all([graced.warm(), givingUp.warm()]), BOOT_TIMEOUT_MS);
+    afterAll(() => Promise.all([graced.dispose(), givingUp.dispose()]));
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    /**
+     * Starts a run on a warm worker with the watchdog's interval faked, and replaces that worker's
+     * busy-time reading with `setActive`'s value. From the run's host entry on, a case that does not
+     * yield sees no message from the worker, so only this clock moves the watchdog.
+     */
+    function runOnControlledClock(pool: ScriptWorkerPool, code: string, cpuMs: number, host: LuaHost) {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const posted = vi.spyOn(Worker.prototype, "postMessage");
+        const run = pool.runLua(task(code, "probe", { cpuMs }), { host });
+        // A warm worker takes the run at once: the task is the last message posted.
+        const worker = posted.mock.contexts.at(-1) as Worker;
+        let active = 0;
+        Object.defineProperty(worker, "performance", {
+            value: { eventLoopUtilization: () => ({ idle: 0, active, utilization: 1 }) },
+            configurable: true,
+        });
+        return { run, setActive: (ms: number) => (active = ms) };
+    }
+
+    it("terminates the worker once the run's charged time passes its budget plus the watchdog grace", async () => {
+        const before = graced.stats().terminated;
+        const { host, entered } = heldHost();
+        const { run, setActive } = runOnControlledClock(
+            graced,
+            "probe = async(function(id) return hold():await() end)",
+            LONG_MS,
+            host,
+        );
+        await entered;
+        setActive(LONG_MS + 50);
+        vi.advanceTimersByTime(50);
+        expect(graced.stats().terminated).toBe(before);
+        setActive(LONG_MS + 51);
+        vi.advanceTimersByTime(50);
+        expect(graced.stats().terminated).toBe(before + 1);
+        expect(await run).toMatchObject({ timedOut: true, error: WATCHDOG_ERROR, cpuMs: LONG_MS + 51 });
+    });
+
+    it("leaves out an unanswered synchronous call only up to the worker's own give-up", async () => {
+        const before = givingUp.stats().terminated;
+        const entered = deferred<void>();
+        const host: LuaHost = { sync: { never: () => (entered.resolve(), new Promise(() => {})) } };
+        const now = vi.spyOn(performance, "now").mockReturnValue(0);
+        const { run, setActive } = runOnControlledClock(
+            givingUp,
+            "function probe(id) never(id) return 1 end",
+            LONG_MS,
+            host,
+        );
+        await entered.promise;
+        // 27,000 ms into the call, all of it the call's: LONG_MS + 100 charged, exactly at the limit.
+        now.mockReturnValue(27_000);
+        setActive(LONG_MS + 27_100);
+        vi.advanceTimersByTime(50);
+        expect(givingUp.stats().terminated).toBe(before);
+        // Past the worker's 30,000 ms give-up the call stops counting as the host's.
+        now.mockReturnValue(35_000);
+        setActive(LONG_MS + 30_201);
+        vi.advanceTimersByTime(50);
+        expect(givingUp.stats().terminated).toBe(before + 1);
+        expect(await run).toMatchObject({ timedOut: true, error: WATCHDOG_ERROR, cpuMs: LONG_MS + 201 });
+    });
+
+    it(
+        "gives the server context's pool the graces of createTestServer's scriptWorkerOptions",
+        // The server pool's two workers boot cold here.
+        { timeout: BOOT_TIMEOUT_MS },
+        async () => {
+            // At the production graces (1000 and 500 ms) neither kill below would happen.
+            const server = createTestServer({ scriptWorkerOptions: { watchdogGraceMs: 50, abortGraceMs: 10 } });
+            // The pool resolves `json.lua` under the server's root at its first spawn.
+            mkdirSync(path.join(server.rootDir, "public"));
+            symlinkSync(path.join(REPO_ROOT, "public/lua"), path.join(server.rootDir, "public/lua"), "dir");
+            const pool = server.context.scriptWorkers;
+            let disposing: Promise<void> | undefined;
+            try {
+                await pool.warm();
+                const watched = heldHost();
+                const { run, setActive } = runOnControlledClock(
+                    pool,
+                    "probe = async(function(id) return hold():await() end)",
+                    LONG_MS,
+                    watched.host,
+                );
+                await watched.entered;
+                setActive(LONG_MS + 51);
+                vi.advanceTimersByTime(50);
+                expect(pool.stats().terminated).toBe(1);
+                expect(await run).toMatchObject({ timedOut: true, error: WATCHDOG_ERROR, cpuMs: LONG_MS + 51 });
+                vi.useRealTimers();
+
+                // The pool's other warm worker takes this run.
+                const controller = new AbortController();
+                const held = heldHost();
+                const aborted = pool.runLua(task("probe = async(function(id) return hold():await() end)"), {
+                    host: held.host,
+                    signal: controller.signal,
+                });
+                await held.entered;
+                vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+                controller.abort();
+                vi.advanceTimersByTime(10);
+                expect(pool.stats().terminated).toBe(2);
+                expect(await aborted).toMatchObject({ aborted: true, error: "request aborted", res: undefined });
+            } finally {
+                // The replacements hold boot timers on whichever clock was faked: dispose before restoring.
+                disposing = pool.dispose();
+                vi.useRealTimers();
+            }
+            await disposing;
+            await server.close();
+        },
+    );
+});
+
 describe("the watchdog after a synchronous call timed out in the worker", () => {
     it(
         "charges a C-level runaway that follows the worker's own 10 s give-up",
@@ -955,21 +1266,24 @@ describe("the watchdog after a synchronous call timed out in the worker", () => 
         },
     );
 
-    it("charges a C-level runaway that follows a shortened give-up (syncHostTimeoutMs)", async () => {
-        const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000, syncHostTimeoutMs: 1000 });
-        const [r, ms] = await timed(() =>
-            one.runLua(task(`function probe(id) pcall(never, id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }), {
-                host: { sync: { never: () => new Promise(() => {}) } },
-            }),
-        );
-        expect(r.error).toBe("Lua execution limit exceeded (worker terminated)");
-        expect(r.timedOut).toBe(true);
-        expect(ms).toBeGreaterThanOrEqual(1000);
-        expect(ms).toBeLessThan(7000);
-    }, 20_000);
+    it(
+        "charges a C-level runaway that follows a shortened give-up (syncHostTimeoutMs)",
+        { tags: ["slow"], timeout: 20_000 },
+        async () => {
+            const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000, syncHostTimeoutMs: 1000 });
+            const r = await one.runLua(
+                task(`function probe(id) pcall(never, id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }),
+                { host: { sync: { never: () => new Promise(() => {}) } } },
+            );
+            expect(r.error).toBe(WATCHDOG_ERROR);
+            expect(r.timedOut).toBe(true);
+        },
+    );
 });
 
-describe("worker readiness", () => {
+// Most cases boot a fresh worker, and the boot is their subject: the deadlines they check are on faked
+// timers or out of reach, and only this timeout bounds the real boot.
+describe("worker readiness", { timeout: BOOT_TIMEOUT_MS }, () => {
     const simpleRegex = { op: "test" as const, pattern: "a", flags: "", input: "a" };
 
     afterEach(() => {
@@ -1002,12 +1316,10 @@ describe("worker readiness", () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const now = vi.spyOn(performance, "now").mockReturnValue(0);
         const pool = makePool({ size: 1, maxSize: 1, wallMs: 100 });
-        const budget = createLuaBudget(1000);
+        const budget = createLuaBudget(2 * LONG_MS);
         try {
-            const held = pool.runLua(task("function probe(id) return 'ready' end", "probe", { cpuMs: 100 }), {
-                budget,
-            });
-            expect(budget).toMatchObject({ usedMs: 0, reservedMs: 100 });
+            const held = pool.runLua(task("function probe(id) return 'ready' end"), { budget });
+            expect(budget).toMatchObject({ usedMs: 0, reservedMs: LONG_MS });
             now.mockReturnValue(500);
             vi.advanceTimersByTime(500);
             expect(pool.stats()).toMatchObject({ workers: 1, busy: 1, terminated: 0 });
@@ -1107,7 +1419,7 @@ describe("worker readiness", () => {
 
     it("immediately aborts a held Lua run, releases its reservation, and reuses the booting worker", async () => {
         const pool = makePool({ size: 1, maxSize: 1 });
-        const budget = createLuaBudget(1000);
+        const budget = createLuaBudget(LONG_MS);
         const controller = new AbortController();
         const logs: string[] = [];
         let result: Awaited<ReturnType<ScriptWorkerPool["runLua"]>> | undefined;
@@ -1134,84 +1446,105 @@ describe("worker readiness", () => {
 });
 
 describe("pool lifecycle", () => {
-    it("grows to maxSize under load, admits in FIFO order at saturation, and retires idle workers", async () => {
-        const pool = makePool({ size: 1, maxSize: 2, idleMs: 200 });
-        const entered: number[] = [];
-        const releases = Array.from({ length: 4 }, () => deferred<string>());
-        const host: LuaHost = {
-            async: {
-                hold: ([index]) => {
-                    const i = Number(index);
-                    entered.push(i);
-                    return releases[i].promise;
-                },
-            },
-        };
-        // Submit every task before observing entry; cold workers may enter 0 and 1 in either order.
-        const runs = Array.from({ length: 4 }, (_, i) =>
-            pool.runLua(task(`probe = async(function(id) return hold(${i}):await() end)`), { host }),
-        );
-        try {
-            await vi.waitFor(() => expect(entered).toHaveLength(2), { timeout: 5000 });
-            expect([...entered].sort()).toEqual([0, 1]);
-            expect(pool.stats()).toMatchObject({ workers: 2, busy: 2, queued: 2 });
-            releases[entered[0]].resolve("done");
-            await vi.waitFor(() => expect(entered).toHaveLength(3), { timeout: 5000 });
-            expect(entered[2]).toBe(2);
-            releases[entered[1]].resolve("done");
-            await vi.waitFor(() => expect(entered).toHaveLength(4), { timeout: 5000 });
-            expect(entered[3]).toBe(3);
-        } finally {
-            releases.forEach((release) => release.resolve("done"));
-        }
-        const results = await Promise.all(runs);
-        expect(results.every((r) => r.res === "done")).toBe(true);
-        await vi.waitFor(() => expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, terminated: 1 }), {
-            timeout: 5000,
-        });
-        expect((await pool.runLua(task("function probe(id) return 'still' end"))).res).toBe("still");
-    }, 20_000);
+    const disposedAfterWarm = makePool({ size: 2, maxSize: 2 });
+    const disposedBusy = makePool({ size: 1, maxSize: 1 });
+    const replacing = makePool({ size: 1, maxSize: 1 });
+    beforeAll(() => Promise.all([disposedAfterWarm.warm(), disposedBusy.warm(), replacing.warm()]), BOOT_TIMEOUT_MS);
+    afterAll(() => Promise.all([disposedAfterWarm.dispose(), disposedBusy.dispose(), replacing.dispose()]));
+
+    it(
+        "grows to maxSize under load, admits in FIFO order at saturation, and retires idle workers",
+        // The second worker's boot is the subject.
+        { timeout: BOOT_TIMEOUT_MS },
+        async () => {
+            // Faked before the pool exists, so the boot caps and the idle timers are all on this clock.
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const pool = makePool({ size: 1, maxSize: 2, idleMs: 200 });
+            try {
+                const order: number[] = [];
+                const entered = Array.from({ length: 4 }, () => deferred<void>());
+                const releases = Array.from({ length: 4 }, () => deferred<string>());
+                const host: LuaHost = {
+                    async: {
+                        hold: ([index]) => {
+                            const i = Number(index);
+                            order.push(i);
+                            entered[i].resolve();
+                            return releases[i].promise;
+                        },
+                    },
+                };
+                // Submit every task before observing entry; cold workers may enter 0 and 1 in either order.
+                const runs = Array.from({ length: 4 }, (_, i) =>
+                    pool.runLua(task(`probe = async(function(id) return hold(${i}):await() end)`), { host }),
+                );
+                try {
+                    await Promise.all([entered[0].promise, entered[1].promise]);
+                    expect(pool.stats()).toMatchObject({ workers: 2, busy: 2, queued: 2 });
+                    // Each freed slot takes the oldest queued task, and only one does.
+                    releases[order[0]].resolve("done");
+                    await entered[2].promise;
+                    expect(order.slice(2)).toEqual([2]);
+                    releases[order[1]].resolve("done");
+                    await entered[3].promise;
+                    expect(order.slice(2)).toEqual([2, 3]);
+                } finally {
+                    releases.forEach((release) => release.resolve("done"));
+                }
+                const results = await Promise.all(runs);
+                expect(results.every((r) => r.res === "done")).toBe(true);
+                // Both workers went idle with two workers in the pool; the one above `size` retires.
+                vi.advanceTimersByTime(199);
+                expect(pool.stats()).toMatchObject({ workers: 2, busy: 0, terminated: 0 });
+                vi.advanceTimersByTime(1);
+                expect(pool.stats()).toMatchObject({ workers: 1, busy: 0, terminated: 1 });
+                expect((await pool.runLua(task("function probe(id) return 'still' end"))).res).toBe("still");
+            } finally {
+                await pool.dispose();
+                vi.useRealTimers();
+            }
+        },
+    );
 
     it("leaves no worker behind when disposed after warm()", async () => {
-        const pool = makePool({ size: 2, maxSize: 2 });
-        pool.warm();
-        expect((await pool.runLua(task("function probe(id) return 1 end"))).res).toBe(1);
-        await sleep(200);
-        expect(pool.stats()).toMatchObject({ workers: 2, spawned: 2, terminated: 0 });
-        const first = pool.dispose();
-        expect(pool.dispose()).toBe(first);
+        expect(disposedAfterWarm.stats()).toMatchObject({ workers: 2, busy: 0, spawned: 2, terminated: 0 });
+        const first = disposedAfterWarm.dispose();
+        expect(disposedAfterWarm.dispose()).toBe(first);
         await first;
-        expect(pool.stats()).toMatchObject({ workers: 0, spawned: 2, terminated: 2 });
-        await sleep(100);
-        expect(pool.stats()).toMatchObject({ workers: 0, spawned: 2 });
+        expect(disposedAfterWarm.stats()).toMatchObject({ workers: 0, spawned: 2, terminated: 2 });
     });
 
     it("fails the running and queued tasks on dispose and refuses new ones", async () => {
-        const pool = makePool({ size: 1, maxSize: 1 });
-        const running = pool.runLua(task(`${ASYNC} probe = async(function(id) return slowDone(5000) end)`), {
-            host: slowHost,
-        });
-        await sleep(100);
-        const queued = pool.regex({ op: "test", pattern: "a", flags: "", input: "a" });
-        await pool.dispose();
+        const { host, entered } = heldHost();
+        const running = disposedBusy.runLua(task("probe = async(function(id) return hold():await() end)"), { host });
+        await entered;
+        const queued = disposedBusy.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE);
+        expect(disposedBusy.stats().queued).toBe(1);
+        await disposedBusy.dispose();
         expect((await running).error).toBe("The script workers are disposed");
         expect(await queued).toEqual({ error: "The script workers are disposed" });
-        expect((await pool.runLua(task("return 1"))).error).toBe("The script workers are disposed");
-        expect(await pool.regex({ op: "test", pattern: "a", flags: "", input: "a" })).toEqual({
+        expect((await disposedBusy.runLua(task("return 1"))).error).toBe("The script workers are disposed");
+        expect(await disposedBusy.regex({ op: "test", pattern: "a", flags: "", input: "a" })).toEqual({
             error: "The script workers are disposed",
         });
     });
 
-    it("replaces a terminated worker when the pool is warm", async () => {
-        const pool = makePool({ size: 1, maxSize: 1 });
-        pool.warm();
-        // A Lua run waits for the worker's engines, so the worker has reported ready by its end; a
-        // worker killed while still booting is not replaced ahead of demand.
-        expect((await pool.runLua(task("function probe(id) return 1 end"))).res).toBe(1);
-        expect(await pool.regex(REDOS)).toEqual({ error: "Regex timed out", timedOut: true });
-        expect(pool.stats()).toMatchObject({ workers: 1, spawned: 2, terminated: 1 });
-        expect(await pool.regex({ op: "test", pattern: "a", flags: "", input: "a" })).toEqual({ value: true });
-    });
+    it(
+        "replaces a terminated worker when the pool is warm",
+        // The replacement's boot is the subject.
+        { timeout: BOOT_TIMEOUT_MS },
+        async () => {
+            // REDOS never ends, so the short deadline is certain to kill the worker.
+            expect(await replacing.regex(REDOS, { deadlineMs: 100 })).toEqual({
+                error: "Regex timed out",
+                timedOut: true,
+            });
+            expect(replacing.stats()).toMatchObject({ workers: 1, spawned: 2, terminated: 1 });
+            expect(await replacing.regex({ op: "test", pattern: "a", flags: "", input: "a" }, SANE)).toEqual({
+                value: true,
+            });
+        },
+    );
 
     it("reports a broken setup in the task's result instead of looping", async () => {
         const root = mkdtempSync(path.join(os.tmpdir(), "risu-no-json-lua-"));

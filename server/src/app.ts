@@ -81,7 +81,7 @@ import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
-import { createScriptWorkerPool } from "./scripts/workerPool.ts";
+import { createScriptWorkerPool, type ScriptWorkerPoolOptions } from "./scripts/workerPool.ts";
 import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import type { AppEnv } from "./types.ts";
@@ -113,6 +113,8 @@ export function createServerContext(options: {
     trustProxy?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
+    /** The script workers' watchdog and abort graces (tests change them; the defaults are the production ones). */
+    scriptWorkerOptions?: Pick<ScriptWorkerPoolOptions, "watchdogGraceMs" | "abortGraceMs">;
     maxImportBytes?: number;
     generationRunner?: GenerationRunner;
     /** The default runner's random source (`presetChain`, the group order); default `Math.random`. */
@@ -296,7 +298,7 @@ export function createServerContext(options: {
     /** The one `upgrade` listener per HTTP server (generation jobs, live updates). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
-    const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
+    const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir, ...options.scriptWorkerOptions });
     // Web Push for chat completions: its keys and subscriptions live in `save/server/`, beside the
     // password.
     const push = createPushService({
