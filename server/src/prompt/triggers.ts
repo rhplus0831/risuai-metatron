@@ -264,6 +264,28 @@ export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
     const now = host.now ?? (() => performance.now());
     let lastEffectYieldAt = now();
+    /**
+     * Awaits a wait that lets the event loop run with nothing computed after it on this thread (an
+     * alert answer, `v2Wait`, a worker regex): when a macrotask ran during this await, the thread was
+     * not held meanwhile, so a new 50 ms stretch starts where it resumed. The effects after it then do
+     * not yield at once, which would split the resumed effect's writes from theirs. Other awaits (Lua,
+     * a command, an image, a similarity, an LLM call, a token count) compute after their own await or
+     * may not let the loop run, so they keep charging toward the next yield.
+     */
+    const resumed = async <T>(pending: Promise<T>): Promise<T> => {
+        let turned = false;
+        const marker = setImmediate(() => {
+            turned = true;
+        });
+        try {
+            return await pending;
+        } finally {
+            clearImmediate(marker);
+            if (turned) {
+                lastEffectYieldAt = now();
+            }
+        }
+    };
 
     /** A fatal failure or the run's abort is never turned into an effect's fallback value. */
     const rethrowFatal = (error: unknown) => {
@@ -274,7 +296,7 @@ export function createTriggerRuntime(host: TriggerHost) {
 
     /** A worker regex task: an ordinary failure comes back as `{ error }`; an abort rejects. */
     const regex = async (op: RegexOp) => {
-        const result = await ctx.regex(op);
+        const result = await resumed(ctx.regex(op));
         services.fence(ctx);
         return result;
     };
@@ -302,6 +324,7 @@ export function createTriggerRuntime(host: TriggerHost) {
         // Every run (a nested `v2RunTrigger`, a `/trigger` inside `v2Command`) starts on a turn of
         // its own: a privileged recursion has no depth limit, so the effect limit ends it, not the stack.
         await yieldTurn();
+        lastEffectYieldAt = now();
         services.fence(ctx);
         // Always a copy: display and request runs edit their lore effects on it, not on a stored record.
         const char = triggerCopy(sourceChar);
@@ -778,6 +801,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             loopCounters["loopTimes"] = (loopCounters["loopTimes"] ?? 0) + 1;
                             if (loopCounters["loopTimes"] > 100) {
                                 await yieldTurn();
+                                lastEffectYieldAt = now();
                                 services.fence(ctx);
                                 loopCounters["loopTimes"] = 0;
                             }
@@ -1390,12 +1414,14 @@ export function createTriggerRuntime(host: TriggerHost) {
                         if (arg.displayMode) {
                             return undefined;
                         }
-                        const answer = await services.ask(
-                            {
-                                kind: "alertInput",
-                                payload: { message: operand(effect.displayType, effect.display) },
-                            },
-                            ctx,
+                        const answer = await resumed(
+                            services.ask(
+                                {
+                                    kind: "alertInput",
+                                    payload: { message: operand(effect.displayType, effect.display) },
+                                },
+                                ctx,
+                            ),
                         );
                         services.fence(ctx);
                         setVar(parse(effect.outputVar), typeof answer === "string" ? answer : String(answer ?? ""));
@@ -1408,7 +1434,9 @@ export function createTriggerRuntime(host: TriggerHost) {
                         const display = operand(effect.displayType, effect.display);
                         const value = operand(effect.valueType, effect.value);
                         const options = value.split("|");
-                        const answer = await services.ask({ kind: "alertSelect", payload: { options, display } }, ctx);
+                        const answer = await resumed(
+                            services.ask({ kind: "alertSelect", payload: { options, display } }, ctx),
+                        );
                         services.fence(ctx);
                         setVar(parse(effect.outputVar), typeof answer === "string" ? answer : String(answer ?? ""));
                         break;
@@ -1468,7 +1496,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             effect.valueType === "value"
                                 ? Number(parse(effect.value))
                                 : Number(getVar(parse(effect.value)));
-                        await abortableSleep(Math.max(0, value * 1000) || 0, ctx.signal);
+                        await resumed(abortableSleep(Math.max(0, value * 1000) || 0, ctx.signal));
                         services.fence(ctx);
                         break;
                     }

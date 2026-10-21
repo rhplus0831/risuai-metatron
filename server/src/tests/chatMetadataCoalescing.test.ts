@@ -561,4 +561,78 @@ describe("chat metadata coalescing", () => {
         expect(h.counts.transactions).toBe(2);
         expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "second", $y: "second" });
     });
+
+    it("keeps an alert answer and the setters after it in one write when the event loop ran during the wait", async () => {
+        const h = setup();
+        let clock = 0;
+        // The user takes 10 s: the event loop turns while the question waits, and the clock moves.
+        vi.spyOn(h.services, "ask").mockImplementation(async () => {
+            await new Promise((resolve) => setImmediate(resolve));
+            await new Promise((resolve) => setImmediate(resolve));
+            clock = 10_000;
+            return "go";
+        });
+        h.resetCounts();
+        await h
+            .runtime(() => clock)
+            .runTrigger(
+                h.char([
+                    { type: "v2GetAlertInput", indent: 0, displayType: "value", display: "ready", outputVar: "ready" },
+                    setEffect("x", "one"),
+                    setEffect("y", "two"),
+                ] as triggerEffect[]),
+                "manual",
+                { manualName: "go", chat: structuredClone(scopeChat(h.run.scope)!) },
+            );
+        expect(h.counts.transactions).toBe(1);
+        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $ready: "go", $x: "one", $y: "two" });
+    });
+
+    it("still yields after an answer that came back without the event loop running", async () => {
+        const h = setup();
+        let clock = 0;
+        // An answer settled in microtasks (a refused or already settled question) never released the thread.
+        vi.spyOn(h.services, "ask").mockImplementation(async () => {
+            clock = 51;
+            return "go";
+        });
+        h.resetCounts();
+        await h
+            .runtime(() => clock)
+            .runTrigger(
+                h.char([
+                    { type: "v2GetAlertInput", indent: 0, displayType: "value", display: "ready", outputVar: "ready" },
+                    setEffect("x", "one"),
+                ] as triggerEffect[]),
+                "manual",
+                { manualName: "go", chat: structuredClone(scopeChat(h.run.scope)!) },
+            );
+        expect(h.counts.transactions).toBe(2);
+        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $ready: "go", $x: "one" });
+    });
+
+    it("still yields after a token count that held the thread past 50 ms without the event loop running", async () => {
+        const h = setup();
+        let clock = 0;
+        // A cached count: no macrotask runs, yet its synchronous encode spends the stretch.
+        vi.spyOn(h.services, "tokenize").mockImplementation(async () => {
+            clock = 51;
+            return 3;
+        });
+        h.resetCounts();
+        await h
+            .runtime(() => clock)
+            .runTrigger(
+                h.char([
+                    setEffect("x", "one"),
+                    { type: "v2Tokenize", indent: 0, valueType: "value", value: "text", outputVar: "n" },
+                    setEffect("y", "two"),
+                ] as triggerEffect[]),
+                "manual",
+                { manualName: "go", chat: structuredClone(scopeChat(h.run.scope)!) },
+            );
+        // `$x` flushes at the count's own await; the yield before `$y` then splits `$n` from it.
+        expect(h.counts.transactions).toBe(3);
+        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "one", $n: "3", $y: "two" });
+    });
 });
