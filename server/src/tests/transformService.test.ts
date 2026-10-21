@@ -10,6 +10,7 @@ import { ChatBindingError } from "../jobs/jobScope.ts";
 import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
 import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
+import { createLuaBudget } from "../scripts/workerPool.ts";
 
 // The script transform's service (`server/src/prompt/transform.ts`) and its cache
 // (`server/src/prompt/transformCache.ts`) on a real resource store, with script workers the test
@@ -81,6 +82,7 @@ function harness() {
             return { res: task.data };
         },
         regex: async () => ({ value: null }),
+        createBudget: () => createLuaBudget(),
     };
     const deps = {
         store,

@@ -6,7 +6,7 @@ import { encodeSecretPath, maskLlmSecrets, type FlatSecretField, type SecretPath
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
-import { createResourceTestClient, parseArchive, sleep, type ResourceTestClient } from "./testSupport.ts";
+import { createResourceTestClient, parseArchive, type ResourceTestClient } from "./testSupport.ts";
 
 // The write-only `llmSecrets`: the HTTP contract of the credential record. Every read route and the
 // PUT response answer the masked projection (`shared/llmSecrets.ts`); a plain resource write may
@@ -424,16 +424,23 @@ describe("the secret routes", () => {
 
         let release!: () => void;
         const held = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const closed = new Promise<void>((resolve) => (entered = resolve));
+        // The maintenance body runs once its listeners ran and mutations are closed.
         const maintenance = s.context.snapshots.withMaintenance(async () => {
+            entered();
             await held;
         });
-        await sleep(20);
-        const during = await s.json(target, body, { method: "PUT" });
-        expect(during.status).toBe(503);
-        expect(during.headers.get("retry-after")).toBe("5");
-        // Reads stay open.
-        expect((await s.get("llmSecrets", "main")).status).toBe(200);
-        release();
+        try {
+            await closed;
+            const during = await s.json(target, body, { method: "PUT" });
+            expect(during.status).toBe(503);
+            expect(during.headers.get("retry-after")).toBe("5");
+            // Reads stay open.
+            expect((await s.get("llmSecrets", "main")).status).toBe(200);
+        } finally {
+            release();
+        }
         await maintenance;
         expect((await s.json(target, body, { method: "PUT" })).status).toBe(200);
 

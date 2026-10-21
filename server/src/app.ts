@@ -25,6 +25,7 @@ import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createImportSlot } from "./http/fileImport.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
+import type { ServerCbsTimeLimits } from "./jobs/cbsHost.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
 import type { GenerationRunnerDeps } from "./jobs/runSetup.ts";
 import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJobs.ts";
@@ -123,7 +124,8 @@ export type RouteLimits = {
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
  * defaults are the production ones). `routeLimits` lowers the rate limits and the asset batch, backup
  * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
- * production ones).
+ * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
+ * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -166,6 +168,8 @@ export function createServerContext(options: {
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower route caps (tests reach them in a few requests); each default is the production value. */
     routeLimits?: RouteLimits;
+    /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
+    cbsTimeLimits?: ServerCbsTimeLimits;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -312,6 +316,7 @@ export function createServerContext(options: {
         llm: llmRequests,
         tokens: tokenCounter,
         rootDir: options.rootDir,
+        ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
     });
     // A restore or an import replaces the settings: live requests end, new ones wait (503).
     snapshots.onMaintenance(async () => {
@@ -358,6 +363,7 @@ export function createServerContext(options: {
         ...(options.generationHypaV3SeparatorLimits
             ? { hypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits }
             : {}),
+        ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
     // The script transform: read-only renders on the runner's services. A restore

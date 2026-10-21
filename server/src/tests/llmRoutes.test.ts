@@ -9,7 +9,6 @@ import {
     createResourceTestClient,
     createSigner,
     json,
-    sleep,
     waitFor,
     type ResourceTestClient,
 } from "./testSupport.ts";
@@ -517,13 +516,20 @@ describe("POST /api/llm/request", () => {
         const store = client.context.snapshots;
         let release!: () => void;
         const held = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const closed = new Promise<void>((resolve) => (entered = resolve));
+        // The maintenance body runs once its listeners (the llm pause) ran and mutations are closed.
         const maintenance = store.withMaintenance(async () => {
+            entered();
             await held;
         });
-        await sleep(20);
-        const during = await client.json("/api/llm/request", body(ids));
-        expect(during.status).toBe(503);
-        release();
+        try {
+            await closed;
+            const during = await client.json("/api/llm/request", body(ids));
+            expect(during.status).toBe(503);
+        } finally {
+            release();
+        }
         await maintenance;
         const after = await client.json("/api/llm/request", body(ids));
         expect(after.status).toBe(200);

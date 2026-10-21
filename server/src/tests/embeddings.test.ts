@@ -609,26 +609,34 @@ describe("HypaProcessorV2", () => {
         const held = new Promise<void>((resolve) => {
             release = resolve;
         });
+        let entered!: () => void;
+        const first = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
         const e = env({
             cache: shared,
             signal: controller.signal,
             fetch: fakeFetch({
                 calls,
                 answer: async (call) => {
+                    entered();
                     await held;
                     return defaultAnswer(call);
                 },
             }),
         });
-        const processor = new HypaProcessorV2<Meta>(e, {
-            // One request per minute: the second chunk would wait a minute for the window.
-            rateLimiter: new TaskRateLimiter({ tasksPerMinute: 1, maxConcurrentTasks: 1 }),
-        });
+        // One request per minute: the second chunk would wait a minute for the window.
+        const rateLimiter = new TaskRateLimiter({ tasksPerMinute: 1, maxConcurrentTasks: 1 });
+        const processor = new HypaProcessorV2<Meta>(e, { rateLimiter });
         const items = Array.from({ length: 51 }, (_, i) => ({ id: `r${i}`, content: `rate ${i}` }));
         const pending = processor.addTexts(items);
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await first;
         expect(calls).toHaveLength(1);
+        expect(rateLimiter.queuedTaskCount).toBe(1);
+        // The abort itself ends the waiting task, while the first request is still held (not the
+        // limiter's fail-fast after that request fails).
         controller.abort(new Error("the job ended"));
+        expect(rateLimiter.queuedTaskCount).toBe(0);
         release();
         await expect(pending).rejects.toThrow("the job ended");
         // The second chunk never went out, and nothing was stored.

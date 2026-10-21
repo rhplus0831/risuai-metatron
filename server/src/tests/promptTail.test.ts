@@ -35,13 +35,23 @@ import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitF
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
 
-type Answer = { chunks: string[]; status?: number };
+/** `paced`: each chunk is written once the owner holds the text so far, so no two chunks reach the server together. */
+type Answer = { chunks: string[]; status?: number; paced?: boolean };
 /** The provider: one scripted answer per request, in order; `fallback` once the queue is empty. */
 let answers: Answer[] = [];
 let fallback: Answer = { chunks: ["Done."] };
 const CHUNK_DELAY_MS = 20;
 /** Resolves once the current job's owner socket is open (set per job by `job()`). */
 let socketOpen: Promise<void> = Promise.resolve();
+/** The current job's owner events (`job()`), and the waiters for a text the owner's chunks rebuild. */
+let ownerEvents: any[] = [];
+let ownerWaiters: { text: string; resolve: () => void }[] = [];
+const ownerHolds = (text: string) => streamedTexts(ownerEvents).includes(text);
+function ownerEventAdded() {
+    ownerWaiters = ownerWaiters.filter((waiter) => !(ownerHolds(waiter.text) && (waiter.resolve(), true)));
+}
+const untilOwnerHolds = (text: string) =>
+    ownerHolds(text) ? Promise.resolve() : new Promise<void>((resolve) => ownerWaiters.push({ text, resolve }));
 const bodies: any[] = [];
 const provider = http.createServer(async (req, res) => {
     const parts: Buffer[] = [];
@@ -64,11 +74,16 @@ const provider = http.createServer(async (req, res) => {
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    let sent = "";
     for (const chunk of answer.chunks) {
         if (res.destroyed) {
             return;
         }
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
+        sent += chunk;
+        if (answer.paced) {
+            await untilOwnerHolds(sent);
+        }
         await sleep(CHUNK_DELAY_MS);
     }
     res.write("data: [DONE]\n\n");
@@ -308,6 +323,15 @@ async function job(
     options: JobOptions = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId);
+    // The gate and the event list are this job's before it is created: its provider request may come
+    // before the create answers.
+    let opened!: () => void;
+    socketOpen = new Promise<void>((resolve) => {
+        opened = resolve;
+    });
+    const events: any[] = [];
+    ownerEvents = events;
+    ownerWaiters = [];
     const created = await api("/api/generations", {
         method: "POST",
         body: JSON.stringify({
@@ -334,36 +358,24 @@ async function job(
         }),
     });
     if (created.status !== 200) {
+        opened();
         return { ...created, events: [], terminal: undefined };
     }
     const jobId = created.body.jobId as string;
-    let opened!: () => void;
-    socketOpen = new Promise<void>((resolve) => {
-        opened = resolve;
-    });
     const url =
         `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
         `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
     const ws = new WebSocket(url);
-    const events: any[] = [];
-    await new Promise<void>((resolve) => {
-        ws.onopen = () => {
-            opened();
-            resolve();
-        };
-        ws.onerror = () => {
-            opened();
-            resolve();
-        };
-    });
-    await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 45_000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ended = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 45_000);
         ws.onmessage = (message) => {
             const event = JSON.parse(String(message.data));
             if (event.type === "ping") {
                 return;
             }
             events.push(event);
+            ownerEventAdded();
             if (event.type === "callback") {
                 const answer = options.answerCallback?.(event) ?? { outcome: "answered", value: true };
                 ws.send(JSON.stringify({ type: "answer", id: event.id, ...answer }));
@@ -374,6 +386,17 @@ async function job(
             }
         };
     });
+    await new Promise<void>((resolve) => {
+        ws.onopen = () => {
+            opened();
+            resolve();
+        };
+        ws.onerror = () => {
+            opened();
+            resolve();
+        };
+    });
+    await ended;
     ws.close();
     return {
         ...created,
@@ -565,7 +588,7 @@ describe("the streaming tail", () => {
                 ],
             });
             await withSettings({ ttsAutoSpeech: true, notification: true }, async () => {
-                answers = [{ chunks: ["Hel", "lo", " there"] }];
+                answers = [{ chunks: ["Hel", "lo", " there"], paced: true }];
                 const before = bodies.length;
                 // A browser registered for Web Push (`routes/push.ts`): the completion reaches it too.
                 pushes.length = 0;
@@ -605,6 +628,9 @@ describe("the streaming tail", () => {
                 // The chunks are the raw text so far; the plugin hook ran once, on the completed text.
                 const chunks = events.filter((event) => event.type === "chunk");
                 const streamed = streamedTexts(events);
+                // A chunk event for each paced chunk: the raw text so far, never an edited one (the stream's end
+                // may send the final text once more).
+                expect(streamed.slice(0, 3)).toEqual(["Hel", "Hello", "Hello there"]);
                 expect(streamed.at(-1)).toBe("Hello there");
                 expect(streamed.every((text) => !text.includes("[lua]"))).toBe(true);
                 expect(callbacks(events, "editoutput").map((event) => event.payload)).toEqual([
@@ -642,7 +668,6 @@ describe("the streaming tail", () => {
                 const listenersAt = indexOf(events, (e) => e.type === "callback" && e.name === "chatOutput");
                 const ttsAt = indexOf(events, (e) => e.type === "notice" && e.kind === "tts");
                 const notificationAt = indexOf(events, (e) => e.type === "notice" && e.kind === "notification");
-                expect(chunks.length).toBeGreaterThanOrEqual(2);
                 expect(indexOf(events, (e) => e === chunks.at(-1))).toBeLessThan(editAt);
                 expect(editAt).toBeLessThan(listenersAt);
                 expect(listenersAt).toBeLessThan(ttsAt);

@@ -6,8 +6,8 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
-import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // A Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
@@ -117,7 +117,7 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS });
+    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS, cbsTimeLimits: UNHURRIED_CBS });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -321,17 +321,19 @@ const createJob = (body: Record<string, unknown>) =>
     });
 
 /**
- * Attaches the owner socket of `jobId` (after `attachAfterMs`) and collects its events until the
- * terminal: a question is answered with `answer(event)` (undefined: left pending), a callback with
- * `callback(event)` (an answer message; the default is an ordinary hook failure).
+ * Attaches the owner socket of `jobId` (once `beforeAttach` resolved) and collects its events until
+ * the terminal: a question is answered with `answer(event)` (undefined: left pending), a callback
+ * with `callback(event)` (an answer message; the default is an ordinary hook failure).
  */
 async function follow(
     jobId: string,
-    options: { answer?: Answerer; callback?: (event: any) => Record<string, unknown>; attachAfterMs?: number } = {},
+    options: {
+        answer?: Answerer;
+        callback?: (event: any) => Record<string, unknown>;
+        beforeAttach?: () => Promise<void>;
+    } = {},
 ): Promise<{ events: any[]; terminal: GenerationTerminalEvent | undefined }> {
-    if (options.attachAfterMs) {
-        await sleep(options.attachAfterMs);
-    }
+    await options.beforeAttach?.();
     const events: any[] = [];
     const url =
         `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
@@ -373,7 +375,7 @@ async function runButton(
         bound?: boolean;
         answer?: Answerer;
         callback?: (event: any) => Record<string, unknown>;
-        attachAfterMs?: number;
+        beforeAttach?: () => Promise<void>;
     } = {},
 ) {
     const created = await createJob({
@@ -906,13 +908,7 @@ describe("notices before the owner's first attach", () => {
                 command: { type: "button", data: "go" },
             });
             const jobId = created.body.jobId as string;
-            for (let i = 0; i < 300; i++) {
-                const status = await api(`/api/generations/${jobId}?clientId=tab`);
-                if (status.body?.state === "ended") {
-                    break;
-                }
-                await sleep(100);
-            }
+            await waitFor(async () => (await api(`/api/generations/${jobId}?clientId=tab`)).body?.state === "ended");
             const { events } = await follow(jobId);
             const types = events.map((event) => `${event.type}:${event.kind ?? ""}`);
             expect(types.indexOf("notice:alertNormal")).toBeGreaterThanOrEqual(0);
@@ -925,14 +921,23 @@ describe("notices before the owner's first attach", () => {
     it(
         "keeps a notice made before a late first attach beside the question outstanding then, both before the terminal",
         async () => {
+            // The provider seeing the marker means the question is outstanding and the notice sent: the
+            // question and the marker are asynchronous host calls handled in order, and the notice's
+            // synchronous call returned before the marker's was made.
+            const marker = "late first attach";
             const code = button(`
                 local p = alertInput(id, "q")
                 alertNormal(id, "beside the question")
+                simpleLLM(id, "${marker}"):await()
                 local a = p:await()
                 addChat(id, "char", "a=" .. tostring(a))
             `);
             const chaId = await seedCharacter({ codes: [code] });
-            const { events, terminal } = await runButton(chaId, { attachAfterMs: 1500, answer: () => "yes" });
+            const { events, terminal } = await runButton(chaId, {
+                beforeAttach: () =>
+                    waitFor(() => providerCalls.some((call) => call.body.messages?.at(-1)?.content === marker)),
+                answer: () => "yes",
+            });
             expect(terminal?.type).toBe("done");
             const types = events.map((event) => `${event.type}:${event.kind ?? ""}`);
             const question = types.indexOf("question:alertInput");

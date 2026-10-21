@@ -20,7 +20,7 @@ import { readChatTranslationSettings, resolveTranslatorPreset } from "../../../s
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { ResourceBatchConflictError, ResourceEpochError, type ResourceStore } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
-import { createJobCbsHost, serverCbsLimits } from "../jobs/cbsHost.ts";
+import { createJobCbsHost, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
@@ -138,6 +138,8 @@ export function createTranslationRunner(deps: {
     tokens: Pick<TokenCounter, "count">;
     rootDir: string;
     now?: () => number;
+    /** The CBS wall times of a run (`serverCbsLimits`; default the production ones, tests lengthen them). */
+    cbsTimeLimits?: ServerCbsTimeLimits;
 }) {
     const { store, kinds, gate, lock, llm } = deps;
     const now = deps.now ?? Date.now;
@@ -206,7 +208,7 @@ export function createTranslationRunner(deps: {
             createJobCbsHost(scope, {
                 rootDir: deps.rootDir,
                 setChatVar: () => false,
-                limits: serverCbsLimits({ usedMs: 0 }),
+                limits: serverCbsLimits({ usedMs: 0 }, deps.cbsTimeLimits),
             }),
         );
         const spec = (arg: RequestArgs): JobRequestSpec => ({

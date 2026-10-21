@@ -8,7 +8,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
-import { UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
 // server with the default runner, the production memory services, the vector cache file, a mock chat
@@ -479,6 +479,7 @@ beforeAll(async () => {
         rootDir,
         generationRandom: () => 0.5,
         scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+        cbsTimeLimits: UNHURRIED_CBS,
         generationHypaV3SeparatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
     });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
@@ -818,7 +819,6 @@ describe("HypaV3", () => {
             const rowsBefore = cacheRows();
             state.holdSummary = async () => {
                 await api(`/api/generations/${currentJobId}?clientId=tab`, { method: "DELETE" });
-                await sleep(200);
             };
             const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
             expect(terminal?.type, JSON.stringify(terminal)).toBe("error");

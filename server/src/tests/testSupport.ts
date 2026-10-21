@@ -8,6 +8,7 @@ import path from "node:path";
 import { createServerContext, type RouteLimits } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
+import type { ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import type { RealmStagingTimer } from "../routes/importRealm.ts";
@@ -57,6 +58,8 @@ export type TestServerOptions = {
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower rate limits and asset batch, backup archive, and CharX entry caps (default the production ones). */
     routeLimits?: RouteLimits;
+    /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
+    cbsTimeLimits?: ServerCbsTimeLimits;
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -89,6 +92,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         generationAbortGraceMs: options.generationAbortGraceMs,
         generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
         routeLimits: options.routeLimits,
+        cbsTimeLimits: options.cbsTimeLimits,
     });
     return {
         rootDir,

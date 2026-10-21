@@ -28,7 +28,7 @@ import {
 } from "../prompt/triggers.ts";
 import type { RegexOp } from "../scripts/worker.ts";
 import { createLuaBudget, type HostContext, type LuaBudget, type ScriptWorkerPool } from "../scripts/workerPool.ts";
-import { jobModules } from "./cbsHost.ts";
+import { jobModules, type ServerCbsTimeLimits } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
@@ -67,6 +67,8 @@ export type GenerationRunnerDeps = {
     effectClock?: () => number;
     /** HypaV3's summary separator limits (`MemoryHost.separatorLimits`; default the production ones, tests lengthen them). */
     hypaV3SeparatorLimits?: HypaV3SeparatorLimits;
+    /** The CBS wall times of every job, render, and run (`serverCbsLimits`; default the production ones, tests lengthen them). */
+    cbsTimeLimits?: ServerCbsTimeLimits;
 };
 
 /** Rejects with the signal's reason when it aborts first. */
@@ -263,6 +265,7 @@ export function createRunSetup(
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
         ...(options.frozen ? { frozen: true } : {}),
+        ...(deps.cbsTimeLimits ? { cbsTimeLimits: deps.cbsTimeLimits } : {}),
     });
     const { services } = bindings;
     const identity = { characterId, chatId, presetId: scope.promptPreset.id, personaId: scope.effectivePersona.id };

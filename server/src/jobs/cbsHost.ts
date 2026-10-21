@@ -57,12 +57,18 @@ export const SERVER_CBS_MAX_WORK = DEFAULT_CBS_MAX_WORK;
 export const SERVER_CBS_MAX_MS = 5_000;
 export const SERVER_CBS_JOB_MS = 60_000;
 
-/** The limits of one job's evaluators: `usage` is the job's, shared by every run of it. */
-export function serverCbsLimits(usage: CbsUsage): CbsLimits {
+/** The wall times `serverCbsLimits` allows: one template's and a job's in all (tests lengthen them). */
+export type ServerCbsTimeLimits = { templateMs: number; jobMs: number };
+
+/**
+ * The limits of one job's evaluators: `usage` is the job's, shared by every run of it. `time`
+ * replaces `SERVER_CBS_MAX_MS` and `SERVER_CBS_JOB_MS`; the work limit and the clock stay.
+ */
+export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): CbsLimits {
     return {
         maxWork: SERVER_CBS_MAX_WORK,
-        maxMs: SERVER_CBS_MAX_MS,
-        total: { usage, maxMs: SERVER_CBS_JOB_MS },
+        maxMs: time?.templateMs ?? SERVER_CBS_MAX_MS,
+        total: { usage, maxMs: time?.jobMs ?? SERVER_CBS_JOB_MS },
     };
 }
 

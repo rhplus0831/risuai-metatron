@@ -1109,6 +1109,8 @@ function memoryStore() {
 
 describe("createMcpRegistry", () => {
     it("shares one client per identifier, keeps a leased client past the idle time, closes an idle one after its release, and replaces a closed one", async () => {
+        // Fake from the first lease on, so every idle timer is one the test advances.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const store = memoryStore();
         const server = recorder(streamable());
         const registry = createMcpRegistry({ store, kinds, fetchImpl: server.fetchImpl, idleMs: 40 });
@@ -1124,12 +1126,14 @@ describe("createMcpRegistry", () => {
         expect(seen[1]).toBe(seen[0]);
         expect(methods(server.calls)).toEqual(["initialize", "notifications/initialized"]);
         await registry.use("id", "http://mcp.test/mcp", async (mcp) => {
-            await sleep(90);
+            await vi.advanceTimersByTimeAsync(90);
             expect(mcp.isClosed).toBe(false);
             expect(mcp).toBe(seen[0]);
         });
+        // Idle from the release on: open just before the idle time, closed at it.
+        await vi.advanceTimersByTimeAsync(39);
         expect(seen[0].isClosed).toBe(false);
-        await sleep(90);
+        await vi.advanceTimersByTimeAsync(1);
         expect(seen[0].isClosed).toBe(true);
         await registry.use("id", "http://mcp.test/mcp", async (mcp) => {
             seen.push(mcp);
