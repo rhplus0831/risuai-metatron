@@ -117,7 +117,10 @@ afterEach(async () => {
 
 describe("nativeFetch aborts through SandboxHost", () => {
     it("aborts the host fetch after headers while the guest is reading the body", async () => {
-        const cancelled = vi.fn();
+        // The cancel crosses a real MessagePort: await the body's cancel itself, not a bounded poll.
+        let bodyCancelled!: () => void;
+        const cancelledOnce = new Promise<void>((resolve) => (bodyCancelled = resolve));
+        const cancelled = vi.fn(() => bodyCancelled());
         vi.mocked(fetchNative).mockResolvedValue(
             new Response(
                 new ReadableStream<Uint8Array>({
@@ -143,7 +146,8 @@ describe("nativeFetch aborts through SandboxHost", () => {
         expect(signal.aborted).toBe(true);
         expect(aborted).toHaveBeenCalledTimes(1);
         port.postMessage({ cancel: true });
-        await vi.waitFor(() => expect(cancelled).toHaveBeenCalledTimes(1));
+        await cancelledOnce;
+        expect(cancelled).toHaveBeenCalledTimes(1);
     });
 
     it("ignores late aborts after body completion, a bodyless response or a thrown fetch", async () => {
@@ -198,14 +202,21 @@ describe("unread nativeFetch bodies expire", () => {
         vi.mocked(fetchNative).mockResolvedValue(bodyOf(["never read"], cancelled));
         const port = bodyPort(await callNativeFetch("unread"));
         const received: unknown[] = [];
-        port.onmessage = (event) => received.push(event.data);
+        // Fake timers do not deliver port messages: latch the first one before the deadline passes.
+        const firstMessage = new Promise<void>((resolve) => {
+            port.onmessage = (event) => {
+                received.push(event.data);
+                resolve();
+            };
+        });
         port.start();
 
         await vi.advanceTimersByTimeAsync(UNREAD_PLUGIN_STREAM_TIMEOUT_MS - 1);
         expect(cancelled).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1);
         expect(cancelled).toHaveBeenCalledTimes(1);
-        await vi.waitFor(() => expect(received).toEqual([{ done: true, error: "Unread plugin response expired" }]));
+        await firstMessage;
+        expect(received).toEqual([{ done: true, error: "Unread plugin response expired" }]);
 
         // The stream's end released the call's abort controller.
         const signal = hostSignal();

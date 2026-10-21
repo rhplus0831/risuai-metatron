@@ -102,11 +102,24 @@ describe("the guest bridge's reconstructed streams", () => {
         const guest = await startGuest();
         const { port1: host, port2 } = new MessageChannel();
         const received: unknown[] = [];
-        host.onmessage = (event) => received.push(event.data);
+        // Port delivery takes real event-loop turns: each wait is a latch checked on every host message,
+        // not a bounded poll.
+        let onReceived = () => {};
+        host.onmessage = (event) => {
+            received.push(event.data);
+            onReceived();
+        };
+        const arrived = (done: () => boolean) =>
+            new Promise<void>((resolve) => {
+                onReceived = () => {
+                    if (done()) resolve();
+                };
+                onReceived();
+            });
         // Everything the guest sends on its port arrives before a marker posted after it.
         const settled = async (marker: number) => {
             port2.postMessage({ marker });
-            await vi.waitFor(() => expect(received).toContainEqual({ marker }));
+            await arrived(() => received.some((message) => (message as { marker?: number }).marker === marker));
         };
 
         const fetched: Promise<Response> = guest.risuai.nativeFetch("https://example.test/body");
@@ -134,7 +147,8 @@ describe("the guest bridge's reconstructed streams", () => {
         // Each read asks for one chunk.
         const reader = response.body!.getReader();
         const read = reader.read();
-        await vi.waitFor(() => expect(received).toEqual([{ marker: 1 }, { pull: true }]));
+        await arrived(() => received.length >= 2);
+        expect(received).toEqual([{ marker: 1 }, { pull: true }]);
         host.postMessage({ done: false, value: new TextEncoder().encode("chunk") });
         const chunk = await read;
         expect(new TextDecoder().decode(chunk.value)).toBe("chunk");
@@ -142,9 +156,10 @@ describe("the guest bridge's reconstructed streams", () => {
         expect(received).toEqual([{ marker: 1 }, { pull: true }, { marker: 2 }]);
 
         const end = reader.read();
-        await vi.waitFor(() =>
-            expect(received).toEqual([{ marker: 1 }, { pull: true }, { marker: 2 }, { pull: true }]),
-        );
+        await arrived(() => received.length >= 4);
+        // A surplus pull would arrive before this marker.
+        await settled(3);
+        expect(received).toEqual([{ marker: 1 }, { pull: true }, { marker: 2 }, { pull: true }, { marker: 3 }]);
         host.postMessage({ done: true });
         expect((await end).done).toBe(true);
         host.close();
