@@ -28,7 +28,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // What this proves: in these runs, no sentinel reached the browser. It is not a proof for every
 // code path; the sentinels of providers not exercised here only show they are never sent to the tab.
 //
-// Usage: node util/playwright/checkCutoverCredentials.mjs
+// Usage: node util/playwright/checkCredentialTraffic.mjs
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";

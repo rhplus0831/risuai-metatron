@@ -3,7 +3,7 @@
 The golden values the Phase 5 server path is compared against, captured once from the **browser
 path as it was before slice 3** (commit `efad2b76`, the Stop A state: slices 1 and 2 only added
 server files the client does not load). They were captured by
-`util/playwright/capturePhase5Baseline.mjs` from the client's own functions on the Vite dev stack
+`util/playwright/captureBrowserBaseline.mjs` from the client's own functions on the Vite dev stack
 (`util/playwright/stack.mjs`: a fresh server working directory, so an empty `save/`) in a headless
 system Chrome, and never derived from server code. `provenance.json` records the commit, the Chrome,
 Playwright, and wasmoon versions, the page errors, and every request the capture blocked or served
@@ -30,7 +30,7 @@ Contract changes) are separate reviewed expected-delta files, as the implementat
 The capture files above stay as captured. An approved behavior change (a defect fix, a Safety
 Contract change) gets a reviewed expected-delta file here, which names the scenarios it changes,
 the value after the change, and why the change produces it; a test takes the delta where it has an
-entry and the capture everywhere else. The re-capture (`node util/playwright/capturePhase5Baseline.mjs`,
+entry and the capture everywhere else. The re-capture (`node util/playwright/captureBrowserBaseline.mjs`,
 at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 
 | File                               | What it holds                                                                                                                                                                                                                                                                                                                                                                   | Consumer                                                                                                                                               |
@@ -115,7 +115,7 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 - **`decodeToolCall`** (`src/ts/process/mcp/mcp.ts`) and **the MCP OAuth refresh**
   (`src/ts/process/mcp/mcplib.ts`, `oauthLogin`) are pure client functions, so they are pinned as
   Vitest tests against the client code instead of browser fixtures:
-  `src/ts/process/mcp/tests/phase5BaselineDefects.test.ts`. Fixed in slices 11 and 12.
+  `src/ts/process/mcp/tests/baselineDefects.test.ts`. Fixed in slices 11 and 12.
 
 ## Other behavior worth knowing when comparing
 
@@ -154,6 +154,6 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 The capture drives the browser path the Phase 5 cutover (slice 14) removed: it imports
 `src/ts/process/scripts.ts`. It runs only on a checkout at `219dfb51` or earlier.
 
-`node util/playwright/capturePhase5Baseline.mjs` writes this folder (an `outDir` argument writes
+`node util/playwright/captureBrowserBaseline.mjs` writes this folder (an `outDir` argument writes
 elsewhere, for example to compare two runs). A difference from the checked-in files after a client
 change is a behavior change to attribute and record, not a fixture to overwrite silently.

@@ -2,7 +2,7 @@
   "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10): the per-family token counts of the `lore` prompt",
   "before": "../token-counts.json (captured at efad2b76, the browser path before the fix)",
   "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
-  "after": "The counts re-captured on the fixed tree (`node util/playwright/capturePhase5Baseline.mjs`, 2026-10-01); `routing` and the other four prompts came out identical to the capture.",
+  "after": "The counts re-captured on the fixed tree (`node util/playwright/captureBrowserBaseline.mjs`, 2026-10-01); `routing` and the other four prompts came out identical to the capture.",
   "unchanged": ["routing", "prompts.plain", "prompts.group", "prompts.presetChain", "prompts.jinja"],
   "prompts": {
     "lore": {

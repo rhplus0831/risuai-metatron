@@ -224,7 +224,7 @@ describe("characterURLImport pending shares", () => {
         const app = await boot();
         const ids = app.settings.presets.map((preset) => preset.id);
         const bytes = new Uint8Array(
-            readFileSync(path.resolve(__dirname, "storage/tests/fixtures/phase3/custom.risup")),
+            readFileSync(path.resolve(__dirname, "storage/tests/fixtures/boot/custom.risup")),
         );
         const before = app.settings.presets.length;
         const share = pendingShare("preset", bytes);

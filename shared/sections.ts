@@ -14,7 +14,7 @@ import {
  * The field-to-resource map of Phase 3 (`docs/plan/phases/phase-3-settings-sections.md`): which
  * resource owns each top-level `Database` field (the flat legacy shape the plugin API and the
  * server's job projection keep, D3); these lists say where each one is stored. Together with the Phase 1 collections
- * (`PHASE1_FIELDS`) they partition `keyof Database`:
+ * (`ITEM_RECORD_FIELDS`) they partition `keyof Database`:
  *
  * - `SECTION_FIELDS`: five singleton section resources.
  * - `COLLECTION_FIELDS`: small collection resources, each holding one field (two for the preset
@@ -529,7 +529,7 @@ export const DROPPED_FIELDS = [
 ] as const satisfies readonly (keyof Database | "modelCredentials")[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */
-export const PHASE1_FIELDS = [
+export const ITEM_RECORD_FIELDS = [
     "characters",
     "botPresets",
     "modules",

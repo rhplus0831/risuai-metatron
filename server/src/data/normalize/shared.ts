@@ -24,7 +24,7 @@ type SectionField<K extends SectionKind> = (typeof SECTION_FIELDS)[K][number];
 
 /**
  * One field of a section: the JSON kind its value must have and its fresh-boot default, recorded in
- * `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`. A deliberate default change updates
+ * `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. A deliberate default change updates
  * the spec and that maintained fixture together. A field a fresh boot leaves unset has no default
  * and stays absent.
  */

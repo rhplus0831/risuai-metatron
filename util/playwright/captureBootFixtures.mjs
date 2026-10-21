@@ -1,19 +1,19 @@
 // Captures the Phase 3 pre-phase fixtures (docs/plan/phases/slices/phase-3-settings-sections/
-// implementation-plan.md, "Step 0 recipe") into src/ts/storage/tests/fixtures/phase3/:
+// implementation-plan.md, "Step 0 recipe") into src/ts/storage/tests/fixtures/boot/:
 //
 // - boot-snapshot.json: `getDatabase({ snapshot: true })` right after the first boot on an empty
 //   server, before anything else runs.
 // - default.risup: `downloadPreset(0, "return")` of the default preset.
 // - custom.risup: a copy of the default preset with non-default preset-owned fields.
 //
-// Usage: node util/playwright/capturePhase3Fixtures.mjs [outDir]
+// Usage: node util/playwright/captureBootFixtures.mjs [outDir]
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import * as prettier from "prettier";
 import { chromePath, openApp, repoRoot, startStack } from "./stack.mjs";
 
-const outDir = path.resolve(process.argv[2] ?? path.join(repoRoot, "src/ts/storage/tests/fixtures/phase3"));
+const outDir = path.resolve(process.argv[2] ?? path.join(repoRoot, "src/ts/storage/tests/fixtures/boot"));
 
 const stack = await startStack({ serverPort: 6111, vitePort: 5211 });
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });

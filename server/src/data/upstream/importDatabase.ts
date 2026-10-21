@@ -28,7 +28,7 @@ import {
     DROPPED_FIELDS,
     FORWARDED_ROOT_KEYS,
     MODEL_PROFILE_ROOT_FIELDS,
-    PHASE1_FIELDS,
+    ITEM_RECORD_FIELDS,
     SECTION_FIELDS,
     SECTION_KIND,
 } from "../../../../shared/sections.ts";
@@ -114,7 +114,7 @@ export type UpstreamConversionOptions = {
 type Root = Record<string, unknown>;
 
 /** Root fields of the Phase 1 records (`importCharacters.ts`, `importCollections.ts`) and of the preset step (`botPresets`). */
-const nonSettingsFields = new Set<string>(PHASE1_FIELDS);
+const nonSettingsFields = new Set<string>(ITEM_RECORD_FIELDS);
 
 /** Root names of the prompt preset fields (`PRESET_ROOT_ALIASES` reversed). */
 const promptRootNames: Record<string, string> = Object.fromEntries(
@@ -173,7 +173,7 @@ const knownFields = new Set<string>([
     ...Object.values(SECTION_FIELDS).flat(),
     ...Object.values(COLLECTION_FIELDS),
     ...Object.values(COLLECTION_SELECTION_FIELDS),
-    ...PHASE1_FIELDS,
+    ...ITEM_RECORD_FIELDS,
     ...FORWARDED_ROOT_KEYS,
 ]);
 

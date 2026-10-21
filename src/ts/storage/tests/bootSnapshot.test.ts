@@ -21,7 +21,7 @@ import { StoreBackedServer } from "./storeBackedServer";
 
 // Phase 3, slice 7 (`docs/plan/phases/slices/phase-3-settings-sections/credentials-and-closeout.md`,
 // "Boot-snapshot comparison rule", amended by A10 of `implementation-plan.md`): the Safety Contract's
-// oracle, kept as a test. `fixtures/phase3/boot-snapshot.json` is the hand-maintained record of
+// oracle, kept as a test. `fixtures/boot/boot-snapshot.json` is the hand-maintained record of
 // fresh-boot defaults (see the fixture README). Here the client boots the way `loadData` does against
 // the real server store (`storeBackedServer.ts`: the server normalizers materialize every section
 // and collection, so what `installBootRecords` receives is what a fresh server holds), and the same
@@ -65,7 +65,7 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
 const fixture: Record<string, any> = JSON.parse(
-    readFileSync(path.resolve(__dirname, "fixtures/phase3/boot-snapshot.json"), "utf8"),
+    readFileSync(path.resolve(__dirname, "fixtures/boot/boot-snapshot.json"), "utf8"),
 );
 
 /**

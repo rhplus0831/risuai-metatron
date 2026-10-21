@@ -648,7 +648,7 @@ Web Push browser matrix, `LazyFileSrc` with real files (the asset lists'
 paging and filters were checked on 2026-10-17 with previews off), inlay audio
 and video, the service worker's MIME and Range handling (everything is served
 as `image/png`), and the two load-only test flakes (`cbsLimitsHost.test.ts`
-"does not yield between quick effects", `checkStopDMatrix.mjs` setup).
+"does not yield between quick effects", `checkServerJobMatrix.mjs` setup).
 
 ## Not in this plan
 

@@ -22,7 +22,7 @@
 // ids (characters, chats, messages, personas, presets) are assigned explicitly; the tokenizer cache is
 // off. The procedure is described in the folder's README.
 //
-// Usage: node util/playwright/capturePhase5Baseline.mjs [outDir]
+// Usage: node util/playwright/captureBrowserBaseline.mjs [outDir]
 import { execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1144,7 +1144,7 @@ try {
         ).version,
         wasmoon: wasmoonVersion,
         client: "the browser path unchanged at the commit above, Vite dev stack (util/playwright/stack.mjs), fresh server working directory",
-        tool: "util/playwright/capturePhase5Baseline.mjs",
+        tool: "util/playwright/captureBrowserBaseline.mjs",
         pageErrors: [...new Set(pageErrors)].map((text) => ({
             text,
             times: pageErrors.filter((e) => e === text).length,

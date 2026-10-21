@@ -11,9 +11,9 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // `checkServerTrigger.mjs`'s; rendering `checkServerTransform.mjs`'s.
 //
 // Usage:
-//   node util/playwright/checkStopDMatrix.mjs
+//   node util/playwright/checkServerJobMatrix.mjs
 //       dev: starts an isolated stack (`stack.mjs`).
-//   node util/playwright/checkStopDMatrix.mjs --base http://localhost:6231 --password docker-pw \
+//   node util/playwright/checkServerJobMatrix.mjs --base http://localhost:6231 --password docker-pw \
 //       --provider-host host.docker.internal
 //       production: a server already running the built app (the Docker image on a fresh volume;
 //       the check sets its password). The mocks listen on every interface and are named by

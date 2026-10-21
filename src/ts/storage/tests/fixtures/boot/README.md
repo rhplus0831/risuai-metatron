@@ -13,10 +13,10 @@ source change (the tree differs from that commit only by the Playwright tooling:
 none of which the app loads), with:
 
 ```bash
-node util/playwright/capturePhase3Fixtures.mjs
+node util/playwright/captureBootFixtures.mjs
 ```
 
-The script (`util/playwright/capturePhase3Fixtures.mjs`) starts the self-host server in a fresh
+The script (`util/playwright/captureBootFixtures.mjs`) starts the self-host server in a fresh
 temporary working directory (empty `save/`) and the Vite dev server in front of it, opens a fresh
 headless Chrome context, answers the password prompt, and waits for `loadedStore`. Then:
 

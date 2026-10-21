@@ -7,7 +7,7 @@
 // a chat it has not loaded through the summary list, without a chat read; nothing is written by
 // opening, switching, or reloading.
 //
-// Usage: node util/playwright/checkStopCSmoke.mjs --base http://localhost:6246 --password docker-pw
+// Usage: node util/playwright/checkLazyChatsSmoke.mjs --base http://localhost:6246 --password docker-pw
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
 import { chromePath, isolateContext, unexpectedEgress } from "./stack.mjs";
@@ -20,7 +20,7 @@ const option = (name) => {
 const base = option("--base");
 const password = option("--password") ?? "docker-pw";
 if (!base) {
-    console.error("Usage: node util/playwright/checkStopCSmoke.mjs --base <url> [--password <pw>]");
+    console.error("Usage: node util/playwright/checkLazyChatsSmoke.mjs --base <url> [--password <pw>]");
     process.exit(1);
 }
 

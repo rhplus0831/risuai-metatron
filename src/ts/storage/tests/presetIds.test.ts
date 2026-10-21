@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (`docs/plan/split-preset.md`) the stored prompt preset and the `.risup` export carry the prompt
 // fields only, and a fixture's model fields live in the model preset of the same id
 // (`installFlatDatabase`); since the model profiles (`docs/plan/model-profiles.md`) that model
-// preset names its profiles by slot, and the connection fields (`maxContext`) live on the profiles. The step-0 fixtures (`fixtures/phase3/*.risup`, captured before any
+// preset names its profiles by slot, and the connection fields (`maxContext`) live on the profiles. The step-0 fixtures (`fixtures/boot/*.risup`, captured before any
 // Phase 3 change) pin the `.risup` reader contract: an import followed by an export decodes to the
 // fixture preset's prompt fields apart from `id` (Astra challenge point 1
 // found `seperateModels` gained a default here before the keep-on-switch rule).
@@ -92,7 +92,7 @@ import {
 } from "../../../../shared/presets.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const fixtureDir = path.resolve(__dirname, "fixtures/phase3");
+const fixtureDir = path.resolve(__dirname, "fixtures/boot");
 
 function readFixture(name: string): Uint8Array {
     return new Uint8Array(readFileSync(path.join(fixtureDir, name)));

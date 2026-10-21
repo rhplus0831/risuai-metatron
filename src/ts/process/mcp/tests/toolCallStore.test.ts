@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // read from it; without a chat, or with one that is gone, nothing is remembered (the browser's
 // LocalForage store was removed at the Phase 5 cutover, so a call remembered only there no longer
 // resolves). Both marker forms (the whole `<tool_call>` marker, its inner text) decode. The
-// `decodeToolCall` defect itself is pinned in `phase5BaselineDefects.test.ts`.
+// `decodeToolCall` defect itself is pinned in `baselineDefects.test.ts`.
 
 const chatStore = vi.hoisted(() => ({
     chats: new Map<string, { toolCalls?: Record<string, unknown> }>(),

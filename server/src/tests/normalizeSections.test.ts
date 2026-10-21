@@ -16,9 +16,9 @@ import { ResourceValidationError, serialize } from "../data/resourceStore.ts";
 
 // Phase 3, slice 3 (`docs/plan/phases/slices/phase-3-settings-sections/server-section-normalizers.md`,
 // "Validation"): the five section normalizers. Their specs and the hand-maintained
-// `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json` together define the fresh-boot defaults.
+// `src/ts/storage/tests/fixtures/boot/boot-snapshot.json` together define the fresh-boot defaults.
 
-const fixtureDir = path.resolve(import.meta.dirname, "../../../src/ts/storage/tests/fixtures/phase3");
+const fixtureDir = path.resolve(import.meta.dirname, "../../../src/ts/storage/tests/fixtures/boot");
 const bootSnapshot = JSON.parse(readFileSync(path.join(fixtureDir, "boot-snapshot.json"), "utf-8")) as Record<
     string,
     unknown

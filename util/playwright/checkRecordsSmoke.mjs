@@ -5,7 +5,7 @@
 // Docker image on a fresh volume; the check sets its password), through the UI and the public API only
 // (no dev modules).
 //
-// Usage: node util/playwright/checkStopBSmoke.mjs --base http://localhost:6232 --password docker-pw
+// Usage: node util/playwright/checkRecordsSmoke.mjs --base http://localhost:6232 --password docker-pw
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
 import { chromePath, isolateContext, unexpectedEgress } from "./stack.mjs";
@@ -18,7 +18,7 @@ const option = (name) => {
 const base = option("--base");
 const password = option("--password") ?? "docker-pw";
 if (!base) {
-    console.error("Usage: node util/playwright/checkStopBSmoke.mjs --base <url> [--password <pw>]");
+    console.error("Usage: node util/playwright/checkRecordsSmoke.mjs --base <url> [--password <pw>]");
     process.exit(1);
 }
 

@@ -47,7 +47,7 @@ import {
     maxContextOverrideOf,
     MODEL_PROFILE_ROOT_FIELDS,
     PERSONA_ROOT_KEYS,
-    PHASE1_FIELDS,
+    ITEM_RECORD_FIELDS,
     SECTION_FIELDS,
     SECTION_KIND,
     SELECTION_KEYS,
@@ -64,7 +64,7 @@ import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts"
 // (`modelProfiles`), each normalized to its own fields. Everything here is pure `shared/` code, so
 // the file runs in node.
 
-const fixtureDir = path.resolve(import.meta.dirname, "fixtures/phase3");
+const fixtureDir = path.resolve(import.meta.dirname, "fixtures/boot");
 const bootSnapshot = JSON.parse(readFileSync(path.join(fixtureDir, "boot-snapshot.json"), "utf-8")) as Record<
     string,
     unknown
@@ -654,7 +654,7 @@ type ListedKey =
     | (typeof COLLECTION_SELECTION_FIELDS)[keyof typeof COLLECTION_SELECTION_FIELDS]
     | ForwardedRootKey
     | (typeof DROPPED_FIELDS)[number]
-    | (typeof PHASE1_FIELDS)[number];
+    | (typeof ITEM_RECORD_FIELDS)[number];
 type UnlistedDatabaseKey = Exclude<keyof Database, ListedKey>;
 // `modelCredentials` left `Database` (Model Profiles decision 3) but stays listed as dropped by name.
 type NotADatabaseKey = Exclude<ListedKey, keyof Database | "modelCredentials">;
@@ -691,7 +691,7 @@ describe("field-to-resource partition", () => {
         ["collection selections", selectionFields],
         ["forwarded root", FORWARDED_ROOT_KEYS],
         ["dropped", DROPPED_FIELDS],
-        ["phase 1", PHASE1_FIELDS],
+        ["phase 1", ITEM_RECORD_FIELDS],
     ];
     const union = allLists.flatMap(([, keys]) => keys);
 
@@ -1073,7 +1073,7 @@ describe("field-to-resource partition", () => {
             hypaV3Presets: "hypaV3PresetId",
         });
         // Its own literal since slice 6 (`ROOT_EXCLUDED_KEYS` went with the `root` resource).
-        expect(PHASE1_FIELDS).toEqual(["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"]);
+        expect(ITEM_RECORD_FIELDS).toEqual(["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"]);
     });
 });
 

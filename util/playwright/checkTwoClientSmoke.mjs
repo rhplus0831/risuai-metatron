@@ -20,7 +20,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // - no page error and no unexpected outbound request.
 //
 // Usage:
-//   node util/playwright/checkStopDSmoke.mjs --base http://localhost:6270 --password docker-pw \
+//   node util/playwright/checkTwoClientSmoke.mjs --base http://localhost:6270 --password docker-pw \
 //       --provider-host host.docker.internal --restart-cmd "docker restart risu-stopd"
 // The mock provider listens on every interface; the server reaches it as `--provider-host`.
 import { exec } from "node:child_process";
@@ -41,7 +41,7 @@ const providerHost = option("--provider-host") ?? "127.0.0.1";
 const restartCmd = option("--restart-cmd");
 if (!base || !restartCmd) {
     console.error(
-        "Usage: node util/playwright/checkStopDSmoke.mjs --base <url> --restart-cmd <cmd> [--password <pw>] [--provider-host <host>]",
+        "Usage: node util/playwright/checkTwoClientSmoke.mjs --base <url> --restart-cmd <cmd> [--password <pw>] [--provider-host <host>]",
     );
     process.exit(1);
 }

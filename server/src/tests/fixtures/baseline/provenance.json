@@ -5,7 +5,7 @@
   "playwrightCore": "1.63.0",
   "wasmoon": "1.16.0",
   "client": "the browser path unchanged at the commit above, Vite dev stack (util/playwright/stack.mjs), fresh server working directory",
-  "tool": "util/playwright/capturePhase5Baseline.mjs",
+  "tool": "util/playwright/captureBrowserBaseline.mjs",
   "pageErrors": [
     {
       "text": "TypeError: Cannot read properties of undefined (reading 'length')\n\n\tin <unknown>\n\tin DefaultChatScreen.svelte\n\tin ChatScreen.svelte\n\tin App.svelte\n\tin undefined\n",
