@@ -18,7 +18,7 @@ const refusalMessages: Record<CredentialRefusalReason, string> = {
     unsupportedModel: messages.errors.credentialUnsupportedModel,
 };
 
-/** Custom definitions and reverse proxies have no flat default key (Model Profiles O2). */
+/** Custom definitions and reverse proxies have no flat default key: the profile binds one. */
 export function defaultCredentialKey(modelId: string | undefined, defaultKey: string | undefined): string {
     return modelId === "reverse_proxy" || modelId?.startsWith("xcustom:::") ? "" : (defaultKey ?? "");
 }

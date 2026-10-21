@@ -17,7 +17,7 @@ it("imports every shared/**/*.ts with plain node", () => {
         .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
         .sort();
     expect(files).toContain("database.ts");
-    // The Phase 5 runtime modules live in subfolders.
+    // The server runtime modules live in subfolders.
     expect(files).toContain("cbs/evaluator.ts");
     expect(files).toContain("scripts/regex.ts");
     const script = files

@@ -28,10 +28,9 @@ export type RequestShares = {
 };
 
 /**
- * Sharing for support (`docs/plan/request-history-diagnostics.md` decisions 3 and 4, slice 10): a
- * job's requests, with their content, as one file in the diagnostics folder's `shared/`, which the
- * developer pulls over sftp. A share is a snapshot: requests the job makes later, and rows the caps
- * already removed, are not in it; sharing again replaces it.
+ * Sharing for support: a job's requests, with their content, as one file in the diagnostics folder's
+ * `shared/`, which the developer pulls over sftp. A share is a snapshot: requests the job makes
+ * later, and rows the caps already removed, are not in it; sharing again replaces it.
  *
  * - The copy: `{ format, version: 1, sharedAt, app: { version }, jobId, requestId, failure, eventsPartial,
  *   events, requests }`. `requests` are the rows oldest first, each built field by field: a row

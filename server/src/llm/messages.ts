@@ -1,5 +1,5 @@
 // The client's `language` strings the request layer shows (`src/lang/en.ts`). Server messages are
-// English whatever the tab's language (recorded in `request-layer-and-llm-secrets.md`).
+// English whatever the tab's language.
 export const messages = {
     errors: {
         unknownModel: "Error: Unknown model selected",

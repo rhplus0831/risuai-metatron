@@ -17,10 +17,10 @@ import type { MessageSearchRouteOptions } from "../routes/messageSearch.ts";
 import { createSigner, json, TEST_INDEX_HTML } from "./testSupport.ts";
 
 /**
- * `POST /api/chats/search` (archived `docs/plan/search.md` slice 4a). The server is built with
- * `createServerContext({ messageSearch })` directly: the yield between batches is a latch the test
- * holds and releases, and the batch and request limits are small, so paging and the between-batch
- * checks are reached without any real time passing.
+ * `POST /api/chats/search`. The server is built with `createServerContext({ messageSearch })`
+ * directly: the yield between batches is a latch the test holds and releases, and the batch and
+ * request limits are small, so paging and the between-batch checks are reached without any real
+ * time passing.
  */
 
 beforeAll(() => {
@@ -720,7 +720,7 @@ describe("POST /api/chats/search refusals", () => {
     });
 });
 
-describe("POST /api/chats/search with malformed stored text (Challenge 1 and 2)", () => {
+describe("POST /api/chats/search with malformed stored text", () => {
     it("does not report a stored lone surrogate as a hit for the replacement character", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c")] });
@@ -757,7 +757,7 @@ describe("POST /api/chats/search with malformed stored text (Challenge 1 and 2)"
     });
 });
 
-describe("store.searchMessages inside a transaction (Challenge 3)", () => {
+describe("store.searchMessages inside a transaction", () => {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     const characters = kinds.get("characters")!;
     const stores: ResourceStore[] = [];

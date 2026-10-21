@@ -33,7 +33,7 @@ import {
 import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
 
 /**
- * What a job reads (Phase 5 slice 8a; the slice 9 `PromptScope` builds on it), loaded at the job's
+ * What a job reads (the prompt runner's `PromptScope` builds on it), loaded at the job's
  * start and kept apart in two parts:
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
@@ -68,7 +68,7 @@ export type JobScope = {
     request: LoadedRequestDb;
     /**
      * The revision of every record the load read, by `<kind>/<id>` (the chat's is `chatRevision`),
-     * from the same synchronous read as the data: the script transform's cache key (slice 13).
+     * from the same synchronous read as the data: the script transform's cache key.
      */
     revisions?: ReadonlyMap<string, string>;
     /** Live character revisions, separate from the load's transform cache key; null means gone. */
@@ -88,7 +88,7 @@ function kindOf(kinds: ResourceKindRegistry, name: string): ResourceKind {
     return kind;
 }
 
-/** The job's ids are not its chat's binding (`docs/plan/chat-binding.md`): 409, with the refusal. */
+/** The job's ids are not its chat's binding: 409, with the refusal. */
 export class ChatBindingError extends GenerationRunnerError {
     readonly refusal: ChatBindingRefusal;
     constructor(refusal: ChatBindingRefusal) {
@@ -296,7 +296,7 @@ export function loadJobScope(
 }
 
 /**
- * Admits the job's plugin provider models (slice 11b): the descriptors the tab registered when it
+ * Admits the job's plugin provider models: the descriptors the tab registered when it
  * created the job, each under its own id `pluginmodel:::<name>` and as a plugin model whatever
  * format it claims. Model resolution of the job's requests, counts, and assembly reads them from the
  * request projection.

@@ -391,7 +391,7 @@ describe("storage key codec", () => {
         expect(resolveStorageKey(save, "assets/x.a/b")).toBe(path.join(save, "assets", "x.a%2Fb"));
         for (const key of [
             "database.bin",
-            // The database and remote-character namespaces of older versions are gone (Phase 1).
+            // The database and remote-character namespaces of older versions are gone.
             "database/database.bin",
             "remotes/cha-1.local.bin",
             "/assets/x.png",
@@ -530,7 +530,7 @@ describe("storage routes", () => {
         }
         expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
         expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "backups", "data", "diagnostics", "server"]);
-        // `web_push_vapid.json` is the server's Web Push key pair, generated at start (`docs/plan/web-push.md`).
+        // `web_push_vapid.json` is the server's Web Push key pair, generated at start.
         expect(readdirSync(path.join(s.savePath, "server")).sort()).toEqual([
             "known_public_key_hashes.json",
             "password",

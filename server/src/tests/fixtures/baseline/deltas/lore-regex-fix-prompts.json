@@ -1,5 +1,5 @@
 {
-  "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10): the prompt of the `lore` fixture",
+  "delta": "The lore regex key fix: the prompt of the `lore` fixture",
   "before": "../prompts.json (captured at efad2b76, the browser path before the fix)",
   "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
   "after": "The DevTool preview of the `lore` fixture re-captured on the fixed tree (`node util/playwright/captureBrowserBaseline.mjs`, 2026-10-01); `plain`, `group`, `presetChain`, and `jinja` came out identical to the capture.",

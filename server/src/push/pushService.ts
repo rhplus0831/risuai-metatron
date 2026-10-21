@@ -244,10 +244,10 @@ function errorCategory(error: unknown): { status: number | null; label: string }
 }
 
 /**
- * Web Push for chat completions (`docs/plan/web-push.md`). The subscriptions are per browser, so they
- * are not resources: `save/server/push_subscriptions.json`, beside the password (`routes/auth.ts`),
- * out of the storage routes, backups, and snapshots. Completions are delivered one at a time (each to
- * every subscription in parallel); a subscription the push service reports gone (404, 410) is removed.
+ * Web Push for chat completions. The subscriptions are per browser, so they are not resources:
+ * `save/server/push_subscriptions.json`, beside the password (`routes/auth.ts`), out of the storage
+ * routes, backups, and snapshots. Completions are delivered one at a time (each to every subscription
+ * in parallel); a subscription the push service reports gone (404, 410) is removed.
  */
 export function createPushService(options: {
     savePath: string;

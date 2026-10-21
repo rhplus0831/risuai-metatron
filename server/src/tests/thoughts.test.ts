@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { stripThoughtsBlock } from "../prompt/thoughts.ts";
 import { parseChatML } from "../prompt/triggers.ts";
 
-// Slice 1a of `docs/plan/audit-findings-perf.md` (PERF-01): prompt assembly and the display
-// trigger's ChatML parser strip `<Thoughts>` blocks with a linear scan that keeps the semantics of
-// the former `/<Thoughts>(.+)<\/Thoughts>/gms`: at most one block, from the first opening tag to the
-// last closing tag, with at least one character inside. The former regex backtracked once per
-// unmatched opening tag (quadratic: about 2.4 s for 200 KB, minutes for 1 MB), so the large case
-// below fails by Vitest's timeout on that implementation and needs no wall-clock assertion.
+// Prompt assembly and the display trigger's ChatML parser strip `<Thoughts>` blocks with a linear
+// scan that keeps the semantics of the former `/<Thoughts>(.+)<\/Thoughts>/gms`: at most one block,
+// from the first opening tag to the last closing tag, with at least one character inside. The former
+// regex backtracked once per unmatched opening tag (quadratic: about 2.4 s for 200 KB, minutes for 1
+// MB), so the large case below fails by Vitest's timeout on that implementation and needs no
+// wall-clock assertion.
 
 describe("stripThoughtsBlock", () => {
     it.each([

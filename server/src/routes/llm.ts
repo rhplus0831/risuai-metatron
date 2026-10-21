@@ -235,14 +235,14 @@ function parseAnswer(body: unknown): (LlmCallbackAnswer & { clientId: string }) 
 }
 
 /**
- * `POST /api/llm/request` (Phase 5, `request-layer-and-llm-secrets`): runs one provider request on
- * the server with the stored settings and credentials (JWT only; `x-resource-epoch`, 412 for another
- * epoch; 503 during maintenance and shutdown; 429 past the per-client cap; 409 for a `channelCall`
- * that is not running; 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` for an
- * `arg.chatRef` whose ids are not the chat's binding, `docs/plan/chat-binding.md`; 404 for an
- * `arg.chatRef` naming a chat that does not exist) and answers with an SSE stream of `LlmRequestEvent`s. Not a job: no chat
- * lock, no persistence. `POST /api/llm/request/:id/answer` answers one of its callbacks
- * (`{ accepted }`, `{ ignored }` for a repeat or a late answer, 404 for an unknown request).
+ * `POST /api/llm/request`: runs one provider request on the server with the stored settings and
+ * credentials (JWT only; `x-resource-epoch`, 412 for another epoch; 503 during maintenance and
+ * shutdown; 429 past the per-client cap; 409 for a `channelCall` that is not running; 409
+ * `chatBindingIncomplete` with `problems` or `chatBindingMismatch` for an `arg.chatRef` whose ids
+ * are not the chat's binding; 404 for an `arg.chatRef` naming a chat that does not exist) and
+ * answers with an SSE stream of `LlmRequestEvent`s. Not a job: no chat lock, no persistence.
+ * `POST /api/llm/request/:id/answer` answers one of its callbacks (`{ accepted }`, `{ ignored }` for
+ * a repeat or a late answer, 404 for an unknown request).
  */
 export function registerLlmRoutes(
     app: Hono<AppEnv>,

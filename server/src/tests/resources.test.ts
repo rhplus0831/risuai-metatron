@@ -432,7 +432,7 @@ describe("default kinds over the routes", () => {
             expect(other.status, kind).toBe(400);
             expect(await other.json(), kind).toEqual({ error: `${kind} has only the record main` });
             expect((await s.get(kind, "other")).status, kind).toBe(400);
-            // `presets/main` is materialized (slice 3), so it is written over with its current revision.
+            // `presets/main` is materialized, so it is written over with its current revision.
             const existing =
                 kind === "presets"
                     ? ((await (await s.get(kind, "main")).json()) as { revision: string }).revision

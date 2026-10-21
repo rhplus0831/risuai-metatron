@@ -5,20 +5,19 @@ import { parseRevisionToken, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../
 import { DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
-// Every registered resource kind over the resource routes (the Phase 6 closeout's criterion 2:
-// "every collection has a server resource with revision checks, normalization, and route tests").
-// One table row per kind of `DEFAULT_RESOURCE_KINDS`, each run against a fresh server: what a
-// fresh store holds (a materialized singleton, an absent singleton, or a per-record kind), a write
-// on the held revision answered and stored in its normalized form (the expected values are written
-// here from the normalizers' rules, not read from the server), the read-back on every read route,
-// the revision advancing by one per write, a stale write and a stale batch op refused with 409 and
-// the current revision, the batch route persisting, a value the normalizer refuses as a 400 on both
-// write routes, and the singleton rules (only `main`, never deleted) against a per-record delete.
-// The chats and chat orders, which are not resource kinds, get the same walk through the batch and
-// read routes below. The kinds' shape rules themselves are in `kinds.test.ts` and
-// `normalize*.test.ts`; the route contract over identity kinds in `resources.test.ts` and
-// `resourcesBatch.test.ts`; the `llmSecrets` masking and secret routes in depth in
-// `llmSecrets.test.ts`; the chat op semantics in `resourcesChats.test.ts`.
+// Every registered resource kind over the resource routes: every collection has a server resource
+// with revision checks, normalization, and route tests. One table row per kind of
+// `DEFAULT_RESOURCE_KINDS`, each run against a fresh server: what a fresh store holds (a materialized
+// singleton, an absent singleton, or a per-record kind), a write on the held revision answered and
+// stored in its normalized form (the expected values are written here from the normalizers' rules,
+// not read from the server), the read-back on every read route, the revision advancing by one per
+// write, a stale write and a stale batch op refused with 409 and the current revision, the batch
+// route persisting, a value the normalizer refuses as a 400 on both write routes, and the singleton
+// rules (only `main`, never deleted) against a per-record delete. The chats and chat orders, which
+// are not resource kinds, get the same walk through the batch and read routes below. The kinds' shape
+// rules themselves are in `kinds.test.ts` and `normalize*.test.ts`; the route contract over identity
+// kinds in `resources.test.ts` and `resourcesBatch.test.ts`; the `llmSecrets` masking and secret
+// routes in depth in `llmSecrets.test.ts`; the chat op semantics in `resourcesChats.test.ts`.
 
 const servers: ResourceTestClient[] = [];
 afterEach(async () => {
@@ -126,7 +125,7 @@ const CASES: KindCase[] = [
         invalid: [{ id: "t1" }, null],
         refused: "togglePresets must be an array of objects",
     },
-    // ---- the Phase 1 kinds ------------------------------------------------------------------
+    // ---- the plain record kinds --------------------------------------------------------------
     {
         kind: "presets",
         fresh: [expect.objectContaining({ id: anyString(), name: "New Preset" })],
@@ -299,7 +298,7 @@ const CASES: KindCase[] = [
     {
         kind: "modelPresets",
         // Materialized with one default model preset whose main and sub slots name the default
-        // profile (`docs/plan/model-profiles.md`, O4).
+        // profile.
         fresh: [
             expect.objectContaining({
                 id: anyString(),
@@ -351,9 +350,9 @@ const CASES: KindCase[] = [
     },
     {
         kind: "modelProfiles",
-        // Materialized with one default profile (`docs/plan/model-profiles.md`, O4).
+        // Materialized with one default profile.
         fresh: [expect.objectContaining({ id: "default", name: "New Connection", modelId: anyString() })],
-        // The profile fields only: a prompt field, a slot, and an inline key are dropped (O2), a
+        // The profile fields only: a prompt field, a slot, and an inline key are dropped, a
         // wrong kind takes its default.
         write: [
             {
@@ -566,7 +565,7 @@ const CASES: KindCase[] = [
     {
         kind: "customModels",
         fresh: [],
-        // A custom model holds no key or key binding (`docs/plan/model-profiles.md`, O2): either is dropped.
+        // A custom model holds no key or key binding: either is dropped.
         write: [{ id: "m1", internalId: "i1", name: "M", key: "secret-model-key", credentialId: "c1" }],
         stored: [{ id: "m1", internalId: "i1", name: "M" }],
         forbidden: ["secret-model-key"],

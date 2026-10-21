@@ -6,13 +6,12 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
-// Phase 6 slice 9a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
-// "Validation"): the server's summary reads. A `ChatSummary` is the listed fields picked from a
-// chat's stored metadata: no message rows in the payload, no memory data (`hypaV2Data`,
-// `hypaV3Data`, `supaMemoryData`), bookmarks, or note. `readKinds(..., { chatSummaries })` answers
-// every summary with every order (exclusive with `chats`), `readRefs(..., { chatSummaryCollections })`
-// a character's order with its summaries, and the routes validate the options the way they
-// validate `chats` and `chatCollections` (counted toward the cap).
+// The server's summary reads. A `ChatSummary` is the listed fields picked from a chat's stored
+// metadata: no message rows in the payload, no memory data (`hypaV2Data`, `hypaV3Data`,
+// `supaMemoryData`), bookmarks, or note. `readKinds(..., { chatSummaries })` answers every summary
+// with every order (exclusive with `chats`), `readRefs(..., { chatSummaryCollections })` a
+// character's order with its summaries, and the routes validate the options the way they validate
+// `chats` and `chatCollections` (counted toward the cap).
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -28,7 +27,7 @@ const SUMMARY_KEYS = [
     "pinned",
     "promptPresetId",
     "revision",
-    // The translation settings (`docs/plan/translation.md` slice 2.1).
+    // The translation settings.
     "translatorPresetId",
     "autoTranslate",
     "translateBotOnly",
@@ -159,7 +158,7 @@ describe("the store's summary reads", () => {
         }
     });
 
-    it("projects the binding fields (docs/plan/chat-binding.md) as list fields: string ids only, and bindingReview as either boolean", () => {
+    it("projects the binding fields as list fields: string ids only, and bindingReview as either boolean", () => {
         const store = createResourceStore({ file: ":memory:", kinds });
         stores.push(store);
         store.applyChanges({
@@ -204,7 +203,8 @@ describe("the store's summary reads", () => {
         for (const field of ["modelPresetId", "promptPresetId", "bindedPersona", "bindingReview"]) {
             expect(byId.malformed, field).not.toHaveProperty(field);
         }
-        // Stored as sent (D2): the summary does not trim or drop a blank string; the resolver reads it as unset.
+        // Stored as sent: the summary does not trim or drop a blank string; the resolver reads it as
+        // unset.
         expect(byId.padded).toMatchObject({ modelPresetId: " m1 ", promptPresetId: "" });
         expect(byId.padded).not.toHaveProperty("bindedPersona");
         expect(byId.padded).not.toHaveProperty("bindingReview");
@@ -216,7 +216,7 @@ describe("the store's summary reads", () => {
         }
     });
 
-    it("projects the translation settings (docs/plan/translation.md slice 2.1) as list fields: typed values only, false and 0 kept, nothing defaulted; a meta op moves them", () => {
+    it("projects the translation settings as list fields: typed values only, false and 0 kept, nothing defaulted; a meta op moves them", () => {
         const store = createResourceStore({ file: ":memory:", kinds });
         stores.push(store);
         const full = {

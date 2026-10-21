@@ -49,25 +49,24 @@ import {
 import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 
 /**
- * The metatron store → upstream RisuAI flat `Database` exporter (`docs/plan/upstream-bin-compat.md`
- * S6): the inverse of `importDatabase.ts`'s conversion, for a `.bin` upstream's "Load Backup" restores.
- * It reads the rows of a validated store copy (`store.readSnapshot` of a `backupTo` file: every
- * record normalized, the chat tables checked) and does no I/O; `encodeUpstreamDatabase` (`risuSave.ts`)
- * turns the result into `database.risudat`. Upstream behavior is read from RisuAI `669b12ce`; "U" below
- * is its `src/ts/`.
+ * The metatron store → upstream RisuAI flat `Database` exporter: the inverse of `importDatabase.ts`'s
+ * conversion, for a `.bin` upstream's "Load Backup" restores. It reads the rows of a validated store
+ * copy (`store.readSnapshot` of a `backupTo` file: every record normalized, the chat tables checked)
+ * and does no I/O; `encodeUpstreamDatabase` (`risuSave.ts`) turns the result into `database.risudat`.
+ * Upstream behavior is read from RisuAI `669b12ce`; "U" below is its `src/ts/`.
  *
  * - Settings: the sections and collections as a job's projection holds them (`databaseProjection.ts`),
  *   without metatron-only fields, with `formatversion: 5` so upstream's `checkNewFormat` runs no legacy
  *   migration, and with the translator and HypaV3 selections as list positions.
- * - Presets (D10): one upstream preset per prompt preset, each with the chosen model preset's slot
+ * - Presets: one upstream preset per prompt preset, each with the chosen model preset's slot
  *   model ids and main profile options; the chosen prompt preset also fills the root.
- * - Credentials (D7): only with `includeSecrets`. Upstream reads one key per field (U `setPreset`
+ * - Credentials: only with `includeSecrets`. Upstream reads one key per field (U `setPreset`
  *   restores no preset key), so a named key bound by a chosen slot is written into the field its model
  *   reads, the main slot first; the reverse proxy key goes to `proxyKey` and a custom model's key to
  *   `customModels[].key`, as the import reads them back. Without it every credential field is `""`,
  *   auxiliary service keys included.
  * - Characters and chats: chats in `chatOrders` order, without metatron-only chat, message, and
- *   character fields (D12); inlays and device-local plugin storage are left out (D8) and counted.
+ *   character fields; inlays and device-local plugin storage are left out and counted.
  *
  * Every left-out or reshaped item is reported (`shared/upstreamExportReport.ts`). The rows are parsed
  * here, so the result shares no object with the input.
@@ -82,11 +81,11 @@ export type UpstreamExportChats = {
 };
 
 export type UpstreamExportOptions = {
-    /** The tab's selection: the prompt preset, model preset (D10), and persona the root holds. */
+    /** The tab's selection: the prompt preset, model preset, and persona the root holds. */
     promptPresetId: string;
     modelPresetId: string;
     personaId: string;
-    /** D7: export the API keys (default of the client's question: no). */
+    /** Export the API keys (default of the client's question: no). */
     includeSecrets: boolean;
     /** The chat the tab has open: its character's `chatPage` points at it (0 for every other one). */
     selectedChat?: { characterId: string; chatId: string };
@@ -167,7 +166,7 @@ const ROOT_ONLY_PROFILE_FIELDS = new Set<string>([
 /** Character fields upstream's `character` and `groupChat` lack. */
 const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount"];
 
-/** Chat fields upstream's `Chat` lacks (D12). */
+/** Chat fields upstream's `Chat` lacks. */
 const METATRON_CHAT_FIELDS = [
     "pinned",
     "memoryTrimAck",
@@ -252,7 +251,7 @@ export function buildUpstreamDatabase(
     });
     projectCollections(db, (collection) => records.get(collection));
 
-    // Presets (D10) and the chosen records.
+    // Presets and the chosen records.
     let promptPresets = asList<botPreset>(records.get(RESOURCE_KIND.presets));
     if (promptPresets.length === 0) {
         promptPresets = normalizePresets([]);
@@ -278,7 +277,7 @@ export function buildUpstreamDatabase(
         }
     }
 
-    // Credentials (D7).
+    // Credentials.
     const customModels = asList<CustomModel>(db.customModels).map((model) => ({ ...model, key: "" }));
     const keys = options.includeSecrets
         ? placeNamedKeys(
@@ -923,7 +922,7 @@ function upstreamCharacters(
 }
 
 /**
- * One upstream chat: the stored metadata without metatron's fields (D12), the messages in order
+ * One upstream chat: the stored metadata without metatron's fields, the messages in order
  * without their translations, `useLocallySetGlobalVariables` when the chat holds toggle values (so
  * upstream keeps writing them to the chat, as metatron does), and `lastDate` at least as recent as its
  * newest message.

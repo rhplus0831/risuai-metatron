@@ -23,10 +23,10 @@ export type {
 } from "../../../shared/requestHistory.ts";
 
 /**
- * The durable LLM request history (`docs/plan/request-history-diagnostics.md`, slice 2): one row per
- * request (a `runInJob` or `start` call, so each retry is its own row), in a file of its own
- * (`save/data/request-history.sqlite`). It is diagnostic data: in no snapshot, backup, or export, and
- * a restore, an import, or a maintenance does not touch it. Only its caps and the user clear it.
+ * The durable LLM request history: one row per request (a `runInJob` or `start` call, so each retry
+ * is its own row), in a file of its own (`save/data/request-history.sqlite`). It is diagnostic data:
+ * in no snapshot, backup, or export, and a restore, an import, or a maintenance does not touch it.
+ * Only its caps and the user clear it.
  *
  * A row is begun `pending`, gets the transport's log entries as exchanges, and is finished once with
  * its outcome. Rows still `pending` when the store opens become `interrupted` (the server stopped
@@ -142,8 +142,8 @@ export type RequestHistory = {
     /** Sets or clears `sharedAt` on the rows; returns how many changed. */
     setShared(ids: readonly string[], at: number | null): number;
     /**
-     * The rows of a share with their content, oldest first, read in one read transaction (slice 10).
-     * A `requestId` whose row has a job reads that job's rows (decision 4); one without a job is read
+     * The rows of a share with their content, oldest first, read in one read transaction.
+     * A `requestId` whose row has a job reads that job's rows; one without a job is read
      * alone. `missing` when there is no such row; `tooLarge` when the rows' stored bytes pass
      * `maxBytes` (their content is not read); `failed` when a read failed or the store is unavailable,
      * never a partial list.

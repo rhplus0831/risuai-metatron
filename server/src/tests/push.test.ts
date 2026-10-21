@@ -10,19 +10,19 @@ import type { CompletionNotification } from "../../../shared/notifications.ts";
 import { createPushService, MAX_PUSH_SUBSCRIPTIONS, type PushTransport } from "../push/pushService.ts";
 import { createSigner, createTestServer, json } from "./testSupport.ts";
 
-// `docs/plan/web-push.md` slice 2: the push service (`server/src/push/pushService.ts`) over a
-// temporary `save/` with an injected transport, and its routes (`server/src/routes/push.ts`) on the
-// real app. The VAPID pair (generated once into `save/server/web_push_vapid.json`, mode 0600, kept
-// across restarts; the environment pair; one variable alone, an invalid pair, or an unreadable file
-// turning push off without replacing the file), the subscription validation (the allowed push
-// hosts, `https` only, no port, credentials, or fragment, the P-256 point, the 16-byte auth secret,
-// `expirationTime`), the file (invalid rows dropped on load, the cap of 50 keeping the newest, the
-// atomic write), delivery (every subscription in parallel with the payload and the per-call VAPID
-// details, 404/410 removing the subscription, other failures counted with a sanitized label, a
-// success clearing them, the sends one at a time with a bounded queue, `close`, never a rejection),
-// and the routes (authenticated before the body, `no-store`, 400/503, the 16 KiB cap that the global
-// limiter leaves to the route, DELETE idempotent). The `it.fails` cases pin intended behavior the
-// implementation does not meet yet (Astra's challenge, points 1 and 3): they turn green once fixed.
+// The push service (`server/src/push/pushService.ts`) over a temporary `save/` with an injected
+// transport, and its routes (`server/src/routes/push.ts`) on the real app. The VAPID pair (generated
+// once into `save/server/web_push_vapid.json`, mode 0600, kept across restarts; the environment
+// pair; one variable alone, an invalid pair, or an unreadable file turning push off without
+// replacing the file), the subscription validation (the allowed push hosts, `https` only, no port,
+// credentials, or fragment, the P-256 point, the 16-byte auth secret, `expirationTime`), the file
+// (invalid rows dropped on load, the cap of 50 keeping the newest, the atomic write), delivery
+// (every subscription in parallel with the payload and the per-call VAPID details, 404/410 removing
+// the subscription, other failures counted with a sanitized label, a success clearing them, the
+// sends one at a time with a bounded queue, `close`, never a rejection), and the routes
+// (authenticated before the body, `no-store`, 400/503, the 16 KiB cap that the global limiter leaves
+// to the route, DELETE idempotent). The `it.fails` cases pin intended behavior the implementation
+// does not meet yet: they turn green once fixed.
 
 const ALLOWED = "https://fcm.googleapis.com/fcm/send/";
 let counter = 0;
@@ -159,8 +159,8 @@ describe("the VAPID keys", () => {
         expect(readFileSync(serverFile(save, "web_push_vapid.json"), "utf-8")).toBe("{ not json");
     });
 
-    // Astra's challenge, point 2: `web-push` refuses a padded key on every send (`validatePublicKey`),
-    // and a pair mixed from two keys signs with the wrong key; neither may be advertised.
+    // `web-push` refuses a padded key on every send (`validatePublicKey`), and a pair mixed from two
+    // keys signs with the wrong key; neither may be advertised.
     it("turn push off for a pair the package cannot sign with: padded keys, a mismatched pair, an off-curve point", () => {
         const a = webPush.generateVAPIDKeys();
         const b = webPush.generateVAPIDKeys();
@@ -383,10 +383,10 @@ describe("the subscriptions", () => {
         expect(readJson(serverFile(save, "push_subscriptions.json")).subscriptions).toEqual([]);
     });
 
-    // Astra's challenge, point 1: `new URL()` decodes `%2e` in the host (`127.0.0.1.notify.windows.com`
-    // passes the allowlist) while `web-push` posts with the legacy `url.parse()`, whose hostname of
-    // the same string is `127.0.0.1`; a host character the WHATWG parser keeps (`'`, `"`, `;`, a
-    // backtick, `{`, `}`) ends the host for `url.parse` the same way. Only a plain DNS name is allowed.
+    // `new URL()` decodes `%2e` in the host (`127.0.0.1.notify.windows.com` passes the allowlist)
+    // while `web-push` posts with the legacy `url.parse()`, whose hostname of the same string is
+    // `127.0.0.1`; a host character the WHATWG parser keeps (`'`, `"`, `;`, a backtick, `{`, `}`)
+    // ends the host for `url.parse` the same way. Only a plain DNS name is allowed.
     it("refuses a host spelled with escapes or punctuation that the transport's URL parser would read differently", () => {
         const { service: push } = service();
         const punctuation = [
@@ -517,7 +517,7 @@ describe("the subscriptions", () => {
         expect(calls[0].subscription.keys).toEqual(ok.keys);
     });
 
-    // Astra's challenge, point 3: a registration or removal is acknowledged only once the file holds it.
+    // A registration or removal is acknowledged only once the file holds it.
     it("reports a registration or removal whose persistence failed, and changes nothing in memory", async () => {
         const save = savePath();
         const file = serverFile(save, "push_subscriptions.json");
@@ -874,7 +874,7 @@ describe("the push routes", () => {
         expect(readJson(path.join(s.savePath, "server", "push_subscriptions.json")).subscriptions).toEqual([]);
         // Idempotent.
         expect((await s.request("DELETE", SUB, { endpoint: sub.endpoint })).status).toBe(204);
-        // The storage routes never reach the push files (`docs/plan/web-push.md` decision 8).
+        // The storage routes never reach the push files.
         for (const file of ["server/push_subscriptions.json", "server/web_push_vapid.json"]) {
             const read = await s.app.request("/api/read", {
                 headers: await s.headers({ "file-path": Buffer.from(file).toString("hex") }),

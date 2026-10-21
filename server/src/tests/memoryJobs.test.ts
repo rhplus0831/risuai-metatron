@@ -9,21 +9,21 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
 
-// Phase 5 slice 10: memory on the server, end to end. A send (and a preview) as a server job on a
-// real listening server with the default runner, the production memory services, the vector cache
-// file, a mock chat provider (summaries answered to the non-streamed `memory` requests, the reply
-// streamed) and a mock embedding server (`hypaModel: "custom"`); no local model. The four
-// algorithms with their persistence: HypaV3's summaries requested and stored before the main
-// request and the memory card in the prompt, the vectors reused from the cache on a later send, a
-// preview writing too, a partial failure keeping the summaries made, the WebLLM summarization
-// model refused; HypaV2's chunks, and its repeated failure writing nothing; SupaMemory's
-// `supaMemoryData` and `lastMemory` kept when the main provider then fails; Hanurai writing no
-// memory field, its exhaustion the job's error also with `inlayErrorResponse`; the priority Hanurai,
-// V2, V3, Supa among enabled flags; an unrelated metadata edit during a delayed summary kept; an
-// abort during a summary with no later request, write, or cache row; a progress notice closed; the
-// embedding key never in the job's error, events, chat, or log when the provider echoes it;
-// `additionalInformations` in the description; a WebLLM model's `previewPrompt` answered without
-// inference. The algorithms' outputs against the browser are `memoryAlgorithms.test.ts`'s.
+// Memory on the server, end to end. A send (and a preview) as a server job on a real listening
+// server with the default runner, the production memory services, the vector cache file, a mock chat
+// provider (summaries answered to the non-streamed `memory` requests, the reply streamed) and a mock
+// embedding server (`hypaModel: "custom"`); no local model. The four algorithms with their
+// persistence: HypaV3's summaries requested and stored before the main request and the memory card
+// in the prompt, the vectors reused from the cache on a later send, a preview writing too, a partial
+// failure keeping the summaries made, the WebLLM summarization model refused; HypaV2's chunks, and
+// its repeated failure writing nothing; SupaMemory's `supaMemoryData` and `lastMemory` kept when the
+// main provider then fails; Hanurai writing no memory field, its exhaustion the job's error also
+// with `inlayErrorResponse`; the priority Hanurai, V2, V3, Supa among enabled flags; an unrelated
+// metadata edit during a delayed summary kept; an abort during a summary with no later request,
+// write, or cache row; a progress notice closed; the embedding key never in the job's error, events,
+// chat, or log when the provider echoes it; `additionalInformations` in the description; a WebLLM
+// model's `previewPrompt` answered without inference. The algorithms' outputs against the browser
+// are `memoryAlgorithms.test.ts`'s.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -296,7 +296,7 @@ async function seedCharacter(
                 ops: [
                     {
                         op: "create",
-                        // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                        // Bound to the ids the jobs send: a job runs on its chat's binding.
                         chat: {
                             id: "k",
                             name: "K",
@@ -693,8 +693,8 @@ describe("HypaV3", () => {
         SLOW,
     );
 
-    // Slice 1c of `docs/plan/data-loss-concurrency.md` (audit A2): the job's `hypaV3Data` write is
-    // placed onto the value stored at the write (`mergeHypaV3Write`), not written over it.
+    // The job's `hypaV3Data` write is placed onto the value stored at the write (`mergeHypaV3Write`),
+    // not written over it.
     const seeded = { text: "Seeded summary.", chatMemos: ["m0", "m1"], isImportant: false };
     const edited = { ...seeded, text: "Seeded summary, edited meanwhile.", isImportant: true, tags: ["mine"] };
     /** Seeds `hypaV3Data` with one summary and edits it (or `set`s another value) at the first summary request. */
@@ -863,7 +863,7 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
             const failed = await job("send", failing, { input: "Hello", userMessageId: "u1" });
             expect(failed.terminal).toMatchObject({ type: "error", message: expect.stringContaining("[HypaV2]") });
             // The memory layer answers its failure as text: the error is the assembly's, naming no
-            // request (request history slice 6, settled at implementation).
+            // request.
             expect((failed.terminal as any).stage).toBe("assembly");
             expect("requestId" in failed.terminal!).toBe(false);
             expect(mains()).toHaveLength(0);
@@ -880,7 +880,7 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
             state.mainStatus = 500;
             const { terminal } = await job("send", chaId, { input: "Hello Supa", userMessageId: "u1" });
             expect(terminal).toMatchObject({ type: "error", status: 500 });
-            // The main request's failure names the request stage and the request (slice 6).
+            // The main request's failure names the request stage and the request.
             expect(terminal).toMatchObject({
                 stage: "request",
                 requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),

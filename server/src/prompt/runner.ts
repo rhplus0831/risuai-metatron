@@ -226,8 +226,8 @@ class SendError extends GenerationRunnerError {
 }
 
 /**
- * A send, continue, group send, or preview (Phase 5 slice 9): `sendMain`'s input stage and
- * `sendChat` up to the provider call and the raw reply, on the server. The sequence:
+ * A send, continue, group send, or preview: `sendMain`'s input stage and `sendChat` up to the
+ * provider call and the raw reply, on the server. The sequence:
  *
  * 1. `accepted` (no message) with the chat's revision.
  * 2. The input stage (a send with a nonempty `input`, unless the chat already holds the user message
@@ -245,7 +245,7 @@ class SendError extends GenerationRunnerError {
  *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
  *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
  *    end, after an abort (inside the grace), or after a read failure.
- * 6. The tail of a completed reply (slice 11a), in the tab's order on each path: `editoutput` once on
+ * 6. The tail of a completed reply, in the tab's order on each path: `editoutput` once on
  *    the completed text, the output trigger, inlays, the `chatOutput` listeners, TTS; the
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
  *    image view; the generation info with its timings; the final write. An auto-continue or a resend
@@ -255,9 +255,9 @@ class SendError extends GenerationRunnerError {
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
  * it the job ends with the error.
  *
- * A failure names its stage (`docs/plan/request-history-diagnostics.md` slice 6): the site nearest
- * it names one where it knows it (a script, a write, a request, with the request's id and provider
- * code), else the stage the run was in (`JobRunState.stage`: setup, input, assembly, request, tail).
+ * A failure names its stage: the site nearest it names one where it knows it (a script, a write, a
+ * request, with the request's id and provider code), else the stage the run was in
+ * (`JobRunState.stage`: setup, input, assembly, request, tail).
  */
 export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
     const state = createJobRunState(job);
@@ -339,7 +339,7 @@ async function runSend(
 
     // `presetChain` (the tab's top-level send picks one prompt preset for the whole send): picked and
     // read with the admitted configuration, applied after the input stage, where the tab's `sendChat`
-    // picks it. The model preset stays the job's (`docs/plan/split-preset.md`).
+    // picks it. The model preset stays the job's.
     let chain: { scope: JobScope; presetId: string } | { missing: string } | null = null;
     if (scope.db.presetChain) {
         const names = scope.db.presetChain.split(",").map((v) => v.trim());
@@ -349,7 +349,7 @@ async function runSend(
             chain = { missing: ele };
         } else {
             // The pick is this job's own prompt preset: the chat's binding is checked but its prompt
-            // preset is not compared (`docs/plan/chat-binding.md`, decision 9).
+            // preset is not compared.
             const picked = loadJobScope(store, kinds, { ...job.context, presetId: found.id }, { binding: "chain" });
             admitProviderModels(picked, job.hooks.providers);
             chain = { scope: picked, presetId: found.id };
@@ -553,12 +553,12 @@ async function runSend(
 }
 
 /**
- * Automatic translation of a send's messages (`docs/plan/translation.md` slice 2.3): after the final
- * writes (each released its message's lock) and before `done`, the messages go to the translation
- * runner, which decides from the chat's settings whether to translate them and runs detached from the
- * job (the next send is not blocked). The replies come first, so a runner near capacity takes them
- * before the user message. The tab gets a `translating` notice for the ones handed over and follows
- * them. An aborted job hands over nothing (its partial reply is not translated).
+ * Automatic translation of a send's messages: after the final writes (each released its message's
+ * lock) and before `done`, the messages go to the translation runner, which decides from the chat's
+ * settings whether to translate them and runs detached from the job (the next send is not blocked).
+ * The replies come first, so a runner near capacity takes them before the user message. The tab gets
+ * a `translating` notice for the ones handed over and follows them. An aborted job hands over nothing
+ * (its partial reply is not translated).
  */
 function handOffTranslations(job: RunningJob, deps: GenerationRunnerDeps, messageIds: string[]) {
     if (!deps.translations || job.signal.aborted || messageIds.length === 0) {
@@ -675,9 +675,9 @@ async function runSpeaker(arg: {
     const { services, evaluator } = bindings;
 
     /**
-     * The completion notification (`docs/plan/web-push.md`): the tab's notice and Web Push, both naming
-     * the job's chat and its owner (a group's name and message, not the speaking member's). A failure
-     * here never changes the reply.
+     * The completion notification: the tab's notice and Web Push, both naming the job's chat and its
+     * owner (a group's name and message, not the speaking member's). A failure here never changes the
+     * reply.
      */
     function notifyCompletion() {
         try {
@@ -1156,8 +1156,8 @@ async function runSpeaker(arg: {
             });
         }
 
-        // ---- The tail (`post-generation-and-plugin-callbacks`, slice 11a): what `sendChatInner` does
-        // after the provider answers, in its order on each path.
+        // ---- The tail: what `sendChatInner` does after the provider answers, in its order on each
+        // path.
 
         /** The client's `result`: the reply's text as the later stages read it (see each path). */
         let result = "";
@@ -1527,7 +1527,7 @@ async function runSpeaker(arg: {
         }
         const willResend = resend && roundLeft();
 
-        // `igp`: once, on the reply no further round follows (the plan's "after the loop").
+        // `igp`: once, on the reply no further round follows (after the loop).
         if (!willResend) {
             const igp = evaluator.risuChatParser(db.igpPrompt ?? "", { chatRef });
             if (igp) {

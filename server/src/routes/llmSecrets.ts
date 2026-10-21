@@ -15,8 +15,8 @@ const PREFIX = "/api/llm-secrets/";
 const MAX_SECRET_LENGTH = 64 * 1024;
 
 /**
- * `/api/llm-secrets/*` (Phase 5 slice 7b): the only way a client writes an `llmSecrets` credential
- * (the record is write-only: `shared/llmSecrets.ts`).
+ * `/api/llm-secrets/*`: the only way a client writes an `llmSecrets` credential (the record is
+ * write-only: `shared/llmSecrets.ts`).
  *
  * - `PUT /api/llm-secrets/<path>` `{ value, baseRevision }`: sets the credential (an empty value
  *   clears a leaf and removes a map entry);

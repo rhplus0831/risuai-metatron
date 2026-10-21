@@ -16,11 +16,11 @@ import {
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 
-// The publisher of the live updates (Phase 6 slice 2): the resource store publishes one change set
-// per committed outer write (`put`, `delete`, `applyChanges`, `transaction`) after the commit, with
-// side effects (a character's order on create, its chats and order on delete), a record's final
-// revision when it changed twice, nothing for a rolled-back write or a 409, and `replaceAll`'s new
-// epoch after it is installed. The socket that carries it is in `events.test.ts`.
+// The publisher of the live updates: the resource store publishes one change set per committed
+// outer write (`put`, `delete`, `applyChanges`, `transaction`) after the commit, with side effects
+// (a character's order on create, its chats and order on delete), a record's final revision when it
+// changed twice, nothing for a rolled-back write or a 409, and `replaceAll`'s new epoch after it is
+// installed. The socket that carries it is in `events.test.ts`.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -403,10 +403,10 @@ describe("the store publishes committed changes", () => {
     });
 });
 
-// Audit item A2: a `patch` batch op publishes its change set entry with a `RecordFieldPatch`
-// (`feedPatch`): every top-level field whose stored JSON value differs between the old and the new
-// stored record (normalization included) and the base revision one write earlier. None (a plain ref)
-// for a kind with `project`, a hidden hydration kind, a changed `__proto__`, or a patch over
+// A `patch` batch op publishes its change set entry with a `RecordFieldPatch` (`feedPatch`): every
+// top-level field whose stored JSON value differs between the old and the new stored record
+// (normalization included) and the base revision one write earlier. None (a plain ref) for a kind
+// with `project`, a hidden hydration kind, a changed `__proto__`, or a patch over
 // `MAX_FEED_PATCH_BYTES` (UTF-8 bytes of its JSON); nothing for a batch that rolls back.
 describe("field patches in the feed", () => {
     const plain: ResourceKind = { name: "plain", schemaVersion: 1, normalize: (input) => input };
@@ -511,7 +511,7 @@ describe("field patches in the feed", () => {
         expect(store.get(counted, "c")!.data).toEqual({ x: 1, count: 2, y: 2 });
     });
 
-    it("publishes a plain ref for a hidden hydration kind or a changed __proto__, without the data; a kind that projects takes no patch (audit item A1)", () => {
+    it("publishes a plain ref for a hidden hydration kind or a changed __proto__, without the data; a kind that projects takes no patch", () => {
         const { store, published, events } = patchSetup();
         store.put(hidden, "r", { secret: "value", n: 1 }, null);
         published();
@@ -644,7 +644,7 @@ describe("field patches in the feed", () => {
     });
 });
 
-// Audit item A1: an item `patch` op (`RecordItemPatch`, an array record with unique item ids such as
+// An item `patch` op (`RecordItemPatch`, an array record with unique item ids such as
 // `modules`) publishes what `diffItems` finds between the old and the stored list: a new item, or
 // one whose `__proto__` changed, whole in `items`; another changed item's fields in `changes`; the
 // id sequence in `order` when it changed. A plain ref over `MAX_FEED_PATCH_BYTES`; nothing for a
@@ -871,10 +871,10 @@ describe("item patches in the feed", () => {
     });
 });
 
-// Data-loss slice 2b: a generation job's write runs `committed` after the commit and before the
-// change is published, and the lists it returns ride on that change as `streaming`; a job's end
-// publishes its released locks without a write (`publishStreaming`).
-describe("the store publishes generation locks (slice 2b)", () => {
+// A generation job's write runs `committed` after the commit and before the change is
+// published, and the lists it returns ride on that change as `streaming`; a job's end publishes
+// its released locks without a write (`publishStreaming`).
+describe("the store publishes generation locks", () => {
     const lockOf = (messageId: string, generationId: string, seq = 0) => [
         { characterId: "c", id: "k", streaming: [{ messageId, generationId, seq }] },
     ];

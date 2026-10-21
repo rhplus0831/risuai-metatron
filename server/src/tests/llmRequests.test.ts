@@ -35,14 +35,14 @@ import { createTokenCounter } from "../prompt/tokens.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 7a: the live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`)
-// over a fake store and a recording upstream, with the real ported adapters. The SSE grammar and
-// its one terminal; the callback leg (`mcpTool`, `cbs`: ownership, duplicates, deadlines, a failed
-// parse ending the request); the lifecycle (pre-aborted admission, an abort mid-stream, the
-// per-client cap, maintenance, shutdown); the child interceptor's refusal and failure taxonomy; the
-// secret-free projection (field by field, protocol intact, a short credential, content the tab
-// must get unaltered refused instead); the warmer fence; local Ollama and a real Node WebSocket
-// to an OobaLegacy upstream. The HTTP routes are in `llmRoutes.test.ts`.
+// The live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`) over a fake store and
+// a recording upstream, with the real ported adapters. The SSE grammar and its one terminal; the
+// callback leg (`mcpTool`, `cbs`: ownership, duplicates, deadlines, a failed parse ending the
+// request); the lifecycle (pre-aborted admission, an abort mid-stream, the per-client cap,
+// maintenance, shutdown); the child interceptor's refusal and failure taxonomy; the secret-free
+// projection (field by field, protocol intact, a short credential, content the tab must get
+// unaltered refused instead); the warmer fence; local Ollama and a real Node WebSocket to an
+// OobaLegacy upstream. The HTTP routes are in `llmRoutes.test.ts`.
 
 const SECRET = "sk-proxy-SENTINEL-1111";
 const PROVIDER = "https://mock.test/v1/chat/completions";
@@ -51,17 +51,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type Records = Record<string, unknown> & {
     characters?: Record<string, unknown>;
-    /** The chats by `<characterId>/<chatId>`: their binding fields (`docs/plan/chat-binding.md`). */
+    /** The chats by `<characterId>/<chatId>`: their binding fields. */
     chats?: Record<string, Record<string, unknown>>;
 };
 
 /**
  * The settings records. `overrides.preset` mixes the prompt preset's fields and the profile's
- * (`aiModel` is its `modelId`): each normalizer keeps its own (`docs/plan/split-preset.md`,
- * `docs/plan/model-profiles.md`), so the prompt preset `p` and the profile `main` (both slots of
- * the model preset `m`) split it. A reverse proxy has no flat default key (O2): the `reverse_proxy`
- * profile binds the named key `proxy` (`overrides.proxyKey`, else `SECRET`) unless the preset
- * names its own `credentialId`.
+ * (`aiModel` is its `modelId`): each normalizer keeps its own, so the prompt preset `p` and the
+ * profile `main` (both slots of the model preset `m`) split it. A reverse proxy has no flat default
+ * key: the `reverse_proxy` profile binds the named key `proxy` (`overrides.proxyKey`, else `SECRET`)
+ * unless the preset names its own `credentialId`.
  */
 function makeRecords(
     overrides: { preset?: Record<string, unknown>; secrets?: Record<string, unknown>; proxyKey?: string } = {},
@@ -130,7 +129,7 @@ const kinds = { get: (name: string) => ({ name }) } as unknown as ResourceKindRe
 /** The targets of the job a `channelCall` names: chat `k` with the ids `body()` sends. */
 const JOB_TARGETS = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", modelPresetId: "m", personaId: "u" };
 
-/** A job's tool set that offers nothing (slice 12a): no descriptors, so a call is never legitimate. */
+/** A job's tool set that offers nothing: no descriptors, so a call is never legitimate. */
 function noTools(): JobRequestSpec["tools"] {
     return {
         descriptors: [],
@@ -370,7 +369,7 @@ describe("a buffered request", () => {
     });
 
     it("names the tab's selected character for the prompt and the replying character for Ollama's unstringlize, from the ids sent", async () => {
-        // The Ollama fields are profile fields (`docs/plan/model-profiles.md` O7).
+        // The Ollama fields are profile fields.
         const records = makeRecords({
             preset: { aiModel: "ollama-hosted", ollamaURL: "http://ollama.test", ollamaModel: "llama" },
         });
@@ -977,9 +976,9 @@ function jobSpec(
         intercept?: CallbackResult;
         streaming?: boolean;
         signal?: AbortSignal;
-        /** The job's MCP tools (slice 12a); none by default. */
+        /** The job's MCP tools; none by default. */
         tools?: JobRequestSpec["tools"];
-        /** What the request is recorded as (request history slice 1); a Lua request of no chat by default. */
+        /** What the request is recorded as; a Lua request of no chat by default. */
         source?: RequestSource;
         chatRef?: { chaId: string; chatId: string } | null;
         messageId?: string | null;
@@ -1097,10 +1096,10 @@ describe("strong-ban cache isolation", () => {
     });
 });
 
-describe("a job's in-process request (runInJob, slice 8a)", () => {
+describe("a job's in-process request (runInJob)", () => {
     it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the exchanges it reports (a job has no tab log)", async () => {
-        // The `requestLog` notice is gone (request history slice 3): a job's exchanges reach only
-        // the observer, redacted at the write.
+        // There is no `requestLog` notice: a job's exchanges reach only the observer, redacted at the
+        // write.
         const exchanges: Record<string, unknown>[] = [];
         const observer: RequestObserver = {
             begin() {},
@@ -1218,7 +1217,7 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
     });
 });
 
-describe("a job's MCP tools (runInJob, slice 12a)", () => {
+describe("a job's MCP tools (runInJob)", () => {
     // The job's tool set reaches the real OpenAI-compatible adapter: its descriptors go out as the
     // body's tools, every tool call the model asks for is charged before the lookup (an unknown
     // name too), the job's `call` answers the follow-up request, a spent budget or a throwing tool
@@ -1265,7 +1264,7 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
     function spec(records: Records, tools: JobRequestSpec["tools"], streaming = false, signal?: AbortSignal) {
         const loaded = loadRequestDb(fakeStore(records), kinds, ids);
         const ended: string[] = [];
-        /** Each `endJob` with the request it names (slice 6). */
+        /** Each `endJob` with the request it names. */
         const endedWith: [string, { requestId: string } | undefined][] = [];
         const jobSpec: JobRequestSpec = {
             jobId: "job",
@@ -1341,7 +1340,7 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
         const plain = harness(buffered, () => chat("", { tool_calls: [toolCall("nope", {})] }));
         const spent = jobTools({ charge: () => false });
         const job = spec(buffered, spent.tools);
-        // The result names the admitted request (slice 6); without an observer no provider code is read.
+        // The result names the admitted request; without an observer no provider code is read.
         expect(await plain.registry.runInJob(job.spec)).toEqual({
             type: "fail",
             result: limit,
@@ -1423,7 +1422,7 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
     });
 });
 
-describe("a job's request names its failure (request history slice 6)", () => {
+describe("a job's request names its failure", () => {
     // `runInJob`'s results carry `request: { id, providerCode }`, a stream that fails while read
     // errors with `JobRequestError`, and a fatal end from inside the request names it: through
     // `endJob(message, { requestId })` for a new fatal, and through `markFailure` on the job's abort
@@ -1865,11 +1864,11 @@ describe("the child interceptor of a job callback", () => {
     });
 });
 
-// `docs/plan/chat-binding.md`, slice 2: a request for a chat (`arg.chatRef`) runs on that chat's binding
-// (`chatRequestRefusal`): outside a job callback the chat's complete binding, inside a callback of that
-// chat's job the job's targets (a `presetChain` pick included). A refusal is a 409 before registration
-// and before the provider, with the problems for an incomplete binding, and releases the callback
-// watch. A request without a chat is not checked (decision 10).
+// A request for a chat (`arg.chatRef`) runs on that chat's binding (`chatRequestRefusal`): outside a
+// job callback the chat's complete binding, inside a callback of that chat's job the job's targets (a
+// `presetChain` pick included). A refusal is a 409 before registration and before the provider, with
+// the problems for an incomplete binding, and releases the callback watch. A request without a chat
+// is not checked.
 describe("a chat's request and its binding", () => {
     const chatRef = { chaId: "c", chatId: "k" };
     const context = (ids: Record<string, unknown>) => ({ context: { ...body().context, ...ids } });
@@ -2021,7 +2020,7 @@ describe("a chat's request and its binding", () => {
     });
 });
 
-describe("a job's plugin provider model (runInJob, slice 11b)", () => {
+describe("a job's plugin provider model (runInJob)", () => {
     const ids = {
         presetId: "p",
         modelPresetId: "m",
@@ -2238,7 +2237,7 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
         ]);
         await dynamic.registry.dispose();
 
-        // `currentPluginProvider` is a profile field (`docs/plan/model-profiles.md`).
+        // `currentPluginProvider` is a profile field.
         const legacy = await startProvider(
             makeRecords({ preset: { aiModel: "custom", currentPluginProvider: "legacy" } }),
             { registered: ["legacy"] },
@@ -2378,7 +2377,7 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
     });
 });
 
-describe("the request observer (request history slice 1)", () => {
+describe("the request observer", () => {
     // `LlmRequestsOptions.observer` over both entry points: `begin` at admission with the request's
     // identity, `firstByte` at most once on the layer's clock (`options.now`), `finish` exactly once
     // with the end's status; a throwing observer never reaches the request; an unobserved run makes

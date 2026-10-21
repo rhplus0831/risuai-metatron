@@ -67,7 +67,7 @@ afterEach(async () => {
 /**
  * `feed`: build the store with the change feed and record what it publishes (`events`). `failCommitted`:
  * while `current`, the store the jobs write through throws from a write's `committed` hook after the
- * job's own bookkeeping ran (slice 2b: a `CommittedWriteError`).
+ * job's own bookkeeping ran (a `CommittedWriteError`).
  */
 function setup(options: { feed?: boolean; failCommitted?: { current: boolean } } = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-generation-jobs-"));
@@ -118,7 +118,7 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
         store.close();
         rmSync(dir, { recursive: true, force: true });
     });
-    // The chats' binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names.
+    // The chats' binding: the default records' ids, which every job names.
     const firstId = (name: string) => (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
     const bound = {
         presetId: firstId("presets"),
@@ -137,7 +137,7 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
                 { op: "create", chat: { name: "K", ...binding, message: [m("u", "hi"), m("r", "", "char")] } as never },
             ]),
             group(null, [{ op: "create", chat: { name: "J", ...binding, message: [m("x", "X")] } as never }], "j"),
-            // No binding: cannot be sent (`docs/plan/chat-binding.md`).
+            // No binding: cannot be sent.
             group(null, [{ op: "create", chat: { name: "Loose", message: [m("y", "Y")] } as never }], "loose"),
         ],
     });
@@ -156,7 +156,8 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
     });
     /** Creates a job for chat k owned by `tab` and returns its id (the create must succeed). */
     const create = (input = "", kind: "send" | "command" = "send") => {
-        // A command job carries what it runs (slice 8a); the body is a union by kind, so each branch names its kind.
+        // A command job carries what it runs; the body is a union by kind, so each branch names its
+        // kind.
         const result = jobs.create(
             kind === "command"
                 ? { kind, context: context(input), clientId: "tab", command: { type: "button", data: "" } }
@@ -253,7 +254,7 @@ describe("admission", () => {
         expect(jobs.create({ kind: "send", context: context(), clientId: "tab" }, store.epoch()).ok).toBe(true);
     });
 
-    // `docs/plan/chat-binding.md`, slice 2: a job of any kind runs on its chat's complete binding or not at all.
+    // A job of any kind runs on its chat's complete binding or not at all.
     it("refuses a chat whose binding is not complete (with its problems) or whose ids differ from the context's, after busy and stale, for a preview too", async () => {
         const { jobs, store, context, create, run, ended } = setup();
         const loose = { ...context(), chatId: "loose", chatRevision: store.chatRevision("c", "loose")! };
@@ -598,7 +599,7 @@ describe("the end of a job", () => {
     });
 });
 
-describe("the failure fields of the error terminal (request history slice 6)", () => {
+describe("the failure fields of the error terminal", () => {
     const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
     it("markFailure fills only the fields the error does not hold yet (the nearest site wins), ignores null, undefined, and a primitive; failureOf copies; a GenerationRunnerError holds its own", () => {
@@ -806,11 +807,11 @@ describe("maintenance and shutdown", () => {
     });
 });
 
-// Data-loss slice 2b: the change feed carries the generation locks. A job's write publishes, with its
-// change, every lock of each chat it touched (`chatStreaming` from the committed hook: a `begin`'s new
-// owner, a checkpoint's watermark, a final write's release), and the job's end publishes the chats it
-// locked once more with no refs (`publishStreaming`), so a release reaches every tab without a write.
-describe("the locks a job's writes and end publish (slice 2b)", () => {
+// The change feed carries the generation locks. A job's write publishes, with its change, every lock
+// of each chat it touched (`chatStreaming` from the committed hook: a `begin`'s new owner, a
+// checkpoint's watermark, a final write's release), and the job's end publishes the chats it locked
+// once more with no refs (`publishStreaming`), so a release reaches every tab without a write.
+describe("the locks a job's writes and end publish", () => {
     const locks = (event: ChangeFeedEvent | undefined) => {
         if (event?.type !== "change") throw new Error("expected a committed change");
         return event.streaming;

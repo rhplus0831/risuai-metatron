@@ -387,12 +387,12 @@ describe("snapshots", () => {
                 new ResourceValidationError("Unsupported resource database version 0"),
             ],
             [
-                "version 1 (Phase 1, chats inside characters)",
+                "version 1 (chats inside characters)",
                 craft(dir, "v1.sqlite", layout.replace("user_version = 3", "user_version = 1")),
                 new ResourceValidationError("Unsupported resource database version 1"),
             ],
             [
-                "other version (2: settings in a root record, before Phase 3)",
+                "other version (2: settings in a root record)",
                 craft(dir, "v2.sqlite", layout.replace("user_version = 3", "user_version = 2")),
                 new ResourceValidationError("Unsupported resource database version 2"),
             ],
@@ -831,7 +831,7 @@ describe("transaction", () => {
     });
 });
 
-// Audit item A2: a batch op may carry a field `patch` of an object record (store-internal; the send
+// A batch op may carry a field `patch` of an object record (store-internal; the send
 // job's `lastInteraction` stamp). It is checked before the transaction, applied at its base revision
 // inside it, normalized and stored like a write, and counted as one. What the feed carries for it is
 // in `changeFeed.test.ts`.
@@ -1051,7 +1051,7 @@ describe("field patches", () => {
     });
 });
 
-// Audit item A1: a batch op may carry an item `patch` of an array record whose items are objects
+// A batch op may carry an item `patch` of an array record whose items are objects
 // with unique non-empty string ids (`modules`): `items` put whole by id, `changes` as field patches
 // of base items, and `order` the exact id sequence. Checked before the transaction
 // (`checkItemPatch`), applied at the base revision inside it (`applyItemPatch`), normalized and

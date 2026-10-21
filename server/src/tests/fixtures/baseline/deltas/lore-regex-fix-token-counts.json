@@ -1,5 +1,5 @@
 {
-  "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10): the per-family token counts of the `lore` prompt",
+  "delta": "The lore regex key fix: the per-family token counts of the `lore` prompt",
   "before": "../token-counts.json (captured at efad2b76, the browser path before the fix)",
   "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
   "after": "The counts re-captured on the fixed tree (`node util/playwright/captureBrowserBaseline.mjs`, 2026-10-01); `routing` and the other four prompts came out identical to the capture.",
@@ -7,7 +7,7 @@
   "prompts": {
     "lore": {
       "change": "Every family's `perMessage` gains the counts of the two regex entries (`Regex entry with empty flags.`, `Regex entry with the i flag.`) at indexes 12 and 13, and its `total` grows by their sum; the other 31 counts are unchanged.",
-      "why": "`lore-regex-fix-prompts.json` adds those two system messages to the `lore` prompt at index 12 (the regex fix activates them). The capture counts each message's `content` with the family's own tokenizer (`encodeWithTokenizer`, or `encode` routed to `o200k_base`), so each inserted count is the family's token count of that message's text and the total is the sum. The server's tokenizers reproduce the browser's ids (`fixtures/tokens/browser-ids.json`, slice 1), so `tokenParity.test.ts` recounts the two messages per family and checks them against `inserted`.",
+      "why": "`lore-regex-fix-prompts.json` adds those two system messages to the `lore` prompt at index 12 (the regex fix activates them). The capture counts each message's `content` with the family's own tokenizer (`encodeWithTokenizer`, or `encode` routed to `o200k_base`), so each inserted count is the family's token count of that message's text and the total is the sum. The server's tokenizers reproduce the browser's ids (`fixtures/tokens/browser-ids.json`), so `tokenParity.test.ts` recounts the two messages per family and checks them against `inserted`.",
       "insertAt": 12,
       "inserted": [
         {

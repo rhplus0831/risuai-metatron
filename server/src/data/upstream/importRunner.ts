@@ -5,13 +5,13 @@ import type { UpstreamImportWorkerData, UpstreamImportWorkerMessage } from "./im
 
 /**
  * Starts and ends the upstream import worker (`importWorker.ts`) from the server's thread
- * (`docs/plan/upstream-bin-compat.md` S5, D1). The worker's heap is always capped (`resourceLimits`):
- * msgpack headers can allocate past the decoded-size cap (S1 _Landed_), so an oversized database
- * ends the worker, not the server. The limit covers the JavaScript heap only (not Buffers or SQLite's
- * own memory), so it is a ceiling against a runaway decode, not process isolation.
+ * The worker's heap is always capped (`resourceLimits`): msgpack headers can allocate past the
+ * decoded-size cap (`risuSave.ts`), so an oversized database ends the worker, not the server. The
+ * limit covers the JavaScript heap only (not Buffers or SQLite's own memory), so it is a ceiling
+ * against a runaway decode, not process isolation.
  */
 
-/** Default cap of the decoded database (D1); `RISU_MAX_UPSTREAM_DB_BYTES` overrides it. */
+/** Default cap of the decoded database; `RISU_MAX_UPSTREAM_DB_BYTES` overrides it. */
 export const DEFAULT_MAX_UPSTREAM_DB_BYTES = 1024 * 1024 * 1024;
 
 /**

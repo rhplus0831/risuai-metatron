@@ -35,22 +35,22 @@ import {
 } from "../llm/transport.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
-// Request history slice 3 (`docs/plan/request-history-diagnostics.md`): every request the server
-// request layer admits writes its row in the durable history through `createHistoryObserver`
-// (`server/src/llm/historyObserver.ts`), with its prompt, model, exchanges, first byte, and outcome,
-// every content field redacted with the request's redactor at the write. The transport's history
-// sink (`record`, `captures`, `teeBody`, `attempt` in `server/src/llm/transport.ts`): each exchange
-// once with the bytes sent and received, a streamed body kept up to `STREAM_CAPTURE_BYTES` and the
-// consumer unaffected, an unread body or a fetch still waiting flushed at the request's end and
-// never recorded twice. `Redactor.trimPartial`: a credential cut in two at the capture bound leaves
-// no fragment. Over the real request layer with an injected upstream and a real store on a temp
-// file: the secret matrix (OpenAI bearer and a named key, Anthropic `x-api-key`, Gemini `?key=`, a
-// Vertex token acquired mid-request, AWS SigV4), a streamed body stored and cut, a tool round, a
-// retry, aborts while a fetch waits for its headers or its buffered answer, an aborted job, the
-// Anthropic batch's exchanges and first byte (the results' first chunk; a `null` acknowledgement,
-// a refused submit whose body cannot be read, an acknowledgement that is not JSON), and Horde's
-// malformed submit id. The store's own rules are in `requestHistory.test.ts`, the observer's
-// slice-1 contract in `llmRequests.test.ts`, the HTTP wiring in `llmRoutes.test.ts`.
+// Every request the server request layer admits writes its row in the durable history through
+// `createHistoryObserver` (`server/src/llm/historyObserver.ts`), with its prompt, model, exchanges,
+// first byte, and outcome, every content field redacted with the request's redactor at the write. The
+// transport's history sink (`record`, `captures`, `teeBody`, `attempt` in
+// `server/src/llm/transport.ts`): each exchange once with the bytes sent and received, a streamed
+// body kept up to `STREAM_CAPTURE_BYTES` and the consumer unaffected, an unread body or a fetch still
+// waiting flushed at the request's end and never recorded twice. `Redactor.trimPartial`: a credential
+// cut in two at the capture bound leaves no fragment. Over the real request layer with an injected
+// upstream and a real store on a temp file: the secret matrix (OpenAI bearer and a named key,
+// Anthropic `x-api-key`, Gemini `?key=`, a Vertex token acquired mid-request, AWS SigV4), a streamed
+// body stored and cut, a tool round, a retry, aborts while a fetch waits for its headers or its
+// buffered answer, an aborted job, the Anthropic batch's exchanges and first byte (the results' first
+// chunk; a `null` acknowledgement, a refused submit whose body cannot be read, an acknowledgement
+// that is not JSON), and Horde's malformed submit id. The store's own rules are in
+// `requestHistory.test.ts`, the observer's contract in `llmRequests.test.ts`, the HTTP wiring in
+// `llmRoutes.test.ts`.
 
 const SECRET = "sk-proxy-SENTINEL-1111";
 const CLAUDE_KEY = "sk-ant-SENTINEL-3333";
@@ -820,7 +820,7 @@ describe("the history observer (createHistoryObserver)", () => {
             error: "bad",
             providerCode: "overloaded_error",
         });
-        // The provider code of the end (slice 6): stored when it is one, null otherwise or when absent.
+        // The provider code of the end: stored when it is one, null otherwise or when absent.
         observer.begin(begin("s"));
         observer.finish("s", { status: "error", completedAt: 9 }, { error: "bad", providerCode: "not a code" });
         expect(history.get("s")).toMatchObject({ error: "bad", providerCode: null });
@@ -829,7 +829,7 @@ describe("the history observer (createHistoryObserver)", () => {
         expect(history.get("t")).toMatchObject({ error: "bad", providerCode: null });
     });
 
-    it("a content getter that throws counts as off: the row is still written, as a summary, with a warning (slice 4)", () => {
+    it("a content getter that throws counts as off: the row is still written, as a summary, with a warning", () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         try {
             const history = openHistory();
@@ -872,7 +872,7 @@ describe("the history observer (createHistoryObserver)", () => {
 
 // ---------------------------------------------------------------------------------------------
 
-describe("a request's row (slice 3, over the request layer)", () => {
+describe("a request's row (over the request layer)", () => {
     it("a tab's buffered request: the row with its chat, prompt (redacted), model, first byte, one exchange with its sizes and status, and a success", async () => {
         const { registry, calls, history } = harness(makeRecords(), () => chat("hi there"));
         const { id, events } = await run(
@@ -1088,7 +1088,7 @@ describe("a request's row (slice 3, over the request layer)", () => {
         expect(JSON.parse(exchange.header)).toMatchObject({ Authorization: "[redacted]" });
         // One fetch, one exchange: the adapter's post-fetch `addLog({ response: "Streaming" })`
         // placeholder (`openAI/requests.ts`) must not be a second one beside the teed body, as the
-        // Gemini one was removed (plan review point 5).
+        // Gemini one was removed.
         expect(row.exchanges!.map((e) => e.response)).toEqual([sseText(frames)]);
         expect(row.exchangeCount).toBe(1);
         expect(row.requestBytes).toBe(utf8(calls[0].body));

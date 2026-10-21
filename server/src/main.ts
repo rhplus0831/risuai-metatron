@@ -11,9 +11,9 @@ const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
 /**
  * Node's limit for receiving a whole request, raised from its default of 300 s: the backup import
- * and the `.risum` module import (large-asset-import slice 2c) upload a whole file in one request,
- * which the default fails with 408 under about 1.9 MB/s for a 580 MB file. Finite, so a stalled
- * upload cannot hold an import slot forever; Node's default `headersTimeout` still bounds the headers.
+ * and the `.risum` module import upload a whole file in one request, which the default fails with 408
+ * under about 1.9 MB/s for a 580 MB file. Finite, so a stalled upload cannot hold an import slot
+ * forever; Node's default `headersTimeout` still bounds the headers.
  */
 const REQUEST_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const sslPath = path.join(rootDir, "server/ssl/certificate");

@@ -25,8 +25,7 @@ import { normalizePersonas } from "../data/normalize/personas.ts";
 import { normalizeModelPresetCollection, normalizePresetCollection } from "../data/normalize/presets.ts";
 import { ResourceValidationError, serialize } from "../data/resourceStore.ts";
 
-// Phase 3, slice 3 (`docs/plan/phases/slices/phase-3-settings-sections/server-section-normalizers.md`,
-// "Validation"): the collection normalizers, and the registry entries of every Phase 3 kind.
+// The collection normalizers, and the registry entries of every settings section and collection kind.
 
 const fixtureDir = path.resolve(import.meta.dirname, "../../../src/ts/storage/tests/fixtures/boot");
 const bootSnapshot = JSON.parse(readFileSync(path.join(fixtureDir, "boot-snapshot.json"), "utf-8")) as Record<
@@ -65,7 +64,7 @@ describe("the registry", () => {
             const kind = kinds.get(name);
             expect(kind, name).toBeDefined();
             expect(kind, name).toMatchObject({ singleton: true, materialize: true, schemaVersion: 1 });
-            // Phase 5 slice 7b: only `llmSecrets` projects its reads and prepares its plain writes.
+            // Only `llmSecrets` projects its reads and prepares its plain writes.
             expect(typeof kind!.project, name).toBe(name === "llmSecrets" ? "function" : "undefined");
             expect(typeof kind!.prepareWrite, name).toBe(name === "llmSecrets" ? "function" : "undefined");
         }
@@ -136,7 +135,7 @@ describe("plain list and map collections", () => {
         const modules = ["m1", "m2"];
         expect(normalizeEnabledModules(modules)).toEqual(modules);
         expect(normalizeEnabledModules(modules)).not.toBe(modules);
-        // A model's key is an `llmSecrets` credential (Phase 5 slice 7b): one in the record is dropped.
+        // A model's key is an `llmSecrets` credential: one in the record is dropped.
         const models = [{ id: "a", internalId: "b", key: "secret", extra: 1 }];
         expect(normalizeCustomModels(models)).toEqual([{ id: "a", internalId: "b", extra: 1 }]);
     });
@@ -224,7 +223,7 @@ describe("plain list and map collections", () => {
 
     it("customModels: a definition holds no credential binding or key; either is dropped, of any kind", () => {
         const model = { id: "xcustom:::a", internalId: "b" };
-        // `docs/plan/model-profiles.md`, product decision 3: the profile picks the key.
+        // The profile picks the key.
         expect(normalizeCustomModels([{ ...model, credentialId: "c1" }])).toEqual([model]);
         expect(normalizeCustomModels([{ ...model, credentialId: 1, key: "sk-leak" }])).toEqual([model]);
         expect(normalizeCustomModels([model])).toEqual([model]);
@@ -304,7 +303,7 @@ describe("translatorPresets", () => {
             selectedId: "y",
         });
         // The shape before steps (`{ prompt, maxResponse }`) becomes one inherited step; both old
-        // fields are dropped from the record (translation slice 1.2).
+        // fields are dropped from the record.
         const oneStep = (prompt: string, maxResponse: number) => [
             {
                 id: expect.stringMatching(UUID_V4),
@@ -405,8 +404,8 @@ describe("translatorPresets", () => {
         expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
     });
 
-    // Translation slice 3.2: Send Text As-Is is stored only as `true`; a preset from before the option
-    // (no field) and one carrying any other value are stored without it.
+    // Send Text As-Is is stored only as `true`; a preset from before the option (no field) and one
+    // carrying any other value are stored without it.
     it("stores sendTextAsIs only as true, drops any other value, and leaves a preset without it as it was", () => {
         const out = normalizeTranslatorPresets({
             items: [
@@ -436,8 +435,7 @@ describe("translatorPresets", () => {
         expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
     });
 
-    // Translation slice 3.4: Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs`
-    // and independent of it.
+    // Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs` and independent of it.
     it("stores excludeThoughts only as true, after sendTextAsIs and independent of it, drops any other value, and leaves a preset without it as it was", () => {
         const out = normalizeTranslatorPresets({
             items: [
@@ -509,7 +507,7 @@ describe("hypaV3Presets", () => {
         }
     });
 
-    it("gives a settings object with an own `__proto__` key an ordinary prototype and a stable stored form (Astra challenge, point 1)", () => {
+    it("gives a settings object with an own `__proto__` key an ordinary prototype and a stable stored form", () => {
         const input = JSON.parse(
             '{"items":[{"id":"p","name":"P","settings":{"__proto__":{"extra":0},"extra":42}}],"selectedId":"p"}',
         );
@@ -530,7 +528,7 @@ describe("personas", () => {
         const materialized = normalizePersonas(undefined);
         expect(withoutIds(materialized)).toEqual(withoutIds(bootSnapshot.personas));
         expect(materialized[0].id).toMatch(UUID_V4);
-        // Never empty (slice 6, `shared/personas.ts`): a selection always has a record.
+        // Never empty (`shared/personas.ts`): a selection always has a record.
         const fromEmpty = normalizePersonas([]);
         expect(withoutIds(fromEmpty)).toEqual(withoutIds(bootSnapshot.personas));
         expect(fromEmpty[0].id).toMatch(UUID_V4);
@@ -583,7 +581,7 @@ describe("presets", () => {
         ]);
         expect(out.map((preset) => preset.name)).toEqual(["p", "New Preset", "New Preset"]);
         expect(out[0]).toMatchObject({ temperature: 1 });
-        // A prompt preset holds no model field (`docs/plan/split-preset.md`).
+        // A prompt preset holds no model field.
         expect(Object.hasOwn(out[0], "aiModel")).toBe(false);
         expect(Object.hasOwn(out[0], "maxContext")).toBe(false);
         expect(out[1].id).toBe("keep");

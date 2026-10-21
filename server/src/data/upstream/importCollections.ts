@@ -10,8 +10,8 @@ import { kindOf, normalizeRecord, ownCopy, PendingReport, setOwn, storedValue, t
 
 /**
  * The upstream collections that name characters or modules, and the module, plugin, and plugin
- * storage records (`docs/plan/upstream-bin-compat.md` S4), for `convertUpstreamDatabase`. Each entry
- * is recovered on its own: one bad entry never costs the others.
+ * storage records, for `convertUpstreamDatabase`. Each entry is recovered on its own: one bad entry
+ * never costs the others.
  */
 
 /** Where metatron keeps the v3 `pluginStorage` values (`src/ts/storage/pluginStorageStore.svelte.ts`). */
@@ -284,8 +284,8 @@ export function convertPluginStorage(
     }
     const legacyKeys = new Set<string>();
     const coldKeys = new Set<string>();
-    // Only a file upstream wrote: a metatron backup from before Phase 1 already has `_pluginStorage`,
-    // and its top-level keys are `setDatabase` custom keys only.
+    // Only a file upstream wrote: a metatron backup from before the resource records already
+    // has `_pluginStorage`, and its top-level keys are `setDatabase` custom keys only.
     if (!hasStorage) {
         for (const key of Object.keys(out)) {
             if (key === PLUGIN_STORAGE_KEY || key === SAFE_LOCAL_PLUGIN_STORAGE_KEY || Object.hasOwn(v3, key)) {

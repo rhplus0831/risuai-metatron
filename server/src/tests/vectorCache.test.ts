@@ -6,17 +6,17 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createVectorCache, MAX_ENTRY_BYTES, type VectorCache, vectorCacheKey } from "../data/vectorCache.ts";
 
-// Phase 5 slice 10: the server's embedding vector cache (`server/src/data/vectorCache.ts`), the
-// replacement of the browser's `hypaVector` LocalForage store. The rows: a local model's
-// `Float32Array` back as one from its own bytes (a subview's bytes only, an independent copy), an
-// API vector's float64 numbers kept exactly (`1 + 2^-40` would not survive float32), an overwrite
-// accounted once, an oversize or empty vector skipped, the trim by `used_at` down to 90% of the
-// bound, a hit touching `used_at` only after a minute. The lifecycle: a write of an earlier
-// generation dropped after `clear` or `close`, a closed cache serving nothing, the rows kept across
-// a reopen under the same epoch and removed under another one, an emptying that fails (the file
-// locked) serving and storing nothing until the retry succeeds (at most once a second), a failed
-// epoch read handled the same way, a failed sync followed by a restart exposing no old row. The key:
-// the SHA-256 of the UTF-16 string, so two lone surrogates never share a row.
+// The server's embedding vector cache (`server/src/data/vectorCache.ts`), the replacement of the
+// browser's `hypaVector` LocalForage store. The rows: a local model's `Float32Array` back as one
+// from its own bytes (a subview's bytes only, an independent copy), an API vector's float64 numbers
+// kept exactly (`1 + 2^-40` would not survive float32), an overwrite accounted once, an oversize or
+// empty vector skipped, the trim by `used_at` down to 90% of the bound, a hit touching `used_at`
+// only after a minute. The lifecycle: a write of an earlier generation dropped after `clear` or
+// `close`, a closed cache serving nothing, the rows kept across a reopen under the same epoch and
+// removed under another one, an emptying that fails (the file locked) serving and storing nothing
+// until the retry succeeds (at most once a second), a failed epoch read handled the same way, a
+// failed sync followed by a restart exposing no old row. The key: the SHA-256 of the UTF-16 string,
+// so two lone surrogates never share a row.
 
 const dirs: string[] = [];
 const caches: VectorCache[] = [];

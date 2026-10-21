@@ -5,15 +5,15 @@ import type { customscript } from "../../../shared/database.ts";
 import type { RegexScriptEffect } from "../../../shared/scripts/regex.ts";
 import { createScriptWorkerPool, type RegexScriptsHost } from "../scripts/workerPool.ts";
 
-// Phase 5 slice 9: the regex script engine as a worker task (`workerPool.ts` `runScripts`,
-// `worker.ts` `REGEX_SCRIPTS_MODE`) under the real workers: the synchronous hosts (`parse` on the
-// replaced text, `repeatBack`, `effect`) answered on the main thread in script order, each effect
-// exactly once where its script matched; an abort inside a host effect ending the task with no
-// later host call; the bounds shared with Lua tasks as JSON (a CBS argument over 16 MiB failing the
-// task with no later host call, not even a later script's effect; a result over 16 MiB as JSON
-// refused whether the raw text or its escaping crosses the cap, also for a `@@repeat_back` that never
-// reaches `parse`); and the worker reused by a plain run afterwards. The engine's own semantics are
-// pinned in `regex.test.ts`; the send that runs this task in `promptRunner.test.ts`.
+// The regex script engine as a worker task (`workerPool.ts` `runScripts`, `worker.ts`
+// `REGEX_SCRIPTS_MODE`) under the real workers: the synchronous hosts (`parse` on the replaced text,
+// `repeatBack`, `effect`) answered on the main thread in script order, each effect exactly once where
+// its script matched; an abort inside a host effect ending the task with no later host call; the
+// bounds shared with Lua tasks as JSON (a CBS argument over 16 MiB failing the task with no later
+// host call, not even a later script's effect; a result over 16 MiB as JSON refused whether the raw
+// text or its escaping crosses the cap, also for a `@@repeat_back` that never reaches `parse`); and
+// the worker reused by a plain run afterwards. The engine's own semantics are pinned in
+// `regex.test.ts`; the send that runs this task in `promptRunner.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const identity = { characterId: "c", chatId: "k", presetId: "p", personaId: null };

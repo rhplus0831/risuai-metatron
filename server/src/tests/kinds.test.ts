@@ -8,9 +8,9 @@ import { ResourceValidationError } from "../data/resourceStore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
-const phase1Kinds = ["presets", "modules", "plugins", "pluginStorage", "pluginPermissions", "characters", "inlays"];
-/** The Phase 3 sections and collections (slice 3): singletons the store materializes. */
-const phase3Kinds = [
+const recordKinds = ["presets", "modules", "plugins", "pluginStorage", "pluginPermissions", "characters", "inlays"];
+/** The settings sections and collections: singletons the store materializes. */
+const settingsKinds = [
     "providers",
     "secrets",
     "llmSecrets",
@@ -44,8 +44,8 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 21 Phase 3 singletons (including credentials and togglePresets); presets and Phase 3 materialize", () => {
-        expect([...kinds.keys()]).toEqual([...phase1Kinds, ...phase3Kinds]);
+    it("holds the seven record kinds (no root), five of them singletons, and the 21 settings singletons (including credentials and togglePresets); presets and the settings kinds materialize", () => {
+        expect([...kinds.keys()]).toEqual([...recordKinds, ...settingsKinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([
             "presets",
@@ -53,14 +53,14 @@ describe("createKindRegistry", () => {
             "plugins",
             "pluginStorage",
             "pluginPermissions",
-            ...phase3Kinds,
+            ...settingsKinds,
         ]);
         // `presets` materializes too (one default preset), so a selection always has a record.
         expect([...kinds.values()].filter((k) => k.materialize).map((k) => k.name)).toEqual([
             "presets",
-            ...phase3Kinds,
+            ...settingsKinds,
         ]);
-        // Phase 5 slice 7b: `llmSecrets` is write-only, the only kind with a projection and a write rule.
+        // `llmSecrets` is write-only, the only kind with a projection and a write rule.
         expect([...kinds.values()].filter((k) => k.project).map((k) => k.name)).toEqual(["llmSecrets"]);
         expect([...kinds.values()].filter((k) => k.prepareWrite).map((k) => k.name)).toEqual(["llmSecrets"]);
     });
@@ -82,7 +82,7 @@ describe("createKindRegistry", () => {
 
 describe("default normalizers", () => {
     it("return the input unchanged when the minimum shape holds, except presets, which get the canonical schema, and characters, which get the shared defaults", () => {
-        // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
+        // `presets` returns `normalizePresets`' copy: every preset gets an id and the
         // canonical fields, and an empty list becomes one default preset.
         const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
         const { name, temperature } = PRESET_DEFAULTS;
@@ -90,7 +90,7 @@ describe("default normalizers", () => {
         for (const preset of presets) {
             expect(preset.id).toMatch(UUID);
             expect(preset).toMatchObject({ temperature, formatingOrder: expect.any(Array) });
-            // A prompt preset: the model fields live in `modelPresets` (`docs/plan/split-preset.md`).
+            // A prompt preset: the model fields live in `modelPresets`.
             expect(Object.hasOwn(preset, "maxContext")).toBe(false);
         }
         const modelPresets = kind("modelPresets").normalize([{ name: "m" }, {}], { id: "main" }) as Record<
@@ -100,7 +100,7 @@ describe("default normalizers", () => {
         expect(modelPresets.map((p) => p.name)).toEqual(["m", "New Model Preset"]);
         for (const preset of modelPresets) {
             expect(preset.id).toMatch(UUID);
-            // A model preset holds only the slot choices (`docs/plan/model-profiles.md`).
+            // A model preset holds only the slot choices.
             expect(preset).toMatchObject({
                 mainSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
                 subSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
@@ -133,7 +133,7 @@ describe("default normalizers", () => {
         accepts("pluginStorage", "main", { _safeLocalPluginStorage: { a: 1 } });
         accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
         accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: { p_db_lastGrantTime: 1 } });
-        // `characters` (Phase 6 slice 5b) returns a copy with the shared defaults (`normalizeCharacter`);
+        // `characters` returns a copy with the shared defaults (`normalizeCharacter`);
         // the input is not changed.
         for (const [id, input] of [
             ["c1", { chaId: "c1" }],
@@ -173,7 +173,7 @@ describe("default normalizers", () => {
     it("require the character id to match and refuse a character record holding chats", () => {
         rejects("characters", "c1", {}, "character.chaId must equal the resource id");
         rejects("characters", "c1", { chaId: "c2" }, "character.chaId must equal the resource id");
-        // Chats are their own resource (Phase 2); a Phase 1 record with embedded chats is refused.
+        // Chats are their own resource; a character record with embedded chats is refused.
         rejects("characters", "c1", { chaId: "c1", chats: [] }, "character must not hold chats");
         rejects("characters", "c1", { chaId: "c1", chats: undefined }, "character must not hold chats");
     });

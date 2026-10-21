@@ -163,9 +163,9 @@ export function registerBackupRoutes(
             if (signal.aborted) {
                 return;
             }
-            // A downloaded archive carries no LLM credentials (owner answer 12 (a)): the staged copy
-            // loses its `llmSecrets` row, and `VACUUM` rewrites the file so no page keeps the deleted
-            // row (or an older version of it). Snapshots on the server keep the record.
+            // A downloaded archive carries no LLM credentials: the staged copy loses its `llmSecrets`
+            // row, and `VACUUM` rewrites the file so no page keeps the deleted row (or an older
+            // version of it). Snapshots on the server keep the record.
             const staged = new DatabaseSync(databaseFile);
             let selectedKeys: string[] = [];
             try {
@@ -476,8 +476,9 @@ async function planImport(handle: FileHandle, savePath: string) {
         names.add(record.name);
     }
     if (names.has("database.risudat")) {
-        // An upstream RisuAI backup (or one of this fork's from before Phase 1): the client sends it to
-        // the upstream import (`data/upstream/archive.ts`); only a client older than that posts it here.
+        // An upstream RisuAI backup (or one of this fork's from before the resource records): the
+        // client sends it to the upstream import (`data/upstream/archive.ts`); only a client older
+        // than that posts it here.
         throw new ArchiveRejectedError("This is a RisuAI backup; choose it again and it will be imported as one");
     }
     const [first] = records;

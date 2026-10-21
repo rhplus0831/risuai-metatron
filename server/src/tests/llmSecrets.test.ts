@@ -8,15 +8,14 @@ import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createResourceTestClient, parseArchive, sleep, type ResourceTestClient } from "./testSupport.ts";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`, write-only `llmSecrets`): the HTTP contract
-// of the credential record. Every read route and the PUT response answer the masked projection
-// (`shared/llmSecrets.ts`); a plain resource write may carry no credential path and keeps every
-// stored credential; the credentials are written only through `/api/llm-secrets/*` (set, clear,
-// delete) on the record's revision, with the same JWT, epoch, and maintenance rules as the resource
-// writes; the retired per-model-preset and per-custom-model maps (`docs/plan/model-profiles.md`, O2)
-// are neither paths nor readable; the path codec round-trips any id through a real URL; and a downloaded
-// archive carries neither the record nor any byte of a current or replaced credential, while a
-// server snapshot keeps the record.
+// The write-only `llmSecrets`: the HTTP contract of the credential record. Every read route and the
+// PUT response answer the masked projection (`shared/llmSecrets.ts`); a plain resource write may
+// carry no credential path and keeps every stored credential; the credentials are written only
+// through `/api/llm-secrets/*` (set, clear, delete) on the record's revision, with the same JWT,
+// epoch, and maintenance rules as the resource writes; the retired per-model-preset and
+// per-custom-model maps are neither paths nor readable; the path codec round-trips any id through a
+// real URL; and a downloaded archive carries neither the record nor any byte of a current or replaced
+// credential, while a server snapshot keeps the record.
 
 const servers: ResourceTestClient[] = [];
 
@@ -463,7 +462,7 @@ describe("the secret routes", () => {
             "modelPresets/~/proxyKey",
             "modelPresets/~p1/key",
             "customModels/~m1/proxyKey",
-            // The retired per-model-preset and per-custom-model paths (`docs/plan/model-profiles.md`, O2).
+            // The retired per-model-preset and per-custom-model paths.
             "modelPresets/~p1/proxyKey",
             "customModels/~m1/key",
             "OaiCompAPIKeys/~a/extra",

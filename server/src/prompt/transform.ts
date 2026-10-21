@@ -125,14 +125,14 @@ function retainedBytes(run: TargetRun): number {
 }
 
 /**
- * The script transform (Phase 5 slice 13): `processScriptFull`'s `editdisplay` and `editprocess`
- * stages for targets the tab sends, read-only. One `loadJobScope` per request the cache does not
- * answer whole (the ids the tab captured; a missing record fails the request, 404), then per target
- * an isolated run on a copy of that snapshot: its own chat object (`scriptstate` copied: a Lua or
- * CBS variable write changes it for the target's later stages and is never stored), its own owner
- * object and character list, its own regex and dynamic-asset caches, and a setup built as a job's
- * (`createRunSetup`) on a job that cannot write, ask, or call the tab, with frozen bindings (no
- * character or chat re-read, chat writes refused). The targets share one Lua budget and CBS time.
+ * The script transform: `processScriptFull`'s `editdisplay` and `editprocess` stages for targets
+ * the tab sends, read-only. One `loadJobScope` per request the cache does not answer whole (the ids
+ * the tab captured; a missing record fails the request, 404), then per target an isolated run on a
+ * copy of that snapshot: its own chat object (`scriptstate` copied: a Lua or CBS variable write
+ * changes it for the target's later stages and is never stored), its own owner object and character
+ * list, its own regex and dynamic-asset caches, and a setup built as a job's (`createRunSetup`) on
+ * a job that cannot write, ask, or call the tab, with frozen bindings (no character or chat
+ * re-read, chat writes refused). The targets share one Lua budget and CBS time.
  *
  * `editdisplay`, in the client's order: Lua `editDisplay` on the source character (the speaking
  * member in a group) with `meta.index`; the `display` trigger on the chat's owner and chat, groups
@@ -148,7 +148,7 @@ function retainedBytes(run: TargetRun): number {
  * the handler set, the revisions the load read (every section and collection, the presets, the
  * modules, the owner, the source, a group's members), and the chat's variables, author's note,
  * local lore, name, modules, bound persona, bound presets, and greeting index; not the viewport or
- * the other messages (Decision 5). `noCache` replaces the entry. A cached result keeps its emotions;
+ * the other messages. `noCache` replaces the entry. A cached result keeps its emotions;
  * the tab applies a key's emotions once. A request whose every target has an entry is answered
  * before the load (`cachedResults`: revisions and the chat's metadata only, no record parsed).
  *
@@ -604,7 +604,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 ...(request.client ? { client: request.client } : {}),
             };
             // A render, read-only: the chat's bound fields that exist must be the ones sent; an
-            // unset or gone field renders with the tab's (`docs/plan/chat-binding.md`).
+            // unset or gone field renders with the tab's.
             const scope = loadJobScope(store, kinds, context, {
                 binding: "display",
                 // Besides the chat's characters, each target's source.

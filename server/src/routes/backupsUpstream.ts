@@ -50,7 +50,7 @@ type StagedUpstreamImport = {
     /** Every archive asset: its file under `save/assets` and its extracted copy in the staging folder. */
     assets: { target: string; staged: string }[];
     selection: UpstreamImportSelection;
-    /** The live store's epoch and `writeCount()` when the prepare ended (D13). */
+    /** The live store's epoch and `writeCount()` when the prepare ended. */
     epoch: string;
     writeCount: number;
 };
@@ -145,8 +145,8 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
 }
 
 /**
- * The upstream RisuAI `.bin` import (`docs/plan/upstream-bin-compat.md` S5, `shared/upstreamBackup.ts`),
- * in two steps, so that the user reads the report before anything is replaced:
+ * The upstream RisuAI `.bin` import (`shared/upstreamBackup.ts`), in two steps, so that the user
+ * reads the report before anything is replaced:
  *
  * `POST /api/backups/import-upstream/prepare`: the `.bin` as the raw body, under `serveFileImport`'s
  * lifecycle (`http/fileImport.ts`; the slot is the backup import's, so one import at a time): auth;
@@ -164,7 +164,7 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
  *
  * `POST /api/backups/import-upstream/commit` `{ token, acceptWrites? }`: 404 `Import expired` for a
  * token that names no waiting import; 409 while another import runs, 503 during maintenance, 412 for
- * another epoch (the import kept); then the changed-since-review check (D13), before maintenance so a
+ * another epoch (the import kept); then the changed-since-review check, before maintenance so a
  * refusal ends no job: when resources were written since the prepare and `acceptWrites` is not that
  * count, `409 { error: "changedSinceReview", writes }` (the import kept). Otherwise, under
  * maintenance: the epoch, `readSnapshot` of the staged store (here, inside the window where writes are
@@ -189,7 +189,7 @@ export function registerUpstreamImportRoutes(
         diagnostics?: DiagnosticsRecorder;
         /** The prepared imports (closed at shutdown by the caller); a store of its own without one. */
         staging?: UpstreamImportStaging;
-        /** Cap of the decoded database (D1); default `DEFAULT_MAX_UPSTREAM_DB_BYTES`. */
+        /** Cap of the decoded database; default `DEFAULT_MAX_UPSTREAM_DB_BYTES`. */
         maxDatabaseBytes?: number;
         /** The worker's old-generation limit in MiB; default `defaultUpstreamImportHeapMb`. */
         heapMb?: number;
@@ -391,7 +391,7 @@ export function registerUpstreamImportRoutes(
         } catch (error) {
             return backupErrorResponse(c, error);
         }
-        // D13: before maintenance, so a refusal ends no running job. Not repeated under the lock: the
+        // Before maintenance, so a refusal ends no running job. Not repeated under the lock: the
         // jobs' own abort checkpoints there count as writes. The window until the gate closes is
         // accepted; the safety snapshot holds what lands in it.
         const writes = store.writeCount() - staged.writeCount;

@@ -29,7 +29,7 @@ describe("generation delta chunks on the owner socket", () => {
     let base = "";
     let epoch = "";
     let signer: Awaited<ReturnType<typeof createSigner>>;
-    /** The chat's binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names. */
+    /** The chat's binding: the default records' ids, which every job names. */
     let bound = { presetId: "", modelPresetId: "", personaId: "" };
     /** The steps the current test hands the runner, in order; the runner waits for each. */
     let steps: Step[] = [];
@@ -160,7 +160,7 @@ describe("generation delta chunks on the owner socket", () => {
         return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     };
     const createOk = async (kind = "send", clientId = "tab") => {
-        // A command job carries what it runs (slice 8a); the route refuses `command` on any other kind.
+        // A command job carries what it runs; the route refuses `command` on any other kind.
         const command = kind === "command" ? { command: { type: "button", data: "" } } : {};
         const res = await create({ kind, context: await context(), clientId, ...command });
         expect(res.status).toBe(200);

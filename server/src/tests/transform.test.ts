@@ -6,23 +6,22 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
-// Phase 5 slice 13a: the script transform (`POST /api/transform`, `POST /api/transform/continue`;
+// The script transform (`POST /api/transform`, `POST /api/transform/continue`;
 // `server/src/routes/transform.ts`, `server/src/prompt/transform.ts`) end to end in process, with the
 // production bindings in frozen mode, the real worker pool (Lua and the regex scripts), and a fake
-// embedding server. Pinned: `editdisplay` in the client's order (Lua `editDisplay` with
-// `meta.index`, the `display` trigger on the chat's owner (a group's modules included), CBS, the
-// regex scripts, the dynamic assets) and `editprocess` (CBS and the regex only); `@@emo` returned as
-// the target's emotions (kept by a cached result), `@@inject` discarded; nothing stored (the chat's
-// variables and messages unchanged); each target's own variables, regex cache, and emotions; a Lua
-// variable kept across the image getter's refused callback; the cache key's dependencies (the
-// chat's variables, author's note, local lore, the source character, the language) and its
-// deliberate staleness (the viewport, the other messages); the two-call protocol (the snapshot's
-// variables, not the store's; the exact pending set checked before the snapshot is used; one winner;
-// the text limits of the first call's pending texts and of the snapshot); a maintenance ending a
-// snapshot and refusing renders; the admission order (authentication before the body is read, the
-// 8 MiB cap, the epoch, a missing record); an aborted request computing nothing; the embedding key
-// used by the server and never answered. The lifetime rules with held workers are
-// `transformService.test.ts`.
+// embedding server. Pinned: `editdisplay` in the client's order (Lua `editDisplay` with `meta.index`,
+// the `display` trigger on the chat's owner (a group's modules included), CBS, the regex scripts, the
+// dynamic assets) and `editprocess` (CBS and the regex only); `@@emo` returned as the target's
+// emotions (kept by a cached result), `@@inject` discarded; nothing stored (the chat's variables and
+// messages unchanged); each target's own variables, regex cache, and emotions; a Lua variable kept
+// across the image getter's refused callback; the cache key's dependencies (the chat's variables,
+// author's note, local lore, the source character, the language) and its deliberate staleness (the
+// viewport, the other messages); the two-call protocol (the snapshot's variables, not the store's;
+// the exact pending set checked before the snapshot is used; one winner; the text limits of the first
+// call's pending texts and of the snapshot); a maintenance ending a snapshot and refusing renders;
+// the admission order (authentication before the body is read, the 8 MiB cap, the epoch, a missing
+// record); an aborted request computing nothing; the embedding key used by the server and never
+// answered. The lifetime rules with held workers are `transformService.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -421,7 +420,7 @@ describe("the transform's stages", () => {
                     character("dyn", {
                         additionalAssets: [["smile", "assets/smile.png", "png"]],
                         // A script that never matches: the dynamic assets run after the regex scripts here;
-                        // the no-script path is covered by `dynamicAssets.test.ts` (slice 4d).
+                        // the no-script path is covered by `dynamicAssets.test.ts`.
                         customscript: [rx("never-matches", "x")],
                     }),
                 ],
@@ -775,7 +774,7 @@ describe("the transform's admission", () => {
     );
 
     it(
-        "renders with the display rule (`docs/plan/chat-binding.md`): a bound record that exists must be the one sent (409 chatBindingMismatch), an unset or gone one takes the sent id, a pending review does not matter",
+        "renders with the display rule: a bound record that exists must be the one sent (409 chatBindingMismatch), an unset or gone one takes the sent id, a pending review does not matter",
         async () => {
             const personas = await single("personas");
             await batch({

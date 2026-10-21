@@ -137,7 +137,8 @@ describe("main.ts graceful shutdown", () => {
         expect(readdirSync(path.join(server.savePath, ".tmp"))).toEqual([]);
         const live = new DatabaseSync(path.join(server.savePath, "data", "resources.sqlite"), { readOnly: true });
         try {
-            // The materialized singletons (slice 3) are in every store; the imported character is the only other row.
+            // The materialized singletons are in every store; the imported character is the only
+            // other row.
             const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
             const rows = live.prepare("SELECT kind, id FROM resources").all() as { kind: string; id: string }[];
             expect(rows.filter((r) => !materialized.has(r.kind))).toEqual([{ kind: "characters", id: "c1" }]);

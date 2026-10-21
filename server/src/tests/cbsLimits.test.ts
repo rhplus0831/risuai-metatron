@@ -17,19 +17,18 @@ import type { Database, character, groupChat } from "../../../shared/database.ts
 import { SERVER_CBS_MAX_MS, SERVER_CBS_MAX_WORK, serverCbsLimits } from "../jobs/cbsHost.ts";
 import { createNodeCbsHost } from "./cbsHost.ts";
 
-// Phase 5 slice 9b: the cooperative limits of the shared CBS evaluator (`shared/cbs/limits.ts`,
-// `CbsHost.limits`) over the Node test host with small limits and an injected clock: the budget
-// arithmetic (an exact budget, the refusal before the scan, a function's result charged, a result
-// never longer than the work limit on every output path), the sharing of one budget by the nested
-// parses of a top-level call (the registry's, `call::`) and its reset after a result or an error,
-// the clock (the threshold crossing, the check after the last function, a parse that ends after its
-// deadline), the shared allowance of several evaluators (`total`), the registry's charges (`range`,
-// `dice`, `cbr`, `replace`, `join`, `filter`, `#each`, `#pure_display`, the unfinished-syntax
-// drain), the matcher letting the limit error through, and the browser-path parity: an evaluator
-// without limits never reads the clock, and a bounded host answers the host-parity cases and the
-// whitespace and coercion cases as the unbounded one does. The runaway templates run in a child
-// process, so a broken limit cannot hang the test run. The server's wiring is in
-// `cbsLimitsHost.test.ts` and `cbsLimitsJobs.test.ts`.
+// The cooperative limits of the shared CBS evaluator (`shared/cbs/limits.ts`, `CbsHost.limits`) over
+// the Node test host with small limits and an injected clock: the budget arithmetic (an exact budget,
+// the refusal before the scan, a function's result charged, a result never longer than the work limit
+// on every output path), the sharing of one budget by the nested parses of a top-level call (the
+// registry's, `call::`) and its reset after a result or an error, the clock (the threshold crossing,
+// the check after the last function, a parse that ends after its deadline), the shared allowance of
+// several evaluators (`total`), the registry's charges (`range`, `dice`, `cbr`, `replace`, `join`,
+// `filter`, `#each`, `#pure_display`, the unfinished-syntax drain), the matcher letting the limit
+// error through, and the browser-path parity: an evaluator without limits never reads the clock, and
+// a bounded host answers the host-parity cases and the whitespace and coercion cases as the unbounded
+// one does. The runaway templates run in a child process, so a broken limit cannot hang the test run.
+// The server's wiring is in `cbsLimitsHost.test.ts` and `cbsLimitsJobs.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const FIXTURES = path.join(import.meta.dirname, "fixtures");
@@ -302,9 +301,8 @@ describe("the registry's charges", () => {
         for (const huge of ["{{range::[0,1e18]}}", "{{range::[1e300]}}"]) {
             expect(limitError(() => bounded(100_000).risuChatParser(huge)).reason, huge).toBe("work");
         }
-        // A zero or negative step or a non-finite bound (audit UI-01, slice 1d of
-        // `docs/plan/audit-findings-perf.md`) is refused before the loop: `[]` instead of the work
-        // limit it used to reach (and the endless loop it was without limits).
+        // A zero or negative step or a non-finite bound is refused before the loop: `[]` instead of
+        // the work limit it used to reach (and the endless loop it was without limits).
         for (const stuck of [
             "{{range::[0,1,0]}}",
             "{{range::[0,1,-1]}}",

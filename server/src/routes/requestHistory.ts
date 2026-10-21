@@ -53,11 +53,11 @@ const CURSOR = /^[1-9][0-9]{0,15}$/;
 const PAGE_SIZE = /^[0-9]{1,4}$/;
 
 /**
- * The LLM request history (`docs/plan/request-history-diagnostics.md` slice 4), for the app's own
- * viewer: JWT, the shared limiter. Not a resource: no epoch, no maintenance gate (a restore leaves
- * the history as it is). The app's admission middleware refuses these routes during shutdown and
- * makes every answer `no-store`; the store's availability is checked again after the JWT check, in
- * the same synchronous block as the read or the delete (the store closes at dispose).
+ * The LLM request history, for the app's own viewer: JWT, the shared limiter. Not a resource: no
+ * epoch, no maintenance gate (a restore leaves the history as it is). The app's admission
+ * middleware refuses these routes during shutdown and makes every answer `no-store`; the store's
+ * availability is checked again after the JWT check, in the same synchronous block as the read or
+ * the delete (the store closes at dispose).
  *
  * - `GET /api/request-history?cursor&limit&chaId&chatId&jobId&status`: `{ items, next }`, summaries
  *   newest first; `next` is the cursor of the next page, null on the last. An empty parameter is
@@ -66,7 +66,7 @@ const PAGE_SIZE = /^[0-9]{1,4}$/;
  *   truncation); 404 when there is none.
  * - `DELETE /api/request-history`: removes every shared copy first (500, and nothing deleted, when
  *   one cannot be removed), then every row; 204, or 500 when the delete failed.
- * - `PUT /api/request-history/share` (slice 10): body `{ jobId | requestId, shared }` (JSON, 4 KiB,
+ * - `PUT /api/request-history/share`: body `{ jobId | requestId, shared }` (JSON, 4 KiB,
  *   its own limit after the auth; 400 for anything else). Shares the job's requests to the
  *   diagnostics folder (`diagnostics/share.ts`) or withdraws the share, and answers
  *   `RequestHistoryShareResult`: 404 when there is no such request to share, 413 when its requests

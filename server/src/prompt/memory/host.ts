@@ -5,7 +5,7 @@ import type { RegexOp, RegexOpResult } from "../../scripts/worker.ts";
 import type { EmbeddingEnv } from "../embeddings.ts";
 
 /**
- * What the server's memory algorithms (Phase 5 slice 10: `supaMemory.ts`, `hypav2.ts`, `hypav3.ts`,
+ * What the server's memory algorithms (`supaMemory.ts`, `hypav2.ts`, `hypav3.ts`,
  * `hanurai.ts` here) read and call outside their arguments. The client equivalents are module state
  * (`getDatabase`, `requestChatData`, `runSummarizer`, the LocalForage vectors, `parseChatML`,
  * `getUserName`, `hypaV3ProgressStore`, `Math.random`); on the server one host is bound to one run

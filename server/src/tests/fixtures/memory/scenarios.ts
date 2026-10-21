@@ -1,4 +1,4 @@
-// The memory-algorithm parity scenarios (Phase 5 slice 10), shared by the browser oracle
+// The memory-algorithm parity scenarios, shared by the browser oracle
 // (`src/ts/process/memory/memoryOracle.test.ts`, which runs the client algorithms and captures or
 // verifies `algorithms.json`) and the server test (`server/src/tests/memoryAlgorithms.test.ts`, which
 // runs the ports against the same fixture). This module is pure: no client or server import, only

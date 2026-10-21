@@ -14,11 +14,11 @@ import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 8a: the bindings' cancellation fences on their asynchronous continuations, with
-// the production bindings over a real store and a fake job, and a suspendable token counter and
-// file check: lore activation whose tokenization is suspended writes no activation flag once the
-// host call was aborted, and an image getter aborted during its media check asks the tab nothing.
-// The whole path through the worker is in `luaBindings.test.ts`.
+// The bindings' cancellation fences on their asynchronous continuations, with the production
+// bindings over a real store and a fake job, and a suspendable token counter and file check: lore
+// activation whose tokenization is suspended writes no activation flag once the host call was
+// aborted, and an image getter aborted during its media check asks the tab nothing. The whole
+// path through the worker is in `luaBindings.test.ts`.
 
 const stat = vi.hoisted(() => ({ impl: null as null | ((savePath: string, key: string) => Promise<boolean>) }));
 vi.mock("../routes/storage.ts", async (importOriginal) => {
@@ -106,7 +106,7 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
                 ops: [
                     {
                         op: "create",
-                        // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                        // The chat's binding: the job scope checks the context's ids against it.
                         chat: {
                             id: "k",
                             name: "K",

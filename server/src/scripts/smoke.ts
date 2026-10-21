@@ -5,7 +5,7 @@ import type { LuaRunOutput } from "../lua/runtime.ts";
 import { createLuaBudget, createScriptWorkerPool, type LuaHost, type LuaTask } from "./workerPool.ts";
 
 /**
- * The script worker spike's checks (Phase 5 slice 2), run under plain Node and inside the image:
+ * The script worker pool's smoke checks, run under plain Node and inside the image:
  * `node server/src/scripts/smoke.ts [rootDir]`. Prints one line per check and a JSON summary, and
  * exits 1 when a check fails. Timings are measurements; the bounds are generous.
  */

@@ -208,14 +208,13 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
 }
 
 /**
- * The script transform (Phase 5 slice 13): `POST /api/transform` (a `TransformRequest`) and `POST
- * /api/transform/continue` (the second call after the tab's plugin handlers), both answering a
- * `TransformResponse` as JSON. Authenticated, rate-limited, the body capped at
+ * The script transform: `POST /api/transform` (a `TransformRequest`) and
+ * `POST /api/transform/continue` (the second call after the tab's plugin handlers), both answering
+ * a `TransformResponse` as JSON. Authenticated, rate-limited, the body capped at
  * `MAX_TRANSFORM_BODY_BYTES`, the resource epoch checked (412 `EpochMismatch`). A render writes
- * nothing, so it does not hold the maintenance gate: a maintenance stops it (503, `Retry-After`).
- * A missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`; an id
- * that is not the chat's bound one (`docs/plan/chat-binding.md`, the display rule) is 409
- * `chatBindingMismatch`.
+ * nothing, so it does not hold the maintenance gate: a maintenance stops it (503, `Retry-After`). A
+ * missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`; an id
+ * that is not the chat's bound one (the display rule) is 409 `chatBindingMismatch`.
  */
 export function registerTransformRoutes(
     app: Hono<AppEnv>,

@@ -11,8 +11,8 @@ import type { RequestDb } from "../llm/settings.ts";
 // builder (roles, multimodals, tools, the parameters and the reasoning effort mapping), the endpoint,
 // auth and header wiring per model kind, the additional parameters, the text extraction, the
 // failure shapes, the continuation sanitization for `store: false`, the tool continuations
-// (buffered and streaming) and the SSE parser. Phase 6 slice 11: these are the cases of the deleted
-// browser test of the Responses helpers (`src/ts/process/request/openAI/`, the pre-cutover client
+// (buffered and streaming) and the SSE parser. These are the cases of the deleted
+// browser test of the Responses helpers (`src/ts/process/request/openAI/`, the former client
 // code's), retargeted at the server port; its browser module mocks are the context's dependencies
 // here (`ctx.transport` for `globalFetch`/`fetchNative`, `ctx.tools.call` for `callTool`). The
 // streaming `response.failed` case lives in `llmRequests.test.ts` ("redacts a provider error the
@@ -363,8 +363,8 @@ describe("OpenAI Responses API helpers", () => {
             baseArg({
                 aiModel: "xcustom:::responses",
                 previewBody: true,
-                // A custom model holds no key (`docs/plan/model-profiles.md` O2): the key is the
-                // profile's bound named key, which `requestChatDataMain` hands over as `arg.key`.
+                // A custom model holds no key: the key is the profile's bound named key, which
+                // `requestChatDataMain` hands over as `arg.key`.
                 key: "custom-key",
                 modelInfo: {
                     ...baseArg().modelInfo,
@@ -543,7 +543,7 @@ describe("OpenAI Responses API helpers", () => {
         expect(result.type).toBe("success");
         const preview = JSON.parse(result.result as string);
         expect(preview.url).toBe("https://proxy.example/api/v1/responses");
-        // No bound key: a reverse proxy has no flat default (`docs/plan/model-profiles.md` O2).
+        // No bound key: a reverse proxy has no flat default.
         expect(preview.headers.Authorization).toBe("Bearer ");
         expect(preview.headers["X-Test"]).toBe("ok");
         expect(preview.body.metadata.source).toBe("risu");

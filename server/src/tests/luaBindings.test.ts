@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep } from "./testSupport.ts";
 
-// Phase 5 slice 8a: a Lua button as a server `command` job, end to end on a real listening server
+// A Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
 // the production bindings (`server/src/lua/bindings.ts`) over the job scope (`jobScope.ts`,
 // `cbsHost.ts`), the job channel over the owner socket, and the request layer against a mock
@@ -269,7 +269,7 @@ async function seedCharacter(options: {
                                 id: "k",
                                 name: "K",
                                 note: "note!",
-                                // The binding the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                                // The binding the jobs send: a job runs on its chat's binding.
                                 modelPresetId,
                                 promptPresetId: presetId,
                                 bindedPersona: options.bindPersona ? "bound" : defaultPersonaId,
@@ -756,7 +756,7 @@ describe("the command runner", () => {
     it("refuses a button in a group chat with a 400 terminal", async () => {
         const chaId = await seedCharacter({ codes: [button(`addChat(id, "char", "ran")`)], type: "group" });
         const { terminal } = await runButton(chaId);
-        // A command job's failure names its stage (request history slice 6): its setup here.
+        // A command job's failure names its stage: its setup here.
         expect(terminal).toMatchObject({ type: "error", status: 400, message: /group chat/, stage: "setup" });
         expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:hi there"]);
     });

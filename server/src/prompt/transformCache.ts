@@ -10,14 +10,14 @@ const sizeOf = (entry: TransformCacheEntry) =>
     entry.emotions.reduce((sum, emotion) => sum + emotion.name.length + emotion.image.length, 0);
 
 /**
- * The script transform's result cache (Phase 5 slice 13): an LRU of `entries` results and `bytes`
- * of text, a result over `entryBytes` not kept. A key has a generation: `invalidate` ("Re-render",
- * `noCache`) drops the entry and raises it, and a result computed under an older generation is not
- * stored (`set` with the generation read when its work began), so an older fill finishing late
- * cannot replace the newer one. A key without a generation of its own has the cache's floor; when
- * the oldest generations are forgotten (past `MAX_GENERATIONS`) or the cache is cleared, the floor
- * rises above every generation handed out, so no fill begun before can be stored. One cache per
- * process; `clear` empties it (a new epoch).
+ * The script transform's result cache: an LRU of `entries` results and `bytes` of text, a result
+ * over `entryBytes` not kept. A key has a generation: `invalidate` ("Re-render", `noCache`) drops
+ * the entry and raises it, and a result computed under an older generation is not stored (`set`
+ * with the generation read when its work began), so an older fill finishing late cannot replace
+ * the newer one. A key without a generation of its own has the cache's floor; when the oldest
+ * generations are forgotten (past `MAX_GENERATIONS`) or the cache is cleared, the floor rises
+ * above every generation handed out, so no fill begun before can be stored. One cache per process;
+ * `clear` empties it (a new epoch).
  */
 export function createTransformCache(
     limits: { entries: number; bytes: number; entryBytes: number } = {

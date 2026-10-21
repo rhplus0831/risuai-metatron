@@ -180,11 +180,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
 }
 
 /**
- * `/api/generations` (Phase 5, `generation-jobs`): `POST` creates a job (`{ jobId }`; 409
- * `chatBusy` with the running job's id, 409 `stale`, 409 `chatBindingIncomplete` with `problems` or
- * `chatBindingMismatch` when the context's ids are not the chat's complete binding
- * (`docs/plan/chat-binding.md`), 404, 412 for another epoch, 503 while the server shuts down or a
- * restore runs), `GET /:id?clientId=` is the owner's status, and
+ * `/api/generations`: `POST` creates a job (`{ jobId }`; 409 `chatBusy` with the running job's id,
+ * 409 `stale`, 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` when the
+ * context's ids are not the chat's complete binding, 404, 412 for another epoch, 503 while the
+ * server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
  * `DELETE /:id?clientId=` aborts it. Another client's job is a 404. The socket is
  * `/api/generations/:id/ws` (`generationJobs.handleUpgrade`). Responses are never cached.
  */

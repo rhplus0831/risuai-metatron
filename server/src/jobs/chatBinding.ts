@@ -11,10 +11,10 @@ import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 
 /**
- * The server's check of a chat's binding (`docs/plan/chat-binding.md`): a chat job or chat request
- * names the chat's own model preset, prompt preset, and persona, or it is refused (409). Pure over
- * what the caller read, so the job scope checks the same synchronous read it loads from. Imports
- * nothing of the job registry (`jobScope.ts` and `generationJobs.ts` import this module).
+ * The server's check of a chat's binding: a chat job or chat request names the chat's own model
+ * preset, prompt preset, and persona, or it is refused (409). Pure over what the caller read, so
+ * the job scope checks the same synchronous read it loads from. Imports nothing of the job
+ * registry (`jobScope.ts` and `generationJobs.ts` import this module).
  */
 
 /** The ids a job, request, or transform names (`GenerationContext`, `LlmRequestBody.context`, `TransformContext`). */
@@ -28,7 +28,7 @@ export type SentBindingIds = {
  * - `send`: the binding is complete (every id set, every record there, no review pending) and the
  *   three sent ids are the bound ones.
  * - `chain`: as `send`, but the prompt preset is not compared: a `presetChain` pick re-scopes its own
- *   job (decision 9).
+ *   job.
  * - `display`: a read-only render. A field bound to a record that exists must be sent as bound; an
  *   unset or gone field takes the sent id; a pending review does not matter.
  */

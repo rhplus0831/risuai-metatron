@@ -22,15 +22,14 @@ import {
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 6, the server side of the job channel. First the hub in isolation
-// (`server/src/jobs/channel.ts`) over a recording transport with an injected clock: the hook
-// list validation, notices, the request lifecycle (FIFO per client, nesting at most two deep,
-// one absolute deadline from enqueue that the clock decides, the hydration receipts of a
-// callback, answers bound to the outstanding request, delivery and replay, close). Then the
-// registry wired to it (`generationJobs.ts`) on a real listening server with a fake runner: the
-// 400 for a malformed list, a callback requested before the owner attaches, a reconnect with a
-// pending question, answers only from the current socket, the hydration before a callback, and
-// the abort or end of a job with a request pending.
+// The server side of the job channel. First the hub in isolation (`server/src/jobs/channel.ts`) over
+// a recording transport with an injected clock: the hook list validation, notices, the request
+// lifecycle (FIFO per client, nesting at most two deep, one absolute deadline from enqueue that the
+// clock decides, the hydration receipts of a callback, answers bound to the outstanding request,
+// delivery and replay, close). Then the registry wired to it (`generationJobs.ts`) on a real
+// listening server with a fake runner: the 400 for a malformed list, a callback requested before the
+// owner attaches, a reconnect with a pending question, answers only from the current socket, the
+// hydration before a callback, and the abort or end of a job with a request pending.
 
 const targets = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", modelPresetId: "m", personaId: "u" };
 const receipt: HydrationReceipt = { kind: "chats", id: "k", characterId: "c", revision: "e:1:1" };
@@ -636,7 +635,7 @@ describe("the registry over a real socket", () => {
     let base = "";
     let epoch = "";
     let signer: Awaited<ReturnType<typeof createSigner>>;
-    /** The chat's binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names. */
+    /** The chat's binding: the default records' ids, which every job names. */
     let bound = { presetId: "", modelPresetId: "", personaId: "" };
     let steps: Step[] = [];
     let wake: (() => void) | null = null;
@@ -749,7 +748,7 @@ describe("the registry over a real socket", () => {
             "/api/generations",
             json({
                 kind: "command",
-                // A command job carries what it runs (slice 8a); the fake runner here never reads it.
+                // A command job carries what it runs; the fake runner here never reads it.
                 command: { type: "button", data: "" },
                 clientId: "tab",
                 ...(hooks === undefined ? {} : { hooks }),
@@ -859,7 +858,7 @@ describe("the registry over a real socket", () => {
         expect(types(owner.events).filter((type) => type === "cancel")).toEqual([]);
     });
 
-    it("hands an aux request of a callback the job's targets as they are now, a presetChain pick included, as a detached copy (`docs/plan/chat-binding.md`)", async () => {
+    it("hands an aux request of a callback the job's targets as they are now, a presetChain pick included, as a detached copy", async () => {
         await listen();
         const outcome: { result?: CallbackResult } = {};
         step(async (job) => {
@@ -977,7 +976,7 @@ describe("the registry over a real socket", () => {
     });
 });
 
-describe("the hub: provider chunks and the caller's signal (slice 11b)", () => {
+describe("the hub: provider chunks and the caller's signal", () => {
     const hooks = { providers: validHooks.providers };
     const payload = { name: "prov", argument: { prompt_chat: [], mode: "model" } };
 

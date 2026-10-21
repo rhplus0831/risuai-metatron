@@ -1,11 +1,10 @@
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 
 /**
- * The provider's error code in an answer body (`docs/plan/request-history-diagnostics.md` slice 6):
- * OpenAI's `error.code`, Google's `error.status`, Anthropic's `error.type`, from a JSON body (an
- * array: its first element, Google's stream form) or from the events of an SSE body. Only the
- * documented envelopes are read, never arbitrary content, and only a value matching
- * `PROVIDER_CODE_PATTERN` is taken.
+ * The provider's error code in an answer body: OpenAI's `error.code`, Google's `error.status`,
+ * Anthropic's `error.type`, from a JSON body (an array: its first element, Google's stream form)
+ * or from the events of an SSE body. Only the documented envelopes are read, never arbitrary
+ * content, and only a value matching `PROVIDER_CODE_PATTERN` is taken.
  *
  * Best effort: a streamed body is captured up to its bound (`STREAM_CAPTURE_BYTES`), so an error
  * event past it is not seen.

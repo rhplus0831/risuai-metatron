@@ -1,8 +1,8 @@
-// The Transformers.js worker process (Phase 5 slice 10): model loading, tokenization, image decoding,
-// and ONNX inference run here, outside the server's process (`onnxruntime-node` runs its native load
-// and run calls synchronously on the thread that asked, and ending a worker thread in the middle of
-// one aborts the whole process; a child process can be killed). One task at a time, sent by
-// `transformers.ts` over the IPC channel (`serialization: "advanced"`, so vectors cross as typed arrays).
+// The Transformers.js worker process: model loading, tokenization, image decoding, and ONNX inference
+// run here, outside the server's process (`onnxruntime-node` runs its native load and run calls
+// synchronously on the thread that asked, and ending a worker thread in the middle of one aborts the
+// whole process; a child process can be killed). One task at a time, sent by `transformers.ts` over
+// the IPC channel (`serialization: "advanced"`, so vectors cross as typed arrays).
 
 import type { TransformersRequest, TransformersResponse, TransformersTask } from "./transformers.ts";
 

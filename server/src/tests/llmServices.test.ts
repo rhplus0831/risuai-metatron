@@ -6,12 +6,12 @@ import { collectSecrets, createRedactor, REDACTED, redactHeaderText } from "../l
 import { createVertexTokenCache } from "../llm/vertexToken.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 7a, the request layer's services in isolation: the secret-free projection
-// (`redact.ts`: every stored credential in its raw, JSON-escaped, doubly escaped, and URL-encoded
-// forms, however short; `carries` for content the tab must get unaltered; the by-name header and
-// query rules), the Vertex token cache (`vertexToken.ts`: one refresh per credential shared by its
-// waiters, aborted when the last waiter leaves or at `clear`), and the Claude cache warmer
-// (`claudeObserver.ts`: one per server, its timer and retries owned by a registration period).
+// The request layer's services in isolation: the secret-free projection (`redact.ts`: every stored
+// credential in its raw, JSON-escaped, doubly escaped, and URL-encoded forms, however short;
+// `carries` for content the tab must get unaltered; the by-name header and query rules), the
+// Vertex token cache (`vertexToken.ts`: one refresh per credential shared by its waiters, aborted
+// when the last waiter leaves or at `clear`), and the Claude cache warmer (`claudeObserver.ts`:
+// one per server, its timer and retries owned by a registration period).
 
 afterEach(() => {
     vi.useRealTimers();

@@ -9,12 +9,12 @@ import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shar
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 9: a send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
-// `server/src/prompt/scripts.ts`, `server/src/jobs/runSetup.ts`) on a real listening server with
-// the default runner, the real worker pool (the regex scripts task, Lua), the production bindings,
-// the job channel, and a fake OpenAI-compatible provider (SSE and JSON). The input stage (the input
-// trigger, `editinput` through the worker, the plugin hook as a callback, the user message under
-// its id, the retry that skips it, the id of another role refused); the streamed reply (chunks,
+// A send as a server job end to end (`server/src/prompt/runner.ts` `runPromptJob`,
+// `server/src/prompt/scripts.ts`, `server/src/jobs/runSetup.ts`) on a real listening server with the
+// default runner, the real worker pool (the regex scripts task, Lua), the production bindings, the
+// job channel, and a fake OpenAI-compatible provider (SSE and JSON). The input stage (the input
+// trigger, `editinput` through the worker, the plugin hook as a callback, the user message under its
+// id, the retry that skips it, the id of another role refused); the streamed reply (chunks,
 // `accepted`, `done` with the alternatives, the stored raw text and its generation info, the lock
 // released); a continue extending its message while a Lua `editRequest` write to it is refused; the
 // checkpoint timer during a stalled stream and the text kept on abort; a group send under the job's
@@ -71,7 +71,7 @@ const provider = http.createServer(async (req, res) => {
     const requestMode = mode;
     if (requestMode.status) {
         res.writeHead(requestMode.status, { "content-type": "application/json" });
-        // An OpenAI error envelope: the message (never stored on the event) and the code (slice 6).
+        // An OpenAI error envelope: the message (never stored on the event) and the code.
         res.end(JSON.stringify({ error: { message: "upstream broke", code: "upstream_broke" } }));
         return;
     }
@@ -238,7 +238,7 @@ async function seedCharacter(options: {
                 ops: [
                     {
                         op: "create",
-                        // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                        // Bound to the ids the jobs send: a job runs on its chat's binding.
                         chat: {
                             id: "k",
                             name: "K",
@@ -392,7 +392,7 @@ function streamedTexts(events: any[]): { seq: number; text: string; messageId: s
     return out;
 }
 const notices = (events: any[], kind: string) => events.filter((e) => e.type === "notice" && e.kind === kind);
-/** The request history rows of a job, newest first (slice 6: the error event names the failed one). */
+/** The request history rows of a job, newest first (the error event names the failed one). */
 const historyOf = async (jobId: string) =>
     (await api(`/api/request-history?jobId=${encodeURIComponent(jobId)}`)).body.items as {
         id: string;
@@ -438,8 +438,7 @@ beforeAll(async () => {
     profileId = modelProfiles.data[0].id;
     personaId = personas.data[0].id;
     // The selected model preset's main and sub slots use one profile: a reverse proxy to the fake
-    // provider. The prompt presets: the selected one and `Alpha`, the presetChain pick
-    // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md`).
+    // provider. The prompt presets: the selected one and `Alpha`, the presetChain pick.
     const common = {
         maxResponse: 100,
         jailbreakToggle: false,
@@ -806,7 +805,7 @@ describe("a send", () => {
     );
 
     it(
-        "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's (docs/plan/web-push.md)",
+        "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's",
         async () => {
             const bob = await seedCharacter({ name: "Bob", extra: { customNotificationMessage: "Bob's own" } });
             const cid = await seedCharacter({ name: "Cid" });
@@ -890,7 +889,7 @@ describe("a send", () => {
             const failed = await job("send", chaId);
             expect(failed.terminal).toMatchObject({ type: "error", status: 500, message: /upstream broke|500/ });
             expect(texts(await readChat(chaId))).toEqual(["user:q"]);
-            // The error names where it failed (slice 6): the request stage, the last attempt's history
+            // The error names where it failed: the request stage, the last attempt's history
             // row, and the provider's code, which the row holds too.
             const rows = await historyOf(failed.body.jobId);
             const errored = rows.filter((row) => row.status === "error");
@@ -1163,7 +1162,7 @@ describe("the route", () => {
     });
 });
 
-describe("automatic translation of a send's messages (docs/plan/translation.md slice 2.3)", () => {
+describe("automatic translation of a send's messages", () => {
     /** Polls the chat until `condition` holds on it. */
     async function chatUntil(chaId: string, condition: (chat: any) => boolean, timeoutMs = 10_000) {
         const deadline = Date.now() + timeoutMs;
@@ -1363,7 +1362,7 @@ describe("automatic translation of a send's messages (docs/plan/translation.md s
     );
 });
 
-// Audit item A2: the owner record's `lastInteraction` is the job's to stamp (`stampInteraction` in
+// The owner record's `lastInteraction` is the job's to stamp (`stampInteraction` in
 // `runner.ts`): a field patch with the server clock, published on the change feed with only that
 // field, never a character record on the job socket; a preview stamps nothing.
 describe("the lastInteraction stamp", () => {

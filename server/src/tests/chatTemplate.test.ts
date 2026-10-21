@@ -6,10 +6,10 @@ import { chatTemplates, renderChatTemplate, templateEffect } from "../../../shar
 import { templateCheck } from "../../../shared/prompt/templateCheck.ts";
 
 /**
- * The instruct chat templates and the template check under plain Node (Phase 5 slice 4): the
- * client's `applyChatTemplate` (`src/ts/process/templates/chatTemplate.ts`) ran these over the
- * selected preset's settings; `renderChatTemplate` takes them as parameters. The rendered strings
- * and the thrown errors are those of the pre-move function, and the input list is never changed.
+ * The instruct chat templates and the template check under plain Node: the client's
+ * `applyChatTemplate` (`src/ts/process/templates/chatTemplate.ts`) ran these over the selected
+ * preset's settings; `renderChatTemplate` takes them as parameters. The rendered strings and the
+ * thrown errors are those of the pre-move function, and the input list is never changed.
  */
 const names = { characterName: () => "Aria", userName: () => "User" };
 const render = (messages: OpenAIChat[], type: string, jinjaTemplate = "") =>

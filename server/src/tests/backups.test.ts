@@ -123,7 +123,7 @@ function archiveOf(
 const reader = createResourceStore({ file: ":memory:", kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS) });
 afterAll(() => reader.close());
 /**
- * The kinds the store materializes (slice 3): their `main` rows exist in every store from the start,
+ * The kinds the store materializes: their `main` rows exist in every store from the start,
  * so the row checks below look only at the rows the tests wrote.
  */
 const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
@@ -244,7 +244,7 @@ describe("POST /api/backups/:id/restore", () => {
             INSERT INTO meta (key, value) VALUES ('epoch', 'e');
             INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES ('characters', 'x', 1, 1, '{"chaId":"y"}');`);
         db.close();
-        // A Phase 1 database (schema version 1: characters with their chats inside) is a listed
+        // A version-1 database (schema version 1: characters with their chats inside) is a listed
         // snapshot too, and is refused by its version.
         const v1 = "resources-20300101T000000000Z-00000003";
         const old = new DatabaseSync(path.join(backupsDir(s), `${v1}.sqlite`));
@@ -1185,8 +1185,8 @@ describe("chats in snapshots and archives", () => {
         }
     });
 
-    it("refuses a schema-version-2 database (a root record, before Phase 3) as an archive, as a snapshot, and at startup; a fresh store is version 3", async () => {
-        // Phase 3, slice 6: the `root` kind is gone, so a version-2 file (whose tables are those of
+    it("refuses a schema-version-2 database (a root record) as an archive, as a snapshot, and at startup; a fresh store is version 3", async () => {
+        // The `root` kind is gone, so a version-2 file (whose tables are those of
         // version 3) is refused everywhere a database enters, without touching the live data.
         const s = await defaultServer();
         const revision = await s.create("characters", "a", character("a"));
@@ -1239,7 +1239,7 @@ describe("chats in snapshots and archives", () => {
             const file = path.join(rootDir, "save", "data", "resources.sqlite");
             writeFileSync(file, bytes);
             expect(() => createTestServer({ rootDir })).toThrow(
-                `${file} holds resource database version 2 (settings in one root record, before Phase 3), which ` +
+                `${file} holds resource database version 2 (settings in one root record), which ` +
                     "this server no longer reads. It is disposable alpha data: move it away or delete it and " +
                     "restart to begin with an empty database.",
             );

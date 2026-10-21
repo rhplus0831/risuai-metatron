@@ -31,12 +31,11 @@ import { loadStoredSecrets } from "../llm/settings.ts";
 import { SHARE_BODY_BYTES } from "../routes/requestHistory.ts";
 import { createResourceTestClient, waitFor } from "./testSupport.ts";
 
-// Request history slice 10 (`docs/plan/request-history-diagnostics.md`, decisions 3, 4, and 9,
-// "Sharing to the folder"): a job's requests shared to the diagnostics folder's `shared/`
+// A job's requests shared to the diagnostics folder's `shared/`
 // (`server/src/diagnostics/share.ts`), the journal's `shared/` operations and `eventsFor`
 // (`server/src/diagnostics/journal.ts`), the store's share reads (`readShare`, `shareTargetOf`,
-// `clearShared`), the credentials of the second redaction (`loadStoredSecrets`), and the routes
-// on the real app. The copy: one file per share named by the target, the rows oldest first with a
+// `clearShared`), the credentials of the second redaction (`loadStoredSecrets`), and the routes on
+// the real app. The copy: one file per share named by the target, the rows oldest first with a
 // content-off row as its summary only, the head's checked `app.version`, the job's events and its
 // last error as `failure`. The second redaction: every stored credential (a named key the
 // collection no longer names, an id of `__proto__`) replaced in every string, headers masked by

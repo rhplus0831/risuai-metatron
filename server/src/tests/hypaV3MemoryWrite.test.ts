@@ -9,16 +9,16 @@ import {
     type SerializableSummary,
 } from "../../../shared/memory.ts";
 
-// Slice 1c of `docs/plan/data-loss-concurrency.md` (audit A2): the job's memory write is placed onto
-// the chat's value as stored at the write (`docs/structure/memory.md`, Server Persistence). The two
-// merge rules on their own: the unchanged fast path, a text edit kept beside new summaries, the
-// algorithm's orphan removals applied to the stored value (an edit of a removed summary goes with
-// it), middle deletions and merges kept, the cursor rule (a reset, "delete after", a conversion
-// that moves the last message skip; a reset of a wholly cleaned baseline does not), no duplicate
-// coverage, the metrics by provenance (equal-valued recomputed metrics carried; stored metrics
-// shifted for a returned-error write), legacy `null` and duplicate memos as one identity, the
-// stored categories and the legacy field, damaged values, and the V2 rule with a reused id, a
-// colliding id, a legacy shape, and duplicate numeric ids. The job path is `memoryJobs.test.ts`.
+// The job's memory write is placed onto the chat's value as stored at the write
+// (`docs/structure/memory.md`, Server Persistence). The two merge rules on their own: the unchanged
+// fast path, a text edit kept beside new summaries, the algorithm's orphan removals applied to the
+// stored value (an edit of a removed summary goes with it), middle deletions and merges kept, the
+// cursor rule (a reset, "delete after", a conversion that moves the last message skip; a reset of a
+// wholly cleaned baseline does not), no duplicate coverage, the metrics by provenance (equal-valued
+// recomputed metrics carried; stored metrics shifted for a returned-error write), legacy `null` and
+// duplicate memos as one identity, the stored categories and the legacy field, damaged values, and
+// the V2 rule with a reused id, a colliding id, a legacy shape, and duplicate numeric ids. The job
+// path is `memoryJobs.test.ts`.
 
 const summary = (memos: (string | null)[], text = memos.join("+"), extra: Partial<SerializableSummary> = {}) =>
     ({ text, chatMemos: memos as string[], isImportant: false, ...extra }) as SerializableSummary;

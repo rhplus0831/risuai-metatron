@@ -12,7 +12,7 @@ import {
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 
 /**
- * The shared lore activation (Phase 5 slice 4, `shared/lore/activation.ts`) under plain Node, with
+ * The shared lore activation (`shared/lore/activation.ts`) under plain Node, with
  * a host of plain functions: activation order and the result shape, the scan depth, plain and
  * regex keys (the fixed `/pattern/flags` grammar and its inherited traps), secondary keys, the
  * decorators, recursion, the token budget, the keep and don't-activate flags through the host, a
@@ -227,7 +227,7 @@ describe("the scan depth", () => {
 });
 
 describe("regex keys", () => {
-    // Astra's probe table over the text `abc a/b aa`: the grammar after the fix (the last `/` ends
+    // A probe table over the text `abc a/b aa`: the grammar after the fix (the last `/` ends
     // the pattern; empty flags are allowed; the key is never rewritten) and the inherited traps
     // (keys split on every comma; a malformed key ends its query; a non-`/` key ends the search).
     const text = "abc a/b aa";

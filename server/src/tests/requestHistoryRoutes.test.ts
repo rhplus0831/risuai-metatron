@@ -15,22 +15,21 @@ import {
 import { REQUEST_HISTORY_PATH } from "../routes/requestHistory.ts";
 import { createResourceTestClient, createSigner, TEST_INDEX_HTML, type ResourceTestClient } from "./testSupport.ts";
 
-// Request history slice 4 (`docs/plan/request-history-diagnostics.md`): the history routes
-// (`server/src/routes/requestHistory.ts`) on the real app, and the two `providers` settings as
-// `createServerContext` reads them (`server/src/app.ts`). The routes: the JWT before anything (the
-// server's 400 for a missing or invalid token), `GET` paging newest first through the `next` cursor,
-// each filter and their combination, an empty parameter absent, a 400 for a malformed cursor (the
-// shape and the safe-integer bound), page size, or status, the row with its content by id and a 404,
-// `DELETE` as a 204 (an empty history too) with the list empty after, a 500 when the delete failed
-// while the store stays open (another connection holds the write lock), a 503 with `Retry-After` on
-// every route once the store is closed (also closed while a request is already in flight, after its
-// admission) or never opened, and the admission middleware: a 503 during shutdown and
-// `Cache-Control: no-store` on every answer (200, 204, 400, 404, 500, 503, the limiter's 429, the
-// body limit's 413). The settings: `requestHistoryContent` read when a request begins (off makes
-// the new row a summary while an older row keeps its content; a record written without it reads as
-// on), `requestHistoryLimit` read at every prune (a cap of 10 prunes at the next write, a value
-// under 10 reads as 10, a record written without it reads as 1,000). The observer's throwing content
-// getter is in `requestCapture.test.ts`, the store's own rules in `requestHistory.test.ts`.
+// The history routes (`server/src/routes/requestHistory.ts`) on the real app, and the two `providers`
+// settings as `createServerContext` reads them (`server/src/app.ts`). The routes: the JWT before
+// anything (the server's 400 for a missing or invalid token), `GET` paging newest first through the
+// `next` cursor, each filter and their combination, an empty parameter absent, a 400 for a malformed
+// cursor (the shape and the safe-integer bound), page size, or status, the row with its content by id
+// and a 404, `DELETE` as a 204 (an empty history too) with the list empty after, a 500 when the
+// delete failed while the store stays open (another connection holds the write lock), a 503 with
+// `Retry-After` on every route once the store is closed (also closed while a request is already in
+// flight, after its admission) or never opened, and the admission middleware: a 503 during shutdown
+// and `Cache-Control: no-store` on every answer (200, 204, 400, 404, 500, 503, the limiter's 429, the
+// body limit's 413). The settings: `requestHistoryContent` read when a request begins (off makes the
+// new row a summary while an older row keeps its content; a record written without it reads as on),
+// `requestHistoryLimit` read at every prune (a cap of 10 prunes at the next write, a value under 10
+// reads as 10, a record written without it reads as 1,000). The observer's throwing content getter is
+// in `requestCapture.test.ts`, the store's own rules in `requestHistory.test.ts`.
 
 const servers: ResourceTestClient[] = [];
 let warn: ReturnType<typeof vi.spyOn>;

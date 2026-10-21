@@ -4,10 +4,10 @@ import path from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 /**
- * The server's embedding vectors (Phase 5 slice 10): what the browser keeps in the `hypaVector`
- * LocalForage store, in a file of its own (`save/data/vectors.sqlite`). It is a cache: every row can
- * be computed again, so it is in no snapshot and no archive, and a read or write failure is a miss
- * or a skipped write, never the caller's error.
+ * The server's embedding vectors: what the browser keeps in the `hypaVector` LocalForage store, in a
+ * file of its own (`save/data/vectors.sqlite`). It is a cache: every row can be computed again, so
+ * it is in no snapshot and no archive, and a read or write failure is a miss or a skipped write,
+ * never the caller's error.
  *
  * The cache belongs to one resource database: it stores that database's epoch, and `sync(epoch)`
  * (at startup and when a restore or an import ends) empties it when the epoch is another one. While

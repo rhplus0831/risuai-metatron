@@ -21,15 +21,15 @@ import { createEmbeddings, type EmbeddingEnv, type EmbeddingsService } from "../
 import type { TransformersService } from "../prompt/transformers.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 
-// Phase 5 slice 12b: the internal MCPs a server job runs (`server/src/mcp/internal.ts`) through the
-// real bindings and job tool set over a real store: RisuAccess reads (the store as it is now, the
-// job's character for an empty id, another character's history through the tab's `selectedChat`),
-// its consent and writes (captured revisions refused on a second conflict, never rebased; one batch
-// for a module and its enabled state; resource events), `runLLM` as a nested request of the job (its
-// tools, budget, and fatal latch; a nested `runLLM` refused as a tool result), and graph memory on
-// the job's chat (its inherited read and fresh-chat behaviors pinned apart from its writes). The job's
-// `write` mirrors `writeAsJob`'s conflict rule (`generationJobs.ts`): a resource-only conflict
-// rebuilds once, a second one is `JobWriteConflictError`.
+// The internal MCPs a server job runs (`server/src/mcp/internal.ts`) through the real bindings and
+// job tool set over a real store: RisuAccess reads (the store as it is now, the job's character for
+// an empty id, another character's history through the tab's `selectedChat`), its consent and writes
+// (captured revisions refused on a second conflict, never rebased; one batch for a module and its
+// enabled state; resource events), `runLLM` as a nested request of the job (its tools, budget, and
+// fatal latch; a nested `runLLM` refused as a tool result), and graph memory on the job's chat (its
+// inherited read and fresh-chat behaviors pinned apart from its writes). The job's `write` mirrors
+// `writeAsJob`'s conflict rule (`generationJobs.ts`): a resource-only conflict rebuilds once, a
+// second one is `JobWriteConflictError`.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
@@ -156,7 +156,7 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService; le
                         chat: {
                             id: "k",
                             name: "K",
-                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            // The chat's binding: the job scope checks the context's ids against it.
                             modelPresetId: "m",
                             promptPresetId: "p",
                             bindedPersona: "u",
@@ -748,7 +748,7 @@ describe("internal:graphmem on the server", () => {
             };
             return JSON.parse(String(chat.scriptstate?.["$graphmem_graph"]));
         };
-        // An unset chat variable reads as the text "null" (Stop D fix D1): the write starts a graph of one entry.
+        // An unset chat variable reads as the text "null": the write starts a graph of one entry.
         expect(s.text(await s.tool("writeMemory", { name: "n1", summary: "s1" }))).toBe(
             'Memory entry "n1" written successfully.',
         );
@@ -818,7 +818,7 @@ describe("internal:graphmem on the server", () => {
         expect(s.bindings.fatal()).toBeInstanceOf(LuaJobFatalError);
     });
 
-    it("writes then reads on a fresh chat; a later read's new processor takes the names' vectors from the cache and embeds only its query (Stop D fixes)", async () => {
+    it("writes then reads on a fresh chat; a later read's new processor takes the names' vectors from the cache and embeds only its query", async () => {
         const embeddings = fakeEmbeddings();
         const s = setup({ embeddings: embeddings.service });
         expect(s.text(await s.tool("writeMemory", { name: "Alice", summary: "likes tea", connections: ["Bob"] }))).toBe(
@@ -876,7 +876,7 @@ describe("internal:graphmem on the server", () => {
     });
 });
 
-describe("graph memory's write (shared/mcp/graphmem.ts, Stop D fixes)", () => {
+describe("graph memory's write (shared/mcp/graphmem.ts)", () => {
     function host(stored: string) {
         const vars: Record<string, string> = { graphmem_graph: stored };
         return {

@@ -1,6 +1,6 @@
 import { createTokenizers, TOKENIZER_FAMILIES, type TokenizerFamily } from "./index.ts";
 
-/** The spike's fixed strings: plain ASCII, mixed scripts with emoji, and chat markup with code. */
+/** The smoke check's fixed strings: plain ASCII, mixed scripts with emoji, and chat markup with code. */
 export const SMOKE_TEXTS = [
     "hello world",
     "안녕하세요, 世界! Привет 👋🏽 café — naïve",

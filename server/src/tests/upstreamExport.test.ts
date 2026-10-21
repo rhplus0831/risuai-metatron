@@ -17,17 +17,16 @@ import { buildUpstreamDatabase, type UpstreamExportOptions } from "../data/upstr
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
 import { decodeUpstreamDatabase, encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
 
-// `docs/plan/upstream-bin-compat.md` S6: the store copy → upstream flat `Database` exporter, on a
-// synthetic store (never a real backup): a store is seeded, copied with `backupTo`, read back with
-// `readSnapshot` (the rows the route hands the exporter), and projected. Covers the S6 "Test" list,
-// the plan-review and challenge counterexamples (`formatversion` and the override roots, auxiliary
-// keys without `includeSecrets`, the named-key placement order and reservations, sub-slot proxy keys
-// and option loss, the translator shape and both selections, boot-crashing shapes, the asset walker,
-// character fields, trash and interaction times, dangling and orphan named keys, Vertex bindings,
-// false/zero settings), ordering, input immutability, and the round trip through S1's codec and the
-// S3/S4 converter: settings, presets, personas, and secrets, and the library written into a fresh
-// staged store as S5 does (characters and groups with their chats in order and message ids, toggles,
-// modules and plugins, trash times and group members).
+// The store copy → upstream flat `Database` exporter, on a synthetic store (never a real backup): a
+// store is seeded, copied with `backupTo`, read back with `readSnapshot` (the rows the route hands
+// the exporter), and projected. Covers the counterexamples (`formatversion` and the override roots,
+// auxiliary keys without `includeSecrets`, the named-key placement order and reservations, sub-slot
+// proxy keys and option loss, the translator shape and both selections, boot-crashing shapes, the
+// asset walker, character fields, trash and interaction times, dangling and orphan named keys,
+// Vertex bindings, false/zero settings), ordering, input immutability, and the round trip through
+// the `risuSave.ts` codec and the import converter: settings, presets, personas, and secrets, and
+// the library written into a fresh staged store as the import does (characters and groups with their
+// chats in order and message ids, toggles, modules and plugins, trash times and group members).
 
 type Root = Record<string, unknown>;
 type Entry = UpstreamReportEntry<string>;
@@ -383,14 +382,14 @@ function record<T>(out: UpstreamConversion, kind: ResourceKindName): T {
     return found[0].data as T;
 }
 
-/** Export → S1 encode → S1 decode → S3 convert. */
+/** Export → encode → decode → convert. */
 function roundTrip(snapshot: ValidatedSnapshot, options: Partial<UpstreamExportOptions> = {}) {
     const exported = exportOf(snapshot, options);
     const decoded = decodeUpstreamDatabase(encodeUpstreamDatabase(exported.db), LIMIT);
     return { exported, decoded: decoded as Root, imported: convertUpstreamDatabase(decoded) };
 }
 
-/** `roundTrip` with the import options an S5 import passes: the exported asset keys as the archive's, and the export time. */
+/** `roundTrip` with the import options an upstream import passes: the exported asset keys as the archive's, and the export time. */
 function libraryRoundTrip(snapshot: ValidatedSnapshot, options: Partial<UpstreamExportOptions> = {}) {
     const exported = exportOf(snapshot, options);
     const decoded = decodeUpstreamDatabase(encodeUpstreamDatabase(exported.db), LIMIT) as Root;
@@ -402,7 +401,7 @@ function libraryRoundTrip(snapshot: ValidatedSnapshot, options: Partial<Upstream
     return { exported, decoded, imported };
 }
 
-/** Writes a conversion into a fresh store in S4's hand-off order and reads its `backupTo` copy back. */
+/** Writes a conversion into a fresh store in the converter's hand-off order and reads its `backupTo` copy back. */
 async function stage(out: UpstreamConversion): Promise<ValidatedSnapshot> {
     const store = createResourceStore({ file: ":memory:", kinds });
     try {
@@ -426,7 +425,7 @@ async function stage(out: UpstreamConversion): Promise<ValidatedSnapshot> {
 
 /**
  * A snapshot's characters by id, each with its chats in chat order and their messages in order: the
- * ids, names, and the message fields an export carries (translations are left out, D12), the group
+ * ids, names, and the message fields an export carries (translations are left out), the group
  * speaker (`saying`) included.
  */
 function libraryOf(snapshot: ValidatedSnapshot) {
@@ -463,7 +462,7 @@ function libraryOf(snapshot: ValidatedSnapshot) {
 
 // ---------------------------------------------------------------------------------------------
 
-describe("buildUpstreamDatabase: presets (D10) and the root", () => {
+describe("buildUpstreamDatabase: presets and the root", () => {
     it("exports one upstream preset per prompt preset, in stored order, with the chosen model preset", async () => {
         const { db, report } = exportOf(await snapshotOf());
         const presets = db.botPresets as Root[];
@@ -773,7 +772,7 @@ describe("buildUpstreamDatabase: assets", () => {
     });
 });
 
-describe("buildUpstreamDatabase: credentials (D7)", () => {
+describe("buildUpstreamDatabase: credentials", () => {
     it("without includeSecrets leaves no key in the decoded object or the archive payload and reports them", async () => {
         const snapshot = await snapshotOf();
         const { db, report } = exportOf(snapshot);
@@ -1002,14 +1001,14 @@ describe("buildUpstreamDatabase: purity", () => {
         expect((second.db.characters as Root[])[0].name).toBe("Alice");
     });
 
-    it("encodes to bytes S1 decodes back to the same database", async () => {
+    it("encodes to bytes `decodeUpstreamDatabase` decodes back to the same database", async () => {
         const { db } = exportOf(await snapshotOf(), { includeSecrets: true });
         const decoded = decodeUpstreamDatabase(encodeUpstreamDatabase(db), LIMIT);
         expect(decoded).toEqual(JSON.parse(JSON.stringify(db)));
     });
 });
 
-describe("buildUpstreamDatabase: round trip through the S3/S4 converter", () => {
+describe("buildUpstreamDatabase: round trip through the import converter", () => {
     it("brings the settings, translator and HypaV3 selections back", async () => {
         const { imported } = roundTrip(await snapshotOf());
         const translator = record<{ items: Root[]; selectedId: string }>(imported, COLLECTION_KIND.translatorPresets);
@@ -1035,7 +1034,7 @@ describe("buildUpstreamDatabase: round trip through the S3/S4 converter", () => 
         expect(presets.map((preset) => preset.name)).toEqual(["Prompt A", "Prompt B"]);
         expect(presets[0].mainPrompt).toBe("A main");
         expect(presets[0].temperature).toBe(70);
-        // The override flattens into upstream's maxContext and seeds the size with the override off (S3).
+        // The override flattens into upstream's maxContext and seeds the size with the override off.
         expect(presets[0].maxContextOverrideSize).toBe(8000);
         expect(presets[1].maxContextOverrideSize).toBe(4000);
         expect(presets[1].maxContextOverride).not.toBe(true);

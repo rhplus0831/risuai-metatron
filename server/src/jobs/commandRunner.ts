@@ -22,9 +22,8 @@ import {
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
- * The server's generation runner (Phase 5): `command` jobs run here (buttons from slice 8a, manual
- * triggers from slice 8b); every other kind is a send, a continue, or a preview (slice 9,
- * `src/server/prompt/runner.ts`).
+ * The server's generation runner: `command` jobs run here (Lua buttons and manual triggers); every
+ * other kind is a send, a continue, or a preview (`src/server/prompt/runner.ts`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
     return async (job) => {
@@ -79,9 +78,8 @@ function prepareRun(
 }
 
 /**
- * A command job's failure names its stage (`docs/plan/request-history-diagnostics.md` slice 6): its
- * setup (`prepare`), else the script it runs, unless a site nearer the failure named one (a write,
- * a request).
+ * A command job's failure names its stage: its setup (`prepare`), else the script it runs, unless
+ * a site nearer the failure named one (a write, a request).
  */
 async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
     const command = job.command;
@@ -176,8 +174,8 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
 }
 
 /**
- * A manual trigger (`risu-trigger` in `Chat.svelte`, `/trigger` from the chat input; Phase 5 slice
- * 8b) as a command job: the trigger runtime runs the chat's character's triggers named `name` (and
+ * A manual trigger (`risu-trigger` in `Chat.svelte`, `/trigger` from the chat input) as a
+ * command job: the trigger runtime runs the chat's character's triggers named `name` (and
  * every Lua trigger, with the name as its Lua function) on a copy of the chat as stored, and the
  * copy is applied afterwards (`applyTriggerChat`), as the client's `captureChatBaseline`,
  * `runTrigger`, and `applyChatResult`. Chat variables, the author's note, character, and persona

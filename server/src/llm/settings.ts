@@ -47,7 +47,7 @@ export type RequestDb = Pick<
         { name: string; type: CredentialType; key: string; clientEmail?: string; projectId?: string }
     >;
     /**
-     * A job's plugin provider models (slice 11b): the descriptors its tab registered when it created
+     * A job's plugin provider models: the descriptors its tab registered when it created
      * the job (`hooks.providers`), by which `pluginmodel:::<name>` resolves. Never stored.
      */
     pluginModels?: LLMModel[];
@@ -211,10 +211,10 @@ export function mergeCredentials(
 /**
  * Every LLM credential the store holds now (`collectSecrets`' fields of the `providers` and
  * `llmSecrets` sections), for a second redaction pass over captured content (the request history's
- * shared copies, `docs/plan/request-history-diagnostics.md` slice 10). Unlike `loadRequestDb`, a
- * named key is taken from the `llmSecrets.credentials` map itself, whether or not the `credentials`
- * collection still names it; the collection adds the client emails. Throws when a record is missing
- * or unreadable, so a caller never redacts with an empty set by mistake.
+ * shared copies). Unlike `loadRequestDb`, a named key is taken from the `llmSecrets.credentials`
+ * map itself, whether or not the `credentials` collection still names it; the collection adds the
+ * client emails. Throws when a record is missing or unreadable, so a caller never redacts with an
+ * empty set by mistake.
  */
 export function loadStoredSecrets(store: ResourceStore, kinds: ResourceKindRegistry): string[] {
     const kind = (name: string) => {

@@ -14,10 +14,10 @@ import {
     type ResourceTestClient,
 } from "./testSupport.ts";
 
-// Phase 5 slice 7a, the HTTP side of the server request layer (`server/src/routes/llm.ts` and the
-// `risu-aux-op` branch of `/proxy2`, `server/src/routes/proxy.ts`) on a test server whose provider
-// is a local upstream: the JWT and epoch rules, the body validation, the SSE answer, the answer
-// route, a client that disconnects over a real socket, maintenance, shutdown, and the six auxiliary
+// The HTTP side of the server request layer (`server/src/routes/llm.ts` and the `risu-aux-op`
+// branch of `/proxy2`, `server/src/routes/proxy.ts`) on a test server whose provider is a local
+// upstream: the JWT and epoch rules, the body validation, the SSE answer, the answer route, a
+// client that disconnects over a real socket, maintenance, shutdown, and the six auxiliary
 // operations (JWT only, the exact endpoint, the server's credential, no redirect followed, redacted
 // errors, the raw body preserved). The registry's own contracts are in `llmRequests.test.ts`.
 
@@ -130,7 +130,7 @@ async function seed() {
     const modelPresetId = modelPresets.data[0].id as string;
     const personaId = personas.data[0].id as string;
     // The default model preset's main slot names the default profile, which reaches the upstream
-    // with a named key (`docs/plan/model-profiles.md`); the prompt preset stays default.
+    // with a named key; the prompt preset stays default.
     expect(modelPresets.data[0].mainSlot).toEqual({ profileId: modelProfiles.data[0].id });
     modelProfiles.data[0] = {
         ...modelProfiles.data[0],
@@ -142,7 +142,7 @@ async function seed() {
     };
     await write("modelProfiles", modelProfiles.data);
     await write("credentials", [{ id: PROXY_CREDENTIAL_ID, name: "Proxy", type: "custom" }]);
-    // The credentials go through `/api/llm-secrets/*` (Phase 5 slice 7b): the record is write-only.
+    // The credentials go through `/api/llm-secrets/*`: the record is write-only.
     await writeSecret({ kind: "flat", field: "openAIKey" }, SECRET.openai);
     await writeSecret({ kind: "flat", field: "supaMemoryKey" }, SECRET.memory);
     await writeSecret({ kind: "nested", field: "google" }, SECRET.google);
@@ -242,7 +242,7 @@ describe("POST /api/llm/request", () => {
         expect(got[2]).toEqual({ type: "result", response: { type: "success", result: "answer to hi" } });
         expect(upstreamRequests[0].headers.authorization).toBe(`Bearer ${SECRET.proxy}`);
         expect(JSON.stringify(got)).not.toContain(SECRET.proxy);
-        // The server context's request history got the row (request history slice 3), redacted.
+        // The server context's request history got the row, redacted.
         const row = client.context.requestHistory.get((got[0] as { id: string }).id);
         expect(row).toMatchObject({
             source: "tab",
@@ -318,7 +318,7 @@ describe("POST /api/llm/request", () => {
         expect(upstreamRequests).toHaveLength(0);
     });
 
-    // `docs/plan/translation.md` slice 3.1: `arg.profileId` names the profile the request runs on.
+    // `arg.profileId` names the profile the request runs on.
     it("runs a request that names a profile on that profile's connection and key, fails one naming a missing profile without an upstream call, and refuses a malformed id", async () => {
         const ids = await seed();
         const read = async (kind: string) =>
@@ -385,7 +385,7 @@ describe("POST /api/llm/request", () => {
         expect(upstreamRequests).toHaveLength(2);
     });
 
-    it("answers 409 with the binding problems for a chat whose binding is not complete, and 409 mismatch for other ids (`docs/plan/chat-binding.md`)", async () => {
+    it("answers 409 with the binding problems for a chat whose binding is not complete, and 409 mismatch for other ids", async () => {
         const ids = await seed();
         const seeded = await client.json("/api/resources/batch", {
             ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],

@@ -3,10 +3,10 @@ import zlib from "node:zlib";
 import type { Context } from "hono";
 
 /**
- * JSON answers compressed for the client (`docs/plan/boot-resource-cache.md` slice 1): the resource
- * reads, whose boot read reaches tens of MB on asset-heavy modules. zstd level 1 when the request
- * accepts it, else gzip level 1, both on the zlib thread pool so a large body does not block the
- * event loop. Streams, the event socket and the proxies never go through here.
+ * JSON answers compressed for the client: the resource reads, whose boot read reaches tens of MB
+ * on asset-heavy modules. zstd level 1 when the request accepts it, else gzip level 1, both on
+ * the zlib thread pool so a large body does not block the event loop. Streams, the event socket
+ * and the proxies never go through here.
  */
 
 /** JSON text shorter than this in UTF-8 bytes is sent as is: compressing it saves little. */

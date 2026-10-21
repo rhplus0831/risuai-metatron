@@ -7,7 +7,7 @@ import { createRedactor } from "../llm/redact.ts";
 import type { TransformersService } from "./transformers.ts";
 
 /**
- * The server's embeddings (Phase 5 slice 10): `HypaProcesser` (`src/ts/process/memory/hypamemory.ts`),
+ * The server's embeddings: `HypaProcesser` (`src/ts/process/memory/hypamemory.ts`),
  * `HypaProcessorV2` (`hypamemoryv2.ts`), and the Voyage contextual provider
  * (`contextualEmbedding.ts`), ported statement for statement with an `EmbeddingEnv` in place of the
  * client's module state. One env is bound to one job (`createEmbeddings(...).forJob`).

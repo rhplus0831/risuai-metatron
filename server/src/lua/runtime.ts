@@ -267,7 +267,7 @@ function getCharacterImage(id)
     return getCharacterImageMain(id):await()
 end
 
--- Server additions (Phase 5 slice 8a): host calls carry primitives only, so the client functions
+-- Server additions: host calls carry primitives only, so the client functions
 -- that take or return a table cross as JSON here; the public names and their returns are the
 -- client's. A refused key returns nil at once where the client does (the host checks again).
 local function __safeKey(id)

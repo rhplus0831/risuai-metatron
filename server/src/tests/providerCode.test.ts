@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { PROVIDER_CODE_PATTERN } from "../../../shared/requestHistory.ts";
 import { providerCodeOf } from "../llm/providerCode.ts";
 
-// Request history slice 6 (`docs/plan/request-history-diagnostics.md`): the provider's error code
-// read from a captured answer body (`server/src/llm/providerCode.ts`). Only the documented
-// envelopes and fields, only a value matching `PROVIDER_CODE_PATTERN` (decision 9), never a message.
+// The provider's error code read from a captured answer body (`server/src/llm/providerCode.ts`). Only
+// the documented envelopes and fields, only a value matching `PROVIDER_CODE_PATTERN`, never a
+// message.
 
 const sse = (...events: (string | string[])[]) =>
     events

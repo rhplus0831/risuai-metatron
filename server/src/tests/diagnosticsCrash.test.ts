@@ -6,9 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-// Request history slice 7 (`docs/plan/request-history-diagnostics.md`): the process hook `main.ts`
-// installs, in a fresh plain `node` process (Vitest's own `uncaughtException` and
-// `unhandledRejection` listeners would change what reaches the monitor). An
+// The process hook `main.ts` installs, in a fresh plain `node` process (Vitest's own
+// `uncaughtException` and `unhandledRejection` listeners would change what reaches the monitor). An
 // `uncaughtExceptionMonitor` bound to the journal records the fault (its origin and class name, never
 // its message) and writes `state.json` synchronously before Node ends the process as it would without
 // the monitor: an uncaught exception and, with no `unhandledRejection` listener in the process, an

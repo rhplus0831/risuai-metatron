@@ -12,7 +12,7 @@ import { buildArchive, createResourceTestClient, type ResourceTestClient } from 
 /**
  * The upstream import's real worker (`importWorker.ts`, `importRunner.ts`): a cold `worker_threads`
  * boot of the converter and `node:sqlite` per prepare, the heap limit (`resourceLimits`), and the
- * test latch. Slow by V3 (a cold worker boot and a real memory limit); the routes themselves are
+ * test latch. Slow (a cold worker boot and a real memory limit); the routes themselves are
  * `upstreamImportRoute.test.ts` with an in-process runner.
  */
 

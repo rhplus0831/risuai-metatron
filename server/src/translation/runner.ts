@@ -41,9 +41,8 @@ export const MAX_RUNNING_TRANSLATIONS = 16;
 const DRAIN_WAIT_MS = 5000;
 
 /**
- * `POST /api/translate/message` (`docs/plan/translation.md` slice 1.3). The ids are the chat's
- * display ids, as the tab sends them for a transform (`chatDisplayIds`): each bound id that exists,
- * else the tab's selection.
+ * `POST /api/translate/message`. The ids are the chat's display ids, as the tab sends them for a
+ * transform (`chatDisplayIds`): each bound id that exists, else the tab's selection.
  */
 export type TranslateMessageRequest = {
     characterId: string;
@@ -126,8 +125,8 @@ export type TranslationRunner = ReturnType<typeof createTranslationRunner>;
  * - The requests run through the request layer in-process (`runInJob`) as a detached job without a
  *   tab: no plugin interceptor, plugin provider, `request` trigger, tool, or inlay. CBS (stop strings,
  *   JSON schema settings) is evaluated over the chat with a run-wide budget and cannot write.
- * - The history slots (`docs/plan/translation.md` slice 3.3) are built from the run's committed chat
- *   copy, once, when the first pipeline run starts, with the main model's tokenizer (`tokens`).
+ * - The history slots are built from the run's committed chat copy, once, when the first
+ *   pipeline run starts, with the main model's tokenizer (`tokens`).
  */
 export function createTranslationRunner(deps: {
     store: ResourceStore;
@@ -161,7 +160,7 @@ export function createTranslationRunner(deps: {
         return null;
     };
 
-    /** The chat's translator preset, else the global selection (`docs/plan/translation.md` slice 2.2). */
+    /** The chat's translator preset, else the global selection. */
     const selectedPreset = (scope: JobScope): TranslatorPreset =>
         resolveTranslatorPreset(scopeChat(scope), scope.db.translatorPresets, scope.db.translatorPresetId).preset;
 
@@ -251,11 +250,11 @@ export function createTranslationRunner(deps: {
         });
 
         const translatorNote = translatorNoteOf(scope);
-        // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the source (once, the whole
+        // Exclude Chain-of-Thought: the reasoning blocks leave the source (once, the whole
         // text, before the line protection cuts it) and every history entry.
         const excludeThoughts = preset.excludeThoughts === true;
         const sourceText = excludeThoughts ? stripTranslatorReasoning(message.data) : message.data;
-        // The history slots of the message (slice 3.3), from the scope's chat copy (the one `message`
+        // The history slots of the message, from the scope's chat copy (the one `message`
         // comes from), built once for every part and step, when the first pipeline run starts: a text
         // that sends nothing counts nothing. Each count yields a turn and checks the run before and
         // after it (a Google count cannot be aborted; one in flight may outlive an ended run, which
@@ -339,7 +338,7 @@ export function createTranslationRunner(deps: {
                     return response.result;
                 },
             );
-        // Send Text As-Is (slice 3.2): the whole source in one run, the reply stored as it is; else
+        // Send Text As-Is: the whole source in one run, the reply stored as it is; else
         // the source chunk by chunk around its asset and blank lines, one after another. A source the
         // reasoning strip left blank is an empty translation, without a request.
         const text =
@@ -424,9 +423,9 @@ export function createTranslationRunner(deps: {
     /**
      * Translates the message: joins its run in flight, returns a fresh stored translation when not
      * forced, or starts a run. Settles when the run ends; the caller's own abort does not end it.
-     * A caller whose message text is not the one the run in flight translates (a continue extended
-     * it meanwhile) waits for that run and then translates the current text (`docs/plan/translation.md`
-     * slice 2.3): the run's write would be ignored.
+     * A caller whose message text is not the one the run in flight translates (a continue extended it
+     * meanwhile) waits for that run and then translates the current text: the run's write would be
+     * ignored.
      */
     function translate(request: TranslateMessageRequest): Promise<TranslateMessageResult> {
         const refused = admission();
@@ -552,12 +551,12 @@ export function createTranslationRunner(deps: {
     }
 
     /**
-     * Hands a finished send's messages to the runner (`docs/plan/translation.md` slice 2.3), when the
-     * chat auto-translates: its `autoTranslate` is on, a target language is set, the translator is the
-     * LLM one, and `llmTranslationTarget` is `"message"`. With `translateBotOnly`, user messages are
-     * skipped. Each message gets an unforced `translate` (not awaited: the send does not wait for it).
-     * Returns the ids with a run started or in flight (the ids are checked against the chat's display
-     * binding first); a refusal (a lock, the binding, capacity) or a fresh stored translation is not
+     * Hands a finished send's messages to the runner, when the chat auto-translates: its
+     * `autoTranslate` is on, a target language is set, the translator is the LLM one, and
+     * `llmTranslationTarget` is `"message"`. With `translateBotOnly`, user messages are skipped. Each
+     * message gets an unforced `translate` (not awaited: the send does not wait for it). Returns the
+     * ids with a run started or in flight (the ids are checked against the chat's display binding
+     * first); a refusal (a lock, the binding, capacity) or a fresh stored translation is not
      * returned. Best effort: a run that cannot start is not retried.
      */
     function handOff(

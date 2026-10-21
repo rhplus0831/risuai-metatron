@@ -16,7 +16,7 @@ export type OuterRequestDeps = {
     beforeRequest?: (formated: OpenAIChat[], model: ModelModeExtended) => Promise<OpenAIChat[]>;
     /** The plugins' `replacerafterRequest` hooks, in order. */
     afterRequest?: (text: string, model: ModelModeExtended) => Promise<string>;
-    /** The `request` trigger over the messages (the job's trigger runtime, Phase 5 slice 9). */
+    /** The `request` trigger over the messages (the job's trigger runtime). */
     requestTrigger?: (formated: OpenAIChat[]) => Promise<OpenAIChat[]>;
     /**
      * Whether a `requestTrigger` failure ends the request (the job's fatal failure or abort) instead

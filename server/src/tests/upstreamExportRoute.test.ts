@@ -22,10 +22,10 @@ import { createUpstreamExportStaging } from "../routes/backupsUpstreamExport.ts"
 import { createResourceTestClient, hex, parseArchive, type ResourceTestClient } from "./testSupport.ts";
 
 /**
- * The upstream RisuAI-compatible `.bin` export routes (`routes/backupsUpstreamExport.ts`,
- * `docs/plan/upstream-bin-compat.md` S7): prepare, download, and cancel over `createTestServer`. What
- * the projection holds is `upstreamExport.test.ts` (S6); here: the route lifecycle, the record layout,
- * the asset name rule, and that this server's own upstream import reads an export back.
+ * The upstream RisuAI-compatible `.bin` export routes (`routes/backupsUpstreamExport.ts`): prepare,
+ * download, and cancel over `createTestServer`. What the projection holds is
+ * `upstreamExport.test.ts`; here: the route lifecycle, the record layout, the asset name rule, and
+ * that this server's own upstream import reads an export back.
  */
 
 const TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

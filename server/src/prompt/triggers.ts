@@ -22,7 +22,7 @@ import { stripThoughtsBlock } from "./thoughts.ts";
 export { displayAllowList, requestAllowList };
 
 /**
- * The server trigger runtime (Phase 5 slice 8b): `runTrigger` of the former `src/ts/process/triggers.ts`,
+ * The server trigger runtime: `runTrigger` of the former `src/ts/process/triggers.ts`,
  * ported with the same effect switch. The client reaches its chat, records, alerts, and services
  * through globals; here they come from the job (`TriggerHost`): CBS over the job's scope, chat
  * variables and the author's note written to the job's chat as the run goes (never in display or

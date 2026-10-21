@@ -36,11 +36,11 @@ export const SYNC_REPLIES = 0;
 export const ABORTED_TASK = 1;
 
 /**
- * A `lua` task whose `mode` is this runs the regex script engine (`runRegexScripts`) instead of Lua
- * (Phase 5 slice 9): `data` is a `RegexScriptsInput`, and the engine's `parse`, `repeatBackSource`,
- * and `applyEffect` are the synchronous host functions `parse`, `repeatBack`, and `effect` (an
- * effect crosses as JSON), so CBS runs on the main thread and an effect lands where its script
- * matched. `res` is the output text. It shares the Lua task's watchdog, abort, and host plumbing.
+ * A `lua` task whose `mode` is this runs the regex script engine (`runRegexScripts`) instead of
+ * Lua: `data` is a `RegexScriptsInput`, and the engine's `parse`, `repeatBackSource`, and
+ * `applyEffect` are the synchronous host functions `parse`, `repeatBack`, and `effect` (an effect
+ * crosses as JSON), so CBS runs on the main thread and an effect lands where its script matched.
+ * `res` is the output text. It shares the Lua task's watchdog, abort, and host plumbing.
  */
 export const REGEX_SCRIPTS_MODE = "\u0000regexScripts";
 

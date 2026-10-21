@@ -13,7 +13,7 @@ export type TransformersResponse =
     { id: number; ok: true; vectors?: Float32Array[]; text?: string } | { id: number; ok: false; error: string };
 
 /**
- * The server's Transformers.js models (Phase 5 slice 10; the client's `src/ts/process/transformers.ts`):
+ * The server's Transformers.js models (the client's `src/ts/process/transformers.ts`):
  * embeddings, the summarizer, the image captioner, and text generation, run in one child process
  * (`transformersWorker.ts`) so that model loading and inference do not hold the server's main thread
  * and a model's memory is not the server's.

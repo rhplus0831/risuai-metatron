@@ -4,9 +4,9 @@ import type { requestDataResponse } from "../llm/request.ts";
 import { type EmbeddingEnv, HypaProcesser } from "./embeddings.ts";
 
 /**
- * The parts of a send's tail (Phase 5 slice 11a) that are the client's own code after the reply
- * (the former `src/ts/process/index.svelte.ts`, `src/ts/process/inlayScreen.ts`): the inlay screen's rewrite of
- * a reply and the two automatic emotion modes. The runner (`runner.ts`) orders them with the rest of
+ * The parts of a send's tail that are the client's own code after the reply (the former
+ * `src/ts/process/index.svelte.ts`, `src/ts/process/inlayScreen.ts`): the inlay screen's rewrite of a
+ * reply and the two automatic emotion modes. The runner (`runner.ts`) orders them with the rest of
  * the tail.
  */
 

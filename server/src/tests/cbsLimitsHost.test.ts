@@ -24,23 +24,24 @@ import { createLuaBindings, type LuaBindingServices, LuaJobFatalError } from "..
 import { createTriggerRuntime, type TriggerHost } from "../prompt/triggers.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 
-// Phase 5 slice 9b, the server's side of the CBS limits: the job host (`server/src/jobs/cbsHost.ts`)
-// carries `serverCbsLimits`, parses the default variables once per source text (the first pair of a
-// key wins, the character's before the template's, re-read when a text changes), and its `calcString`
-// reads a variable once per calculation and answers as the plain calculator over the same getters
-// (values, the coercions of odd variable texts, a missing variable, both namespaces, parentheses);
-// the bindings (`server/src/lua/bindings.ts`) wrap the run's evaluator so that a reached limit is
-// the job's latched fatal failure named after the chat owner, every evaluation after it raises that
-// failure, and the limit is seen through the closures made over the evaluator (`services.parse`,
-// the Lua `cbs` host function); two bindings of one job share its `cbsUsage` allowance, and one made
+// The server's side of the CBS limits: the job host (`server/src/jobs/cbsHost.ts`) carries
+// `serverCbsLimits`, parses the default variables once per source text (the first pair of a key wins,
+// the character's before the template's, re-read when a text changes), and its `calcString` reads a
+// variable once per calculation and answers as the plain calculator over the same getters (values,
+// the coercions of odd variable texts, a missing variable, both namespaces, parentheses); the
+// bindings (`server/src/lua/bindings.ts`) wrap the run's evaluator so that a reached limit is the
+// job's latched fatal failure named after the chat owner, every evaluation after it raises that
+// failure, and the limit is seen through the closures made over the evaluator (`services.parse`, the
+// Lua `cbs` host function); two bindings of one job share its `cbsUsage` allowance, and one made
 // without it has its own; the native effect loop (`server/src/prompt/triggers.ts`) yields a turn once
 // it has held the thread 50 ms, so a stop queued meanwhile gets in before the next effect. The
-// evaluator's own accounting is in `cbsLimits.test.ts`; the jobs end to end in `cbsLimitsJobs.test.ts`.
+// evaluator's own accounting is in `cbsLimits.test.ts`; the jobs end to end in
+// `cbsLimitsJobs.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
-// A range too large for the work limit (a non-advancing one answers `[]` since slice 1d of the audit plan).
+// A range too large for the work limit (a non-advancing one answers `[]`).
 const HUGE = "{{range::[0,1e18]}}";
 
 afterEach(() => {
@@ -267,7 +268,7 @@ function bindingsSetup(options: { desc?: string; triggerscript?: triggerscript[]
                             id: "k",
                             name: "K",
                             fmIndex: -1,
-                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            // The chat's binding: the job scope checks the context's ids against it.
                             modelPresetId: "m",
                             promptPresetId: "p",
                             bindedPersona: "u",

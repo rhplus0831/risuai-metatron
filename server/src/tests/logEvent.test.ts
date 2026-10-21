@@ -4,10 +4,9 @@ import { formatLogEvent, LOG_EVENT_KINDS, logEvent } from "../diagnostics/log.ts
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 
-// Request history slice 6 (`docs/plan/request-history-diagnostics.md`): the server's content-free
-// diagnostic events (`server/src/diagnostics/log.ts`). Every field is checked against its own
-// pattern or enumeration, an error contributes only a known class name and the first application
-// frame of its stack, and a message never reaches the line (decision 9).
+// The server's content-free diagnostic events (`server/src/diagnostics/log.ts`). Every field is
+// checked against its own pattern or enumeration, an error contributes only a known class name
+// and the first application frame of its stack, and a message never reaches the line.
 
 const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";

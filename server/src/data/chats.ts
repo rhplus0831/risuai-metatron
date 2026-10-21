@@ -5,7 +5,7 @@ import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/tr
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
 /**
- * Pure normalizers for chats (Phase 2). Minimum shapes only, as for the Phase 1 kinds: the client
+ * Pure normalizers for chats. Minimum shapes only, as for the plain record kinds: the client
  * keeps building chats and messages; the server checks what it needs to store and address them and
  * fills the three defaults every reader relies on (`name`, `note`, `localLore`).
  */
@@ -50,7 +50,8 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     }
     // The greeting the chat starts from (-1: the first message). The client gives a chat it creates its
     // character's `firstMsgIndex` (`prepareChatInput`); a chat written without one starts from the first
-    // message, as a selection's formatter gave it before Phase 6 slice 5b.
+    // message, as a selection's formatter gave it before characters were normalized by the shared
+    // `normalizeCharacter`.
     meta.fmIndex ??= -1;
     if (typeof meta.fmIndex !== "number") {
         throw new ResourceValidationError("chat.fmIndex must be a number");

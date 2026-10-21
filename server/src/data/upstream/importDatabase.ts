@@ -53,14 +53,14 @@ import {
 import { kinds, normalizeRecord, storedForm, storeNormalize, tryNormalize } from "./importRecords.ts";
 
 /**
- * The upstream RisuAI flat `Database` → metatron resources converter (`docs/plan/upstream-bin-compat.md`
- * S3: settings, presets, personas, secrets; S4: characters, groups, chats, cold storage, modules,
- * plugins, plugin storage, assets). It works on the plain object `database.risudat` decodes to and
- * does no I/O: the cold-storage payloads and the archive's asset keys come in as options. Upstream
- * behavior is read from RisuAI `669b12ce` (`src/ts/storage/database.svelte.ts` `setDatabase`/`setPreset`,
- * `src/ts/bootstrap.ts` `checkNewFormat`); "U" below is that `src/ts/`. Characters and chats are
- * `importCharacters.ts`, the collections that name them and the module and plugin records
- * `importCollections.ts`, the asset walk `assetReferences.ts`.
+ * The upstream RisuAI flat `Database` → metatron resources converter (settings, presets, personas,
+ * secrets; characters, groups, chats, cold storage, modules, plugins, plugin storage, assets). It
+ * works on the plain object `database.risudat` decodes to and does no I/O: the cold-storage payloads
+ * and the archive's asset keys come in as options. Upstream behavior is read from RisuAI `669b12ce`
+ * (`src/ts/storage/database.svelte.ts` `setDatabase`/`setPreset`, `src/ts/bootstrap.ts`
+ * `checkNewFormat`); "U" below is that `src/ts/`. Characters and chats are `importCharacters.ts`, the
+ * collections that name them and the module and plugin records `importCollections.ts`, the asset walk
+ * `assetReferences.ts`.
  *
  * Every record's data is what its kind's own normalizer (`DEFAULT_RESOURCE_KINDS`) returns for the
  * stored form of the converted input, checked with the store's `serialize`, so a staged store
@@ -69,9 +69,9 @@ import { kinds, normalizeRecord, storedForm, storeNormalize, tryNormalize } from
  * record) and reported; only a database that is not an object fails the conversion. The input is
  * never mutated. An `options.report` is single-use: pass it to only one conversion.
  *
- * Hand-off (S5 writes the output into a fresh `createResourceStore`, resolving each kind name to the
- * store's registered kind):
- * 1. `resources`: singletons (`SINGLETON_RESOURCE_ID`), each `(kind, id)` once. The S3 kinds are
+ * Hand-off (`importStage.ts` writes the output into a fresh `createResourceStore`, resolving each
+ * kind name to the store's registered kind):
+ * 1. `resources`: singletons (`SINGLETON_RESOURCE_ID`), each `(kind, id)` once. The settings kinds are
  *    materialized, so the fresh store holds them and they are updated at their current revision;
  *    `modules` and `plugins` (always emitted) and `pluginStorage` (when upstream had one) are not, and
  *    are created: `store.put(kind, id, data, store.get(kind, id)?.revision ?? null)` covers both.
@@ -97,13 +97,13 @@ export type UpstreamConversionOptions = {
     /** Single-use report, populated by this conversion; do not reuse it for another conversion. */
     report?: UpstreamImportReport;
     /**
-     * The archive's cold-storage payloads by key (the UUID its record name holds), as S2's
+     * The archive's cold-storage payloads by key (the UUID its record name holds), as
      * `readColdEntry` returns them. A pointer whose key is absent, or whose result is not `ok`, is
-     * reported `cold-missing` (D3).
+     * reported `cold-missing`.
      */
     cold?: ReadonlyMap<string, ColdRecordResult>;
     /**
-     * The `assets/<name>` keys the archive holds (S2's `planUpstreamArchive` assets). Without it,
+     * The `assets/<name>` keys the archive holds (`planUpstreamArchive`'s assets). Without it,
      * no asset is classified missing (`report.missingAssets` stays empty).
      */
     assetKeys?: ReadonlySet<string>;
@@ -113,7 +113,7 @@ export type UpstreamConversionOptions = {
 
 type Root = Record<string, unknown>;
 
-/** Root fields of the Phase 1 records (`importCharacters.ts`, `importCollections.ts`) and of the preset step (`botPresets`). */
+/** Root fields of the plain records (`importCharacters.ts`, `importCollections.ts`) and of the preset step (`botPresets`). */
 const nonSettingsFields = new Set<string>(ITEM_RECORD_FIELDS);
 
 /** Root names of the prompt preset fields (`PRESET_ROOT_ALIASES` reversed). */
@@ -580,7 +580,7 @@ function convertCustomModels(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Presets (D6)
+// Presets
 
 /**
  * U `setPreset`: the root an upstream tab holds after switching to `preset`, for the fields metatron

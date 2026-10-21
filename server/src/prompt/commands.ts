@@ -3,7 +3,7 @@ import type { LuaBindingServices } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { randomUUID } from "node:crypto";
 
-/** The job a command line runs in (Phase 5 slice 8b). */
+/** The job a command line runs in. */
 export type CommandHost = {
     services: LuaBindingServices;
     ctx: HostContext;
@@ -77,12 +77,12 @@ const HELP_TEXT = `
             `;
 
 /**
- * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat (Phase 5 slice 8b): the
- * same pipe and quote splitting, argument parsing, and CBS of the arguments, each command reading
- * and writing the job's chat as stored when it runs. Alerts and questions go through the job's
- * channel (`/speak` as a `tts` notice, `/?` as `alertMd`). `/multisend` queues its parts for the tab
- * to send after a command job (`host.multisend`); `/send` and `/sendas` only append, as on the client. A question that is not answered
- * ends the line with its error.
+ * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat: the same pipe and quote
+ * splitting, argument parsing, and CBS of the arguments, each command reading and writing the job's
+ * chat as stored when it runs. Alerts and questions go through the job's channel (`/speak` as a
+ * `tts` notice, `/?` as `alertMd`). `/multisend` queues its parts for the tab to send after a
+ * command job (`host.multisend`); `/send` and `/sendas` only append, as on the client. A question
+ * that is not answered ends the line with its error.
  */
 export function createCommandExecutor(host: CommandHost) {
     const { services, ctx } = host;

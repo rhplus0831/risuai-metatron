@@ -4,7 +4,7 @@ import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from ".
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { admitProviderModels, type JobScope } from "../jobs/jobScope.ts";
 
-// Phase 5 slice 11b: a job's plugin provider models (`jobScope.ts` `admitProviderModels`) and how
+// A job's plugin provider models (`jobScope.ts` `admitProviderModels`) and how
 // the shared resolver reads them (`resolveModelInfo`'s `pluginModels`): the descriptors the tab
 // registered when it created the job, each under its own `pluginmodel:::<name>` id, as plugin
 // models whatever format they claim, returned as registered (custom flags apply to the extra

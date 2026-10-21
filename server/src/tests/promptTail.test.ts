@@ -11,26 +11,26 @@ import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shar
 import type { PushTransport } from "../push/pushService.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 11a: the tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker`
-// and `runSend`, `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`),
-// end to end on a listening server with the default runner, the real worker pool (Lua and the regex
-// scripts), the production bindings, the job channel over the owner socket, a fake OpenAI-compatible
-// provider that answers one scripted reply per request, and a fake embedding server. Pinned against
-// the tab's `sendChatInner` (`src/ts/process/index.svelte.ts`) with the approved differences: on the
-// streaming path `editoutput` once on the completed text (Lua `editOutput`, the plugin hook as a
-// callback, the regex) while the chunks stream raw, the output trigger, the `chatOutput` callback with
-// the reply's id and speaker, the `tts` notice with the raw result, the `notification` notice, the
-// timings and the final write; the non-streaming continue's two `editoutput` calls; auto-continue as a
-// continue round of the same reply with `igp` once on the terminal reply (a prompt that is not ChatML
-// an error notice); the cap of 8 rounds with the terminal tail after it; a trigger's resend with `igp`
-// only on the last reply; a trigger that removes the reply ending the turn; a trigger's rewrite of the
-// reply under its generation with the stream's last chunk claimed by every later write; the inlay
-// rewrites (the emotion tag, image commands through `generateImage` callbacks one after the other, a
-// failed one removed); the `imggen` callback of the image view; the submodel emotion mode (the
-// four-message request, the biases from the history trimmed to four, exact/contained/no-match, a
-// failed request shown and the turn ended before the timing write); the embedding emotion mode (the
-// recency penalty on the trimmed history, the dot-product ranking); a cached empty `editoutput`
-// result computed again with its `@@emo` effect; the route's bound on `context.client.emotions`.
+// The tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker` and `runSend`,
+// `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`), end to end on a
+// listening server with the default runner, the real worker pool (Lua and the regex scripts), the
+// production bindings, the job channel over the owner socket, a fake OpenAI-compatible provider that
+// answers one scripted reply per request, and a fake embedding server. Pinned against the tab's
+// `sendChatInner` (`src/ts/process/index.svelte.ts`) with the approved differences: on the streaming
+// path `editoutput` once on the completed text (Lua `editOutput`, the plugin hook as a callback, the
+// regex) while the chunks stream raw, the output trigger, the `chatOutput` callback with the reply's
+// id and speaker, the `tts` notice with the raw result, the `notification` notice, the timings and
+// the final write; the non-streaming continue's two `editoutput` calls; auto-continue as a continue
+// round of the same reply with `igp` once on the terminal reply (a prompt that is not ChatML an error
+// notice); the cap of 8 rounds with the terminal tail after it; a trigger's resend with `igp` only on
+// the last reply; a trigger that removes the reply ending the turn; a trigger's rewrite of the reply
+// under its generation with the stream's last chunk claimed by every later write; the inlay rewrites
+// (the emotion tag, image commands through `generateImage` callbacks one after the other, a failed
+// one removed); the `imggen` callback of the image view; the submodel emotion mode (the four-message
+// request, the biases from the history trimmed to four, exact/contained/no-match, a failed request
+// shown and the turn ended before the timing write); the embedding emotion mode (the recency penalty
+// on the trimmed history, the dot-product ranking); a cached empty `editoutput` result computed again
+// with its `@@emo` effect; the route's bound on `context.client.emotions`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -93,7 +93,7 @@ const embedder = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ data: input.map((text) => ({ embedding: EMBED_VECTORS[text] ?? [1, 0, 0] })) }));
 });
 
-/** The Web Push deliveries (`docs/plan/web-push.md`): the fake transport records them instead of posting. */
+/** The Web Push deliveries: the fake transport records them instead of posting. */
 const pushes: { endpoint: string; payload: string }[] = [];
 const PUSH_ENDPOINT = "https://fcm.googleapis.com/fcm/send/tail-browser";
 const pushTransport: PushTransport = {
@@ -254,7 +254,7 @@ async function seedCharacter(options: {
                             id: "k",
                             name: "K",
                             fmIndex: -1,
-                            // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                            // Bound to the ids the jobs send: a job runs on its chat's binding.
                             modelPresetId,
                             promptPresetId: presetId,
                             bindedPersona: personaId,
@@ -463,7 +463,7 @@ beforeAll(async () => {
     modelPresetId = modelPresets.data[0].id;
     personaId = personas.data[0].id;
     // The selected model preset's main and sub slots use one profile: a reverse proxy to the fake
-    // provider; the selected prompt preset holds the prompt (`docs/plan/model-profiles.md`).
+    // provider; the selected prompt preset holds the prompt.
     const profileId = modelProfiles.data[0].id;
     const seededPresets = await batch({
         ops: [
@@ -611,9 +611,9 @@ describe("the streaming tail", () => {
                     { text: "Hello there [lua]" },
                 ]);
                 // The listeners get the reply's id and the speaker, after the edit hook; TTS carries the
-                // raw result (the tab's `result`); the notification never carries the reply
-                // (`docs/plan/web-push.md`): the server's sentence for the chat, and the same text goes
-                // out as Web Push to the registered browser.
+                // raw result (the tab's `result`); the notification never carries the reply: the
+                // server's sentence for the chat, and the same text goes out as Web Push to the
+                // registered browser.
                 expect(callbacks(events, "chatOutput").map((event) => event.payload)).toEqual([
                     { messageId: reply.chatId, speakerId: chaId },
                 ]);

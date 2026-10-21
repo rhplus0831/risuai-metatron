@@ -153,17 +153,17 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
 }
 
 /**
- * The upstream RisuAI-compatible `.bin` export (`docs/plan/upstream-bin-compat.md` S7, contract in
- * `shared/upstreamExportReport.ts`), in two steps, so the tab shows the report before the download.
- * Neither step writes the live store, so neither takes the archive import's slot: an export runs
- * beside a waiting or running import as the version-2 export does.
+ * The upstream RisuAI-compatible `.bin` export (contract in `shared/upstreamExportReport.ts`), in
+ * two steps, so the tab shows the report before the download. Neither step writes the live store,
+ * so neither takes the archive import's slot: an export runs beside a waiting or running import as
+ * the version-2 export does.
  *
  * `POST /api/backups/export-upstream/prepare` `UpstreamExportRequest`: auth; 400 for an invalid body;
  * 409 `UPSTREAM_EXPORT_TOO_MANY_STAGED` while that many prepared exports wait or are being prepared;
  * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown waits for it. One consistent copy of the store
  * (`snapshots.exclusive(() => store.backupTo(...))` into `save/.tmp/export-upstream-<uuid>/`), the
  * asset inventory listed after it (a blob is written before the record naming it), then on this
- * thread: `readSnapshot` of the copy, `buildUpstreamDatabase` (S6) with `hasAsset` and `now`, and
+ * thread: `readSnapshot` of the copy, `buildUpstreamDatabase` with `hasAsset` and `now`, and
  * `encodeUpstreamDatabase`; the copy is removed and the encoded database written to the folder. Each
  * referenced asset becomes a record named by its key without `assets/` when such a record can hold it
  * (`upstreamAssetRecordName`; otherwise reported as `asset-names`) and its file is a regular file the

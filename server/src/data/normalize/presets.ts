@@ -13,8 +13,8 @@ export function normalizePresetCollection(input: unknown): botPreset[] {
 }
 
 /**
- * The `modelPresets` collection (`docs/plan/split-preset.md`): `normalizeModelPresets`, with the
- * same rules as the prompt presets over the model fields; never empty.
+ * The `modelPresets` collection: `normalizeModelPresets`, with the same rules as the prompt
+ * presets over the model fields; never empty.
  */
 export function normalizeModelPresetCollection(input: unknown): ModelPreset[] {
     return normalizeModelPresets(input === undefined ? [] : requireArrayOfObjects(input, "modelPresets"));

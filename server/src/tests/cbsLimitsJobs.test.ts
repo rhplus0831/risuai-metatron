@@ -8,22 +8,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
-// Phase 5 slice 9b: a reached CBS limit ends the job, whatever evaluated the text, on a real
-// listening server with the default runner, the real worker pool (Lua, the regex scripts task), the
-// production bindings and the job channel, against a fake provider that records every request. For
-// each stage that evaluates card text (the description in assembly, a lore entry, the persona
-// prompt, a native `start` trigger's effect, the `request` trigger before the provider call, a Lua
-// `editRequest` listener's `cbs` inside `pcall`, an `editprocess` regex script's `parse` host call,
-// a group member's description, a Lua button and a manual trigger as command jobs): one error
-// terminal with `CBS limit reached … (<chat owner>)`, no provider request, no write after the
-// failure (the writes before it kept: termination, not rollback), the chat left as it was or with
-// the input stage's message, `inlayErrorResponse` not turning the failure into a stopped send, and
-// the same chat and worker serving the next job. The evaluator's accounting is in `cbsLimits.test.ts`,
-// the host and the bindings' latch in `cbsLimitsHost.test.ts`.
+// A reached CBS limit ends the job, whatever evaluated the text, on a real listening server with the
+// default runner, the real worker pool (Lua, the regex scripts task), the production bindings and the
+// job channel, against a fake provider that records every request. For each stage that evaluates card
+// text (the description in assembly, a lore entry, the persona prompt, a native `start` trigger's
+// effect, the `request` trigger before the provider call, a Lua `editRequest` listener's `cbs` inside
+// `pcall`, an `editprocess` regex script's `parse` host call, a group member's description, a Lua
+// button and a manual trigger as command jobs): one error terminal with
+// `CBS limit reached … (<chat owner>)`, no provider request, no write after the failure (the writes
+// before it kept: termination, not rollback), the chat left as it was or with the input stage's
+// message, `inlayErrorResponse` not turning the failure into a stopped send, and the same chat and
+// worker serving the next job. The evaluator's accounting is in `cbsLimits.test.ts`, the host and the
+// bindings' latch in `cbsLimitsHost.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
-// A range too large for the work limit (a non-advancing one answers `[]` since slice 1d of the audit plan).
+// A range too large for the work limit (a non-advancing one answers `[]`).
 const STUCK = "{{range::[0,1e18]}}";
 // Which allowance ends the template is the evaluator's business (`cbsLimits.test.ts`, under a
 // controlled clock); these jobs assert the fatal propagation, so a starved run that reaches the
@@ -169,7 +169,7 @@ async function seedCharacter(options: {
                 ops: [
                     {
                         op: "create",
-                        // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                        // Bound to the ids the jobs send: a job runs on its chat's binding.
                         chat: {
                             id: "k",
                             name: "K",
@@ -275,7 +275,7 @@ const terminals = (events: any[]) => events.filter((event) => event.type === "do
 
 /**
  * The send fails with the limit error naming `owner`, made no provider request, and wrote nothing
- * after; the error names `stage` (request history slice 6) and no request (none was admitted).
+ * after; the error names `stage` and no request (none was admitted).
  */
 function expectLimitTerminal(
     result: { events: any[]; terminal: any },
@@ -325,8 +325,7 @@ beforeAll(async () => {
     presetId = presets.data[0].id;
     modelPresetId = (await single("modelPresets")).data[0].id;
     personaId = personas.data[0].id;
-    // The model preset's main and sub slots use one profile: a reverse proxy to the fake provider
-    // (`docs/plan/model-profiles.md`).
+    // The model preset's main and sub slots use one profile: a reverse proxy to the fake provider.
     const profileId = (await single("modelProfiles")).data[0].id;
     await patchSingleton("modelProfiles", (data: any[]) => [
         {

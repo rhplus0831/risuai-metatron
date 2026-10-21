@@ -10,7 +10,8 @@ const prefixLength = searchDocumentPrefix.length;
  * `hanuraiMemory` of the former `src/ts/process/memory/hanuraiMemory.ts`, statement for statement, on a
  * `MemoryHost`. Where the client alerts and returns `false` (no chat left to drop), this returns the
  * alert's text as `alert`: the caller ends the send with it, without the inlay error message.
- * Audit GEN-04 deliberately corrects the prefix length and checks duplicates against kept document texts.
+ * Two deliberate departures from the former client: the `search_document: ` prefix is cut by its own
+ * length, and a retrieved document that is still among the kept chats' texts is skipped.
  */
 export async function hanuraiMemory(
     host: MemoryHost,

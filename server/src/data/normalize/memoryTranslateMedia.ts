@@ -113,20 +113,20 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
 
 export function normalizeMemoryTranslateMedia(input: unknown): SectionResource<"memoryTranslateMedia"> {
     const record = normalizeSection("memoryTranslateMedia", spec, input);
-    // `docs/plan/translation.md` slice 1.5: Bergamot (a local translator) was removed. Its users get
-    // Google with translation and input translation off, so nothing they write is sent to an online
-    // translator until they turn translation on again (a chat's own `autoTranslate` shows translations
-    // only while a target language is set).
+    // Bergamot (a local translator) was removed. Its users get Google with translation and input
+    // translation off, so nothing they write is sent to an online translator until they turn
+    // translation on again (a chat's own `autoTranslate` shows translations only while a target
+    // language is set).
     if ((record.translatorType as string) === "bergamot") {
         record.translatorType = "google";
         record.translator = "";
         record.useAutoTranslateInput = false;
     }
-    // `docs/plan/translation.md` decision 9: anything but the two targets reads as the default.
+    // Anything but the two targets reads as the default.
     if (record.llmTranslationTarget !== "message" && record.llmTranslationTarget !== "rendered") {
         record.llmTranslationTarget = "message";
     }
-    // `docs/plan/translation.md` slice 3.3: a history budget at or below 0 reads as the default.
+    // A history budget at or below 0 reads as the default.
     record.translatorHistoryMaxTokens = translatorHistoryMaxTokens(record.translatorHistoryMaxTokens);
     // The NAI v4 fields, added to a config saved before them (the `setDatabase` migration).
     const nai = record.NAIImgConfig;

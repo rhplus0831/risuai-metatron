@@ -57,8 +57,8 @@ const MAX_TRACKED_REFS = 256;
 const socketPath = /^\/api\/generations\/([^/]+)\/ws$/;
 
 /**
- * Where a runner failed, for the terminal `error` event (`docs/plan/request-history-diagnostics.md`
- * slice 6): the stage, the LLM request that failed when it was one, and its provider error code.
+ * Where a runner failed, for the terminal `error` event: the stage, the LLM request that failed when
+ * it was one, and its provider error code.
  */
 export type GenerationFailure = { stage?: GenerationErrorStage; requestId?: string; providerCode?: string | null };
 
@@ -154,7 +154,7 @@ export type RunningJob = {
     readonly command: Readonly<GenerationCommand> | null;
     /** The plugin hooks the owner registered (validated; the channel calls back only for these). */
     readonly hooks: GenerationHooks;
-    /** Notices, questions, and plugin callbacks to the owner (`job-channel`). */
+    /** Notices, questions, and plugin callbacks to the owner (the job channel). */
     readonly channel: JobChannel;
     /** Whether an owner socket is attached now. */
     ownerAttached(): boolean;
@@ -196,11 +196,11 @@ export type RunningJob = {
         build: () => JobChanges,
         options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
     ): AppliedChanges;
-    /** Parsed JSON messages from the owner's socket (the `job-channel` slice answers through it). */
+    /** Parsed JSON messages from the owner's socket (the job channel answers through it). */
     onClientMessage(listener: (message: unknown) => void): () => void;
     /**
-     * The preset the job's later callbacks name in their targets (a send's `presetChain` pick,
-     * Phase 5 slice 9); callbacks already sent keep theirs.
+     * The preset the job's later callbacks name in their targets (a send's `presetChain` pick);
+     * callbacks already sent keep theirs.
      */
     setCallbackPreset?(presetId: string): void;
     /** Flush synchronous metadata setters before a write, event, or callback barrier. */
@@ -209,7 +209,7 @@ export type RunningJob = {
 
 export type GenerationRunner = (job: RunningJob) => Promise<void>;
 
-/** Until prompt assembly (Phase 5 slice 9), a job ends with this error. */
+/** Without a runner (`options.runner`), a job ends with this error. */
 export const unavailableRunner: GenerationRunner = async () => {
     throw new GenerationRunnerError(501, "Server generation is not available yet");
 };
@@ -353,13 +353,13 @@ const abortMessages: Record<GenerationErrorReason, { status: number; message: st
 };
 
 /**
- * The generation job registry (Phase 5, `generation-jobs`): admission (one running job per chat),
- * the owner socket, the job's writes (`writeAsJob` with the generation lock), and the lifecycle.
- * Every abort fixes one deadline (`JOB_ABORT_GRACE_MS`); a job is finalized once: its token dies,
- * its locks and chat slot are released, its chat's hydration and one terminal event are sent, and
- * `finished` resolves. Shutdown aborts every job at `beginShutdown`; a restore or import aborts
- * them from `withMaintenance` and waits for their end while writes are still open, so an abort
- * checkpoint lands before the data is replaced and no old job can write afterwards.
+ * The generation job registry: admission (one running job per chat), the owner socket, the job's
+ * writes (`writeAsJob` with the generation lock), and the lifecycle. Every abort fixes one
+ * deadline (`JOB_ABORT_GRACE_MS`); a job is finalized once: its token dies, its locks and chat
+ * slot are released, its chat's hydration and one terminal event are sent, and `finished`
+ * resolves. Shutdown aborts every job at `beginShutdown`; a restore or import aborts them from
+ * `withMaintenance` and waits for their end while writes are still open, so an abort checkpoint
+ * lands before the data is replaced and no old job can write afterwards.
  */
 export function createGenerationJobs(options: {
     store: ResourceStore;
@@ -775,7 +775,7 @@ export function createGenerationJobs(options: {
     function errorTerminal(error: unknown): TerminalInput {
         const status =
             error instanceof GenerationRunnerError && error.status >= 400 && error.status <= 599 ? error.status : 500;
-        // Only checked values: the event's failure fields are content-free (decision 9).
+        // Only checked values: the event's failure fields are content-free.
         const failure = failureOf(error);
         return {
             type: "error",
@@ -1117,8 +1117,8 @@ export function createGenerationJobs(options: {
         if (revision !== body.context.chatRevision) {
             return { ok: false, status: 409, body: { error: "stale" } };
         }
-        // The job runs on its chat's binding or not at all (`docs/plan/chat-binding.md`), whatever its
-        // kind (a preview too): `targets` below is then the binding. `loadJobScope` checks it again.
+        // The job runs on its chat's binding or not at all, whatever its kind (a preview too):
+        // `targets` below is then the binding. `loadJobScope` checks it again.
         const binding = readChatBindingState(store, kinds, { characterId, chatId });
         const refusal = binding.chat && checkChatBinding(binding.chat, binding.lookup, body.context, "send");
         if (refusal) {
@@ -1393,7 +1393,7 @@ export function createGenerationJobs(options: {
                 return null;
             }
             const unwatch = job.channelLink.watchCallback(callbackId, onSettled);
-            // A child callback's barrier failure, timeout, or disconnect ends the job (`job-channel`).
+            // A child callback's barrier failure, timeout, or disconnect ends the job.
             return unwatch
                 ? {
                       channel: job.channelLink.channel,

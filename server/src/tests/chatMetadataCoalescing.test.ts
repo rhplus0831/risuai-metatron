@@ -285,7 +285,7 @@ describe("chat metadata coalescing", () => {
         expect(h.stored().data.note).toBe("pending note");
     });
 
-    it("writes pending variables as a scriptstate merge and the note as a set, never the whole map (data-loss slice 1a)", () => {
+    it("writes pending variables as a scriptstate merge and the note as a set, never the whole map", () => {
         const h = setup();
         holdMicrotasks();
         const writes = vi.spyOn(h.job, "write");

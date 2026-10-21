@@ -3,11 +3,10 @@ import type { UpstreamAssetReference, UpstreamAssetRole } from "../../../../shar
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
 
 /**
- * The asset walk of both `.bin` directions (`docs/plan/upstream-bin-compat.md` S4 import, S6 export):
- * one walker over an upstream flat `Database`, and an adapter that gives it the stored records in that
- * shape. The server equivalent of the tab's backup inventory (`src/ts/drive/backuplocal.ts`
- * `referencedAssets`, `shared/backups.ts` `selectPartialBackupAssets`; U `globalApi.svelte.ts` lists
- * the same), plus module assets and icons.
+ * The asset walk of both `.bin` directions (import and export): one walker over an upstream flat
+ * `Database`, and an adapter that gives it the stored records in that shape. The server equivalent of
+ * the tab's backup inventory (`src/ts/drive/backuplocal.ts` `referencedAssets`, `shared/backups.ts`
+ * `selectPartialBackupAssets`; U `globalApi.svelte.ts` lists the same), plus module assets and icons.
  */
 
 /**

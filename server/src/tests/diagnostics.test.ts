@@ -35,26 +35,25 @@ import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createHistoryObserver } from "../llm/historyObserver.ts";
 import { createResourceTestClient, createTestServer, sleep, TEST_INDEX_HTML, waitFor } from "./testSupport.ts";
 
-// Request history slice 7 (`docs/plan/request-history-diagnostics.md`, "Diagnostics folder"): the
-// server's diagnostics journal (`server/src/diagnostics/journal.ts`) and its wiring. The journal:
+// The server's diagnostics journal (`server/src/diagnostics/journal.ts`) and its wiring. The journal:
 // one projected event per line in `events/<UTC day>.jsonl`, the 300-event ring and the last 20 job
 // failures, the byte cap (oldest day first, the current day when it alone passes, at creation too),
 // `state.json` built from explicit checked sources and written atomically, the timers (5 s after an
 // error event, every 10 minutes, stopped by `close`), and every filesystem failure contained: a
-// symlinked `events/`, a symlink or a FIFO in place of a day file, an unwritable or missing folder,
-// a short write truncated back, a partial tail from an earlier process, each counted and warned
-// once with its code only, nothing thrown. The wiring: the context's own folder (two contexts never
-// share one), the `http` events with registered templates only, the `job` events from the registry
-// (a broken folder never fails a job), the `request` events from the history observer, the
-// `runtime` events from `logEvent`, the lifecycle events (boot, shutdown, maintenance, restore),
-// and the final state at dispose while the stores are open. The crash hooks of `main.ts` run in a
-// fresh process in `diagnosticsCrash.test.ts`. Slice 9: `saveReport` and `reports/` (the name, the
-// modes, the temp file and rename with a taken name drawn again and a temp name never created never
-// cleaned up, the newest 50 kept by name with the one just saved always retained and other entries
-// left alone, at creation too, a symlinked or non-directory `reports/` refused, a failed prune
-// leaving the save in place), and `POST /api/diagnostics/report` (the canonical check before the
-// write, the body limit by declared and by actual bytes, the shutdown recheck after the body read,
-// a failed save, `no-store` on every answer, the text never logged).
+// symlinked `events/`, a symlink or a FIFO in place of a day file, an unwritable or missing folder, a
+// short write truncated back, a partial tail from an earlier process, each counted and warned once
+// with its code only, nothing thrown. The wiring: the context's own folder (two contexts never share
+// one), the `http` events with registered templates only, the `job` events from the registry (a
+// broken folder never fails a job), the `request` events from the history observer, the `runtime`
+// events from `logEvent`, the lifecycle events (boot, shutdown, maintenance, restore), and the final
+// state at dispose while the stores are open. The crash hooks of `main.ts` run in a fresh process in
+// `diagnosticsCrash.test.ts`. The reports: `saveReport` and `reports/` (the name, the modes, the temp
+// file and rename with a taken name drawn again and a temp name never created never cleaned up, the
+// newest 50 kept by name with the one just saved always retained and other entries left alone, at
+// creation too, a symlinked or non-directory `reports/` refused, a failed prune leaving the save in
+// place), and `POST /api/diagnostics/report` (the canonical check before the write, the body limit by
+// declared and by actual bytes, the shutdown recheck after the body read, a failed save, `no-store`
+// on every answer, the text never logged).
 
 const { fsOverrides, randomQueue } = vi.hoisted(() => ({
     fsOverrides: {
@@ -526,7 +525,7 @@ describe("state.json", () => {
             settings: { requestHistoryContent: false, requestHistoryLimit: 250 },
             history: { rows: 3, bytes: 4096 },
             journal: { eventBytes: journal.stats().eventBytes, writeFailures: 0 },
-            // Slice 10: the copies in `shared/` (none yet; the folder is made by the first share).
+            // The copies in `shared/` (none yet; the folder is made by the first share).
             shared: { files: 0 },
             workers: { workers: 2, busy: 1, queued: 0, spawned: 5, terminated: 3 },
             jobs: { live: 1 },
@@ -1073,7 +1072,7 @@ describe("the server context", () => {
             { kind: "http", method: "GET", route: "/*", status: 404 },
             { kind: "http", method: "GET", route: "/api/request-history/:id", status: 400 },
             { kind: "http", method: "POST", route: "/api/backups/:id/restore", status: 400 },
-            // The test's own route is registered but not in the shared table (slice 8): no route.
+            // The test's own route is registered but not in the shared table: no route.
             { kind: "http", method: "GET", status: 500 },
             { kind: "http", route: "/*", status: 404 },
         ]);
@@ -1170,7 +1169,7 @@ describe("the server context", () => {
     });
 });
 
-describe("the read route and the route table (slice 8)", () => {
+describe("the read route and the route table", () => {
     it("answers the ring and the state to a JWT with `no-store` (a trailing slash too), the server's 400 with `no-store` without one, and writes nothing", async () => {
         const s = await createResourceTestClient();
         cleanups.push(() => s.close());
@@ -1253,7 +1252,7 @@ const reportOf = (journal: ReturnType<typeof createDiagnosticsJournal>) =>
     buildDiagnosticReport(reportInput({ state: journal.state(), events: journal.recent() }));
 const PRIVATE = "Private Character said hello";
 
-describe("the report journal (slice 9)", () => {
+describe("the report journal", () => {
     it("saves a report as `reports/<UTC stamp>-<8 hex>.txt` (the folder 0750, the file 0640), whole, with no temp file left, and keeps the state's shape", () => {
         const { dir, journal } = openJournal();
         const reports = path.join(dir, "reports");
@@ -1475,7 +1474,7 @@ describe("the report journal (slice 9)", () => {
     });
 });
 
-describe("the report route (slice 9)", () => {
+describe("the report route", () => {
     const post = (
         s: Awaited<ReturnType<typeof createResourceTestClient>>,
         body: RequestInit["body"],

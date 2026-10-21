@@ -5,16 +5,15 @@ import { encodeSecretPath, type SecretPath } from "../../../shared/llmSecrets.ts
 import { AUX_OPS, planAuxOp, type AuxOpName } from "../llm/auxOps.ts";
 import { allowListenerOrigin, createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the twelve auxiliary operations added for
-// the browser's model discovery, account, and count calls (`server/src/llm/auxOps.ts`, the
-// `risu-aux-op` branch of `/proxy2` in `server/src/routes/proxy.ts`), table-driven against a local
-// recording upstream: each row's origin, method, path, query allowlist, injection (bearer,
-// `x-api-key`, or the `key` query), a GET without a body, a missing key, no redirect followed; and
-// the response policy of the slice: a successful JSON answer is checked as the tab would read it
-// (text and decoded, values and property names) and refused with 502 when it carries the stored
-// credential (as stored or as injected, trimmed); a JSON error carrying it is refused as a whole; a
-// non-JSON body passes; a body that fails mid-read or is not JSON is a 502, never an empty success.
-// The six original rows are covered in `llmRoutes.test.ts`.
+// The twelve auxiliary operations added for the browser's model discovery, account, and count calls
+// (`server/src/llm/auxOps.ts`, the `risu-aux-op` branch of `/proxy2` in
+// `server/src/routes/proxy.ts`), table-driven against a local recording upstream: each row's origin,
+// method, path, query allowlist, injection (bearer, `x-api-key`, or the `key` query), a GET without a
+// body, a missing key, no redirect followed; and the response policy: a successful JSON answer is
+// checked as the tab would read it (text and decoded, values and property names) and refused with 502
+// when it carries the stored credential (as stored or as injected, trimmed); a JSON error carrying it
+// is refused as a whole; a non-JSON body passes; a body that fails mid-read or is not JSON is a 502,
+// never an empty success. The six original rows are covered in `llmRoutes.test.ts`.
 
 const SECRET = {
     openai: "sk-openai-SENTINEL-2222",

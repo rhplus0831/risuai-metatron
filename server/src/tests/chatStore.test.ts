@@ -25,7 +25,7 @@ import { createGenerationLock } from "../jobs/generationLock.ts";
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
 /**
- * The kinds the store materializes (slice 3): their `main` rows exist in every store from the start
+ * The kinds the store materializes: their `main` rows exist in every store from the start
  * (they take the first seqs), so the row checks below look only at the rows the tests wrote.
  */
 const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
@@ -448,8 +448,8 @@ describe("revision rules", () => {
         }
         expect(snapshotState(store)).toBe(state);
         expect(store.writeCount()).toBe(writes);
-        // A setText or setMessage of a gone message changes nothing and is reported `missing`
-        // (data-loss slice 6a); alone, it moves nothing.
+        // A setText or setMessage of a gone message changes nothing and is reported `missing`;
+        // alone, it moves nothing.
         for (const ops of [
             [{ op: "setText", id: "c", text: "gone" }],
             [{ op: "setMessage", message: m("c") }],
@@ -609,7 +609,7 @@ describe("revision rules", () => {
     });
 });
 
-describe("patchMessage (data-loss slice 1a)", () => {
+describe("patchMessage", () => {
     const patch = (id: string, fields: { set?: Record<string, unknown>; unset?: string[] }): ChatOp =>
         ({ op: "patchMessage", id, ...fields }) as ChatOp;
     const row = (store: ResourceStore, id: string) => chat(store, "k")!.data.message.find((x) => x.chatId === id)!;
@@ -643,8 +643,8 @@ describe("patchMessage (data-loss slice 1a)", () => {
         store.applyChanges({ chats: [group("k", base, [{ op: "setMessage", message: m("b", "B3") }])] });
         expect(row(store, "b")).toEqual(m("b", "B3"));
 
-        // A patch whose target is gone changes nothing and is reported `missing` (data-loss slice
-        // 6a); the group's earlier op commits.
+        // A patch whose target is gone changes nothing and is reported `missing`; the group's earlier
+        // op commits.
         const current = chat(store, "k")!.revision!;
         store.applyChanges({ chats: [group("k", current, [{ op: "remove", ids: ["c"] }])] });
         const after = chat(store, "k")!.revision!;
@@ -742,7 +742,7 @@ describe("patchMessage (data-loss slice 1a)", () => {
             { kind: "chat", characterId: "c", id: "k", revision: base, reason: "generating", messageIds: ["b"] },
         ]);
         // Generating is answered before a stale-revision conflict and with nothing written. The entry
-        // names only the targeted messages a job owns (data-loss slice 2a), not the free ones.
+        // names only the targeted messages a job owns, not the free ones.
         expect(
             conflictsOf(() =>
                 store.applyChanges({
@@ -1824,7 +1824,7 @@ describe("per-chat toggle metadata", () => {
     });
 });
 
-describe("meta merge (slice 11b)", () => {
+describe("meta merge", () => {
     const record = (id: string, text = id) => ({
         call: { id, name: "t", arg: {} },
         response: [{ type: "text", text }],
@@ -1925,7 +1925,7 @@ describe("meta merge (slice 11b)", () => {
     });
 });
 
-describe("meta mergeUnset and scriptstate merge (data-loss slice 1a)", () => {
+describe("meta mergeUnset and scriptstate merge", () => {
     const record = (id: string, text = id) => ({
         call: { id, name: "t", arg: {} },
         response: [{ type: "text", text }],
@@ -2066,7 +2066,7 @@ describe("meta mergeUnset and scriptstate merge (data-loss slice 1a)", () => {
     });
 });
 
-describe("message translations (translation slice 1.1)", () => {
+describe("message translations", () => {
     const tr = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
         text,
         sourceHash: translationSourceHash(source),
@@ -2145,8 +2145,8 @@ describe("message translations (translation slice 1.1)", () => {
         });
         revision = r.revision!;
 
-        // A missing message: its translation is `ignored` and its target `missing` (data-loss slice
-        // 6a); the group's meta op commits.
+        // A missing message: its translation is `ignored` and its target `missing`; the group's meta
+        // op commits.
         const gone = store.applyChanges({
             chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
         }).chats[0];
@@ -2376,7 +2376,7 @@ describe("message translations (translation slice 1.1)", () => {
     });
 });
 
-describe("missing targets (data-loss slice 6a)", () => {
+describe("missing targets", () => {
     const tr = (source: string, text = "translated"): MessageTranslation => ({
         text,
         sourceHash: translationSourceHash(source),
@@ -2512,7 +2512,7 @@ describe("missing targets (data-loss slice 6a)", () => {
     });
 });
 
-describe("group idempotency ids (data-loss slice 6b)", () => {
+describe("group idempotency ids", () => {
     const tr = (source: string, text = "translated"): MessageTranslation => ({
         text,
         sourceHash: translationSourceHash(source),
@@ -2773,7 +2773,7 @@ describe("group idempotency ids (data-loss slice 6b)", () => {
         let store = createResourceStore({ file, kinds });
         const base = seed(store).chat;
         store.close();
-        // A database created before the slice: no `chatGroups` table.
+        // A database created before the `chatGroups` table existed: none.
         const db = new DatabaseSync(file);
         db.exec("DROP TABLE chatGroups");
         db.close();

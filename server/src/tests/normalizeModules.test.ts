@@ -5,11 +5,10 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { normalizeModules } from "../data/normalize/modules.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
 
-// Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`,
-// "Implementation notes", "Modules"): the shared module rule (`normalizeModule`, a shape check that
-// refuses a malformed supplied structure and never drops one), the server's `modules` normalizer that
-// applies it per entry and returns a valid list unchanged, and the pure old-lorebook conversion the
-// import paths run (`upgradeLorebook`).
+// The shared module rule (`normalizeModule`, a shape check that refuses a malformed supplied
+// structure and never drops one), the server's `modules` normalizer that applies it per entry and
+// returns a valid list unchanged, and the pure old-lorebook conversion the import paths run
+// (`upgradeLorebook`).
 
 describe("normalizeModule", () => {
     it("refuses a non-object, a non-string name or description, and a present non-list lorebook, regex, or trigger", () => {

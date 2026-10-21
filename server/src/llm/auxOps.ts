@@ -5,12 +5,11 @@ import type { ResolvedCredential } from "./credentials.ts";
 export type AuxCredential = { slot: CredentialSlotName | null; credential: ResolvedCredential } | { error: string };
 
 /**
- * The auxiliary operations of `/proxy2` (owner answer 2, `implementation-plan.md` step 0): a
- * `risu-aux-op` header names one row, and the server sends the request with its stored credential
- * instead of one the browser holds. Each row fixes the HTTPS origin, the method, the path, the
- * secret, and how it is injected. The callers: OpenAI TTS, DALL-E, Whisper, the memory embeddings
- * and completions, Imagen, and (Phase 5 slice 7b) the model discovery, account, and count calls
- * (`src/ts/network/auxFetch.ts`).
+ * The auxiliary operations of `/proxy2`: a `risu-aux-op` header names one row, and the server
+ * sends the request with its stored credential instead of one the browser holds. Each row fixes
+ * the HTTPS origin, the method, the path, the secret, and how it is injected. The callers: OpenAI
+ * TTS, DALL-E, Whisper, the memory embeddings and completions, Imagen, and the model discovery,
+ * account, and count calls (`src/ts/network/auxFetch.ts`).
  */
 export type AuxOpName =
     | "openai-tts"
@@ -19,7 +18,7 @@ export type AuxOpName =
     | "openai-embeddings"
     | "openai-completions"
     | "google-imagen"
-    // Phase 5 slice 7b: the browser's model discovery, account, and count calls.
+    // The browser's model discovery, account, and count calls.
     | "google-models"
     | "anthropic-models"
     | "openai-models"

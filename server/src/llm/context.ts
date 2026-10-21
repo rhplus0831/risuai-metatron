@@ -69,7 +69,7 @@ export type RequestContext = {
     parseCbs: (text: string, chatRef?: { chaId: string; chatId: string } | null) => Promise<string>;
     tools: {
         /**
-         * A job's request only (slice 12): called for every tool call a model asks for, before the
+         * A job's request only: called for every tool call a model asks for, before the
          * adapter looks the tool up; it throws once the job's tool budget is spent.
          */
         attempt?: () => void;
@@ -102,7 +102,7 @@ export type RequestContext = {
      */
     localGeneration?: (text: string, model: string, config: Record<string, unknown>) => Promise<string>;
     /**
-     * A plugin provider model (`LLMFormat.Plugin`, slice 11b): the provider `name` called in the job's
+     * A plugin provider model (`LLMFormat.Plugin`): the provider `name` called in the job's
      * tab with `argument`. Text, a stream of the cumulative text, or `none` (the provider answered
      * nothing). Present for a job's request only; a tab runs its providers itself.
      */

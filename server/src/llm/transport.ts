@@ -9,13 +9,12 @@
  * Log entries are built as the client builds them (`addFetchLog` and `addFetchLogInGlobalFetch`)
  * and handed to `log`, which redacts them before they leave the server.
  *
- * `record` is the request history's sink (`docs/plan/request-history-diagnostics.md`): every
- * exchange once, with the bytes sent and received before any redaction or cut. A buffered fetch is
- * recorded when its answer is read or it fails; a streamed fetch (`logFetch` not false) when its
- * body ends, fails, or is cancelled, or when the request ends (`captures`), with the first
- * `STREAM_CAPTURE_BYTES` of its body; an adapter's `addLog` as it is. The tab's log keeps the
- * pre-fetch "Streamed Fetch" entry, which is not recorded. A `record` failure never changes the
- * provider's answer.
+ * `record` is the request history's sink: every exchange once, with the bytes sent and received
+ * before any redaction or cut. A buffered fetch is recorded when its answer is read or it fails; a
+ * streamed fetch (`logFetch` not false) when its body ends, fails, or is cancelled, or when the
+ * request ends (`captures`), with the first `STREAM_CAPTURE_BYTES` of its body; an adapter's
+ * `addLog` as it is. The tab's log keeps the pre-fetch "Streamed Fetch" entry, which is not
+ * recorded. A `record` failure never changes the provider's answer.
  */
 
 export type FetchLogEntry = {

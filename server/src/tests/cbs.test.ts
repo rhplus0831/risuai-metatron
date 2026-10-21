@@ -9,10 +9,10 @@ import { runRegexScripts } from "../../../shared/scripts/regex.ts";
 import { createNodeCbsEvaluator, createNodeCbsHost } from "./cbsHost.ts";
 
 /**
- * The shared CBS evaluator under plain Node (Phase 5 slice 3), the first golden test of the phase:
- * the browser-path baseline (`fixtures/baseline/markdown.json`, captured from the client before the
- * extraction) and the host-parity cases (`fixtures/cbs-parity.json`, which the client wrapper also
- * answers in `src/ts/parser/tests/cbs/hostParity.test.ts`) must come out the same from a Node host.
+ * The shared CBS evaluator under plain Node: the browser-path baseline
+ * (`fixtures/baseline/markdown.json`, captured from the client before the extraction) and the
+ * host-parity cases (`fixtures/cbs-parity.json`, which the client wrapper also answers in
+ * `src/ts/parser/tests/cbs/hostParity.test.ts`) must come out the same from a Node host.
  */
 const FIXTURES = path.join(import.meta.dirname, "fixtures");
 const readJson = (file: string) => JSON.parse(readFileSync(path.join(FIXTURES, file), "utf8"));

@@ -1,7 +1,7 @@
 import type { RPCToolCallContent, ToolDescriptor } from "../../../shared/llm/request.ts";
 
 /**
- * `internal:dice` on the server (`src/ts/process/mcp/dice.ts`, Phase 5 slice 12): the same tool and
+ * `internal:dice` on the server (`src/ts/process/mcp/dice.ts`): the same tool and
  * the same rolls. The server bounds one call, which the tab does not: the notation's length and the
  * dice rolled in all (a roll runs on the server's main thread).
  */

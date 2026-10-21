@@ -33,18 +33,18 @@ import { createMcpRegistry } from "../mcp/registry.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
-// Phase 5 slice 12a (`mcp-on-server`): the MCP tools of a server job, against injected `fetch`
-// implementations (no network, no public service: the OAuth helper's URL is answered by the fake).
-// The Node client (`server/src/mcp/client.ts`): the wire bodies and headers over streamable HTTP
-// and the legacy SSE transport, every pending answer settling (a stream that ends first, the
-// deadline, the caller's abort), the session reset and the handshake that publishes only into the
-// session it initialized, the bounds (an event in bytes at the boundary, a JSON body, the tool
-// list), OAuth (the stored refresh token, the full login with PKCE, the one login per handshake,
-// a client closed during the owner's question), and the shared handshake with the leader's abort.
-// The registry (`registry.ts`): one client per identifier, leases and idle expiry, the epoch, the
+// The MCP tools of a server job, against injected `fetch` implementations (no network, no public
+// service: the OAuth helper's URL is answered by the fake). The Node client
+// (`server/src/mcp/client.ts`): the wire bodies and headers over streamable HTTP and the legacy
+// SSE transport, every pending answer settling (a stream that ends first, the deadline, the
+// caller's abort), the session reset and the handshake that publishes only into the session it
+// initialized, the bounds (an event in bytes at the boundary, a JSON body, the tool list), OAuth
+// (the stored refresh token, the full login with PKCE, the one login per handshake, a client
+// closed during the owner's question), and the shared handshake with the leader's abort. The
+// registry (`registry.ts`): one client per identifier, leases and idle expiry, the epoch, the
 // `authRefreshes` replacement by URL. The job's tool set (`jobTools.ts`): the identifier list, the
-// cache per list, a handshake failure skipped against a list failure that fails the build, the
-// tab kinds through the callbacks with the attach grace, the budget, and a call's failure taxonomy.
+// cache per list, a handshake failure skipped against a list failure that fails the build, the tab
+// kinds through the callbacks with the attach grace, the budget, and a call's failure taxonomy.
 // `internal:dice` on the server with its bounds. The channel's question with a withdrawing signal,
 // and the bindings' `ask` distinguishing a withdrawn question from a lost owner.
 
@@ -1736,7 +1736,7 @@ describe("createJobTools", () => {
         store.close();
     });
 
-    it("stores a rotated refresh token with the job's write, keeping the client data, and a recreated client refreshes with it and stores the next (Stop D fixes)", async () => {
+    it("stores a rotated refresh token with the job's write, keeping the client data, and a recreated client refreshes with it and stores the next", async () => {
         const store = memoryStore();
         const refreshKind = kind(RESOURCE_KIND.authRefreshes);
         const row = store.get(refreshKind, SINGLETON_RESOURCE_ID)!;
@@ -1954,7 +1954,7 @@ describe("the bindings' ask with a withdrawing signal", () => {
                     ops: [
                         {
                             op: "create",
-                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            // The chat's binding: the job scope checks the context's ids against it.
                             chat: {
                                 id: "k",
                                 name: "K",
@@ -2053,7 +2053,7 @@ describe("the bindings' ask with a withdrawing signal", () => {
     });
 });
 
-describe("McpClient: the Stop D fixes (slice 13d)", () => {
+describe("McpClient: event framing, the session id, and refresh token rotation", () => {
     /** An event-stream response whose body is `chunks`, as given. */
     const eventStream = (chunks: string[], headers: Record<string, string> = {}) =>
         new Response(

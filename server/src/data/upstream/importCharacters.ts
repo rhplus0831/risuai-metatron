@@ -13,17 +13,16 @@ import type { ColdRecordResult } from "./archive.ts";
 import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } from "./importRecords.ts";
 
 /**
- * The characters, groups, and chats of an upstream RisuAI database (`docs/plan/upstream-bin-compat.md`
- * S4, decisions D2, D3, D5), for `convertUpstreamDatabase` (`importDatabase.ts`). Upstream is read
- * from RisuAI `669b12ce`: "U" is its `src/ts/`. No I/O: the cold-storage payloads come in as S2's
- * `readColdEntry` results.
+ * The characters, groups, and chats of an upstream RisuAI database, for `convertUpstreamDatabase`
+ * (`importDatabase.ts`). Upstream is read from RisuAI `669b12ce`: "U" is its `src/ts/`. No I/O: the
+ * cold-storage payloads come in as `readColdEntry` results (`archive.ts`).
  *
  * Per character, in upstream order:
  * - `null` entries are dropped (as upstream's boot does), and `§temp`/`§playground` (multiuser and
  *   playground leftovers, U `globalApi.svelte.ts` `checkCharOrder`) are dropped and reported.
  * - A cold stub (`coldstorage: <key>`) is replaced by its payload's `character` when the payload
  *   names the stub's `chaId` (U `characters.ts` `changeChar`) and that character converts; otherwise
- *   the stub is kept (name, image, a fresh empty chat) and `cold-missing` reported (D3).
+ *   the stub is kept (name, image, a fresh empty chat) and `cold-missing` reported.
  * - The client's creation steps (`characterStore.svelte.ts` `prepareNewCharacter`, ported, not
  *   imported): `normalizeCharacter`, `ttsMode` `"none"` → `""`, `creation_date` when absent, the
  *   `globalLore` conversion (`upgradeLorebook`), a first chat when none is left, each chat's `fmIndex`
@@ -47,7 +46,7 @@ import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } fro
  *   missing one is unset). A missing payload keeps the chat without messages (`cold-missing`).
  * - Ids: a valid chat id unique in its character is kept, else replaced; message `chatId`s likewise
  *   within the chat (`normalizeMessage` then drops an invalid stored translation).
- * - Bindings (D5): the converted selected prompt and model preset, `bindedPersona` when it names a
+ * - Bindings: the converted selected prompt and model preset, `bindedPersona` when it names a
  *   converted persona and else the selected persona, no `bindingReview`.
  * - Toggles: upstream reads a chat's `GLGlobalVariables` value first whenever it is not `""` or
  *   `"null"`, with or without `useLocallySetGlobalVariables` (which only steers its writes, U
@@ -239,7 +238,7 @@ function convertCandidate(entry: Record<string, unknown>, label: string, context
             }
         }
     }
-    // D3: the stub stays (its name, image, and id); its placeholder chat (one empty reply) does not.
+    // The stub stays (its name, image, and id); its placeholder chat (one empty reply) does not.
     const stub = ownCopy(entry);
     stub.chats = [];
     const candidate = convertCharacter(stub, label, context);
@@ -417,7 +416,7 @@ function convertChat(
     delete chat.useLocallySetGlobalVariables;
     delete chat.bindingReview;
 
-    // Ids and bindings (D5).
+    // Ids and bindings.
     chat.id = isValidResourceId(chat.id) && !chatIds.has(chat.id) ? chat.id : uniqueId(chatIds);
     chat.promptPresetId = context.selection.promptPresetId;
     chat.modelPresetId = context.selection.modelPresetId;
@@ -533,7 +532,7 @@ function foldColdChat(chat: Record<string, unknown>, label: string, context: Cha
             }
         }
     } else {
-        // D3: the chat stays, with its metadata and no messages.
+        // The chat stays, with its metadata and no messages.
         chat.message = [];
         notes.excluded("cold-missing", label);
         return;

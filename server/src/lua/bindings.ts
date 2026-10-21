@@ -50,10 +50,10 @@ import type { McpRegistry } from "../mcp/registry.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 
 /**
- * A failure that ends the job whatever the script does with it (Phase 5 slice 8a): a write
- * conflict, a barrier failure, a channel timeout or disconnect, an abort, a protocol failure. The
- * binding latches it outside Lua (a script's `pcall` cannot swallow it) and raises it into the
- * script; the runner checks the latch after every run and ends the job with it.
+ * A failure that ends the job whatever the script does with it: a write conflict, a barrier
+ * failure, a channel timeout or disconnect, an abort, a protocol failure. The binding latches it
+ * outside Lua (a script's `pcall` cannot swallow it) and raises it into the script; the runner
+ * checks the latch after every run and ends the job with it.
  */
 export class LuaJobFatalError extends Error {
     constructor(message: string) {
@@ -82,11 +82,11 @@ export type LuaBindingDeps = {
     triggerId?: string | null;
     /** The job's CBS evaluation time, shared by every run of it (`serverCbsLimits`); its own when absent. */
     cbsUsage?: CbsUsage;
-    /** The embeddings service (Phase 5 slice 10); without one, a similarity search fails with an error. */
+    /** The embeddings service; without one, a similarity search fails with an error. */
     embeddings?: EmbeddingsService;
     /**
-     * The remote MCP clients and the job's tool state (Phase 5 slice 12); without them the job's
-     * requests offer no tools.
+     * The remote MCP clients and the job's tool state; without them the job's requests offer no
+     * tools.
      */
     mcp?: { registry: McpRegistry; state: JobToolState };
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
@@ -97,18 +97,18 @@ export type LuaBindingDeps = {
      */
     lock?: MessageGuard;
     /**
-     * A render's snapshot (the script transform, Phase 5 slice 13): `scope` is the target's own copy
-     * and is never read again from the store; a chat-variable write changes that copy's `scriptstate`
-     * only (the target's later stages see it, nothing persists); any other chat write is refused (a
-     * fatal failure of the target), and the run's character is the scope's.
+     * A render's snapshot (the script transform): `scope` is the target's own copy and is never read
+     * again from the store; a chat-variable write changes that copy's `scriptstate` only (the
+     * target's later stages see it, nothing persists); any other chat write is refused (a fatal
+     * failure of the target), and the run's character is the scope's.
      */
     frozen?: boolean;
 };
 
 /**
- * A trigger's working copy while its `triggerlua` effect runs (Phase 5 slice 8b): the client's
- * `runScripted` with `chat` given. The chat functions read and edit `chat` in place (the trigger
- * reads it back afterwards); the chat-variable functions go through the trigger's own accessors.
+ * A trigger's working copy while its `triggerlua` effect runs: the client's `runScripted` with
+ * `chat` given. The chat functions read and edit `chat` in place (the trigger reads it back
+ * afterwards); the chat-variable functions go through the trigger's own accessors.
  */
 export type LuaWorkingCopy = {
     chat: Chat;
@@ -120,7 +120,7 @@ export type LuaWorkingCopy = {
 export type CharacterPatchListener = (characterId: string, patch: Record<string, unknown>) => void;
 
 /**
- * The bindings' job services for the native trigger runtime and the command executor (slice 8b),
+ * The bindings' job services for the native trigger runtime and the command executor,
  * behind the same latch and fence as the host functions: one fatal policy for Lua and native work.
  */
 export type LuaBindingServices = {
@@ -156,7 +156,7 @@ export type LuaBindingServices = {
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
     /**
      * The `generateImage` callback for `characterId`: the stored inlay's id, or null when the tab could
-     * not. `skipDisconnected`: no tab attached is null too (a reply's inlay image, slice 11a), not the
+     * not. `skipDisconnected`: no tab attached is null too (a reply's inlay image), not the
      * job's end.
      */
     generateImageInlay(
@@ -197,7 +197,7 @@ export type LuaBindings = {
     observeCharacterPatches(listener: CharacterPatchListener): () => void;
     /**
      * The native `request` trigger (`requestChatData`'s `runTrigger(…, 'request', …)`) every request
-     * of these bindings runs before each attempt (Phase 5 slice 9); null for none.
+     * of these bindings runs before each attempt; null for none.
      */
     setRequestTrigger(trigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null): void;
     /** `getInlayAsset`: an inlay's media as a data URI (a signature: its JSON text) with its type, or null. */
@@ -257,8 +257,8 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 /**
  * The 50 Lua host functions the runtime does not own (it owns `stopChat`, `logMain`, `sleep`, and
- * `request`), served on the main thread for one job (Phase 5 slice 8a, ported from
- * the former `src/ts/process/scriptings.ts`). Each one keeps the client's exposure (synchronous, or a promise
+ * `request`), served on the main thread for one job (ported from the former
+ * `src/ts/process/scriptings.ts`). Each one keeps the client's exposure (synchronous, or a promise
  * the script awaits), its guard (the run's key, through `HostContext.access`: Safe is `safe` or
  * `lowLevel`, Safe|Edit adds `editDisplay`, Low is `lowLevel`; a refused key returns nil), and its
  * results. The table-taking functions cross as JSON through the prelude's wrappers
@@ -778,7 +778,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
     };
 
-    /** The job's MCP tools (slice 12), set below once the services exist; none without a registry. */
+    /** The job's MCP tools, set below once the services exist; none without a registry. */
     let jobTools: JobTools | null = null;
 
     /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */

@@ -241,7 +241,7 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
 }
 
 /**
- * The channel hub (`job-channel`): one per server, shared by every job. Per client it keeps a FIFO
+ * The channel hub: one per server, shared by every job. Per client it keeps a FIFO
  * of queued requests and a stack of outstanding ones: a request without a parent waits until the
  * client has none outstanding; a child (an aux request's callback, `parentId` = the client's
  * outstanding callback) runs at once, one level deep; anything else is refused. Notices are never

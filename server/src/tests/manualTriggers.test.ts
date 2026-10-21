@@ -8,19 +8,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
-// Phase 5 slice 8b: a manual trigger as a server `command` job end to end on a real listening
-// server with the default runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the
-// trigger runtime, the command executor, the final applier, the real worker pool (regex tasks and
-// `triggerlua`), the production bindings in working-copy mode, and the job channel over the owner
-// socket. The route's manual command and `triggerId` validation; the group refusal; a trigger's
-// variables, control flow, chat edits, notices, and the stored result (CBS reading the immediate
-// writes and `{{trigger_id}}`); questions answered in order and one not answered ending the job
-// with the immediate writes kept; `v2Command` with a nested `/trigger`; the six regex sites through
-// the worker and an invalid pattern ending the job; an abort during `v2Wait` applying nothing; the
-// persona write to the effective persona beside the frozen getter; Lua on the working copy with a
-// native getter reading its `setDescription`; a Lua load failure versus a handler error; and the
-// effect limit ending the job. The runtime's effect switch is pinned in `triggerRuntime.test.ts`,
-// the applier in `chatResult.test.ts`, the executor in `commandExecutor.test.ts`.
+// A manual trigger as a server `command` job end to end on a real listening server with the default
+// runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the trigger runtime, the command
+// executor, the final applier, the real worker pool (regex tasks and `triggerlua`), the production
+// bindings in working-copy mode, and the job channel over the owner socket. The route's manual
+// command and `triggerId` validation; the group refusal; a trigger's variables, control flow, chat
+// edits, notices, and the stored result (CBS reading the immediate writes and `{{trigger_id}}`);
+// questions answered in order and one not answered ending the job with the immediate writes kept;
+// `v2Command` with a nested `/trigger`; the six regex sites through the worker and an invalid
+// pattern ending the job; an abort during `v2Wait` applying nothing; the persona write to the
+// effective persona beside the frozen getter; Lua on the working copy with a native getter reading
+// its `setDescription`; a Lua load failure versus a handler error; and the effect limit ending the
+// job. The runtime's effect switch is pinned in `triggerRuntime.test.ts`, the applier in
+// `chatResult.test.ts`, the executor in `commandExecutor.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -174,7 +174,7 @@ async function seedCharacter(options: {
                             chat: {
                                 id: "k",
                                 name: "K",
-                                // The binding the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                                // The binding the jobs send: a job runs on its chat's binding.
                                 modelPresetId,
                                 promptPresetId: presetId,
                                 bindedPersona: options.bindPersona ? "bound" : defaultPersonaId,
@@ -415,7 +415,7 @@ describe("a manual trigger job", () => {
             expect(unanswered.terminal).toMatchObject({
                 type: "error",
                 message: /Trigger: .*alertInput question ended: cancelled/,
-                // A command job's trigger failure is the script's (request history slice 6).
+                // A command job's trigger failure is the script's.
                 stage: "script",
             });
             const chat = await readChat(chaId);
@@ -597,8 +597,8 @@ describe("a manual trigger job", () => {
             expect(personas.find((persona: any) => persona.id === defaultPersonaId).personaPrompt ?? "").toBe(
                 defaultPersonaPrompt,
             );
-            // The job has one persona, the chat's bound one (`docs/plan/chat-binding.md`): the forwarded
-            // `personaPrompt` the getter reads is its prompt as loaded, not the tab's selected persona's.
+            // The job has one persona, the chat's bound one: the forwarded `personaPrompt` the getter
+            // reads is its prompt as loaded, not the tab's selected persona's.
             expect(texts(await readChat(chaId)).at(-1)).toBe("char:pd=[bound prompt]");
         },
         SLOW,
@@ -686,7 +686,7 @@ describe("a manual trigger job", () => {
     );
 });
 
-describe("`/multisend` in a command job (slice 11b)", () => {
+describe("`/multisend` in a command job", () => {
     // An unquoted `|` splits the command line, so the separators of the `clear` form come out of
     // the executor's CBS of the argument (`{{u::7c}}` is `|`), as `commandExecutor.test.ts` does;
     // the trigger evaluates its value's CBS first, so the braces are escaped once more for it. The

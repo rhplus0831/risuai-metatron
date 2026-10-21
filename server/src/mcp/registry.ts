@@ -8,12 +8,12 @@ import { McpClient, type McpRefresh } from "./client.ts";
 export const MCP_IDLE_MS = 15 * 60_000;
 
 /**
- * The remote MCP clients of the server process (Phase 5 slice 12), one per module identifier (the
- * module's `mcp.url` as written, which is also its `authRefreshes` key). A client is used only
- * inside `use`, which counts the operations in progress: a client is closed when it has been idle
- * for `MCP_IDLE_MS`, when the database epoch changes (`sync`: its tokens belong to the old data), or
- * at shutdown, and the next `use` creates a new one. A session lives in this process only: a restart
- * drops it and the next call handshakes again.
+ * The remote MCP clients of the server process, one per module identifier (the module's `mcp.url` as
+ * written, which is also its `authRefreshes` key). A client is used only inside `use`, which counts
+ * the operations in progress: a client is closed when it has been idle for `MCP_IDLE_MS`, when the
+ * database epoch changes (`sync`: its tokens belong to the old data), or at shutdown, and the next
+ * `use` creates a new one. A session lives in this process only: a restart drops it and the next
+ * call handshakes again.
  */
 export type McpRegistry = {
     use<T>(identifier: string, url: string, run: (client: McpClient) => Promise<T>): Promise<T>;

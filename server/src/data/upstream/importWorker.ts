@@ -6,10 +6,9 @@ import { UpstreamFormatError } from "./risuSave.ts";
 import type { UpstreamImportPhase } from "../../../../shared/upstreamBackup.ts";
 
 /**
- * The upstream import worker (`docs/plan/upstream-bin-compat.md` S5, D1): one `worker_threads` thread
- * per import, started by `importRunner.ts` under a heap limit. It runs `stageUpstreamImport` and posts
- * what the route needs, never the decoded database or the staged rows: progress, then one result or
- * one error.
+ * The upstream import worker: one `worker_threads` thread per import, started by `importRunner.ts`
+ * under a heap limit. It runs `stageUpstreamImport` and posts what the route needs, never the decoded
+ * database or the staged rows: progress, then one result or one error.
  */
 export type UpstreamImportWorkerData = {
     input: UpstreamStageInput;

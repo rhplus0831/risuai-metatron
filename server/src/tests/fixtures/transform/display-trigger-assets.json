@@ -1,5 +1,5 @@
 {
-  "capturedFrom": "the browser script path (`risu.serverTransform` off: the client display trigger, regex scripts, and both additional-asset passes in `ParseMarkdown`) at commit 219dfb51, before the Phase 5 cutover removed it; recorded on 2026-10-03 by the second test of e2e/transformGolden.spec.ts as committed there (its `render(false)` output, written unchanged), in a temporary worktree of that commit with its own `pnpm install`, headless Google Chrome 153.0.8010.52, the isolated e2e stack of playwright.config.ts; two runs gave the same output, and the server path equaled it in both (the test passed)",
+  "capturedFrom": "the browser script path (`risu.serverTransform` off: the client display trigger, regex scripts, and both additional-asset passes in `ParseMarkdown`) at commit 219dfb51, before browser generation was removed; recorded on 2026-10-03 by the second test of e2e/transformGolden.spec.ts as committed there (its `render(false)` output, written unchanged), in a temporary worktree of that commit with its own `pnpm install`, headless Google Chrome 153.0.8010.52, the isolated e2e stack of playwright.config.ts; two runs gave the same output, and the server path equaled it in both (the test passed)",
   "settings": {
     "viewport": {
       "width": 1280,

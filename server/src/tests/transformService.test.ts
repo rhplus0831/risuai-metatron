@@ -11,17 +11,17 @@ import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
 import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
 
-// Phase 5 slice 13a: the script transform's service (`server/src/prompt/transform.ts`) and its cache
+// The script transform's service (`server/src/prompt/transform.ts`) and its cache
 // (`server/src/prompt/transformCache.ts`) on a real resource store, with script workers the test
 // holds and releases, so the lifetime rules are observable: the 4 running and 32 queued slots, a
 // maintenance (`pause`) and a shutdown (`close`) ending queued and running requests alike and every
 // snapshot, an abort before or right after a slot is granted (a cached or plugin-failure-only answer
 // included), the one absolute deadline from the first call's admission (the snapshot's expiry, a
 // second call waiting for a slot, the clock read even when the timer was held back), the snapshot
-// caps, the cache's generation fence against an older fill (a "Re-render" while an earlier
-// two-call render waits; the forgotten generations of the floor), and the cache probe (an all-cached
-// request answered without loading the scope, only while the load's checks would still pass). The
-// route and the real workers are `transform.test.ts`.
+// caps, the cache's generation fence against an older fill (a "Re-render" while an earlier two-call
+// render waits; the forgotten generations of the floor), and the cache probe (an all-cached request
+// answered without loading the scope, only while the load's checks would still pass). The route and
+// the real workers are `transform.test.ts`.
 
 type Held = { task: { data: string }; release: (suffix?: string) => void };
 

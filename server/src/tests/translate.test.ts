@@ -33,8 +33,8 @@ import {
     waitFor,
 } from "./testSupport.ts";
 
-// `docs/plan/translation.md` slice 1.3: the server translation runner (`server/src/translation/runner.ts`)
-// and its route (`POST /api/translate/message`, `server/src/routes/translate.ts`).
+// The server translation runner (`server/src/translation/runner.ts`) and its route
+// (`POST /api/translate/message`, `server/src/routes/translate.ts`).
 //
 // The first part drives the real app with the `Echo` model (`createResourceTestClient`): a stored
 // write and its `fresh` and `force` answers, a source edited during the run (`ignored`, nothing
@@ -467,7 +467,7 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect(runner().runningCount()).toBe(0);
     });
 
-    // `docs/plan/translation.md` slice 3.1: a step on a profile runs on that profile, not the slot.
+    // A step on a profile runs on that profile, not the slot.
     it("runs a step on a profile on that profile: a dead connection fails the run (502) where the slot's Echo answers, a deleted profile fails it by name, and nothing is stored", async () => {
         // Nothing listens on port 9: the test wants the refused connection.
         onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:9"));
@@ -557,7 +557,7 @@ describe("createTranslationRunner over a fake request layer", () => {
         type: "success",
         result: "번역",
     });
-    /** Every `tokens.count` call (the history slots of slice 3.3), in order. */
+    /** Every `tokens.count` call (the history slots), in order. */
     let counts: { text: string; scope: TokenCountScope }[] = [];
     /** What `tokens.count` answers (a test sets it): one token per character by default. */
     let count: (text: string, scope: TokenCountScope) => Promise<number> = async (text) => text.length;
@@ -751,7 +751,7 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(runner.workingCount()).toBe(0);
     });
 
-    it("sends a profile step's profile as the request's profileId and an inheriting step's request without one, every step in translate mode (slice 3.1)", async () => {
+    it("sends a profile step's profile as the request's profileId and an inheriting step's request without one, every step in translate mode", async () => {
         build();
         const preset = createTranslatorPreset("Mixed", {
             steps: [
@@ -770,7 +770,7 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(calls.map((call) => call.arg.formated[0].content)).toEqual(["A text 0", "B 번역", "C 번역"]);
     });
 
-    it("translates with the chat's own translator preset when it names one (docs/plan/translation.md slice 2.2), the global selection otherwise, and falls back to it for a deleted preset without rewriting the chat", async () => {
+    it("translates with the chat's own translator preset when it names one, the global selection otherwise, and falls back to it for a deleted preset without rewriting the chat", async () => {
         build({ now: () => 99 });
         const own = createTranslatorPreset("Own", { prompt: "Own {{slot::content}}", maxResponse: 7 });
         const global = createTranslatorPreset("Global", { prompt: "Global {{slot::content}}", maxResponse: 8 });
@@ -881,7 +881,7 @@ describe("createTranslationRunner over a fake request layer", () => {
     it("an immediate retry loop (a banned character set) yields each attempt and still ends at the deadline", async () => {
         vi.useFakeTimers({ toFake: ["Date"] });
         build();
-        // A budget the deadline comes before: a rejection counts against `requestRetrys` (slice 1c).
+        // A budget the deadline comes before: a rejection counts against `requestRetrys`.
         patch("providers", { banCharacterset: ["Latin"], requestRetrys: 1_000 });
         answer = async () => ({ type: "success", result: "latin again" });
         const start = Date.now();
@@ -1034,7 +1034,7 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(runner.workingCount()).toBe(0);
     });
 
-    // `docs/plan/translation.md` slice 2.3: a send's hand-off, and the chain behind a run of an older text.
+    // A send's hand-off, and the chain behind a run of an older text.
     const target = () => ({ characterId: "c", chatId: "k", ...ids });
     /** Chat `k` auto-translates with the LLM translator on the stored translation; `r1` and `r2` are replies. */
     function enableAutoTranslation() {
@@ -1198,11 +1198,11 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(runner.runningCount()).toBe(0);
     });
 
-    // `docs/plan/translation.md` slice 3.2: without Send Text As-Is (every preset from before the
-    // option) the runner protects lines as the Fastify fork's server did (`translateProtectingLines`):
-    // one pipeline run per part between the empty and asset lines, one after another, under the
-    // message's one job id, controller, deadline, and write; with it, one run over the whole source,
-    // the reply stored as it is. The automatic hand-off (slice 2.3) is the same run.
+    // Without Send Text As-Is (every preset from before the option) the runner protects lines as the
+    // Fastify fork's server did (`translateProtectingLines`): one pipeline run per part between the
+    // empty and asset lines, one after another, under the message's one job id, controller, deadline,
+    // and write; with it, one run over the whole source, the reply stored as it is. The automatic
+    // hand-off is the same run.
     const PARTS = "  one\ntwo \n\n{{img::pic}}\n{{raw::x}}\nthree\n";
     const partsPreset = (sendTextAsIs?: boolean) =>
         createTranslatorPreset("Parts", {
@@ -1343,11 +1343,11 @@ describe("createTranslationRunner over a fake request layer", () => {
         await until(() => runner.workingCount() === 0);
     });
 
-    // `docs/plan/translation.md` slice 3.4: a preset on Exclude Chain-of-Thought strips the reasoning
-    // blocks from the whole source once, before the As-Is run or the line cut, and from each history
-    // entry's source and fresh translation after the freshness check; a source left blank stores an
-    // empty translation without a request or a count; `sourceHash` stays the stored text's.
-    /** The challenge's non-idempotent text: one strip leaves `<think>secret</think>visible`. */
+    // A preset on Exclude Chain-of-Thought strips the reasoning blocks from the whole source once,
+    // before the As-Is run or the line cut, and from each history entry's source and fresh
+    // translation after the freshness check; a source left blank stores an empty translation without
+    // a request or a count; `sourceHash` stays the stored text's.
+    /** A non-idempotent text: one strip leaves `<think>secret</think>visible`. */
     const NONIDEM = "<thi<think>x</think>nk>secret</think>visible";
     const EX_STEPS = [
         { prompt: "A {{slot::content}}", outputKey: "draft" },
@@ -1516,12 +1516,12 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(runner.workingCount()).toBe(0);
     });
 
-    // `docs/plan/translation.md` slice 3.3: the history slots. The runner builds the history of the
-    // message from the run's chat copy once, when the first pipeline run starts, with `tokens` in the
-    // main model's scope, and hands it to every part and step in both modes; a text that sends nothing
-    // counts nothing. Each count yields a turn and checks the run before and after it, so a run ended
-    // during a held count settles its callers at once, stays counted until the count settles, and
-    // then neither counts, requests, nor writes; a tokenizer failure is an unexpected failure (500).
+    // The history slots. The runner builds the history of the message from the run's chat copy once,
+    // when the first pipeline run starts, with `tokens` in the main model's scope, and hands it to
+    // every part and step in both modes; a text that sends nothing counts nothing. Each count yields
+    // a turn and checks the run before and after it, so a run ended during a held count settles its
+    // callers at once, stays counted until the count settles, and then neither counts, requests, nor
+    // writes; a tokenizer failure is an unexpected failure (500).
     const HISTORY_STEPS = [
         { prompt: "A[{{slot::history::10}}] {{slot::content}}", outputKey: "draft" },
         {

@@ -15,12 +15,12 @@ import {
     type UpstreamConversionOptions,
 } from "../data/upstream/importDatabase.ts";
 
-// `docs/plan/upstream-bin-compat.md` S4: the library half of the upstream `.bin` converter (characters,
-// groups, chats, cold storage, modules, plugins, plugin storage, assets), on synthetic objects only.
-// Covers the S4 "Test" list, decisions D2/D3/D5, the two departures (kept `GLGlobalVariables` minus
-// its `""` toggles; `_coldplugin` into `_pluginStorage`), the end-to-end staged-store write, and the
-// recovery defects the review found (report overflow, tool-call and lorebook exceptions, plugin
-// storage envelopes, the message list's depth budget, silent JSON-copy repairs).
+// The library half of the upstream `.bin` converter (characters, groups, chats, cold storage,
+// modules, plugins, plugin storage, assets), on synthetic objects only. Covers the character,
+// cold-storage, and chat rules, the two departures (kept `GLGlobalVariables` minus its `""` toggles;
+// `_coldplugin` into `_pluginStorage`), the end-to-end staged-store write, and the recovery defects
+// (report overflow, tool-call and lorebook exceptions, plugin storage envelopes, the message list's
+// depth budget, silent JSON-copy repairs).
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 
@@ -211,7 +211,7 @@ function cold(): Map<string, ColdRecordResult> {
     ]);
 }
 
-describe("convertUpstreamDatabase: characters (D2)", () => {
+describe("convertUpstreamDatabase: characters", () => {
     it("drops null and §temp entries, keeps the rest in upstream order, and counts them", () => {
         const out = convert(fixture(), { cold: cold() });
         expect(out.characters.map((character) => character.data.name)).toEqual(["A", "B", "Adup", "G", "Missing"]);
@@ -394,7 +394,7 @@ describe("convertUpstreamDatabase: characters (D2)", () => {
     });
 });
 
-describe("convertUpstreamDatabase: cold storage (D3)", () => {
+describe("convertUpstreamDatabase: cold storage", () => {
     it("restores a cold character from its payload when the chaId matches", () => {
         const out = convert(fixture(), { cold: cold() });
         const b = characterNamed(out, "B");
@@ -504,7 +504,7 @@ describe("convertUpstreamDatabase: cold storage (D3)", () => {
     });
 });
 
-describe("convertUpstreamDatabase: chats and messages (D5)", () => {
+describe("convertUpstreamDatabase: chats and messages", () => {
     it("binds every chat to the converted selection and keeps bindedPersona only when it names a persona", () => {
         const out = convert(fixture(), { cold: cold() });
         expect(out.selection).toEqual({
@@ -908,7 +908,7 @@ describe("convertUpstreamDatabase: recovery of malformed input", () => {
     });
 });
 
-describe("convertUpstreamDatabase: the staged store (S5 hand-off)", () => {
+describe("convertUpstreamDatabase: the staged store (the import's hand-off)", () => {
     it("writes into a fresh store in the documented order; backupTo's copy passes readSnapshot with upstream's chat orders", async () => {
         const report = createUpstreamImportReport();
         const out = convert(fixture(), { cold: cold(), report, assetKeys: new Set(["assets/a.png"]) });

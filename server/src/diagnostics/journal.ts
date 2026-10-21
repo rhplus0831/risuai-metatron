@@ -44,7 +44,7 @@ const STATE_DELAY_MS = 5_000;
 const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const STATE_FILE = "state.json";
 const REPORTS_KEPT = 50;
-/** A shared copy (slice 10): `<UTC stamp to the ms>-job-<job id>.json` or `<stamp>-request-<request id>.json`. */
+/** A shared copy: `<UTC stamp to the ms>-job-<job id>.json` or `<stamp>-request-<request id>.json`. */
 const SHARE_FILE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-(job|request)-([A-Za-z0-9-]{1,80})\.json$/;
 /** A shared copy being written: `.share-<kind>-<id>-<8 hex>.tmp`. */
 const SHARE_TEMP = /^\.share-(job|request)-([A-Za-z0-9-]{1,80})-[0-9a-f]{8}\.tmp$/;
@@ -172,10 +172,9 @@ class RefusedPathError extends Error {
 }
 
 /**
- * The server's diagnostics folder (`docs/plan/request-history-diagnostics.md` "Diagnostics folder",
- * slices 7, 9, and 10): `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC day of its
- * time), `state.json`, `reports/`, and `shared/`. Content-free: every event goes through `projectDiagnosticEvent`, and the state is
- * built from explicit, checked fields.
+ * The server's diagnostics folder: `events/YYYY-MM-DD.jsonl` (one projected event per line, the UTC
+ * day of its time), `state.json`, `reports/`, and `shared/`. Content-free: every event goes through
+ * `projectDiagnosticEvent`, and the state is built from explicit, checked fields.
  *
  * - `events/` is capped at `maxBytes`: past it, the oldest day file is deleted, the current one too
  *   when it alone passes the cap (the next event starts it again). Only `YYYY-MM-DD.jsonl` regular
@@ -193,11 +192,11 @@ class RefusedPathError extends Error {
  *   regular file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`), and a symlink at
  *   `state.json` is replaced by the rename, not followed. The folder itself may be a symlink (a
  *   mount). This guards against a stray entry, not against a writer racing the server in its own folder.
- * - `reports/` holds the reports the Diagnostics panel saves (`saveReport`, slice 9): each written
+ * - `reports/` holds the reports the Diagnostics panel saves (`saveReport`): each written
  *   whole (temp file, then rename), the newest 50 kept (after a save, and at creation). The same
  *   refusals apply: a symlinked or non-directory `reports/` is not used, and only report-named
  *   regular files are counted and deleted.
- * - `shared/` holds the copies a user shared for support (slice 10, `diagnostics/share.ts`): the only
+ * - `shared/` holds the copies a user shared for support (`diagnostics/share.ts`): the only
  *   content in the folder, there because the user asked. `saveShare` writes a copy whole (temp file
  *   `.share-<kind>-<id>-<8 hex>.tmp`, then a rename to `<UTC stamp>-<kind>-<id>.json`) beside the
  *   target's older ones, which `commitShare` removes once the share is recorded; `removeShares` and

@@ -21,17 +21,16 @@ import { createTransport } from "../llm/transport.ts";
 // format, the auxiliary and sub models, the Responses API, Anthropic (buffered, streaming), Bedrock
 // (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, NanoGPT's Messages,
 // Legacy, and Responses formats (endpoint, key, request model, provider), and a request without a
-// selected character. The NanoGPT cases and the named credential cases
-// (`docs/plan/shared-api-keys.md`) are not part of the oracle capture below.
+// selected character. The NanoGPT cases and the named credential cases are not part of the oracle
+// capture below.
 //
-// Phase 6 slice 11: this was the Phase 5 slice 7a parity gate
-// (`src/ts/process/request/tests/serverParity.test.ts`), which ran the pre-cutover browser adapters
-// (the test oracles) beside the server and compared the ten outputs above. The expected values
-// below are the browser oracle's recorded output, captured from that test's `runClient` at
-// `2f658598` (the slice 11 tree) before the oracle was deleted; they were not produced by the
-// server. The formats whose client copy lived in `request.ts` itself (NovelAI, Ooba, Kobold,
-// NovelList, Cohere, Horde, Ollama, Echo) were never part of the gate and are exercised in the
-// other `server/src/tests/` files.
+// This was the parity gate (`src/ts/process/request/tests/serverParity.test.ts`), which ran the
+// former browser adapters (the test oracles) beside the server and compared the ten outputs above.
+// The expected values below are the browser oracle's recorded output, captured from that test's
+// `runClient` at `2f658598` before the oracle was deleted; they were not produced by the server. The
+// formats whose client copy lived in `request.ts` itself (NovelAI, Ooba, Kobold, NovelList, Cohere,
+// Horde, Ollama, Echo) were never part of the gate and are exercised in the other `server/src/tests/`
+// files.
 //
 // One seam differs from the capture: the fake tool `encode` below writes its marker as
 // `<tool_call>${id}${name}</tool_call>`, while the gate's fake (and the real encoder,
@@ -72,8 +71,8 @@ const SECRETS = {
 };
 const PROVIDER = "https://mock.test/v1/chat/completions";
 /**
- * A reverse proxy has no flat default key (`docs/plan/model-profiles.md` O2): the fixture's
- * `reverse_proxy` profiles bind this named key unless the scenario names its own `credentialId`.
+ * A reverse proxy has no flat default key: the fixture's `reverse_proxy` profiles bind this
+ * named key unless the scenario names its own `credentialId`.
  */
 const PROXY_CREDENTIAL = { id: "proxy", name: "Proxy key", type: "custom" };
 
@@ -158,7 +157,7 @@ function settings(overrides: Settings = {}) {
         customModels: overrides.customModels ?? [],
         credentials: [PROXY_CREDENTIAL, ...(overrides.credentials ?? [])],
         // `overrides.preset` mixes the prompt preset's and the model fields: the prompt preset
-        // normalizer keeps its own (`docs/plan/split-preset.md`), `modelRecords` takes the rest.
+        // normalizer keeps its own, `modelRecords` takes the rest.
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 300, temperature: 70, ...overrides.preset }]),
         ...(overrides.model
             ? {
@@ -496,7 +495,7 @@ const NANOGPT_KEY = "nanogpt-SENTINEL-8888";
 const NANOGPT_MODEL = "nano/model-1";
 /**
  * One `nanogpt` request in `format`, with the NanoGPT key, the request model and the provider (both
- * profile fields, `docs/plan/model-profiles.md` O7), and the provider settings given.
+ * profile fields), and the provider settings given.
  */
 const nanogpt = (
     format: LLMFormat,
@@ -629,8 +628,8 @@ describe("the server provider adapters", () => {
             // One chunk with the whole text: the canned body arrives in one read.
             chunks: [{ "0": "Hello" }],
             // The transport's own pre-fetch entry only: the adapter's "Streaming" placeholder the
-            // client logged beside it is gone (request history slice 3: one entry per streamed
-            // call, the body itself recorded by the transport).
+            // client logged beside it is gone (one entry per streamed call, the body itself recorded
+            // by the transport).
             logs: [PROVIDER],
         });
     });
@@ -855,7 +854,7 @@ describe("the server provider adapters", () => {
     it("a custom model (`xcustom:::`), Mistral, and the legacy instruct format", async () => {
         const custom = await run({
             settings: {
-                // A custom model holds no key (`docs/plan/model-profiles.md` O2): its profile binds one.
+                // A custom model holds no key: its profile binds one.
                 preset: { aiModel: "xcustom:::mine", credentialId: "mine" },
                 credentials: [{ id: "mine", name: "Mine", type: "custom" }],
                 secrets: { credentials: { mine: { key: "custom-key" } } },
@@ -932,7 +931,7 @@ describe("the server provider adapters", () => {
 
     it("the auxiliary model of a translate call (`seperateModels`) and the sub model", async () => {
         const aux = await run({
-            // The auxiliary models are model preset fields (`docs/plan/split-preset.md`).
+            // The auxiliary models are model preset fields.
             settings: {
                 preset: { seperateModelsForAxModels: true, seperateModels: { translate: "mistral-small-latest" } },
             },
@@ -1094,7 +1093,7 @@ describe("the server provider adapters", () => {
                 { "0": thoughtful },
                 { "0": thoughtful },
             ],
-            // The transport's pre-fetch entry only (no "Streaming" placeholder, slice 3).
+            // The transport's pre-fetch entry only (no "Streaming" placeholder).
             logs: [RESPONSES_URL],
         });
     });
@@ -1533,9 +1532,8 @@ describe("the server provider adapters", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// Named credentials (`docs/plan/shared-api-keys.md`, bound on the profile since
-// `docs/plan/model-profiles.md`): a profile's binding replaces the model's default key, a profile
-// without one keeps it, and a binding that cannot be honored refuses the request.
+// Named credentials, bound on the profile: a profile's binding replaces the model's default key, a
+// profile without one keeps it, and a binding that cannot be honored refuses the request.
 
 const NAMED = {
     work: "sk-named-work-SENTINEL-8888",
@@ -1648,7 +1646,7 @@ describe("named credentials", () => {
         expect(runs.map((recorded) => headersOf(recorded)[0].authorization)).toEqual([
             `Bearer ${NAMED.work}`,
             `Bearer ${NAMED.work}`,
-            // `c`'s profile binds nothing, and a custom model has no flat default key (O2).
+            // `c`'s profile binds nothing, and a custom model has no flat default key.
             "Bearer ",
         ]);
         expect(wireOf(runs[2])).not.toContain(SECRETS.openAIKey);
@@ -1672,7 +1670,7 @@ describe("named credentials", () => {
         ]);
         expect(wireOf(bound)).not.toContain(SECRETS.proxyKey);
 
-        // A reverse proxy has no flat default key (`docs/plan/model-profiles.md` O2).
+        // A reverse proxy has no flat default key.
         const unbound = await run({
             settings: withNamed({ preset: { credentialId: undefined } }, entries),
             arg: prompt(),
@@ -1714,7 +1712,7 @@ describe("named credentials", () => {
         const recorded = await run({
             settings: withNamed(
                 {
-                    // The Ollama fields are profile fields (`docs/plan/model-profiles.md` O7).
+                    // The Ollama fields are profile fields.
                     preset: {
                         aiModel: "ollama-cloud",
                         credentialId: "work",
@@ -1835,8 +1833,8 @@ describe("named credentials", () => {
     });
 });
 
-// `docs/plan/model-profiles.md`: each slot's profile chooses the model, the key, the endpoint, and
-// the compatibility options of its own request.
+// Each slot's profile chooses the model, the key, the endpoint, and the compatibility options of its
+// own request.
 describe("model profiles", () => {
     const OPENAI = "https://api.openai.com/v1/chat/completions";
     const failure = (recorded: Recorded) => {
@@ -1972,7 +1970,7 @@ describe("model profiles", () => {
         expect(keyless).not.toContain(SECRETS.openAIKey);
     });
 
-    it("uses the main profile for a matching static model, and no profile otherwise (O5)", async () => {
+    it("uses the main profile for a matching static model, and no profile otherwise", async () => {
         const settings = withNamed(
             {
                 model: {
@@ -2056,8 +2054,8 @@ describe("model profiles", () => {
         expect(failure(translate)).toContain('"openrouter" without a connection');
     });
 
-    // `docs/plan/translation.md` slice 3.1: a request may name its profile (`RequestArgs.profileId`, a
-    // translator step's model), which replaces the mode's slot entirely.
+    // A request may name its profile (`RequestArgs.profileId`, a translator step's model), which
+    // replaces the mode's slot entirely.
     it("runs a request that names a profile on that profile's URL, key, and request model, not the mode's slot, also over a static model", async () => {
         const STEP_KEY = "sk-named-step-SENTINEL-7777";
         const proxy = (id: string, host: string, requestModel: string, credentialId: string) => ({

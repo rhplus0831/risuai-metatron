@@ -143,9 +143,9 @@ export function createServerContext(options: {
     const auth = createAuthStore(savePath, { bypass: options.authBypass });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
-    // The diagnostics folder (`docs/plan/request-history-diagnostics.md` slice 7): content-free events
-    // and `state.json`, which the developer pulls over sftp. Its state sources are read only after the
-    // context is built (the boot state below, the timers, an error event).
+    // The diagnostics folder: content-free events and `state.json`, which the developer pulls over
+    // sftp. Its state sources are read only after the context is built (the boot state below, the
+    // timers, an error event).
     const diagnostics = createDiagnosticsJournal({
         dir: process.env.RISU_DIAGNOSTICS_DIR
             ? path.resolve(options.rootDir, process.env.RISU_DIAGNOSTICS_DIR)
@@ -172,7 +172,7 @@ export function createServerContext(options: {
     });
     // The store consults the lock on every write that could rewrite or remove a job's message.
     const generationLock = createGenerationLock();
-    // Every committed change goes to the live-update sockets (Phase 6).
+    // Every committed change goes to the live-update sockets.
     const changeFeed = createChangeFeed();
     // `save/data/` is not a storage namespace, so the `/api/*` storage routes cannot reach the file.
     const resources = createResourceStore({
@@ -229,17 +229,17 @@ export function createServerContext(options: {
     // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
-    // Memory on the server (Phase 5 slice 10): the embedding vectors are a cache in a file of their
-    // own (in no snapshot or archive; `save/data/` and `save/models/` are not storage namespaces), and
-    // the local models run in a child process that starts with the first task.
+    // Memory on the server: the embedding vectors are a cache in a file of their own (in no snapshot
+    // or archive; `save/data/` and `save/models/` are not storage namespaces), and the local models
+    // run in a child process that starts with the first task.
     const vectorCache = createVectorCache({ file: path.join(savePath, "data", "vectors.sqlite") });
     // The vectors of another database (a restore or an import while the server was down) are dropped.
     vectorCache.sync(resources.epoch());
-    // The LLM request history (`docs/plan/request-history-diagnostics.md`): diagnostic data in a file of
-    // its own, in no snapshot (they copy only `resources.sqlite`) or archive; a restore, an import,
-    // or a maintenance leaves it as it is. Its two settings are `providers` fields, read where they
-    // apply: the row cap at every prune (a read that throws skips that prune), content capture when a
-    // request begins. A record or field not there yet reads as its default.
+    // The LLM request history: diagnostic data in a file of its own, in no snapshot (they copy only
+    // `resources.sqlite`) or archive; a restore, an import, or a maintenance leaves it as it is. Its
+    // two settings are `providers` fields, read where they apply: the row cap at every prune (a read
+    // that throws skips that prune), content capture when a request begins. A record or field not
+    // there yet reads as its default.
     const providersKind = resourceKinds.get(RESOURCE_KIND.providers);
     const readProviders = (): Record<string, unknown> | undefined =>
         providersKind
@@ -286,8 +286,8 @@ export function createServerContext(options: {
     // The vectors belong to the data: when a maintenance replaced it (a new epoch), the cache is
     // emptied as the maintenance ends, and a write of work that began before is dropped.
     snapshots.onMaintenance(async () => () => vectorCache.sync(resources.epoch()));
-    // The remote MCP clients of the jobs (Phase 5 slice 12): their sessions and tokens live in this
-    // process and belong to the data they were made with.
+    // The remote MCP clients of the jobs: their sessions and tokens live in this process and belong
+    // to the data they were made with.
     const mcpRegistry = createMcpRegistry({ store: resources, kinds: resourceKinds });
     mcpRegistry.sync(resources.epoch());
     snapshots.onMaintenance(async () => () => mcpRegistry.sync(resources.epoch()));
@@ -297,8 +297,8 @@ export function createServerContext(options: {
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
-    // Web Push for chat completions (`docs/plan/web-push.md`): its keys and subscriptions live in
-    // `save/server/`, beside the password.
+    // Web Push for chat completions: its keys and subscriptions live in `save/server/`, beside the
+    // password.
     const push = createPushService({
         savePath,
         ...(options.pushTransport ? { transport: options.pushTransport } : {}),
@@ -321,7 +321,7 @@ export function createServerContext(options: {
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
-    // The script transform (Phase 5 slice 13): read-only renders on the runner's services. A restore
+    // The script transform: read-only renders on the runner's services. A restore
     // or an import stops every render and empties its cache (the data it was made from is gone).
     const transforms = createTransformService(runnerDeps);
     snapshots.onMaintenance(async () => transforms.pause("The server data is being replaced"));
@@ -593,8 +593,8 @@ export function createServerContext(options: {
     });
     registerRequestHistoryRoutes(app, {
         history: requestHistory,
-        // Slice 10: a job's requests shared to the diagnostics folder, redacted again with every
-        // credential stored now.
+        // A job's requests shared to the diagnostics folder, redacted again with every credential
+        // stored now.
         shares: createRequestShares({
             history: requestHistory,
             journal: diagnostics,

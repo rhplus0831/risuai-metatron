@@ -32,12 +32,12 @@ import { stripThoughtsBlock } from "./thoughts.ts";
 import { parseChatML, type TriggerResult } from "./triggers.ts";
 
 /**
- * The prompt of one send, assembled on the server (Phase 5 slice 9): the body of `sendChatInner`
- * (the former `src/ts/process/index.svelte.ts`) from the prompt-info snapshot to `generationInfo`, for one
- * speaker, statement by statement with the client's order and quirks. Everything it reads of the
- * job comes through `AssemblyHost`. The memory step, `additionalInformations`, and the caption of an
- * image a model cannot take run with the job's memory services (Phase 5 slice 10): the same gate,
- * priority, and persistence as the client's, each result written before the provider request.
+ * The prompt of one send, assembled on the server: the body of `sendChatInner` (the former
+ * `src/ts/process/index.svelte.ts`) from the prompt-info snapshot to `generationInfo`, for one
+ * speaker, statement by statement with the client's order and quirks. Everything it reads of the job
+ * comes through `AssemblyHost`. The memory step, `additionalInformations`, and the caption of an
+ * image a model cannot take run with the job's memory services: the same gate, priority, and
+ * persistence as the client's, each result written before the provider request.
  */
 
 /** The English text of `language.errors.toomuchtoken`. */

@@ -3,11 +3,11 @@ import type { RPCToolCallContent, ToolDescriptor } from "../../../shared/llm/req
 import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
 
 /**
- * The Node port of `MCPClient` (`src/ts/process/mcp/mcplib.ts`, Phase 5 slice 12): a remote MCP
- * server over `fetch`, with the tab client's wire behaviour (the JSON-RPC bodies and headers,
- * streamable HTTP with the 404 fallback to the legacy SSE transport, `ping` answered, the handshake,
- * `tools/list` pagination with the non-empty cache, `tools/call`, OAuth with dynamic registration
- * and PKCE through the account helper).
+ * The Node port of `MCPClient` (`src/ts/process/mcp/mcplib.ts`): a remote MCP server over `fetch`,
+ * with the tab client's wire behaviour (the JSON-RPC bodies and headers, streamable HTTP with the
+ * 404 fallback to the legacy SSE transport, `ping` answered, the handshake, `tools/list` pagination
+ * with the non-empty cache, `tools/call`, OAuth with dynamic registration and PKCE through the
+ * account helper).
  *
  * What differs from the tab client:
  *
@@ -30,10 +30,10 @@ import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
  *
  * Events are framed by `shared/mcp/sse.ts` (CRLF, LF, or CR line ends; `data:` with or without the
  * space), a session id is taken from an `initialize` answer in JSON or as an event stream, and a
- * refresh answer's new refresh token replaces the stored one (Phase 5 Stop D fixes; the tab client
- * does the same). Kept as the tab client has it: a 404 with a session or a 401 with a token resets
- * the session and repeats the request once without them. Prompts, the custom transport, and
- * `debug` are not ported (no server caller).
+ * refresh answer's new refresh token replaces the stored one (the tab client does the same). Kept
+ * as the tab client has it: a 404 with a session or a 401 with a token resets the session and
+ * repeats the request once without them. Prompts, the custom transport, and `debug` are not ported
+ * (no server caller).
  */
 
 export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;

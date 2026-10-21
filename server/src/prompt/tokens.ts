@@ -9,7 +9,7 @@ import type { Tokenizers } from "./tokenizers/index.ts";
  * server's tokenizers, and with `useTokenizerCaching` the results stay in an LRU of 1,500, keyed
  * by the client's fields plus the model's `internalID`.
  *
- * Differences from the client, recorded in `lore-templates-and-tokens.md`:
+ * Differences from the client:
  * - a legacy plugin provider's `custom` tokenizer (`tokenizerFunc`) is never called; the text is
  *   counted with `cl100k_base` (the Safety Contract: plugin tokenizers are not used server-side);
  * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, and its cache is an

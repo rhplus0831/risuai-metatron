@@ -1,9 +1,9 @@
 import type { RequestDb } from "./settings.ts";
 
 /**
- * The secret-free projection of what a request sends back to the client (`request-layer-and-llm-secrets`):
- * logs, notices, errors, fail results, previews, callback payloads, and tool records. Never applied
- * to the request sent upstream.
+ * The secret-free projection of what a request sends back to the client: logs, notices, errors,
+ * fail results, previews, callback payloads, and tool records. Never applied to the request sent
+ * upstream.
  *
  * - Every credential value of the request (the `llmSecrets` keys, `google.accessToken`,
  *   `hordeConfig.apiKey`, `novelai.token`, `vertexPrivateKey`, `vertexAccessToken`, each
@@ -17,7 +17,7 @@ import type { RequestDb } from "./settings.ts";
  *   parameters of any URL-looking string.
  *
  * A free-form `header::` value in `additionalParams` or a custom model's `params` that is not a
- * stored credential is user configuration, outside this guarantee (owner answer 3).
+ * stored credential is user configuration, outside this guarantee.
  */
 export const REDACTED = "[redacted]";
 

@@ -11,7 +11,7 @@ import { createLuaBindings } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 
-// Phase 5 slice 8b: the server command executor (`server/src/prompt/commands.ts`), the port of the
+// The server command executor (`server/src/prompt/commands.ts`), the port of the
 // client's `processMultiCommand`, over the production bindings' services on a real in-memory store
 // and a fake job whose questions the test answers (and may use to edit or delete the chat
 // meanwhile). The client's rules: pipes split outside quotes, `{{pipe}}`/`{{slot}}` and an empty
@@ -20,7 +20,7 @@ import type { HostContext } from "../scripts/workerPool.ts";
 // consumes the rest of the line), the append-only `/send` and `/sendas`, `/comment` on the last
 // message, the `/cut` and `/del` index rules, the alerts and questions as notices and questions
 // (`/speak` a `tts` notice, `/?` an `alertMd`), `/trigger` handed to the job's manual run (refused
-// for a group), `/multisend` handed to the host with the tab's `clear` mode and parts (slice 11b),
+// for a group), `/multisend` handed to the host with the tab's `clear` mode and parts,
 // an unknown command `false`, and a question not answered ending the line with its error.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -72,7 +72,7 @@ function setup(options: { type?: "character" | "group" } = {}) {
                             id: "k",
                             name: "K",
                             scriptstate: { $old: "old" },
-                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            // The chat's binding: the job scope checks the context's ids against it.
                             modelPresetId: "m",
                             promptPresetId: "p",
                             bindedPersona: "u",

@@ -16,17 +16,17 @@ import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from ".
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { type JobScope, loadJobScope, refreshChat, scopeChat } from "../jobs/jobScope.ts";
 
-// Phase 5 slice 8b: `applyTriggerChat` (`server/src/jobs/chatResult.ts`), the port of the client's
-// `applyChatResult`, over a real in-memory resource store guarded by the real generation lock and a
-// fake job whose `write` is the store's `applyChanges` with the job's token (the registry's
-// `writeAsJob` translation of a conflict). Expected outcomes follow the client's rules: changed
-// message fields merged into the message as stored now (edits made meanwhile kept), removals in
-// one op, new messages anchored after their predecessor (counting the ones inserted before them),
-// missing, duplicate, or colliding ids re-keyed, chat fields set or unset, a reorder as a whole
-// replacement only while the chat is unchanged since the baseline and no job owns a message of it
-// (else dropped with a warning while the rest applies), a change to a message another job owns
-// failing the whole group (409, nothing written), a gone chat applying nothing, and the recorded
-// replay of the copy's `scriptstate` over a concurrent variable write.
+// `applyTriggerChat` (`server/src/jobs/chatResult.ts`), the port of the client's `applyChatResult`,
+// over a real in-memory resource store guarded by the real generation lock and a fake job whose
+// `write` is the store's `applyChanges` with the job's token (the registry's `writeAsJob`
+// translation of a conflict). Expected outcomes follow the client's rules: changed message fields
+// merged into the message as stored now (edits made meanwhile kept), removals in one op, new
+// messages anchored after their predecessor (counting the ones inserted before them), missing,
+// duplicate, or colliding ids re-keyed, chat fields set or unset, a reorder as a whole replacement
+// only while the chat is unchanged since the baseline and no job owns a message of it (else dropped
+// with a warning while the rest applies), a change to a message another job owns failing the whole
+// group (409, nothing written), a gone chat applying nothing, and the recorded replay of the copy's
+// `scriptstate` over a concurrent variable write.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
@@ -74,7 +74,7 @@ function setup() {
                             name: "K",
                             note: "n0",
                             scriptstate: { $a: "1" },
-                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            // The chat's binding: the job scope checks the context's ids against it.
                             modelPresetId: "m",
                             promptPresetId: "p",
                             bindedPersona: "u",

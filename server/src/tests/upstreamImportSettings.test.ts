@@ -17,14 +17,13 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, ResourceValidationError, serialize } from "../data/resourceStore.ts";
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
 
-// `docs/plan/upstream-bin-compat.md` S3: the upstream flat `Database` → settings, presets, personas,
-// and secrets converter, on plain synthetic objects (never a real backup). Covers the S3 "Test" list,
-// the plan-review counterexamples (own-`undefined` root overlay, preset network repair, Hypa seeding,
-// Ollama cloud migration, original-index selection, canonical profile dedup, translator index rules,
-// unbound preset OpenAI keys, custom-model lookup rules, removed-feature reporting, per-entry
-// recovery), input immutability, serialized fixed points, staged-store acceptance, and the
-// recovery defects found in review (dangling slots, section fields, binding order, key extraction,
-// `formatversion`, report categories, unreported repairs).
+// The upstream flat `Database` → settings, presets, personas, and secrets converter, on plain
+// synthetic objects (never a real backup). Covers the counterexamples (own-`undefined` root overlay,
+// preset network repair, Hypa seeding, Ollama cloud migration, original-index selection, canonical
+// profile dedup, translator index rules, unbound preset OpenAI keys, custom-model lookup rules,
+// removed-feature reporting, per-entry recovery), input immutability, serialized fixed points,
+// staged-store acceptance, and the recovery defects (dangling slots, section fields, binding order,
+// key extraction, `formatversion`, report categories, unreported repairs).
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 
@@ -220,7 +219,7 @@ function fixture(): Record<string, unknown> {
     };
 }
 
-/** The S3 kinds (materialized singletons) and the S4 records always emitted (`pluginStorage` only when upstream had one). */
+/** The settings kinds (materialized singletons) and the library records always emitted (`pluginStorage` only when upstream had one). */
 const EMITTED_KINDS: ResourceKindName[] = [
     ...Object.values(SECTION_KIND),
     ...Object.values(COLLECTION_KIND),
@@ -295,7 +294,7 @@ describe("convertUpstreamDatabase: records", () => {
     });
 });
 
-describe("convertUpstreamDatabase: presets (D6)", () => {
+describe("convertUpstreamDatabase: presets", () => {
     it("shares one profile between presets on the same endpoint and splits another endpoint", () => {
         const out = convertUpstreamDatabase(fixture());
         const p1 = modelPresetNamed(out, "P1");
@@ -429,7 +428,7 @@ describe("convertUpstreamDatabase: presets (D6)", () => {
         );
     });
 
-    it("returns the selected preset's converted ids (D4) and names the model preset after it", () => {
+    it("returns the selected preset's converted ids and names the model preset after it", () => {
         const db = fixture();
         db.botPresetsId = 2;
         const out = convertUpstreamDatabase(db);
@@ -743,7 +742,8 @@ describe("convertUpstreamDatabase: root migrations and the report", () => {
         expect(excluded(out, "loadouts")).toEqual({ code: "loadouts", count: 1, examples: ["loadouts"] });
         expect(excluded(out, "invalid-setting")).toBeUndefined();
 
-        // The fixture's `enabledModules: ["mod"]` names no module (S4); its `characterOrder: ["c1"]` is dropped silently.
+        // The fixture's `enabledModules: ["mod"]` names no module; its `characterOrder: ["c1"]` is
+        // dropped silently.
         const quiet = convertUpstreamDatabase(fixture());
         expect(quiet.report.excluded.map((item) => item.code).sort()).toEqual([
             "loadouts",

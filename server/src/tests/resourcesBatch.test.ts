@@ -39,7 +39,7 @@ const create = (kind: string, id: string, data: unknown) => ({ kind, id, baseRev
 describe("POST /api/resources/batch", () => {
     it("applies writes and deletions of several kinds as one unit and answers the new tokens in operation order", async () => {
         const s = await defaultServer();
-        // `presets/main` is materialized (slice 3), so the batch writes over it with its current revision.
+        // `presets/main` is materialized, so the batch writes over it with its current revision.
         const presets = ((await (await s.get("presets", "main")).json()) as { revision: string }).revision;
         // `pluginStorage`: a singleton the store does not materialize, so the batch creates it.
         const created = await s.batch([
@@ -239,7 +239,7 @@ describe("POST /api/resources/batch", () => {
             expect(await res.json(), label).toEqual({ error });
         }
         // Nothing was applied: no pluginStorage or character record, and `presets/main` is still the
-        // materialized default preset at its first revision (slice 3).
+        // materialized default preset at its first revision.
         const state = (await (await s.readKinds("pluginStorage,characters,presets")).json()) as ReadKinds;
         expect(state.epoch).toBe(s.epoch);
         expect(state.kinds.pluginStorage).toEqual([]);
@@ -248,9 +248,9 @@ describe("POST /api/resources/batch", () => {
         expect(state.kinds.presets).toMatchObject([{ id: "main", revision: expect.stringMatching(/:1$/) }]);
     });
 
-    // Audit item A1: a batch op may be a record patch (`patch` with a string `baseRevision`): a
-    // field patch of a character, an item patch of `modules`; the store checks its shape and applies
-    // it at the base revision, normalized like a write; a stale base is the usual 409.
+    // A batch op may be a record patch (`patch` with a string `baseRevision`): a field patch of a
+    // character, an item patch of `modules`; the store checks its shape and applies it at the base
+    // revision, normalized like a write; a stale base is the usual 409.
     it("applies field and item patches at their base revision, normalized, and conflicts or refuses them like writes", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a", { name: "A", desc: "d" }));
@@ -405,7 +405,7 @@ describe("multi-kind and ref reads", () => {
             [",", "kinds query parameter required"],
             ["characters,nope", "Unknown resource kind: nope"],
             ["Characters", "Unknown resource kind: Characters"],
-            // The `root` kind is gone (slice 6): a read of it is refused like any unknown kind.
+            // The `root` kind is gone: a read of it is refused like any unknown kind.
             ["root", "Unknown resource kind: root"],
             ["batch", "Unknown resource kind: batch"],
         ]) {

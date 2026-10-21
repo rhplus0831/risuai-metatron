@@ -46,19 +46,19 @@ export type GenerationRunnerDeps = {
     scriptWorkers: ScriptWorkerPool;
     llm: LlmRequests;
     tokens: TokenCounter;
-    /** The embeddings of the memory algorithms and the similarity searches (Phase 5 slice 10). */
+    /** The embeddings of the memory algorithms and the similarity searches. */
     embeddings: EmbeddingsService;
     /** The local models: the summarizer and the image captioner of prompt assembly. */
     transformers: TransformersService;
-    /** The remote MCP clients of the process (Phase 5 slice 12); without them a job's requests offer no tools. */
+    /** The remote MCP clients of the process; without them a job's requests offer no tools. */
     mcp?: McpRegistry;
     /** The generation lock: a trigger's reorder replaces the chat only while no message of it is generated. */
     lock: MessageGuard;
     /** The random source of `presetChain` and the group order (default `Math.random`). */
     random?: () => number;
-    /** The translation runner a send hands its messages to (slice 2.3 of `docs/plan/translation.md`). */
+    /** The translation runner a send hands its messages to. */
     translations?: Pick<TranslationRunner, "handOff">;
-    /** Web Push for chat completions (`docs/plan/web-push.md`); without it only the tab is notified. */
+    /** Web Push for chat completions; without it only the tab is notified. */
     push?: Pick<PushService, "send">;
     /** The diagnostics journal (its caught faults). */
     diagnostics?: DiagnosticsRecorder;
@@ -114,15 +114,14 @@ export type JobRunState = {
      * `context.client.emotions`, plus every emotion the job showed since), oldest first.
      */
     emotions: Map<string, string[]>;
-    /** The `/multisend` commands a command job ran: its tab sends their parts after the job (slice 11b). */
+    /** The `/multisend` commands a command job ran: its tab sends their parts after the job. */
     followUps: GenerationFollowUp[];
-    /** The auto-continue and resend rounds the job has run (slice 11a: at most `MAX_SEND_ROUNDS`). */
+    /** The auto-continue and resend rounds the job has run (at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
-    /** The job's MCP tool sets and the tool calls its models asked for (slice 12). */
+    /** The job's MCP tool sets and the tool calls its models asked for. */
     tools: JobToolState;
     /**
-     * Where the send runner is (`docs/plan/request-history-diagnostics.md` slice 6): the stage a
-     * failure that names none gets (`runPromptJob`).
+     * Where the send runner is: the stage a failure that names none gets (`runPromptJob`).
      */
     stage: GenerationErrorStage;
 };
@@ -192,10 +191,10 @@ export type LuaOutcome = {
 };
 
 /**
- * One run's services (Phase 5 slices 8a, 8b, 9): the bindings for its character (`runCharacterId`,
- * the speaker in a group send) on the job's chat (`engineCharacterId`, the chat's owner), the native
- * context, the Lua runner, the trigger runtime with its command executor, and the native `request`
- * trigger every request of the bindings runs.
+ * One run's services: the bindings for its character (`runCharacterId`, the speaker in a group send)
+ * on the job's chat (`engineCharacterId`, the chat's owner), the native context, the Lua runner, the
+ * trigger runtime with its command executor, and the native `request` trigger every request of the
+ * bindings runs.
  */
 export type RunSetup = {
     scope: JobScope;

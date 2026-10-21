@@ -122,7 +122,7 @@ function tabDescriptors(value: unknown): ToolDescriptor[] {
 }
 
 /**
- * The MCP tools of one job run (Phase 5 slice 12): the server's port of `getTools` and `callTool`
+ * The MCP tools of one job run: the server's port of `getTools` and `callTool`
  * (`src/ts/process/mcp/mcp.ts`) for a job's requests.
  *
  * The identifiers are the `mcp.url` of the job's modules, each once, in module order. A remote

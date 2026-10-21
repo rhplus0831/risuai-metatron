@@ -16,13 +16,14 @@ import { convertUpstreamDatabase } from "./importDatabase.ts";
 import { decodeUpstreamDatabase } from "./risuSave.ts";
 
 /**
- * The upstream import's prepare work (`docs/plan/upstream-bin-compat.md` S5), the body of the import
- * worker (`importWorker.ts`) and free of any worker API, so it also runs in process. It reads the
- * classified archive (S2's plan, made by the route), decodes the database (S1), reads the cold-storage
- * payloads, converts (S3, S4), writes a fresh staged store in S4's order, copies it with `backupTo` into
- * one self-contained `resources.sqlite`, validates that file with `readSnapshot` (the result is dropped:
- * the commit validates again), and extracts every archive asset into the staging folder, so a commit
- * only links. It writes only into `staging`; it never opens the live store.
+ * The upstream import's prepare work, the body of the import worker (`importWorker.ts`) and free of
+ * any worker API, so it also runs in process. It reads the classified archive (the
+ * `planUpstreamArchive` plan, made by the route), decodes the database (`risuSave.ts`), reads the
+ * cold-storage payloads, converts (`convertUpstreamDatabase`), writes a fresh staged store in the
+ * converter's hand-off order, copies it with `backupTo` into one self-contained `resources.sqlite`,
+ * validates that file with `readSnapshot` (the result is dropped: the commit validates again), and
+ * extracts every archive asset into the staging folder, so a commit only links. It writes only into
+ * `staging`; it never opens the live store.
  */
 
 /** Chats per `applyChanges` call while the staged store is written. */
@@ -39,7 +40,7 @@ export type UpstreamStageInput = {
     /** The import's own staging folder under `save/.tmp`. */
     staging: string;
     plan: UpstreamArchivePlan;
-    /** Cap of the decoded MessagePack (D1, `RISU_MAX_UPSTREAM_DB_BYTES`). */
+    /** Cap of the decoded MessagePack (`RISU_MAX_UPSTREAM_DB_BYTES`). */
     maxDecodedBytes: number;
     /** Cap of one cold-storage payload (`MAX_COLD_RECORD_BYTES` by default). */
     maxColdRecordBytes?: number;
@@ -126,9 +127,10 @@ export async function stageUpstreamImport(
 }
 
 /**
- * Writes the conversion into a fresh store at `staging/build.sqlite` in S4's order (the singletons at
- * their current revision or created, the characters, then the chats in batches in array order),
- * copies it to `staging/resources.sqlite` with `backupTo`, validates the copy, and removes the build.
+ * Writes the conversion into a fresh store at `staging/build.sqlite` in the converter's hand-off
+ * order (the singletons at their current revision or created, the characters, then the chats in
+ * batches in array order), copies it to `staging/resources.sqlite` with `backupTo`, validates the
+ * copy, and removes the build.
  */
 async function writeStagedStore(
     staging: string,

@@ -57,7 +57,7 @@ export type UpstreamDatabase = { characters: unknown[]; [key: string]: unknown }
 // value from holding the whole inflated database in memory; the decoded values are the same. The
 // byte cap alone does not bound the decode's allocations: msgpackr 2 refuses an array or map header
 // longer than the bytes left, but nested headers each preallocate up to that, so a caller decoding
-// untrusted data runs it under a heap limit (D1's worker `resourceLimits`).
+// untrusted data runs it under a heap limit (the import worker's `resourceLimits`).
 const packr = new Packr({ useRecords: false });
 const unpackr = new Unpackr({ useRecords: false, int64AsType: "number", copyBuffers: true });
 

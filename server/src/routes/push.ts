@@ -13,9 +13,8 @@ export { PUSH_KEY_PATH, PUSH_SUBSCRIPTION_PATH };
 const MAX_PUSH_BODY_BYTES = 16 * 1024;
 
 /**
- * Web Push registration (`docs/plan/web-push.md`), all authenticated (JWT) and rate-limited, the
- * subscription routes authenticated before their body (capped at 16 KiB) is read; every answer is
- * `no-store`.
+ * Web Push registration, all authenticated (JWT) and rate-limited, the subscription routes
+ * authenticated before their body (capped at 16 KiB) is read; every answer is `no-store`.
  *
  * - `GET /api/push/key`: `{ publicKey }`, null while push is off on the server;
  * - `PUT /api/push/subscription` `{ subscription }` (a `PushSubscription.toJSON()`): 204; 400 for an

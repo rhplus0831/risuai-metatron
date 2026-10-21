@@ -10,17 +10,17 @@ import {
     type TransformersWorkerLike,
 } from "../prompt/transformers.ts";
 
-// Phase 5 slice 10: the local-model service (`server/src/prompt/transformers.ts`) over injected
-// worker processes (`createTransformers({ spawn })`), so no model is loaded and nothing is forked
-// except in the one real-process case at the end (a task kind the worker answers without a model).
-// The queue: one task at a time in order, the process held only while busy; a task aborted while
-// queued removed without a start; one aborted or timed out while running killing the process, the
-// next task waiting for that exit before a new process starts (one process at a time; a late
-// message of the killed one ignored); a failed task not affecting the next; a crash or a process
-// that never started failing its task and the queue going on (a synchronous spawn failure for
-// each queued task in turn); an error of a live process failing its task and killing it; a kill that
-// is refused ending the service (every task fails, no second process beside the first); the idle
-// kill; dispose rejecting every task, waiting for the exit, and refusing later tasks.
+// The local-model service (`server/src/prompt/transformers.ts`) over injected worker processes
+// (`createTransformers({ spawn })`), so no model is loaded and nothing is forked except in the one
+// real-process case at the end (a task kind the worker answers without a model). The queue: one task
+// at a time in order, the process held only while busy; a task aborted while queued removed without
+// a start; one aborted or timed out while running killing the process, the next task waiting for
+// that exit before a new process starts (one process at a time; a late message of the killed one
+// ignored); a failed task not affecting the next; a crash or a process that never started failing
+// its task and the queue going on (a synchronous spawn failure for each queued task in turn); an
+// error of a live process failing its task and killing it; a kill that is refused ending the service
+// (every task fails, no second process beside the first); the idle kill; dispose rejecting every
+// task, waiting for the exit, and refusing later tasks.
 
 type FakeWorker = TransformersWorkerLike & {
     sent: TransformersRequest[];

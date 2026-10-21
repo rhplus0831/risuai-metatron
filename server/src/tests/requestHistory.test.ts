@@ -20,27 +20,27 @@ import {
 } from "../data/requestHistory.ts";
 import type { FetchLogEntry } from "../llm/transport.ts";
 
-// Request history slice 2: the durable LLM request history (`server/src/data/requestHistory.ts`).
-// The rows: a `pending` row begun once (a duplicate id ignored, an id over 256 bytes or empty not
-// begun), its model filled by `describe`, the first `firstByte` and the first `finish` winning, a
-// late exchange after `finish` still kept, a summary row with content off (no prompt, no exchanges,
-// an exchange not even counted, the bounded error kept). The bounds: every cut at a UTF-8 boundary
-// and in the truncation record with its original and stored bytes (the prompt, the exchange fields
-// `date` and `responseType` included, the error, a display field), an id kept whole up to 2 KiB and
-// otherwise not stored, the caller's `cuts` merged as the larger original, the first 32 exchanges
-// kept and the later ones only counted. The accounting: a row's bytes are the fixed overheads plus
-// every stored text, the totals match a sum after every write and after a reopen, a cleared field
-// drops its truncation record. The caps: the oldest rows by begin order go first, a pending one
-// included, under the count cap and the byte cap, after every write (the limit getter read then),
-// an oversized row evicting itself, and no prune at open. The lifecycle: a reopen sweeping `pending`
-// to `interrupted`, an unsupported version leaving the file byte-identical and the store inert, an
-// unopenable file inert, a locked database skipping the write with one warning, injected callbacks
-// that throw never escaping (a throwing limit getter skips the prune and keeps every row), `close`
-// idempotent; `available()` true only while the database is open, and `deleteAll` null (not a
-// count) when the store is inert or closed or the delete failed. The reads: `list` newest first with its exclusive
-// `seq` cursor (an old cursor past every row begun after `deleteAll`), the page size clamped, the
-// filters combined; `get` with the exchanges in order; `deleteAll` cascading to the exchanges;
-// `setShared` atomic over a deduplicated id list.
+// The durable LLM request history (`server/src/data/requestHistory.ts`). The rows: a `pending` row
+// begun once (a duplicate id ignored, an id over 256 bytes or empty not begun), its model filled by
+// `describe`, the first `firstByte` and the first `finish` winning, a late exchange after `finish`
+// still kept, a summary row with content off (no prompt, no exchanges, an exchange not even counted,
+// the bounded error kept). The bounds: every cut at a UTF-8 boundary and in the truncation record
+// with its original and stored bytes (the prompt, the exchange fields `date` and `responseType`
+// included, the error, a display field), an id kept whole up to 2 KiB and otherwise not stored, the
+// caller's `cuts` merged as the larger original, the first 32 exchanges kept and the later ones only
+// counted. The accounting: a row's bytes are the fixed overheads plus every stored text, the totals
+// match a sum after every write and after a reopen, a cleared field drops its truncation record. The
+// caps: the oldest rows by begin order go first, a pending one included, under the count cap and the
+// byte cap, after every write (the limit getter read then), an oversized row evicting itself, and no
+// prune at open. The lifecycle: a reopen sweeping `pending` to `interrupted`, an unsupported version
+// leaving the file byte-identical and the store inert, an unopenable file inert, a locked database
+// skipping the write with one warning, injected callbacks that throw never escaping (a throwing
+// limit getter skips the prune and keeps every row), `close` idempotent; `available()` true only
+// while the database is open, and `deleteAll` null (not a count) when the store is inert or closed
+// or the delete failed. The reads: `list` newest first with its exclusive `seq` cursor (an old
+// cursor past every row begun after `deleteAll`), the page size clamped, the filters combined; `get`
+// with the exchanges in order; `deleteAll` cascading to the exchanges; `setShared` atomic over a
+// deduplicated id list.
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -516,7 +516,7 @@ describe("the bounds", () => {
         expect(store.stats().bytes).toBe(record.bytes);
     });
 
-    it("cuts the error at 64 KiB, recording it; a provider code that is not one (over-long, spaced, or empty) is stored as null, never cut (slice 6)", () => {
+    it("cuts the error at 64 KiB, recording it; a provider code that is not one (over-long, spaced, or empty) is stored as null, never cut", () => {
         const store = open();
         for (const [id, providerCode] of [
             ["e", "c".repeat(REQUEST_HISTORY_BOUNDS.short + 1)],
@@ -1136,7 +1136,7 @@ describe("the reads and the bulk writes", () => {
     });
 });
 
-describe("setPrompt (request history slice 3)", () => {
+describe("setPrompt", () => {
     // The request layer writes the prompt after the row began (its redactor exists only then):
     // a pending row with content on and no prompt takes it once, bounded like `begin`'s prompt
     // and counted in the row's bytes; every other row ignores it; the write prunes.

@@ -12,9 +12,8 @@ import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 
 /**
- * The boot read that skips what the client holds (`POST /api/resources/boot`,
- * `docs/plan/boot-resource-cache.md` slice 2): request parsing and the read. The route in
- * `resources.ts` adds auth, the body cap, and compression.
+ * The boot read that skips what the client holds (`POST /api/resources/boot`): request parsing and
+ * the read. The route in `resources.ts` adds auth, the body cap, and compression.
  */
 
 /** Most kinds, record claims plus item hashes, and item entries one boot request may name (each). */

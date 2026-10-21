@@ -28,10 +28,10 @@ import {
 import { isValidResourceId, nextRevision, ResourceValidationError, serialize } from "./resourceStore.ts";
 
 /**
- * The chat tables of the resource database (Phase 2): chat metadata (`chats`), one row per message
- * (`messages`, keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), and
- * each character's chat order (`chatOrders`). The resource store owns the connection, the epoch, and
- * the transactions; this module prepares, applies, reads, and validates chat changes inside them.
+ * The chat tables of the resource database: chat metadata (`chats`), one row per message (`messages`,
+ * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), and each
+ * character's chat order (`chatOrders`). The resource store owns the connection, the epoch, and the
+ * transactions; this module prepares, applies, reads, and validates chat changes inside them.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -85,14 +85,14 @@ export const CHAT_TABLE_COLUMNS: Record<string, readonly string[]> = {
 };
 
 /**
- * The ids of the client groups a chat applied, with their results (data-loss plan slice 6b, audit
- * D1), so a group resent after a lost answer is answered as before instead of applied again. Keyed
- * by the chat's incarnation (`chats.seq`): deleting the chat (a `delete` op, its character's delete,
- * a restore's `replaceAll`) drops them by cascade. Created when missing, so a database from before
- * the table gains it on open; not part of the snapshot layout (`CHAT_TABLE_COLUMNS`), so snapshots
- * with and without it restore alike and a restore starts with none (its new epoch fences every
- * earlier client anyway). `revision` is the chat's revision counter after the group; `result` holds
- * the rest of its answer (`RememberedResult`).
+ * The ids of the client groups a chat applied, with their results, so a group resent after a lost
+ * answer is answered as before instead of applied again. Keyed by the chat's incarnation
+ * (`chats.seq`): deleting the chat (a `delete` op, its character's delete, a restore's `replaceAll`)
+ * drops them by cascade. Created when missing, so a database from before the table gains it on open;
+ * not part of the snapshot layout (`CHAT_TABLE_COLUMNS`), so snapshots with and without it restore
+ * alike and a restore starts with none (its new epoch fences every earlier client anyway).
+ * `revision` is the chat's revision counter after the group; `result` holds the rest of its answer
+ * (`RememberedResult`).
  */
 export const CHAT_GROUP_TABLE_SQL = `
     CREATE TABLE IF NOT EXISTS chatGroups (
@@ -757,7 +757,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (meta.pinned === true) {
             summary.pinned = true;
         }
-        // The translation settings (`docs/plan/translation.md` slice 2.1): a new chat inherits them.
+        // The translation settings: a new chat inherits them.
         Object.assign(summary, chatTranslationSummary(meta));
         return summary;
     }
@@ -1444,18 +1444,18 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         },
 
         /**
-         * One synchronous batch of a message search (archived `docs/plan/search.md` slice 4a): the scope's chats
-         * by `seq` descending, each chat's messages by `position` descending, every message charged
-         * and handed to `visit` (with its JSON only when its text matches the `LIKE` pattern), until
-         * `visit` ends the request (`stopped`), the batch is full, or the scope is exhausted (`end`).
-         * A batch is full at `maxRows` units (one per message row and one per chat looked at, so
-         * empty or skipped chats cannot keep it running) or `maxBytes` (the messages' UTF-8 bytes
-         * plus what `scope.eligible` charged); the limits are checked after each unit, so a batch
-         * always advances. `resume` is where the next batch starts: a resumed message's chat
-         * continues below that message's current position (found again by id, so inserts before it
-         * neither repeat nor skip rows; its stored position when it is gone), and a chat that is gone
-         * or out of scope continues with the next lower `seq`. Rows are read lazily and the scan
-         * statement is reset before returning, so nothing stays open across the caller's yield.
+         * One synchronous batch of a message search: the scope's chats by `seq` descending, each
+         * chat's messages by `position` descending, every message charged and handed to `visit` (with
+         * its JSON only when its text matches the `LIKE` pattern), until `visit` ends the request
+         * (`stopped`), the batch is full, or the scope is exhausted (`end`). A batch is full at
+         * `maxRows` units (one per message row and one per chat looked at, so empty or skipped chats
+         * cannot keep it running) or `maxBytes` (the messages' UTF-8 bytes plus what `scope.eligible`
+         * charged); the limits are checked after each unit, so a batch always advances. `resume` is
+         * where the next batch starts: a resumed message's chat continues below that message's
+         * current position (found again by id, so inserts before it neither repeat nor skip rows; its
+         * stored position when it is gone), and a chat that is gone or out of scope continues with
+         * the next lower `seq`. Rows are read lazily and the scan statement is reset before
+         * returning, so nothing stays open across the caller's yield.
          */
         searchBatch(args: {
             scope: MessageSearchScope;

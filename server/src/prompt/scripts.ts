@@ -17,7 +17,7 @@ import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { ScriptWorkerPool } from "../scripts/workerPool.ts";
 import { HypaProcesser } from "./embeddings.ts";
 
-/** The script modes the server runs on a send (`editoutput` on the completed reply, slice 11a). */
+/** The script modes the server runs on a send (`editoutput` on the completed reply). */
 export type ServerScriptMode = "editinput" | "editprocess" | "editoutput";
 
 const luaModeOf: Record<ServerScriptMode, string | null> = {
@@ -249,7 +249,7 @@ export async function runScriptTail(
 }
 
 /**
- * The server's `processScriptFull` (the former `src/ts/process/scripts.ts`; Phase 5 slice 9) for one run's
+ * The server's `processScriptFull` (the former `src/ts/process/scripts.ts`) for one run's
  * setup, in the client's order: the Lua edit hook (`runLuaEdit`; none for `editprocess`), the plugin
  * hook as a channel callback named the mode when the owner registered one, then `runScriptTail`.
  * `@@emo` becomes an `emotion` notice; `@@inject` writes the message at `chatID` (resolved to its id

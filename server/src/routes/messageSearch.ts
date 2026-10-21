@@ -31,7 +31,7 @@ const MAX_SEARCH_BODY_BYTES = 4 * 1024;
 /**
  * The scan's bounds and the concurrency cap, each replaceable (tests inject small limits and a
  * `yieldTurn` latch): 64 MiB of message JSON per request, 500 units and 4 MiB per batch, a
- * `setImmediate` turn between batches, and two searches at once server-wide (Decision 17).
+ * `setImmediate` turn between batches, and two searches at once server-wide.
  */
 export type MessageSearchRouteOptions = Partial<MessageSearchLimits> & { maxConcurrent?: number };
 
@@ -162,18 +162,18 @@ function parseSearchQuery(body: Record<string, unknown>): ParsedQuery | string {
 }
 
 /**
- * `POST /api/chats/search` (archived `docs/plan/search.md` slice 4a): one page of a message search over the
- * stored chats (`store.searchMessages`; the body is `MessageSearchQuery`, the answer
- * `MessageSearchPage`, both in `shared/messageSearch.ts`). Rate-limited, authenticated before the
- * body is read, the body capped at 4 KiB of actual bytes (the app's 100 MiB limit is skipped for
- * it), every answer `no-store`. No epoch header: it is a read. 400 for a bad body (query under 2 or
- * over 200 code points after NFC and trimming, NUL or ill-formed text, an unknown field, a bad
- * cursor or id, `chatId` without `characterId`, a non-positive `limit`; a larger one is clamped to
- * 100) and for a request whose client went away; 404 for a named character or chat that does not
- * exist; 409 `{ reason: "epoch" }` when a restore replaced the data during the scan (search again);
- * 429 past `maxConcurrent` running searches; 503 with `Retry-After` during maintenance (checked at
- * admission and between batches) and once the store closed. The app tracks the handler like a
- * resource handler, so shutdown waits for a running search; maintenance does not.
+ * `POST /api/chats/search`: one page of a message search over the stored chats
+ * (`store.searchMessages`; the body is `MessageSearchQuery`, the answer `MessageSearchPage`, both in
+ * `shared/messageSearch.ts`). Rate-limited, authenticated before the body is read, the body capped at
+ * 4 KiB of actual bytes (the app's 100 MiB limit is skipped for it), every answer `no-store`. No
+ * epoch header: it is a read. 400 for a bad body (query under 2 or over 200 code points after NFC and
+ * trimming, NUL or ill-formed text, an unknown field, a bad cursor or id, `chatId` without
+ * `characterId`, a non-positive `limit`; a larger one is clamped to 100) and for a request whose
+ * client went away; 404 for a named character or chat that does not exist; 409 `{ reason: "epoch" }`
+ * when a restore replaced the data during the scan (search again); 429 past `maxConcurrent` running
+ * searches; 503 with `Retry-After` during maintenance (checked at admission and between batches) and
+ * once the store closed. The app tracks the handler like a resource handler, so shutdown waits for a
+ * running search; maintenance does not.
  */
 export function registerMessageSearchRoutes(
     app: Hono<AppEnv>,

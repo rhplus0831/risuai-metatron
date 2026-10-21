@@ -9,9 +9,8 @@ import type { AuthStore } from "./auth.ts";
 export { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH };
 
 /**
- * The server's diagnostics for the app's Diagnostics panel (`docs/plan/request-history-diagnostics.md`
- * slices 8 and 9): JWT, the shared limiter. The app's admission middleware refuses both during
- * shutdown and makes every answer `no-store`.
+ * The server's diagnostics for the app's Diagnostics panel: JWT, the shared limiter. The app's
+ * admission middleware refuses both during shutdown and makes every answer `no-store`.
  *
  * - `GET /api/diagnostics` answers `{ events, state }`: the journal's ring (the last 300 events,
  *   oldest first) and its state (`state.json`'s fields, built now). Both are in memory and

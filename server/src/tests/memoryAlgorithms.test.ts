@@ -27,8 +27,8 @@ import {
     USER_NAME,
 } from "./fixtures/memory/scenarios.ts";
 
-// Phase 5 slice 10: the server memory ports (`server/src/prompt/memory/*`, over `embeddings.ts`)
-// against the browser-captured fixture `fixtures/memory/algorithms.json`, which
+// The server memory ports (`server/src/prompt/memory/*`, over `embeddings.ts`) against the
+// browser-captured fixture `fixtures/memory/algorithms.json`, which
 // `src/ts/process/memory/memoryOracle.test.ts` records from the flag-off client code and verifies on
 // every run. Each scenario runs the port on a `MemoryHost` bound to the same fake world (the token
 // counts, vectors, canned answers, random sequence, and vector store the client mocks are bound to),
@@ -36,8 +36,9 @@ import {
 // requests, summarizer inputs, completions bodies, embedding requests, local model runs, cache keys
 // written, progress payloads, and alerts. A difference is a parity defect to attribute, never a
 // fixture to recapture from the server (the `hanurai-plain` and `hanurai-split-paragraphs` cases were
-// hand-edited on 2026-10-17 for audit GEN-04; see the fixture README). Beside the fixture: the server-only refusal of HypaV3's
-// WebLLM summarization models, and the host's fence and signal reaching the algorithms.
+// hand-edited on 2026-10-17 for the corrected Hanurai prefix and duplicate check; see the fixture
+// README). Beside the fixture: the server-only refusal of HypaV3's WebLLM summarization models, and
+// the host's fence and signal reaching the algorithms.
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures/memory/algorithms.json");
 const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as { capturedFrom: string; cases: Record<string, Outcome> };
@@ -233,7 +234,7 @@ describe("the server ports against the browser fixture", () => {
 });
 
 describe("what the server adds to the algorithms", () => {
-    describe("GEN-03: contextual summary vectors", () => {
+    describe("contextual summary vectors", () => {
         const shared = "Shared paragraph.";
         const cases = [
             {
@@ -343,7 +344,7 @@ describe("what the server adds to the algorithms", () => {
         }
     });
 
-    describe("GEN-04: Hanurai retrieves only dropped document texts", () => {
+    describe("Hanurai retrieves only dropped document texts", () => {
         const cases = [
             {
                 name: "excludes a retained message without whitespace and retrieves a dropped message once without a leading space",

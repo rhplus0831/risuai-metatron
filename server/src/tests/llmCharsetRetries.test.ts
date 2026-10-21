@@ -8,14 +8,14 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { requestDataResponse } from "../llm/request.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 
-// LLM-03 (docs/plan/audit-findings-perf.md, slice 1c): a `banCharacterset` rejection in the outer
-// request loop counts against `requestRetrys` and ends with a failure, and the loop yields a turn of
-// the event loop before every attempt, so a model that answers at once (Echo with no delay) cannot
-// hold the server's main thread. The first part drives `requestChatDataOuter` with finite attempt
-// scripts (an unexpected extra attempt throws, so a lost budget fails instead of spinning). The
-// second part is the audit's reproduction: a real group send over the default runner with the Echo
-// model and the `Latn` ban, in a child process the test kills after a timeout, since before the fix
-// the job never yielded and no timer, stop, or test timeout could end it.
+// A `banCharacterset` rejection in the outer request loop counts against `requestRetrys` and ends
+// with a failure, and the loop yields a turn of the event loop before every attempt, so a model that
+// answers at once (Echo with no delay) cannot hold the server's main thread. The first part drives
+// `requestChatDataOuter` with finite attempt scripts (an unexpected extra attempt throws, so a lost
+// budget fails instead of spinning). The second part reproduces the hang: a real group send over the
+// default runner with the Echo model and the `Latn` ban, in a child process the test kills after a
+// timeout, since before the fix the job never yielded and no timer, stop, or test timeout could end
+// it.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const BANNED = "The model answered in a banned script (Latn)";
@@ -110,7 +110,7 @@ describe("a group send with the Echo model and a banned script", () => {
     };
 
     /**
-     * The audit's reproduction over the real server, the default runner, the real group and
+     * The hang reproduced over the real server, the default runner, the real group and
      * character records, and `POST /api/generations` with `kind: "group"`: the Echo model answers
      * "blocked Latin text" at once, and the providers ban `Latn`. The child counts the runner's
      * request attempts; in `stop` mode it issues the owner's DELETE from a timer 50 ms after the

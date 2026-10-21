@@ -14,8 +14,7 @@ import { normalizeSecrets } from "../data/normalize/secrets.ts";
 import { normalizeUi } from "../data/normalize/ui.ts";
 import { ResourceValidationError, serialize } from "../data/resourceStore.ts";
 
-// Phase 3, slice 3 (`docs/plan/phases/slices/phase-3-settings-sections/server-section-normalizers.md`,
-// "Validation"): the five section normalizers. Their specs and the hand-maintained
+// The five section normalizers. Their specs and the hand-maintained
 // `src/ts/storage/tests/fixtures/boot/boot-snapshot.json` together define the fresh-boot defaults.
 
 const fixtureDir = path.resolve(import.meta.dirname, "../../../src/ts/storage/tests/fixtures/boot");
@@ -44,7 +43,7 @@ function bootDefaults(section: SectionKind): Record<string, unknown> {
     }
     if (section === "llmSecrets") {
         // The named keys by credential id; the per-model-preset and per-custom-model maps are
-        // retired (`docs/plan/model-profiles.md`, O2).
+        // retired.
         record.credentials = {};
     }
     return record;
@@ -190,7 +189,7 @@ function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): 
 }
 
 describe("providers", () => {
-    it("drops the former keep-on-switch copies and their three toggles: they are preset fields now (docs/plan/split-preset.md)", () => {
+    it("drops the former keep-on-switch copies and their three toggles: they are preset fields now", () => {
         const out = normalizeProviders({
             seperateModels: { memory: "m", emotion: "", translate: "", otherAx: "" },
             seperateModelsForAxModels: true,
@@ -217,9 +216,8 @@ describe("providers", () => {
         expectIdempotent(normalizeProviders, { seperateParameters: { memory: {} }, fallbackModels: { model: ["a"] } });
     });
 
-    it("drops a stored model-to-credential map and the profile fields (O7), of any kind", () => {
-        // `docs/plan/model-profiles.md`, product decision 3 and O7: the profile owns the key and
-        // the upstream model and URL of a generic definition.
+    it("drops a stored model-to-credential map and the profile fields, of any kind", () => {
+        // The profile owns the key and the upstream model and URL of a generic definition.
         const profileFields = [
             "nanogptRequestModel",
             "nanogptRequestModelName",
@@ -252,7 +250,7 @@ describe("providers", () => {
 
     it("keeps the fresh-boot constants that setDatabase derived from other fields", () => {
         expect(normalizeProviders(undefined)).toMatchObject({ loreBookToken: 8000 });
-        // The two Ollama constants moved with the other O7 fields to the profile's defaults.
+        // The two Ollama constants moved with the other profile fields to the profile's defaults.
         expect(normalizeModelProfile({})).toMatchObject({ ollamaModelSource: "local", ollamaCloudModel: "" });
     });
 });
@@ -281,7 +279,7 @@ describe("llmSecrets", () => {
     });
 
     it("drops the retired per-model-preset and per-custom-model key maps and the former `presets` map, well-formed or not", () => {
-        // `docs/plan/model-profiles.md`, O2: the named keys are the one place that stores LLM keys.
+        // The named keys are the one place that stores LLM keys.
         expect(Object.hasOwn(normalizeLlmSecrets(undefined), "modelPresets")).toBe(false);
         expect(Object.hasOwn(normalizeLlmSecrets(undefined), "customModels")).toBe(false);
         const input = JSON.parse(
@@ -361,7 +359,7 @@ describe("ui", () => {
         expectIdempotent(normalizeUi, { chatLoadInitialPages: 2.7, chatLoadAdditionalPages: 0.5 });
     });
 
-    it("keeps newChatBinding when it is one of its two values and replaces any other string, or another kind, with the default `inherit` (docs/plan/chat-binding.md)", () => {
+    it("keeps newChatBinding when it is one of its two values and replaces any other string, or another kind, with the default `inherit`", () => {
         expect(normalizeUi(undefined).newChatBinding).toBe(DEFAULT_NEW_CHAT_BINDING);
         expect(normalizeUi({ newChatBinding: "inherit" }).newChatBinding).toBe("inherit");
         expect(normalizeUi({ newChatBinding: "empty" }).newChatBinding).toBe("empty");
@@ -374,7 +372,7 @@ describe("ui", () => {
 });
 
 describe("memoryTranslateMedia", () => {
-    it("defaults llmTranslationTarget to `message`, keeps `rendered`, and replaces any other string, or another kind, with `message` (docs/plan/translation.md decision 9)", () => {
+    it("defaults llmTranslationTarget to `message`, keeps `rendered`, and replaces any other string, or another kind, with `message`", () => {
         expect(normalizeMemoryTranslateMedia(undefined).llmTranslationTarget).toBe("message");
         expect(normalizeMemoryTranslateMedia({}).llmTranslationTarget).toBe("message");
         expect(normalizeMemoryTranslateMedia({ llmTranslationTarget: "message" }).llmTranslationTarget).toBe("message");
@@ -401,7 +399,7 @@ describe("memoryTranslateMedia", () => {
         expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "rendered" });
     });
 
-    it("defaults translatorHistoryMaxTokens to 2048 for a missing, wrong-kind, nonfinite, zero, or negative value and keeps a positive number, fractions included, exactly (docs/plan/translation.md slice 3.3)", () => {
+    it("defaults translatorHistoryMaxTokens to 2048 for a missing, wrong-kind, nonfinite, zero, or negative value and keeps a positive number, fractions included, exactly", () => {
         const budget = (input: unknown) =>
             normalizeMemoryTranslateMedia(input === undefined ? undefined : { translatorHistoryMaxTokens: input })
                 .translatorHistoryMaxTokens;
@@ -419,7 +417,7 @@ describe("memoryTranslateMedia", () => {
         expectIdempotent(normalizeMemoryTranslateMedia, { translatorHistoryMaxTokens: "x" });
     });
 
-    it("turns a stored `bergamot` translator into Google with translation and input translation off, keeps the rest, and drops `htmlTranslation` (docs/plan/translation.md slice 1.5); the legacy global `autoTranslate` is dropped from every record (slice 2.1)", () => {
+    it("turns a stored `bergamot` translator into Google with translation and input translation off, keeps the rest, and drops `htmlTranslation`; the legacy global `autoTranslate` is dropped from every record", () => {
         const bergamot = {
             translatorType: "bergamot",
             translator: "ko",

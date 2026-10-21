@@ -15,17 +15,17 @@ import {
 } from "../prompt/embeddings.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
 
-// Phase 5 slice 10: the server embeddings (`server/src/prompt/embeddings.ts`) over a fake `fetch`,
-// a fake model process, and a real vector cache in a temporary file. The providers: the custom URL
-// (`/embeddings` appended unless present, the settings' model and trimmed key, the `-<model>` key
-// suffix), OpenAI (the stored memory key, or the processor's own), Voyage (document groups and
-// queries, the `|voyageContext3` and `|ctx:` suffixes, the missing-key error), a local model (the
-// model process, `Float32Array` vectors stored as float32). The cache: cold and warm request counts,
-// the batches of 50, duplicates, a `HypaProcessorV2` hit without an `id`, a contextual group with a
-// partial miss embedded whole. The checks: malformed answers refused and not cached; error texts
-// without the keys in their plain, JSON-escaped, and URL-encoded forms, a whitespace-only key not a
-// key; an abort before a cache write, a write of an earlier cache generation dropped, the rate
-// limiter's waiting tasks ended by an abort; `postJson`'s two JSON contracts; `carries`.
+// The server embeddings (`server/src/prompt/embeddings.ts`) over a fake `fetch`, a fake model
+// process, and a real vector cache in a temporary file. The providers: the custom URL (`/embeddings`
+// appended unless present, the settings' model and trimmed key, the `-<model>` key suffix), OpenAI
+// (the stored memory key, or the processor's own), Voyage (document groups and queries, the
+// `|voyageContext3` and `|ctx:` suffixes, the missing-key error), a local model (the model process,
+// `Float32Array` vectors stored as float32). The cache: cold and warm request counts, the batches of
+// 50, duplicates, a `HypaProcessorV2` hit without an `id`, a contextual group with a partial miss
+// embedded whole. The checks: malformed answers refused and not cached; error texts without the keys
+// in their plain, JSON-escaped, and URL-encoded forms, a whitespace-only key not a key; an abort
+// before a cache write, a write of an earlier cache generation dropped, the rate limiter's waiting
+// tasks ended by an abort; `postJson`'s two JSON contracts; `carries`.
 
 type Call = { url: string; headers: Record<string, string>; body: any };
 

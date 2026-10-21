@@ -76,14 +76,13 @@ type CharxPlanEntry = {
 export type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
 
 /**
- * `POST /api/import/charx` (historical `docs/plan/large-asset-import.md` slice 2d): a CharX file (a zip, or a
- * `charxJpeg`: a JPEG, then the zip) as the raw body (`shared/charxImport.ts`), so the tab neither
- * unzips the file nor sends one request per asset. Authenticated before the body is read; no epoch
- * (only content-addressed files are written, and the client adds the character, or the module of
- * `importModule`'s `.charx` branch, itself). The request lifecycle is `serveFileImport`'s
- * (`http/fileImport.ts`), with the module import's refusals and its import slot (409 while either
- * runs); the body is spooled to `save/.tmp/charx-<uuid>/file.charx` under `maxImportBytes` (exempt
- * from the global body limit).
+ * `POST /api/import/charx`: a CharX file (a zip, or a `charxJpeg`: a JPEG, then the zip) as the
+ * raw body (`shared/charxImport.ts`), so the tab neither unzips the file nor sends one request per
+ * asset. Authenticated before the body is read; no epoch (only content-addressed files are
+ * written, and the client adds the character, or the module of `importModule`'s `.charx` branch,
+ * itself). The request lifecycle is `serveFileImport`'s (`http/fileImport.ts`), with the module
+ * import's refusals and its import slot (409 while either runs); the body is spooled to
+ * `save/.tmp/charx-<uuid>/file.charx` under `maxImportBytes` (exempt from the global body limit).
  *
  * The zip is read by its central directory, never by scanning for signatures (a stored entry may
  * hold them). Before anything is written the whole structure is checked from the file: the end
@@ -180,7 +179,7 @@ export async function* charxLines(
             } else if (entry.kind === "module") {
                 moduleData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
             } else {
-                // The client's key (`saveAsset` with its default extension; decision 4).
+                // The client's key (`saveAsset` with its default extension).
                 const key = await writeContentAsset(savePath, snapshots, bytes, signal);
                 if (key === null) {
                     return;

@@ -44,17 +44,16 @@ class AssetTooLargeError extends Error {}
 type ModuleFilePlan = { module: RisuModule; recordsStart: number; records: number };
 
 /**
- * `POST /api/import/module` (historical `docs/plan/large-asset-import.md` slice 2b): a `.risum` module file as
- * the raw body (`shared/moduleImport.ts`), so the tab neither parses the file nor sends one request
- * per asset. Authenticated before the body is read; no epoch (only content-addressed files are
- * written, and the client adds the module record itself). The request lifecycle is
- * `serveFileImport`'s (`http/fileImport.ts`): refused before the body is read for a declared length
- * over `maxImportBytes` (413), another import holding the shared slot (409; the CharX import shares
- * it), maintenance (503 with `Retry-After`), no body (400); the body spooled to
- * `save/.tmp/module-<uuid>/` under `maxImportBytes` (exempt from the global body limit). The whole
- * file is validated from the file before anything is written: a malformed or truncated file is a 400
- * `Invalid module file`, a record over `MAX_MODULE_ASSET_BYTES` a 413. Then the answer is NDJSON
- * (`ModuleImportLine`): each record is read, rpack-decoded, and stored under
+ * `POST /api/import/module`: a `.risum` module file as the raw body (`shared/moduleImport.ts`), so
+ * the tab neither parses the file nor sends one request per asset. Authenticated before the body is
+ * read; no epoch (only content-addressed files are written, and the client adds the module record
+ * itself). The request lifecycle is `serveFileImport`'s (`http/fileImport.ts`): refused before the
+ * body is read for a declared length over `maxImportBytes` (413), another import holding the shared
+ * slot (409; the CharX import shares it), maintenance (503 with `Retry-After`), no body (400); the
+ * body spooled to `save/.tmp/module-<uuid>/` under `maxImportBytes` (exempt from the global body
+ * limit). The whole file is validated from the file before anything is written: a malformed or
+ * truncated file is a 400 `Invalid module file`, a record over `MAX_MODULE_ASSET_BYTES` a 413. Then
+ * the answer is NDJSON (`ModuleImportLine`): each record is read, rpack-decoded, and stored under
  * `assets/<sha256 hex>.png` (skipped when that file exists; each write under the maintenance gate),
  * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }`, or one
  * `{ error }` line at the first failure (nothing more is written). Memory holds the main record and
@@ -117,7 +116,7 @@ export function registerModuleImportRoutes(
                 const bytes = await readAt(file, new Uint8Array(length), position + RECORD_HEADER_BYTES);
                 position += RECORD_HEADER_BYTES + length;
                 decodeRPackInPlace(bytes);
-                // The client's key (`saveAsset` with its default extension; decision 4).
+                // The client's key (`saveAsset` with its default extension).
                 const key = `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
                 if (await storageFileExists(savePath, key)) {
                     assetsSkipped += 1;

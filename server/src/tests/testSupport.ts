@@ -27,9 +27,9 @@ export type TestServerOptions = {
     maxImportBytes?: number;
     /** The generation jobs' runner (the default runs command jobs and sends). */
     generationRunner?: GenerationRunner;
-    /** The default runner's random source (`presetChain`, the group order; Phase 5 slice 9). */
+    /** The default runner's random source (`presetChain`, the group order). */
     generationRandom?: () => number;
-    /** The Web Push transport (`docs/plan/web-push.md`); the default is the real `web-push`. */
+    /** The Web Push transport; the default is the real `web-push`. */
     pushTransport?: PushTransport;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;

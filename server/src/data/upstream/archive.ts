@@ -3,9 +3,9 @@ import { resolveStorageKey } from "../../routes/storage.ts";
 import { ArchiveFormatError, ArchiveRejectedError, type ArchiveRecord, indexArchive, readRecord } from "../archive.ts";
 
 /**
- * Upstream RisuAI `.bin` backups (`docs/plan/upstream-bin-compat.md` S2): the same record container
- * as `../archive.ts`, holding basenames only: `.png` assets, cold-storage payloads, `database.risudat`
- * (written last), and `encryption.risudat` for a Risu Account backup. Readers do not rely on that order.
+ * Upstream RisuAI `.bin` backups: the same record container as `../archive.ts`, holding basenames
+ * only: `.png` assets, cold-storage payloads, `database.risudat` (written last), and
+ * `encryption.risudat` for a Risu Account backup. Readers do not rely on that order.
  */
 export const UPSTREAM_DATABASE_RECORD = "database.risudat";
 const UPSTREAM_ENCRYPTION_RECORD = "encryption.risudat";
@@ -18,7 +18,7 @@ const VERSION_2_RECORDS = new Set(["manifest.json", "resources.sqlite"]);
  */
 const COLD_RECORD_NAME =
     /^(?:coldstorage_)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.json$/;
-/** Largest cold-storage payload `readColdRecord` parses by default (plan decision D1). */
+/** Largest cold-storage payload `readColdRecord` parses by default. */
 export const MAX_COLD_RECORD_BYTES = 64 * 1024 * 1024;
 
 export const UPSTREAM_ENCRYPTED_MESSAGE =

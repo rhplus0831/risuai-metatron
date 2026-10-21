@@ -19,10 +19,8 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 
-// Phase 3, slice 3 (`docs/plan/phases/slices/phase-3-settings-sections/server-section-normalizers.md`,
-// "Validation", and `implementation-plan.md`, "Reviews and checks"): the normalization pass the
-// store runs when it opens and inside `replaceAll`, materialization, idempotence and stable ids
-// across restarts, and the rollback when the pass fails.
+// The normalization pass the store runs when it opens and inside `replaceAll`, materialization,
+// idempotence and stable ids across restarts, and the rollback when the pass fails.
 
 const defaults = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const allDefaults = [...defaults.values()];
@@ -136,8 +134,7 @@ describe("the pass at startup", () => {
         const seqOf = (kind: string) => rawRows(file).find((row) => row.kind === kind)!.seq;
         const seqs = { ui: seqOf("ui"), presets: seqOf("presets"), hotkeys: seqOf("hotkeys") };
         raw(file, "UPDATE resources SET data = ? WHERE kind = 'ui'", '{"zoomsize":150,"unknownKey":1}');
-        // A legacy prompt field is migrated; a model field stored in a prompt preset is dropped
-        // (`docs/plan/split-preset.md`).
+        // A legacy prompt field is migrated; a model field stored in a prompt preset is dropped.
         raw(
             file,
             "UPDATE resources SET data = ? WHERE kind = 'presets'",
@@ -300,12 +297,12 @@ describe("the pass at startup", () => {
     });
 });
 
-describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
+describe("the pass strips preset credentials", () => {
     // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only the prompt
-    // fields, so a preset stored with either (before slice 7, or by hand) is rewritten without them
+    // fields, so a preset stored with either (from before, or by hand) is rewritten without them
     // at the next start, its id kept. The per-model-preset `proxyKey` map `llmSecrets.modelPresets`
-    // is retired (`docs/plan/model-profiles.md`, O2): the same pass rewrites a stored llmSecrets
-    // record without it, keeping every other field.
+    // is retired: the same pass rewrites a stored llmSecrets record without it, keeping every other
+    // field.
     it("rewrites a presets record that carries proxyKey and openAIKey once, keeping ids, and drops the retired llmSecrets.modelPresets map", () => {
         const file = path.join(tempDir(), "resources.sqlite");
         const before = observe(open(file));
@@ -352,16 +349,16 @@ describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
 });
 
 describe("the pass inside replaceAll", () => {
-    // `pluginStorage` stands in for the pre-Phase 3 `root` (removed in slice 6): a Phase 1 singleton the
-    // store does not materialize, whose normalizer keeps the input unchanged.
+    // `pluginStorage` stands in for the former `root` record: a plain record singleton the store does
+    // not materialize, whose normalizer keeps the input unchanged.
     const pluginStorage = defaults.get("pluginStorage")!;
     const characters = defaults.get("characters")!;
-    /** A pre-slice-3 store: only `pluginStorage` and `characters` exist, nothing is materialized. */
-    const phase1 = createKindRegistry([pluginStorage, characters]);
+    /** A store from before the materialized kinds: only `pluginStorage` and `characters` exist. */
+    const oldKinds = createKindRegistry([pluginStorage, characters]);
 
     it("materializes the kinds a snapshot lacks, with the new epoch, and does not fill them from another record", async () => {
         const dir = tempDir();
-        const old = open(path.join(dir, "old.sqlite"), phase1);
+        const old = open(path.join(dir, "old.sqlite"), oldKinds);
         old.put(pluginStorage, "main", { zoomsize: 150, username: "u" }, null);
         old.put(characters, "c", { chaId: "c", name: "C" }, null);
         const snapshotFile = path.join(dir, "old-backup.sqlite");
@@ -447,7 +444,7 @@ describe("the pass inside replaceAll", () => {
 
     it("rolls the whole restore back when the pass fails: data, epoch, and write count stay, and the store keeps working", async () => {
         const dir = tempDir();
-        const old = open(path.join(dir, "old.sqlite"), phase1);
+        const old = open(path.join(dir, "old.sqlite"), oldKinds);
         old.put(pluginStorage, "main", { zoomsize: 150 }, null);
         const snapshotFile = path.join(dir, "old-backup.sqlite");
         await old.backupTo(snapshotFile);
@@ -488,7 +485,7 @@ describe("the pass inside replaceAll", () => {
     });
 });
 
-describe("non-finite numbers under a normalizer's JSON copy (Astra challenge, point 2)", () => {
+describe("non-finite numbers under a normalizer's JSON copy", () => {
     const providers = defaults.get("providers")!;
     const variables = defaults.get("globalChatVariables")!;
     const message = "Resource data contains a non-finite number";

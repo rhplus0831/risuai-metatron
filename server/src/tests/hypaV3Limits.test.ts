@@ -15,14 +15,13 @@ import { hypaMemoryV3 } from "../prompt/memory/hypav3.ts";
 import type { RegexOp, RegexOpResult } from "../scripts/worker.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 
-// Slice 1b of `docs/plan/audit-findings-perf.md` (audit MEM-01 and MEM-02): a HypaV3 preset can no
-// longer hang or stall the server. The shared constructor (and through it the server normalizer)
-// defaults a batch size or query count that is not an integer of at least 1 and any non-finite
-// number; both summarization loops end with an error instead of spinning when the batch does not
-// advance (run in a child process, so a broken guard cannot hang the run); and the summary chunk
-// separator runs on a script worker through `MemoryHost.regex`, with the worker's timeout or the
-// chunking budget returned as the memory step's error, the summaries kept, and an invalid pattern
-// keeping the former double-newline fallback without a worker call.
+// A HypaV3 preset cannot hang or stall the server. The shared constructor (and through it the
+// server normalizer) defaults a batch size or query count that is not an integer of at least 1
+// and any non-finite number; both summarization loops end with an error instead of spinning when
+// the batch does not advance (run in a child process, so a broken guard cannot hang the run); and
+// the summary chunk separator runs on a script worker through `MemoryHost.regex`, with the
+// worker's timeout or the chunking budget returned as the memory step's error, the summaries
+// kept, and an invalid pattern keeping the former double-newline fallback without a worker call.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const MODES = [

@@ -48,7 +48,7 @@ export function serverAppVersion(rootDir: string): string {
 }
 
 /**
- * The server's CBS limits (Phase 5 slice 9b; `shared/cbs/limits.ts`): card text is evaluated on the
+ * The server's CBS limits (`shared/cbs/limits.ts`): card text is evaluated on the
  * main thread, so one template is held to a work count and a wall time, and a job's templates
  * together to an allowance of evaluation time. The numbers are policy, chosen with room for large
  * inline data in card text (a multi-megabyte data URL scans at about 80 ns per character).
@@ -81,14 +81,13 @@ export type JobCbsOptions = {
 };
 
 /**
- * The server's CBS host over a job's scope (Phase 5 slice 8a): what the client host
- * (`src/ts/parser/parser.svelte.ts` `clientCbsHost`, with `risuChatParserScoped`'s preset and
- * persona) answers for the same data. Chat variables read the chat's `scriptstate` with the
- * `defaultVariables`/`templateDefaultVariables` fallback and write through the job; globals read the
- * chat's `GLGlobalVariables` override; the persona is the job's frozen effective one for its chat;
- * modules resolve as the client's `getModules`; the viewport and language are the tab's
- * (`context.client`); `isMobile` is false and the internal function empty, as the client host has
- * them.
+ * The server's CBS host over a job's scope: what the client host (`src/ts/parser/parser.svelte.ts`
+ * `clientCbsHost`, with `risuChatParserScoped`'s preset and persona) answers for the same data. Chat
+ * variables read the chat's `scriptstate` with the `defaultVariables`/`templateDefaultVariables`
+ * fallback and write through the job; globals read the chat's `GLGlobalVariables` override; the
+ * persona is the job's frozen effective one for its chat; modules resolve as the client's
+ * `getModules`; the viewport and language are the tab's (`context.client`); `isMobile` is false and
+ * the internal function empty, as the client host has them.
  *
  * The host carries `options.limits`, so its evaluator is bounded (`shared/cbs/limits.ts`). The
  * default variables are parsed once per source text, not per missing variable.

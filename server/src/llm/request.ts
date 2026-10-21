@@ -1,9 +1,9 @@
-// The server request layer (Phase 5, `request-layer-and-llm-secrets`): a port of
-// `src/ts/process/request/request.ts`'s `requestChatDataMain` and its per-format functions. The
-// client keeps the outer `requestChatData` loop (replacers, the request trigger, retries) and the
-// formats that run in the tab (`Plugin`, `WebLLM`); `POST /api/llm/request` runs this for every
-// other format. The client's module reads (`getDatabase`, `globalFetch`, the selected character,
-// `getUserName`, `risuChatParser`, ...) are the request context's (`arg.ctx`).
+// The server request layer: a port of `src/ts/process/request/request.ts`'s `requestChatDataMain`
+// and its per-format functions. The client keeps the outer `requestChatData` loop (replacers, the
+// request trigger, retries) and the formats that run in the tab (`Plugin`, `WebLLM`);
+// `POST /api/llm/request` runs this for every other format. The client's module reads
+// (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
+// are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
@@ -56,8 +56,8 @@ export interface RequestDataArgumentExtended extends RequestArgs {
 }
 
 /**
- * A job's admitted request (`runInJob`, `docs/plan/request-history-diagnostics.md` slice 6): its id
- * in the request history and, for a failure, the provider's error code. Plain data.
+ * A job's admitted request (`runInJob`): its id in the request history and, for a failure, the
+ * provider's error code. Plain data.
  */
 export type JobRequestInfo = { id: string; providerCode: string | null };
 
@@ -425,7 +425,7 @@ export async function requestChatDataMain(
         targ.customURL = found?.url;
     }
 
-    // The request history's model (`docs/plan/request-history-diagnostics.md`), with its final format.
+    // The request history's model, with its final format.
     ctx.describe?.({
         modelId: aiModel,
         profileId: profile?.id ?? null,

@@ -5,13 +5,13 @@ import { CbsLimitError } from "../../../shared/cbs/limits.ts";
 import type { Database } from "../../../shared/database.ts";
 import { createNodeCbsEvaluator, createNodeCbsHost } from "./cbsHost.ts";
 
-// Audit UI-04 (`docs/plan/audit-findings-perf.md`, slice 1d): the evaluator's call depth of 20
-// counts the parses in progress, not the parses done. Before the fix every parse incremented the
-// caller's `arg.callStack` and never restored it, so the twentieth sibling `{{call::f}}`, the
-// nineteenth message of a `{{history}}` (the registry passes one `matcherArg` to every nested parse)
-// and the twenty-fifth `{{description}}` answered "ERROR: Call stack limit reached". Genuine
-// recursion still stops there. The budget (`limits.ts`) is the bound of a fan-out of calls, which
-// the shared counter used to cap as a side effect; that trade-off is pinned here.
+// The evaluator's call depth of 20 counts the parses in progress, not the parses done. Before the
+// fix every parse incremented the caller's `arg.callStack` and never restored it, so the twentieth
+// sibling `{{call::f}}`, the nineteenth message of a `{{history}}` (the registry passes one
+// `matcherArg` to every nested parse) and the twenty-fifth `{{description}}` answered "ERROR: Call
+// stack limit reached". Genuine recursion still stops there. The budget (`limits.ts`) is the bound
+// of a fan-out of calls, which the shared counter used to cap as a side effect; that trade-off is
+// pinned here.
 
 const ERROR = "ERROR: Call stack limit reached";
 

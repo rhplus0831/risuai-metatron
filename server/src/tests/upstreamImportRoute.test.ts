@@ -26,11 +26,11 @@ import { UPSTREAM_FIXTURE_DATABASE } from "./fixtures/upstream/database.ts";
 import { buildArchive, createResourceTestClient, hex, type ResourceTestClient } from "./testSupport.ts";
 
 /**
- * The upstream RisuAI `.bin` import routes (`routes/backupsUpstream.ts`, `docs/plan/upstream-bin-compat.md`
- * S5): prepare, commit, and cancel over `createTestServer`. The prepare's conversion runs in process
- * (`stageUpstreamImport` as the injected runner, V3: no worker boot in the default suite); the real
- * worker, its heap limit, and the latch are `upstreamImportWorker.test.ts` (slow). The archive is the
- * codec fixture's synthetic database plus two asset records.
+ * The upstream RisuAI `.bin` import routes (`routes/backupsUpstream.ts`): prepare, commit, and cancel
+ * over `createTestServer`. The prepare's conversion runs in process (`stageUpstreamImport` as the
+ * injected runner: no worker boot in the default suite); the real worker, its heap limit, and the
+ * latch are `upstreamImportWorker.test.ts` (slow). The archive is the codec fixture's synthetic
+ * database plus two asset records.
  */
 
 const FIXTURE_CHARACTER = "0f8e3c4a-5b6d-4e7f-8a9b-0c1d2e3f4a5b";
@@ -309,7 +309,7 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
         expect(s.context.upstreamStaging.full).toBe(false);
     });
 
-    it("refuses a Risu Account backup (U4), a version-2 archive, a damaged archive, no body, and a stale epoch before anything streams, writing nothing", async () => {
+    it("refuses a Risu Account backup, a version-2 archive, a damaged archive, no body, and a stale epoch before anything streams, writing nothing", async () => {
         const s = await server();
         const epoch = s.epoch;
         const cases: [string, Uint8Array, string][] = [
@@ -397,7 +397,7 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
     });
 });
 
-describe("changed since review (D13)", () => {
+describe("changed since review", () => {
     it("answers 409 with the count of writes since the prepare, ends no job, and commits once the count is accepted exactly", async () => {
         const s = await server();
         const maintenance = vi.fn(async () => undefined);

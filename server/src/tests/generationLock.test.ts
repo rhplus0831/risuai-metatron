@@ -14,7 +14,7 @@ import {
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 
-// The generation lock as the resource store's guard (Phase 5 slice 5): a change that rewrites or
+// The generation lock as the resource store's guard: a change that rewrites or
 // removes a message a job owns, or deletes its chat or character, is refused with
 // `reason: "generating"` before any revision check, unless it carries the owner's job token. The
 // lock itself is in memory (`createGenerationLock`); the jobs registry is covered by
@@ -33,7 +33,7 @@ const bumped = (token: string, n: number) =>
     token.replace(/:\d+$/, `:${Number(token.slice(token.lastIndexOf(":") + 1)) + n}`);
 /**
  * The chat `k` conflict entry a refused group gets: with `messageIds` naming `b` when one of its ops
- * targets that message by id (data-loss slice 2a), without the field for a whole-chat refusal.
+ * targets that message by id, without the field for a whole-chat refusal.
  */
 const refusal = (revision: string, ops: ChatOp[]) => {
     const targetsB = ops.some(

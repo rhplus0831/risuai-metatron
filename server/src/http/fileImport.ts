@@ -8,10 +8,10 @@ import { iteratorStream } from "./recordStream.ts";
 import { makeStaging, spool } from "./spool.ts";
 
 /**
- * The lifecycle shared by the routes that import one whole file as the raw body and answer NDJSON
- * (historical `docs/plan/large-asset-import.md` slices 2b and 2d): the module import (`routes/importModule.ts`)
- * and the CharX import (`routes/importCharx.ts`). Each route supplies its validation, its refusals,
- * and its lines; `serveFileImport` owns the rest, in this order:
+ * The lifecycle shared by the routes that import one whole file as the raw body and answer NDJSON:
+ * the module import (`routes/importModule.ts`) and the CharX import (`routes/importCharx.ts`). Each
+ * route supplies its validation, its refusals, and its lines; `serveFileImport` owns the rest, in
+ * this order:
  *
  * 1. Refused before the body is read: authentication, a declared length over `maxImportBytes` (413
  *    `File too large`), another import holding the shared slot (409 `Another import is running`),

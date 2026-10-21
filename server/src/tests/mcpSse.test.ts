@@ -2,15 +2,15 @@
 import { describe, expect, it } from "vitest";
 import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
 
-// Phase 5 Stop D fixes (slice 13d): the event framing both MCP clients share (`shared/mcp/sse.ts`),
-// on its own. `SseFramer`: CRLF, LF, and CR line ends (a CR at a chunk end ends its line at once and
-// an LF first in the next non-empty chunk completes it), an empty chunk changing nothing, UTF-8 and
-// line ends split at every byte position, blank lines before an event, several events in a chunk, an
-// unfinished tail never delivered, and the byte bound (the event's text, its internal line ends
-// included and the pending line end excluded; an event before an oversized one is still delivered).
-// `parseSseEvent`: the colon with at most one space removed, comments, multiline data, a field
-// without a colon, unknown fields, and the last `event` field. The clients' own readers are tested
-// with their dispatch: `mcp.test.ts` (the server) and `src/ts/process/mcp/tests/mcplib.test.ts`.
+// The event framing both MCP clients share (`shared/mcp/sse.ts`), on its own. `SseFramer`: CRLF, LF,
+// and CR line ends (a CR at a chunk end ends its line at once and an LF first in the next non-empty
+// chunk completes it), an empty chunk changing nothing, UTF-8 and line ends split at every byte
+// position, blank lines before an event, several events in a chunk, an unfinished tail never
+// delivered, and the byte bound (the event's text, its internal line ends included and the pending
+// line end excluded; an event before an oversized one is still delivered). `parseSseEvent`: the
+// colon with at most one space removed, comments, multiline data, a field without a colon, unknown
+// fields, and the last `event` field. The clients' own readers are tested with their dispatch:
+// `mcp.test.ts` (the server) and `src/ts/process/mcp/tests/mcplib.test.ts`.
 
 const enc = new TextEncoder();
 const bytes = (text: string) => enc.encode(text);

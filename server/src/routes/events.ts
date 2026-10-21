@@ -11,7 +11,7 @@ const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 export type EventSockets = ReturnType<typeof createEventSockets>;
 
 /**
- * The live-update socket (`/api/events/ws`, Phase 6): every committed change the resource store
+ * The live-update socket (`/api/events/ws`): every committed change the resource store
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
  * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
  * `hello` with the epoch; nothing is replayed, so a client reconciles from the revision listing

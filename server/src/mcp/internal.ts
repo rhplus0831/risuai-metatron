@@ -92,9 +92,9 @@ function entryPatch(entries: readonly (readonly [string, unknown])[]) {
 }
 
 /**
- * The internal MCPs that run on the server for a job (Phase 5 slice 12b): `internal:aiaccess`,
- * `internal:risuai`, and `internal:graphmem`. The tools and their logic are the tab's
- * (`shared/mcp/`); what differs is the host each runs on:
+ * The internal MCPs that run on the server for a job: `internal:aiaccess`, `internal:risuai`, and
+ * `internal:graphmem`. The tools and their logic are the tab's (`shared/mcp/`); what differs is the
+ * host each runs on:
  *
  * - `internal:aiaccess` `runLLM` is a request of the job (`services.request`: the job's settings,
  *   tools, and budget). One runs at a time: a `runLLM` asked for while another of the job is running

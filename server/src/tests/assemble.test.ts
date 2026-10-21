@@ -18,16 +18,16 @@ import {
 import { FORWARDED_MODEL_PRESET_KEYS, FORWARDED_PRESET_KEYS, SECTION_FIELDS } from "../../../shared/sections.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
-// Phase 5 slice 9: the prompt golden. The server `preview` job (`server/src/prompt/runner.ts`
-// `runPromptJob`, `server/src/prompt/assemble.ts` `assemblePrompt`) on a real listening server with
-// the default runner, seeded from the baseline scenario (`fixtures/baseline/scenario.json`, applied
-// as the browser capture applied it: the base settings and the fixture's own onto the selected
-// `Default` preset, the selected persona, and the settings sections), must produce the `formated`
-// the browser path produced (`fixtures/baseline/prompts.json`, captured before any server code
-// existed), the `lore` fixture taking the approved delta (`deltas/lore-regex-fix-prompts.json`). A
-// difference here is a parity defect to attribute, never a fixture to recapture. The `presetChain`
-// fixture also pins the `preset` event (the pick with the seeded random), and the `jinja` fixture
-// the `previewPrompt` job's provider body against the captured one.
+// The prompt golden. The server `preview` job (`server/src/prompt/runner.ts` `runPromptJob`,
+// `server/src/prompt/assemble.ts` `assemblePrompt`) on a real listening server with the default
+// runner, seeded from the baseline scenario (`fixtures/baseline/scenario.json`, applied as the
+// browser capture applied it: the base settings and the fixture's own onto the selected `Default`
+// preset, the selected persona, and the settings sections), must produce the `formated` the browser
+// path produced (`fixtures/baseline/prompts.json`, captured before any server code existed), the
+// `lore` fixture taking the approved delta (`deltas/lore-regex-fix-prompts.json`). A difference
+// here is a parity defect to attribute, never a fixture to recapture. The `presetChain` fixture
+// also pins the `preset` event (the pick with the seeded random), and the `jinja` fixture the
+// `previewPrompt` job's provider body against the captured one.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const FIXTURES = path.join(import.meta.dirname, "fixtures/baseline");
@@ -137,9 +137,8 @@ async function startServer(): Promise<Server> {
  * fixture's `settings`, each key to its home (a persona root alias onto the selected persona, a
  * forwarded prompt preset key onto the selected `Default` preset under its field name, a forwarded
  * model key onto the materialized model preset's main profile (`aiModel` as its `modelId`, the
- * profile options as they are; `subModel` the sub slot's model, `docs/plan/model-profiles.md`),
- * else the section holding it); the two extra presets through `normalizePreset`; every character
- * with its chats.
+ * profile options as they are; `subModel` the sub slot's model), else the section holding it);
+ * the two extra presets through `normalizePreset`; every character with its chats.
  */
 async function seed(s: Server, fixture: Fixture) {
     const settings = { ...scenario.baseSettings, ...fixture.settings };
@@ -192,9 +191,9 @@ async function seed(s: Server, fixture: Fixture) {
     }
     if (fixture.name === "presetChain") {
         // The capture's `presetChain` pick switched the whole preset: `Alpha`, a canonical preset,
-        // brought the schema's default model with it. A pick changes the prompt preset only now
-        // (`docs/plan/split-preset.md`), so the model the capture assembled with is seeded as the
-        // job's model preset's profile.
+        // brought the schema's default model with it. A pick now changes the prompt preset only (the
+        // model fields live in model presets), so the model the capture assembled with is seeded as
+        // the job's model preset's profile.
         mainProfile.modelId = PRESET_DEFAULTS.modelId;
         subModel = PRESET_DEFAULTS.modelId!;
     }
@@ -234,8 +233,8 @@ async function seed(s: Server, fixture: Fixture) {
                 characterId: character.chaId,
                 chatId: chat.id,
                 baseRevision: null,
-                // The capture had no chat binding (`docs/plan/chat-binding.md`): each chat is bound to the
-                // ids the preview job sends, keeping a bound persona the fixture holds (else the selected one).
+                // The capture had no chat binding: each chat is bound to the ids the preview job
+                // sends, keeping a bound persona the fixture holds (else the selected one).
                 ops: [
                     {
                         op: "create",

@@ -25,17 +25,16 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
 const json = (value: unknown) => JSON.stringify(value);
 
 /**
- * `applyChatResult` of `src/ts/storage/chatStore.svelte.ts` as one job write (Phase 5 slice 8b):
- * what a trigger changed in its copy of the job's chat (`result`) against the copy it started from
- * (`baseline`), onto the chat as stored now. Messages the trigger removed are removed (one op),
- * added ones are inserted after their predecessor, changed message fields are merged into the
- * stored message, changed chat fields are set or removed; changes made meanwhile by others are
- * kept. A reorder of surviving messages replaces the whole chat, but only when the chat has not
- * changed since the baseline and no message of it is being generated; otherwise the order change
- * is dropped with a warning and the rest applies. Every op goes in one group on the stored
- * revision, so the write is atomic: a change to a message another generation owns fails it whole
- * (the client throws before any write), and the job ends with that error. A gone chat applies
- * nothing.
+ * `applyChatResult` of `src/ts/storage/chatStore.svelte.ts` as one job write: what a trigger
+ * changed in its copy of the job's chat (`result`) against the copy it started from (`baseline`),
+ * onto the chat as stored now. Messages the trigger removed are removed (one op), added ones are
+ * inserted after their predecessor, changed message fields are merged into the stored message,
+ * changed chat fields are set or removed; changes made meanwhile by others are kept. A reorder of
+ * surviving messages replaces the whole chat, but only when the chat has not changed since the
+ * baseline and no message of it is being generated; otherwise the order change is dropped with a
+ * warning and the rest applies. Every op goes in one group on the stored revision, so the write is
+ * atomic: a change to a message another generation owns fails it whole (the client throws before
+ * any write), and the job ends with that error. A gone chat applies nothing.
  */
 export function applyTriggerChat(
     deps: { job: RunningJob; store: ResourceStore; scope: JobScope; lock: MessageGuard },

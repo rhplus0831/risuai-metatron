@@ -174,8 +174,8 @@ describe("payload resolution", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// Phase 5 slice 4: the shared routing (`selectTokenizer`), the server counter
-// (`createTokenCounter`), and the shared token arithmetic (`ChatTokenCounter`).
+// The shared routing (`selectTokenizer`), the server counter (`createTokenCounter`), and the
+// shared token arithmetic (`ChatTokenCounter`).
 // ---------------------------------------------------------------------------------------------
 
 /** A recording stand-in for the server tokenizers: the ids are the family's name length and the text's length. */
@@ -468,7 +468,7 @@ describe("createTokenCounter", () => {
         });
 
         it("two scopes that resolve one aiModel to different models count separately, cached or not", async () => {
-            // The challenge's two-scope case: the cache key carries the model's internalID.
+            // The two-scope case: the cache key carries the model's internalID.
             const { tokenizers } = stubTokenizers();
             const fetchImpl = vi.fn(async (url: string) => ok(url.includes("model-A") ? 7 : 19));
             const counter = createTokenCounter({ tokenizers, fetchImpl: fetchImpl as unknown as typeof fetch });

@@ -21,8 +21,8 @@ import {
 import { allowListenerOrigin } from "./testSupport.ts";
 
 /**
- * The script worker pool (Phase 5 slice 2) under the real `worker.ts` workers. Timing bounds are
- * generous: a budget of a few hundred milliseconds is checked against seconds.
+ * The script worker pool under the real `worker.ts` workers. Timing bounds are generous: a budget of
+ * a few hundred milliseconds is checked against seconds.
  */
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const identity = { characterId: "c1", chatId: "chat1", presetId: "p1", personaId: null };
@@ -209,7 +209,7 @@ describe("the shared pool", () => {
 
         it("hands no answer (undefined or null) to Lua as nil on both paths, and keeps false, zero, and the empty string", async () => {
             // Through wasmoon a JS `null` would be its truthy `null` userdata, which `json.encode`
-            // refuses; the client's functions answer `undefined` (nil) for no answer (slice 8a).
+            // refuses; the client's functions answer `undefined` (nil) for no answer.
             const nullish: LuaHost = {
                 async: {
                     aundef: async () => undefined,

@@ -16,8 +16,8 @@ import {
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
 import { ChatBindingError, loadJobScope } from "../jobs/jobScope.ts";
 
-// `docs/plan/chat-binding.md`, slice 2: the server's check of a chat's binding (`server/src/jobs/chatBinding.ts`)
-// and the job scope that runs it (`loadJobScope`, `server/src/jobs/jobScope.ts`). Pinned:
+// The server's check of a chat's binding (`server/src/jobs/chatBinding.ts`) and the job scope that
+// runs it (`loadJobScope`, `server/src/jobs/jobScope.ts`). Pinned:
 // - `checkChatBinding` in its three modes: `send` refuses an unset field, a gone record, and a pending
 //   review (every problem, in field order) and compares the three sent ids; `chain` does not compare
 //   the prompt preset (a `presetChain` pick); `display` compares only a field bound to a record that

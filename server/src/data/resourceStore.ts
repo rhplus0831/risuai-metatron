@@ -59,7 +59,7 @@ import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
 
 /**
  * Version of the resource database, kept in `PRAGMA user_version`. Version 2 added the chat tables;
- * version 3 (Phase 3) has the same tables and holds the settings sections and collections instead of
+ * version 3 has the same tables and holds the settings sections and collections instead of
  * a `root` record.
  */
 const SCHEMA_VERSION = 3;
@@ -316,7 +316,7 @@ export function createResourceStore(options: {
     file: string;
     kinds: ResourceKindRegistry;
     guard?: MessageGuard;
-    /** Where committed changes are published (Phase 6 live updates). */
+    /** Where committed changes are published (the live updates). */
     feed?: ChangeFeed;
 }) {
     const { kinds, guard, feed } = options;
@@ -1137,18 +1137,18 @@ export function createResourceStore(options: {
         },
 
         /**
-         * One page of a message search (archived `docs/plan/search.md` slice 4a, `shared/messageSearch.ts`):
-         * `LIKE` over each message's text (`$.data`), chats by `seq` descending and messages by
-         * position descending, in synchronous batches (`chatTables.searchBatch`) with `yieldTurn`
-         * between them, on this store's one connection. Without ids it scans every character except
-         * trashed ones (`trashTime`) and the playground; a named character or chat is scanned even
-         * when trashed (`notFound` when it does not exist). The page ends after the row that reaches
-         * `limit` hits or `budgetBytes` (its `next` is that row) or at the end (`next` null). Before
-         * the first batch and after every yield it checks, in order: `signal` (throws its reason), the
-         * store being open (`ResourceStoreClosedError`), the epoch (`MessageSearchEpochError` once a
-         * restore replaced the data), and `between` (the route's maintenance gate). A character's
-         * eligibility and name are read once per page, so trashing one mid-page takes effect on the
-         * next page. Refuses to start inside a store transaction.
+         * One page of a message search (`shared/messageSearch.ts`): `LIKE` over each message's text
+         * (`$.data`), chats by `seq` descending and messages by position descending, in synchronous
+         * batches (`chatTables.searchBatch`) with `yieldTurn` between them, on this store's one
+         * connection. Without ids it scans every character except trashed ones (`trashTime`) and the
+         * playground; a named character or chat is scanned even when trashed (`notFound` when it does
+         * not exist). The page ends after the row that reaches `limit` hits or `budgetBytes` (its
+         * `next` is that row) or at the end (`next` null). Before the first batch and after every
+         * yield it checks, in order: `signal` (throws its reason), the store being open
+         * (`ResourceStoreClosedError`), the epoch (`MessageSearchEpochError` once a restore replaced
+         * the data), and `between` (the route's maintenance gate). A character's eligibility and name
+         * are read once per page, so trashing one mid-page takes effect on the next page. Refuses to
+         * start inside a store transaction.
          */
         async searchMessages(
             request: {
@@ -1832,7 +1832,7 @@ function assertSnapshotLayout(source: DatabaseSync) {
 
 /**
  * Runs the kind's normalizer on the stored form of `input` (`serialize`), so input the store would
- * refuse as output is refused before normalizing: the Phase 3 normalizers copy through JSON
+ * refuse as output is refused before normalizing: the settings normalizers copy through JSON
  * (`plainClone`), which would turn an `Infinity` from `JSON.parse("1e400")` into `null` where
  * `serialize` could no longer see it. `undefined` (a record being materialized) passes as is.
  */
@@ -1918,8 +1918,8 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Opens the connection settings and creates the schema and epoch on first use. Returns the epoch. A
- * version-1 database (Phase 1, characters with embedded chats) and a version-2 one (settings in a
- * `root` record, before Phase 3) are refused: no migration is owed (formats of the implementation phases, the
+ * version-1 database (characters with embedded chats) and a version-2 one (settings in a `root`
+ * record) are refused: no migration is owed (formats the server read during development, the
  * compatibility rule in `docs/structure/persistence.md`).
  */
 function initialize(db: DatabaseSync, file: string): string {
@@ -1958,7 +1958,7 @@ function initialize(db: DatabaseSync, file: string): string {
         );
     } else if (version === 2) {
         throw new Error(
-            `${file} holds resource database version 2 (settings in one root record, before Phase 3), which ` +
+            `${file} holds resource database version 2 (settings in one root record), which ` +
                 "this server no longer reads. It is disposable alpha data: move it away or delete it and " +
                 "restart to begin with an empty database.",
         );

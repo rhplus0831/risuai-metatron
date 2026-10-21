@@ -52,7 +52,7 @@ export type ParentCallback = {
     endJob: () => void;
 };
 
-/** A request as the request layer admits it (`docs/plan/request-history-diagnostics.md`). */
+/** A request as the request layer admits it (the request history's row). */
 export type RequestBegin = {
     requestId: string;
     /** The job it runs for: its own (`runInJob`), the job callback a tab's request runs inside, or none. */
@@ -82,13 +82,13 @@ export type RequestModel = {
  * provider's answer (`TransportOptions.onFirstByte`, at most once), and its end (exactly once). An
  * observer's throw is logged; it never reaches the request.
  *
- * The request history's members (`docs/plan/request-history-diagnostics.md` slice 3) are optional:
- * `prompt` once (the `formated` the layer received, as JSON text, redacted), `describe` once its model
- * is resolved, `exchange` for every transport exchange (`TransportOptions.record`, redacted at the
- * call; also after `finish`, for a body the request ended while it was read), and `finish`'s
- * `detail.error` (a redacted text, for an end other than a success) and `detail.providerCode` (an
- * `error` end's provider error code, read from its last exchange: `providerCodeOf`). Without
- * `exchange`, the transport captures nothing, and no provider code is read.
+ * The request history's members are optional: `prompt` once (the `formated` the layer received, as
+ * JSON text, redacted), `describe` once its model is resolved, `exchange` for every transport
+ * exchange (`TransportOptions.record`, redacted at the call; also after `finish`, for a body the
+ * request ended while it was read), and `finish`'s `detail.error` (a redacted text, for an end other
+ * than a success) and `detail.providerCode` (an `error` end's provider error code, read from its last
+ * exchange: `providerCodeOf`). Without `exchange`, the transport captures nothing, and no provider
+ * code is read.
  */
 export type RequestObserver = {
     begin(request: RequestBegin): void;
@@ -355,7 +355,7 @@ function redactResponse(response: requestDataResponse, redactor: Redactor): requ
 }
 
 /**
- * A request a server job makes in-process (Lua `LLM`, `simpleLLM`, `axLLM` in slice 8a): the job's
+ * A request a server job makes in-process (Lua `LLM`, `simpleLLM`, `axLLM`): the job's
  * frozen settings (`loaded`, read once at the job's start), its derived token scope, and the job's
  * own sinks instead of a tab's SSE stream.
  */
@@ -385,7 +385,7 @@ export type JobRequestSpec = {
      */
     endJob: (message: string, failure?: { requestId: string }) => void;
     /**
-     * The job's MCP tools (slice 12): what the request offers, the job's budget (`charge` is false
+     * The job's MCP tools: what the request offers, the job's budget (`charge` is false
      * once the `limit` calls are spent, which ends the job), and a tool's call. A tool's own failure
      * comes back as a text result; a throw is the job's end.
      */
@@ -396,7 +396,7 @@ export type JobRequestSpec = {
         call(name: string, args: unknown): Promise<RPCToolCallContent[]>;
     };
     /**
-     * The remembered tool calls of the job's chat (`chat.toolCalls`, slice 11b): read as stored now,
+     * The remembered tool calls of the job's chat (`chat.toolCalls`): read as stored now,
      * and a new record written with the chat.
      */
     toolCalls: {
@@ -408,16 +408,16 @@ export type JobRequestSpec = {
 };
 
 /**
- * The live `POST /api/llm/request` requests (`request-layer-and-llm-secrets`). Each request reads its
- * settings from the store by the ids the client sent, runs `requestChatDataMain`, and answers with
- * one ordered SSE stream (`LlmRequestEvent`): `accepted`, side events (logs, notices, inlays, tool
- * records, callbacks), then either `result` or `streaming` with its chunks and exactly one terminal
- * (`result`, `end`, or `error`). A request ends once (`finalize`): its work finished, the client went
- * away (the stream was cancelled or the HTTP request aborted), its parent job callback settled, a
- * fatal callback failure, maintenance, or shutdown. Ending closes the stream at once (an aborted
- * request's terminal is an `error` with the reason), aborts every upstream fetch, rejects every
- * pending callback, and fences every later event, whether or not the adapter's work has stopped;
- * that work drains in the background (`dispose` waits for it, bounded).
+ * The live `POST /api/llm/request` requests. Each request reads its settings from the store by the
+ * ids the client sent, runs `requestChatDataMain`, and answers with one ordered SSE stream
+ * (`LlmRequestEvent`): `accepted`, side events (logs, notices, inlays, tool records, callbacks), then
+ * either `result` or `streaming` with its chunks and exactly one terminal (`result`, `end`, or
+ * `error`). A request ends once (`finalize`): its work finished, the client went away (the stream was
+ * cancelled or the HTTP request aborted), its parent job callback settled, a fatal callback failure,
+ * maintenance, or shutdown. Ending closes the stream at once (an aborted request's terminal is an
+ * `error` with the reason), aborts every upstream fetch, rejects every pending callback, and fences
+ * every later event, whether or not the adapter's work has stopped; that work drains in the
+ * background (`dispose` waits for it, bounded).
  */
 export function createLlmRequests(options: LlmRequestsOptions) {
     const now = options.now ?? Date.now;
@@ -1120,10 +1120,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     }
 
     /**
-     * A request for a chat (`arg.chatRef`) runs on that chat's ids (`docs/plan/chat-binding.md`):
-     * inside a callback of that chat's job, on the job's targets (a `presetChain` pick included);
-     * otherwise on the chat's complete binding, and a chat that does not exist is refused (404). A
-     * request without a chat is not checked (decision 10).
+     * A request for a chat (`arg.chatRef`) runs on that chat's ids: inside a callback of that
+     * chat's job, on the job's targets (a `presetChain` pick included); otherwise on the chat's
+     * complete binding, and a chat that does not exist is refused (404). A request without a chat
+     * is not checked.
      */
     function chatRequestRefusal(
         body: LlmRequestBody,

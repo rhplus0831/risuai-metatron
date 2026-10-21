@@ -1,10 +1,10 @@
 /**
- * The server generation lock (Phase 5, PLAN.md Decision 4): the message a generation job writes is
- * owned by that job from its `begin` until its final write is applied or the job ends. The resource
- * store consults it (`MessageGuard`) inside every transaction that could rewrite or remove an owned
- * message, and refuses the write unless it carries the owner's job token. Tokens never leave the
- * process; a client-supplied generation id grants nothing. In memory only: a server restart clears
- * it, and the Phase 2 fence then closes on the next ordinary write.
+ * The server generation lock: the message a generation job writes is owned by that job from its
+ * `begin` until its final write is applied or the job ends. The resource store consults it
+ * (`MessageGuard`) inside every transaction that could rewrite or remove an owned message, and
+ * refuses the write unless it carries the owner's job token. Tokens never leave the process; a
+ * client-supplied generation id grants nothing. In memory only: a server restart clears it, and the
+ * message's generation fence then closes on the next ordinary write.
  */
 
 export type MessageOwner = { jobId: string; generationId: string; token: string };

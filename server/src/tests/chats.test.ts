@@ -405,7 +405,7 @@ describe("prepareChatOrders and countChatOperations", () => {
     });
 });
 
-describe("chat.toolCalls (slice 11b)", () => {
+describe("chat.toolCalls", () => {
     const record = (id: string, response: unknown[] = [{ type: "text", text: "4" }]) => ({
         call: { id, name: "rollDice", arg: '{"sides":6}' },
         response,
@@ -523,7 +523,7 @@ describe("chat.toolCalls (slice 11b)", () => {
     });
 });
 
-describe("patchMessage and meta.mergeUnset (data-loss slice 1a)", () => {
+describe("patchMessage and meta.mergeUnset", () => {
     const group = (ops: unknown[]) => ({ characterId: "c", chatId: "k", baseRevision: "e:1:1", ops });
     const prepare = (op: unknown) => prepareChatGroups([group([op])])[0];
     const opRejects = (op: unknown, error: string) =>

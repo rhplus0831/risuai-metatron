@@ -300,7 +300,7 @@ describe("a patch of a shallowNormalize kind", () => {
     });
 });
 
-// Slice 3g: observe both the stored result and its feed, including the work avoided by the fast path.
+// Observe both the stored result and its feed, including the work avoided by the fast path.
 describe("general record patch writes", () => {
     it("patches pluginStorage without parsing or serializing its unchanged payload, and publishes a detached field diff", () => {
         const s = side(FAST);

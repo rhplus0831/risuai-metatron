@@ -1,6 +1,6 @@
 {
   "readme": [
-    "The CBS host-parity cases of Phase 5 slice 3: the same strings evaluated by the client wrapper",
+    "The CBS host-parity cases: the same strings evaluated by the client wrapper",
     "(src/ts/parser/tests/cbs/hostParity.test.ts, happy-dom, risuChatParser with the live-database host)",
     "and by the shared evaluator under plain Node (server/src/tests/cbs.test.ts, createNodeCbsHost).",
     "The expected values are hand-derived from the registry and evaluator code and pin the legacy",

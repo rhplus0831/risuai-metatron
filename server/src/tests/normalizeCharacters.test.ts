@@ -13,12 +13,11 @@ import {
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
 
-// Phase 6 slice 5b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "5b as built", "Validation": the character normalizer tests): the shared pure helper
-// (`normalizeCharacter`: purity, fresh mutable defaults, supplied values and unknown or prototype-named
-// keys kept, `null` filled in its position, a byte-stable second pass, both character types, every
-// inlay mode, the group repair and the non-list refusal), the server's `characters` normalizer on a
-// write (and its refusal), and the startup pass rewriting a stored character once, then nothing.
+// The character normalizer tests: the shared pure helper (`normalizeCharacter`: purity, fresh mutable
+// defaults, supplied values and unknown or prototype-named keys kept, `null` filled in its position,
+// a byte-stable second pass, both character types, every inlay mode, the group repair and the
+// non-list refusal), the server's `characters` normalizer on a write (and its refusal), and the
+// startup pass rewriting a stored character once, then nothing.
 
 const SINGLE_DEFAULTS = [
     "desc",

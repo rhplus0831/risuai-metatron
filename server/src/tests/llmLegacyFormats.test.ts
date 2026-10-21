@@ -9,11 +9,11 @@ import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { createLlmRequests, type LlmRequestsOptions, type RequestObserver } from "../llm/requests.ts";
 
-// Phase 5 slice 7a, the recorded provider bodies of the formats whose client functions lived in
+// The recorded provider bodies of the formats whose client functions lived in
 // `src/ts/process/request/request.ts` itself (NovelAI, Kobold, Cohere, NovelList, Horde, Echo) and
 // so have no client module left to run beside the port (`serverParity.test.ts` covers the others).
-// The expectations are the bodies the client built at `250c0f96`, from the same settings; a
-// change in `server/src/llm/request.ts` or in the settings the port reads shows here.
+// The expectations are the bodies the client built at `250c0f96`, from the same settings; a change
+// in `server/src/llm/request.ts` or in the settings the port reads shows here.
 
 const SECRETS = {
     novelai: "nai-SENTINEL",
@@ -41,7 +41,7 @@ function harness(
         ui: { autoSuggestPrefix: "" },
         customModels: [],
         // `preset` mixes the prompt preset's fields and the profile's (`aiModel` is its `modelId`);
-        // each normalizer keeps its own (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md`).
+        // each normalizer keeps its own.
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 250, temperature: 60, ...preset }]),
         modelProfiles: normalizeModelProfiles([{ id: "main", name: "main", ...preset, modelId: preset.aiModel }]),
         modelPresets: normalizeModelPresets([
@@ -355,7 +355,7 @@ describe("the prompt preset's context size override on the server", () => {
     });
 });
 
-describe("Horde's first byte (request history slice 1)", () => {
+describe("Horde's first byte", () => {
     // Horde answers only in a response that ends the request (`requestHorde`'s `watchHorde`): a
     // refused submit at its first chunk; an impossible or finished poll, or a submit or poll whose
     // body cannot be read, at the first chunk it kept, on the layer's clock; nothing for an accepted

@@ -20,18 +20,18 @@ import {
 import { runRegexOp } from "../scripts/worker.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 
-// Phase 5 slice 8b: the server trigger runtime (`server/src/prompt/triggers.ts`), the port of the
-// client's `runTrigger`, over controlled job services, the real regex engine (`runRegexOp`, which
-// the worker runs), and the real command executor for the `/trigger` route. Expected values are
-// derived from the client's effect switch (`src/ts/process/triggers.ts`), not from the port:
-// variables and their precedence, the immediate `scriptstate`/note writes (none in display runs),
-// control flow, the manual-name and mode filters, the allowlists and the bare returns, the array,
-// dictionary, string, and calculator effects with the client's fallback values, the evaluation
-// order of an output name against its value, the six regex sites with the client's error behavior
-// and its replacer quirks, the chat, character, persona, and UI effects, `triggerlua` on the working
-// copy with the character-patch listener, recursion (the depth rule, the shared effect limit on both
-// routes without a stack overflow), the returned temporary variables, and the cancellation fences
-// (an abort or a fatal failure never becomes an effect's fallback value, nor a later service call).
+// The server trigger runtime (`server/src/prompt/triggers.ts`), the port of the client's
+// `runTrigger`, over controlled job services, the real regex engine (`runRegexOp`, which the worker
+// runs), and the real command executor for the `/trigger` route. Expected values are derived from
+// the client's effect switch (`src/ts/process/triggers.ts`), not from the port: variables and their
+// precedence, the immediate `scriptstate`/note writes (none in display runs), control flow, the
+// manual-name and mode filters, the allowlists and the bare returns, the array, dictionary, string,
+// and calculator effects with the client's fallback values, the evaluation order of an output name
+// against its value, the six regex sites with the client's error behavior and its replacer quirks,
+// the chat, character, persona, and UI effects, `triggerlua` on the working copy with the
+// character-patch listener, recursion (the depth rule, the shared effect limit on both routes
+// without a stack overflow), the returned temporary variables, and the cancellation fences (an abort
+// or a fatal failure never becomes an effect's fallback value, nor a later service call).
 
 const m = (id: string, data: string, role: "user" | "char" = "user"): Message => ({ role, data, chatId: id });
 const v = (value: string) => ({ value, valueType: "value" });

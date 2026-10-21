@@ -41,11 +41,11 @@ import { ResourceValidationError } from "./resourceStore.ts";
  * `materialize` kind is a singleton the store creates as `normalize(undefined)` whenever it is missing
  * (at startup and after a restore), so a client always finds it.
  *
- * A write-only kind (`llmSecrets`, Phase 5 slice 7b) has `project` and `prepareWrite`: the resource
- * routes return `project(data)` wherever a record reaches a client (the stored data stays as it is
- * for the server), and a plain write's data is `prepareWrite(incoming, stored)` before it is
- * normalized (it may refuse with `ResourceValidationError`). Both run in the same synchronous block
- * as the write, so they are atomic with its revision check.
+ * A write-only kind (`llmSecrets`) has `project` and `prepareWrite`: the resource routes return
+ * `project(data)` wherever a record reaches a client (the stored data stays as it is for the server),
+ * and a plain write's data is `prepareWrite(incoming, stored)` before it is normalized (it may refuse
+ * with `ResourceValidationError`). Both run in the same synchronous block as the write, so they are
+ * atomic with its revision check.
  */
 export interface ResourceKind<T = unknown> {
     readonly name: string;
@@ -99,7 +99,7 @@ function requireOptionalNumber(record: Record<string, unknown>, key: string, wha
     }
 }
 
-/** A Phase 3 settings kind: a singleton the store materializes, normalized by `normalize`. */
+/** A settings section or collection kind: a singleton the store materializes, normalized by `normalize`. */
 function settingsKind(
     name: string,
     normalize: (input: unknown) => unknown,
@@ -118,8 +118,8 @@ function settingsKind(
 const inlayTypes = new Set(["image", "video", "audio", "signature"]);
 
 /**
- * The Phase 1 kinds check minimum shapes and return the input unchanged, except `presets`, which
- * gets the canonical preset schema. The Phase 3 sections and collections
+ * The plain record kinds check minimum shapes and return the input unchanged, except `presets`,
+ * which gets the canonical preset schema. The settings sections and collections
  * (`server/src/data/normalize/`) apply their defaults and migrations, which `setDatabase` applied on
  * the client before.
  */
@@ -128,7 +128,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.presets,
         schemaVersion: 1,
         singleton: true,
-        // Created by the server like the Phase 3 kinds, so a selection always has a preset.
+        // Created by the server like the settings kinds, so a selection always has a preset.
         materialize: true,
         normalize: (input) => normalizePresetCollection(input),
     },

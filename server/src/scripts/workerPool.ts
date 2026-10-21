@@ -838,8 +838,8 @@ export function createScriptWorkerPool(options: {
         },
 
         /**
-         * Runs the regex script engine on a worker (Phase 5 slice 9: user regexes never run on the
-         * main thread), under `cpuMs` of the worker's own time. A failure is reported, never thrown.
+         * Runs the regex script engine on a worker (user regexes never run on the main thread), under
+         * `cpuMs` of the worker's own time. A failure is reported, never thrown.
          */
         async runScripts(
             input: RegexScriptsInput & { identity: LuaIdentity; cpuMs?: number },

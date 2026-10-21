@@ -29,7 +29,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
     let base = "";
     let epoch = "";
     let signer: Awaited<ReturnType<typeof createSigner>>;
-    /** The chat's binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names. */
+    /** The chat's binding: the default records' ids, which every job names. */
     let bound = { presetId: "", modelPresetId: "", personaId: "" };
     /** The steps the current test hands the runner, in order; the runner waits for each. */
     let steps: Step[] = [];
@@ -160,7 +160,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     };
     const createOk = async (kind = "send", clientId = "tab") => {
-        // A command job carries what it runs (slice 8a); the route refuses `command` on any other kind.
+        // A command job carries what it runs; the route refuses `command` on any other kind.
         const command = kind === "command" ? { command: { type: "button", data: "" } } : {};
         const res = await create({ kind, context: await context(), clientId, ...command });
         expect(res.status).toBe(200);
@@ -882,7 +882,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             ws.onclose = () => resolve("closed");
         });
         expect(unknown).toBe("closed");
-        // The live-update socket on the same dispatcher (Phase 6): a JWT is admitted and gets `hello`.
+        // The live-update socket on the same dispatcher: a JWT is admitted and gets `hello`.
         const feedFrames: { type: string; epoch?: string }[] = [];
         let feedOpened = false;
         const feedJwt = await signer.jwt();

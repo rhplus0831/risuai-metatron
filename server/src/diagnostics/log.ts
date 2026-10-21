@@ -16,13 +16,13 @@ import {
 } from "../../../shared/diagnostics.ts";
 
 /**
- * The server's diagnostic events (`docs/plan/request-history-diagnostics.md` slice 6). Content-free
- * by construction (decision 9): a closed set of kinds, a closed set of fields each with its own
- * check (a value that fails it is left out), and of an error only its class name (a known one,
- * else `?`) and the first application frame of its stack (file, line, column), never its message.
- * An event is one console line, `[Generation] failed job=<id> request=<id> stage=<stage> …`. With
- * a recorder (the server context's journal, slice 7), a caught fault (every kind but
- * `generation.failed`, whose fields the job's own `job` event carries) is also a `runtime` event.
+ * The server's diagnostic events. Content-free by construction: a closed set of kinds, a closed set
+ * of fields each with its own check (a value that fails it is left out), and of an error only its
+ * class name (a known one, else `?`) and the first application frame of its stack (file, line,
+ * column), never its message. An event is one console line,
+ * `[Generation] failed job=<id> request=<id> stage=<stage> …`. With a recorder (the server context's
+ * journal), a caught fault (every kind but `generation.failed`, whose fields the job's own `job`
+ * event carries) is also a `runtime` event.
  */
 export const LOG_EVENT_KINDS = [
     /** A job ended with an error other than its owner's abort. */
