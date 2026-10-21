@@ -132,8 +132,27 @@ async function boot() {
         expect(booted.fake.batchCount()).toBe(batches);
         return answer;
     };
+    /**
+     * `unchanged` for several calls run in turn, their answers in order: after each, the mirror is as
+     * it was before the first, and a flush sends nothing and leaves the server as it was, so a write a
+     * later call undoes still shows. The texts before are taken once, not once per call.
+     */
+    const unchangedEach = async (acts: (() => Promise<string>)[]) => {
+        const mirror = booted.mirrorText();
+        const serverBefore = booted.serverText();
+        const batches = booted.fake.batchCount();
+        const answers: string[] = [];
+        for (const act of acts) {
+            answers.push(await act());
+            expect(booted.mirrorText()).toBe(mirror);
+            await booted.sync.flushResources();
+            expect(booted.serverText()).toBe(serverBefore);
+            expect(booted.fake.batchCount()).toBe(batches);
+        }
+        return answers;
+    };
     const saved = (id = "c") => booted.record("characters", id);
-    return { ...booted, handler, call, other, hold, unchanged, saved };
+    return { ...booted, handler, call, other, hold, unchanged, unchangedEach, saved };
 }
 
 beforeAll(() => warmMutationGraph(() => import("../characters")), 60_000);
@@ -302,7 +321,7 @@ describe("write tools on a character that is not selected", () => {
 
 describe("nothing is written", () => {
     it("when the user denies the consent prompt, for every write tool", async () => {
-        const { call, unchanged, characterStore, sync } = await boot();
+        const { call, unchangedEach, characterStore, sync } = await boot();
         characterStore.updateCharacter("c", {
             globalLore: [lore("Town", "t")],
             customscript: [regex("a")],
@@ -319,10 +338,13 @@ describe("nothing is written", () => {
             ["risu-delete-character-additional-assets", { id: "c", assetName: "img" }],
             ["risu-set-character-lua-script", { id: "c", code: "-- x" }],
         ];
-        for (const [tool, args] of writes) {
-            consent.queue.push(false);
-            expect(await unchanged(() => call(tool, args))).toBe("Access denied by user.");
-        }
+        const answers = await unchangedEach(
+            writes.map(([tool, args]) => () => {
+                consent.queue.push(false);
+                return call(tool, args);
+            }),
+        );
+        expect(answers).toEqual(writes.map(() => "Access denied by user."));
         expect(consent.prompts).toHaveLength(writes.length);
     });
 
@@ -343,7 +365,7 @@ describe("nothing is written", () => {
     });
 
     it("when a field is unknown or inherited (constructor, toString, a parsed __proto__), even next to valid ones", async () => {
-        const { call, unchanged } = await boot();
+        const { call, unchangedEach } = await boot();
         const bad: Record<string, unknown>[] = [
             { name: "Changed", nope: 1 },
             { name: "Changed", constructor: "bad" },
@@ -352,12 +374,15 @@ describe("nothing is written", () => {
             { hasOwnProperty: 1 },
             { id: "other" },
         ];
-        for (const data of bad) {
+        // Named before the calls, which receive the same objects.
+        const expected = bad.map((data) => {
             const field = Object.keys(data).find((key) => !["name", "description"].includes(key));
-            expect(await unchanged(() => call("risu-set-character-info", { id: "c", data }))).toBe(
-                `Error: Field ${field} does not exist on character c or it isn't allowed to be modified.`,
-            );
-        }
+            return `Error: Field ${field} does not exist on character c or it isn't allowed to be modified.`;
+        });
+        const answers = await unchangedEach(
+            bad.map((data) => () => call("risu-set-character-info", { id: "c", data })),
+        );
+        expect(answers).toEqual(expected);
     });
 
     it("when the mutation refuses the patch (a non-data value) or the id names a group", async () => {

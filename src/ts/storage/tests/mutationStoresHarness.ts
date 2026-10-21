@@ -152,6 +152,23 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
         expect(serverText()).toBe(server);
         expect(fake.batchCount()).toBe(batches);
     };
+    /**
+     * `refused` for a list of mutations: after each, the mirror is as it was before the first, and a
+     * flush sends nothing and leaves the server as it was, so a change by any of them shows even when
+     * a later one would undo it. The texts before are taken once, not once per mutation.
+     */
+    const refusedEach = async (mutations: (() => unknown)[], errorClass: new (...args: any[]) => Error) => {
+        const mirror = mirrorText();
+        const server = serverText();
+        const batches = fake.batchCount();
+        for (const mutate of mutations) {
+            expect(mutate).toThrow(errorClass);
+            expect(mirrorText()).toBe(mirror);
+            await sync.flushResources();
+            expect(serverText()).toBe(server);
+            expect(fake.batchCount()).toBe(batches);
+        }
+    };
     const record = (kind: string, id = "main") => fake.record(kind, id)?.data as any;
     const character = (id: string): any => characterList().find((entry: any) => entry?.chaId === id);
     return {
@@ -178,5 +195,6 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
         serverText,
         mirrorText,
         refused,
+        refusedEach,
     };
 }

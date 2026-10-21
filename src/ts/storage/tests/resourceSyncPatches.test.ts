@@ -835,8 +835,10 @@ describe("modules item patches another tab committed", () => {
         noNotice();
     }, 20_000);
     it("reads the record whole for a patch it cannot take: a base it does not hold, a malformed patch, an unknown or omitted item, a field form on modules, an item form on a character, a patch over 64 KiB", async () => {
+        // Small modules: the size that matters is the 70,000-byte patch below; projecting the boot's large
+        // asset list on every read only costs time.
         const { fake, sync, live, settings, character, record, revision, reads, patchModules, settle, noNotice } =
-            await boot();
+            await boot((fake) => fake.set("modules", "main", [module("m1"), module("m2"), module("m3")]));
         const craft = (kind: string, revision: string, patch: unknown) =>
             sync.noteRemoteChanges({
                 resources: [{ kind, id: kind === "characters" ? "c" : "main", revision, patch: patch as never }],
@@ -1354,7 +1356,11 @@ describe("patches of the other mirrored records", () => {
     it.each(["feed", "hydration"] as const)(
         "rebuilds a dirty tab's 409 from matching %s data, retaining merge, discard and lost-response behavior",
         async (delivery) => {
-            const h = await boot((fake) => fake.set("statics", "main", { messages: 4, imports: 0 }));
+            // Small modules: projecting the boot's large asset list on every cycle only costs time here.
+            const h = await boot((fake) => {
+                fake.set("statics", "main", { messages: 4, imports: 0 });
+                fake.set("modules", "main", [module("m1"), module("m2"), module("m3")]);
+            });
             h.live.paused = true;
             const publish = (kind: string, id: string, patch: unknown) => {
                 h.fake.store.applyChanges({
@@ -1406,7 +1412,8 @@ describe("patches of the other mirrored records", () => {
     it.each(["missing", "older feed", "wrong base", "older hydration"])(
         "reads a conflicting record when the available copy is %s",
         async (mode) => {
-            const h = await boot();
+            // Small modules: projecting the boot's large asset list on every cycle only costs time here.
+            const h = await boot((fake) => fake.set("modules", "main", [module("m1"), module("m2"), module("m3")]));
             h.live.paused = true;
             h.settings.modules[1].name = "local";
             const base = h.revision("modules");

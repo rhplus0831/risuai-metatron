@@ -140,9 +140,28 @@ async function boot() {
         expect(booted.fake.batchCount()).toBe(batches);
         return answer;
     };
+    /**
+     * `unchanged` for several calls run in turn, their answers in order: after each, the mirror is as
+     * it was before the first, and a flush sends nothing and leaves the server as it was, so a write a
+     * later call undoes still shows. The texts before are taken once, not once per call.
+     */
+    const unchangedEach = async (acts: (() => Promise<string>)[]) => {
+        const mirror = booted.mirrorText();
+        const serverBefore = booted.serverText();
+        const batches = booted.fake.batchCount();
+        const answers: string[] = [];
+        for (const act of acts) {
+            answers.push(await act());
+            expect(booted.mirrorText()).toBe(mirror);
+            await booted.sync.flushResources();
+            expect(booted.serverText()).toBe(serverBefore);
+            expect(booted.fake.batchCount()).toBe(batches);
+        }
+        return answers;
+    };
     const savedModule = (id = "m") => booted.record("modules").find((module: any) => module.id === id);
     const module = (id = "m") => booted.collectionStore.findModule(id) as any;
-    return { ...booted, handler, call, hold, unchanged, savedModule, module };
+    return { ...booted, handler, call, hold, unchanged, unchangedEach, savedModule, module };
 }
 
 beforeAll(() => warmMutationGraph(() => import("../modules")), 60_000);
@@ -290,24 +309,28 @@ describe("nothing is written", () => {
     ];
 
     it("to an MCP module or an unknown id, for every write tool, without a prompt", async () => {
-        const { call, unchanged } = await boot();
-        for (const [tool, args] of writes) {
-            expect(await unchanged(() => call(tool, { ...args, id: "mcp" }))).toBe(
-                "Error: Module with ID mcp not found.",
-            );
-            expect(await unchanged(() => call(tool, { ...args, id: "nope" }))).toBe(
-                "Error: Module with ID nope not found.",
-            );
-        }
+        const { call, unchangedEach } = await boot();
+        const answers = await unchangedEach(
+            writes.flatMap(([tool, args]) => [
+                () => call(tool, { ...args, id: "mcp" }),
+                () => call(tool, { ...args, id: "nope" }),
+            ]),
+        );
+        expect(answers).toEqual(
+            writes.flatMap(() => ["Error: Module with ID mcp not found.", "Error: Module with ID nope not found."]),
+        );
         expect(consent.prompts).toEqual([]);
     });
 
     it("when the user denies the consent prompt, for every write tool", async () => {
-        const { call, unchanged } = await boot();
-        for (const [tool, args] of writes) {
-            consent.queue.push(false);
-            expect(await unchanged(() => call(tool, { ...args, id: "m" }))).toBe("Access denied by user.");
-        }
+        const { call, unchangedEach } = await boot();
+        const answers = await unchangedEach(
+            writes.map(([tool, args]) => () => {
+                consent.queue.push(false);
+                return call(tool, { ...args, id: "m" });
+            }),
+        );
+        expect(answers).toEqual(writes.map(() => "Access denied by user."));
         expect(consent.prompts).toHaveLength(writes.length);
     });
 
@@ -327,7 +350,7 @@ describe("nothing is written", () => {
     });
 
     it("when an info field has the wrong type: neither the module nor the enabled list changes", async () => {
-        const { call, unchanged, record, settings } = await boot();
+        const { call, unchangedEach, record, settings } = await boot();
         const bad: [Record<string, unknown>, string][] = [
             [{ name: "Changed", enabled: "false" }, "Error: Field enabled must be a boolean."],
             [{ enabled: 1 }, "Error: Field enabled must be a boolean."],
@@ -337,9 +360,14 @@ describe("nothing is written", () => {
             [{ description: ["d"] }, "Error: Field description must be a string."],
             [{ enabled: true, customModuleToggle: () => 1 }, "Error: Field customModuleToggle must be a string."],
         ];
-        for (const [data, answer] of bad) {
-            expect(await unchanged(() => call("risu-set-module-info", { id: "m", data }))).toBe(answer);
-        }
+        const answers = await unchangedEach(
+            bad.map(
+                ([data]) =>
+                    () =>
+                        call("risu-set-module-info", { id: "m", data }),
+            ),
+        );
+        expect(answers).toEqual(bad.map(([, answer]) => answer));
         expect(settings.enabledModules).toEqual([]);
         expect(record("enabledModules")).toEqual([]);
     });

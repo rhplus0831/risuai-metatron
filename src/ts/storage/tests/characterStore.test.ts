@@ -78,8 +78,8 @@ describe("updateCharacter", () => {
     });
 
     it("refuses the fixed fields, prototype names, and non-data values, and changes nothing", async () => {
-        const { characterStore, refused, validation } = await boot();
-        for (const patch of [
+        const { characterStore, refusedEach, validation } = await boot();
+        const patches = [
             { chats: [] },
             { chatPage: 1 },
             { reloadKeys: [] },
@@ -90,10 +90,12 @@ describe("updateCharacter", () => {
             { desc: Number.NaN },
             { desc: 1n },
             { desc: new Date() },
-        ]) {
-            await refused(() => characterStore.updateCharacter("c", patch), validation.MutationValidationError);
-        }
-        await refused(() => characterStore.updateCharacter("c", "no" as any), validation.MutationValidationError);
+            "no" as any,
+        ];
+        await refusedEach(
+            patches.map((patch) => () => characterStore.updateCharacter("c", patch)),
+            validation.MutationValidationError,
+        );
     });
 
     it("returns false for a character that does not exist, without sending anything", async () => {
@@ -273,23 +275,27 @@ describe("checkCharacterInput and the render key", () => {
     });
 
     it("refuses a root that is not a plain object, or a non-JSON field next to the key, and changes nothing", async () => {
-        const { characterStore, refused, validation } = await boot();
+        const { characterStore, refusedEach, validation } = await boot();
         class Character {
             chaId = "c";
             name = "instance";
         }
-        for (const bad of [
+        const bads = [
             new Date(0),
             new Map([["chaId", "c"]]),
             new Character(),
             Object.create({ chaId: "c", name: "inherited id" }),
             { chaId: "c", reloadKeys: 1, desc: () => 1 },
             { chaId: "c", reloadKeys: 1, desc: 1n },
-        ]) {
-            await refused(() => characterStore.replaceCharacterFields(bad), validation.MutationValidationError);
-            await refused(() => characterStore.addCharacter(bad), validation.MutationValidationError);
-            await refused(() => characterStore.replaceCharacterAt(0, bad), validation.MutationValidationError);
-        }
+        ];
+        await refusedEach(
+            bads.flatMap((bad) => [
+                () => characterStore.replaceCharacterFields(bad),
+                () => characterStore.addCharacter(bad),
+                () => characterStore.replaceCharacterAt(0, bad),
+            ]),
+            validation.MutationValidationError,
+        );
         // A null-prototype object is plain data.
         const bare = Object.assign(Object.create(null), { chaId: "c", name: "bare" });
         expect(characterStore.replaceCharacterFields(bare)).toBe(true);

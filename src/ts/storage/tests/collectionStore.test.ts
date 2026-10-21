@@ -193,8 +193,8 @@ describe("updateSettings", () => {
     });
 
     it("refuses credentials, persona and selection keys, unknown keys, wrong kinds, and non-data values", async () => {
-        const { collectionStore, refused, validation } = await boot();
-        for (const patch of [
+        const { collectionStore, refusedEach, validation } = await boot();
+        const patches = [
             { openAIKey: "sk" },
             { proxyKey: "x" },
             { username: "me" },
@@ -212,11 +212,13 @@ describe("updateSettings", () => {
             { theme: () => "t" },
             { theme: 1n },
             { customCSS: { nested: () => 1 } },
-        ]) {
-            await refused(() => collectionStore.updateSettings(patch), validation.MutationValidationError);
-        }
-        await refused(() => collectionStore.updateSettings(null as any), validation.MutationValidationError);
-        await refused(() => collectionStore.updateSettings([] as any), validation.MutationValidationError);
+            null as any,
+            [] as any,
+        ];
+        await refusedEach(
+            patches.map((patch) => () => collectionStore.updateSettings(patch)),
+            validation.MutationValidationError,
+        );
     });
 });
 

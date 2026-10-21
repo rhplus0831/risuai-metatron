@@ -193,9 +193,11 @@ describe("asset list name caches", () => {
         expect(moduleFieldPlain(module(), "assets")).toEqual([["Remote", "r", "png"]]);
     });
 
-    it("reuses 100k cached names across successive queries for both record owners", () => {
-        const assets = (): Asset[] =>
-            Array.from({ length: 100_000 }, (_, i) => [`Asset ${i}`, `assets/${i}.png`, "png"]);
+    it("reuses the cached names of a large list across successive queries for both record owners", () => {
+        // Identity, not size or time, is the guard: rebuilding the names of an unchanged list breaks it
+        // at any length (a wall-clock bound failed under CPU load).
+        const count = 2_000;
+        const assets = (): Asset[] => Array.from({ length: count }, (_, i) => [`Asset ${i}`, `assets/${i}.png`, "png"]);
         initializeRecords({
             characters: [{ chaId: "c", name: "C", additionalAssets: assets() }],
             modules: [{ id: "m", name: "M", assets: assets() }],
@@ -204,20 +206,18 @@ describe("asset list name caches", () => {
         const liveModule = module();
         const characterNames = characterAssetNames("c", liveCharacter.additionalAssets);
         const moduleNames = moduleAssetNames(liveModule);
-        expect(characterNames).toHaveLength(100_000);
-        expect(moduleNames).toHaveLength(100_000);
+        expect(characterNames).toHaveLength(count);
+        expect(moduleNames).toHaveLength(count);
 
-        // Identity, not time, guards against walking 8 million record tuples per keystroke: a
-        // wall-clock bound here failed under CPU load without any regression.
         for (let i = 0; i < 40; i++) {
-            const query = `asset ${99_960 + i}`;
+            const index = count - 40 + i;
+            const query = `asset ${index}`;
             const nextCharacterNames = characterAssetNames("c", liveCharacter.additionalAssets);
             const nextModuleNames = moduleAssetNames(liveModule);
-            // Identity is a deterministic guard against rebuilding on every keystroke.
             expect(nextCharacterNames).toBe(characterNames);
             expect(nextModuleNames).toBe(moduleNames);
-            expect(matchingAssetIndices(nextCharacterNames, query)).toEqual([99_960 + i]);
-            expect(matchingAssetIndices(nextModuleNames, query)).toEqual([99_960 + i]);
+            expect(matchingAssetIndices(nextCharacterNames, query)).toEqual([index]);
+            expect(matchingAssetIndices(nextModuleNames, query)).toEqual([index]);
         }
         expect(characterAssetNames("c", liveCharacter.additionalAssets)).toBe(characterNames);
         expect(moduleAssetNames(liveModule)).toBe(moduleNames);
