@@ -3,9 +3,10 @@ import type { HypaV3Preset, HypaV3Settings } from "./memory.ts";
 
 /**
  * A HypaV3 preset with every setting filled: own, known keys of `existingSettings` with the right
- * type are kept. Numbers must also be finite, and `maxChatsPerSummary` and `queryChatCount` must be
- * integers >= 1. Invalid values take their defaults. `id` is kept when it is a valid record id,
- * otherwise a new one is assigned (a copy or an import passes none, so it gets a fresh id).
+ * type are kept. Numbers must also be finite, `maxChatsPerSummary` and `queryChatCount` must be
+ * integers >= 1, and `gapConfirmTokens` an integer >= 0. Invalid values take their defaults. `id` is
+ * kept when it is a valid record id, otherwise a new one is assigned (a copy or an import passes none,
+ * so it gets a fresh id).
  */
 export function createHypaV3Preset(name = "New Preset", existingSettings = {}, id?: unknown): HypaV3Preset {
     const settings: HypaV3Settings = {
@@ -30,6 +31,7 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
         embeddingMaxConcurrent: 1,
         alwaysToggleOn: false,
         queryChatCount: 3,
+        gapConfirmTokens: 10000,
     };
 
     if (existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings)) {
@@ -45,6 +47,9 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
                         (key === "maxChatsPerSummary" || key === "queryChatCount") &&
                         (!Number.isInteger(value) || value < 1)
                     ) {
+                        continue;
+                    }
+                    if (key === "gapConfirmTokens" && (!Number.isInteger(value) || value < 0)) {
                         continue;
                     }
                 }

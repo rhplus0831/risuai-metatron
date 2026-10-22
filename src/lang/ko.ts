@@ -251,6 +251,9 @@ export const languageKorean = {
         hypaV3MaxChatsPerSummary: "하나의 요약본을 만들 때 포함할 최대 채팅 메시지 수입니다.",
         hypaV3QueryChatCount:
             "유사도 검색의 쿼리로 사용되는 최근 채팅 메시지 수입니다. 값이 높을수록 더 많은 분량의 채팅으로 유사도를 판별합니다.",
+        hypaV3GapConfirmTokens:
+            "전송할 때 요약되지 않은 이전 메시지가 이 토큰 수보다 많이 남으면, 요약을 지금 만들지 아니면 그대로 진행하고 요약은 백그라운드에서 만들지 먼저 묻습니다. " +
+            "이 값 이하의 공백은 묻지 않고 백그라운드에서 채웁니다. 0이면 공백이 있을 때마다 묻습니다.",
         hypaV3SummaryChunkSeparator: "요약본을 청크 단위로 분리할 때 사용되는 구분자입니다.",
         hypaV3RecentMemoryRatio:
             "메모리 토큰 중 최근 메모리에 할당할 비율입니다. 가장 최근에 만들어진 요약본부터 할당된 토큰이 다 찰 때까지 자동으로 채워집니다.",
@@ -1711,6 +1714,13 @@ export const languageKorean = {
         extraSummarizationRatioLabel: "추가 요약 비율",
         maxChatsPerSummaryLabel: "요약본당 최대 메시지 수",
         queryChatCountLabel: "쿼리 채팅 수",
+        gapConfirmTokensLabel: "요약 전 확인 기준 (토큰)",
+        pluginMemoryModelWarning:
+            "이 메모리 모델의 요약은 연결된 탭에서 실행됩니다: 탭을 열어 두세요. 전송은 요약이 끝날 때까지 기다립니다.",
+        localSummarizationWarning:
+            "서버는 이 요약 모델을 실행할 수 없습니다: 요약이 백그라운드에서 만들어지지 않으며, 요약이 필요한 전송은 실패합니다. 저장된 요약만 사용하는 전송은 작동합니다.",
+        requestTriggerNote:
+            "캐릭터나 모듈의 request 트리거가 있으면 트리거가 요약 요청에도 적용되도록 요약을 전송 안에서 만듭니다.",
         summaryChunkSeparatorLabel: "청크 구분자 정규식",
         recentMemoryRatioLabel: "최근 메모리 비율",
         similarMemoryRatioLabel: "유사 메모리 비율",

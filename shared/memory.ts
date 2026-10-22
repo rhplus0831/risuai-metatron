@@ -117,6 +117,8 @@ export interface HypaV3Settings {
     embeddingMaxConcurrent: number;
     alwaysToggleOn: boolean;
     queryChatCount: number;
+    /** Uncovered history tokens a send may leave without summaries before it asks first; 0 asks on any gap. */
+    gapConfirmTokens: number;
 }
 
 export interface HypaV3Data {

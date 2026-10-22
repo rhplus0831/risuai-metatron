@@ -350,6 +350,9 @@ export const languageEnglish = {
         hypaV3QueryChatCount:
             "The number of recent chat messages used as the query for similarity search. " +
             "Higher values use more chat context to determine similarity.",
+        hypaV3GapConfirmTokens:
+            "When a send would leave more than this many tokens of older messages without summaries, it first asks whether to make those summaries now or to continue and let them be made in the background. " +
+            "Gaps up to this size are filled in the background without asking. At 0, any gap asks.",
         hypaV3SummaryChunkSeparator: "Separator used to split summaries into chunks for similarity search.",
     },
     triggerCategories: {
@@ -1828,6 +1831,13 @@ export const languageEnglish = {
         extraSummarizationRatioLabel: "Extra Summarization Ratio",
         maxChatsPerSummaryLabel: "Max Messages Per Summary",
         queryChatCountLabel: "Query Chat Count",
+        gapConfirmTokensLabel: "Ask Before Summarizing Over (Tokens)",
+        pluginMemoryModelWarning:
+            "Summaries for this memory model run in a connected tab: keep it open; a send waits for them.",
+        localSummarizationWarning:
+            "The server cannot run this summarization model: summaries are not made in the background, and a send that must summarize fails. A send that uses stored summaries works.",
+        requestTriggerNote:
+            "A character or module request trigger keeps summaries inside the send so the trigger applies to them.",
         summaryChunkSeparatorLabel: "Chunk Separator Regex",
         recentMemoryRatioLabel: "Recent Memory Ratio",
         similarMemoryRatioLabel: "Similar Memory Ratio",

@@ -16,12 +16,13 @@ import type { RegexOp, RegexOpResult } from "../scripts/worker.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 
 // A HypaV3 preset cannot hang or stall the server. The shared constructor (and through it the
-// server normalizer) defaults a batch size or query count that is not an integer of at least 1
-// and any non-finite number; both summarization loops end with an error instead of spinning when
-// the batch does not advance (run in a child process, so a broken guard cannot hang the run); and
-// the summary chunk separator runs on a script worker through `MemoryHost.regex`, with the
-// worker's timeout or the chunking budget returned as the memory step's error, the summaries
-// kept, and an invalid pattern keeping the former double-newline fallback without a worker call.
+// server normalizer) defaults a batch size or query count that is not an integer of at least 1, a
+// gap threshold that is not an integer of at least 0, and any non-finite number; both
+// summarization loops end with an error instead of spinning when the batch does not advance (run
+// in a child process, so a broken guard cannot hang the run); and the summary chunk separator runs
+// on a script worker through `MemoryHost.regex`, with the worker's timeout or the chunking budget
+// returned as the memory step's error, the summaries kept, and an invalid pattern keeping the
+// former double-newline fallback without a worker call.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const MODES = [
@@ -39,6 +40,10 @@ describe("createHypaV3Preset limits", () => {
         ["queryChatCount", 0, 3],
         ["queryChatCount", 2.5, 3],
         ["queryChatCount", Number.NaN, 3],
+        ["gapConfirmTokens", -1, 10000],
+        ["gapConfirmTokens", 2.5, 10000],
+        ["gapConfirmTokens", Number.NaN, 10000],
+        ["gapConfirmTokens", Number.POSITIVE_INFINITY, 10000],
         ["memoryTokensRatio", Number.NaN, 0.2],
         ["summarizationRequestsPerMinute", Number.NEGATIVE_INFINITY, 20],
     ] as const)("defaults %s = %s to %s", (key, value, expected) => {
@@ -47,17 +52,31 @@ describe("createHypaV3Preset limits", () => {
     });
 
     it("keeps valid counts, including the UI's extremes", () => {
-        const { settings } = createHypaV3Preset("P", { maxChatsPerSummary: 1, queryChatCount: 20 });
+        const { settings } = createHypaV3Preset("P", {
+            maxChatsPerSummary: 1,
+            queryChatCount: 20,
+            gapConfirmTokens: 0,
+        });
         expect(settings.maxChatsPerSummary).toBe(1);
         expect(settings.queryChatCount).toBe(20);
+        expect(settings.gapConfirmTokens).toBe(0);
+        expect(createHypaV3Preset("P").settings.gapConfirmTokens).toBe(10000);
     });
 
-    it("defaults a stored zero through the server normalizer", () => {
+    it("defaults out-of-range stored counts through the server normalizer and keeps a zero gap threshold", () => {
         const out = normalizeHypaV3Presets({
-            items: [{ id: "a", name: "A", settings: { maxChatsPerSummary: 0, queryChatCount: -1 } }],
+            items: [
+                { id: "a", name: "A", settings: { maxChatsPerSummary: 0, queryChatCount: -1, gapConfirmTokens: -5 } },
+                { id: "b", name: "B", settings: { gapConfirmTokens: 0 } },
+            ],
             selectedId: "a",
         });
-        expect(out.items[0].settings).toMatchObject({ maxChatsPerSummary: 6, queryChatCount: 3 });
+        expect(out.items[0].settings).toMatchObject({
+            maxChatsPerSummary: 6,
+            queryChatCount: 3,
+            gapConfirmTokens: 10000,
+        });
+        expect(out.items[1].settings.gapConfirmTokens).toBe(0);
     });
 });
 

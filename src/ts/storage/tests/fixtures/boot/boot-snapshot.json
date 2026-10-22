@@ -488,7 +488,8 @@
         "embeddingRequestsPerMinute": 100,
         "embeddingMaxConcurrent": 1,
         "alwaysToggleOn": false,
-        "queryChatCount": 3
+        "queryChatCount": 3,
+        "gapConfirmTokens": 10000
       }
     }
   ],

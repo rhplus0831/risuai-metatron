@@ -17,6 +17,7 @@
     import { onMount, untrack } from "svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
     import { tokenizePreset } from "src/ts/process/prompt";
+    import { getModelInfoForMode, LLMFormat } from "src/ts/model/modellist";
     import { getCharToken } from "src/ts/tokenizer";
     import { PlusIcon, PencilIcon, TrashIcon, DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
     import { alertError, alertInput, alertConfirm, alertNormal } from "src/ts/alert";
@@ -95,6 +96,18 @@
                 settings.similarMemoryRatio = 1 - newValue;
             }
         });
+    });
+
+    // The `memory` slot on a plugin provider: the server calls it through the tab, and treats every
+    // `pluginmodel:::` id so, even one whose plugin this tab has not registered.
+    const memoryUsesPlugin = $derived.by(() => {
+        try {
+            const info = getModelInfoForMode("memory");
+            return info.format === LLMFormat.Plugin || info.id.startsWith("pluginmodel:::");
+        } catch {
+            // A gone model preset: the request refuses it.
+            return false;
+        }
     });
 
     async function getMaxMemoryRatio(): Promise<number> {
@@ -366,6 +379,12 @@
                 <OptionInput value="Qwen3-8B-q4f32_1-MLC">Qwen3 8B (GPU)</OptionInput>
             {/if}
         </SelectInput>
+        {#if settings.summarizationModel !== "subModel"}
+            <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.localSummarizationWarning}</span>
+        {:else if memoryUsesPlugin}
+            <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.pluginMemoryModelWarning}</span>
+        {/if}
+        <span class="text-textcolor2 text-xs mb-4">{language.hypaV3Settings.requestTriggerNote}</span>
         <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
         <div class="mb-4">
             <TextAreaInput
@@ -412,6 +431,10 @@
             >{language.hypaV3Settings.queryChatCountLabel} <Help key="hypaV3QueryChatCount" /></span
         >
         <NumberInput marginBottom size="sm" min={1} max={20} bind:value={settings.queryChatCount} />
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.gapConfirmTokensLabel} <Help key="hypaV3GapConfirmTokens" /></span
+        >
+        <NumberInput marginBottom size="sm" min={0} bind:value={settings.gapConfirmTokens} />
         <span class="text-textcolor"
             >{language.hypaV3Settings.summaryChunkSeparatorLabel}
             <Help key="hypaV3SummaryChunkSeparator" /></span

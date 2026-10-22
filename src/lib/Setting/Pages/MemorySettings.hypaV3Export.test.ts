@@ -73,7 +73,11 @@ function render() {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
-    const exported = createHypaV3Preset("Exported", { memoryTokensRatio: 0.35, queryChatCount: 7 });
+    const exported = createHypaV3Preset("Exported", {
+        memoryTokensRatio: 0.35,
+        queryChatCount: 7,
+        gapConfirmTokens: 0,
+    });
     const other = createHypaV3Preset("Other");
     // Installed into the records the way the app installs a boot (its fields moved into the
     // records), since the page reads the records through the settings views.
@@ -118,7 +122,7 @@ describe("the HypaV3 preset export", () => {
             ver: 1,
             data: { name: "Exported", settings: JSON.parse(JSON.stringify(selected.settings)) },
         });
-        expect(file.data.settings).toMatchObject({ memoryTokensRatio: 0.35, queryChatCount: 7 });
+        expect(file.data.settings).toMatchObject({ memoryTokensRatio: 0.35, queryChatCount: 7, gapConfirmTokens: 0 });
     });
 
     it("imports its own export as a new preset with a fresh id and selects it", async () => {
@@ -139,6 +143,7 @@ describe("the HypaV3 preset export", () => {
         expect(imported.id).toEqual(expect.any(String));
         expect(settings.hypaV3Presets.selectedId).toBe(imported.id);
         expect(imported.name).toBe("Exported");
+        expect(imported.settings.gapConfirmTokens).toBe(0);
         expect(JSON.parse(JSON.stringify(imported.settings))).toStrictEqual(
             JSON.parse(JSON.stringify(settings.hypaV3Presets.items[1].settings)),
         );
