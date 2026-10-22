@@ -28,6 +28,7 @@ git show d30735b05:docs/plan/search.md
 git show f4c26f27d:docs/plan/risunest-small-wins.md
 git show 74f770e19:docs/plan/upstream-bin-compat.md
 git show e1aa33150:docs/plan/audit-findings-perf.md
+git show 2508dfd0c:docs/plan/timing-tests.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -57,6 +58,7 @@ it is not a current architecture guide.
 | RisuNest Small Wins                      | `f4c26f27d`: `docs/plan/risunest-small-wins.md`                           | [build/test](../structure/build-test-platforms.md), [plugins/MCP](../structure/plugins-mcp.md), [alerts](../structure/global-api.md), [app shell](../structure/app-shell.md), [server/Docker](../structure/self-host-server.md), `STRUCTURE.md` V4–V9                                                                                                                                                                                                                                        |
 | Upstream `.bin` Compatibility            | `74f770e19`: `docs/plan/upstream-bin-compat.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [backups](../structure/backup-sync-hub.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                       |
 | Audit Findings and Performance Leftovers | `e1aa33150`: `docs/plan/audit-findings-perf.md`                           | [server](../structure/self-host-server.md), [memory](../structure/memory.md), [LLM requests](../structure/llm-requests.md), [CBS/rendering](../structure/cbs-rendering.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [plugins/MCP](../structure/plugins-mcp.md), [media](../structure/media-aux.md), [app shell](../structure/app-shell.md), [build/test](../structure/build-test-platforms.md) |
+| Timing-Dependent Tests                   | `2508dfd0c`: `docs/plan/timing-tests.md`                                  | [build/test](../structure/build-test-platforms.md) `Tests`, `STRUCTURE.md` V3, [server](../structure/self-host-server.md) (test-only timing options)                                                                                                                                                                                                                                                                                                                                         |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -217,6 +219,45 @@ verifying it through everyday use. Still open, per slice:
   worker's MIME and Range handling (everything served as `image/png`), and the load-only flakes
   (`cbsLimitsHost.test.ts` "does not yield between quick effects", `checkServerJobMatrix.mjs`
   setup).
+
+Timing-Dependent Tests (from the 2026-10-19 timing inventory, refreshed 2026-10-21) landed every
+slice on metatron between 2026-10-21 and 2026-10-22:
+
+- Slice 0 added the `pnpm test:overload` runner.
+- The cause slices 1-8 and the sweeps 9a/9b followed. The archived Status line and the per-slice
+  Landed notes give each merge.
+- Close-out 10 (`887d360c0`, `0c193b678`, `2508dfd0c`):
+  - The first whole-gate runs under load failed mostly on Vitest's 5 s default in CPU-bound tests.
+    That led to the user's decision D5: the gate's timeout is a 60 s hang guard, and
+    `test:agent --slow-tests` lists slow tests on request.
+  - It fixed four scheduler races.
+  - It passed three overload runs and four parallel suites.
+
+The inventory `docs/audit/timing-dependent-tests-2026-10-19.md` is complete. It is a historical
+record: a new real-time dependency is a V3 violation, not a new row. Still open:
+
+- Kept by decision:
+  - `prepareCpuMs` is an inert test-only pool option.
+  - Slice 5a's exception stands: the boot-subject `scriptWorker` tests keep real cold worker boots
+    under an explicit 60 s.
+  - The `scriptWorker` cases "summed across them" and "right after a resumption" stay gated,
+    although under load they can pass without exercising their distinction. Summation also has a
+    deterministic `luaRuntimeCharge` test.
+- `resourceSyncChats` still has `vi.waitFor(..., { timeout: 5000 })` polls on real time.
+- The slowest gated test, `importRealm` "refuses a card or asset chunk over
+  MAX_PNG_TEXT_CHUNK_BYTES...", takes 2-4 s alone and about 27 s under the overload.
+- Gated explicit 60 s timeouts now repeat the default and could go.
+- A test body that outlives its timeout can still reach the next case's fake (seen in
+  `exportBatches`).
+- Test copies of production constants: `SAVE_DEBOUNCE_MS` in `mutationStoresHarness.ts` copies the
+  unexported production `DEBOUNCE_MS`.
+- Coverage gaps:
+  - A CharX entry exactly at the cap is untested.
+  - `mcpSse`'s scan bound has no slack.
+  - Other partial `vi.mock(importOriginal)` mocks were not audited for Vitest 4 keeping the first
+    registry across `resetModules`.
+- Production: `chatStore.svelte.ts` `isMember` scans a character's chat list through a proxy, so
+  per-character work grows quadratically with the chat count.
 
 ## Server-Owned Data Chronology
 
