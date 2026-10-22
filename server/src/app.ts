@@ -1,6 +1,7 @@
 import type { Credential, Database, ModelProfile } from "../../shared/database.ts";
 import { credentialSlotOf } from "../../shared/llm/credentialSlots.ts";
 import { resolveModelInfo } from "../../shared/llm/models.ts";
+import type { MemoryTaskService } from "../../shared/jobs.ts";
 import { resolveCredential } from "./llm/credentials.ts";
 import { mkdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -126,6 +127,9 @@ export type RouteLimits = {
  * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
  * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
  * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
+ * `memoryTasks` gives the default runner a memory task service (tests pass a fake one): HypaV3 then
+ * selects stored summaries in a send and hands its chat to the service; `"disabled"` or unset passes
+ * none, and every HypaV3 step summarizes inside its job.
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -170,6 +174,8 @@ export function createServerContext(options: {
     routeLimits?: RouteLimits;
     /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
     cbsTimeLimits?: ServerCbsTimeLimits;
+    /** The default runner's memory task service; `"disabled"` or unset: none. */
+    memoryTasks?: "disabled" | MemoryTaskService;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -364,6 +370,7 @@ export function createServerContext(options: {
             ? { hypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits }
             : {}),
         ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
+        ...(options.memoryTasks && options.memoryTasks !== "disabled" ? { memoryTasks: options.memoryTasks } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
     // The script transform: read-only renders on the runner's services. A restore

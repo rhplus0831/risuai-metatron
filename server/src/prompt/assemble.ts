@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CbsParseArg } from "../../../shared/cbs/evaluator.ts";
 import type {
     Chat,
@@ -10,7 +11,13 @@ import type {
 } from "../../../shared/database.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
-import { mergeHypaV2Write, mergeHypaV3Write, type SerializableHypaV3Data } from "../../../shared/memory.ts";
+import type {
+    MemoryBlockingReason,
+    MemoryGapChoice,
+    MemoryTaskInput,
+    SummaryWriterLease,
+} from "../../../shared/jobs.ts";
+import { mergeHypaV2Write, mergeHypaV3SelectionWrite, type SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import type { PromptItem, PromptItemPlain, PromptItemTyped } from "../../../shared/prompt.ts";
 import type { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
@@ -21,11 +28,29 @@ import {
     toggleStorageKey,
     valueToggles,
 } from "../../../shared/prompt/toggles.ts";
+import type { MemoryControl } from "../jobs/generationJobs.ts";
 import { HypaProcesser } from "./embeddings.ts";
 import { hanuraiMemory } from "./memory/hanurai.ts";
-import type { MemoryHost } from "./memory/host.ts";
+import type { MemoryHost, MemoryTokenizer } from "./memory/host.ts";
 import { hypaMemoryV2 } from "./memory/hypav2.ts";
-import { hypaMemoryV3 } from "./memory/hypav3.ts";
+import {
+    createHypaV3SourceValidator,
+    emptyHypaV3Execution,
+    executeHypaV3Plan,
+    getCurrentHypaV3Preset,
+    type HypaV3Checkpoint,
+    type HypaV3CurrentSource,
+    type HypaV3EntrySource,
+    type HypaV3ExecutionHooks,
+    type HypaV3ExecutionResult,
+    type HypaV3Prepared,
+    type HypaV3SelectOptions,
+    type HypaV3Selection,
+    hypaV3SourceHash,
+    planHypaV3Summaries,
+    prepareHypaV3,
+    selectHypaV3,
+} from "./memory/hypav3.ts";
 import { supaMemory } from "./memory/supaMemory.ts";
 import type { ScriptProcessor } from "./scripts.ts";
 import { stripThoughtsBlock } from "./thoughts.ts";
@@ -115,6 +140,55 @@ export type AssemblyHost = {
     getModelInfo(id: string): LLMModel;
     /** Raises after an abort or a latched failure (after every await). */
     fence(): void;
+    /**
+     * The job's side of the HypaV3 step (`hypaV3Step`). Absent: the step summarizes inside the job
+     * without progress, source validation, or a task input.
+     */
+    memoryJob?: AssemblyMemoryJob;
+};
+
+/** What the HypaV3 step asks of its job. */
+export type AssemblyMemoryJob = {
+    /** A `preview` or `previewPrompt` job. */
+    preview: boolean;
+    /** A send, continue, reroll, or group job. */
+    input: boolean;
+    /**
+     * Whether the job has a memory task service. Without one every HypaV3 step summarizes inside the
+     * job (blocking); with one a preview and an input job without a blocking reason select only.
+     */
+    tasks: boolean;
+    /** The source generation of the chat snapshot `chat()` returned last, read with it. */
+    sourceGeneration(): number | undefined;
+    /**
+     * The chat as stored now with its owner's stored greeting (a source validation's read), or null
+     * when the chat or the owner is gone. Synchronous.
+     */
+    readSource(): HypaV3CurrentSource | null;
+    /** Why the summary requests must run inside this job: a Plugin `memory` model, a `request` trigger; or null. */
+    blockingReason(): MemoryBlockingReason | null;
+    /** The job's `memoryGap` question (asked at most once a job; see the runner's `confirmMemoryGap`). */
+    confirmGap(payload: { gapTokens: number; plannedCalls: number }): Promise<MemoryGapChoice>;
+    /** The owner stopped an initial run: the job's later steps select only. */
+    markStopped(): void;
+    /** The chat's summary writer lease (a no-op one without a service); the caller releases it. */
+    acquireWriter(): Promise<SummaryWriterLease>;
+    /** A new memory run of the job (a fresh `runId`): its `memoryProgress` notices. */
+    openRun(phase: "blocking" | "initial" | "selection", reason: MemoryBlockingReason | null): AssemblyMemoryRun;
+    /** The job's memory task input around the step's captured history, or null without a service. */
+    taskInput(
+        part: Pick<MemoryTaskInput, "history" | "sources" | "historyStart" | "currentTokens" | "sourceGeneration">,
+    ): MemoryTaskInput | null;
+};
+
+/** One memory run's progress and stop control. */
+export type AssemblyMemoryRun = {
+    /** An open `memoryProgress` notice: summaries done of total, or an embedding queue's text. */
+    update(progress: { done: number; total: number } | { text: string }): void;
+    /** Ends the run's entry (`open: false`) when a notice opened it; once. */
+    close(): void;
+    /** The run's stop control (`RunningJob.registerMemoryControl`), or null when the job has none. */
+    registerStop(): MemoryControl | null;
 };
 
 export type AssembleInput = {
@@ -132,6 +206,11 @@ export type AssembledPrompt =
           generationInfo: MessageGenerationInfo;
           promptInfo: MessagePresetInfo;
           maxContextTokens: number;
+          /**
+           * The HypaV3 step's task input (captured before the step) and whether its lookahead plan
+           * says summaries are due; only for an input job with a memory task service.
+           */
+          memoryTask?: { input: MemoryTaskInput; due: boolean };
       }
     /** The `start` trigger's `stopSending`: the send ends quietly. */
     | { type: "stopped" }
@@ -287,6 +366,377 @@ function systemizeChat(chat: OpenAIChat[]) {
 /** The client's `safeStructuredClone` of prompt data. */
 const clone = <T>(value: T): T => structuredClone(value);
 
+/** A summary write the stored value refused (a reset, a moved cursor, a damaged value). */
+const HYPAV3_WRITE_SKIPPED = "[HypaV3] The memory data changed during the summary; this summary is not saved";
+/** The retryable end of a summarization whose source messages changed (D15). */
+const HYPAV3_SOURCE_CHANGED =
+    "[HypaV3] The chat changed during summarization: the summaries from the changed messages on were not saved. Send again to continue.";
+
+type HypaV3StepResult =
+    | { type: "error"; error: string }
+    | {
+          type: "done";
+          chats: OpenAIChat[];
+          currentTokens: number;
+          /** The history entries the final re-check never removes (a select-only or initial selection's tail). */
+          protectedEntries: OpenAIChat[];
+          memoryTask?: { input: MemoryTaskInput; due: boolean };
+      };
+
+/** `hypaMemoryV3`'s error wrapping: the job's own end first, then the algorithm's prefix. */
+function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
+    memory.fence();
+    if (error instanceof Error) {
+        error.message = `[HypaV3] ${error.message}`;
+        throw error;
+    }
+    let errorMessage: string;
+    try {
+        errorMessage = JSON.stringify(error);
+    } catch {
+        errorMessage = String(error);
+    }
+    throw new Error(`[HypaV3] ${errorMessage}`);
+}
+
+/**
+ * The HypaV3 memory step of a job. Without a memory task service (`memoryJob.tasks`) it summarizes
+ * inside the job (blocking) for every job kind. With one: a preview selects only; an input job
+ * blocks when its summary requests must run in the job (`blockingReason`), else it selects only and,
+ * when the history it leaves out (the gap) is over the preset's `gapConfirmTokens`, asks the owner
+ * whether to summarize it now (an initial run, sequential, with the stop control) or go on.
+ *
+ * Every summary is saved as it is made (checkpoints, after a source validation of its window);
+ * blocking and initial runs hold the chat's summary writer lease. A refused save ends the
+ * summarization: the step selects only from the memory stored now (D16). A changed source ends it
+ * with a retryable error and no selection write. Otherwise the selection is written last
+ * (`mergeHypaV3SelectionWrite`). A select-only or initial selection returns its protected tail.
+ */
+async function hypaV3Step(
+    host: AssemblyHost,
+    arg: {
+        chats: OpenAIChat[];
+        currentTokens: number;
+        maxContextTokens: number;
+        room: Chat;
+        tokenizer: MemoryTokenizer;
+        /** One per entry of `chats`, or null when they could not be aligned. */
+        sources: HypaV3EntrySource[] | null;
+        historyStart: number;
+        /** The history snapshot's source generation; undefined when its entries came from different ones. */
+        sourceGeneration: number | undefined;
+    },
+): Promise<HypaV3StepResult> {
+    const memory = host.memory;
+    const job = host.memoryJob;
+    const { chats, currentTokens, maxContextTokens, tokenizer } = arg;
+    // A missing preset is thrown without the algorithm's prefix.
+    getCurrentHypaV3Preset(memory);
+
+    // The task input, captured before the step changes anything.
+    const input =
+        job?.tasks && job.input && arg.sources && arg.sourceGeneration !== undefined
+            ? job.taskInput({
+                  history: structuredClone(chats),
+                  sources: structuredClone(arg.sources),
+                  historyStart: arg.historyStart,
+                  currentTokens,
+                  sourceGeneration: arg.sourceGeneration,
+              })
+            : null;
+    const validate = job && arg.sources ? createHypaV3SourceValidator(arg.sources, () => job.readSource()) : undefined;
+
+    const part = async <T>(run: () => Promise<T>): Promise<T> => {
+        try {
+            return await run();
+        } catch (error) {
+            rethrowHypaV3(memory, error);
+        }
+    };
+    const failed = (error: string | undefined): HypaV3StepResult => ({
+        type: "error",
+        error: error ?? "[HypaV3] The memory step failed",
+    });
+    // With a task service the summarized-prefix cursor is looked up among history entries only (the
+    // legacy lookup can match an example's missing memo for the greeting's); without one, as before.
+    const prepareOptions = job?.tasks ? {} : undefined;
+    const prepare = async (room: Chat) =>
+        part(() => prepareHypaV3(memory, chats, currentTokens, maxContextTokens, room, tokenizer, prepareOptions));
+    /** The chat as stored now (a lease holder's read of the memory the task may have written). */
+    const storedRoom = () => structuredClone(host.chat());
+
+    /** A selection; an experimental embedding queue's legacy notices also report as a `selection` run. */
+    const select = async (
+        prepared: HypaV3Prepared,
+        execution: HypaV3ExecutionResult,
+        options?: HypaV3SelectOptions,
+    ): Promise<HypaV3Selection> => {
+        let run: AssemblyMemoryRun | null = null;
+        const selectionHost: MemoryHost = {
+            ...memory,
+            progress: (payload) => {
+                if (!job) {
+                    memory.progress(payload);
+                    return;
+                }
+                if (payload.open) {
+                    run ??= job.openRun("selection", null);
+                    run.update({ text: payload.subMsg });
+                } else {
+                    run?.close();
+                    run = null;
+                }
+                memory.progress(payload);
+            },
+        };
+        try {
+            return await part(() => selectHypaV3(selectionHost, prepared, execution, options));
+        } finally {
+            (run as AssemblyMemoryRun | null)?.close();
+        }
+    };
+
+    const checkpoint = (write: HypaV3Checkpoint): "committed" | "skipped" => {
+        let outcome: "committed" | "skipped" = "skipped";
+        host.writeMemory((stored) => {
+            const merged = write.merge(stored.hypaV3Data);
+            outcome = merged ? "committed" : "skipped";
+            if (!merged) {
+                console.warn(HYPAV3_WRITE_SKIPPED);
+            }
+            return merged ? { hypaV3Data: merged } : null;
+        });
+        return outcome;
+    };
+    const hooks = (run: AssemblyMemoryRun | null, extra: HypaV3ExecutionHooks = {}): HypaV3ExecutionHooks => ({
+        progress: (done, total) => run?.update({ done, total }),
+        checkpoint,
+        ...(validate ? { validate } : {}),
+        ...extra,
+    });
+    /** The final write: the selection and the orphan removals placed onto the value stored now. */
+    const writeSelection = (
+        baseline: SerializableHypaV3Data | null | undefined,
+        data: SerializableHypaV3Data | undefined,
+    ) => {
+        if (!data) {
+            return;
+        }
+        host.writeMemory((stored) => {
+            const merged = mergeHypaV3SelectionWrite(baseline, data, stored.hypaV3Data, {
+                selectionMade: data.summaries.length > 0,
+            });
+            if (!merged) {
+                console.warn(HYPAV3_WRITE_SKIPPED);
+            }
+            return merged ? { hypaV3Data: merged } : null;
+        });
+    };
+    /** Whether the next sends need summaries: a lookahead plan of `prepared` with a summary request. */
+    const dueFrom = async (prepared: HypaV3Prepared) =>
+        input ? (await part(() => planHypaV3Summaries(prepared, { lookahead: true }))).llmCalls > 0 : false;
+    const finish = (selection: HypaV3Selection, protect: boolean, due: boolean): HypaV3StepResult => {
+        if (selection.error) {
+            return failed(selection.error);
+        }
+        const count = protect && selection.trim ? selection.trim.protected.count : 0;
+        return {
+            type: "done",
+            chats: selection.chats,
+            currentTokens: selection.currentTokens,
+            protectedEntries: count > 0 ? selection.chats.slice(-count) : [],
+            ...(input ? { memoryTask: { input, due } } : {}),
+        };
+    };
+
+    /** Select-only from the memory stored in `room`: the stored summaries, the uncovered history trimmed. */
+    const selectOnly = async (room: Chat, correction?: string) => {
+        const outcome = await prepare(room);
+        if (!outcome.ok) {
+            return { ok: false as const, error: outcome.result.error };
+        }
+        const prepared = outcome.prepared;
+        const selection = await select(prepared, emptyHypaV3Execution(prepared), {
+            trimUncovered: { tooMuchToken: TOO_MUCH_TOKEN },
+            ...(correction !== undefined ? { correction } : {}),
+        });
+        return { ok: true as const, prepared, selection };
+    };
+    /** After a refused save (D16): select only from the memory stored now, without asking. */
+    const recover = async (correction?: string): Promise<HypaV3StepResult> => {
+        const result = await selectOnly(storedRoom(), correction);
+        if (!result.ok) {
+            return failed(result.error);
+        }
+        if (result.selection.error) {
+            return failed(result.selection.error);
+        }
+        writeSelection(result.prepared.snapshot, result.selection.memory);
+        return finish(result.selection, true, await dueFrom(result.prepared));
+    };
+    /** Releases in order, each even when an earlier one throws. */
+    const releaseAll = (...steps: (() => void)[]) => {
+        const [first, ...rest] = steps;
+        if (!first) {
+            return;
+        }
+        try {
+            first();
+        } finally {
+            releaseAll(...rest);
+        }
+    };
+
+    /** Summarizing inside the job: today's composition, each summary saved as it is made. */
+    const blocking = async (reason: MemoryBlockingReason | null): Promise<HypaV3StepResult> => {
+        const lease = job?.tasks ? await job.acquireWriter() : null;
+        let run: AssemblyMemoryRun | null = null;
+        try {
+            run = job?.openRun("blocking", reason) ?? null;
+            // A lease holder reads the memory a task wrote before the lease.
+            const outcome = await prepare(lease ? storedRoom() : arg.room);
+            if (!outcome.ok) {
+                return failed(outcome.result.error);
+            }
+            const prepared = outcome.prepared;
+            const plan = await part(() => planHypaV3Summaries(prepared));
+            // The experimental implementation reports a planning error before summarizing anything.
+            if (plan.error !== undefined && prepared.implementation === "experimental") {
+                return failed(plan.error);
+            }
+            const execution = await part(() => executeHypaV3Plan(memory, prepared, plan, hooks(run)));
+            run?.close();
+            switch (execution.endReason) {
+                case "providerFailed":
+                    return failed(execution.error);
+                case "sourceInvalid":
+                    return failed(HYPAV3_SOURCE_CHANGED);
+                case "writeSkipped":
+                    return await recover();
+            }
+            // The standard implementation reports it after summarizing the windows before it.
+            if (plan.error !== undefined) {
+                return failed(plan.error);
+            }
+            const selection = await select(prepared, execution);
+            if (selection.error) {
+                return failed(selection.error);
+            }
+            writeSelection(execution.baseline, selection.memory);
+            return finish(selection, false, false);
+        } finally {
+            releaseAll(
+                () => lease?.release(),
+                () => run?.close(),
+            );
+        }
+    };
+
+    /** The approved summarization of the gap: sequential, stoppable, then a trimmed selection. */
+    const initial = async (memoryJob: AssemblyMemoryJob, correction: string | undefined) => {
+        const lease = await memoryJob.acquireWriter();
+        let run: AssemblyMemoryRun | null = null;
+        let control: MemoryControl | null = null;
+        try {
+            run = memoryJob.openRun("initial", "gap");
+            // Prepared and planned again on the memory stored now, not the gap measurement's.
+            const room = storedRoom();
+            const outcome = await prepare(room);
+            if (!outcome.ok) {
+                return failed(outcome.result.error);
+            }
+            const prepared = outcome.prepared;
+            const plan = await part(() => planHypaV3Summaries(prepared));
+            // A scan that cannot advance is an error; a plan that reaches the protected tail over the
+            // context runs its windows, and the selection trims the rest.
+            if (plan.stopReason === "noProgress") {
+                return failed(plan.error);
+            }
+            control = run.registerStop();
+            const stop = control;
+            const execution = await part(() =>
+                executeHypaV3Plan(
+                    memory,
+                    prepared,
+                    plan,
+                    hooks(run, { sequential: true, shouldStop: () => stop?.stopRequested() ?? false }),
+                ),
+            );
+            // A stop asked during the last window still counts for the job's later steps.
+            const stopped = execution.endReason === "stopped" || (stop?.stopRequested() ?? false);
+            releaseAll(
+                () => stop?.release(),
+                () => run?.close(),
+            );
+            control = null;
+            if (stopped) {
+                memoryJob.markStopped();
+            }
+            switch (execution.endReason) {
+                case "providerFailed":
+                    return failed(execution.error);
+                case "sourceInvalid":
+                    return failed(HYPAV3_SOURCE_CHANGED);
+                case "writeSkipped":
+                    return await recover(correction);
+            }
+            const selection = await select(prepared, execution, {
+                trimUncovered: { tooMuchToken: TOO_MUCH_TOKEN },
+                ...(correction !== undefined ? { correction } : {}),
+            });
+            if (selection.error) {
+                return failed(selection.error);
+            }
+            writeSelection(execution.baseline, selection.memory);
+            let due = stopped;
+            if (!due && input) {
+                // Planned again on what the run saved: an ordinary plan can end above the lookahead line.
+                const after = await prepare({ ...room, hypaV3Data: execution.baseline ?? undefined });
+                due = after.ok ? await dueFrom(after.prepared) : false;
+            }
+            return finish(selection, true, due);
+        } finally {
+            releaseAll(
+                () => control?.release(),
+                () => lease.release(),
+                () => run?.close(),
+            );
+        }
+    };
+
+    /** Stored summaries only; the gap question for an input job. */
+    const selectOnlyStep = async (memoryJob: AssemblyMemoryJob): Promise<HypaV3StepResult> => {
+        const result = await selectOnly(arg.room);
+        if (!result.ok) {
+            return failed(result.error);
+        }
+        const { prepared, selection } = result;
+        if (selection.error) {
+            return failed(selection.error);
+        }
+        const gap = selection.trim?.gap;
+        if (memoryJob.input && gap && gap.tokens > prepared.settings.gapConfirmTokens) {
+            const planned = await part(() => planHypaV3Summaries(prepared));
+            const choice = await memoryJob.confirmGap({ gapTokens: gap.tokens, plannedCalls: planned.llmCalls });
+            memory.fence();
+            if (choice === "generate") {
+                return initial(memoryJob, selection.correction);
+            }
+        }
+        writeSelection(prepared.snapshot, selection.memory);
+        return finish(selection, true, await dueFrom(prepared));
+    };
+
+    if (!job?.tasks) {
+        return blocking(null);
+    }
+    if (job.preview) {
+        return selectOnlyStep(job);
+    }
+    const reason = job.input ? job.blockingReason() : null;
+    return reason ? blocking(reason) : selectOnlyStep(job);
+}
+
 export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): Promise<AssembledPrompt> {
     const { db, owner: nowChatroom, speaker: currentChar, chatRef: chatTarget, tokenizer } = host;
     const parse = host.parse;
@@ -339,6 +789,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     const chatAdditonalTokens = input.chatAdditonalTokens;
     host.runCurrentChatFunction();
     let currentChat = host.chat();
+    // The source generation of the snapshot the history is built from (HypaV3's task input).
+    let currentChatGeneration = host.memoryJob?.sourceGeneration();
     const maxContextTokens = db.maxContext;
 
     const stage1Start = Date.now();
@@ -824,12 +1276,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     };
 
     let ms: Message[] = makeMs(currentChat);
+    /** The greeting entry's source: the stored greeting text and `fmIndex`, from the snapshot of its generation. */
+    let greetingSource: { fmIndex: Chat["fmIndex"]; text: string; generation: number | undefined } | null = null;
 
     if (nowChatroom.type !== "group" && !msReseted) {
         const firstMsg =
             currentChat.fmIndex === -1
                 ? nowChatroom.firstMessage
                 : nowChatroom.alternateGreetings[currentChat.fmIndex as number];
+        greetingSource = { fmIndex: currentChat.fmIndex, text: firstMsg ?? "", generation: currentChatGeneration };
         const chat: OpenAIChat = {
             role: "assistant",
             content: (
@@ -854,7 +1309,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     const triggerResult = await host.runStartTrigger();
     host.fence();
     if (triggerResult) {
-        currentChat = host.chat() ?? triggerResult.chat;
+        const stored = host.chat();
+        currentChatGeneration = stored ? host.memoryJob?.sourceGeneration() : undefined;
+        currentChat = stored ?? triggerResult.chat;
         ms = makeMs(currentChat);
         currentTokens += triggerResult.tokens;
         if (triggerResult.stopSending) {
@@ -1032,6 +1489,12 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
     }
 
+    /**
+     * The history entries the final re-check never removes (HypaV3's select-only or initial tail),
+     * by identity; a system message `pushPrompts` merges one into joins them.
+     */
+    const protectedEntries = new Set<OpenAIChat>();
+    let memoryTask: { input: MemoryTaskInput; due: boolean } | undefined;
     if (useMemory) {
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
         const stage2Start = Date.now();
@@ -1090,43 +1553,30 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
                 currentChat = host.chat();
             } else if (db.hypaV3) {
-                const room = detachedChat();
-                // The value the algorithm reads: its result is placed onto the value stored at the write.
-                const baseline = structuredClone(room.hypaV3Data);
-                const writeHypaV3 = (data: SerializableHypaV3Data, metricsRecomputed: boolean) => {
-                    host.writeMemory((stored) => {
-                        const merged = mergeHypaV3Write(baseline, data, stored.hypaV3Data, metricsRecomputed);
-                        if (!merged) {
-                            console.warn(
-                                "[HypaV3] The memory data changed during the summary; this summary is not saved",
-                            );
-                        }
-                        return merged ? { hypaV3Data: merged } : null;
-                    });
-                };
-                const sp = await hypaMemoryV3(
-                    memory,
+                const sources = hypaV3Sources(chats, historyStart, greetingSource, ms);
+                const step = await hypaV3Step(host, {
                     chats,
                     currentTokens,
                     maxContextTokens,
-                    room,
-                    nowChatroom,
-                    memoryTokenizer,
-                );
+                    room: detachedChat(),
+                    tokenizer: memoryTokenizer,
+                    sources,
+                    historyStart,
+                    sourceGeneration:
+                        greetingSource && greetingSource.generation !== currentChatGeneration
+                            ? undefined
+                            : currentChatGeneration,
+                });
                 host.fence();
-                if (sp.error) {
-                    // Save new summary (an error return carries the metrics as read)
-                    if (sp.memory) {
-                        writeHypaV3(sp.memory, false);
-                    }
-                    return { type: "error", error: sp.error };
+                if (step.type === "error") {
+                    return { type: "error", error: step.error };
                 }
-                chats = sp.chats;
-                currentTokens = sp.currentTokens;
-                if (sp.memory) {
-                    // A run that ends with summaries selects from them and records that selection.
-                    writeHypaV3(sp.memory, sp.memory.summaries.length > 0);
+                chats = step.chats;
+                currentTokens = step.currentTokens;
+                for (const entry of step.protectedEntries) {
+                    protectedEntries.add(entry);
                 }
+                memoryTask = step.memoryTask;
 
                 currentChat = host.chat();
             } else {
@@ -1192,7 +1642,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     unformated.chats = chats
         .map((v) => {
             if (v.memo !== "supaMemory" && v.memo !== "hypaMemory") {
-                v.removable = true;
+                if (!protectedEntries.has(v)) {
+                    v.removable = true;
+                }
             } else if (supaMemoryCardUsed) {
                 memories.push(v);
                 return { role: "system", content: "" } as OpenAIChat;
@@ -1259,6 +1711,10 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 const endf = formated.at(-1);
                 if (endf && endf.role === "system" && endf.memo === chat.memo && endf.name === chat.name) {
                     formated[formated.length - 1].content += "\n\n" + chat.content;
+                    if (protectedEntries.has(chat)) {
+                        delete endf.removable;
+                        protectedEntries.add(endf);
+                    }
                 } else {
                     formated.push(chat);
                 }
@@ -1435,8 +1891,26 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         });
     }
 
+    // With protected entries, an entry `editRequest` returns stays removable only when it is one the
+    // prompt marked removable (the same role, text, and media, never shared with an entry that was not
+    // removable): a changed, new, or ambiguous entry is not.
+    const removableBefore = protectedEntries.size > 0 ? removableEntryCounts(formated) : null;
     formated = await host.runEditRequest(formated);
     host.fence();
+    if (removableBefore) {
+        for (const chat of formated) {
+            if (!chat?.removable) {
+                continue;
+            }
+            const key = removableEntryKey(chat);
+            const left = removableBefore.get(key) ?? 0;
+            if (left > 0) {
+                removableBefore.set(key, left - 1);
+            } else {
+                delete chat.removable;
+            }
+        }
+    }
 
     if (promptText) {
         promptBodyformatedForChatStore = await host.runEditRequest(promptBodyformatedForChatStore);
@@ -1487,5 +1961,71 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         },
     };
 
-    return { type: "prompt", formated, biases, generationInfo, promptInfo, maxContextTokens };
+    return {
+        type: "prompt",
+        formated,
+        biases,
+        generationInfo,
+        promptInfo,
+        maxContextTokens,
+        ...(memoryTask ? { memoryTask } : {}),
+    };
+}
+
+/** The identity of a prompt entry across `editRequest`: a digest of its role, text, and media. */
+function removableEntryKey(chat: OpenAIChat): string {
+    return createHash("sha256")
+        .update(JSON.stringify([chat.role, chat.content, chat.multimodals ?? null]))
+        .digest("base64url");
+}
+
+/** How many removable entries of each identity `formated` holds; none for an identity an unremovable entry shares. */
+function removableEntryCounts(formated: readonly OpenAIChat[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    const kept = new Set<string>();
+    for (const chat of formated) {
+        const key = removableEntryKey(chat);
+        if (chat.removable) {
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        } else {
+            kept.add(key);
+        }
+    }
+    for (const key of kept) {
+        counts.delete(key);
+    }
+    return counts;
+}
+
+/**
+ * The source of each entry of the history HypaV3 gets (D15): the example dialogue and the new-chat
+ * marker by memo, the greeting by its `fmIndex` and stored text, each message by its id and stored
+ * text, from the snapshots the entries were built from. Null when the entries do not line up with
+ * them.
+ */
+function hypaV3Sources(
+    chats: readonly OpenAIChat[],
+    historyStart: number,
+    greeting: { fmIndex: Chat["fmIndex"]; text: string } | null,
+    ms: readonly Message[],
+): HypaV3EntrySource[] | null {
+    const sources: HypaV3EntrySource[] = chats
+        .slice(0, historyStart)
+        .map((chat) => ({ kind: "other", memo: chat.memo }));
+    if (greeting) {
+        sources.push({ kind: "greeting", fmIndex: greeting.fmIndex, textHash: hypaV3SourceHash(greeting.text) });
+    }
+    for (const message of ms) {
+        sources.push({ kind: "message", id: message.chatId, textHash: hypaV3SourceHash(message.data) });
+    }
+    if (sources.length !== chats.length) {
+        return null;
+    }
+    for (const [index, source] of sources.entries()) {
+        const memo = chats[index].memo;
+        if (source.kind === "message" ? memo !== source.id : source.kind === "greeting" && memo !== undefined) {
+            return null;
+        }
+    }
+    return sources;
 }

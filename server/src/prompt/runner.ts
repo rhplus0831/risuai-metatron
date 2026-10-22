@@ -6,9 +6,15 @@ import { completionNotification } from "../../../shared/notifications.ts";
 import {
     type CallbackPayloads,
     type CallbackResult,
+    MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
+    type MemoryBlockingReason,
+    type MemoryGapChoice,
+    type MemoryTaskInput,
     type MemoryTrimChoice,
+    type SummaryWriterLease,
 } from "../../../shared/jobs.ts";
+import { LLMFormat } from "../../../shared/llm.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -32,6 +38,8 @@ import {
     flushChatMetadata,
     type JobScope,
     loadJobScope,
+    memorySettingsFingerprint,
+    memoryTokenPolicy,
     refreshCharacter,
     refreshChatAfterWrite,
     refreshChat,
@@ -44,21 +52,29 @@ import {
     type GenerationRunnerDeps,
     type JobRunState,
     MAX_SEND_ROUNDS,
+    moduleTriggers,
     type RunSetup,
     showEmotion,
     untilAborted,
 } from "../jobs/runSetup.ts";
 import { messages } from "../llm/messages.ts";
+import { resolveJobRequestModel } from "../llm/request.ts";
 import { JobRequestError } from "../llm/requests.ts";
 import { mainModelOf, mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { readStorageFile } from "../routes/storage.ts";
-import { type AssembledPrompt, assemblePrompt, getGenerationModelString } from "./assemble.ts";
+import {
+    type AssembledPrompt,
+    type AssemblyMemoryJob,
+    type AssemblyMemoryRun,
+    assemblePrompt,
+    getGenerationModelString,
+} from "./assemble.ts";
 import { postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
-import { parseChatML } from "./triggers.ts";
+import { hasRequestTriggers, parseChatML } from "./triggers.ts";
 
 /** How often a streaming reply's raw text is checkpointed (the client's `CHECKPOINT_INTERVAL_MS`). */
 export const CHECKPOINT_INTERVAL_MS = 3000;
@@ -471,7 +487,11 @@ async function runSend(
     }
 
     const baseRequest = scope.request;
+    // Whether a `presetChain` pick is the job's prompt preset (the memory task input says so).
+    const fromChain = !!chain && "scope" in chain;
     let last: { messageId: string; alternatives?: string[] } | null = null;
+    /** The memory task of the last completed speaker or round (its HypaV3 step's input), or none. */
+    let memoryTask: MemoryTaskHandOff | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
     const replyIds = new Set<string>();
     let stopped = false;
@@ -497,6 +517,7 @@ async function runSend(
                 ...(round.continueMessageId ? { continueMessageId: round.continueMessageId } : {}),
                 usedContinueTokens: round.usedContinueTokens,
                 baseRequest,
+                fromChain,
                 onSetup,
                 writeOwn,
             });
@@ -510,10 +531,13 @@ async function runSend(
                 break speakers;
             }
             if (result.type === "removed") {
-                // The reply is gone: nothing of this turn to continue.
+                // The reply is gone: nothing of this turn to continue. Its round completed: its memory
+                // input stands.
+                memoryTask = result.memoryTask;
                 break;
             }
             replyIds.add(result.messageId);
+            memoryTask = result.memoryTask;
             // The reply of the last round is the one the job reports, with that round's alternatives.
             last = {
                 messageId: result.messageId,
@@ -543,6 +567,7 @@ async function runSend(
     }
     flushChatMetadata(job);
     handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
+    handOffMemory(job, deps, memoryTask);
     job.emit({
         type: "done",
         revision: store.chatRevision(characterId, chatId),
@@ -581,11 +606,45 @@ function handOffTranslations(job: RunningJob, deps: GenerationRunnerDeps, messag
     }
 }
 
+/** A HypaV3 step's task input and whether its lookahead plan says summaries are due. */
+type MemoryTaskHandOff = { input: MemoryTaskInput; due: boolean };
+
+/**
+ * The chat's background memory: after the final writes and before `done`, the last completed speaker
+ * or round's HypaV3 input goes to the memory task service when summaries are due or a manual start
+ * waits for it (`pendingManual`). Nothing without a service, for an aborted or non-input job, or when
+ * the input's epoch or source generation is no longer the chat's (a whole-chat replace or a delete
+ * since the history was read): the next send's input is used. Never fails the send.
+ */
+function handOffMemory(job: RunningJob, deps: GenerationRunnerDeps, memoryTask: MemoryTaskHandOff | undefined) {
+    const tasks = deps.memoryTasks;
+    if (!tasks || !memoryTask || job.signal.aborted || !INPUT_KINDS.has(job.kind)) {
+        return;
+    }
+    const { input } = memoryTask;
+    try {
+        if (
+            deps.store.epoch() !== input.epoch ||
+            deps.store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) !== input.sourceGeneration
+        ) {
+            return;
+        }
+        if (memoryTask.due || tasks.pendingManual(input.chatRef)) {
+            tasks.handOff(input);
+        }
+    } catch (error) {
+        // Memory never fails the send it follows.
+        console.error("[memory] hand-off failed:", error instanceof Error ? error.name : typeof error);
+    }
+}
+
 type SpeakerResult =
     | {
           type: "reply";
           messageId: string;
           alternatives?: string[];
+          /** The round's HypaV3 task input (only with a memory task service and an input job). */
+          memoryTask?: MemoryTaskHandOff;
           /**
            * The next round of this speaker: a continue of this reply (auto-continue, with the tokens
            * counted so far), or a fresh send (a trigger's `sendAIprompt`). None: the reply is done.
@@ -594,7 +653,7 @@ type SpeakerResult =
       }
     | { type: "preview"; result: unknown }
     /** The output trigger removed the reply: this speaker's turn ends with the removal. */
-    | { type: "removed" }
+    | { type: "removed"; memoryTask?: MemoryTaskHandOff }
     /** The send ended for this speaker (an error shown, stopped by a trigger, nothing to continue). */
     | { type: "stop" };
 
@@ -616,6 +675,8 @@ async function runSpeaker(arg: {
     usedContinueTokens: number;
     /** The job's request projection (frozen configuration) the speakers' projections derive from. */
     baseRequest: JobScope["request"];
+    /** Whether the job's prompt preset is a `presetChain` pick. */
+    fromChain: boolean;
     onSetup: (setup: RunSetup) => void;
     writeOwn: (
         ops: ChatOp[],
@@ -633,6 +694,7 @@ async function runSpeaker(arg: {
     const generationId = randomUUID();
     let generation: Generation | null = null;
     let generationInfo: MessageGenerationInfo | undefined;
+    let memoryTask: MemoryTaskHandOff | undefined;
     const chatNow = (): Chat | undefined => {
         refreshChat(store, scope);
         return scopeChat(scope);
@@ -829,6 +891,42 @@ async function runSpeaker(arg: {
     }
 
     /**
+     * `AssemblyMemoryJob.confirmGap`: the job's one `memoryGap` question. An earlier answer serves the
+     * job (`generate` again; `continue` and a stop select only); none without a memory task service
+     * or for a job that is not an input; none while the chat's task is queued or running (not
+     * recorded: a later speaker may ask). A dismissed (`null`), timed-out, or disconnected question
+     * continues; any other answer ends the send with `SendError`; an abort propagates.
+     */
+    async function confirmMemoryGap(payload: { gapTokens: number; plannedCalls: number }): Promise<MemoryGapChoice> {
+        if (state.memoryGap === "generate") {
+            return "generate";
+        }
+        const tasks = deps.memoryTasks;
+        if (state.memoryGap || !tasks || !INPUT_KINDS.has(job.kind)) {
+            return "continue";
+        }
+        const status = tasks.status(chatRef);
+        if (status?.state === "queued" || status?.state === "running") {
+            return "continue";
+        }
+        const lastTaskError = status?.state === "failed" ? status.error : undefined;
+        const result = await bindings.askOptional(
+            { kind: "memoryGap", payload: { ...payload, ...(lastTaskError ? { lastTaskError } : {}) } },
+            nativeCtx,
+        );
+        setup.check();
+        let choice: MemoryGapChoice = "continue";
+        if (result.outcome === "answered" && result.value !== null) {
+            if (typeof result.value !== "string" || !MEMORY_GAP_CHOICES.includes(result.value as MemoryGapChoice)) {
+                throw new SendError(`The memory gap question got no valid answer: ${String(result.value)}`);
+            }
+            choice = result.value as MemoryGapChoice;
+        }
+        state.memoryGap = choice;
+        return choice;
+    }
+
+    /**
      * Closes the generation (its final write, the text as stored when none is given). A final write the
      * store ignored (another write closed the generation first) did not persist the reply: an error.
      */
@@ -987,6 +1085,127 @@ async function runSpeaker(arg: {
             fence: () => setup.check(),
             signal: nativeCtx.signal,
         };
+        // The HypaV3 step's side of the job: its kind, the task service, the gap question, the writer
+        // lease, the `memoryProgress` runs, and the chat's sources.
+        const memoryJob: AssemblyMemoryJob = {
+            preview: job.kind === "preview" || job.kind === "previewPrompt",
+            input: INPUT_KINDS.has(job.kind),
+            tasks: !!deps.memoryTasks,
+            sourceGeneration: () => scope.chatSourceGeneration,
+            readSource: () => {
+                const chat = chatNow();
+                if (!chat) {
+                    return null;
+                }
+                let greeting: string | undefined;
+                if (owner.type !== "group") {
+                    // The owner's greeting as stored now (a projection may be older).
+                    const charactersKind = kinds.get(RESOURCE_KIND.characters);
+                    const stored = charactersKind
+                        ? (store.get(charactersKind, characterId)?.data as character | groupChat | undefined)
+                        : undefined;
+                    if (!stored || stored.type === "group") {
+                        return null;
+                    }
+                    greeting =
+                        chat.fmIndex === -1 ? stored.firstMessage : stored.alternateGreetings?.[chat.fmIndex as number];
+                }
+                return { messages: chat.message, fmIndex: chat.fmIndex, greeting };
+            },
+            blockingReason: (): MemoryBlockingReason | null => {
+                // After a stop the job's later steps select only, whatever would block them now.
+                if (state.memoryGap === "stopped") {
+                    return null;
+                }
+                const resolved = resolveJobRequestModel(scope.request.db, "memory");
+                if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
+                    return "pluginModel";
+                }
+                const stored = scope.db.characters.find((entry) => entry?.chaId === characterId);
+                return hasRequestTriggers(stored, moduleTriggers(scope)) ? "requestTrigger" : null;
+            },
+            confirmGap: confirmMemoryGap,
+            markStopped: () => {
+                state.memoryGap = "stopped";
+            },
+            acquireWriter: async (): Promise<SummaryWriterLease> => {
+                const tasks = deps.memoryTasks;
+                if (!tasks) {
+                    return { release: () => {} };
+                }
+                setup.check();
+                const pending = tasks.acquireSummaryWriter(chatRef, job.id);
+                let lease: SummaryWriterLease;
+                try {
+                    lease = await untilAborted(pending, nativeCtx.signal);
+                } catch (error) {
+                    // A lease granted after the job stopped waiting is given back.
+                    pending.then(
+                        (late) => late.release(),
+                        () => {},
+                    );
+                    throw error;
+                }
+                try {
+                    setup.check();
+                } catch (error) {
+                    lease.release();
+                    throw error;
+                }
+                return lease;
+            },
+            openRun: (phase, reason): AssemblyMemoryRun => {
+                const runId = randomUUID();
+                let opened = false;
+                let closed = false;
+                return {
+                    update: (progress) => {
+                        if (closed) {
+                            return;
+                        }
+                        opened = true;
+                        services.notice({
+                            kind: "memoryProgress",
+                            payload: { chatRef, runId, open: true, phase, reason, ...progress },
+                        });
+                    },
+                    close: () => {
+                        if (closed) {
+                            return;
+                        }
+                        closed = true;
+                        if (opened) {
+                            services.notice({ kind: "memoryProgress", payload: { chatRef, runId, open: false } });
+                        }
+                    },
+                    registerStop: () => job.registerMemoryControl?.(runId) ?? null,
+                };
+            },
+            taskInput: (part) =>
+                deps.memoryTasks
+                    ? {
+                          ...part,
+                          chatRef,
+                          epoch: job.epoch,
+                          admittedRevision: job.context.chatRevision,
+                          speakerId: currentChar.chaId ?? null,
+                          binding: {
+                              presetId: job.context.presetId ?? null,
+                              modelPresetId: job.context.modelPresetId ?? null,
+                              personaId: job.context.personaId ?? null,
+                          },
+                          effective: {
+                              presetId: scope.promptPreset.id,
+                              modelPresetId: scope.modelPreset.id,
+                              fromChain: arg.fromChain,
+                          },
+                          maxContext: db.maxContext,
+                          maxResponse: db.maxResponse,
+                          tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditonalTokens),
+                          settingsFingerprint: memorySettingsFingerprint(scope),
+                      }
+                    : null,
+        };
         state.stage = "assembly";
         const assembled: AssembledPrompt = await assemblePrompt(
             {
@@ -1093,6 +1312,7 @@ async function runSpeaker(arg: {
                         pluginModels: requestDb.pluginModels,
                     }),
                 fence: () => setup.check(),
+                memoryJob,
             },
             { chatAdditonalTokens: arg.chatAdditonalTokens, continue: arg.continueSend, generationId, stageTimings },
         );
@@ -1109,6 +1329,7 @@ async function runSpeaker(arg: {
         }
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;
+        memoryTask = assembled.memoryTask;
         if (job.kind === "preview") {
             return { type: "preview", result: formated };
         }
@@ -1375,7 +1596,7 @@ async function runSpeaker(arg: {
             if (!outputMessage) {
                 // The trigger removed the reply: the turn ends with the removal.
                 generation!.final = true;
-                return { type: "removed" };
+                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
             }
             const inlay = runInlayScreen(currentChar, outputMessage.data);
             writeReplyText(inlay.text);
@@ -1485,7 +1706,7 @@ async function runSpeaker(arg: {
             await runOutputTrigger();
             if (!storedReply()) {
                 generation!.final = true;
-                return { type: "removed" };
+                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
             }
             await runChatOutputListeners(outputMessageId);
         }
@@ -1523,6 +1744,7 @@ async function runSpeaker(arg: {
                 type: "reply",
                 messageId: replyId,
                 ...(alternatives ? { alternatives } : {}),
+                ...(memoryTask ? { memoryTask } : {}),
                 next: { type: "continue", usedContinueTokens: resultTokens },
             };
         }
@@ -1585,6 +1807,7 @@ async function runSpeaker(arg: {
             type: "reply",
             messageId: replyId!,
             ...(alternatives ? { alternatives } : {}),
+            ...(memoryTask ? { memoryTask } : {}),
             ...(next ? { next } : {}),
         });
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
     Chat,
     Database,
@@ -8,7 +9,8 @@ import type {
     character,
     groupChat,
 } from "../../../shared/database.ts";
-import type { GenerationContext } from "../../../shared/jobs.ts";
+import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+import type { GenerationContext, MemoryTokenPolicy } from "../../../shared/jobs.ts";
 import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
@@ -22,7 +24,14 @@ import {
 } from "../data/databaseProjection.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import { isValidResourceId, type ResourceStore, type StoredResource } from "../data/resourceStore.ts";
-import { loadRequestDb, type LoadedRequestDb } from "../llm/settings.ts";
+import { resolveJobRequestModel } from "../llm/request.ts";
+import {
+    loadRequestDb,
+    type LoadedRequestDb,
+    mainModelOf,
+    mainModelTakesImages,
+    tokenScopeFor,
+} from "../llm/settings.ts";
 import {
     bindingLookup,
     checkChatBinding,
@@ -53,6 +62,12 @@ export type JobScope = {
     chatId: string;
     /** The chat's revision as last read. */
     chatRevision: string;
+    /**
+     * The chat's source generation (`ResourceStore.readChatSource`), read in the same synchronous
+     * call as the chat snapshot the projection holds: a whole-chat `replace` or a delete since then
+     * shows as another value. A `meta` write keeps it.
+     */
+    chatSourceGeneration?: number;
     /** The job's prompt preset (`context.presetId`). */
     promptPreset: botPreset;
     /** The job's model preset (`context.modelPresetId`). */
@@ -188,13 +203,13 @@ export function loadJobScope(
 ): JobScope {
     const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
     const read = store.readKinds(jobScopeKinds(kinds).filter((kind) => kind !== charactersKind));
-    const chatRead = store.readRefs([], { chats: [{ characterId: context.characterId, id: context.chatId }] });
+    const chatRecord = store.readChatSource(context.characterId, context.chatId);
     const characterRevisions = new Map<string, string | null>();
     read.kinds[RESOURCE_KIND.characters] = readCharacters(
         store,
         charactersKind,
         context,
-        chatRead.chats[0]?.data,
+        chatRecord.data,
         options.characters,
         characterRevisions,
     );
@@ -209,8 +224,7 @@ export function loadJobScope(
 
     // The chat and its binding before the records the ids name, so a bound record deleted since the
     // job was created reports the binding problem rather than a missing record.
-    const chatRecord = chatRead.chats[0];
-    if (!chatRecord?.data || chatRecord.revision === null) {
+    if (!chatRecord.data || chatRecord.revision === null) {
         throw new GenerationRunnerError(404, "The job's chat no longer exists");
     }
     const refusal = checkChatBinding(
@@ -284,6 +298,7 @@ export function loadJobScope(
         characterId: context.characterId,
         chatId: context.chatId,
         chatRevision: chatRecord.revision,
+        chatSourceGeneration: chatRecord.sourceGeneration,
         revisions,
         characterRevisions,
         charactersKind,
@@ -306,6 +321,71 @@ export function admitProviderModels(scope: JobScope, providers: readonly { name:
         .filter((entry) => entry.model.id === `pluginmodel:::${entry.name}`)
         .map((entry) => ({ ...structuredClone(entry.model), format: LLMFormat.Plugin }));
     scope.request = { ...scope.request, db: { ...scope.request.db, pluginModels } };
+}
+
+/**
+ * How the job's prompt counts tokens (the runner's `ChatTokenCounter` for a speaker of `scope`), as a
+ * credential-free `MemoryTokenPolicy`: an explicit projection of the request settings' main model,
+ * request model, image rule, and tokenizer fields, never the token scope itself (it carries the
+ * Google token).
+ */
+export function memoryTokenPolicy(scope: JobScope, chatAdditionalTokens: number): MemoryTokenPolicy {
+    const requestDb = scope.request.db;
+    const tokenScope = tokenScopeFor(requestDb);
+    const requestModel =
+        requestDb.aiModel === "openrouter"
+            ? requestDb.openrouterRequestModel
+            : requestDb.aiModel === "nanogpt"
+              ? requestDb.nanogptRequestModel
+              : undefined;
+    return {
+        chatAdditionalTokens,
+        useName: scope.db.aiModel.startsWith("gpt") ? "noName" : "name",
+        mainModel: structuredClone(mainModelOf(requestDb)),
+        ...(requestModel !== undefined ? { requestModel } : {}),
+        supportsInlayImage: mainModelTakesImages(requestDb),
+        ...(scope.db.gptVisionQuality !== undefined ? { gptVisionQuality: scope.db.gptVisionQuality } : {}),
+        tokenizer: {
+            aiModel: tokenScope.aiModel,
+            currentPluginProvider: tokenScope.currentPluginProvider,
+            model: { ...tokenScope.model },
+            pluginTokenizer: tokenScope.pluginTokenizer,
+            customTokenizer: tokenScope.customTokenizer,
+            googleClaudeTokenizing: tokenScope.googleClaudeTokenizing,
+            useTokenizerCaching: tokenScope.useTokenizerCaching,
+        },
+    };
+}
+
+/**
+ * A digest of the memory-relevant settings of `scope` (`MemoryTaskInput.settingsFingerprint`): the
+ * selected HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
+ * which names a credential but holds none, the descriptor's format and wire id, a custom model's
+ * definition, and the request's temperature and response size, or the refusal), and the embedding model with its custom endpoint and model (never its key). Equal for
+ * two scopes read from the same settings.
+ */
+export function memorySettingsFingerprint(scope: JobScope): string {
+    const db = scope.db;
+    const memory = resolveJobRequestModel(scope.request.db, "memory");
+    const projection = {
+        hypaV3Preset: selectedHypaV3Preset(db) ?? null,
+        memoryModel:
+            memory.kind === "refused"
+                ? { refused: memory.result }
+                : {
+                      aiModel: memory.aiModel,
+                      profile: memory.profile ?? null,
+                      format: memory.modelInfo.format,
+                      internalID: memory.modelInfo.internalID ?? null,
+                      // A custom model's definition (its endpoint) lives outside the profile.
+                      customModel: memory.db.customModels?.find((model) => model.id === memory.aiModel) ?? null,
+                      temperature: memory.db.temperature ?? null,
+                      maxResponse: memory.db.maxResponse ?? null,
+                  },
+        hypaModel: db.hypaModel ?? null,
+        hypaCustom: { url: db.hypaCustomSettings?.url ?? "", model: db.hypaCustomSettings?.model ?? "" },
+    };
+    return createHash("sha256").update(JSON.stringify(projection)).digest("base64url");
 }
 
 /** A projection character's chats (a group's are typed read-only; the projection is the job's own copy). */
@@ -475,18 +555,18 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
     if (store.chatRevision(scope.characterId, scope.chatId) === scope.chatRevision && scopeChat(scope)) {
         return true;
     }
-    const read = store.readRefs([], { chats: [{ characterId: scope.characterId, id: scope.chatId }] });
-    const record = read.chats[0];
+    const record = store.readChatSource(scope.characterId, scope.chatId);
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
     if (!owner) {
         return false;
     }
-    if (!record?.data || record.revision === null) {
+    if (!record.data || record.revision === null) {
         setChats(owner, []);
         return false;
     }
     setChats(owner, [record.data as Chat]);
     scope.chatRevision = record.revision;
+    scope.chatSourceGeneration = record.sourceGeneration;
     overlayChatMeta(scope, record.data as Chat);
     if (scope.charactersKind) {
         addSpeakers(store, scope.charactersKind, scope, record.data as Chat);

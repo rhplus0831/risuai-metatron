@@ -8,6 +8,7 @@ import path from "node:path";
 import { createServerContext, type RouteLimits } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
+import type { MemoryTaskService } from "../../../shared/jobs.ts";
 import type { ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
@@ -60,6 +61,8 @@ export type TestServerOptions = {
     routeLimits?: RouteLimits;
     /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
     cbsTimeLimits?: ServerCbsTimeLimits;
+    /** The default runner's memory task service (a fake one); `"disabled"` or unset: none. */
+    memoryTasks?: "disabled" | MemoryTaskService;
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -93,6 +96,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
         routeLimits: options.routeLimits,
         cbsTimeLimits: options.cbsTimeLimits,
+        memoryTasks: options.memoryTasks,
     });
     return {
         rootDir,

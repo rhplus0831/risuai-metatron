@@ -5,8 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    type GenerationTerminalEvent,
+    type MemoryChatRef,
+    type MemoryTaskInput,
+    type MemoryTaskService,
+    type MemoryTaskStatus,
+    NO_GENERATION_HOOKS,
+} from "../../../shared/jobs.ts";
+import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -24,7 +32,10 @@ import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } f
 // write, or cache row; a progress notice closed; the embedding key never in the job's error, events,
 // chat, or log when the provider echoes it; `additionalInformations` in the description; a WebLLM
 // model's `previewPrompt` answered without inference. The algorithms' outputs against the browser
-// are `memoryAlgorithms.test.ts`'s.
+// are `memoryAlgorithms.test.ts`'s. The first stack runs without a memory task service (every HypaV3
+// step summarizes inside the job); the last block starts a second stack with a fake service for the
+// select-only sends, the gap question, the initial runs with their stop control, the protected
+// history tail, and the hand-offs.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -42,6 +53,8 @@ const state = {
     mainStatus: 0,
     /** Called when the main request arrives (reads the stored chat at that moment). */
     onMain: null as null | (() => Promise<unknown>),
+    /** The main replies' texts, in order (`Main reply.` once they run out). */
+    mainTexts: null as null | string[],
     embedMode: "ok" as "ok" | "leak",
 };
 const provider = http.createServer(async (req, res) => {
@@ -80,7 +93,8 @@ const provider = http.createServer(async (req, res) => {
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    for (const chunk of ["Main ", "reply."]) {
+    const mainText = state.mainTexts?.shift() ?? "Main reply.";
+    for (const chunk of [mainText.slice(0, 5), mainText.slice(5)]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
     }
     res.write("data: [DONE]\n\n");
@@ -125,6 +139,20 @@ const embedder = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ data: input.map((text) => ({ embedding: vectorOf(text) })) }));
 });
 
+/** A listening test server with its own save directory, settings, and login. */
+type Stack = {
+    rootDir: string;
+    server: ReturnType<typeof createTestServer>;
+    node: http.Server;
+    base: string;
+    epoch: string;
+    signer: Awaited<ReturnType<typeof createSigner>>;
+    presetId: string;
+    modelPresetId: string;
+    profileId: string;
+    personaId: string;
+};
+// The stack the helpers below talk to (`use`).
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
 let node: http.Server;
@@ -135,7 +163,13 @@ let presetId = "";
 let modelPresetId = "";
 let profileId = "";
 let personaId = "";
+let providerUrl = "";
+let embedderUrl = "";
 const logged: string[] = [];
+
+function use(stack: Stack) {
+    ({ rootDir, server, node, base, epoch, signer, presetId, modelPresetId, profileId, personaId } = stack);
+}
 
 async function api(url: string, init: RequestInit = {}) {
     const res = await fetch(`${base}${url}`, {
@@ -171,6 +205,7 @@ const SECTION_OF: Record<string, string> = {
     hypaCustomSettings: "secrets",
     useStreaming: "providers",
     inlayErrorResponse: "providers",
+    autoContinueChat: "providers",
 };
 async function patchSettings(fields: Record<string, unknown>) {
     const bySection = new Map<string, Record<string, unknown>>();
@@ -386,13 +421,20 @@ let currentJobId = "";
 const NO_ANSWER = Symbol("no answer");
 /**
  * Creates a job and follows its owner socket to the terminal. `extra.chatId` runs it on another
- * chat of the character; `answer` answers each `question` event with its value (`NO_ANSWER`: none).
+ * chat of the character; `answer` answers each `question` event with its value (`NO_ANSWER`: none);
+ * `hooks` are the job's plugin hooks and `answerCallback` answers each `callback` event with the
+ * answer message's fields.
  */
 async function job(
     kind: string,
     chaId: string,
     extra: Record<string, unknown> = {},
-    options: { onEvent?: (event: any) => void; answer?: (event: any) => unknown | Promise<unknown> } = {},
+    options: {
+        onEvent?: (event: any) => void;
+        answer?: (event: any) => unknown | Promise<unknown>;
+        hooks?: Record<string, unknown>;
+        answerCallback?: (event: any) => Record<string, unknown>;
+    } = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId, (extra.chatId as string | undefined) ?? "k");
     const created = await api("/api/generations", {
@@ -400,6 +442,7 @@ async function job(
         body: JSON.stringify({
             kind,
             clientId: "tab",
+            ...(options.hooks ? { hooks: options.hooks } : {}),
             context: {
                 characterId: chaId,
                 chatId: "k",
@@ -442,6 +485,9 @@ async function job(
                     ws.send(JSON.stringify({ type: "answer", id: event.id, outcome: "answered", value }));
                 }
             }
+            if (event.type === "callback" && options.answerCallback) {
+                ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
+            }
         };
     });
     ws.close();
@@ -456,48 +502,55 @@ const ownerRecords = (events: any[], chaId: string) =>
 const memoryCard = (messages: any[]) =>
     messages.find((m) => typeof m.content === "string" && m.content.includes("<Past Events Summary>"));
 
-beforeAll(async () => {
-    const record = (...args: unknown[]) =>
-        logged.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
-    vi.spyOn(console, "log").mockImplementation(record);
-    vi.spyOn(console, "error").mockImplementation(record);
-    vi.spyOn(console, "warn").mockImplementation(record);
-    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
-    allowListenerOrigin(provider);
-    await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
-    allowListenerOrigin(embedder);
-    const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
-    const embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
-    rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-jobs-"));
-    mkdirSync(path.join(rootDir, "dist"));
-    writeFileSync(path.join(rootDir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
-    symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
-    cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
-    mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
-    writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({
-        rootDir,
+/**
+ * Starts a stack, makes it the helpers' target, and gives it the settings every test here starts
+ * from: the main and sub slots on one reverse-proxy profile to the fake provider, a 900-token
+ * context, the fake embedding server, memory off.
+ */
+async function startStack(options: { memoryTasks?: MemoryTaskService } = {}): Promise<Stack> {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-jobs-"));
+    mkdirSync(path.join(dir, "dist"));
+    writeFileSync(path.join(dir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
+    symlinkSync(path.join(REPO_ROOT, "public"), path.join(dir, "public"), "dir");
+    cpSync(path.join(REPO_ROOT, "version.json"), path.join(dir, "version.json"));
+    mkdirSync(path.join(dir, "save", "server"), { recursive: true });
+    writeFileSync(path.join(dir, "save", "server", "password"), "pw");
+    const started = createTestServer({
+        rootDir: dir,
         generationRandom: () => 0.5,
         scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
         cbsTimeLimits: UNHURRIED_CBS,
         generationHypaV3SeparatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
+        ...(options.memoryTasks ? { memoryTasks: options.memoryTasks } : {}),
     });
-    node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
-    await new Promise<void>((resolve) => node.once("listening", () => resolve()));
-    allowListenerOrigin(node);
-    server.context.attachWebSocket(node);
-    base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
-    signer = await createSigner();
-    await fetch(`${base}/api/login`, json({ password: "pw", publicKey: signer.publicJwk }));
-    epoch = (
-        (await (
-            await fetch(`${base}/api/resources/ui`, { headers: { "risu-auth": await signer.jwt() } })
-        ).json()) as any
-    ).epoch;
-    presetId = (await single("presets")).data[0].id;
-    modelPresetId = (await single("modelPresets")).data[0].id;
-    profileId = (await single("modelProfiles")).data[0].id;
-    personaId = (await single("personas")).data[0].id;
+    const listening = serve({ fetch: started.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+    await new Promise<void>((resolve) => listening.once("listening", () => resolve()));
+    allowListenerOrigin(listening);
+    started.context.attachWebSocket(listening);
+    const url = `http://127.0.0.1:${(listening.address() as { port: number }).port}`;
+    const signing = await createSigner();
+    await fetch(`${url}/api/login`, json({ password: "pw", publicKey: signing.publicJwk }));
+    const stack: Stack = {
+        rootDir: dir,
+        server: started,
+        node: listening,
+        base: url,
+        signer: signing,
+        epoch: (
+            (await (
+                await fetch(`${url}/api/resources/ui`, { headers: { "risu-auth": await signing.jwt() } })
+            ).json()) as any
+        ).epoch,
+        presetId: "",
+        modelPresetId: "",
+        profileId: "",
+        personaId: "",
+    };
+    use(stack);
+    stack.presetId = presetId = (await single("presets")).data[0].id;
+    stack.modelPresetId = modelPresetId = (await single("modelPresets")).data[0].id;
+    stack.profileId = profileId = (await single("modelProfiles")).data[0].id;
+    stack.personaId = personaId = (await single("personas")).data[0].id;
     // The main and sub slots use one profile: a reverse proxy to the fake provider.
     await patchPreset("modelProfiles", {
         modelId: "reverse_proxy",
@@ -518,17 +571,40 @@ beforeAll(async () => {
         ...defaultMemorySettings,
         hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb-model" },
     });
+    return stack;
+}
+
+async function closeStack(stack: Stack) {
+    await stack.server.close();
+    stack.node.closeAllConnections();
+    await new Promise((resolve) => stack.node.close(resolve));
+    rmSync(stack.rootDir, { recursive: true, force: true });
+}
+
+/** The stack without a memory task service: every HypaV3 step summarizes inside the job. */
+let blockingStack: Stack;
+
+beforeAll(async () => {
+    const record = (...args: unknown[]) =>
+        logged.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
+    vi.spyOn(console, "log").mockImplementation(record);
+    vi.spyOn(console, "error").mockImplementation(record);
+    vi.spyOn(console, "warn").mockImplementation(record);
+    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
+    await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
+    providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
+    embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
+    blockingStack = await startStack();
 }, SLOW);
 
 afterAll(async () => {
-    await server?.close();
-    node?.closeAllConnections();
-    await new Promise((resolve) => node?.close(resolve));
+    await closeStack(blockingStack);
     provider.closeAllConnections();
     provider.close();
     embedder.closeAllConnections();
     embedder.close();
-    rmSync(rootDir, { recursive: true, force: true });
     vi.restoreAllMocks();
 });
 
@@ -541,6 +617,7 @@ afterEach(async () => {
     state.holdSummary = null;
     state.mainStatus = 0;
     state.onMain = null;
+    state.mainTexts = null;
     state.embedMode = "ok";
     await patchSettings(defaultMemorySettings);
 });
@@ -777,7 +854,7 @@ describe("HypaV3", () => {
     );
 
     it(
-        "a returned-error write places the summary made onto the edit saved meanwhile",
+        "a summary saved at its checkpoint is placed onto the edit saved meanwhile, and the failure of the next summary keeps it",
         async () => {
             await patchSettings({ hypaV3: true });
             state.summaries = ["First landed.", { fail: "summary provider down" }];
@@ -1412,6 +1489,884 @@ describe("credentials and the other consumers", () => {
             } finally {
                 await patchPreset("modelProfiles", { modelId: "reverse_proxy" });
             }
+        },
+        SLOW,
+    );
+});
+
+// A memory task service makes a send select from the stored summaries instead of summarizing
+// (`docs/structure/chat-pipeline.md`, the job's HypaV3 step): the dispatch (previews and server-slot
+// sends select only; a Plugin `memory` slot and a request trigger keep the summaries in the job), the
+// `memoryProgress` runs before any legacy progress of the same work, the gap question and its
+// answers, the approved initial run with its per-summary saves, the retryable error of an edit, the
+// abort and the stop control, the protected history tail at the final re-check, and the hand-off
+// with its source-generation check. The service is a fake: hand-offs and leases recorded, the status
+// and `pendingManual` set by the test.
+function createFakeMemoryTasks() {
+    const handOffs: MemoryTaskInput[] = [];
+    const leases: { chatRef: MemoryChatRef; ownerId: string; released: boolean }[] = [];
+    let status: MemoryTaskStatus | null = null;
+    let manual = false;
+    const service = {
+        handOff(input: MemoryTaskInput) {
+            handOffs.push(input);
+        },
+        status() {
+            return status;
+        },
+        acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string) {
+            const lease = { chatRef, ownerId, released: false };
+            leases.push(lease);
+            return Promise.resolve({
+                release: () => {
+                    lease.released = true;
+                },
+            });
+        },
+        pendingManual() {
+            return manual;
+        },
+    } satisfies MemoryTaskService;
+    return {
+        service,
+        handOffs,
+        leases,
+        setStatus(value: MemoryTaskStatus | null) {
+            status = value;
+        },
+        setPendingManual(value: boolean) {
+            manual = value;
+        },
+        reset() {
+            handOffs.length = 0;
+            leases.length = 0;
+            status = null;
+            manual = false;
+        },
+    };
+}
+
+describe("HypaV3 with a memory task service", () => {
+    const fake = createFakeMemoryTasks();
+    let tasksStack: Stack;
+    /** A `request` trigger with a request effect: the owner's summaries stay in the job. */
+    const REQUEST_TRIGGER = {
+        comment: "request",
+        type: "request",
+        conditions: [],
+        effect: [{ type: "v2SetVar", indent: 0, var: "seen", operator: "=", value: "1", valueType: "value" }],
+        lowLevelAccess: true,
+    };
+    const luaTrigger = (code: string) => ({
+        comment: "lua",
+        type: "manual",
+        conditions: [],
+        effect: [{ type: "triggerlua", indent: 0, code }],
+        lowLevelAccess: true,
+    });
+    /** The provider descriptor the tab registers for the job's plugin provider `prov`. */
+    const PLUGIN_DESCRIPTOR: LLMModel = {
+        id: "pluginmodel:::prov",
+        name: "prov",
+        shortName: "prov",
+        fullName: "prov",
+        internalID: "pluginmodel:::prov",
+        provider: LLMProvider.AsIs,
+        format: LLMFormat.Plugin,
+        flags: [LLMFlags.hasFullSystemPrompt],
+        parameters: ["temperature"],
+        tokenizer: LLMTokenizer.Unknown,
+    };
+    const PLUGIN_HOOKS = { ...NO_GENERATION_HOOKS, providers: [{ name: "prov", model: PLUGIN_DESCRIPTOR }] };
+    const PLUGIN_PROFILE_ID = "plugin-memory";
+    const seededSummary = { text: "Seeded summary of the first steps.", chatMemos: ["m0", "m1"], isImportant: false };
+
+    const memoryNotices = (events: any[]) =>
+        events.filter((event) => event.type === "notice" && event.kind === "memoryProgress").map((e) => e.payload);
+    const legacyNotices = (events: any[]) =>
+        events.filter((event) => event.type === "notice" && event.kind === "progress").map((e) => e.payload);
+    /** Every legacy `progress` open notice falls inside a `memoryProgress` run (opened before, closed after). */
+    function expectRunsToCoverLegacyProgress(events: any[]) {
+        const runs = new Map<string, { openAt: number; closeAt: number }>();
+        events.forEach((event, index) => {
+            if (event.type !== "notice" || event.kind !== "memoryProgress") {
+                return;
+            }
+            const run = runs.get(event.payload.runId) ?? { openAt: Number.POSITIVE_INFINITY, closeAt: -1 };
+            if (event.payload.open) {
+                run.openAt = Math.min(run.openAt, index);
+            } else {
+                run.closeAt = index;
+            }
+            runs.set(event.payload.runId, run);
+        });
+        const legacyOpens = events
+            .map((event, index) => ({ event, index }))
+            .filter(({ event }) => event.type === "notice" && event.kind === "progress" && event.payload.open === true);
+        expect(legacyOpens.length).toBeGreaterThan(0);
+        for (const { event, index } of legacyOpens) {
+            const covered = [...runs.values()].some((run) => run.openAt < index && run.closeAt > index);
+            expect(
+                covered,
+                `legacy progress at event ${index} (${event.payload.msg}) inside a memoryProgress run`,
+            ).toBe(true);
+        }
+        for (const [runId, run] of runs) {
+            expect(run.openAt, `${runId} opened`).toBeLessThan(Number.POSITIVE_INFINITY);
+            expect(run.closeAt, `${runId} closed`).toBeGreaterThan(run.openAt);
+        }
+        return runs;
+    }
+    /** Patches the selected HypaV3 preset for `body` and restores the fields after. */
+    async function withHypaV3(settings: Record<string, unknown>, body: () => Promise<void>) {
+        const current = await single("hypaV3Presets");
+        const selected = current.data.items.find((item: any) => item.id === current.data.selectedId);
+        const before = Object.fromEntries(Object.keys(settings).map((key) => [key, selected.settings[key]]));
+        await patchHypaV3(settings);
+        try {
+            await body();
+        } finally {
+            await patchHypaV3(before);
+        }
+    }
+    /** The `memory` slot on a reverse-proxy profile whose format is Plugin (the tab's provider `prov`). */
+    async function withPluginMemorySlot(body: () => Promise<void>) {
+        const profiles = await single("modelProfiles");
+        const presets = await single("modelPresets");
+        const preset = presets.data.find((entry: any) => entry.id === modelPresetId);
+        const before = { auxSlots: preset.auxSlots, seperateModelsForAxModels: preset.seperateModelsForAxModels };
+        const added = await batch({
+            ops: [
+                {
+                    kind: "modelProfiles",
+                    id: "main",
+                    baseRevision: profiles.revision,
+                    data: [
+                        ...profiles.data,
+                        {
+                            ...profiles.data[0],
+                            id: PLUGIN_PROFILE_ID,
+                            name: "plugin memory",
+                            customAPIFormat: LLMFormat.Plugin,
+                            currentPluginProvider: "prov",
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(added.status, JSON.stringify(added.body).slice(0, 300)).toBe(200);
+        await patchPreset("modelPresets", {
+            auxSlots: { memory: { profileId: PLUGIN_PROFILE_ID } },
+            seperateModelsForAxModels: true,
+        });
+        try {
+            await body();
+        } finally {
+            await patchPreset("modelPresets", before);
+            const now = await single("modelProfiles");
+            await batch({
+                ops: [
+                    {
+                        kind: "modelProfiles",
+                        id: "main",
+                        baseRevision: now.revision,
+                        data: now.data.filter((entry: any) => entry.id !== PLUGIN_PROFILE_ID),
+                    },
+                ],
+            });
+        }
+    }
+    /** Answers the job's `provider` callbacks with one plugin summary each. */
+    function pluginAnswers() {
+        const calls: any[] = [];
+        return {
+            calls,
+            answerCallback: (event: any) => {
+                calls.push(event);
+                return {
+                    outcome: "answered",
+                    value: { success: true, content: `Plugin summary ${calls.length}: events happened.` },
+                };
+            },
+        };
+    }
+    /** A message edit as another client makes it (`setText`). */
+    async function editMessage(chaId: string, id: string, text: string) {
+        const chat = await readChat(chaId);
+        const res = await batch({
+            chats: [
+                { characterId: chaId, chatId: "k", baseRevision: chat.revision, ops: [{ op: "setText", id, text }] },
+            ],
+        });
+        expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
+    }
+    const stopMemoryRun = (runId: string) =>
+        api(`/api/generations/${currentJobId}/memory-stop?clientId=tab`, {
+            method: "POST",
+            body: JSON.stringify({ runId }),
+        });
+
+    beforeAll(async () => {
+        tasksStack = await startStack({ memoryTasks: fake.service });
+        await patchSettings({ hypaV3: true });
+    }, SLOW);
+    afterAll(async () => {
+        use(blockingStack);
+        await closeStack(tasksStack);
+    });
+    // The file's `afterEach` turns memory off again after the inner hooks ran: on before each test.
+    beforeEach(async () => {
+        fake.reset();
+        await patchSettings({ hypaV3: true });
+    });
+
+    it(
+        "a request trigger keeps the summaries in the send: stored before the main request under the chat's lease, and memoryProgress names the reason; nothing is handed off",
+        async () => {
+            const chaId = await seedCharacter({ extra: { triggerscript: [REQUEST_TRIGGER] } });
+            state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
+            const { events, terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toHaveLength(1);
+            const atMain = mains()[0].chatAtRequest as { summaries: unknown[] };
+            expect(atMain.summaries).toHaveLength(summaries().length);
+            expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+            const notices = memoryNotices(events);
+            expect(notices[0]).toMatchObject({ phase: "blocking", reason: "requestTrigger", open: true, done: 0 });
+            expect(notices.at(-1)).toMatchObject({ runId: notices[0].runId, open: false });
+            expect(notices.filter((n) => n.open).at(-1)).toMatchObject({
+                done: summaries().length,
+                total: summaries().length,
+            });
+            expect(fake.leases).toEqual([{ chatRef: { chaId, chatId: "k" }, ownerId: currentJobId, released: true }]);
+            expect(fake.handOffs).toHaveLength(0);
+        },
+        SLOW,
+    );
+
+    it(
+        "a Plugin memory slot keeps the summaries in the send through the tab's provider callback, before the main request, and memoryProgress names the reason",
+        async () => {
+            await withPluginMemorySlot(async () => {
+                const chaId = await seedCharacter();
+                const plugin = pluginAnswers();
+                state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
+                const { events, terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
+                    { hooks: PLUGIN_HOOKS, answerCallback: plugin.answerCallback },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(plugin.calls.length).toBeGreaterThan(0);
+                expect(plugin.calls.every((call) => call.name === "provider" && call.payload.name === "prov")).toBe(
+                    true,
+                );
+                expect(JSON.stringify(plugin.calls[0].payload.argument.prompt_chat)).toContain(
+                    "Summarize the ongoing role story",
+                );
+                // The summaries never reached the HTTP provider; the main request did, after the writes.
+                expect(summaries()).toHaveLength(0);
+                expect(mains()).toHaveLength(1);
+                const atMain = mains()[0].chatAtRequest as { summaries: { text: string }[] };
+                expect(atMain.summaries.map((s) => s.text)).toEqual(
+                    plugin.calls.map((_, i) => `Plugin summary ${i + 1}: events happened.`),
+                );
+                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Plugin summary 1: events happened.");
+                expect(memoryNotices(events)[0]).toMatchObject({
+                    phase: "blocking",
+                    reason: "pluginModel",
+                    open: true,
+                });
+                expect(fake.handOffs).toHaveLength(0);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "both preview kinds select only, under a request trigger and under a Plugin slot: no history summary, no new stored summary, no question, no hand-off",
+        async () => {
+            const previews = async (chaId: string, options: Parameters<typeof job>[3] = {}) => {
+                for (const kind of ["preview", "previewPrompt"]) {
+                    const { events, terminal } = await job(kind, chaId, {}, { ...options, answer: () => "generate" });
+                    expect(terminal?.type, `${kind}: ${JSON.stringify(terminal)}`).toBe("done");
+                    expect(questions(events)).toHaveLength(0);
+                    if (kind === "preview") {
+                        const result = (terminal as any).result as { content: string }[];
+                        expect(memoryCard(result)?.content).toContain(seededSummary.text);
+                        expect(JSON.stringify(result)).not.toContain("Message number 2:");
+                        expect(JSON.stringify(result)).toContain("Message number 23:");
+                    }
+                }
+                expect(summaries()).toHaveLength(0);
+                expect(mains()).toHaveLength(0);
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                    seededSummary.text,
+                ]);
+                expect(fake.handOffs).toHaveLength(0);
+            };
+            const triggered = await seedCharacter({ extra: { triggerscript: [REQUEST_TRIGGER] } });
+            await setChatMeta(triggered, { hypaV3Data: { summaries: [seededSummary] } });
+            await previews(triggered);
+            await withPluginMemorySlot(async () => {
+                const plugged = await seedCharacter();
+                await setChatMeta(plugged, { hypaV3Data: { summaries: [seededSummary] } });
+                const plugin = pluginAnswers();
+                await previews(plugged, { hooks: PLUGIN_HOOKS, answerCallback: plugin.answerCallback });
+                expect(plugin.calls).toHaveLength(0);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "a server-slot send selects the stored summaries without a summary request, trims the uncovered history behind the protected tail without asking for a gap under the threshold, and hands the chat off",
+        async () => {
+            const chaId = await seedCharacter();
+            await setChatMeta(chaId, { hypaV3Data: { summaries: [seededSummary] } });
+            const { events, terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(questions(events)).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+            expect(mains()).toHaveLength(1);
+            const prompt = JSON.stringify(mains()[0].body.messages);
+            expect(memoryCard(mains()[0].body.messages)?.content).toContain(seededSummary.text);
+            // The uncovered history is dropped oldest first; the last `queryChatCount` entries and the input stay.
+            expect(prompt).not.toContain("Message number 2:");
+            expect(prompt).toContain("Message number 22:");
+            expect(prompt).toContain("Message number 23:");
+            expect(prompt).toContain("Hello");
+            // The hand-off: the history as read for the prompt, with its sources and the chat's generation.
+            expect(fake.handOffs).toHaveLength(1);
+            const input = fake.handOffs[0];
+            expect(input).toMatchObject({
+                chatRef: { chaId, chatId: "k" },
+                epoch,
+                speakerId: chaId,
+                historyStart: 1,
+                maxContext: 900,
+                maxResponse: 100,
+                effective: { fromChain: false },
+            });
+            expect(typeof input.sourceGeneration).toBe("number");
+            expect(input.history.length).toBe(input.sources.length);
+            expect(input.history.some((entry) => entry.content.includes("Message number 0:"))).toBe(true);
+            expect(input.sources[1]).toMatchObject({ kind: "greeting", fmIndex: -1 });
+            expect(input.sources[2]).toMatchObject({ kind: "message", id: "m0" });
+            expect(input.tokenPolicy.tokenizer.customTokenizer).toBe("tik");
+            expect(typeof input.settingsFingerprint).toBe("string");
+            // The stored summaries are untouched; the job's own append and meta writes did not block the hand-off.
+            expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                seededSummary.text,
+            ]);
+        },
+        SLOW,
+    );
+
+    it(
+        "with the similarity correction on, a select-only send makes exactly one correction request before the main request and stores no summary",
+        async () => {
+            await withHypaV3({ enableSimilarityCorrection: true }, async () => {
+                const chaId = await seedCharacter();
+                await setChatMeta(chaId, { hypaV3Data: { summaries: [seededSummary] } });
+                const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(upstream.map((entry) => entry.summary)).toEqual([true, false]);
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                    seededSummary.text,
+                ]);
+                expect(fake.handOffs).toHaveLength(1);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "a gap over the threshold asks once with the planned count: 'continue', a dismissed question, and a running task's silence all trim and hand off; a failed task's error is shown",
+        async () => {
+            await withHypaV3({ gapConfirmTokens: 0 }, async () => {
+                const expectTrimmedAndHandedOff = async (
+                    result: Awaited<ReturnType<typeof job>>,
+                    chaId: string,
+                    handOffs: number,
+                ) => {
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    expect(summaries()).toHaveLength(0);
+                    expect(mains().length).toBeGreaterThan(0);
+                    const prompt = JSON.stringify(mains().at(-1)!.body.messages);
+                    expect(prompt).not.toContain("Message number 0:");
+                    expect(prompt).toContain("Message number 23:");
+                    expect(fake.handOffs).toHaveLength(handOffs);
+                    expect(fake.handOffs.at(-1)?.chatRef).toEqual({ chaId, chatId: "k" });
+                };
+                const continued = await seedCharacter();
+                const first = await job(
+                    "send",
+                    continued,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => "continue" },
+                );
+                expect(questions(first.events)).toEqual([
+                    expect.objectContaining({
+                        kind: "memoryGap",
+                        payload: { gapTokens: expect.any(Number), plannedCalls: expect.any(Number) },
+                    }),
+                ]);
+                expect(questions(first.events)[0].payload.gapTokens).toBeGreaterThan(0);
+                expect(questions(first.events)[0].payload.plannedCalls).toBeGreaterThan(1);
+                await expectTrimmedAndHandedOff(first, continued, 1);
+
+                upstream.length = 0;
+                fake.setStatus({
+                    taskId: "t1",
+                    state: "failed",
+                    done: 1,
+                    total: 3,
+                    error: "the summary model broke",
+                    terminalRevision: null,
+                });
+                const dismissed = await seedCharacter();
+                const second = await job(
+                    "send",
+                    dismissed,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => null },
+                );
+                expect(questions(second.events)).toHaveLength(1);
+                expect(questions(second.events)[0].payload.lastTaskError).toBe("the summary model broke");
+                await expectTrimmedAndHandedOff(second, dismissed, 2);
+
+                upstream.length = 0;
+                fake.setStatus({ taskId: "t2", state: "running", done: 0, total: 3 });
+                const busy = await seedCharacter();
+                const third = await job(
+                    "send",
+                    busy,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => "generate" },
+                );
+                expect(questions(third.events)).toHaveLength(0);
+                await expectTrimmedAndHandedOff(third, busy, 3);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "'generate' takes the lease, summarizes the gap one window at a time with each summary saved before the next request and before the main request, reuses the gap measurement's correction, and reports the initial run",
+        async () => {
+            await withHypaV3({ gapConfirmTokens: 0, enableSimilarityCorrection: true }, async () => {
+                const chaId = await seedCharacter();
+                await setChatMeta(chaId, { hypaV3Data: { summaries: [seededSummary] } });
+                fake.setPendingManual(true);
+                const storedAtRequest: number[] = [];
+                state.holdSummary = async () => {
+                    storedAtRequest.push((await readChat(chaId)).data.hypaV3Data.summaries.length);
+                };
+                state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
+                const { events, terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => "generate" },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                const question = questions(events)[0];
+                expect(question.payload.plannedCalls).toBeGreaterThan(1);
+                // One correction request (the gap measurement's, reused by the run), then the history summaries.
+                const planned = question.payload.plannedCalls as number;
+                expect(summaries()).toHaveLength(planned + 1);
+                expect(storedAtRequest).toEqual([1, ...Array.from({ length: planned }, (_, i) => 1 + i)]);
+                expect(mains()).toHaveLength(1);
+                const atMain = mains()[0].chatAtRequest as { summaries: { text: string }[] };
+                expect(atMain.summaries).toHaveLength(1 + planned);
+                expect(atMain.summaries[0].text).toBe(seededSummary.text);
+                const stored = (await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text);
+                expect(stored).toEqual(atMain.summaries.map((s) => s.text));
+                const prompt = mains()[0].body.messages as { content: string }[];
+                expect(memoryCard(prompt)?.content).toContain("events happened.");
+                expect(JSON.stringify(prompt)).toContain("Message number 23:");
+                expect(fake.leases).toEqual([
+                    { chatRef: { chaId, chatId: "k" }, ownerId: currentJobId, released: true },
+                ]);
+                const initial = memoryNotices(events).filter((n) => n.phase === "initial");
+                expect(initial[0]).toMatchObject({ reason: "gap", open: true, done: 0, total: planned });
+                expect(initial.filter((n) => n.open).at(-1)).toMatchObject({ done: planned, total: planned });
+                expect(
+                    memoryNotices(events)
+                        .filter((n) => n.runId === initial[0].runId)
+                        .at(-1),
+                ).toEqual({
+                    chatRef: { chaId, chatId: "k" },
+                    runId: initial[0].runId,
+                    open: false,
+                });
+                // A manual start waits for the chat: the input is handed off whatever the lookahead says.
+                expect(fake.handOffs).toHaveLength(1);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "a message edited during 'generate' ends the send with the retryable error and saves nothing past the valid prefix",
+        async () => {
+            await withHypaV3({ gapConfirmTokens: 0 }, async () => {
+                const chaId = await seedCharacter();
+                let edited = false;
+                state.holdSummary = async () => {
+                    // During the second window's request: a message of that window changes.
+                    if (state.summaryIndex === 1 && !edited) {
+                        edited = true;
+                        await editMessage(chaId, "m8", "Message number 8, rewritten by another tab.");
+                    }
+                };
+                const { terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => "generate" },
+                );
+                expect(terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("[HypaV3] The chat changed during summarization"),
+                });
+                expect(edited).toBe(true);
+                expect(summaries()).toHaveLength(2);
+                expect(mains()).toHaveLength(0);
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                    "Summary 1: events happened.\n\nPart two of 1.",
+                ]);
+                expect(fake.leases.map((lease) => lease.released)).toEqual([true]);
+                expect(fake.handOffs).toHaveLength(0);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "an abort after two summaries of an initial run keeps the two, makes no later request, and releases the lease",
+        async () => {
+            await withHypaV3({ gapConfirmTokens: 0 }, async () => {
+                const chaId = await seedCharacter({ count: 36 });
+                state.holdSummary = async () => {
+                    if (state.summaryIndex === 2) {
+                        await api(`/api/generations/${currentJobId}?clientId=tab`, { method: "DELETE" });
+                    }
+                };
+                const { events, terminal } = await job(
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
+                    { answer: () => "generate" },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("error");
+                expect((terminal as any).message).toMatch(/abort/i);
+                expect(questions(events)[0].payload.plannedCalls).toBeGreaterThan(3);
+                expect(summaries()).toHaveLength(3);
+                expect(mains()).toHaveLength(0);
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                    "Summary 1: events happened.\n\nPart two of 1.",
+                    "Summary 2: events happened.\n\nPart two of 2.",
+                ]);
+                expect(fake.leases.map((lease) => lease.released)).toEqual([true]);
+                expect(fake.handOffs).toHaveLength(0);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "memory-stop after two summaries keeps the two, trims the rest, and the group's second speaker selects only",
+        async () => {
+            await withHypaV3({ gapConfirmTokens: 0 }, async () => {
+                const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
+                const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
+                const group = await seedCharacter({
+                    messages: Array.from({ length: 36 }, (_, i) => ({
+                        role: i % 2 === 0 ? "user" : "char",
+                        data: longText(i),
+                        chatId: `m${i}`,
+                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
+                    })),
+                    extra: {
+                        name: "Band",
+                        type: "group",
+                        characters: [bob, cid],
+                        characterTalks: [1, 1],
+                        characterActive: [true, true],
+                        orderByOrder: true,
+                        firstMessage: "",
+                        desc: "",
+                    },
+                });
+                let runId: string | undefined;
+                let stopped: { status: number; body: any } | undefined;
+                state.holdSummary = async () => {
+                    if (state.summaryIndex === 1 && !stopped) {
+                        expect(runId).toBeDefined();
+                        stopped = await stopMemoryRun(runId!);
+                    }
+                };
+                const { events, terminal } = await job(
+                    "group",
+                    group,
+                    { input: "hello all", userMessageId: "u1" },
+                    {
+                        answer: () => "generate",
+                        onEvent: (event) => {
+                            if (
+                                event.type === "notice" &&
+                                event.kind === "memoryProgress" &&
+                                event.payload.phase === "initial"
+                            ) {
+                                runId = event.payload.runId;
+                            }
+                        },
+                    },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(stopped).toMatchObject({ status: 200, body: { stopped: true } });
+                expect(questions(events)).toHaveLength(1);
+                expect(summaries()).toHaveLength(2);
+                expect((await readChat(group)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                    "Summary 1: events happened.\n\nPart two of 1.",
+                    "Summary 2: events happened.\n\nPart two of 2.",
+                ]);
+                // Both speakers replied from the stored summaries with the rest of the history trimmed.
+                expect(mains()).toHaveLength(2);
+                for (const main of mains()) {
+                    const prompt = JSON.stringify(main.body.messages);
+                    expect(memoryCard(main.body.messages)?.content).toContain("Summary 1: events happened.");
+                    expect(prompt).not.toContain("Message number 20:");
+                    expect(prompt).toContain("Message number 35:");
+                }
+                expect(
+                    memoryNotices(events)
+                        .filter((n) => n.runId === runId)
+                        .at(-1),
+                ).toMatchObject({ open: false });
+                expect(memoryNotices(events).filter((n) => n.phase === "blocking")).toHaveLength(0);
+                expect(fake.leases).toHaveLength(1);
+                expect(fake.handOffs).toHaveLength(1);
+                expect(fake.handOffs[0].speakerId).toBe(cid);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "the protected tail survives the final re-check: an editRequest growth drops the older history first, and one past the tail ends with the too-many-tokens error, also when sendChatAsSystem merged them into one system message",
+        async () => {
+            const grow = (words: number) =>
+                luaTrigger(
+                    `listenEdit('editRequest', function(id, data) data[#data + 1] = { role = 'system', content = string.rep('word ', ${words}) } return data end)`,
+                );
+            // A short chat that fits: the protected tail (the last three history entries) and the
+            // removable entries before it.
+            const fits = await seedCharacter({ count: 8, extra: { triggerscript: [grow(450)] } });
+            const kept = await job("send", fits, { input: "Hi", userMessageId: "u1" });
+            expect(kept.terminal?.type, JSON.stringify(kept.terminal)).toBe("done");
+            const prompt = JSON.stringify(mains()[0].body.messages);
+            expect(prompt).not.toContain("Message number 0:");
+            expect(prompt).toContain("Message number 6:");
+            expect(prompt).toContain("Message number 7:");
+            expect(prompt).toContain("word word");
+            // Nothing is due for a chat this short.
+            expect(fake.handOffs).toHaveLength(0);
+
+            upstream.length = 0;
+            const over = await seedCharacter({ count: 8, extra: { triggerscript: [grow(760)] } });
+            const refused = await job("send", over, { input: "Hi", userMessageId: "u1" });
+            expect(refused.terminal).toMatchObject({
+                type: "error",
+                message: expect.stringContaining("At token rechecking"),
+            });
+            expect(mains()).toHaveLength(0);
+
+            const presets = await single("presets");
+            const preset = presets.data.find((entry: any) => entry.id === presetId);
+            const before = {
+                promptTemplate: preset.promptTemplate ?? null,
+                promptSettings: preset.promptSettings ?? null,
+            };
+            await patchPreset("presets", {
+                promptTemplate: [
+                    { type: "plain", type2: "main", role: "system", text: "Main prompt." },
+                    { type: "description" },
+                    { type: "chat", rangeStart: 0, rangeEnd: "end" },
+                ],
+                promptSettings: {
+                    assistantPrefill: "",
+                    postEndInnerFormat: "",
+                    sendChatAsSystem: true,
+                    sendName: false,
+                    utilOverride: false,
+                },
+            });
+            try {
+                const merged = await seedCharacter({ count: 8, extra: { triggerscript: [grow(760)] } });
+                const result = await job("send", merged, { input: "Hi", userMessageId: "u1" });
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("At token rechecking"),
+                });
+                expect(mains()).toHaveLength(0);
+            } finally {
+                await patchPreset("presets", before);
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a whole-chat replace during the step (same ids, texts, and memory; another scriptstate) hands off nothing",
+        async () => {
+            await withHypaV3({ enableSimilarityCorrection: true }, async () => {
+                const chaId = await seedCharacter();
+                await setChatMeta(chaId, { hypaV3Data: { summaries: [seededSummary] } });
+                let replaced = false;
+                // The correction request runs inside the step, after the history and its generation were read.
+                state.holdSummary = async () => {
+                    if (!replaced) {
+                        replaced = true;
+                        const chat = await readChat(chaId);
+                        const res = await batch({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: chat.revision,
+                                    ops: [{ op: "replace", chat: { ...chat.data, scriptstate: { reloaded: "1" } } }],
+                                },
+                            ],
+                        });
+                        expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
+                    }
+                };
+                const { terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(replaced).toBe(true);
+                expect(mains()).toHaveLength(1);
+                const chat = (await readChat(chaId)).data;
+                expect(chat.scriptstate).toEqual({ reloaded: "1" });
+                expect(chat.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([seededSummary.text]);
+                expect(chat.message.at(-1).data).toBe("Main reply.");
+                expect(fake.handOffs).toHaveLength(0);
+            });
+        },
+        SLOW,
+    );
+
+    it(
+        "continue, reroll, and an auto-continue round each hand off the last round's input",
+        async () => {
+            const chaId = await seedCharacter();
+            const continued = await job("continue", chaId, {});
+            expect(continued.terminal?.type, JSON.stringify(continued.terminal)).toBe("done");
+            expect(fake.handOffs).toHaveLength(1);
+            expect(fake.handOffs[0].history.at(-1)?.content).toContain("Message number 23:");
+
+            const rerolled = await job("reroll", chaId, {});
+            expect(rerolled.terminal?.type, JSON.stringify(rerolled.terminal)).toBe("done");
+            expect(fake.handOffs).toHaveLength(2);
+
+            await patchSettings({ autoContinueChat: true });
+            try {
+                upstream.length = 0;
+                state.mainTexts = ["Main reply without an end", "Main reply."];
+                const other = await seedCharacter();
+                const auto = await job("send", other, { input: "Hello", userMessageId: "u1" });
+                expect(auto.terminal?.type, JSON.stringify(auto.terminal)).toBe("done");
+                expect(mains()).toHaveLength(2);
+                expect((await readChat(other)).data.message.at(-1).data).toBe("Main reply without an endMain reply.");
+                // The continue round's history ends with the reply it continued.
+                expect(fake.handOffs).toHaveLength(3);
+                expect(fake.handOffs[2].history.at(-1)?.content).toContain("Main reply without an end");
+            } finally {
+                await patchSettings({ autoContinueChat: false });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "the experimental selection's embedding queue reports inside a selection run: memoryProgress opens before the legacy progress and closes after it",
+        async () => {
+            await withHypaV3(
+                {
+                    useExperimentalImpl: true,
+                    summarizationMaxConcurrent: 1,
+                    embeddingMaxConcurrent: 1,
+                    recentMemoryRatio: 0.1,
+                    similarMemoryRatio: 0.6,
+                },
+                async () => {
+                    const chaId = await seedCharacter();
+                    await setChatMeta(chaId, {
+                        hypaV3Data: {
+                            summaries: [
+                                {
+                                    text: "Alpha: the party left the village.",
+                                    chatMemos: ["m0", "m1"],
+                                    isImportant: false,
+                                },
+                                {
+                                    text: "Beta: the desert crossing began.",
+                                    chatMemos: ["m2", "m3"],
+                                    isImportant: false,
+                                },
+                            ],
+                        },
+                    });
+                    const { events, terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                    expect(summaries()).toHaveLength(0);
+                    expect(
+                        legacyNotices(events).some((n) => n.open && String(n.msg).includes("Similarity searching")),
+                    ).toBe(true);
+                    const runs = expectRunsToCoverLegacyProgress(events);
+                    expect(
+                        memoryNotices(events)
+                            .filter((n) => n.open)
+                            .every((n) => n.phase === "selection" && n.reason === null),
+                    ).toBe(true);
+                    // The summary chunks were embedded (the queue the notices report), not only the queries.
+                    expect(embedCalls.some((call) => call.input.some((text) => text.startsWith("Alpha:")))).toBe(true);
+                    expect(runs.size).toBeGreaterThan(0);
+                    expect(fake.handOffs).toHaveLength(1);
+                },
+            );
+        },
+        SLOW,
+    );
+
+    it(
+        "an experimental blocking run reports its summaries and its selection inside memoryProgress runs that open before and close after the legacy progress",
+        async () => {
+            await withHypaV3(
+                { useExperimentalImpl: true, summarizationMaxConcurrent: 1, embeddingMaxConcurrent: 1 },
+                async () => {
+                    const chaId = await seedCharacter({ extra: { triggerscript: [REQUEST_TRIGGER] } });
+                    const { events, terminal } = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                    expect(summaries().length).toBeGreaterThan(0);
+                    expect(legacyNotices(events).some((n) => n.open && String(n.msg).includes("Summarizing"))).toBe(
+                        true,
+                    );
+                    const runs = expectRunsToCoverLegacyProgress(events);
+                    const notices = memoryNotices(events);
+                    expect(notices[0]).toMatchObject({ phase: "blocking", reason: "requestTrigger", open: true });
+                    const blocking = runs.get(notices[0].runId)!;
+                    const firstLegacy = events.findIndex(
+                        (event) => event.type === "notice" && event.kind === "progress",
+                    );
+                    expect(blocking.openAt).toBeLessThan(firstLegacy);
+                    expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBe(summaries().length);
+                },
+            );
         },
         SLOW,
     );

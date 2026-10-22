@@ -4,6 +4,8 @@ import {
     type GenerationFollowUp,
     MAX_FOLLOW_UP_PART_CHARS,
     MAX_FOLLOW_UP_PARTS,
+    type MemoryGapChoice,
+    type MemoryTaskService,
 } from "../../../shared/jobs.ts";
 import type { character, Chat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -59,6 +61,12 @@ export type GenerationRunnerDeps = {
     random?: () => number;
     /** The translation runner a send hands its messages to. */
     translations?: Pick<TranslationRunner, "handOff">;
+    /**
+     * The detached memory task service a send hands its chat's HypaV3 input to. Without it, HypaV3
+     * summarizes inside the job (blocking) for every job kind: no select-only send, gap question,
+     * initial run, or hand-off.
+     */
+    memoryTasks?: MemoryTaskService;
     /** Web Push for chat completions; without it only the tab is notified. */
     push?: Pick<PushService, "send">;
     /** The diagnostics journal (its caught faults). */
@@ -107,6 +115,13 @@ export type JobRunState = {
      * memory was found or turned on. A chat's stored "don't ask again" is not kept here.
      */
     memoryTrim?: "memory" | "trim";
+    /**
+     * The HypaV3 gap question's outcome for the job (asked at most once a job): the user's choice
+     * (a dismissed, timed-out, or disconnected question is `continue`), serving every later speaker
+     * and round, or `stopped` once the owner stopped an initial summarization run (later speakers
+     * and rounds select only).
+     */
+    memoryGap?: MemoryGapChoice | "stopped";
     /** The CBS evaluation time of the job, across its runs (`serverCbsLimits`). */
     cbsUsage: CbsUsage;
     effects: { count: number };
