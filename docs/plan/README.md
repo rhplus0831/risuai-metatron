@@ -11,7 +11,7 @@ Active planning and implementation:
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.
 - [HypaV3 Background Memory](hypav3-background-memory.md): a send selects stored HypaV3
   summaries and a detached server task writes new ones; blocking stays for Plugin memory
-  models and request triggers, a large gap asks first; in progress, slices 2 and 1a landed.
+  models and request triggers, a large gap asks first; in progress, slices 2, 1a, and 5a landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
