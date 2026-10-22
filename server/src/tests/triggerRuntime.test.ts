@@ -1526,7 +1526,7 @@ describe("recursion and the effect limit", () => {
             triggers: [trig([ef("v2Loop"), setVar("n", "+=", "1", 1), ef("v2EndIndent", { endOfLoop: true }, 1)])],
         });
         await expect(h.run()).rejects.toThrow(/more than/);
-    }, 30_000);
+    });
 });
 
 describe("the fences", () => {

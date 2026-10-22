@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// `pnpm test:agent [--force] [--verbose] [--all] [vitest args]`: `pnpm test` for agents.
+// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [vitest args]`: `pnpm test`
+// for agents.
 //
-// Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with `util/agentTestReporter.ts` (failures and one summary
-// line only, on stdout) and caches the output under `node_modules/.cache/agent-test/` keyed by the
-// working tree. Everything the run writes to stderr (Node warnings, worker-thread traces from
+// Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with
+// `util/agentTestReporter.ts` (failures and one summary line only, on stdout; `--slow-tests` adds a
+// warning listing the passed tests slower than <ms>, default 1000) and caches the output under
+// `node_modules/.cache/agent-test/` keyed by the working tree. Everything the run writes to stderr (Node warnings, worker-thread traces from
 // passing tests) is held back: a passing run reports only its line count, a failing run prints the
 // last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key is `git write-tree` over a temporary index with every change staged (untracked
 // files included, `.gitignore` honored), plus the Node and Vitest versions and the arguments. When
@@ -24,18 +26,38 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
 const vitestBin = join(root, "node_modules", "vitest", "vitest.mjs");
 const reporter = "./util/agentTestReporter.ts";
+/** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
+const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
 const STDERR_TAIL = 60;
+
+const SLOW_TESTS_DEFAULT_MS = 1000;
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
-const vitestArgs = args.filter((arg) => arg !== "--force" && arg !== "--verbose" && arg !== "--all");
+const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
+// `--slow-tests[=<ms>]`: the reporter also lists the passed tests slower than this (it gets the
+// threshold through SLOW_TESTS_ENV); never forwarded to Vitest.
+let slowTestsMs;
+for (const arg of args.filter(isSlowTests)) {
+    const value = arg === "--slow-tests" ? String(SLOW_TESTS_DEFAULT_MS) : arg.slice("--slow-tests=".length);
+    if (!/^\d+$/.test(value)) {
+        process.stderr.write(`[agent-test] --slow-tests=<ms> takes a whole number of milliseconds, got "${value}"\n`);
+        process.exit(2);
+    }
+    slowTestsMs = Number(value);
+}
+const vitestArgs = args.filter(
+    (arg) => arg !== "--force" && arg !== "--verbose" && arg !== "--all" && !isSlowTests(arg),
+);
 if (!all && !vitestArgs.some((arg) => arg === "--tags-filter" || arg.startsWith("--tags-filter="))) {
     vitestArgs.unshift("--tags-filter=!slow");
 }
 
 const log = (line) => process.stdout.write(`[agent-test] ${line}\n`);
+// The cache key's arguments: a plain run keeps the key it had before `--slow-tests` existed.
+const keyArgs = slowTestsMs === undefined ? vitestArgs : [...vitestArgs, `--slow-tests=${slowTestsMs}`];
 
 function git(gitArgs, env = {}) {
     return spawnSync("git", gitArgs, { cwd: root, env: { ...process.env, ...env }, encoding: "utf8" });
@@ -95,7 +117,13 @@ function run() {
         });
         const child = spawn(process.execPath, [vitestBin, "run", ...vitestArgs, `--reporter=${reporter}`], {
             cwd: root,
-            env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", AGENT_TEST: "1" },
+            env: {
+                ...process.env,
+                NO_COLOR: "1",
+                FORCE_COLOR: "0",
+                AGENT_TEST: "1",
+                [SLOW_TESTS_ENV]: slowTestsMs === undefined ? "" : String(slowTestsMs),
+            },
             stdio: ["inherit", "pipe", "pipe"],
             windowsHide: true,
         });
@@ -136,13 +164,13 @@ function printStderr(stderr, exitCode) {
 const tree = workingTreeId();
 if (tree === null) log("not a git checkout (or git failed): running without the cache");
 
-const argsHash = createHash("sha256").update(JSON.stringify(vitestArgs)).digest("hex").slice(0, 16);
+const argsHash = createHash("sha256").update(JSON.stringify(keyArgs)).digest("hex").slice(0, 16);
 const entryFile = join(cacheDir, `${argsHash}.json`);
 const key =
     tree === null
         ? null
         : createHash("sha256")
-              .update(JSON.stringify([tree, process.version, vitestVersion(), vitestArgs]))
+              .update(JSON.stringify([tree, process.version, vitestVersion(), keyArgs]))
               .digest("hex");
 
 const cached = key === null || force ? null : readEntry(entryFile);

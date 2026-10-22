@@ -160,7 +160,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         // The write landed after the search; the next activation sees it.
         expect(chat.findChat(ref)?.message[0].data).toBe("dragon");
         expect(await sources()).toEqual(["dragon"]);
-    }, 30_000);
+    });
 
     it("yields first at the first active's token count, after its CBS and chat-variable reads", async () => {
         const { characterStore, chatVar, chaId, ref, lorebook } = await boot([message("m1", "user", "alpha beta")]);
@@ -177,7 +177,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
             ["beta", "B {{getvar::x}}", "B two".length],
             ["alpha", "A {{getvar::x}}", "A one".length],
         ]);
-    }, 30_000);
+    });
 
     it("matches regex keys with the fixed grammar: empty flags, the i flag, and an invalid pattern that matches nothing", async () => {
         const { characterStore, chaId, ref, lorebook } = await boot([message("m1", "user", "A dragon appears.")]);
@@ -197,7 +197,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
             { prompt: "\x01{{User}}:A dragon appears.\x01", source: "message 0 by user", activated: "/DRAGON/i" },
             { prompt: "\x01{{user}}:a dragon appears.\x01", source: "message 0 by user", activated: "dragon" },
         ]);
-    }, 30_000);
+    });
 
     it("scans the user's messages under the bound persona's name, else the selected persona's, else User", async () => {
         const { characterStore, collectionStore, chat, chaId, ref, lorebook, activePersona, settingsViews } =
@@ -215,7 +215,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(activePersona.name).toBe("User");
         activePersona.name = undefined as any;
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
-    }, 30_000);
+    });
 
     it("merges the module lore enabled globally, on the chat, on the character, and by moduleIntergration, in module order", async () => {
         const { characterStore, collectionStore, chat, chaId, ref, sources, activePreset } = await boot([
@@ -232,7 +232,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await sources()).toEqual(["lore-i", "lore-h", "lore-c", "lore-g"]);
         collectionStore.setEnabledModules([]);
         expect(await sources()).toEqual(["lore-i", "lore-h", "lore-c"]);
-    }, 30_000);
+    });
 
     it("resolves a bound persona's embedded module through the module list, as before the move (inherited)", async () => {
         const { collectionStore, chat, ref, sources } = await boot([message("m1", "user", "mina")]);
@@ -252,7 +252,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         // `getModules` caches by the joined id list: enabling another module changes the list.
         collectionStore.setEnabledModules(["other"]);
         expect(await sources()).toEqual(["lore-$embedded"]);
-    }, 30_000);
+    });
 
     it("writes the keep-after-match flag to the chat through the chat module, and reads it back next time", async () => {
         const { characterStore, chat, chaId, ref, sources } = await boot([message("m1", "user", "a dragon")]);
@@ -263,7 +263,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(chat.findChat(ref)?.scriptstate).toEqual({ "$__internal_ka_keep-id": "true" });
         chat.setMessageText(ref, "m1", "nothing");
         expect(await sources()).toEqual(["keep"]);
-    }, 30_000);
+    });
 
     it("a group chat scans the group's own lore and names a member message by its speaker", async () => {
         const { characterStore, lorebook } = await boot();
@@ -290,7 +290,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(result.matchLog).toEqual([
             { prompt: "\x01{{Member}}:a dragon\x01", source: "message 0 by char", activated: "/dragon/" },
         ]);
-    }, 30_000);
+    });
 });
 
 // Adding a chat lorebook entry or folder sends the chat's whole `localLore`, so while a send of
@@ -335,7 +335,7 @@ describe("adding chat lorebook entries during a job in the chat", () => {
             "New Lore 1",
             "New Folder",
         ]);
-    }, 30_000);
+    });
 
     it("is fenced by this tab's own send of the chat only", async () => {
         const { lorebook, sendingChatRef, language, stored, ref, chaId } = await fenced();
@@ -351,7 +351,7 @@ describe("adding chat lorebook entries during a job in the chat", () => {
         expect(alerts.error).toHaveBeenCalledWith(language.chatGenerating);
         expect(stored()).toEqual(["New Lore 1"]);
         sendingChatRef.set(null);
-    }, 30_000);
+    });
 });
 
 // The export of the Global Lore Book page (`"sglobal"`, the list `LoreBookList` shows in
@@ -381,14 +381,14 @@ describe("exportLoreBook", () => {
         expect(exported(1)).toEqual({ type: "risu", ver: 1, data: pages[1].data });
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
-    }, 30_000);
+    });
 
     it("exports an empty list when there is no Global Lore Book page", async () => {
         const { lorebook, exported } = await exporting((fake) => fake.set("loreBook", "main", []));
         await lorebook.exportLoreBook("sglobal");
         expect(exported()).toEqual({ type: "risu", ver: 1, data: [] });
         expect(alerts.error).not.toHaveBeenCalled();
-    }, 30_000);
+    });
 
     it("exports the selected chat's lorebook, and refuses with a notice while that chat is still loading", async () => {
         const { lorebook, chat, ref, chaId, sync, download, exported, language } = await exporting();
@@ -415,5 +415,5 @@ describe("exportLoreBook", () => {
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(alerts.error).toHaveBeenCalledWith(language.localLoreExportNotLoaded);
         expect(download).toHaveBeenCalledTimes(1);
-    }, 30_000);
+    });
 });

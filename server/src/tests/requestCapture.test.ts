@@ -1119,7 +1119,7 @@ describe("a request's row (over the request layer)", () => {
             originalBytes: utf8(text),
             storedBytes: REQUEST_HISTORY_BOUNDS.response,
         });
-    }, 20_000);
+    });
 
     it("a credential crossing the capture cut leaves no fragment, also when earlier redaction shrinks the text under the store's bound", async () => {
         // The capture ends 10 characters into a credential; the many credentials before it shrink
@@ -1136,7 +1136,7 @@ describe("a request's row (over the request layer)", () => {
         expect(utf8(exchange.response)).toBeLessThan(REQUEST_HISTORY_BOUNDS.response);
         expect(row.truncation["exchange.0.response"]).toMatchObject({ originalBytes: utf8(text) });
         expect(JSON.stringify(row)).not.toContain(SECRET);
-    }, 20_000);
+    });
 
     it("a character split at the capture cut is left out rather than stored as a replacement character", async () => {
         const unit = `${SECRET} `;
@@ -1148,7 +1148,7 @@ describe("a request's row (over the request layer)", () => {
         expect(exchange.response.endsWith("a")).toBe(true);
         expect(exchange.response).not.toContain("�");
         expect(utf8(exchange.response)).toBeLessThan(REQUEST_HISTORY_BOUNDS.response);
-    }, 20_000);
+    });
 
     it("a buffered tool round is two exchanges in one row, with the bytes of both", async () => {
         const echo: ToolDescriptor = {

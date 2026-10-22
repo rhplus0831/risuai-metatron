@@ -330,6 +330,33 @@ function deferred<T = unknown>() {
     return { promise, resolve, reject };
 }
 
+/**
+ * Holds the permission prompts until the test answers them. `shown(i, running)` resolves with the
+ * answer function of prompt `i` once it is asked for, and fails when `running` settles first. A
+ * prompt beyond `expected` is denied; `asked()` counts every prompt.
+ */
+function heldPrompts(expected: number) {
+    const prompts = Array.from({ length: expected }, () => deferred<(value: boolean) => void>());
+    let asked = 0;
+    alerts.confirm.mockImplementation(
+        () =>
+            new Promise<boolean>((resolve) => {
+                const prompt = prompts[asked++];
+                if (prompt) prompt.resolve(resolve);
+                else resolve(false);
+            }),
+    );
+    return {
+        asked: () => asked,
+        shown(index: number, running: void | PromiseLike<unknown>): Promise<(value: boolean) => void> {
+            const settled = Promise.resolve(running).then<never>(() => {
+                throw new Error(`settled before prompt ${index + 1}`);
+            });
+            return Promise.race([prompts[index].promise, settled]);
+        },
+    };
+}
+
 /** Registers `fn` as a `chatOutput` listener of `api` and returns the wrapper the runner would call. */
 async function listenerOf(api: CapturedApi, fn: Function) {
     const before = new Set(pluginHooks.chatOutput);
@@ -643,34 +670,32 @@ describe("settings inside a hook", () => {
 
     it("a read and a write keep the hook's preset across the database consent and the install prompt", async () => {
         const api = await makeApi();
-        const read = deferred<unknown>();
-        const written = deferred<void>();
+        let read: unknown;
         const listener = await listenerOf(api, async () => {
-            read.resolve(await api.getDatabase(["temperature"]));
+            read = await api.getDatabase(["temperature"]);
             await api.setDatabase({
                 plugins: [{ name: "installed-by-hook", script: "x", version: "3.0" }],
                 temperature: 55,
             });
-            written.resolve();
         });
         // From here on the permissions are asked for (the listener was registered under a grant).
         grants.value = false;
-        const prompts: ((value: boolean) => void)[] = [];
-        alerts.confirm.mockImplementation(() => new Promise<boolean>((resolve) => prompts.push(resolve)));
+        const prompts = heldPrompts(2);
         const running = invokeHook(listener, capturePluginContext(refB1), listenerArg);
 
         // The consent for the read is pending; the user switches presets meanwhile.
-        await vi.waitFor(() => expect(prompts).toHaveLength(1));
+        const consent = await prompts.shown(0, running);
         selectPreset("b");
-        prompts[0](true);
-        expect(await read.promise).toEqual({ temperature: 10 });
+        consent(true);
 
-        // The install prompt is pending; the write still goes to the hook's preset when answered.
-        await vi.waitFor(() => expect(prompts).toHaveLength(2));
+        // The install prompt is pending (the read is done); the write still goes to the hook's
+        // preset when answered.
+        const install = await prompts.shown(1, running);
+        expect(read).toEqual({ temperature: 10 });
         preset("b").temperature = 21;
-        prompts[1](true);
-        await written.promise;
+        install(true);
         await running;
+        expect(prompts.asked()).toBe(2);
         expect(preset("a").temperature).toBe(55);
         expect(preset("b").temperature).toBe(21);
         expect(settings.plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
@@ -842,8 +867,7 @@ describe("the runners", () => {
         });
         // From here on the permissions are asked for: the provider's, then the read's.
         grants.value = false;
-        const prompts: ((value: boolean) => void)[] = [];
-        alerts.confirm.mockImplementation(() => new Promise<boolean>((resolve) => prompts.push(resolve)));
+        const prompts = heldPrompts(2);
         // `aiModel` is the model id of the model preset's main profile: the request reads it from
         // the model preset of its captured context, else the selected one.
         mainProfile("a").modelId = "pluginmodel:::ctx";
@@ -858,11 +882,10 @@ describe("the runners", () => {
             "model",
         );
         // The provider permission prompt is pending; its context was taken before the wait.
-        await vi.waitFor(() => expect(prompts).toHaveLength(1));
+        const provider = await prompts.shown(0, running);
         expect(where(api)).toEqual([1, 1]);
-        prompts[0](true);
-        await vi.waitFor(() => expect(prompts).toHaveLength(2));
-        prompts[1](true);
+        provider(true);
+        (await prompts.shown(1, running))(true);
         const response = await running;
 
         expect(response).toMatchObject({ type: "success", result: "reply!" });
@@ -878,6 +901,7 @@ describe("the runners", () => {
         );
         expect(captured).toMatchObject({ type: "success", result: "reply!" });
         expect(seen).toEqual(["before 0/1", "provider 0/1 10 again", "after 0/1"]);
+        expect(prompts.asked()).toBe(2);
     });
 });
 

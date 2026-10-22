@@ -231,7 +231,7 @@ describe("cache reuse", () => {
         ]);
         agree();
         noNotice();
-    }, 20_000);
+    });
 
     it("a reorder, a deletion with the self-assignment, and an insertion reuse every text and send the order", async () => {
         const { fake, settings, records, byId, ops, serialized, agree, settle, noNotice } = await boot();
@@ -273,7 +273,7 @@ describe("cache reuse", () => {
         expect(ops()[0].patch).toEqual({ items: [], changes: [], order: ["m3", "m0", "m1"] });
         agree();
         noNotice();
-    }, 20_000);
+    });
 
     it("the mutation module's writes: updateModule patches one field, addModule sends the new module whole, setModules copies the list once", async () => {
         const { fake, collectionStore, byId, ops, serialized, cacheable, agree, settle, noNotice } = await boot();
@@ -323,7 +323,7 @@ describe("cache reuse", () => {
         function record() {
             return fake.record("modules", "main")!.data as any[];
         }
-    }, 20_000);
+    });
 
     it("a list whose ids repeat is sent whole, and its texts are still reused", async () => {
         const { fake, collectionStore, settings, byId, ops, serialized, agree, settle, noNotice } = await boot();
@@ -342,7 +342,7 @@ describe("cache reuse", () => {
         expect(ops()[0]).not.toHaveProperty("patch");
         agree();
         noNotice();
-    }, 20_000);
+    });
 });
 
 describe("soundness", () => {
@@ -382,7 +382,7 @@ describe("soundness", () => {
         expect(byId("m2").lorebook[0].content).toBe("written through m1");
         agree();
         noNotice();
-    }, 20_000);
+    });
 
     it("another tab's item patch gives the list fresh identities; the next local save is a patch of the edited field only", async () => {
         const { fake, settings, byId, ops, reads, serialized, agree, settle, patchModules, noNotice } = await boot();
@@ -414,7 +414,7 @@ describe("soundness", () => {
         expect(ops()[0].patch.changes).toEqual([{ id: "m1", set: { name: "M1" }, remove: [] }]);
         agree();
         noNotice();
-    }, 20_000);
+    });
 
     it("an asset rename, addition and deletion replace the frozen list whole, each an item patch of assets; another tab's assets patch arrives frozen", async () => {
         const { fake, settings, records, byId, ops, reads, agree, settle, patchModules, noNotice } = await boot();
@@ -478,5 +478,5 @@ describe("soundness", () => {
         });
         agree();
         noNotice();
-    }, 20_000);
+    });
 });

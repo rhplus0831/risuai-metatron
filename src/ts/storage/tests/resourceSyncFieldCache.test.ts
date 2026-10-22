@@ -71,9 +71,7 @@ const big = (count: number) => Array.from({ length: count }, (_, i) => ({ i, tex
 // Every case re-evaluates the client/store/bootstrap graph after `vi.resetModules()` (the
 // `beforeAll` below loads it once, outside the cases) and flushes the real save loop over its
 // fixture inside its timed body: up to about 1 s alone, many times that on one CPU shared with
-// busy processes. Vitest's default 5 s runner timeout would be a load gauge here, not a check;
-// this one only catches a hang.
-const INTEGRATION_TIMEOUT = 60_000;
+// busy processes.
 
 async function boot(prepare: (fake: FakeResourceServer) => void = () => {}) {
     vi.resetModules();
@@ -142,7 +140,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-describe("cache reuse", { timeout: INTEGRATION_TIMEOUT }, () => {
+describe("cache reuse", () => {
     it("does not serialize an unchanged large field again after a small edit, and does after a write under it", async () => {
         const { fake, c, rawOf, flush, ops, serialized, agree } = await boot();
         c("a").assets = big(3000);
@@ -304,7 +302,7 @@ describe("cache reuse", { timeout: INTEGRATION_TIMEOUT }, () => {
     });
 });
 
-describe("every write path saves the mirror's text", { timeout: INTEGRATION_TIMEOUT }, () => {
+describe("every write path saves the mirror's text", () => {
     it("set at depth, delete, defineProperty, each mutator, replaceRecordList, moveRecordListItem, batched writes, same-field reuse", async () => {
         const { c, records, flush, agree } = await boot();
         const a = c("a");
@@ -438,7 +436,7 @@ describe("every write path saves the mirror's text", { timeout: INTEGRATION_TIME
     });
 });
 
-describe("record aliases and hooks, end to end", { timeout: INTEGRATION_TIMEOUT }, () => {
+describe("record aliases and hooks, end to end", () => {
     it("a sort comparator writing a raw owned object into another field: the character is saved whole and right", async () => {
         const { fake, c, rawOf, flush, agree } = await boot();
         c("a").left = { n: 1 };
@@ -692,5 +690,5 @@ describe("canonicalShape against normalizeCharacter on a whole parse", () => {
             agree(id);
         }
         expect(reports()).toBe(0);
-    }, 20_000);
+    });
 });

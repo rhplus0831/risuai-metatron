@@ -280,9 +280,28 @@ describe("batched exports", () => {
             await flush();
             expect(h.requests.map((r) => r.keys)).toEqual([keys.slice(0, 200)]);
             const beforeAssets = h.output().length;
+            // The next POST is already pending when the first asset of a batch is used (compressed
+            // for the JSON card, written out otherwise), not only once the batch is consumed.
+            let requestsAtFirstUse: number | undefined;
+            const noteFirstUse = () => {
+                requestsAtFirstUse ??= h.requests.length;
+            };
+            if (format === "json") {
+                h.compress.mockImplementation(async (bytes) => {
+                    noteFirstUse();
+                    return bytes;
+                });
+            } else {
+                const write = h.sink.write.getMockImplementation()!;
+                h.sink.write.mockImplementation((bytes) => {
+                    noteFirstUse();
+                    return write(bytes);
+                });
+            }
             gates[0].resolve(batchResponse(keys.slice(0, 200), h.data));
             await flush();
             expect(h.requests.map((r) => r.keys)).toEqual([keys.slice(0, 200), keys.slice(200, 400)]);
+            expect(requestsAtFirstUse).toBe(2);
             expect(active).toBe(1);
             expect(finished).toBe(false);
             if (format === "json") expect(h.compress).toHaveBeenCalledTimes(200);

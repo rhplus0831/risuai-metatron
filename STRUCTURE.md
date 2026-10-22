@@ -59,9 +59,9 @@ Verification:
   work. Control the clock (fake timers, an injected `now`, a deferred or latch, a
   test-only limit option) or tag the test `slow`. The gate's Vitest timeout is a
   hang guard, not a budget: a deterministic test may be slow under load, and one
-  that is slow alone is reported, not failed. Add tests only for code the task
-  changes, and keep a test only when a plausible wrong implementation would fail
-  it. Details, the overload check (`pnpm --silent test:overload`), and the timing
+  that is slow alone is reported on request (`test:agent --slow-tests`), not
+  failed. Add tests only for code the task changes, and keep a test only when a
+  plausible wrong implementation would fail it. Details, the overload check (`pnpm --silent test:overload`), and the timing
   inventory: [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
 - V4. Before committing, `rg` each changed product export and file name across `src`,
   `server`, `shared`, `util`, `e2e`, and `docs`, and update the consumers it finds
