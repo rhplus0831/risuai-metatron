@@ -37,6 +37,7 @@ import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
 import type { HypaV3SeparatorLimits } from "./prompt/memory/host.ts";
+import { createMemoryTasks, type MemoryTaskLimits, type MemoryTasks } from "./prompt/memory/memoryTasks.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
@@ -83,6 +84,7 @@ import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } 
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
+import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
@@ -129,7 +131,9 @@ export type RouteLimits = {
  * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
  * `memoryTasks` gives the default runner a memory task service (tests pass a fake one): HypaV3 then
  * selects stored summaries in a send and hands its chat to the service; `"disabled"` or unset passes
- * none, and every HypaV3 step summarizes inside its job.
+ * none, and every HypaV3 step summarizes inside its job. The context's own memory task service
+ * (`createMemoryTasks`, returned as `memoryTasks`) is not given to the runner; `memoryTaskOptions`
+ * opens its manual routes (closed by default: 503) and replaces its clock and limits (tests).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -176,6 +180,11 @@ export function createServerContext(options: {
     cbsTimeLimits?: ServerCbsTimeLimits;
     /** The default runner's memory task service; `"disabled"` or unset: none. */
     memoryTasks?: "disabled" | MemoryTaskService;
+    /**
+     * The context's memory task service: `manualAdmission` opens the start and cancel routes (default
+     * closed: 503 `notEnabled`), `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`).
+     */
+    memoryTaskOptions?: { manualAdmission?: boolean; now?: () => number; limits?: Partial<MemoryTaskLimits> };
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -229,6 +238,13 @@ export function createServerContext(options: {
         feed: changeFeed,
         epoch: () => resources.epoch(),
         authorize: auth.isAuthorizedToken,
+        // The service is built below; a socket connects only once the context exists.
+        memoryTasks: () =>
+            memoryTasks?.snapshot().map(({ chatRef, status }) => ({
+                characterId: chatRef.chaId,
+                chatId: chatRef.chatId,
+                status,
+            })) ?? [],
     });
     const snapshots = createSnapshotManager({
         store: resources,
@@ -257,6 +273,13 @@ export function createServerContext(options: {
     snapshots.onMaintenance(async () => {
         translationRunner.pause("The server data is being replaced");
         return () => translationRunner.resume();
+    });
+    // The memory tasks' likewise (the service is built below): its tasks end `cancelled`
+    // (`maintenance`) before the jobs' listener waits for the jobs and the request layer pauses, and
+    // none starts until the maintenance ends.
+    snapshots.onMaintenance(async () => {
+        memoryTasks?.pause();
+        return () => memoryTasks?.resume();
     });
     const generationJobs = createGenerationJobs({
         store: resources,
@@ -373,6 +396,49 @@ export function createServerContext(options: {
         ...(options.memoryTasks && options.memoryTasks !== "disabled" ? { memoryTasks: options.memoryTasks } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
+    // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
+    // the script workers. Not given to the runner yet, so nothing hands a chat off; a context whose
+    // resource kinds have no characters (tests) has none.
+    const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
+        ? createMemoryTasks({
+              store: resources,
+              kinds: resourceKinds,
+              gate: snapshots.gate,
+              hostDeps: {
+                  llm: llmRequests,
+                  embeddings,
+                  scriptWorkers,
+                  tokens: tokenCounter,
+                  rootDir: options.rootDir,
+                  ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
+                  ...(options.generationHypaV3SeparatorLimits
+                      ? { separatorLimits: options.generationHypaV3SeparatorLimits }
+                      : {}),
+              },
+              ...(options.memoryTaskOptions?.now ? { now: options.memoryTaskOptions.now } : {}),
+              ...(options.memoryTaskOptions?.limits ? { limits: options.memoryTaskOptions.limits } : {}),
+          })
+        : null;
+    if (memoryTasks) {
+        // After the live-update sockets' listener, so the clients get the `epoch` frame before any
+        // status of the new registry. A superseded epoch (a newer one was published inside this
+        // publication and reset the registry already) resets nothing.
+        changeFeed.subscribe((event) => {
+            if (event.type === "epoch" && event.epoch === resources.epoch()) {
+                memoryTasks.resetEpoch();
+            }
+        });
+        resources.onChatInvalidated((notice) => memoryTasks.invalidate(notice));
+        memoryTasks.onStatus(({ epoch, chatRef, status }) =>
+            changeFeed.publish({
+                type: "memoryTask",
+                epoch,
+                characterId: chatRef.chaId,
+                chatId: chatRef.chatId,
+                status,
+            }),
+        );
+    }
     // The script transform: read-only renders on the runner's services. A restore
     // or an import stops every render and empties its cache (the data it was made from is gone).
     const transforms = createTransformService(runnerDeps);
@@ -416,6 +482,10 @@ export function createServerContext(options: {
         }
         shuttingDown = true;
         diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
+        // The memory tasks end `cancelled` (`shutdown`) first, before the jobs' aborts release their
+        // writer leases and the request layer fails the tasks' requests; their terminals reach the
+        // live-update sockets, closed below.
+        memoryTasks?.beginShutdown();
         // Time zero of every job's abort deadline; `dispose` waits for them to end.
         generationJobs.beginShutdown();
         translationRunner.beginShutdown();
@@ -487,9 +557,13 @@ export function createServerContext(options: {
     app.use(async (c, next) => {
         // The credential writes (`/api/llm-secrets`) are resource writes too, and the message search
         // reads the resource store between yields (shutdown waits for it before closing the store).
+        // The memory task routes read the store and change the memory task registry; every answer of
+        // theirs is `no-store`, the limiter's 429 and the body limit's 413 included.
+        const memoryTask = c.req.path === MEMORY_TASKS_PATH || c.req.path.startsWith(`${MEMORY_TASKS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
-            c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH;
+            c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH ||
+            memoryTask;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
@@ -524,7 +598,7 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history) {
+            if (history || memoryTask) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -537,9 +611,9 @@ export function createServerContext(options: {
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
-    // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, and
-    // the message search's cap their bodies themselves (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB,
-    // 2 MiB, 4 KiB).
+    // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
+    // message search's, and the memory task start's cap their bodies themselves (8 MiB, 16 KiB, 16 KiB,
+    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -554,6 +628,7 @@ export function createServerContext(options: {
                     route === TRANSLATE_MESSAGE_PATH ||
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
+                    route === MEMORY_TASKS_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
@@ -633,6 +708,13 @@ export function createServerContext(options: {
     });
     registerTranslateRoutes(app, {
         runner: translationRunner,
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+    });
+    registerMemoryTaskRoutes(app, {
+        tasks: memoryTasks,
+        enabled: () => options.memoryTaskOptions?.manualAdmission === true,
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
@@ -783,6 +865,8 @@ export function createServerContext(options: {
         llmRequests,
         requestHistory,
         translationRunner,
+        /** The HypaV3 memory task service (null without a characters kind); not given to the runner. */
+        memoryTasks,
         push,
         eventSockets,
         diagnostics,
@@ -826,6 +910,7 @@ export function createServerContext(options: {
             disposing ??= Promise.all([
                 generationJobs.drain(),
                 translationRunner.drain(),
+                memoryTasks?.drain(),
                 llmRequests.dispose(),
                 transforms.close(),
             ])

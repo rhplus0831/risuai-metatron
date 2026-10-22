@@ -1,10 +1,15 @@
 // @vitest-environment node
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, character, Message } from "../../../shared/database.ts";
+import type { EventFeedFrame } from "../../../shared/events.ts";
 import type { GenerationContext, MemoryChatRef, MemoryEntrySource, MemoryTaskInput } from "../../../shared/jobs.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
@@ -24,12 +29,26 @@ import { createLlmRequests } from "../llm/requests.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import { emptyHypaV3Execution, hypaV3SourceHash, prepareHypaV3, selectHypaV3 } from "../prompt/memory/hypav3.ts";
 import { createMemoryTaskHost, type MemoryTaskHostDeps } from "../prompt/memory/memoryTaskHost.ts";
-import { createMemoryTasks, type MemoryTaskEvent, type MemoryTaskLimits } from "../prompt/memory/memoryTasks.ts";
+import {
+    createMemoryTasks,
+    MEMORY_TASK_LIMITS,
+    type MemoryTaskEvent,
+    type MemoryTaskLimits,
+} from "../prompt/memory/memoryTasks.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { createTokenCounter } from "../prompt/tokens.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
 import type { RegexOp, RegexOpResult } from "../scripts/worker.ts";
-import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR } from "./unhurriedLimits.ts";
+import {
+    allowListenerOrigin,
+    createResourceTestClient,
+    createSigner,
+    createTestServer,
+    json as jsonInit,
+    TEST_INDEX_HTML,
+    waitFor,
+} from "./testSupport.ts";
+import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The detached HypaV3 memory task service (`server/src/prompt/memory/memoryTasks.ts`) over a real
 // resource store on a temp dir, the real request layer with a scripted upstream (each summary
@@ -54,6 +73,11 @@ import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR } from "./unhurriedLimits.ts"
 //   stops the old epoch's terminals, a hand-off from an abort callback survives the epoch reset, an
 //   abort callback never sees an ended task as running, and a listener re-registering itself is
 //   called once per event.
+// The last block is the service's wiring in a server context (`createServerContext`) on a listening
+// server with loopback chat and embedding providers: the `memoryTask` frames and `hello` snapshot of
+// the live-update socket, the maintenance listener's and shutdown's order, the invalidation notice,
+// the epoch reset at a restore, and the start and cancel routes (open through `memoryTaskOptions`,
+// closed in production).
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const PROVIDER = "https://mock.test/v1/chat/completions";
@@ -228,6 +252,10 @@ type StoreOptions = {
     memoryModelId?: string;
     hypaSettings?: Record<string, unknown>;
     memorySection?: Record<string, unknown>;
+    /** The `secrets` section over its defaults (a custom embedding server's settings). */
+    secrets?: Record<string, unknown>;
+    /** The profiles' reverse-proxy URL (default `PROVIDER`; a listening loopback provider for a server context). */
+    providerUrl?: string;
     /** The owner `c`'s record over its defaults. */
     owner?: Record<string, unknown>;
 };
@@ -262,7 +290,7 @@ function openStore(options: StoreOptions = {}) {
         id,
         name: id,
         modelId: "reverse_proxy",
-        forceReplaceUrl: PROVIDER,
+        forceReplaceUrl: options.providerUrl ?? PROVIDER,
         customProxyRequestModel: "mock-model",
         customAPIFormat: LLMFormat.OpenAICompatible,
         credentialId: "proxy",
@@ -298,6 +326,9 @@ function openStore(options: StoreOptions = {}) {
         credentials: { proxy: { key: PROXY_KEY } },
     }));
     replace("credentials", () => [{ id: "proxy", name: "Proxy key", type: "custom" }]);
+    if (options.secrets) {
+        replace("secrets", (section: Record<string, unknown>) => ({ ...section, ...options.secrets }));
+    }
     replace("memoryTranslateMedia", (section: Record<string, unknown>) => ({
         ...section,
         hypaV3: true,
@@ -1571,5 +1602,636 @@ describe("re-entrant callers", () => {
         handOff(t, "k1", { entries: 2 });
         expect(calls).toBe(1);
         lease.release();
+    });
+});
+
+// -------------------------------------------------------------------------------------------------
+// The server wiring
+
+type MemoryTaskFrame = Extract<EventFeedFrame, { type: "memoryTask" }>;
+type ChangeFrame = Extract<EventFeedFrame, { type: "change" }>;
+type HelloFrame = Extract<EventFeedFrame, { type: "hello" }>;
+type Terminal = Extract<MemoryTaskStatusOf, { terminalRevision: string | null }>;
+type MemoryTaskStatusOf = MemoryTaskFrame["status"];
+
+const isTaskOf =
+    (chatId: string) =>
+    (frame: EventFeedFrame): frame is MemoryTaskFrame =>
+        frame.type === "memoryTask" && frame.characterId === "c" && frame.chatId === chatId;
+const isChangeOf =
+    (chatId: string) =>
+    (frame: EventFeedFrame): frame is ChangeFrame =>
+        frame.type === "change" && frame.changes.chats.some((chat) => chat.characterId === "c" && chat.id === chatId);
+const isTerminal = (frame: MemoryTaskFrame) => TERMINAL.has(frame.status.state);
+
+type HeldRequest = {
+    body: any;
+    /** Answers with a summary text (nothing when the request layer closed the connection already). */
+    answer(text: string): void;
+    /** Answers with a provider error. */
+    fail(message: string): void;
+};
+
+/**
+ * A listening chat provider: every request waits for the test's answer (the context's request layer
+ * uses the real `fetch`, so the profile's reverse-proxy URL points here).
+ */
+async function loopbackProvider() {
+    const requests: HeldRequest[] = [];
+    const arrivals: (() => void)[] = [];
+    const server = http.createServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+            chunks.push(chunk as Buffer);
+        }
+        res.on("error", () => {});
+        const send = (status: number, body: unknown) => {
+            try {
+                res.writeHead(status, { "content-type": "application/json" });
+                res.end(JSON.stringify(body));
+            } catch {
+                // The connection is gone (the task was ended): the answer reaches nothing.
+            }
+        };
+        requests.push({
+            body: JSON.parse(Buffer.concat(chunks).toString() || "{}"),
+            answer: (text) => send(200, { choices: [{ message: { role: "assistant", content: text } }] }),
+            fail: (message) => send(400, { error: { message } }),
+        });
+        for (const arrival of arrivals.splice(0)) {
+            arrival();
+        }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const origin = allowListenerOrigin(server);
+    return {
+        url: `${origin}/v1/chat/completions`,
+        requests,
+        /** Resolves once the request with `index` (in arrival order) has arrived. */
+        request(index: number): Promise<HeldRequest> {
+            return new Promise((resolve) => {
+                const check = () => {
+                    if (requests[index]) {
+                        resolve(requests[index]);
+                    } else {
+                        arrivals.push(check);
+                    }
+                };
+                check();
+            });
+        },
+        close() {
+            server.closeAllConnections();
+            server.close();
+        },
+    };
+}
+
+/** A listening embedding server (`hypaModel: "custom"`): a vector per input. */
+async function loopbackEmbedder() {
+    const server = http.createServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+            chunks.push(chunk as Buffer);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+        const input: string[] = Array.isArray(body.input) ? body.input : [body.input];
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+            JSON.stringify({
+                data: input.map((text) => ({ embedding: [1, (text.length % 7) + 1, (text.charCodeAt(0) % 5) + 1] })),
+            }),
+        );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return {
+        url: `${allowListenerOrigin(server)}/v1`,
+        close() {
+            server.closeAllConnections();
+            server.close();
+        },
+    };
+}
+
+type SocketClient = {
+    frames: EventFeedFrame[];
+    closed: Promise<number>;
+    ws: WsClient;
+};
+
+/**
+ * A server context with the real memory task service and the manual routes open, on a listening
+ * server, seeded with `openStore`'s records (written through the resource routes from a local store of
+ * the same content, so a scope read from the local store is a scope of the server's data: the inputs
+ * a job would hand off carry the server's epoch and chat revisions).
+ */
+async function wiring(options: { limits?: Partial<MemoryTaskLimits> } = {}) {
+    const provider = await loopbackProvider();
+    const embedder = await loopbackEmbedder();
+    const local = openStore({
+        providerUrl: provider.url,
+        memorySection: { hypaModel: "custom" },
+        secrets: { hypaCustomSettings: { url: embedder.url, key: "custom-KEY-4444", model: "emb" } },
+    });
+    const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-wiring-"));
+    mkdirSync(path.join(rootDir, "dist"));
+    writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+    // The tokenizers load their vocabularies from `public/token`.
+    symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
+    mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
+    writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
+    const clock = { now: 1_000_000 };
+    const server = createTestServer({
+        rootDir,
+        scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+        cbsTimeLimits: UNHURRIED_CBS,
+        generationHypaV3SeparatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
+        memoryTaskOptions: {
+            manualAdmission: true,
+            now: () => clock.now,
+            limits: { drainWaitMs: 1000, ...options.limits },
+        },
+    });
+    const node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+    await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
+    server.context.attachWebSocket(node);
+    const port = (node.address() as { port: number }).port;
+    const base = `http://127.0.0.1:${port}`;
+    const signer = await createSigner();
+    await fetch(`${base}/api/login`, jsonInit({ password: "pw", publicKey: signer.publicJwk }));
+    const sockets: SocketClient[] = [];
+    cleanups.push(async () => {
+        for (const socket of sockets.splice(0)) {
+            socket.ws.terminate();
+        }
+        await server.close();
+        node.closeAllConnections();
+        await new Promise((resolve) => node.close(resolve));
+        provider.close();
+        embedder.close();
+        local.dispose();
+    });
+
+    const w = {
+        rootDir,
+        base,
+        context: server.context,
+        provider,
+        local,
+        clock,
+        epoch: "",
+        /** The server's revision of each chat at its creation. */
+        revisions: {} as Record<string, string>,
+        /** A request with a JWT and the epoch header (`epoch`: another value; null: none). */
+        async api(
+            url: string,
+            init: RequestInit = {},
+            epoch: string | null | undefined = undefined,
+        ): Promise<{ status: number; headers: Headers; body: any }> {
+            const headers: Record<string, string> = {
+                "risu-auth": await signer.jwt(),
+                "content-type": "application/json",
+                ...((init.headers as Record<string, string> | undefined) ?? {}),
+            };
+            const value = epoch === undefined ? w.epoch : epoch;
+            if (value !== null) {
+                headers["x-resource-epoch"] = value;
+            }
+            const res = await fetch(`${base}${url}`, { ...init, headers });
+            let body: any = null;
+            try {
+                body = await res.json();
+            } catch {}
+            return { status: res.status, headers: res.headers, body };
+        },
+        start: (body: unknown, epoch?: string | null) =>
+            w.api(
+                "/api/memory/tasks",
+                { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) },
+                epoch,
+            ),
+        cancel: (characterId: string, chatId: string, epoch?: string | null) =>
+            w.api(
+                `/api/memory/tasks/${encodeURIComponent(characterId)}/${encodeURIComponent(chatId)}`,
+                { method: "DELETE" },
+                epoch,
+            ),
+        /** The chat as stored on the server (`revision` and `data` null once it is gone). */
+        async chat(chatId: string): Promise<{ revision: string | null; data: Chat | null }> {
+            const read = await w.api("/api/resources/read", {
+                method: "POST",
+                body: JSON.stringify({ chats: [{ characterId: "c", id: chatId }] }),
+            });
+            expect(read.status).toBe(200);
+            return read.body.chats[0];
+        },
+        /** The input a job of the server's chat would hand off. */
+        input: (chatId: string, over: Partial<MemoryTaskInput> & { entries?: number } = {}) =>
+            inputOf(local, local.jobScope(chatId), { epoch: w.epoch, admittedRevision: w.revisions[chatId], ...over }),
+        handOff(chatId: string, over: Partial<MemoryTaskInput> & { entries?: number } = {}) {
+            const input = w.input(chatId, over);
+            server.context.memoryTasks!.handOff(input);
+            return input;
+        },
+        /** A live-update socket, resolved once its `hello` arrived. */
+        async socket(): Promise<SocketClient> {
+            const ws = new WsClient(`ws://127.0.0.1:${port}/api/events/ws?risu-auth=${await signer.jwt()}`);
+            const frames: EventFeedFrame[] = [];
+            const closed = new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
+            ws.on("error", () => {});
+            ws.on("message", (data) => frames.push(JSON.parse(String(data)) as EventFeedFrame));
+            const client = { frames, closed, ws };
+            sockets.push(client);
+            await waitFor(() => frames.length > 0);
+            return client;
+        },
+        /** The first frame of `client` that `test` accepts, once it arrived. */
+        async frame<T extends EventFeedFrame>(
+            client: SocketClient,
+            test: (frame: EventFeedFrame) => frame is T,
+        ): Promise<T> {
+            await waitFor(() => client.frames.some(test));
+            return client.frames.find(test)!;
+        },
+        /** The chat's first terminal frame on `client`. */
+        terminal: (client: SocketClient, chatId: string) =>
+            w.frame(client, (frame): frame is MemoryTaskFrame => isTaskOf(chatId)(frame) && isTerminal(frame)),
+        /** Answers the chat's summary requests in arrival order until its task ends; the terminal frame. */
+        async drive(
+            client: SocketClient,
+            chatId: string,
+            from: number,
+        ): Promise<{ terminal: MemoryTaskFrame; answered: number }> {
+            let answered = 0;
+            for (let index = from; ; index++) {
+                const next = await Promise.race([
+                    provider.request(index).then((request) => ({ request })),
+                    w.terminal(client, chatId).then((terminal) => ({ terminal })),
+                ]);
+                if ("terminal" in next) {
+                    return { terminal: next.terminal, answered };
+                }
+                next.request.answer(`Summary ${index + 1}`);
+                answered++;
+            }
+        },
+    };
+    w.epoch = (await w.api("/api/resources/ui")).body.epoch;
+    const kind = (name: string) => local.kinds.get(name)!;
+    for (const name of [
+        "personas",
+        "presets",
+        "modelProfiles",
+        "modelPresets",
+        "providers",
+        "credentials",
+        "memoryTranslateMedia",
+        "hypaV3Presets",
+        "secrets",
+    ]) {
+        const current = await w.api(`/api/resources/${name}/main`);
+        const put = await w.api(`/api/resources/${name}/main`, {
+            method: "PUT",
+            body: JSON.stringify({
+                baseRevision: current.body.revision,
+                data: local.store.get(kind(name), "main")!.data,
+            }),
+        });
+        expect(put.status, name).toBe(200);
+    }
+    const secrets = await w.api("/api/resources/llmSecrets/main");
+    const credential = await w.api("/api/llm-secrets/credentials/~proxy/key", {
+        method: "PUT",
+        body: JSON.stringify({ value: PROXY_KEY, baseRevision: secrets.body.revision }),
+    });
+    expect(credential.status).toBe(200);
+    const owner = await w.api("/api/resources/characters/c", {
+        method: "PUT",
+        body: JSON.stringify({ baseRevision: null, data: local.store.get(kind("characters"), "c")!.data }),
+    });
+    expect(owner.status).toBe(200);
+    const created = await w.api("/api/resources/batch", {
+        method: "POST",
+        body: JSON.stringify({
+            chats: CHATS.map((chatId) => ({
+                characterId: "c",
+                chatId,
+                baseRevision: null,
+                ops: [{ op: "create", chat: local.chat(chatId) }],
+            })),
+        }),
+    });
+    expect(created.status, JSON.stringify(created.body).slice(0, 300)).toBe(200);
+    CHATS.forEach((chatId, index) => {
+        w.revisions[chatId] = created.body.chats[index].revision;
+    });
+    return w;
+}
+
+describe("the server wiring", () => {
+    it("frames reach a socket in publication order (a summary's `change` before the status counting it) and `hello` reports a running task and a recent failure, one status per chat", async () => {
+        const w = await wiring();
+        const a = await w.socket();
+        expect(a.frames[0]).toEqual({ type: "hello", epoch: w.epoch, memoryTasks: [] });
+
+        w.handOff("k1");
+        const { terminal: done, answered } = await w.drive(a, "k1", 0);
+        expect(answered).toBeGreaterThan(0);
+        const k1 = a.frames.filter(isTaskOf("k1"));
+        expect(k1[0].status.state).toBe("queued");
+        expect(k1.slice(1, -1).every((frame) => frame.status.state === "running")).toBe(true);
+        expect(k1.at(-1)).toBe(done);
+        const status = done.status as Terminal;
+        expect(status).toMatchObject({ state: "done", done: answered, total: answered });
+        expect(status.reason).toBeUndefined();
+        for (let i = 1; i < k1.length; i++) {
+            expect(k1[i].status.done).toBeGreaterThanOrEqual(k1[i - 1].status.done);
+        }
+        // One `change` frame per saved summary, each before the first status that counts it; the
+        // terminal carries the last one's revision.
+        const writes = a.frames.filter(isChangeOf("k1"));
+        expect(writes).toHaveLength(answered);
+        for (const frame of k1) {
+            if (frame.status.done > 0) {
+                expect(a.frames.indexOf(frame)).toBeGreaterThan(a.frames.indexOf(writes[frame.status.done - 1]));
+            }
+        }
+        const last = writes.at(-1)!.changes.chats.find((chat) => chat.id === "k1")!.revision;
+        expect(status.terminalRevision).toBe(last);
+        expect(status.lastCommittedRevision).toBe(last);
+        const stored = (await w.chat("k1"))!;
+        expect(stored.revision).toBe(last);
+        expect((stored.data!.hypaV3Data as SerializableHypaV3Data).summaries).toHaveLength(answered);
+
+        // The done task's status expires; a failure and a running task remain for `hello`.
+        w.clock.now += MEMORY_TASK_LIMITS.terminalRetentionMs;
+        w.handOff("k2");
+        (await w.provider.request(answered)).fail("the provider broke");
+        const failed = await w.terminal(a, "k2");
+        expect(failed.status).toMatchObject({ state: "failed", done: 0, terminalRevision: w.revisions.k2 });
+        expect((failed.status as Terminal).error).toContain("the provider broke");
+        expect(JSON.stringify(a.frames)).not.toContain(PROXY_KEY);
+        w.handOff("k3");
+        await w.provider.request(answered + 1);
+        const running = a.frames.filter(isTaskOf("k3")).at(-1)!;
+        expect(running.status.state).toBe("running");
+
+        const b = await w.socket();
+        const hello = b.frames[0] as HelloFrame;
+        expect(hello.type).toBe("hello");
+        expect(hello.epoch).toBe(w.epoch);
+        expect(hello.memoryTasks.map((entry) => [entry.characterId, entry.chatId, entry.status.state]).sort()).toEqual([
+            ["c", "k2", "failed"],
+            ["c", "k3", "running"],
+        ]);
+        expect(hello.memoryTasks.find((entry) => entry.chatId === "k3")!.status).toEqual(running.status);
+        expect(hello.memoryTasks.find((entry) => entry.chatId === "k2")!.status).toEqual(failed.status);
+    });
+
+    it("maintenance ends a running task `cancelled` (`maintenance`) before the request layer pauses, refuses a start meanwhile (503, Retry-After), and the late provider result writes nothing", async () => {
+        const w = await wiring();
+        const a = await w.socket();
+        w.handOff("k1");
+        const held = await w.provider.request(0);
+        await w.context.snapshots.withMaintenance(async () => {
+            const terminal = await w.terminal(a, "k1");
+            expect(terminal.status).toMatchObject({
+                state: "cancelled",
+                reason: "maintenance",
+                done: 0,
+                terminalRevision: w.revisions.k1,
+            });
+            const refused = await w.start({ characterId: "c", chatId: "k2" });
+            expect(refused.status).toBe(503);
+            expect(refused.body).toEqual({ error: "The server data is being replaced", reason: "maintenance" });
+            expect(refused.headers.get("retry-after")).toBe("5");
+            expect(refused.headers.get("cache-control")).toBe("no-store");
+        });
+        held.answer("A late summary");
+        // Once the maintenance ended, a hand-off runs again (its first request is the sync point).
+        w.handOff("k2");
+        await w.provider.request(1);
+        expect(a.frames.filter(isTaskOf("k2")).at(-1)!.status.state).toBe("running");
+        const stored = (await w.chat("k1"))!;
+        expect(stored.revision).toBe(w.revisions.k1);
+        expect(stored.data!.hypaV3Data).toBeUndefined();
+        expect(a.frames.filter(isChangeOf("k1"))).toEqual([]);
+        const states = a.frames.filter(isTaskOf("k1")).map((frame) => frame.status.state);
+        expect(states[0]).toBe("queued");
+        expect(states.slice(1, -1).every((state) => state === "running")).toBe(true);
+        expect(states.at(-1)).toBe("cancelled");
+    });
+
+    it("shutdown ends a running task `cancelled` (`shutdown`) whose terminal reaches the socket before its 1001, refuses the routes (503), and the late result writes nothing", async () => {
+        const w = await wiring();
+        const a = await w.socket();
+        w.handOff("k1");
+        const held = await w.provider.request(0);
+        w.context.beginShutdown();
+        const terminal = await w.terminal(a, "k1");
+        expect(terminal.status).toMatchObject({
+            state: "cancelled",
+            reason: "shutdown",
+            terminalRevision: w.revisions.k1,
+        });
+        expect(await a.closed).toBe(1001);
+        expect(a.frames.at(-1)).toBe(terminal);
+        held.answer("A late summary");
+        const refused = await w.start({ characterId: "c", chatId: "k1" });
+        expect(refused.status).toBe(503);
+        expect(refused.body).toEqual({ error: "The server is shutting down" });
+        expect(refused.headers.get("retry-after")).toBe("5");
+        expect(refused.headers.get("cache-control")).toBe("no-store");
+        expect((await w.cancel("c", "k1")).status).toBe(503);
+        await w.context.dispose();
+        const db = new DatabaseSync(path.join(w.rootDir, "save", "data", "resources.sqlite"), { readOnly: true });
+        try {
+            const row = db.prepare("SELECT meta FROM chats WHERE characterId = 'c' AND id = 'k1'").get() as {
+                meta: string;
+            };
+            expect((JSON.parse(row.meta) as Chat).hypaV3Data).toBeUndefined();
+        } finally {
+            db.close();
+        }
+    });
+
+    it("the chat's deletion cancels its running task (`sourceChanged`, revision null) after the deletion's `change` frame; the late result writes nothing", async () => {
+        const w = await wiring();
+        const a = await w.socket();
+        w.handOff("k1");
+        const held = await w.provider.request(0);
+        const deleted = await w.api("/api/resources/batch", {
+            method: "POST",
+            body: JSON.stringify({
+                chats: [{ characterId: "c", chatId: "k1", baseRevision: w.revisions.k1, ops: [{ op: "delete" }] }],
+            }),
+        });
+        expect(deleted.status).toBe(200);
+        const terminal = await w.terminal(a, "k1");
+        expect(terminal.status).toMatchObject({ state: "cancelled", reason: "sourceChanged", terminalRevision: null });
+        const change = a.frames.find(isChangeOf("k1"))!;
+        expect(change.changes.chats).toEqual([{ characterId: "c", id: "k1", revision: null }]);
+        expect(a.frames.indexOf(change)).toBeLessThan(a.frames.indexOf(terminal));
+        held.answer("A late summary");
+        expect(await w.chat("k1")).toMatchObject({ revision: null, data: null });
+        expect((await w.start({ characterId: "c", chatId: "k1" })).status).toBe(404);
+        expect((await w.cancel("c", "k1")).status).toBe(404);
+        expect(a.frames.filter(isChangeOf("k1"))).toEqual([change]);
+    });
+
+    it("a restore publishes `epoch` after the maintenance terminals and empties the registry: the socket stays open, a new `hello` carries the new epoch and no old status, and no old-epoch frame follows", async () => {
+        const w = await wiring();
+        const a = await w.socket();
+        w.handOff("k2");
+        (await w.provider.request(0)).fail("the provider broke");
+        await w.terminal(a, "k2");
+        w.handOff("k1");
+        const held = await w.provider.request(1);
+        const snapshot = await w.context.snapshots.snapshotNow();
+        const restored = await w.api(`/api/backups/${snapshot.id}/restore`, { method: "POST" });
+        expect(restored.status).toBe(200);
+        const next = restored.body.epoch as string;
+        expect(next).not.toBe(w.epoch);
+        await w.frame(a, (frame): frame is Extract<EventFeedFrame, { type: "epoch" }> => frame.type === "epoch");
+        const epochIndex = a.frames.findIndex((frame) => frame.type === "epoch");
+        expect(a.frames[epochIndex]).toEqual({ type: "epoch", epoch: next });
+        const cancelled = a.frames.filter(isTaskOf("k1")).at(-1)!;
+        expect(cancelled.status).toMatchObject({
+            state: "cancelled",
+            reason: "maintenance",
+            terminalRevision: w.revisions.k1,
+        });
+        expect(a.frames.indexOf(cancelled)).toBeLessThan(epochIndex);
+        expect(a.ws.readyState).toBe(WsClient.OPEN);
+        held.answer("A late summary");
+        const b = await w.socket();
+        expect(b.frames[0]).toEqual({ type: "hello", epoch: next, memoryTasks: [] });
+        // The old epoch's retained input is gone with the registry: a start waits for the next send.
+        w.epoch = next;
+        const start = await w.start({ characterId: "c", chatId: "k1" });
+        expect(start.status).toBe(200);
+        expect(start.body).toEqual({ outcome: "pendingManual" });
+        expect(a.frames.slice(epochIndex + 1).filter((frame) => frame.type === "memoryTask")).toEqual([]);
+        expect(w.context.memoryTasks!.snapshot()).toEqual([]);
+    });
+
+    it("the routes: authentication, 400 for a bad body or id, 412 for a wrong or missing epoch, 404 for a gone chat, 413 over 4 KiB, `pendingManual`, `running`, `queued`, 429 `queueFull`, and a cancel's answer, every answer `no-store`", async () => {
+        const w = await wiring({ limits: { maxRunning: 1, maxPendingChats: 1 } });
+        const a = await w.socket();
+        const body = { characterId: "c", chatId: "k1" };
+
+        const anonymous = await fetch(`${w.base}/api/memory/tasks`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-resource-epoch": w.epoch },
+            body: JSON.stringify(body),
+        });
+        // `checkAuth`'s refusal of a request without a token.
+        expect(anonymous.status).toBe(400);
+        for (const bad of [
+            "not json",
+            "[1]",
+            JSON.stringify({ characterId: "c" }),
+            JSON.stringify({ ...body, chatId: 5 }),
+        ]) {
+            expect((await w.start(bad)).status, bad).toBe(400);
+        }
+        expect((await w.cancel("c", "x".repeat(600))).status).toBe(400);
+        for (const epoch of ["stale", null]) {
+            const start = await w.start(body, epoch);
+            expect(start.status).toBe(412);
+            expect(start.body).toEqual({ error: "EpochMismatch", epoch: w.epoch });
+            expect(start.headers.get("cache-control")).toBe("no-store");
+            expect((await w.cancel("c", "k1", epoch)).status).toBe(412);
+        }
+        expect((await w.start({ characterId: "c", chatId: "nope" })).status).toBe(404);
+        expect((await w.cancel("c", "nope")).status).toBe(404);
+        const oversized = await w.start(JSON.stringify({ ...body, pad: "x".repeat(5000) }));
+        expect(oversized.status).toBe(413);
+        expect(oversized.headers.get("cache-control")).toBe("no-store");
+        expect(a.frames.filter((frame) => frame.type === "memoryTask")).toEqual([]);
+
+        // No retained input: the next send hands off; a cancel clears that.
+        const manual = await w.start(body);
+        expect(manual.status).toBe(200);
+        expect(manual.body).toEqual({ outcome: "pendingManual" });
+        expect(manual.headers.get("cache-control")).toBe("no-store");
+        expect(w.context.memoryTasks!.pendingManual(ref("k1"))).toBe(true);
+        expect((await w.cancel("c", "k1")).body).toEqual({ cancelled: true });
+        expect(w.context.memoryTasks!.pendingManual(ref("k1"))).toBe(false);
+        expect((await w.cancel("c", "k1")).body).toEqual({ cancelled: false });
+
+        // k1 done (its input retained), k2 running, k3 queued (the running cap): k1's start finds the
+        // queue full; a running task is reported; a cancel ends the running task and lets k3 start.
+        w.handOff("k1");
+        const { terminal: done, answered } = await w.drive(a, "k1", 0);
+        w.handOff("k2");
+        await w.provider.request(answered);
+        w.handOff("k3");
+        await w.frame(a, (frame): frame is MemoryTaskFrame => isTaskOf("k3")(frame) && frame.status.state === "queued");
+        const full = await w.start(body);
+        expect(full.status).toBe(429);
+        expect(full.body).toEqual({ error: "Too many chats are waiting for their memory task", reason: "queueFull" });
+        const running = await w.start({ characterId: "c", chatId: "k2" });
+        expect(running.status).toBe(200);
+        expect(running.body).toEqual({ outcome: "running", status: a.frames.filter(isTaskOf("k2")).at(-1)!.status });
+        const queued = await w.start({ characterId: "c", chatId: "k3" });
+        expect(queued.body).toEqual({ outcome: "queued", status: a.frames.filter(isTaskOf("k3")).at(-1)!.status });
+        expect((await w.cancel("c", "k2")).body).toEqual({ cancelled: true });
+        expect((await w.terminal(a, "k2")).status).toMatchObject({ state: "cancelled", reason: "cancelled" });
+        await w.provider.request(answered + 1);
+        expect(a.frames.filter(isTaskOf("k3")).at(-1)!.status.state).toBe("running");
+        expect((await w.cancel("c", "k3")).body).toEqual({ cancelled: true });
+        expect((await w.cancel("c", "k3")).body).toEqual({ cancelled: false });
+        // With the queue empty, k1's retained input is queued again; its task finds the stored
+        // summaries already cover that input: a plan with nothing to summarize ends `done` (0 of 0)
+        // without a request or a write.
+        const again = await w.start(body);
+        expect(again.body).toMatchObject({ outcome: "queued", status: { state: "queued" } });
+        const taskId = again.body.status.taskId as string;
+        const completed = await w.frame(
+            a,
+            (frame): frame is MemoryTaskFrame =>
+                isTaskOf("k1")(frame) && frame.status.taskId === taskId && isTerminal(frame),
+        );
+        expect(completed.status).toEqual({
+            taskId,
+            state: "done",
+            done: 0,
+            total: 0,
+            terminalRevision: (done.status as Terminal).terminalRevision,
+        });
+        expect(w.provider.requests).toHaveLength(answered + 2);
+        expect((await w.cancel("c", "k1")).body).toEqual({ cancelled: false });
+    });
+
+    it("production keeps both routes closed (503 `notEnabled`, no Retry-After, `no-store`) after the epoch check; a context without a characters kind has no service", async () => {
+        const production = await createResourceTestClient();
+        cleanups.push(() => production.close());
+        expect(production.context.memoryTasks).not.toBeNull();
+        const start = await production.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
+        expect(start.status).toBe(503);
+        expect(await start.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
+        expect(start.headers.get("retry-after")).toBeNull();
+        expect(start.headers.get("cache-control")).toBe("no-store");
+        const cancel = await production.request("/api/memory/tasks/c/k", { method: "DELETE" });
+        expect(cancel.status).toBe(503);
+        expect(await cancel.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
+        expect(cancel.headers.get("retry-after")).toBeNull();
+        expect(cancel.headers.get("cache-control")).toBe("no-store");
+        expect(
+            (await production.json("/api/memory/tasks", { characterId: "c", chatId: "k" }, {}, "stale")).status,
+        ).toBe(412);
+
+        const bare = await createResourceTestClient({
+            resourceKinds: [{ name: "docs", schemaVersion: 1, normalize: (input) => input }],
+            epochKind: "docs",
+            memoryTaskOptions: { manualAdmission: true },
+        });
+        cleanups.push(() => bare.close());
+        expect(bare.context.memoryTasks).toBeNull();
+        const refused = await bare.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
+        expect(refused.status).toBe(503);
+        expect(await refused.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
     });
 });

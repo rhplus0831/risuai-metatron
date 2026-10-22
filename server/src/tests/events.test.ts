@@ -3,16 +3,19 @@ import http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
-import type { EventFeedFrame } from "../../../shared/events.ts";
+import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
 import type { ResourceRevisionListing } from "../../../shared/resources.ts";
 import { createChangeFeed } from "../data/changeFeed.ts";
 import { createEventSockets } from "../routes/events.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
-// server: JWT-only authentication, `hello` with the epoch, every committed change delivered to every
-// socket, close (1001) on shutdown and refusal afterwards, the heartbeat, and the revision listing
-// route the client reconciles against after every `hello`. The publisher is in `changeFeed.test.ts`.
+// server: JWT-only authentication, `hello` with the epoch and the memory task snapshot, every
+// committed change delivered to every socket, close (1001) on shutdown and refusal afterwards, the
+// heartbeat, and the revision listing route the client reconciles against after every `hello`; and
+// the module alone: frames published while another is being sent keep their order on every socket,
+// a failing snapshot closes the socket (1011) instead of sending a partial `hello`. The publisher is
+// in `changeFeed.test.ts`; the frames of a real memory task are in `memoryTasks.test.ts`.
 
 type Client = {
     frames: EventFeedFrame[];
@@ -104,17 +107,17 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
-    it("admits a JWT in the query or the header and sends `hello` with the epoch", async () => {
+    it("admits a JWT in the query or the header and sends `hello` with the epoch and the (empty) memory task snapshot", async () => {
         await listen();
         const epoch = await epochOf();
         const byQuery = await open();
         expect(await byQuery.opened).toBe("open");
         await waitFor(() => byQuery.frames.length > 0);
-        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch });
+        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch, memoryTasks: [] });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
         await waitFor(() => byHeader.frames.length > 0);
-        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch });
+        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch, memoryTasks: [] });
         expect(server.context.eventSockets.size()).toBe(2);
     });
 
@@ -242,9 +245,12 @@ describe("createEventSockets", () => {
         }
     });
 
-    async function host(authorize: (token: string | undefined) => Promise<boolean>) {
+    async function host(
+        authorize: (token: string | undefined) => Promise<boolean>,
+        memoryTasks: () => MemoryTaskEntry[] = () => [],
+    ) {
         const feed = createChangeFeed();
-        const sockets = createEventSockets({ feed, epoch: () => "E", authorize });
+        const sockets = createEventSockets({ feed, epoch: () => "E", authorize, memoryTasks });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
             if (!sockets.handleUpgrade(req, socket, head)) {
@@ -301,7 +307,7 @@ describe("createEventSockets", () => {
             expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
         }
         expect(await failed.closed).toBe(1006);
-        expect(failed.frames).toEqual([{ type: "hello", epoch: "E" }]);
+        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", memoryTasks: [] }]);
         await waitFor(() => sockets.size() === 2);
         for (const client of others) {
             client.ws.terminate();
@@ -315,7 +321,7 @@ describe("createEventSockets", () => {
         const client = connect(url);
         expect(await client.opened).toBe("open");
         await waitFor(() => client.frames.length > 0);
-        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E" });
+        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", memoryTasks: [] });
         vi.advanceTimersByTime(15_000);
         await waitFor(() => client.frames.length > 1);
         expect(client.frames[1]).toMatchObject({ type: "ping", ts: expect.any(Number) });
@@ -327,5 +333,63 @@ describe("createEventSockets", () => {
         await waitFor(() => sockets.size() === 0);
         expect(vi.getTimerCount()).toBe(0);
         sockets.close();
+    });
+
+    it("a frame published while another is being sent reaches every socket after it, as its own `memoryTask` frame", async () => {
+        const { feed, sockets, url } = await host(async () => true);
+        const clients = [connect(url), connect(url)];
+        for (const client of clients) {
+            expect(await client.opened).toBe("open");
+        }
+        await waitFor(() => clients.every((client) => client.frames.length > 0));
+        const nested = {
+            type: "memoryTask",
+            epoch: "E",
+            characterId: "c",
+            chatId: "k",
+            status: { taskId: "t1", state: "queued", done: 0, total: 0 },
+        } as const;
+        // Server sockets share the client class: the fan-out's first `send` (the first socket) publishes
+        // another event before the first frame reached the second socket.
+        const original = WsClient.prototype.send;
+        const send = vi.spyOn(WsClient.prototype, "send").mockImplementationOnce(function (this: WsClient, ...args) {
+            feed.publish(nested);
+            return (original as (...a: unknown[]) => void).apply(this, args);
+        });
+        try {
+            feed.publish({ type: "epoch", epoch: "F" });
+        } finally {
+            send.mockRestore();
+        }
+        await waitFor(() => clients.every((client) => client.frames.length > 2));
+        for (const client of clients) {
+            expect(client.frames.slice(1)).toEqual([{ type: "epoch", epoch: "F" }, nested]);
+        }
+        for (const client of clients) {
+            client.ws.terminate();
+        }
+        sockets.close();
+    });
+
+    it("closes a socket with 1011 and no frame when the memory task snapshot throws, logging no detail", async () => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+            const { sockets, url } = await host(
+                async () => true,
+                () => {
+                    throw new Error("registry detail");
+                },
+            );
+            const client = connect(url);
+            expect(await client.opened).toBe("open");
+            expect(await client.closed).toBe(1011);
+            expect(client.frames).toEqual([]);
+            expect(sockets.size()).toBe(0);
+            expect(error).toHaveBeenCalledTimes(1);
+            expect(error.mock.calls[0].join(" ")).not.toContain("registry detail");
+            sockets.close();
+        } finally {
+            error.mockRestore();
+        }
     });
 });

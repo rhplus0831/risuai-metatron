@@ -1,13 +1,15 @@
-import type { ChatStreaming } from "../../../shared/events.ts";
+import type { ChatStreaming, MemoryTaskEntry } from "../../../shared/events.ts";
 import type { ChangeSet } from "../../../shared/resources.ts";
 
 /**
- * What the resource store publishes after a commit (the live updates): a write's refs and
- * revisions (`change`, with the generation locks of the chats a job's write touched or a job's end
- * released: `streaming`), or a new database epoch after a restore or import (`epoch`).
+ * The live updates: what the resource store publishes after a commit, a write's refs and revisions
+ * (`change`, with the generation locks of the chats a job's write touched or a job's end released:
+ * `streaming`) or a new database epoch after a restore or import (`epoch`), and a chat's memory task
+ * status change, which the memory task service publishes in the epoch of its transition (`memoryTask`).
  */
 export type ChangeFeedEvent =
     | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
+    | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | { type: "epoch"; epoch: string };
 
 export type ChangeFeedListener = (event: ChangeFeedEvent) => void;

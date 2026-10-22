@@ -263,6 +263,8 @@ export const ROUTE_TEMPLATES = [
     "/api/transform",
     "/api/transform/continue",
     "/api/translate/message",
+    "/api/memory/tasks",
+    "/api/memory/tasks/:characterId/:chatId",
     "/api/push/key",
     "/api/push/subscription",
     "/api/llm/request",

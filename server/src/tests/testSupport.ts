@@ -14,6 +14,7 @@ import type { GenerationRunner } from "../jobs/generationJobs.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import type { RealmStagingTimer } from "../routes/importRealm.ts";
 import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
+import type { MemoryTaskLimits } from "../prompt/memory/memoryTasks.ts";
 import type { ScriptWorkerTimingOptions } from "../scripts/workerPool.ts";
 import { allowTestLoopbackOrigin } from "../../../vitest.testNetwork.ts";
 
@@ -63,6 +64,11 @@ export type TestServerOptions = {
     cbsTimeLimits?: ServerCbsTimeLimits;
     /** The default runner's memory task service (a fake one); `"disabled"` or unset: none. */
     memoryTasks?: "disabled" | MemoryTaskService;
+    /**
+     * The context's own memory task service: `manualAdmission` opens its start and cancel routes
+     * (closed by default, as in production), `now` and `limits` replace its clock and caps.
+     */
+    memoryTaskOptions?: { manualAdmission?: boolean; now?: () => number; limits?: Partial<MemoryTaskLimits> };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {
@@ -97,6 +103,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         routeLimits: options.routeLimits,
         cbsTimeLimits: options.cbsTimeLimits,
         memoryTasks: options.memoryTasks,
+        memoryTaskOptions: options.memoryTaskOptions,
     });
     return {
         rootDir,
