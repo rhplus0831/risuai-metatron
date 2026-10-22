@@ -243,6 +243,16 @@ export type AppliedChanges = {
 
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
+/**
+ * The notice `onChatInvalidated` delivers once a write that deleted a chat, replaced it whole, or
+ * deleted its character committed: the chat's new source generation in that epoch. Captured at the
+ * commit, so a later write never changes it.
+ */
+export type ChatInvalidation = { epoch: string; characterId: string; id: string; sourceGeneration: number };
+
+/** A `readRefs` chat entry; a missing chat has revision and data null. */
+type ChatRead = ChatRecord | { characterId: string; id: string; revision: null; data: null };
+
 /** A patch op, checked before the transaction (`preparePatch`). */
 type PreparedPatch = ({ type: "fields" } & CheckedFields) | ({ type: "items" } & CheckedItemPatch);
 
@@ -448,6 +458,101 @@ export function createResourceStore(options: {
     const token = (seq: number, revision: number) => `${epoch}:${seq}:${revision}`;
 
     /**
+     * Source generations: per chat (`characterId\0id`), an in-memory value that changes once in the
+     * commit of every write that deletes the chat, replaces it whole, or deletes its character, and
+     * in no other write. Values come from one counter and are never issued twice while the store is
+     * open, so an entry stays after its chat is deleted (a recreated chat under the same ids must
+     * not read an earlier value again); `replaceAll` clears the map and moves `baseSourceGeneration`,
+     * the value of a chat without an entry, past every value issued before.
+     */
+    const sourceGenerations = new Map<string, number>();
+    let lastSourceGeneration = 0;
+    let baseSourceGeneration = 0;
+    /**
+     * The chats the open SQL transaction deletes or replaces whole, advanced at its COMMIT and
+     * dropped at its rollback. Null outside a transaction; transactions never nest (a write inside
+     * `transaction` or `atomically` joins the open one).
+     */
+    let transactionInvalidations: Map<string, { characterId: string; id: string }> | null = null;
+    const invalidationListeners = new Set<(notice: ChatInvalidation) => void>();
+    /** Notices of committed writes not delivered yet, oldest first. */
+    const pendingInvalidations: ChatInvalidation[] = [];
+    let deliveringInvalidations = false;
+    /**
+     * Outermost publishing scopes still running, their feed publication included (a feed listener's
+     * own write opens another): notices wait until every one has published.
+     */
+    let publishingDepth = 0;
+
+    function readChatOrMissing(characterId: string, id: string): ChatRead {
+        return chatTables.readChat(characterId, id) ?? { characterId, id, revision: null, data: null };
+    }
+
+    function sourceGenerationOf(characterId: string, id: string): number {
+        return sourceGenerations.get(`${characterId}\u0000${id}`) ?? baseSourceGeneration;
+    }
+
+    function recordInvalidation(characterId: string, id: string) {
+        transactionInvalidations?.set(`${characterId}\u0000${id}`, { characterId, id });
+    }
+
+    function beginTransaction() {
+        db.exec("BEGIN IMMEDIATE");
+        transactionInvalidations = new Map();
+    }
+
+    /**
+     * Commits the open transaction and, in the same synchronous step, advances the source
+     * generation of every chat it invalidated and queues their notices (`deliverInvalidations`).
+     */
+    function commitTransaction() {
+        db.exec("COMMIT");
+        const invalidated = transactionInvalidations;
+        transactionInvalidations = null;
+        for (const [key, { characterId, id }] of invalidated ?? []) {
+            lastSourceGeneration += 1;
+            sourceGenerations.set(key, lastSourceGeneration);
+            pendingInvalidations.push({ epoch, characterId, id, sourceGeneration: lastSourceGeneration });
+        }
+    }
+
+    /** Rolls back the open transaction, if any, with the invalidations it recorded. */
+    function rollbackTransaction() {
+        transactionInvalidations = null;
+        if (db.isTransaction) {
+            db.exec("ROLLBACK");
+        }
+    }
+
+    /**
+     * Delivers the queued notices in commit order, once no publishing scope is running. A listener's
+     * own write queues its notices behind the ones being delivered (no nested delivery); a listener
+     * that throws is logged and never fails the write that committed. A listener can see a state
+     * newer than its notice (a later write ran before it), so consumers compare the notice's
+     * generation with what they hold.
+     */
+    function deliverInvalidations() {
+        if (deliveringInvalidations || publishingDepth > 0) {
+            return;
+        }
+        deliveringInvalidations = true;
+        try {
+            while (pendingInvalidations.length > 0) {
+                const notice = pendingInvalidations.shift()!;
+                for (const listener of [...invalidationListeners]) {
+                    try {
+                        listener(notice);
+                    } catch (error) {
+                        console.error("[ChatInvalidation]", error);
+                    }
+                }
+            }
+        } finally {
+            deliveringInvalidations = false;
+        }
+    }
+
+    /**
      * The refs the outermost write (`put`, `delete`, `applyChanges`, `transaction`) changed so far,
      * keyed so a record written twice keeps its final revision. Dropped when the write throws (it
      * rolled back); published once after its commit. Null outside a write.
@@ -482,10 +587,11 @@ export function createResourceStore(options: {
         changes?.chatOrders.set(characterId, { characterId, revision });
     }
 
-    /** A character's chats and order deleted with it, recorded as deletions. */
+    /** A character's chats and order deleted with it, recorded as deletions and invalidations. */
     function recordCharacterCascade(characterId: string, removed: { chatIds: string[]; order: boolean }) {
         for (const chatId of removed.chatIds) {
             recordChat(characterId, chatId, null);
+            recordInvalidation(characterId, chatId);
         }
         if (removed.order) {
             recordOrder(characterId, null);
@@ -495,7 +601,11 @@ export function createResourceStore(options: {
     /**
      * Runs a write as the outermost publishing scope (or inside the current one) and publishes what
      * it changed after it returns: by then its transaction has committed and `transactionState` is
-     * cleared. A throw publishes nothing.
+     * cleared. A throw publishes nothing. The invalidation notices of every transaction that
+     * committed inside it are delivered after the change is published (after the outermost scope
+     * running, when a feed listener's write opened this one), and also when it throws: a write
+     * nested in its input evaluation may have committed before the throw, and its notices are
+     * delivered although this scope publishes no change.
      */
     function publishing<T>(fn: () => T): T {
         if (changes) {
@@ -508,28 +618,37 @@ export function createResourceStore(options: {
             streaming: new Map(),
         };
         changes = scope;
-        let result: T;
+        publishingDepth += 1;
         try {
-            result = fn();
+            let result: T;
+            try {
+                result = fn();
+            } finally {
+                changes = null;
+            }
+            if (
+                feed &&
+                (scope.resources.size > 0 ||
+                    scope.chats.size > 0 ||
+                    scope.chatOrders.size > 0 ||
+                    scope.streaming.size > 0)
+            ) {
+                feed.publish({
+                    type: "change",
+                    epoch,
+                    changes: {
+                        resources: [...scope.resources.values()],
+                        chats: [...scope.chats.values()],
+                        chatOrders: [...scope.chatOrders.values()],
+                    },
+                    ...(scope.streaming.size > 0 ? { streaming: [...scope.streaming.values()] } : {}),
+                });
+            }
+            return result;
         } finally {
-            changes = null;
+            publishingDepth -= 1;
+            deliverInvalidations();
         }
-        if (
-            feed &&
-            (scope.resources.size > 0 || scope.chats.size > 0 || scope.chatOrders.size > 0 || scope.streaming.size > 0)
-        ) {
-            feed.publish({
-                type: "change",
-                epoch,
-                changes: {
-                    resources: [...scope.resources.values()],
-                    chats: [...scope.chats.values()],
-                    chatOrders: [...scope.chatOrders.values()],
-                },
-                ...(scope.streaming.size > 0 ? { streaming: [...scope.streaming.values()] } : {}),
-            });
-        }
-        return result;
     }
 
     function parseToken(value: string): { seq: number; revision: number } | null {
@@ -566,16 +685,16 @@ export function createResourceStore(options: {
         if (db.isTransaction) {
             return fn();
         }
-        db.exec("BEGIN IMMEDIATE");
+        beginTransaction();
         let committed = false;
         try {
             const result = fn();
-            db.exec("COMMIT");
+            commitTransaction();
             committed = true;
             return result;
         } finally {
-            if (!committed && db.isTransaction) {
-                db.exec("ROLLBACK");
+            if (!committed) {
+                rollbackTransaction();
             }
         }
     }
@@ -781,7 +900,7 @@ export function createResourceStore(options: {
             }
         }
 
-        db.exec("BEGIN IMMEDIATE");
+        beginTransaction();
         let committed = false;
         try {
             const conflicts: BatchConflict[] = [];
@@ -857,7 +976,10 @@ export function createResourceStore(options: {
             if (conflicts.length > 0) {
                 throw new ResourceBatchConflictError(conflicts);
             }
-            db.exec("COMMIT");
+            for (const chat of chatOutcome.invalidated) {
+                recordInvalidation(chat.characterId, chat.id);
+            }
+            commitTransaction();
             committed = true;
             writeCount += prepared.length + chatOutcome.applied;
             for (const [index, result] of results.entries()) {
@@ -871,8 +993,8 @@ export function createResourceStore(options: {
             }
             return { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
         } finally {
-            if (!committed && db.isTransaction) {
-                db.exec("ROLLBACK");
+            if (!committed) {
+                rollbackTransaction();
             }
         }
     }
@@ -881,7 +1003,7 @@ export function createResourceStore(options: {
     function transactionInScope<F extends () => unknown>(fn: TransactionBody<F>): ReturnType<F> {
         assertWritable();
         assertNotInTransaction();
-        db.exec("BEGIN IMMEDIATE");
+        beginTransaction();
         const state: { conflict: ResourceConflictError | null; writes: number } = { conflict: null, writes: 0 };
         transactionState = state;
         const scope = { ended: false };
@@ -904,15 +1026,15 @@ export function createResourceStore(options: {
             if (state.conflict) {
                 throw state.conflict;
             }
-            db.exec("COMMIT");
+            commitTransaction();
             committed = true;
             writeCount += state.writes;
             return result;
         } finally {
             scope.ended = true;
             transactionState = null;
-            if (!committed && db.isTransaction) {
-                db.exec("ROLLBACK");
+            if (!committed) {
+                rollbackTransaction();
             }
         }
     }
@@ -1023,10 +1145,7 @@ export function createResourceStore(options: {
                 const row = readOne(kind, id);
                 return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
             });
-            const chats = (options.chats ?? []).map(({ characterId, id }) => {
-                const record = chatTables.readChat(characterId, id);
-                return record ?? { characterId, id, revision: null, data: null };
-            });
+            const chats = (options.chats ?? []).map(({ characterId, id }) => readChatOrMissing(characterId, id));
             const chatCollections = (options.chatCollections ?? []).map((characterId) => {
                 const collection = chatTables.readCollection(characterId);
                 return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
@@ -1128,6 +1247,40 @@ export function createResourceStore(options: {
                 .filter((row) => kinds.has(row.kind))
                 .map((row) => ({ kind: row.kind, id: row.id, revision: token(row.seq, row.revision) }));
             return { epoch, resources, ...chatTables.listRevisions() };
+        },
+
+        /**
+         * One chat (missing: revision and data null, as in `readRefs`) with its source generation,
+         * read in one synchronous call: a snapshot of the chat and the generation it belongs to.
+         */
+        readChatSource(characterId: string, id: string): ChatRead & { sourceGeneration: number } {
+            assertOpen();
+            return { ...readChatOrMissing(characterId, id), sourceGeneration: sourceGenerationOf(characterId, id) };
+        },
+
+        /**
+         * A chat's source generation (no row is read; a missing chat has one too): equal values in
+         * one epoch mean no write deleted the chat, replaced it whole, or deleted its character in
+         * between. Process memory, compared only for equality; `replaceAll` gives every chat a new
+         * one, without a notice (the `epoch` feed event is that signal).
+         */
+        chatSourceGeneration(characterId: string, id: string): number {
+            assertOpen();
+            return sourceGenerationOf(characterId, id);
+        },
+
+        /**
+         * Calls `listener` with a `ChatInvalidation` for every chat a committed write deleted,
+         * replaced whole, or deleted with its character: once per chat and transaction, after the
+         * transaction committed and its change was published, never for a rolled-back one (see
+         * `deliverInvalidations`). Returns the removal.
+         */
+        onChatInvalidated(listener: (notice: ChatInvalidation) => void): () => void {
+            assertOpen();
+            invalidationListeners.add(listener);
+            return () => {
+                invalidationListeners.delete(listener);
+            };
         },
 
         /** A chat's revision token, or null when it does not exist (its messages are not read). */
@@ -1548,8 +1701,18 @@ export function createResourceStore(options: {
             epoch = nextEpoch;
             writeCount += 1;
             patchBases.clear();
-            // Every client reloads: their tokens are of the old epoch.
-            feed?.publish({ type: "epoch", epoch: nextEpoch });
+            sourceGenerations.clear();
+            lastSourceGeneration += 1;
+            baseSourceGeneration = lastSourceGeneration;
+            // Every client reloads: their tokens are of the old epoch. An epoch listener's write
+            // delivers its notices after every listener had the epoch.
+            publishingDepth += 1;
+            try {
+                feed?.publish({ type: "epoch", epoch: nextEpoch });
+            } finally {
+                publishingDepth -= 1;
+                deliverInvalidations();
+            }
             return nextEpoch;
         },
 
@@ -1559,6 +1722,8 @@ export function createResourceStore(options: {
             }
             closed = true;
             patchBases.clear();
+            sourceGenerations.clear();
+            invalidationListeners.clear();
             db.close();
         },
     };

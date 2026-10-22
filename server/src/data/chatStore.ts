@@ -1006,7 +1006,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
-    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody } {
+    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody; invalidated?: true } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
             throw new ChatChangeConflict({
@@ -1077,6 +1077,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         // Per message-editing op: whether its message was there (reported only when one was not).
         const targets: TargetOutcome[] = [];
         let deleted = false;
+        /** A `delete` or `replace` applied: the chat's source changed as a whole (its source generation). */
+        let invalidated = false;
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
             const chatSeq = row?.seq ?? -1;
@@ -1108,6 +1110,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         changedOrders.add(characterId);
                     }
                     deleted = true;
+                    invalidated = true;
                     applied += 1;
                     break;
                 }
@@ -1138,6 +1141,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     row = { ...row!, meta: op.meta };
                     messageIds = op.messages.map((message) => message.id);
                     messageIdsRenamed = op.renamed;
+                    invalidated = true;
                     applied += 1;
                     break;
                 }
@@ -1391,7 +1395,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             patchBase && applied > 0 && !reappended
                 ? chatFeedPatch(row!, patchBase, touched, removedIds, metaChanged)
                 : undefined;
-        return { result, applied, patch };
+        return { result, applied, patch, ...(invalidated ? { invalidated } : {}) };
     }
 
     return {
@@ -1579,7 +1583,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
         /**
          * Deletes a character's chats, their messages, and its order (inside the character's delete).
-         * Returns the ids of the chats it deleted and whether an order existed.
+         * Returns the ids of the chats it deleted (the store advances each one's source generation)
+         * and whether an order existed.
          */
         deleteCharacter(characterId: string): { chatIds: string[]; order: boolean } {
             const chatIds = (selectCharacterChats.all(characterId) as { id: string }[]).map((row) => row.id);
@@ -1595,7 +1600,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * permutation of the list after this batch's creates and deletes; that check is skipped once
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
-         * back when there is one), the results, and the applied count.
+         * back when there is one), the results, the applied count, and the chats a `delete` or
+         * `replace` applied to (`invalidated`, once each, in group order).
          */
         apply(
             groups: readonly PreparedChatGroup[],
@@ -1609,6 +1615,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
             const patches = new Map<ChatGroupResult, ChatPatchBody>();
             const changedOrders = new Set<string>();
+            const invalidated: { characterId: string; id: string }[] = [];
             let applied = 0;
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
@@ -1617,6 +1624,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     results.push(outcome.result);
                     if (outcome.patch) {
                         patches.set(outcome.result, outcome.patch);
+                    }
+                    if (outcome.invalidated) {
+                        invalidated.push({ characterId: group.characterId, id: group.chatId });
                     }
                     applied += outcome.applied;
                 } catch (error) {
@@ -1671,7 +1681,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     });
                 }
             }
-            return { conflicts, results, orders: orderResults, applied, patches };
+            return { conflicts, results, orders: orderResults, applied, patches, invalidated };
         },
 
         /** The order rows the given reorders name, as they are before the batch writes anything. */
