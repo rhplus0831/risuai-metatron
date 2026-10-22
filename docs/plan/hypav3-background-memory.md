@@ -1,7 +1,7 @@
 # HypaV3 Background Memory Plan
 
 Status: planned 2026-10-22 at `5b54332a4`, revised after three verification rounds the same
-day. Landed: 2 (`4b00a0bc2`), 1a (`66b7f154c`), 5a (`84b4f67c9`). Source: the comparison with the Fastify fork
+day. Landed: 2 (`4b00a0bc2`), 1a (`66b7f154c`), 5a (`84b4f67c9`), 1b (`4cdf65b6c`). Source: the comparison with the Fastify fork
 (`/home/codex/risuai-fastify`, read-only reference), whose generation selects only stored
 summaries and leaves new summaries and embeddings to background jobs. This plan takes that
 behavior, not that storage: summaries stay in `chats.meta` `hypaV3Data` and keep the
