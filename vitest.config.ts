@@ -24,11 +24,9 @@ export default defineConfig({
         // worktrees under `.claude/worktrees/` are full checkouts of other branches.
         exclude: [...configDefaults.exclude, "e2e/**", ".claude/**"],
         // A hang guard, not a performance budget (`STRUCTURE.md` V3, timing plan D5): a deterministic
-        // test may take this long under load. Tests over `slowTestThreshold` are listed by the
-        // agent-test reporter as a warning (`util/agentTestReporter.ts`), not failed.
+        // test may take this long under load. `pnpm test:agent --slow-tests` lists the slow ones.
         testTimeout: 60_000,
         hookTimeout: 60_000,
-        slowTestThreshold: 1_000,
         // `pnpm test` leaves out the `slow` tests (`--tags-filter=!slow`); `pnpm test:slow` runs only
         // them and `pnpm test:all` everything. See `docs/structure/build-test-platforms.md`.
         tags: [

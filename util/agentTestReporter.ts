@@ -1,6 +1,7 @@
 // Vitest reporter for agents: prints nothing while tests run, then only the failures (test name,
-// error message, diff, in-repo stack frames, that test's console output), a warning listing the
-// passed tests slower than `slowTestThreshold` (it never changes the exit code), and one summary line.
+// error message, diff, in-repo stack frames, that test's console output) and one summary line. With
+// `test:agent --slow-tests[=<ms>]` it also lists the passed tests slower than that, as a warning
+// that never changes the exit code (the wrapper passes the threshold in RISU_REPORT_SLOW_TESTS_MS).
 // Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/build-test-platforms.md`.
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
@@ -39,14 +40,16 @@ const capLines = (text: unknown, max: number): string[] => {
 
 export default class AgentTestReporter implements Reporter {
     private root = process.cwd();
-    private slowTestThreshold = 1000;
+    /** The slow-test list's threshold in ms; undefined: no list. */
+    private slowTestsMs: number | undefined;
     private startedAt = Date.now();
     private logs = new Map<string, UserConsoleLog[]>();
     private logLines = new Map<string, number>();
 
     onInit(vitest: Vitest): void {
         this.root = vitest.config.root;
-        this.slowTestThreshold = vitest.config.slowTestThreshold;
+        const slowTestsMs = process.env.RISU_REPORT_SLOW_TESTS_MS;
+        this.slowTestsMs = slowTestsMs && /^\d+$/.test(slowTestsMs) ? Number(slowTestsMs) : undefined;
     }
 
     onTestRunStart(): void {
@@ -103,7 +106,8 @@ export default class AgentTestReporter implements Reporter {
                 } else if (result.state === "passed") {
                     passed += 1;
                     const duration = test.diagnostic()?.duration ?? 0;
-                    if (duration > this.slowTestThreshold) slow.push({ duration, name: `${file} > ${test.fullName}` });
+                    if (this.slowTestsMs !== undefined && duration > this.slowTestsMs)
+                        slow.push({ duration, name: `${file} > ${test.fullName}` });
                 } else if (result.state === "skipped") {
                     skipped += 1;
                 } else {
@@ -139,11 +143,11 @@ export default class AgentTestReporter implements Reporter {
     // A warning only: the gate's timeout is a hang guard (`STRUCTURE.md` V3), and a duration measured
     // beside parallel workers or other load says little about the test alone.
     private printSlow(slow: { duration: number; name: string }[]): void {
-        if (slow.length === 0) return;
+        if (this.slowTestsMs === undefined || slow.length === 0) return;
         slow.sort((a, b) => b.duration - a.duration);
         const seconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
         this.write(
-            `SLOW ${slow.length} passed ${slow.length === 1 ? "test" : "tests"} took over ${seconds(this.slowTestThreshold)} in this run ` +
+            `SLOW ${slow.length} passed ${slow.length === 1 ? "test" : "tests"} took over ${seconds(this.slowTestsMs)} in this run ` +
                 "(a warning, not a failure; durations under load or beside parallel workers are inflated):",
         );
         for (const { duration, name } of slow.slice(0, MAX_SLOW_TESTS)) this.write(`  ${seconds(duration)} ${name}`);

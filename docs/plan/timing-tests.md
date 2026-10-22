@@ -354,15 +354,17 @@ disposition is not `keep-*`) and split further if the list is long.
 
 Landed 2026-10-22 (this commit; the inventory and archive steps below are left to the merge):
 
-- `vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s and `slowTestThreshold` to 1 s.
+- `vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s.
   51 explicit budgets below 60 s on gated tests went (50 tests, one hook: `requestCapture`,
   `regexScriptsTask`, `triggerRuntime`, `lorebook.svelte`, `chatToggles`, `resourceSyncPatches`,
   `resourceSyncModuleCache`, `resourceSyncLive`, `resourceSyncFieldCache`, `resourceSyncChats`),
   with `resourceSyncFieldCache`'s 60 s `INTEGRATION_TIMEOUT`, whose reason was the 5 s default.
   None was part of an assertion. Slow-tier timeouts, gated values of exactly 60 s and non-Vitest
   timeouts stay.
-- The agent-test reporter lists the passed tests over `slowTestThreshold` (ten slowest and a
-  count) as a warning before the summary line; the exit code is unchanged.
+- On request (`pnpm --silent test:agent --slow-tests[=<ms>]`, default 1000 ms) the agent-test
+  reporter lists the passed tests over the threshold (ten slowest and a count) as a warning
+  before the summary line; the exit code is unchanged. A plain run prints what it printed before
+  this slice, and Vitest's own reporters keep their default slow threshold.
 - The three races, causes confirmed in the code: `resourceSyncHydration` waited on real animation
   frames (now `handRunFrames`, which the 9b neighbour uses too); `pluginContext`'s prompt polls
   had `vi.waitFor`'s own real 1 s deadline (now `heldPrompts` deferreds, both prompt tests); the
@@ -433,7 +435,7 @@ Defaults the slices take unless the user decides otherwise:
   them one by one never ends as more sessions share the machine. Those tests read no clock, and
   for a synchronous one the timeout cannot even stop a hang, only report it afterwards. So the
   gated default becomes 60 s (about 27 times the slowest such case's idle time, the slowdown under
-  the overload), a test that is slow alone is reported rather than failed, and the plan's earlier
+  the overload), a test that is slow alone is reported on request (`test:agent --slow-tests`) rather than failed, and the plan's earlier
   "default timeouts expose cold boots and large fixtures" rule ends. Real-time dependencies stay
   V3 violations at any timeout.
 
