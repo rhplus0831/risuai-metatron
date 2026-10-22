@@ -76,23 +76,27 @@ time with a deliberately large margin, stated in the row), `rewrite:<how>`, `mov
 
 ## 1. Summary
 
-Rows: **476** spots in **216** files (2026-10-19: 395 in 189; 463 at the 2026-10-21 refresh, 13
-added by the fix slices).
+Rows: **480** spots in **217** files (2026-10-19: 395 in 189; 463 at the 2026-10-21 refresh; 17
+added by the fix slices and the close-out).
 
-**Actionable rows resolved (2026-10-22).** Every actionable row (disposition not `keep-*`) is
-resolved. 232 of the 233 carry `fixed in slice <n> (<commit>)`, which includes the rows moved to
-slow. The one left, `scriptWorker.test.ts` "makePool", is kept under slice 5a's stated exception:
-real cold worker boots under an explicit 60 s timeout, because the boot is what it tests. The
-`keep-*` rows stay as judged (D3). The "resolved" columns below count the actionable rows only, so
-the three race rows that the close-out added are not in them.
+**Complete (2026-10-22).** Every actionable row (disposition not `keep-*`) is resolved. 236 of the
+237 carry `fixed in slice <n> (<commit>)`, which includes the rows moved to slow. The one left,
+`scriptWorker.test.ts` "makePool", is kept under slice 5a's stated exception: real cold worker
+boots under an explicit 60 s timeout, because the boot is what it tests. The `keep-*` rows stay as
+judged (D3). The "resolved" columns below count the actionable rows only.
 
-The close-out (plan slice 10) then ran the whole gated suite under load in two ways. One was three
-runs under the overload. The other was four unpinned suites at once. Both kinds of run failed,
-mostly on Vitest's default 5 s timeout in CPU-bound tests that read no clock. Most of those tests
-were never in this inventory, because they have no timing code for its patterns to find. The user
-decided that the gate's timeout is a hang guard, not a budget (plan decision D5, the 60 s gated
-default). So those failures are not rows here. The three assertion failures the runs also found are
-scheduler races, and they are rows, marked `(new 2026-10-22, found by slice 10)`.
+The close-out (plan slice 10) ran the whole gated suite under load in two ways: three runs under
+the overload, and four unpinned suites at once. The first runs failed, mostly on Vitest's default
+5 s timeout in CPU-bound tests that read no clock. Most of those tests were never in this
+inventory, because they have no timing code for its patterns to find. The user decided that the
+gate's timeout is a hang guard, not a budget (plan decision D5): the gated default is 60 s, and
+`pnpm --silent test:agent --slow-tests` lists slow tests on request. So those failures are not rows
+here. The three assertion failures were scheduler races, and so was a fourth that the merged tree's plain
+gated run found (`plugins.test.ts`); they are rows marked `(new 2026-10-22, found by slice 10)`,
+fixed in slice 10. On slice 10's final tree both checks
+passed: three overload runs and four parallel suites. The plan that did this is archived
+(`docs/archived-plan/README.md`, Timing-Dependent Tests). This inventory is a historical record: a
+new real-time dependency is a V3 violation to fix in its own change, not a new row.
 
 ### By dependency kind (primary kind of each row)
 
@@ -100,13 +104,13 @@ scheduler races, and they are rows, marked `(new 2026-10-22, found by slice 10)`
 | --------- | ---------------------------------------------------------------------------------------------- | ------: | ------------: | ------: | --------: | -----: | -------: |
 | DUR       | duration assertion on elapsed real ms                                                          |      17 |             2 |      13 |         2 |      0 |       15 |
 | PERF      | absolute performance threshold (incl. heavy work whose only budget is the default 5 s timeout) |      40 |             2 |      31 |         7 |      0 |       38 |
-| SLEEP     | sleep/tick used as synchronization                                                             |      87 |            55 |      29 |         1 |      2 |       32 |
-| POLL      | bounded poll with a real-time cap (vi.waitFor, expect.poll, testSupport.waitFor)               |     100 |            54 |      44 |         2 |      0 |       46 |
-| CLOCK     | real performance.now()/Date.now()/ELU feeding a budget, deadline, TTL or throttle              |     143 |           104 |      36 |         3 |      0 |       39 |
+| SLEEP     | sleep/tick used as synchronization                                                             |      88 |            55 |      30 |         1 |      2 |       33 |
+| POLL      | bounded poll with a real-time cap (vi.waitFor, expect.poll, testSupport.waitFor)               |     101 |            54 |      45 |         2 |      0 |       47 |
+| CLOCK     | real performance.now()/Date.now()/ELU feeding a budget, deadline, TTL or throttle              |     145 |           104 |      38 |         3 |      0 |       41 |
 | TMO       | Vitest timeout bump (heavy work raced against the wall clock)                                  |      41 |            26 |      13 |         2 |      0 |       15 |
 | BOOT      | worker / child process / server / cold module graph boot inside a timed region                 |      48 |             0 |      41 |         7 |      0 |       47 |
 | HEAP      | heap/GC-dependent assertion                                                                    |       0 |             0 |       0 |         0 |      0 |        0 |
-| **Total** |                                                                                                | **476** |       **243** | **207** |    **24** |  **2** |  **232** |
+| **Total** |                                                                                                | **480** |       **243** | **211** |    **24** |  **2** |  **236** |
 
 ### By disposition
 
@@ -117,13 +121,13 @@ scheduler races, and they are rows, marked `(new 2026-10-22, found by slice 10)`
 | keep-accepted            |      55 |                     0 |        – |              50 |
 | rewrite:fake-timers      |      16 |                     3 |       16 |              15 |
 | rewrite:injected-clock   |       8 |                     1 |        8 |               7 |
-| rewrite:deferred         |      40 |                    14 |       40 |              35 |
+| rewrite:deferred         |      41 |                    14 |       41 |              35 |
 | rewrite:call-through-spy |       2 |                     1 |        2 |               2 |
 | rewrite:raise-timeout    |      20 |                     7 |       19 |              20 |
-| rewrite:other            |     121 |                    57 |      121 |              99 |
+| rewrite:other            |     124 |                    57 |      124 |              99 |
 | move-slow                |      24 |                    12 |       24 |              15 |
 | delete                   |       2 |                     0 |        2 |               2 |
-| **Total**                | **476** |                **95** |  **232** |         **395** |
+| **Total**                | **480** |                **95** |  **236** |         **395** |
 
 ### By risk under overload (as stated in each row)
 
@@ -131,11 +135,11 @@ scheduler races, and they are rows, marked `(new 2026-10-22, found by slice 10)`
 | --------- | ------: | ---------: | -------: | --------------: |
 | high      |      75 |         75 |       75 |              65 |
 | med-high  |      20 |         20 |       20 |              16 |
-| med       |      81 |         81 |       80 |              62 |
-| low-med   |      22 |         20 |       20 |              20 |
+| med       |      82 |         82 |       81 |              62 |
+| low-med   |      25 |         23 |       23 |              20 |
 | low       |     184 |         35 |       35 |             171 |
 | none      |      94 |          2 |        2 |              61 |
-| **Total** | **476** |    **233** |  **232** |         **395** |
+| **Total** | **480** |    **237** |  **236** |         **395** |
 
 Refresh status: 372 rows carried over (lines and titles updated), 23 revised, 68 new, 0 removed.
 
@@ -962,7 +966,7 @@ in their headings. Rows changed by the refresh end with `(2026-10-21: ...)`; row
 
 #### `src/ts/exportBatches.test.ts`
 
-- **239-320** "%s consumes a batch while the next 200-key POST is pending" (json): SLEEP/POLL, controlled: partial. **rewrite:other(none for the failure: a cascade of the 5 s timeout)** (risk: low-med). In 1 of 4 parallel whole-suite runs the json case saw a second batch already requested where it expects only the first. Confirmed in slice 10: not a race in the json case. In that run the charx case before it timed out at 5 s; its abandoned body kept running, and its exporter's third POST (`keys.slice(400)`, the stray `["assets/400.png"]`) reached the json case's fake through the module-level `authFetch` mock (`server.current`). The 60 s default (D5) removes that trigger; an abandoned case can still reach the next one's fake after a real hang (new 2026-10-22, found by slice 10) (fixed in slice 10 (this commit): no change for the failure; the case now also records the requests at the first use of a batch's asset (`requestsAtFirstUse`, 2), so moving the prefetch after the batch is consumed fails it, which it did not before)
+- **239-320** "%s consumes a batch while the next 200-key POST is pending" (json): SLEEP/POLL, controlled: partial. **rewrite:other(none for the failure: a cascade of the 5 s timeout)** (risk: low-med). In 1 of 4 parallel whole-suite runs the json case saw a second batch already requested where it expects only the first. Confirmed in slice 10: not a race in the json case. In that run the charx case before it timed out at 5 s; its abandoned body kept running, and its exporter's third POST (`keys.slice(400)`, the stray `["assets/400.png"]`) reached the json case's fake through the module-level `authFetch` mock (`server.current`). The 60 s default (D5) removes that trigger; an abandoned case can still reach the next one's fake after a real hang (new 2026-10-22, found by slice 10) (fixed in slice 10 (887d360c0): no change for the failure; the case now also records the requests at the first use of a batch's asset (`requestsAtFirstUse`, 2), so moving the prefetch after the batch is consumed fails it, which it did not before)
 - **783-797** "refuses as the over-cap batch arrives and cancels the pending read": PERF, controlled: no. **rewrite:other(inject a smaller export cap, or raise the timeout)** (risk: med). It allocates two 32 MiB halves plus 198 more assets (64 MiB cap) under the default 5 s timeout. It takes 1.14 s alone, about 10 s at 9x with memory pressure. The 64 MiB "exactly" test at 765 is lighter but the same kind. risk: med (fixed in slice 7b (45b6309bf): compression is mocked to a few bytes, with no injected limit because the cap counts raw bytes; all three cap cases stay at the real 64 MiB)
 - **71,269-281,640,659,686,796** "flush": CLOCK, controlled: yes. **keep-det** (risk: none). flush = advanceTimersByTimeAsync(0) on in-process fake-server promises. The 180_000 advances only check that nothing more happens. A real-Date resourceSync backoff, if one arose, could only make a retry earlier, never later. risk: none
 - **202** "beforeAll": TMO, controlled: no. **keep-accepted** (risk: low). A cold transform plus import of about 3-4 s alone, about 30 s at 9x, against 60 s. risk: low
@@ -1075,8 +1079,8 @@ in their headings. Rows changed by the refresh end with `(2026-10-21: ...)`; row
 
 #### `src/ts/plugins/apiV3/pluginContext.test.ts`
 
-- **852-905** "the replacers and the provider of a request get the request's context, the provider before its permission wait": POLL, controlled: partial. **rewrite:deferred** (risk: low-med). Under the overload (1 of 3 runs) the wait for the provider's permission prompt (then line 861) gave up with no prompt asked. Confirmed in slice 10: `vi.waitFor` has its own real 1 s default deadline, and under load `requestChatData` took longer than that to reach the prompt; the 60 s test timeout does not cover it (new 2026-10-22, found by slice 10) (fixed in slice 10 (this commit): `heldPrompts` holds each prompt on a deferred the test awaits (an early end of the request fails at once, an extra prompt is denied and counted, two asserted); it still fails when the provider's context is taken after the permission wait)
-- **103-105;682;869** "makeApi": POLL, controlled: yes. **keep-poll** (risk: low). waitFor on mocked alertConfirm prompts; hasher is mocked, so there is no crypto/thread I/O; the 3-day grant window is as in nativeFetch (risk: low) (fixed in slice 10 (this commit): the four prompt polls, in "a read and a write keep the hook's preset across the database consent and the install prompt" and the provider test above, were bounded by `vi.waitFor`'s real 1 s; both tests now await the `heldPrompts` deferreds, and the read/write test still fails when `setDatabase` drops the hook's context)
+- **852-905** "the replacers and the provider of a request get the request's context, the provider before its permission wait": POLL, controlled: partial. **rewrite:deferred** (risk: low-med). Under the overload (1 of 3 runs) the wait for the provider's permission prompt (then line 861) gave up with no prompt asked. Confirmed in slice 10: `vi.waitFor` has its own real 1 s default deadline, and under load `requestChatData` took longer than that to reach the prompt; the 60 s test timeout does not cover it (new 2026-10-22, found by slice 10) (fixed in slice 10 (887d360c0): `heldPrompts` holds each prompt on a deferred the test awaits (an early end of the request fails at once, an extra prompt is denied and counted, two asserted); it still fails when the provider's context is taken after the permission wait)
+- **103-105;682;869** "makeApi": POLL, controlled: yes. **keep-poll** (risk: low). waitFor on mocked alertConfirm prompts; hasher is mocked, so there is no crypto/thread I/O; the 3-day grant window is as in nativeFetch (risk: low) (fixed in slice 10 (887d360c0): the four prompt polls, in "a read and a write keep the hook's preset across the database consent and the install prompt" and the provider test above, were bounded by `vi.waitFor`'s real 1 s; both tests now await the `heldPrompts` deferreds, and the read/write test still fails when `setDatabase` drops the hook's context)
 
 #### `src/ts/plugins/apiV3/pluginContextSaved.test.ts`
 
@@ -1120,6 +1124,10 @@ in their headings. Rows changed by the refresh end with `(2026-10-21: ...)`; row
 - **66-74,91-96** "resolves true at once without plugins": BOOT, controlled: no. **rewrite:other(warm the settings, fixture and plugins module graph in a 60 s beforeAll before retaining per-test resetModules)** (risk: high). fresh resets modules and dynamically imports settingsViews, installFlatDatabase and plugins.svelte inside each test; the partial resourceSync mock imports the real storage graph too. The first test took a noisy 2150.9 ms in the permitted single-file run, later tests 20.5-85.3 ms. The first cold load is still inside the default 5 s budget and is a direct cause-1 sibling. (new 2026-10-21) (fixed in slice 4b (236531778): warmModules loads the settings views, fixture and plugins in a 60 s beforeAll; the resourceSync partial mock became a per-test vi.spyOn)
 - **29-45,60-63,98-111,153-239** "pending": SLEEP, controlled: yes. **keep-det** (risk: none). Aggregates the fake loader's zero-delay turn and settle/pending markers. Startup completion is explicitly delivered with host.settle or withheld; pending is checked after awaiting the load that established the held guest. The replacement chain cannot finish correctly before the test's explicit signal. No real iframe or plugin-work idle deadline is running. (new 2026-10-21)
 - **114-131** "judges the guests its own load started, not what a reload applied while the boot still waited": POLL, controlled: yes. **keep-poll** (risk: low). vi.waitFor's default real 1 s cap observes the fake loader's local zero-delay turn. crypto.subtle.digest is held by a test-owned deferred callback, so the poll does not race WebCrypto completion; it asserts that the old guest's failure survives a later reload. (new 2026-10-21)
+
+#### `src/ts/plugins/plugins.test.ts`
+
+- **167-178** "reports overlapping loads of the same plugins in one alert": CLOCK, controlled: no. **rewrite:other(accept either load's order; keep the one-alert check)** (risk: low-med). Two overlapping loads list the same plugins in opposite orders, and whichever finishes its `crypto.subtle.digest` hashes first reports in its own order. The digests settle on crypto's thread pool, so under load the second load can win; the test pinned the first load's order and failed once in the close-out's merged-tree gated run (12 of 12 alone). (new 2026-10-22, found by slice 10) (fixed in slice 10 at the merge: one alert naming both plugins, in either order; dropping the per-identity dedupe still fails it)
 
 #### `src/ts/process/chatStatus.test.ts`
 
@@ -1380,7 +1388,7 @@ in their headings. Rows changed by the refresh end with `(2026-10-21: ...)`; row
 
 #### `src/ts/storage/tests/resourceSyncHydration.test.ts`
 
-- **599-672** "releases a reply finalized while the job continues, scopes releases to the job, retires a replaced generation, and orders job metadata across revisions": CLOCK, controlled: no. **rewrite:other(run the stream frames by hand as 9b did for "installs the job's generated row...")** (risk: med). In 2 of 7 whole-suite runs under load the chunk "STILL STREAMING" applied at line 634 was not visible at 635 ("NEW GENERATION" stayed). Confirmed in slice 10: a frame that shows held stream text asks for another (`scheduleStreamFrame`), and every non-first update is held while one is pending; the test waited for "NEW GENERATION" with `vi.waitFor` on real animation frames, so when the poll ended between the two frames the next chunk was held. A test race; one stream update per frame is the intended behaviour (new 2026-10-22, found by slice 10) (fixed in slice 10 (this commit): `handRunFrames` stubs `requestAnimationFrame` and drains the frames, the ones they ask for included, with a bound so a frame that always asks again fails instead of looping; the 9b neighbour uses it too. It still fails when a stale copy is taken as current; a late `accepted` of the retired generation now also proves the retirement, which the late chunk alone did not)
+- **599-672** "releases a reply finalized while the job continues, scopes releases to the job, retires a replaced generation, and orders job metadata across revisions": CLOCK, controlled: no. **rewrite:other(run the stream frames by hand as 9b did for "installs the job's generated row...")** (risk: med). In 2 of 7 whole-suite runs under load the chunk "STILL STREAMING" applied at line 634 was not visible at 635 ("NEW GENERATION" stayed). Confirmed in slice 10: a frame that shows held stream text asks for another (`scheduleStreamFrame`), and every non-first update is held while one is pending; the test waited for "NEW GENERATION" with `vi.waitFor` on real animation frames, so when the poll ended between the two frames the next chunk was held. A test race; one stream update per frame is the intended behaviour (new 2026-10-22, found by slice 10) (fixed in slice 10 (887d360c0): `handRunFrames` stubs `requestAnimationFrame` and drains the frames, the ones they ask for included, with a bound so a frame that always asks again fails instead of looping; the 9b neighbour uses it too. It still fails when a stale copy is taken as current; a late `accepted` of the retired generation now also proves the retirement, which the late chunk alone did not)
 - **312-313** "applies a newer record without echoing it back, and later local edits save on the hydrated revision": BOOT, controlled: no. **rewrite:raise-timeout** (risk: high). The first test's in-test boot() pays the cold import: 2.26 s idle against the 5 s default. Add a warm beforeAll import. Risk: high (fixed in slice 4a (7d52aa936): warmMutationGraph and StoreBackedServer.preload warm the graph in a 60 s beforeAll)
 - **1974-2017** "applies an empty equal-revision patch and an append on a long chat without reading or rewriting the list: the earlier messages keep their objects": PERF, controlled: no. **rewrite:other(shrink count; the object-identity checks already prove no read or rewrite) or raise-timeout** (risk: med). A 150_000-message chat built and hydrated in 1.6 s idle against the default 5 s timeout. Risk: med (partly fixed in slice 4a (7d52aa936): warm-up landed; still open: the large fixture still fails 3/3 overload runs, slice 7b) (fixed in slice 7b (45b6309bf): renamed from "applies an empty equal-revision patch and an append on a very large chat without reading or rewriting the list: the earlier messages keep their objects" and split into this gated case with 3,000 messages and the new slow "applies the same patches to a chat longer than a call's argument list can hold (150,000 messages)"; leftover: the title says "without reading" but only identity is asserted, which predates the slice)
 - **296,495,610,780,901-1102** "a job's reply in the mirror" / "a reply locked by its job's chat event, before its stream" / "a refusal for a generating message": POLL, controlled: yes. **keep-poll** (risk: low). Date is faked for JOB_RETRY_MS. The vi.waitFor calls wait for stream frames scheduled by happy-dom rAF (real setImmediate, in-process). The setTimeout spies count calls, not time. Risk: low

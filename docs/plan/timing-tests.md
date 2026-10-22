@@ -1,13 +1,11 @@
 # Timing-Dependent Tests Plan
 
-Status: planned 2026-10-21. Landed 2026-10-21: slice 0 (`pnpm test:overload`), then 1, 2, 3, 4a
-and 8 in parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (merged at
-`ae024b5bb`), then 5b and 6b (merged at `444cd6107`), then 7a and 7b (merged at `200395360`),
-then the 9a and 9b sweeps (merged at `05aa74159`). The 6a follow-up on `lastEffectYieldAt` landed
-in `e3ba64355`. Close-out 10: its whole-suite runs failed on load alone, and the user decided on
-2026-10-22 to treat the gate's timeout as a hang guard (D5); its timeout change, slow-test report
-and race fixes landed on 2026-10-22 (see Slice 10). Next: mark the inventory complete and archive
-this plan. Source: the
+Status: done 2026-10-22. Slice 0 (`pnpm test:overload`) landed first, then 1, 2, 3, 4a and 8 in
+parallel worktrees (merged into `metatron` at `d3a053ca0`), then 4b, 5a and 6a (`ae024b5bb`), then
+5b and 6b (`444cd6107`), then 7a and 7b (`200395360`), then the 9a and 9b sweeps (`05aa74159`),
+then close-out 10 (`887d360c0` and `0c193b678`, merged at `e073e773c`). The 6a follow-up on
+`lastEffectYieldAt` landed in `e3ba64355`. The close-out's first whole-suite runs failed on load
+alone, which led to D5 (the gate's timeout is a hang guard). Source: the
 refreshed inventory `docs/audit/timing-dependent-tests-2026-10-19.md` (refreshed at `11d6e86f1`:
 463 rows in 216 files, 220 actionable rows in 116 files, 131 of them server and 89 client). Line
 numbers there and here are approximate; the quoted test titles are the anchors. Re-verify each row
@@ -352,7 +350,8 @@ disposition is not `keep-*`) and split further if the list is long.
 
 ## Slice 10. Close-out (_small_, `build-test-platforms.md`)
 
-Landed 2026-10-22 (this commit; the inventory and archive steps below are left to the merge):
+Landed 2026-10-22 (`887d360c0`, `0c193b678`; merged at `e073e773c`, where the inventory was
+marked complete and this plan archived):
 
 - `vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s.
   51 explicit budgets below 60 s on gated tests went (50 tests, one hook: `requestCapture`,
@@ -377,6 +376,12 @@ Landed 2026-10-22 (this commit; the inventory and archive steps below are left t
   31 min each); four unpinned whole suites at once (all passed, about 187 s each). Nothing failed,
   so no new row. The slowest test under the overload, `importRealm` "refuses a card or asset chunk
   over MAX_PNG_TEXT_CHUNK_BYTES..." (2-4 s alone), took 26-27 s, under half the guard.
+
+At the merge, the merged tree's plain gated run failed once in `plugins.test.ts` "reports
+overlapping loads of the same plugins in one alert" (12 of 12 alone): two overlapping loads list
+the same plugins in opposite orders, and whichever finishes hashing on crypto's thread pool first
+reports in its order. The test now accepts either order and keeps the one-alert check (a new
+inventory row, fixed in the close-out commit).
 
 First runs, 2026-10-22, at `a7bcb103b`:
 
@@ -403,18 +408,6 @@ First runs, 2026-10-22, at `a7bcb103b`:
   - `exportBatches` "json consumes a batch while the next 200-key POST is pending": 1 of 4.
   - `pluginContext` "the replacers and the provider of a request get the request's context...":
     1 of 3.
-
-Remaining work, after D5:
-
-- Raise the gated default timeout to 60 s in `vitest.config.ts`, including the hook timeout. Keep
-  the slow tier's explicit timeouts. Update the comment in `util/overloadTest.mjs` that says a
-  raised timeout hides cold boots.
-- Have the agent-test reporter list the tests that run longer than 1 s on their own, as a warning
-  that does not fail the run.
-- Fix the three races with a deferred, a latch, or a hand-run frame.
-- Rerun both checks on the merged tree: the whole suite under the overload, three runs, and four
-  unpinned whole suites at once. Any failure left is a new row and a fix, or a recorded leftover.
-- Mark the inventory complete. Archive this plan in `docs/archived-plan/README.md`.
 
 ## Decisions
 

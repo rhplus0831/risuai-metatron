@@ -170,7 +170,13 @@ describe("loadPlugins reports enabled non-3.0 plugins", () => {
         const first = loadPlugins();
         settings.plugins = [stored("overlap-b", "2.1"), stored("overlap-a", "2.1")];
         await Promise.all([first, loadPlugins()]);
-        expect(mocks.alertError.mock.calls).toEqual([[reported("overlap-a (API 2.1)", "overlap-b (API 2.1)")]]);
+        // Whichever load finishes hashing first reports, in its own order; the hashes settle on
+        // crypto's thread pool, so either order is right. What matters is one alert naming both.
+        expect(mocks.alertError.mock.calls).toHaveLength(1);
+        expect([
+            reported("overlap-a (API 2.1)", "overlap-b (API 2.1)"),
+            reported("overlap-b (API 2.1)", "overlap-a (API 2.1)"),
+        ]).toContain(mocks.alertError.mock.calls[0][0]);
     });
 
     it("never reports when only 3.0 plugins are enabled", async () => {

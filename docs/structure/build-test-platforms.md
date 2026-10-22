@@ -231,8 +231,13 @@ on request instead of failing: `pnpm --silent test:agent --slow-tests` lists the
 Real-time dependencies (sleeps, real deadlines, bounded polls, elapsed-time assertions) are still
 V3 violations at any timeout. The static inventory of gated tests that broke the determinism
 gate, with a disposition per spot (keep, rewrite, move to `slow`, delete), is
-`docs/audit/timing-dependent-tests-2026-10-19.md`; every actionable row is resolved, and the
-close-out is in `docs/plan/timing-tests.md`. Verify a timing fix under load with
+`docs/audit/timing-dependent-tests-2026-10-19.md`. It was completed on 2026-10-22, and the plan
+that did it is archived (`docs/archived-plan/README.md`, Timing-Dependent Tests). It is a historical
+record now: a new real-time dependency is a V3 violation to fix in its own change, not a new row.
+The plan's close-out checked the whole gate two ways, and both are worth repeating after a change
+to shared test infrastructure: three runs of `pnpm --silent test:overload` at once on different
+CPUs (`--runs 1 --cpu N` each, about 31 min), and four `pnpm --silent test:agent --force` runs at
+once with no CPU limit. Verify a timing fix under load with
 `pnpm --silent test:overload <files>` (three runs, default timeouts; see `util/overloadTest.mjs`
 above). The slow tier is not run under it. `server/src/tests/testSupport.ts`
 `waitFor` has no polling deadline by default: the test's Vitest timeout reports a condition that
