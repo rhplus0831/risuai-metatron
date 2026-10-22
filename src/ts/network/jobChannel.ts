@@ -1,7 +1,7 @@
 import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
-import { noteChannelCallbacks } from "./generationJobs";
+import { generationClientId, noteChannelCallbacks } from "./generationJobs";
 import { get } from "svelte/store";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
@@ -14,16 +14,18 @@ import type {
     GenerationNotice,
     GenerationQuestionEvent,
     HydrationReceipt,
+    MemoryProgress,
     ScriptHookMode,
 } from "../../../shared/jobs.ts";
 import {
     MAX_PROVIDER_TEXT_CHARS,
+    MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
     SCRIPT_HOOK_MODES,
     TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { compareRevision } from "../../../shared/resources.ts";
+import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     alertClear,
     alertConfirm,
@@ -62,10 +64,15 @@ import {
     heldRecordRevision,
     type HydrationRecord,
 } from "../storage/resourceSync.svelte";
+import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { authFetch } from "../storage/serverAuth";
 import {
     bodyIntercepterStore,
     CharEmotion,
     hypaV3ProgressStore,
+    memoryProgressStore,
+    type MemoryProgressEntry,
+    type MemoryProgressState,
     ReloadChatPointer,
     ReloadGUIPointer,
     reloadChatKey,
@@ -234,6 +241,54 @@ function showNotice(notice: GenerationNotice): boolean {
  */
 let progressJobId: string | null = null;
 
+/** A `memoryProgress` payload as the tab shows it, or null for a malformed one. */
+function readMemoryProgress(payload: unknown): MemoryProgress | null {
+    if (!payload || typeof payload !== "object") {
+        return null;
+    }
+    const { chatRef, runId, open, phase, reason, done, total, text } = payload as Record<string, unknown>;
+    if (!chatRef || typeof chatRef !== "object" || typeof runId !== "string") {
+        return null;
+    }
+    const { chaId, chatId } = chatRef as Record<string, unknown>;
+    if (typeof chaId !== "string" || typeof chatId !== "string") {
+        return null;
+    }
+    if (open === false) {
+        return { chatRef: { chaId, chatId }, runId, open: false };
+    }
+    if (open !== true || (phase !== "blocking" && phase !== "initial" && phase !== "selection")) {
+        return null;
+    }
+    // Counts that are not two finite numbers show the indeterminate bar.
+    const counted =
+        typeof done === "number" && typeof total === "number" && Number.isFinite(done) && Number.isFinite(total);
+    return {
+        chatRef: { chaId, chatId },
+        runId,
+        open: true,
+        phase,
+        reason: reason === "pluginModel" || reason === "requestTrigger" || reason === "gap" ? reason : null,
+        ...(counted ? { done, total } : {}),
+        ...(typeof text === "string" ? { text } : {}),
+    };
+}
+
+/**
+ * A job's memory run notice: an open one becomes the job's entry (a newer run replaces the older and
+ * moves last; the same run keeps its stop state), a closing one removes the entry only while it is
+ * that run's.
+ */
+function applyMemoryProgress(state: MemoryProgressState, jobId: string, progress: MemoryProgress): MemoryProgressState {
+    const { [jobId]: held, ...runs } = state.runs;
+    const chats = { ...state.chats, [jobId]: progress.chatRef };
+    if (!progress.open) {
+        return held?.runId === progress.runId ? { ...state, runs, chats } : { ...state, chats };
+    }
+    const stop = held?.runId === progress.runId ? held.stop : "idle";
+    return { ...state, runs: { ...runs, [jobId]: { ...progress, jobId, stop } }, chats };
+}
+
 /** The effects that never touch the alert store run at once. */
 function applyEffect(jobId: string, notice: GenerationNotice) {
     switch (notice.kind) {
@@ -266,9 +321,21 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             CharEmotion.set({ ...emotions, [chaId]: list });
             return;
         }
-        case "progress":
-            hypaV3ProgressStore.set({ ...notice.payload });
+        case "progress": {
+            // The value is remembered with its job: a job that reports memory runs shows it only in
+            // its own chat (`legacyProgressShown`).
+            const value = { ...notice.payload };
+            hypaV3ProgressStore.set(value);
+            memoryProgressStore.update((state) => ({ ...state, legacy: { value, jobId } }));
             return;
+        }
+        case "memoryProgress": {
+            const progress = readMemoryProgress(notice.payload);
+            if (progress) {
+                memoryProgressStore.update((state) => applyMemoryProgress(state, jobId, progress));
+            }
+            return;
+        }
         case "tts": {
             const { chaId, text } = notice.payload;
             const character = characterList().find((entry) => entry?.chaId === chaId);
@@ -335,6 +402,20 @@ async function ask(event: GenerationQuestionEvent): Promise<unknown> {
                 language.memoryTrimWarning,
             );
             return /^[0-2]$/.test(picked) ? MEMORY_TRIM_CHOICES[Number(picked)] : null;
+        }
+        case "memoryGap": {
+            const { gapTokens, plannedCalls, lastTaskError } = event.payload;
+            let text = language.hypaV3Progress.gapQuestion(gapTokens, plannedCalls);
+            if (typeof lastTaskError === "string" && lastTaskError !== "") {
+                text += ` ${language.hypaV3Progress.gapLastError(lastTaskError)}`;
+            }
+            // The selection dialog separates its text and buttons with `||`: no pipe of the text may
+            // stay one, or the buttons would shift.
+            const picked = await alertSelect(
+                [language.hypaV3Progress.gapGenerate, language.hypaV3Progress.gapContinue],
+                text.replaceAll("|", "\u00a6"),
+            );
+            return /^[01]$/.test(picked) ? MEMORY_GAP_CHOICES[Number(picked)] : null;
         }
     }
 }
@@ -1044,6 +1125,71 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
     }
 }
 
+/** The memory-stop route's answers for a run that cannot be stopped any more (ended, absent, or replaced). */
+const ENDED_MEMORY_RUN = new Set(["jobEnded", "noMemoryRun", "otherMemoryRun"]);
+
+/**
+ * "Stop here and continue" for the initial memory run `runId` of `jobId` (`POST
+ * /api/generations/:id/memory-stop`): asked once while the run is the job's entry; the entry's
+ * `stop` follows the request. A failure is reported only while the run is still shown.
+ */
+export async function stopMemoryRun(jobId: string, runId: string): Promise<void> {
+    const current = (): MemoryProgressEntry | null => {
+        const entry = get(memoryProgressStore).runs[jobId];
+        return entry?.runId === runId ? entry : null;
+    };
+    const setStop = (stop: MemoryProgressEntry["stop"]) =>
+        memoryProgressStore.update((state) => {
+            const held = state.runs[jobId];
+            return held?.runId === runId ? { ...state, runs: { ...state.runs, [jobId]: { ...held, stop } } } : state;
+        });
+    const entry = current();
+    if (!entry || entry.phase !== "initial" || entry.stop !== "idle") {
+        return;
+    }
+    setStop("pending");
+    let failure: string;
+    try {
+        const response = await authFetch(
+            `/api/generations/${encodeURIComponent(jobId)}/memory-stop?clientId=${encodeURIComponent(generationClientId())}`,
+            {
+                method: "POST",
+                cache: "no-store",
+                headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                body: JSON.stringify({ runId }),
+            },
+        );
+        if (response.ok) {
+            setStop("requested");
+            return;
+        }
+        let body: { error?: unknown; epoch?: unknown } = {};
+        try {
+            const parsed: unknown = await response.json();
+            if (parsed && typeof parsed === "object") {
+                body = parsed;
+            }
+        } catch {}
+        if (response.status === 412 && body.error === "EpochMismatch") {
+            // The restore notice and reload, as for any other request to the server.
+            epochMismatch(typeof body.epoch === "string" ? body.epoch : "");
+            setStop("unavailable");
+            return;
+        }
+        if (response.status === 409 && typeof body.error === "string" && ENDED_MEMORY_RUN.has(body.error)) {
+            setStop("unavailable");
+            return;
+        }
+        failure = typeof body.error === "string" ? body.error : `Request failed (${response.status})`;
+    } catch (error) {
+        failure = errorText(error);
+    }
+    if (current()) {
+        setStop("idle");
+        alertError(language.hypaV3Progress.stopFailed(failure));
+    }
+}
+
 /** The job ended: its hydration copies and queued questions are dropped; callbacks stop starting hooks. */
 export function endJobChannel(jobId: string) {
     hydrations.delete(jobId);
@@ -1055,6 +1201,14 @@ export function endJobChannel(jobId: string) {
         progressJobId = null;
         hypaV3ProgressStore.set({ open: false, miniMsg: "", msg: "", subMsg: "" });
     }
+    memoryProgressStore.update((state) => {
+        if (!(jobId in state.runs) && !(jobId in state.chats) && state.legacy?.jobId !== jobId) {
+            return state;
+        }
+        const { [jobId]: _run, ...runs } = state.runs;
+        const { [jobId]: _chat, ...chats } = state.chats;
+        return { runs, chats, legacy: state.legacy?.jobId === jobId ? null : state.legacy };
+    });
     for (let index = uiQueue.length - 1; index >= 0; index -= 1) {
         const item = uiQueue[index];
         if (item.type === "question" && item.jobId === jobId) {

@@ -39,9 +39,15 @@
     import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
     import { checkCharOrder } from "./ts/globalApi.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
-    import { hypaV3ModalOpen, hypaV3ProgressStore } from "./ts/stores.svelte";
+    import {
+        hypaV3ModalOpen,
+        hypaV3ProgressStore,
+        legacyProgressShown,
+        memoryProgressFor,
+        memoryProgressStore,
+    } from "./ts/stores.svelte";
     import HypaV3Modal from "./lib/Others/HypaV3Modal.svelte";
-    import { selectedChat } from "./ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
     import sendSound from "./etc/send.mp3";
@@ -52,6 +58,8 @@
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
     let keepingSessionAlive = $state(false);
+    /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */
+    const memoryProgress = $derived(memoryProgressFor($memoryProgressStore, currentChatRef()));
 
     const getMainDropEffect = (e: DragEvent): DataTransfer["dropEffect"] => {
         const types = Array.from(e.dataTransfer?.types ?? []);
@@ -320,8 +328,9 @@
         <HypaV3Modal />
     {/if}
     <SavePopupIconComp />
-    {#if $hypaV3ProgressStore.open}
-        <HypaV3Progress />
+    <!-- The selected chat's own memory run, else the legacy overlay. -->
+    {#if memoryProgress || legacyProgressShown($memoryProgressStore, $hypaV3ProgressStore, currentChatRef())}
+        <HypaV3Progress entry={memoryProgress} />
     {/if}
     {#if popupStore.children}
         <PopupList />

@@ -2,6 +2,7 @@ import { type AnyClientCharacter, selectedCharacter } from "./storage/characterS
 import { selectedChat, type ChatRef } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
+import type { MemoryChatRef, MemoryProgress } from "../../shared/jobs.ts";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import { createAlertQueue } from "./alertQueue";
 import { moduleUpdate } from "./process/modules";
@@ -76,12 +77,72 @@ export const CharConfigSubMenu = writable(0);
 /** The alert slot: one status and a queue of dialogs, each answering its own caller (`alertQueue.ts`). */
 export const alertStore = createAlertQueue({ type: "none", msg: "n" });
 export const hypaV3ModalOpen = writable(false);
+/**
+ * The legacy HypaV3 overlay: written by a job's `progress` notice and by the client copy of the
+ * algorithm. Shown when the selected chat has no memory run of its own (`legacyProgressShown`).
+ */
 export const hypaV3ProgressStore = writable({
     open: false,
     miniMsg: "",
     msg: "",
     subMsg: "",
 });
+
+/**
+ * A job's open memory run (its latest `memoryProgress` notice) and the state of its stop control:
+ * `pending` while the stop request is out, `requested` once the server took it, `unavailable` when
+ * the server answered that the run cannot be stopped any more.
+ */
+export type MemoryProgressEntry = Extract<MemoryProgress, { open: true }> & {
+    jobId: string;
+    stop: "idle" | "pending" | "requested" | "unavailable";
+};
+
+export type MemoryProgressState = {
+    /** Each job's open memory run, by job id (a newer run of the job replaces it). */
+    runs: Record<string, MemoryProgressEntry>;
+    /** The chat of every live job that reported a memory run, kept until the job ends. */
+    chats: Record<string, MemoryChatRef>;
+    /** The legacy overlay value a job's `progress` notice wrote last, and that job. */
+    legacy: { value: object; jobId: string } | null;
+};
+
+/** The memory runs of this tab's jobs (`jobChannel.ts` writes it; every change is a new object). */
+export const memoryProgressStore = writable<MemoryProgressState>({ runs: {}, chats: {}, legacy: null });
+
+const sameChat = (a: MemoryChatRef, b: MemoryChatRef) => a.chaId === b.chaId && a.chatId === b.chatId;
+
+/** The memory run shown for the chat `ref` (the selected one): the newest run of a job in that chat. */
+export function memoryProgressFor(state: MemoryProgressState, ref: ChatRef | null): MemoryProgressEntry | null {
+    if (ref === null) {
+        return null;
+    }
+    let shown: MemoryProgressEntry | null = null;
+    for (const entry of Object.values(state.runs)) {
+        if (sameChat(entry.chatRef, ref)) {
+            shown = entry;
+        }
+    }
+    return shown;
+}
+
+/**
+ * Whether the legacy overlay `value` shows while the chat `ref` is selected: when it is open, except
+ * a value a job's `progress` notice wrote while that job reports memory runs for another chat (the
+ * same run's progress, shown only in its own chat).
+ */
+export function legacyProgressShown(
+    state: MemoryProgressState,
+    value: { open: boolean },
+    ref: ChatRef | null,
+): boolean {
+    if (!value.open) {
+        return false;
+    }
+    const source = state.legacy;
+    const chat = source && source.value === value ? state.chats[source.jobId] : undefined;
+    return !chat || (ref !== null && sameChat(chat, ref));
+}
 
 CustomCSSStore.subscribe((css) => {
     console.log(css);

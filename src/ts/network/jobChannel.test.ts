@@ -11,6 +11,7 @@ import type {
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import { createAlertQueue, type AlertQueue } from "../alertQueue";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
+import type { MemoryProgressState } from "../stores.svelte";
 
 // The client dispatcher of the job channel (`jobChannel.ts`) with controlled persistence and plugin
 // dependencies and the real alert module over the real alert queue (a fresh queue per test, with no
@@ -40,6 +41,9 @@ const deps = vi.hoisted(() => ({
     showCompletion: vi.fn(async (_payload: unknown) => {}),
     followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
     stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
+    /** The server behind `authFetch` (the memory-stop route here). */
+    authFetch: vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(),
+    epochMismatch: vi.fn<(epoch: string) => unknown>(),
     getModelInfo: vi.fn((id: string) => ({
         id,
         name: id,
@@ -101,9 +105,20 @@ vi.mock("../stores.svelte", async () => {
             messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
         CharEmotion: writable({} as Record<string, [string, string, number][]>),
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),
+        memoryProgressStore: writable<MemoryProgressState>({ runs: {}, chats: {}, legacy: null }),
         bodyIntercepterStore: [] as { id: string; callback: (body: unknown, type: string) => Promise<unknown> }[],
     };
 });
+// The server's memory-stop route and the loaded epoch; the rest of both modules is real.
+vi.mock("../storage/serverAuth", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../storage/serverAuth")>()),
+    authFetch: (input: string, init?: RequestInit) => deps.authFetch(input, init),
+}));
+vi.mock("../storage/resourceClient", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../storage/resourceClient")>()),
+    epochMismatch: (epoch: string) => deps.epochMismatch(epoch),
+    getResourceEpoch: () => "epoch-1",
+}));
 vi.mock("../plugins/apiV3/pluginContext", () => ({
     invokeHook: (hook: (...args: unknown[]) => unknown, context: unknown, ...args: unknown[]) => {
         deps.contexts.push(context);
@@ -265,6 +280,8 @@ beforeEach(async () => {
     deps.showCompletion.mockReset();
     deps.stableDiff.mockReset();
     deps.followTranslations.mockReset();
+    deps.authFetch.mockReset();
+    deps.epochMismatch.mockReset();
     deps.alertQueue = createAlertQueue({ type: "none", msg: "" }, { gapMs: 0 });
     stores = await import("../stores.svelte");
     // The mocked stores module outlives `resetModules`: start each test from idle registries.
@@ -272,6 +289,8 @@ beforeEach(async () => {
     stores.ReloadGUIPointer.set(0);
     stores.ReloadChatPointer.set({});
     stores.CharEmotion.set({});
+    stores.hypaV3ProgressStore.set({ open: false, miniMsg: "", msg: "", subMsg: "" });
+    stores.memoryProgressStore.set({ runs: {}, chats: {}, legacy: null });
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
     // The fixture: character `c` in the real records (its chats in the chat module's mock), shown
@@ -378,6 +397,51 @@ describe("notices and questions", () => {
             { type: "answer", id: "q4", outcome: "answered", value: null },
             { type: "answer", id: "q5", outcome: "answered", value: null },
             { type: "answer", id: "q6", outcome: "answered", value: null },
+        ]);
+    });
+
+    it("shows the memoryGap question with its counts and the last task error, answers only a button's choice, and keeps a pipe in the error text off the button separator", async () => {
+        const { language } = await import("../../lang");
+        Object.assign(language, {
+            hypaV3Progress: {
+                gapQuestion: (tokens: number, calls: number) => `gap ${tokens} tokens, ${calls} calls.`,
+                gapLastError: (error: string) => `last error: ${error}`,
+                gapGenerate: "now",
+                gapContinue: "later",
+            },
+        });
+        send(question("q1", "memoryGap", { gapTokens: 1200, plannedCalls: 3 }));
+        expect(alert()).toMatchObject({ type: "select", msg: "__DISPLAY__gap 1200 tokens, 3 calls.||now||later" });
+        userAnswers("0");
+        await pump();
+        send(question("q2", "memoryGap", { gapTokens: 1200, plannedCalls: 3, lastTaskError: "" }));
+        expect(alert().msg).toBe("__DISPLAY__gap 1200 tokens, 3 calls.||now||later");
+        userAnswers("1");
+        await pump();
+        // Not a button: a closed alert, an index out of range, a choice name typed in.
+        send(question("q3", "memoryGap", { gapTokens: 1, plannedCalls: 1 }));
+        userAnswers("");
+        await pump();
+        send(question("q4", "memoryGap", { gapTokens: 1, plannedCalls: 1 }));
+        userAnswers("2");
+        await pump();
+        send(question("q5", "memoryGap", { gapTokens: 1, plannedCalls: 1 }));
+        userAnswers("generate");
+        await pump();
+        // The dialog splits the whole text on `||`: the error's pipes (a run and a trailing one) are
+        // shown as broken bars, so the two buttons keep their indices.
+        send(question("q6", "memoryGap", { gapTokens: 50, plannedCalls: 2, lastTaskError: "a||b|||c|" }));
+        expect(alert().msg).toBe("__DISPLAY__gap 50 tokens, 2 calls. last error: a¦¦b¦¦¦c¦||now||later");
+        expect(alert().msg.substring(11).split("||")).toHaveLength(3);
+        userAnswers("1");
+        await pump();
+        expect(tx.answers).toEqual([
+            { type: "answer", id: "q1", outcome: "answered", value: "generate" },
+            { type: "answer", id: "q2", outcome: "answered", value: "continue" },
+            { type: "answer", id: "q3", outcome: "answered", value: null },
+            { type: "answer", id: "q4", outcome: "answered", value: null },
+            { type: "answer", id: "q5", outcome: "answered", value: null },
+            { type: "answer", id: "q6", outcome: "answered", value: "continue" },
         ]);
     });
 
@@ -1182,6 +1246,281 @@ describe("the HypaV3 progress overlay", () => {
         send(progress(true, "C works"), "C");
         send(progress(false, ""), "B");
         expect(overlay()).toMatchObject({ open: true, msg: "C works" });
+    });
+
+    it("remembers a legacy value with the job that wrote it, and drops that memory only at the job's end", () => {
+        send(progress(true, "A works"), "A");
+        expect(overlay()).toMatchObject({ open: true, msg: "A works" });
+        const legacy = get(stores.memoryProgressStore).legacy;
+        expect(legacy?.jobId).toBe("A");
+        // The exact object the legacy store holds: `legacyProgressShown` compares identities.
+        expect(legacy?.value).toBe(overlay());
+        send(progress(true, "B works"), "B");
+        expect(get(stores.memoryProgressStore).legacy).toEqual({ value: overlay(), jobId: "B" });
+        channel.endJobChannel("A");
+        expect(get(stores.memoryProgressStore).legacy?.jobId).toBe("B");
+        channel.endJobChannel("B");
+        expect(get(stores.memoryProgressStore).legacy).toBeNull();
+        expect(overlay()).toEqual(closed);
+    });
+});
+
+describe("the memory progress map", () => {
+    // One entry per job, from its `memoryProgress` notices: a newer run replaces the job's entry (and
+    // moves it last), the same run keeps its stop state, a closing notice removes only its own run,
+    // and the job's end removes its entry and chat; another job's notices never touch it.
+    const chatRef = (chatId: string) => ({ chaId: "c", chatId });
+    const memory = (payload: unknown) => notice("memoryProgress", payload);
+    const open = (runId: string, chatId: string, extra: Record<string, unknown> = {}) =>
+        memory({ chatRef: chatRef(chatId), runId, open: true, phase: "blocking", reason: null, ...extra });
+    const close = (runId: string, chatId = "k") => memory({ chatRef: chatRef(chatId), runId, open: false });
+    const state = () => get(stores.memoryProgressStore);
+    const setStop = (jobId: string, stop: "idle" | "pending" | "requested" | "unavailable") =>
+        stores.memoryProgressStore.update((held) => ({
+            ...held,
+            runs: { ...held.runs, [jobId]: { ...held.runs[jobId], stop } },
+        }));
+
+    it("keeps one entry per job, newest run last; another job's entry and end leave the first's alone", () => {
+        send(open("r1", "k"), "A");
+        expect(state().runs).toEqual({
+            A: {
+                chatRef: chatRef("k"),
+                runId: "r1",
+                open: true,
+                phase: "blocking",
+                reason: null,
+                jobId: "A",
+                stop: "idle",
+            },
+        });
+        expect(state().chats).toEqual({ A: chatRef("k") });
+        send(open("r2", "n", { phase: "initial", reason: "gap", done: 1, total: 3 }), "B");
+        expect(Object.keys(state().runs)).toEqual(["A", "B"]);
+        expect(state().runs.B).toMatchObject({ runId: "r2", phase: "initial", reason: "gap", done: 1, total: 3 });
+        expect(state().runs.A).toMatchObject({ runId: "r1" });
+        expect(state().runs.A).not.toHaveProperty("done");
+        // A same-run update replaces the job's entry (so it is the newest) and keeps its stop state.
+        setStop("A", "requested");
+        send(open("r1", "k", { done: 2, total: 5 }), "A");
+        expect(Object.keys(state().runs)).toEqual(["B", "A"]);
+        expect(state().runs.A).toMatchObject({ runId: "r1", done: 2, total: 5, stop: "requested" });
+        // A new run of the job starts idle.
+        send(open("r9", "k"), "A");
+        expect(state().runs.A).toMatchObject({ runId: "r9", stop: "idle" });
+        channel.endJobChannel("B");
+        expect(Object.keys(state().runs)).toEqual(["A"]);
+        expect(state().chats).toEqual({ A: chatRef("k") });
+        expect(state().runs.A).toMatchObject({ runId: "r9" });
+        channel.endJobChannel("A");
+        expect(state()).toEqual({ runs: {}, chats: {}, legacy: null });
+    });
+
+    it("a closing notice removes only its own run; the job's chat stays known after the close, until its end", () => {
+        send(open("r1", "k"), "A");
+        send(open("r2", "k"), "A");
+        // A stale close of the replaced run.
+        send(close("r1"), "A");
+        expect(state().runs.A).toMatchObject({ runId: "r2" });
+        send(close("r2"), "A");
+        expect(state().runs).toEqual({});
+        expect(state().chats).toEqual({ A: chatRef("k") });
+        // A close for a job without an entry records its chat and removes nothing.
+        send(open("r3", "n"), "B");
+        send(close("r7", "k"), "Z");
+        expect(Object.keys(state().runs)).toEqual(["B"]);
+        expect(state().chats).toEqual({ A: chatRef("k"), B: chatRef("n"), Z: chatRef("k") });
+        channel.endJobChannel("A");
+        expect(state().chats).toEqual({ B: chatRef("n"), Z: chatRef("k") });
+    });
+
+    it("drops a malformed notice, and shows counts only as two finite numbers, a known reason, and a string text", () => {
+        for (const payload of [
+            null,
+            "open",
+            { chatRef: chatRef("k"), open: true, phase: "blocking", reason: null },
+            { chatRef: { chaId: "c" }, runId: "r1", open: true, phase: "blocking", reason: null },
+            { chatRef: "c/k", runId: "r1", open: true, phase: "blocking", reason: null },
+            { chatRef: chatRef("k"), runId: "r1", open: "yes", phase: "blocking", reason: null },
+            { chatRef: chatRef("k"), runId: "r1", open: true, phase: "summary", reason: null },
+            { chatRef: chatRef("k"), runId: 7, open: true, phase: "blocking", reason: null },
+        ]) {
+            send(memory(payload), "A");
+        }
+        expect(state()).toEqual({ runs: {}, chats: {}, legacy: null });
+        send(open("r1", "k", { done: "3", total: 4, reason: "weird", text: 5 }), "A");
+        expect(state().runs.A).toEqual({
+            chatRef: chatRef("k"),
+            runId: "r1",
+            open: true,
+            phase: "blocking",
+            reason: null,
+            jobId: "A",
+            stop: "idle",
+        });
+        send(open("r1", "k", { done: 2, total: NaN }), "A");
+        expect(state().runs.A).not.toHaveProperty("done");
+        send(open("r1", "k", { phase: "selection", done: 0, total: 4, reason: "pluginModel", text: "queue 1/4" }), "A");
+        expect(state().runs.A).toMatchObject({
+            phase: "selection",
+            done: 0,
+            total: 4,
+            reason: "pluginModel",
+            text: "queue 1/4",
+        });
+    });
+});
+
+describe("the memory stop request", () => {
+    // "Stop here and continue" for an initial run: one `POST /api/generations/:id/memory-stop` for the
+    // captured job and run while it is the job's entry; the entry's stop state follows the request.
+    const chatRef = { chaId: "c", chatId: "k" };
+    const initial = (runId: string, jobId = "A") =>
+        send(
+            notice("memoryProgress", {
+                chatRef,
+                runId,
+                open: true,
+                phase: "initial",
+                reason: "gap",
+                done: 1,
+                total: 4,
+            }),
+            jobId,
+        );
+    const state = () => get(stores.memoryProgressStore);
+    const stopOf = (jobId = "A") => state().runs[jobId]?.stop;
+    const answer = (status: number, body: string) =>
+        new Response(body, { status, headers: { "content-type": "application/json" } });
+    let generationClientId: () => string;
+
+    beforeEach(async () => {
+        const { language } = await import("../../lang");
+        Object.assign(language, { hypaV3Progress: { stopFailed: (error: string) => `stop failed: ${error}` } });
+        generationClientId = (await import("./generationJobs")).generationClientId;
+    });
+
+    it("posts once for the captured run and marks it requested; a second call while pending, a non-initial run, and an unknown run post nothing", async () => {
+        initial("r1", "job/1");
+        const response = deferred<Response>();
+        deps.authFetch.mockReturnValue(response.promise);
+        const first = channel.stopMemoryRun("job/1", "r1");
+        expect(stopOf("job/1")).toBe("pending");
+        await channel.stopMemoryRun("job/1", "r1");
+        expect(deps.authFetch).toHaveBeenCalledTimes(1);
+        expect(deps.authFetch.mock.calls[0][0]).toBe(
+            `/api/generations/job%2F1/memory-stop?clientId=${encodeURIComponent(generationClientId())}`,
+        );
+        expect(deps.authFetch.mock.calls[0][1]).toEqual({
+            method: "POST",
+            cache: "no-store",
+            headers: { "content-type": "application/json", "x-resource-epoch": "epoch-1" },
+            body: JSON.stringify({ runId: "r1" }),
+        });
+        response.resolve(answer(200, JSON.stringify({ stopped: true })));
+        await first;
+        expect(stopOf("job/1")).toBe("requested");
+        expect(alert().type).toBe("none");
+        // The same run's next notice keeps the state; a further call posts nothing.
+        initial("r1", "job/1");
+        expect(stopOf("job/1")).toBe("requested");
+        await channel.stopMemoryRun("job/1", "r1");
+        // Only an initial run takes the control; a run that is not the job's entry is not asked for.
+        send(notice("memoryProgress", { chatRef, runId: "r2", open: true, phase: "blocking", reason: null }), "B");
+        await channel.stopMemoryRun("B", "r2");
+        await channel.stopMemoryRun("job/1", "r0");
+        await channel.stopMemoryRun("nobody", "r1");
+        expect(deps.authFetch).toHaveBeenCalledTimes(1);
+        expect(stopOf("B")).toBe("idle");
+    });
+
+    it("a 409 for an ended, absent, or replaced run and a 412 make the control unavailable without an alert; the 412 reports the epoch", async () => {
+        for (const [index, error] of ["jobEnded", "noMemoryRun", "otherMemoryRun"].entries()) {
+            const runId = `r${index}`;
+            initial(runId);
+            deps.authFetch.mockResolvedValueOnce(answer(409, JSON.stringify({ error })));
+            await channel.stopMemoryRun("A", runId);
+            expect(stopOf()).toBe("unavailable");
+            // The same run's notices keep it unavailable; a further call posts nothing.
+            initial(runId);
+            await channel.stopMemoryRun("A", runId);
+            expect(stopOf()).toBe("unavailable");
+        }
+        expect(deps.authFetch).toHaveBeenCalledTimes(3);
+        initial("r4");
+        expect(stopOf()).toBe("idle");
+        deps.authFetch.mockResolvedValueOnce(answer(412, JSON.stringify({ error: "EpochMismatch", epoch: "other" })));
+        await channel.stopMemoryRun("A", "r4");
+        expect(deps.epochMismatch).toHaveBeenCalledWith("other");
+        expect(stopOf()).toBe("unavailable");
+        expect(alert().type).toBe("none");
+    });
+
+    it("another failure re-enables the control with an error alert: the body's error, a status fallback for a null, invalid, or errorless body, a thrown fetch, an unknown 409", async () => {
+        initial("r1");
+        const failures: [Response | Error, string][] = [
+            [answer(500, JSON.stringify({ error: "boom" })), "boom"],
+            [answer(500, "null"), "Request failed (500)"],
+            [answer(404, "not json"), "Request failed (404)"],
+            [answer(400, JSON.stringify({ problem: "x" })), "Request failed (400)"],
+            [new Error("offline"), "offline"],
+            [answer(409, JSON.stringify({ error: "weird" })), "weird"],
+            [answer(412, JSON.stringify({ error: "other" })), "other"],
+        ];
+        for (const [outcome, text] of failures) {
+            if (outcome instanceof Error) {
+                deps.authFetch.mockRejectedValueOnce(outcome);
+            } else {
+                deps.authFetch.mockResolvedValueOnce(outcome);
+            }
+            await channel.stopMemoryRun("A", "r1");
+            expect(stopOf()).toBe("idle");
+            expect(alert()).toMatchObject({ type: "error", msg: `stop failed: ${text}` });
+            userAnswers("");
+            await pump();
+        }
+        expect(deps.epochMismatch).not.toHaveBeenCalled();
+        expect(deps.authFetch).toHaveBeenCalledTimes(failures.length);
+    });
+
+    it("a late answer for a run that was replaced, closed, or whose job ended changes nothing and alerts nothing; a late 412 still reports the epoch", async () => {
+        // Replaced: the newer run stays idle whatever the answer.
+        initial("r1");
+        let response = deferred<Response>();
+        deps.authFetch.mockReturnValueOnce(response.promise);
+        let pending = channel.stopMemoryRun("A", "r1");
+        initial("r2");
+        expect(stopOf()).toBe("idle");
+        response.resolve(answer(200, "{}"));
+        await pending;
+        expect(stopOf()).toBe("idle");
+        response = deferred<Response>();
+        deps.authFetch.mockReturnValueOnce(response.promise);
+        pending = channel.stopMemoryRun("A", "r2");
+        initial("r3");
+        response.resolve(answer(500, JSON.stringify({ error: "boom" })));
+        await pending;
+        expect(stopOf()).toBe("idle");
+        expect(alert().type).toBe("none");
+        // Closed: the entry is not recreated.
+        response = deferred<Response>();
+        deps.authFetch.mockReturnValueOnce(response.promise);
+        pending = channel.stopMemoryRun("A", "r3");
+        send(notice("memoryProgress", { chatRef, runId: "r3", open: false }), "A");
+        response.resolve(answer(200, "{}"));
+        await pending;
+        expect(state().runs).toEqual({});
+        // Ended: no alert, no entry; the epoch mismatch is still reported.
+        initial("r4");
+        response = deferred<Response>();
+        deps.authFetch.mockReturnValueOnce(response.promise);
+        pending = channel.stopMemoryRun("A", "r4");
+        channel.endJobChannel("A");
+        response.resolve(answer(412, JSON.stringify({ error: "EpochMismatch", epoch: "other" })));
+        await pending;
+        expect(state()).toEqual({ runs: {}, chats: {}, legacy: null });
+        expect(deps.epochMismatch).toHaveBeenCalledWith("other");
+        expect(alert().type).toBe("none");
     });
 });
 
