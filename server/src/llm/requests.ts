@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
-import { dynamicModelOf, resolveModelInfo } from "../../../shared/llm/models.ts";
+import type { LLMModel } from "../../../shared/llm.ts";
+import { dynamicModelOf } from "../../../shared/llm/models.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import { type CallbackTargets, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
@@ -30,7 +30,7 @@ import type { PluginProviderAnswer, RequestContext } from "./context.ts";
 import { messages } from "./messages.ts";
 import { collectSecrets, createRedactor, redactHeaderText, type Redactor } from "./redact.ts";
 import { providerCodeOf } from "./providerCode.ts";
-import { requestChatDataMain, type requestDataResponse } from "./request.ts";
+import { requestChatDataMain, type requestDataResponse, requestModelLookup } from "./request.ts";
 import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./settings.ts";
 import { createTransport, type ExchangeDetail, type FetchLogEntry } from "./transport.ts";
 import type { VertexTokenCache } from "./vertexToken.ts";
@@ -599,22 +599,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     /** The `RequestContext` both entries share (`start` for a tab, `runInJob` for a job). */
     function buildContext(p: ContextParts): RequestContext {
         const { db } = p.loaded;
-        const modelInfo: RequestContext["getModelInfo"] = (modelId, profile = db) => {
-            const model = resolveModelInfo(modelId, {
-                enableCustomFlags: profile.enableCustomFlags,
-                customFlags: profile.customFlags,
-                customModels: db.customModels,
-                extraModels: p.extraModels(modelId),
-                // A job's plugin provider descriptors, returned as registered (the tab's
-                // `pluginModels` branch: custom flags do not apply to them).
-                pluginModels: db.pluginModels,
-            });
-            // Plugin providers still require the job's tab callback and admitted descriptor.
-            if (p.browserOnlyModels && modelId.startsWith("pluginmodel:::")) {
-                return { ...model, format: LLMFormat.Plugin };
-            }
-            return model;
-        };
+        // A job's request (`browserOnlyModels`) resolves as `resolveJobRequestModel` does.
+        const modelInfo = requestModelLookup(db, p.extraModels, p.browserOnlyModels === true);
         const tokenizeNum = (text: string) => options.tokens.encode(text, p.tokenScope);
         const tokenizerKey = tokenizerIdentityKey(p.tokenScope);
         const { tracker } = p;

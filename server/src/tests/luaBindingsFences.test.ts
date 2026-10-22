@@ -4,20 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
-import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { type GenerationQuestion, NO_GENERATION_HOOKS, type QuestionResult } from "../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope } from "../jobs/jobScope.ts";
-import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
+import { createLuaBindings, LuaJobFatalError, type OptionalQuestionResult } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { waitFor } from "./testSupport.ts";
 
 // The bindings' cancellation fences on their asynchronous continuations, with the production
 // bindings over a real store and a fake job, and a suspendable token counter and file check: lore
 // activation whose tokenization is suspended writes no activation flag once the host call was
-// aborted, and an image getter aborted during its media check asks the tab nothing. The whole
+// aborted, and an image getter aborted during its media check asks the tab nothing; an optional
+// question (`askOptional`) returns a timeout and a disconnect as outcomes while an abort of the host
+// call or the job, or a latched failure, still wins over whatever the channel settled. The whole
 // path through the worker is in `luaBindings.test.ts`.
 
 const stat = vi.hoisted(() => ({ impl: null as null | ((savePath: string, key: string) => Promise<boolean>) }));
@@ -132,6 +134,12 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
     };
     const scope = loadJobScope(store, kinds, context);
     const callbacks: string[] = [];
+    /** Every question the job's channel was asked, with the options it got. */
+    const asks: { question: GenerationQuestion; options: { timeoutMs?: number; signal?: AbortSignal } }[] = [];
+    /** How the channel settles a question (the test replaces it). */
+    const channel = {
+        ask: (async () => ({ outcome: "aborted" })) as (question: GenerationQuestion) => Promise<QuestionResult>,
+    };
     const jobController = new AbortController();
     const job: RunningJob = {
         id: "job",
@@ -141,7 +149,10 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
         hooks: NO_GENERATION_HOOKS,
         channel: {
             notice() {},
-            ask: async () => ({ outcome: "aborted" }),
+            ask: (question, options = {}) => {
+                asks.push({ question, options });
+                return channel.ask(question);
+            },
             callback: async (name) => {
                 callbacks.push(name);
                 return { outcome: "refused", refusal: "unregistered", error: "none" };
@@ -176,7 +187,7 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
         regex: async () => ({ value: false }),
     };
     const chat = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as Chat;
-    return { store, bindings, ctx, host, tokens, callbacks, chat };
+    return { store, bindings, ctx, host, jobController, tokens, callbacks, asks, channel, chat };
 }
 
 describe("the bindings' fences", () => {
@@ -224,5 +235,103 @@ describe("the bindings' fences", () => {
         expect(await bindings.host.async!.getCharacterImageMain([], ctx)).toBe("");
         expect(callbacks).toEqual(["inlayImage"]);
         expect(bindings.fatal()).toBeNull();
+    });
+});
+
+describe("an optional question", () => {
+    const question: GenerationQuestion = { kind: "memoryGap", payload: { gapTokens: 1200, plannedCalls: 3 } };
+    /** The rejection of `run`, which must reject. */
+    const rejection = async (run: Promise<unknown>) => {
+        try {
+            await run;
+        } catch (error) {
+            return error as Error;
+        }
+        throw new Error("the question did not reject");
+    };
+
+    it("returns an answer (null included), a timeout, and a disconnect as outcomes without latching, and forwards the deadline and the caller's signal to the channel", async () => {
+        const { bindings, ctx, asks, channel } = setup();
+        const caller = new AbortController();
+        for (const [settled, expected] of [
+            [
+                { outcome: "answered", value: "generate" },
+                { outcome: "answered", value: "generate" },
+            ],
+            [
+                { outcome: "answered", value: null },
+                { outcome: "answered", value: null },
+            ],
+            [{ outcome: "timedOut" }, { outcome: "timedOut" }],
+            [{ outcome: "disconnected", error: "the owner left" }, { outcome: "disconnected" }],
+        ] as [QuestionResult, OptionalQuestionResult][]) {
+            channel.ask = async () => settled;
+            expect(await bindings.askOptional(question, ctx, { signal: caller.signal, timeoutMs: 5 })).toEqual(
+                expected,
+            );
+        }
+        expect(bindings.fatal()).toBeNull();
+        expect(asks.map((ask) => ask.question)).toEqual(Array(4).fill(question));
+        expect(asks.map((ask) => ask.options)).toEqual(Array(4).fill({ timeoutMs: 5, signal: caller.signal }));
+        // Without options the channel gets its own defaults, not `undefined` fields.
+        channel.ask = async () => ({ outcome: "timedOut" });
+        expect(await bindings.askOptional(question, ctx)).toEqual({ outcome: "timedOut" });
+        expect(asks.at(-1)?.options).toEqual({});
+    });
+
+    it("latches a question the channel aborted as fatal, but raises the caller's own withdrawal, a cancellation, and a refusal as ordinary failures", async () => {
+        const closed = setup();
+        closed.channel.ask = async () => ({ outcome: "aborted", error: "The job has ended" });
+        const fatal = await rejection(closed.bindings.askOptional(question, closed.ctx));
+        expect(fatal).toBeInstanceOf(LuaJobFatalError);
+        expect(fatal.message).toBe("The memoryGap question ended: aborted (The job has ended)");
+        expect(closed.bindings.fatal()).toBe(fatal);
+
+        const plain = setup();
+        const caller = new AbortController();
+        // The channel saw the caller's signal: the question is withdrawn, the job goes on.
+        plain.channel.ask = async () => {
+            caller.abort(new Error("withdrawn"));
+            return { outcome: "aborted" };
+        };
+        const withdrawn = await rejection(plain.bindings.askOptional(question, plain.ctx, { signal: caller.signal }));
+        expect(withdrawn).not.toBeInstanceOf(LuaJobFatalError);
+        expect(withdrawn.message).toBe("The memoryGap question ended: aborted");
+        for (const outcome of ["cancelled", "refused"] as const) {
+            plain.channel.ask = async () => ({ outcome, error: "no" });
+            const failure = await rejection(plain.bindings.askOptional(question, plain.ctx));
+            expect(failure).not.toBeInstanceOf(LuaJobFatalError);
+            expect(failure.message).toBe(`The memoryGap question ended: ${outcome} (no)`);
+        }
+        expect(plain.bindings.fatal()).toBeNull();
+    });
+
+    it("lets an abort of the host call or of the job win over what the channel settles, and asks nothing once a failure is latched", async () => {
+        const hostAborted = setup();
+        const pending = gate<QuestionResult>();
+        hostAborted.channel.ask = () => pending.wait();
+        const run = hostAborted.bindings.askOptional(question, hostAborted.ctx);
+        expect(pending.waited()).toBe(true);
+        hostAborted.host.abort(new Error("stop during the question"));
+        pending.release({ outcome: "timedOut" });
+        await expect(run).rejects.toBeInstanceOf(LuaJobFatalError);
+        expect(hostAborted.bindings.fatal()).toBeInstanceOf(LuaJobFatalError);
+        // Latched: a later question under a live host context is refused before the channel is asked.
+        const later = new AbortController();
+        await expect(
+            hostAborted.bindings.askOptional(question, { ...hostAborted.ctx, signal: later.signal }),
+        ).rejects.toBe(hostAborted.bindings.fatal());
+        expect(hostAborted.asks).toHaveLength(1);
+
+        // The job ended after the question went out: the tab's answer no longer counts.
+        const jobEnded = setup();
+        const answer = gate<QuestionResult>();
+        jobEnded.channel.ask = () => answer.wait();
+        const asked = jobEnded.bindings.askOptional(question, jobEnded.ctx);
+        expect(answer.waited()).toBe(true);
+        jobEnded.jobController.abort(new Error("the job ended"));
+        answer.release({ outcome: "answered", value: "generate" });
+        await expect(asked).rejects.toBeInstanceOf(LuaJobFatalError);
+        expect(jobEnded.bindings.fatal()).toBeInstanceOf(LuaJobFatalError);
     });
 });

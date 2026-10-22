@@ -1,3 +1,4 @@
+import type { Chat } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { ChatPatchBody } from "./resources.ts";
@@ -309,7 +310,38 @@ export type GenerationNotice =
      * The send's messages handed to the translation runner: the tab shows them loading and follows
      * their runs.
      */
-    | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } };
+    | { kind: "translating"; payload: { chaId: string; chatId: string; messageIds: string[] } }
+    /** The job's HypaV3 summarization or selection for its chat (beside the legacy `progress`). */
+    | { kind: "memoryProgress"; payload: MemoryProgress };
+
+/** A chat as the memory contracts name it (the job notices' shape). */
+export type MemoryChatRef = { chaId: string; chatId: string };
+
+/**
+ * Why a send summarizes inside the job: the `memory` slot is a Plugin model (its requests run in the
+ * job's tab), the chat owner has a `request` trigger that applies to them, or the user approved
+ * summarizing a gap now (`memoryGap`). Null: an ordinary blocking run or a selection.
+ */
+export type MemoryBlockingReason = "pluginModel" | "requestTrigger" | "gap";
+
+/**
+ * One memory run of a job in `chatRef`, identified by `runId` (fresh for each run). `open: false`
+ * ends that run's entry. `blocking` and `initial` runs summarize (`done` of `total` summaries);
+ * `selection` is the selection's embedding queue (its `text`, no counts). Only an `initial` run
+ * takes the stop control (`POST /api/generations/:id/memory-stop` with its `runId`).
+ */
+export type MemoryProgress =
+    | { chatRef: MemoryChatRef; runId: string; open: false }
+    | {
+          chatRef: MemoryChatRef;
+          runId: string;
+          open: true;
+          phase: "blocking" | "initial" | "selection";
+          reason: MemoryBlockingReason | null;
+          done?: number;
+          total?: number;
+          text?: string;
+      };
 
 export type GenerationQuestion =
     | { kind: "alertInput"; payload: { message: string; datalist?: [string, string][]; defaultValue?: string } }
@@ -322,7 +354,14 @@ export type GenerationQuestion =
      * prompt is over the context size, so the oldest chat history would be cut. The tab shows its own
      * localized text and answers a `MemoryTrimChoice`.
      */
-    | { kind: "memoryTrim"; payload: Record<string, never> };
+    | { kind: "memoryTrim"; payload: Record<string, never> }
+    /**
+     * The HypaV3 gap question: a send that uses stored summaries only would leave out `gapTokens`
+     * tokens of history no summary covers (more than the preset's `gapConfirmTokens`). Summarizing
+     * them now takes about `plannedCalls` summary requests; `lastTaskError` is the chat's last
+     * background memory failure, when there is one. The tab answers a `MemoryGapChoice`.
+     */
+    | { kind: "memoryGap"; payload: { gapTokens: number; plannedCalls: number; lastTaskError?: string } };
 
 /**
  * The answer to `memoryTrim`: turn the owner's memory on and send with it, trim this send only, or
@@ -330,6 +369,128 @@ export type GenerationQuestion =
  */
 export type MemoryTrimChoice = "memory" | "once" | "ignore";
 export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once", "ignore"];
+
+/**
+ * The answer to `memoryGap`: summarize the gap in this send (with progress and the stop control), or
+ * send now with the stored summaries and leave the gap to the background memory task.
+ */
+export type MemoryGapChoice = "generate" | "continue";
+export const MEMORY_GAP_CHOICES: readonly MemoryGapChoice[] = ["generate", "continue"];
+
+// ---------------------------------------------------------------------------------------------
+// The background memory task: a job hands its chat's memory input to a detached service, which
+// writes the summaries the job left out. Data only: the service rebuilds its host from a fresh
+// scope, never from the job.
+
+/**
+ * A history entry's source, captured from the snapshot the entry was built from: a chat message
+ * (its id and the hash of its stored text), the greeting (the `fmIndex` and the hash of the selected
+ * greeting's text), or anything else (examples, the new-chat marker). The prompt history holds
+ * enabled messages only; the summary writer compares the chat as it is then.
+ */
+export type MemoryEntrySource =
+    | { readonly kind: "message"; readonly id: string | undefined; readonly textHash: string }
+    | { readonly kind: "greeting"; readonly fmIndex: Chat["fmIndex"]; readonly textHash: string }
+    | { readonly kind: "other"; readonly memo: string | undefined };
+
+/**
+ * How the job counted tokens, without credentials: the `ChatTokenCounter` arguments and host answers
+ * (`chatAdditionalTokens`, the name rule, the main model's descriptor as the job resolved it, an
+ * admitted Plugin descriptor's metadata included, the request model, the image rules) and the
+ * tokenizer-selecting fields of the job's token scope. Built by an explicit projection (never the
+ * scope object itself, which carries `googleAccessToken`); the task adds the credential from its own
+ * fresh scope.
+ */
+export type MemoryTokenPolicy = {
+    chatAdditionalTokens: number;
+    useName: "name" | "noName";
+    mainModel: LLMModel;
+    /** OpenRouter's or NanoGPT's selected wire model, else absent. */
+    requestModel?: string;
+    supportsInlayImage: boolean;
+    gptVisionQuality?: string;
+    tokenizer: {
+        aiModel: string;
+        currentPluginProvider: string;
+        model: { tokenizer: LLMModel["tokenizer"]; internalID?: string };
+        pluginTokenizer: string;
+        customTokenizer: string;
+        googleClaudeTokenizing: boolean;
+        useTokenizerCaching: boolean;
+    };
+};
+
+/**
+ * What a job hands to the memory task service, captured just before its memory step and deep-copied:
+ *
+ * - `history`: the processed prompt history the memory step gets (message-id memos), `sources` one per
+ *   entry (same length), and `historyStart`, the index of its first chat history entry;
+ * - the counts: `currentTokens` (the prompt before memory), `maxContext`, `maxResponse`, and the
+ *   token policy; `settingsFingerprint`, a digest of the memory-relevant settings (the Hypa preset,
+ *   the `memory` slot, the embedding model);
+ * - `binding`: the ids the job was admitted with; `effective`: the presets it ran with and whether a
+ *   `presetChain` picked the prompt preset;
+ * - `speakerId`: the character the job replied as (null for none);
+ * - freshness: the `epoch`, `admittedRevision` (the chat revision the job was admitted at, the job's
+ *   `context.chatRevision`, never a revision read later), and `sourceGeneration`, the chat's source
+ *   generation read in the same synchronous chat read that produced the history's source snapshot.
+ */
+export type MemoryTaskInput = {
+    chatRef: MemoryChatRef;
+    epoch: string;
+    admittedRevision: string;
+    sourceGeneration: number;
+    speakerId: string | null;
+    binding: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
+    effective: { presetId: string; modelPresetId: string; fromChain: boolean };
+    history: OpenAIChat[];
+    sources: MemoryEntrySource[];
+    historyStart: number;
+    currentTokens: number;
+    maxContext: number;
+    maxResponse: number;
+    tokenPolicy: MemoryTokenPolicy;
+    settingsFingerprint: string;
+};
+
+export type MemoryTaskState = "queued" | "running" | "done" | "failed" | "cancelled" | "skipped";
+
+/**
+ * A chat's memory task as the service reports it: `done` of `total` summaries; for a terminal state
+ * the reason (`skipped`) or redacted error (`failed`), and `terminalRevision`, the chat's revision
+ * read in the step that closed the task's writes and published the terminal (null: the chat is
+ * gone), with `lastCommittedRevision` when the task committed a summary.
+ */
+export type MemoryTaskStatus =
+    | { taskId: string; state: "queued" | "running"; done: number; total: number }
+    | {
+          taskId: string;
+          state: "done" | "failed" | "cancelled" | "skipped";
+          done: number;
+          total: number;
+          reason?: string;
+          error?: string;
+          terminalRevision: string | null;
+          lastCommittedRevision?: string;
+      };
+
+/** A held summary writer lease (`MemoryTaskService.acquireSummaryWriter`). */
+export type SummaryWriterLease = { release(): void };
+
+/**
+ * The detached memory task service a job talks to. `handOff` queues the chat's latest input (a newer
+ * one replaces a pending one); `status` is the chat's current or last task (null for none);
+ * `acquireSummaryWriter` closes the write fence of the chat's running task, waits (bounded) for its
+ * last write to settle, and resolves the lease `ownerId` (the job) holds until `release` (hand-offs
+ * and manual starts for the chat only queue meanwhile); `pendingManual` tells whether a manual start
+ * waits for the chat's next input.
+ */
+export interface MemoryTaskService {
+    handOff(input: MemoryTaskInput): void;
+    status(chatRef: MemoryChatRef): MemoryTaskStatus | null;
+    acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string): Promise<SummaryWriterLease>;
+    pendingManual(chatRef: MemoryChatRef): boolean;
+}
 
 /**
  * The internal MCPs that run in the tab for a job (they need the browser: a directory handle, the

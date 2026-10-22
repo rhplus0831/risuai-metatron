@@ -3,7 +3,13 @@ import type { CbsEvaluator, CbsHost } from "../../../shared/cbs/evaluator.ts";
 import { CbsLimitError, type CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
-import type { CallbackName, CallbackPayloads, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
+import type {
+    CallbackName,
+    CallbackPayloads,
+    CallbackResult,
+    GenerationQuestion,
+    QuestionResult,
+} from "../../../shared/jobs.ts";
 import type {
     InlaySignature,
     ModelModeExtended,
@@ -204,7 +210,19 @@ export type LuaBindings = {
     setRequestTrigger(trigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null): void;
     /** `getInlayAsset`: an inlay's media as a data URI (a signature: its JSON text) with its type, or null. */
     readInlay(id: string): Promise<{ type: string; data: string; width?: number; height?: number } | null>;
+    /**
+     * A channel question the job can go on without: `timedOut` and `disconnected` are outcomes, not
+     * the job's end (`services.ask` latches them). An abort and a latched failure still raise.
+     */
+    askOptional(
+        question: GenerationQuestion,
+        ctx: HostContext,
+        options?: { signal?: AbortSignal; timeoutMs?: number },
+    ): Promise<OptionalQuestionResult>;
 };
+
+/** What `LuaBindings.askOptional` resolves. */
+export type OptionalQuestionResult = { outcome: "answered"; value: unknown } | { outcome: "timedOut" | "disconnected" };
 
 type ParsedPrompt = { role: string; content: string }[];
 
@@ -623,6 +641,47 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             throw new Error(message);
         }
         if (result.outcome === "timedOut" || result.outcome === "disconnected" || result.outcome === "aborted") {
+            throw latch(new LuaJobFatalError(message));
+        }
+        throw new Error(message);
+    };
+
+    /**
+     * A question the job goes on without when the tab does not answer: an answer (any value, `null`
+     * included), or `timedOut`/`disconnected` as outcomes. Fenced before it is asked and after it
+     * settles, so a latched failure or an abort of the job or `ctx` wins over those outcomes. The
+     * caller's own withdrawal (`options.signal`), `cancelled`, and `refused` are ordinary failures; an
+     * `aborted` question the caller did not withdraw (the channel closed) is fatal, as for `ask`.
+     */
+    const askOptional = async (
+        question: GenerationQuestion,
+        ctx: HostContext,
+        options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    ): Promise<OptionalQuestionResult> => {
+        fence(ctx);
+        let result: QuestionResult;
+        try {
+            result = await untilAborted(
+                job.channel.ask(question, {
+                    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+                    ...(options.signal ? { signal: options.signal } : {}),
+                }),
+                ctx.signal,
+            );
+        } catch (error) {
+            fence(ctx);
+            throw error;
+        }
+        fence(ctx);
+        switch (result.outcome) {
+            case "answered":
+                return { outcome: "answered", value: result.value };
+            case "timedOut":
+            case "disconnected":
+                return { outcome: result.outcome };
+        }
+        const message = `The ${question.kind} question ended: ${result.outcome}${result.error ? ` (${result.error})` : ""}`;
+        if (result.outcome === "aborted" && !options.signal?.aborted) {
             throw latch(new LuaJobFatalError(message));
         }
         throw new Error(message);
@@ -1708,5 +1767,6 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             requestTrigger = trigger;
         },
         readInlay,
+        askOptional,
     };
 }

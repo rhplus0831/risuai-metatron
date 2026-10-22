@@ -917,3 +917,56 @@ describe("the locks a job's writes and end publish", () => {
         expect(locks(events.at(-1))).toEqual([chatK([])]);
     });
 });
+
+describe("the memory stop control", () => {
+    it("records the owner's stop for the registered run only (idempotent), refuses another epoch, client, run, or no run, and ends with the job", async () => {
+        const { jobs, store, create, run, ended, revision } = setup();
+        const outcome = run(async (job) => {
+            const epoch = store.epoch();
+            const stop = (clientId: string, runId: string, at = epoch) =>
+                jobs.requestMemoryStop(job.id, clientId, runId, at);
+            expect(stop("tab", "run-1", "other-epoch")).toEqual({
+                ok: false,
+                status: 412,
+                body: { error: "EpochMismatch", epoch },
+            });
+            expect(stop("other", "run-1")).toEqual({ ok: false, status: 404, body: { error: "Generation not found" } });
+            expect(jobs.requestMemoryStop("nope", "tab", "run-1", epoch)).toMatchObject({ ok: false, status: 404 });
+            expect(stop("tab", "run-1")).toEqual({ ok: false, status: 409, body: { error: "noMemoryRun" } });
+
+            const first = job.registerMemoryControl!("run-1");
+            expect(first.stopRequested()).toBe(false);
+            expect(stop("tab", "run-2")).toEqual({ ok: false, status: 409, body: { error: "otherMemoryRun" } });
+            expect(first.stopRequested()).toBe(false);
+            expect(stop("tab", "run-1")).toEqual({ ok: true });
+            expect(stop("tab", "run-1")).toEqual({ ok: true });
+            expect(first.stopRequested()).toBe(true);
+
+            // A later run replaces the registration; the earlier control's release leaves it alone.
+            const second = job.registerMemoryControl!("run-2");
+            first.release();
+            expect(stop("tab", "run-1")).toEqual({ ok: false, status: 409, body: { error: "otherMemoryRun" } });
+            expect(second.stopRequested()).toBe(false);
+            expect(stop("tab", "run-2")).toEqual({ ok: true });
+            expect(second.stopRequested()).toBe(true);
+            second.release();
+            expect(stop("tab", "run-2")).toEqual({ ok: false, status: 409, body: { error: "noMemoryRun" } });
+
+            const third = job.registerMemoryControl!("run-3");
+            job.emit({ type: "done", revision: revision() });
+            // Ended: the registration is gone, a new one is refused, a late release is harmless.
+            expect(stop("tab", "run-3")).toEqual({ ok: false, status: 409, body: { error: "jobEnded" } });
+            expect(() => job.registerMemoryControl!("run-4")).toThrow(GenerationJobEndedError);
+            expect(() => third.release()).not.toThrow();
+            expect(third.stopRequested()).toBe(false);
+        });
+        const jobId = create();
+        await outcome;
+        await ended(jobId);
+        expect(jobs.requestMemoryStop(jobId, "tab", "run-3", store.epoch())).toEqual({
+            ok: false,
+            status: 409,
+            body: { error: "jobEnded" },
+        });
+    });
+});

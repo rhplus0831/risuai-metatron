@@ -1,4 +1,4 @@
-import type { Chat, character } from "../../../shared/database.ts";
+import type { Chat, character, groupChat } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
@@ -259,6 +259,55 @@ const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** A straight list of effects yields a turn once it has held the thread this long. */
 const EFFECT_YIELD_AFTER_MS = 50;
+
+/**
+ * Whether a run in `mode` (for the manual trigger `manualName`) runs `trigger`: one whose first effect
+ * is `triggercode`/`triggerlua` runs in every mode; otherwise a manual run takes the trigger of that
+ * name and any other run the triggers of its type. A trigger with legacy conditions never runs.
+ */
+function triggerSelected(trigger: triggerscript, mode: TriggerMode, manualName: string | undefined): boolean {
+    if (trigger.effect[0]?.type === "triggercode" || trigger.effect[0]?.type === "triggerlua") {
+        //
+    } else if (manualName) {
+        if (trigger.comment !== manualName) {
+            return false;
+        }
+    } else if (mode !== trigger.type) {
+        return false;
+    }
+    // Legacy conditional triggers are no longer supported; skip rather than run unconditionally.
+    return (trigger.conditions?.length ?? 0) === 0;
+}
+
+/** Whether a run in `mode` runs an effect of `type` (display and request runs take their allowlist only). */
+function effectRunsIn(mode: TriggerMode, type: string): boolean {
+    if (mode === "display") {
+        return displayAllowList.includes(type);
+    }
+    if (mode === "request") {
+        return requestAllowList.includes(type);
+    }
+    return true;
+}
+
+/**
+ * Whether `runTrigger(owner, "request", ...)` would run any effect: a trigger of the owner's or of
+ * `modules` (the job's module triggers, `moduleTriggers(scope)`) that a request run selects and that
+ * has an effect of the request allowlist. A group owner has none (the job's request trigger returns
+ * before running).
+ */
+export function hasRequestTriggers(owner: character | groupChat | undefined, modules: triggerscript[]): boolean {
+    if (!owner || owner.type === "group") {
+        return false;
+    }
+    return (owner.triggerscript ?? [])
+        .concat(modules)
+        .some(
+            (trigger) =>
+                triggerSelected(trigger, "request", undefined) &&
+                trigger.effect.some((effect) => effectRunsIn("request", effect.type)),
+        );
+}
 
 export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
@@ -537,27 +586,13 @@ export function createTriggerRuntime(host: TriggerHost) {
         for (const trigger of triggers) {
             const loopCounters: Record<string, number> = {};
 
-            if (trigger.effect[0]?.type === "triggercode" || trigger.effect[0]?.type === "triggerlua") {
-                //
-            } else if (arg.manualName) {
-                if (trigger.comment !== arg.manualName) {
-                    continue;
-                }
-            } else if (mode !== trigger.type) {
-                continue;
-            }
-
-            // Legacy conditional triggers are no longer supported; skip rather than run unconditionally.
-            if ((trigger.conditions?.length ?? 0) > 0) {
+            if (!triggerSelected(trigger, mode, arg.manualName)) {
                 continue;
             }
 
             for (let index = 0; index < trigger.effect.length; index++) {
                 const effect: triggerEffect = trigger.effect[index];
-                if (mode === "display" && !displayAllowList.includes(effect.type)) {
-                    continue;
-                }
-                if (mode === "request" && !requestAllowList.includes(effect.type)) {
+                if (!effectRunsIn(mode, effect.type)) {
                     continue;
                 }
 

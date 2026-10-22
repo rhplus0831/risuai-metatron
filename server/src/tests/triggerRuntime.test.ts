@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { calcString } from "../../../shared/cbs/calc.ts";
-import type { Chat, Message, character } from "../../../shared/database.ts";
+import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
 import type { GenerationQuestion } from "../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../shared/llm/request.ts";
 import type { triggerEffect, triggerscript } from "../../../shared/triggers.ts";
@@ -10,6 +10,7 @@ import { createCommandExecutor } from "../prompt/commands.ts";
 import {
     createTriggerRuntime,
     displayAllowList,
+    hasRequestTriggers,
     MAX_TRIGGER_EFFECTS,
     parseKeyValue,
     requestAllowList,
@@ -1696,5 +1697,66 @@ describe("the run's character copy", () => {
         expect(Object.hasOwn(seen!, "__proto__")).toBe(true);
         expect((seen as unknown as Record<string, unknown>)["__proto__"]).toEqual({ x: 1 });
         expect(Object.getPrototypeOf(seen)).toBe(Object.prototype);
+    });
+});
+
+describe("the request-trigger predicate", () => {
+    const requestTrig = (effect: triggerEffect[], extra: Partial<triggerscript> = {}) =>
+        trig(effect, { type: "request", ...extra });
+
+    it.each([
+        [
+            "a character's request trigger with a request effect",
+            { triggers: [requestTrig([setVar("x", "=", "1")])] },
+            true,
+        ],
+        ["a module's request trigger", { triggers: [], moduleTriggers: [requestTrig([setVar("x", "=", "1")])] }, true],
+        [
+            "a request trigger with legacy conditions (never run)",
+            { triggers: [requestTrig([setVar("x", "=", "1")], { conditions: [{ type: "var", var: "x" }] as never })] },
+            false,
+        ],
+        [
+            "a request trigger whose every effect the request allowlist excludes",
+            {
+                triggers: [
+                    requestTrig([
+                        say("char", "no"),
+                        ef("v2Command", v("/echo no")),
+                        ef("v2RunTrigger", { target: "go" }),
+                    ]),
+                ],
+            },
+            false,
+        ],
+        [
+            "a request trigger with one request effect among excluded ones",
+            { triggers: [requestTrig([say("char", "no"), ef("v2Comment", { text: "note" })])] },
+            true,
+        ],
+        ["a trigger of another type", { triggers: [trig([setVar("x", "=", "1")], { type: "output" })] }, false],
+        [
+            "a Lua trigger of another type (selected in every mode, but Lua is not a request effect)",
+            { triggers: [lua("code", { type: "output" })] },
+            false,
+        ],
+        ["a character with no trigger", { triggers: [] }, false],
+        ["an empty request trigger", { triggers: [requestTrig([])] }, false],
+    ] as [string, { triggers: triggerscript[]; moduleTriggers?: triggerscript[] }, boolean][])(
+        "agrees with a request run on whether any effect runs: %s",
+        async (_case, options, fires) => {
+            const h = harness(options);
+            await h.run("request", { displayMode: true, displayData: "[]" });
+            // Every effect a run reaches counts against the job's limit: the run's own word on it.
+            expect(h.effects.count > 0).toBe(fires);
+            expect(hasRequestTriggers(h.stored, options.moduleTriggers ?? [])).toBe(fires);
+        },
+    );
+
+    it("is false for a group and for no owner, whose request trigger the job never runs, whatever their triggers", () => {
+        const triggers = [requestTrig([setVar("x", "=", "1")])];
+        const group = { chaId: "g", type: "group", triggerscript: triggers } as unknown as groupChat;
+        expect(hasRequestTriggers(group, triggers)).toBe(false);
+        expect(hasRequestTriggers(undefined, triggers)).toBe(false);
     });
 });

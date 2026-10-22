@@ -5,7 +5,9 @@
 // (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
 // are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
+import type { ModelProfile } from "../../../shared/database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
 import { forwardProfileRoots, maxContextOverrideOf } from "../../../shared/sections.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -26,6 +28,7 @@ import { requestClaude } from "./anthropic.ts";
 import { requestGoogleCloudVertex } from "./google.ts";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
+import type { RequestDb } from "./settings.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
 import { deferFirstByte, watchFirstByte } from "./transport.ts";
 import { sleep } from "./util.ts";
@@ -331,6 +334,104 @@ function formatName(format: LLMFormat): string | null {
 }
 
 /**
+ * A request context's descriptor lookup (`RequestContext.getModelInfo`): the catalogue with the
+ * profile's custom flags, `db.customModels`, `extraModels(id)`, and `db.pluginModels` (returned as
+ * registered: custom flags do not apply to them). `browserOnlyModels` (a job's own request): a
+ * `pluginmodel:::` id is a Plugin model whatever its descriptor says, so it still needs the job's tab
+ * callback and admitted descriptor.
+ */
+export function requestModelLookup(
+    db: RequestDb,
+    extraModels: (modelId: string) => readonly LLMModel[],
+    browserOnlyModels = false,
+): RequestContext["getModelInfo"] {
+    return (modelId, profile = db) => {
+        const model = resolveModelInfo(modelId, {
+            enableCustomFlags: profile.enableCustomFlags,
+            customFlags: profile.customFlags,
+            customModels: db.customModels,
+            extraModels: extraModels(modelId),
+            pluginModels: db.pluginModels,
+        });
+        if (browserOnlyModels && modelId.startsWith("pluginmodel:::")) {
+            return { ...model, format: LLMFormat.Plugin };
+        }
+        return model;
+    };
+}
+
+/**
+ * The model a request resolves before dispatch: refused (a missing or required profile, with its
+ * message), or the request's settings (`db`: the context's with the slot's model and profile roots,
+ * and the main slot's context size override), its profile, model id, and descriptor (a copy, with the
+ * reverse proxy's `customAPIFormat` and request model applied: the format dispatch calls).
+ */
+export type ResolvedRequestModel =
+    | { kind: "refused"; result: string }
+    | { kind: "resolved"; db: RequestDb; profile: ModelProfile | undefined; aiModel: string; modelInfo: LLMModel };
+
+/** Slot → profile → descriptor, as `requestChatDataMain` resolves them. */
+export function resolveRequestModel(
+    ctx: Pick<RequestContext, "db" | "getModelInfo">,
+    model: ModelModeExtended,
+    select: { staticModel?: string; profileId?: string } = {},
+): ResolvedRequestModel {
+    const resolved = resolveSlotProfile(
+        ctx.db.modelPreset,
+        ctx.db.modelProfiles,
+        model,
+        select.staticModel,
+        select.profileId,
+    );
+    if (resolved.kind === "refused") {
+        return {
+            kind: "refused",
+            result:
+                resolved.reason === "missingProfile"
+                    ? language.errors.modelProfileMissing(model)
+                    : resolved.reason === "missingNamedProfile"
+                      ? language.errors.modelProfileNamedMissing
+                      : language.errors.modelProfileRequired(resolved.modelId!),
+        };
+    }
+    const profile = resolved.kind === "profile" ? resolved.profile : undefined;
+    const db = { ...ctx.db, aiModel: resolved.modelId };
+    forwardProfileRoots(db, profile);
+    // The prompt preset's context size override is the main slot's only: a named profile, the sub
+    // and auxiliary slots (even on the main profile), and another static model keep their own.
+    if (
+        model === "model" &&
+        select.profileId === undefined &&
+        profile !== undefined &&
+        profile.id === ctx.db.modelPreset.mainSlot.profileId
+    ) {
+        db.maxContext = maxContextOverrideOf(ctx.db as unknown as Record<string, unknown>) ?? db.maxContext;
+    }
+    const aiModel = resolved.modelId;
+    // A copy: adapters change its format, internal id, or flags, including a captured plugin model's.
+    const modelInfo = structuredClone(ctx.getModelInfo(aiModel, db));
+    if (aiModel === "reverse_proxy") {
+        modelInfo.internalID = db.customProxyRequestModel;
+        modelInfo.format = db.customAPIFormat;
+    }
+    return { kind: "resolved", db, profile, aiModel, modelInfo };
+}
+
+/**
+ * The model a job's own request (`LlmRequests.runInJob`) would dispatch to for `model`, resolved
+ * without a request: the job's request settings (`JobScope.request.db`) with the lookup `runInJob`
+ * builds (no extra models, `pluginmodel:::` forced to Plugin). `modelInfo.format` tells whether the
+ * request calls the job's tab (`LLMFormat.Plugin`) or runs on the server (`LLMFormat.WebLLM` too).
+ */
+export function resolveJobRequestModel(
+    db: RequestDb,
+    model: ModelModeExtended,
+    select: { staticModel?: string; profileId?: string } = {},
+): ResolvedRequestModel {
+    return resolveRequestModel({ db, getModelInfo: requestModelLookup(db, () => [], true) }, model, select);
+}
+
+/**
  * `requestChatDataMain` on the server: shared slot resolution, a request-local profile overlay,
  * argument defaults, reverse-proxy/custom-model overrides, `reformater`, then the format's function.
  * Missing or required profiles refuse before dispatch; the job's captured settings stay unchanged.
@@ -344,38 +445,11 @@ export async function requestChatDataMain(
     model: ModelModeExtended,
     ctx: RequestContext,
 ): Promise<requestDataResponse> {
-    const resolved = resolveSlotProfile(
-        ctx.db.modelPreset,
-        ctx.db.modelProfiles,
-        model,
-        arg.staticModel,
-        arg.profileId,
-    );
+    const resolved = resolveRequestModel(ctx, model, arg);
     if (resolved.kind === "refused") {
-        return {
-            type: "fail",
-            result:
-                resolved.reason === "missingProfile"
-                    ? language.errors.modelProfileMissing(model)
-                    : resolved.reason === "missingNamedProfile"
-                      ? language.errors.modelProfileNamedMissing
-                      : language.errors.modelProfileRequired(resolved.modelId!),
-            noRetry: true,
-        };
+        return { type: "fail", result: resolved.result, noRetry: true };
     }
-    const profile = resolved.kind === "profile" ? resolved.profile : undefined;
-    const db = { ...ctx.db, aiModel: resolved.modelId };
-    forwardProfileRoots(db, profile);
-    // The prompt preset's context size override is the main slot's only: a named profile, the sub
-    // and auxiliary slots (even on the main profile), and another static model keep their own.
-    if (
-        model === "model" &&
-        arg.profileId === undefined &&
-        profile !== undefined &&
-        profile.id === ctx.db.modelPreset.mainSlot.profileId
-    ) {
-        db.maxContext = maxContextOverrideOf(ctx.db as unknown as Record<string, unknown>) ?? db.maxContext;
-    }
+    const { db, profile, aiModel } = resolved;
     const getModelInfo = ctx.getModelInfo;
     ctx = {
         ...ctx,
@@ -384,15 +458,15 @@ export async function requestChatDataMain(
         // before adapters change its format, internal id, or flags, including a captured plugin model.
         getModelInfo: (id) => structuredClone(getModelInfo(id, db)),
     };
-    const aiModel = resolved.modelId;
     const targ: RequestDataArgumentExtended = {
         ...arg,
         ctx,
         aiModel,
-        modelInfo: ctx.getModelInfo(aiModel),
+        modelInfo: resolved.modelInfo,
         mode: model,
     };
 
+    // On the format dispatch calls (a reverse proxy's `customAPIFormat` included).
     if (
         (targ.modelInfo.format === LLMFormat.Plugin && !ctx.pluginProvider) ||
         (targ.modelInfo.format === LLMFormat.WebLLM && !ctx.localGeneration)
@@ -416,8 +490,6 @@ export async function requestChatDataMain(
     targ.mode = model;
     targ.extractJson = arg.extractJson ?? db.extractJson;
     if (targ.aiModel === "reverse_proxy") {
-        targ.modelInfo.internalID = db.customProxyRequestModel;
-        targ.modelInfo.format = db.customAPIFormat;
         targ.customURL = db.forceReplaceUrl;
     }
     if (targ.aiModel.startsWith("xcustom:::")) {

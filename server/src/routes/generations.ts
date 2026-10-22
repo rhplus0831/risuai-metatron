@@ -1,5 +1,6 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import {
+    GENERATION_ID_PATTERN,
     GENERATION_KINDS,
     type GenerationClientEnv,
     type GenerationCommand,
@@ -184,7 +185,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
  * 409 `stale`, 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` when the
  * context's ids are not the chat's complete binding, 404, 412 for another epoch, 503 while the
  * server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
- * `DELETE /:id?clientId=` aborts it. Another client's job is a 404. The socket is
+ * `DELETE /:id?clientId=` aborts it, and `POST /:id/memory-stop?clientId=` (`{ runId }`, the epoch
+ * checked) stops the job's initial memory summarization run `runId` after its summary in progress
+ * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch).
+ * Another client's job is a 404. The socket is
  * `/api/generations/:id/ws` (`generationJobs.handleUpgrade`). Responses are never cached.
  */
 export function registerGenerationRoutes(
@@ -238,5 +242,27 @@ export function registerGenerationRoutes(
         }
         const aborted = jobs.abort(c.req.param("id"), c.req.query("clientId"));
         return aborted === null ? c.json({ error: "Generation not found" }, 404) : c.json({ aborted });
+    });
+
+    app.post("/api/generations/:id/memory-stop", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        const runId = isPlainObject(read.body) ? read.body.runId : undefined;
+        if (typeof runId !== "string" || !GENERATION_ID_PATTERN.test(runId)) {
+            return c.json({ error: "runId must be a run id" }, 400);
+        }
+        const result = jobs.requestMemoryStop(
+            c.req.param("id"),
+            c.req.query("clientId"),
+            runId,
+            c.req.header(RESOURCE_EPOCH_HEADER),
+        );
+        return result.ok ? c.json({ stopped: true }) : c.json(result.body, result.status);
     });
 }

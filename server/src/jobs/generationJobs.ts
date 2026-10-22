@@ -205,7 +205,24 @@ export type RunningJob = {
     setCallbackPreset?(presetId: string): void;
     /** Flush synchronous metadata setters before a write, event, or callback barrier. */
     setPendingFlush?(flush: (() => void) | null): void;
+    /**
+     * Registers the job's initial memory summarization run `runId` (fresh for each run) for the
+     * owner's stop control (`requestMemoryStop`), replacing any earlier registration. Throws
+     * `GenerationJobEndedError` once the job ended. The job's end clears it.
+     */
+    registerMemoryControl?(runId: string): MemoryControl;
 };
+
+/**
+ * A registered memory run's stop control: `stopRequested()` turns true once the owner asked this
+ * run to stop (the run saves the summary in progress, starts no further one, and the job goes on);
+ * `release()` unregisters it while it is still the registered run, and does nothing after that or
+ * after the job's end.
+ */
+export type MemoryControl = { stopRequested(): boolean; release(): void };
+
+/** `requestMemoryStop`'s answer: the stop is recorded, or the route's status and body. */
+export type MemoryStopResult = { ok: true } | { ok: false; status: 404 | 409 | 412; body: Record<string, unknown> };
 
 export type GenerationRunner = (job: RunningJob) => Promise<void>;
 
@@ -259,6 +276,8 @@ type Job = {
     /** Every chat this job locked a message in (`chatKey`): the job's end publishes their locks again. */
     lockChats: Map<string, { characterId: string; chatId: string }>;
     terminal: GenerationTerminalEvent | null;
+    /** The registered memory run (`registerMemoryControl`) and whether its stop was asked; null for none. */
+    memoryControl: { runId: string; stopRequested: boolean } | null;
     listeners: Set<(message: unknown) => void>;
     finished: Promise<void>;
     resolveFinished: () => void;
@@ -712,6 +731,7 @@ export function createGenerationJobs(options: {
         job.ended = true;
         job.endedAt = Date.now();
         job.terminal = terminal as GenerationTerminalEvent;
+        job.memoryControl = null;
         record({
             kind: "job",
             phase: terminal.type === "error" ? "error" : "done",
@@ -1065,6 +1085,19 @@ export function createGenerationJobs(options: {
             setPendingFlush(flush) {
                 job.pendingFlush = flush;
             },
+            registerMemoryControl(runId) {
+                assertLive(job);
+                const control = { runId, stopRequested: false };
+                job.memoryControl = control;
+                return {
+                    stopRequested: () => control.stopRequested,
+                    release: () => {
+                        if (job.memoryControl === control) {
+                            job.memoryControl = null;
+                        }
+                    },
+                };
+            },
             onClientMessage(listener) {
                 assertLive(job);
                 job.listeners.add(listener);
@@ -1164,6 +1197,7 @@ export function createGenerationJobs(options: {
             generated: new Set(),
             lockChats: new Map(),
             terminal: null,
+            memoryControl: null,
             listeners: new Set(),
             finished,
             resolveFinished,
@@ -1416,6 +1450,38 @@ export function createGenerationJobs(options: {
         abort(jobId: string, clientId: string | undefined): boolean | null {
             const job = ownJob(jobId, clientId);
             return job ? abort(job, "aborted") : null;
+        },
+
+        /**
+         * The owner's stop of the job's registered initial memory run `runId`: the run stops after the
+         * summary in progress, the job goes on. 412 for another epoch, 404 for an unknown job or
+         * another client's, 409 for an ended job (`jobEnded`), no registered run (`noMemoryRun`), or
+         * another run (`otherMemoryRun`). Asking again while the run is registered succeeds again.
+         */
+        requestMemoryStop(
+            jobId: string,
+            clientId: string | undefined,
+            runId: string,
+            epoch: string | undefined,
+        ): MemoryStopResult {
+            if (epoch !== store.epoch()) {
+                return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+            }
+            const job = ownJob(jobId, clientId);
+            if (!job) {
+                return { ok: false, status: 404, body: { error: "Generation not found" } };
+            }
+            if (job.ended) {
+                return { ok: false, status: 409, body: { error: "jobEnded" } };
+            }
+            if (!job.memoryControl) {
+                return { ok: false, status: 409, body: { error: "noMemoryRun" } };
+            }
+            if (job.memoryControl.runId !== runId) {
+                return { ok: false, status: 409, body: { error: "otherMemoryRun" } };
+            }
+            job.memoryControl.stopRequested = true;
+            return { ok: true };
         },
 
         handleUpgrade,

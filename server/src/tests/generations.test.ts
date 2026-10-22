@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
-import type { RunningJob } from "../jobs/generationJobs.ts";
+import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // The generation job routes and the owner socket (`server/src/routes/generations.ts`,
@@ -661,6 +661,61 @@ describe("generation jobs over HTTP and WebSocket", () => {
             json({ chats: [group(after.revision, [{ op: "setText", id: "r", text: "mine" }])] }),
         );
         expect(edit.status).toBe(200);
+    });
+
+    it("POST memory-stop stops the owner's registered memory run after a valid body and the epoch check: 400 for a malformed body, 404 for another client or job, 409 for another run, no run, or an ended job", async () => {
+        await listen();
+        const jobId = await createOk();
+        let control: MemoryControl | undefined;
+        step((job) => {
+            control = job.registerMemoryControl!("run-1");
+        });
+        await waitFor(() => control !== undefined);
+        const stop = (
+            body: unknown,
+            options: { epoch?: string | null; jwt?: string } = {},
+            id = jobId,
+            clientId = "tab",
+        ) => request(`/api/generations/${id}/memory-stop?clientId=${clientId}`, json(body), options);
+        const status = async (res: Response) => [res.status, await res.json()] as const;
+
+        // The password is not a JWT: refused before the body, on this route as on the others.
+        const denied = await stop({ runId: "run-1" }, { jwt: "pw" });
+        expect(denied.status).toBeGreaterThanOrEqual(400);
+        expect(denied.status).not.toBe(404);
+        for (const bad of ["run-1", { runId: 5 }, {}, { runId: "not a run id!" }, { runId: "x".repeat(65) }]) {
+            const res = await stop(bad);
+            expect(res.status, JSON.stringify(bad)).toBe(400);
+        }
+        expect(await status(await stop({ runId: "run-1" }, { epoch: "other" }))).toEqual([
+            412,
+            { error: "EpochMismatch", epoch },
+        ]);
+        expect((await stop({ runId: "run-1" }, {}, jobId, "other")).status).toBe(404);
+        expect((await stop({ runId: "run-1" }, {}, "nope")).status).toBe(404);
+        expect(await status(await stop({ runId: "run-2" }))).toEqual([409, { error: "otherMemoryRun" }]);
+        expect(control!.stopRequested()).toBe(false);
+
+        const stopped = await stop({ runId: "run-1" });
+        expect(stopped.headers.get("cache-control")).toBe("no-store");
+        expect(await status(stopped)).toEqual([200, { stopped: true }]);
+        expect(control!.stopRequested()).toBe(true);
+        expect(await status(await stop({ runId: "run-1" }))).toEqual([200, { stopped: true }]);
+        control!.release();
+        expect(await status(await stop({ runId: "run-1" }))).toEqual([409, { error: "noMemoryRun" }]);
+
+        step((job) => {
+            job.registerMemoryControl!("run-3");
+            job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" });
+            job.emit({ type: "done", revision: job.context.chatRevision });
+            return "end" as never;
+        });
+        await waitFor(
+            async () =>
+                ((await (await request(`/api/generations/${jobId}?clientId=tab`)).json()) as { state: string })
+                    .state === "ended",
+        );
+        expect(await status(await stop({ runId: "run-3" }))).toEqual([409, { error: "jobEnded" }]);
     });
 
     it("runs a command job without a message, in the chat's slot", async () => {
