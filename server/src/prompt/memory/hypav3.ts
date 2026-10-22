@@ -1,14 +1,17 @@
-import type { Chat, character, groupChat } from "../../../../shared/database.ts";
+import { createHash } from "node:crypto";
+import type { Chat, character, groupChat, Message } from "../../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-import type {
-    HypaV3Data,
-    HypaV3Preset,
-    HypaV3Settings,
-    SerializableHypaV3Data,
-    Summary,
+import {
+    type HypaV3Data,
+    type HypaV3Preset,
+    type HypaV3Settings,
+    mergeHypaV3Write,
+    remapHypaV3MetricsByIdentity,
+    type SerializableHypaV3Data,
+    type Summary,
 } from "../../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../../shared/openai.ts";
-import { type BatchResult, TaskRateLimiter } from "../../../../shared/taskRateLimiter.ts";
+import { type BatchResult, type TaskResult, TaskRateLimiter } from "../../../../shared/taskRateLimiter.ts";
 import { DEFAULT_REGEX_DEADLINE_MS } from "../../scripts/workerPool.ts";
 import {
     type EmbeddingResult,
@@ -37,6 +40,10 @@ import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 //   summaries), and `selectHypaV3` (the memory card). `hypaMemoryV3` composes them with the mains'
 //   requests, progress, results, and error positions. The planner tokenizes every window before the
 //   first summary request, where the standard main tokenized each window just before summarizing it.
+// - Beyond that composition, the parts take options and hooks the composition never passes: a
+//   prepare without the orphan cleanup, lookahead planning, an execution that validates and saves
+//   each summary as it is made and can stop between windows, a selection that trims the history no
+//   summary covers instead of summarizing it, and the warming of the new summaries' vectors.
 
 interface SummaryChunk {
     text: string;
@@ -146,11 +153,38 @@ export interface HypaV3Prepared {
     readonly data: HypaV3Data;
     /** The summarized-prefix cursor: the history index after the last summary's last message. */
     readonly startIdx: number;
+    /**
+     * Whether there are summaries and the last one's last message is absent from the history in
+     * `chats`. Preparation with options then leaves `startIdx` at 0; no-option calls keep the
+     * legacy memo lookup, which can also match examples.
+     */
+    readonly coverageAhead: boolean;
     readonly ledger: HypaV3Ledger;
 }
 
 /** A prepared step, or the settings error the step returns before reading anything. */
 export type HypaV3PrepareOutcome = { ok: true; prepared: HypaV3Prepared } | { ok: false; result: HypaV3Result };
+
+export interface HypaV3PrepareOptions {
+    /**
+     * False: no orphan cleanup, whatever `preserveOrphanedMemory` says (a writer whose history may
+     * be older than the stored summaries never removes one). Default true.
+     */
+    cleanup?: boolean;
+}
+
+/** The share of the context a lookahead plan keeps free: it plans from `C × (1 − h)`. */
+export const HYPAV3_LOOKAHEAD_HEADROOM = 0.15;
+
+export interface HypaV3PlanOptions {
+    /**
+     * Plan the summaries the next sends will need before the prompt reaches the context: trigger
+     * above `C × (1 − h)`, target `max(0, C × (1 − h − extraSummarizationRatio))`, with the full
+     * memory budget counted as a planning cost even without stored summaries. The capacity checks
+     * stay at `C`, and only the protected tail left is a normal stop even over `C`.
+     */
+    lookahead?: boolean;
+}
 
 /** One summary window: the history interval it scans and the messages its summary covers. */
 export interface HypaV3PlannedWindow {
@@ -169,9 +203,9 @@ export interface HypaV3PlannedWindow {
 
 /**
  * Why the window scan stopped: summarization not needed; at or under the target; only the
- * `queryChatCount` tail left and the prompt fits; the next window would go under the target while
- * the prompt fits; or one of the two errors (the tail left and the prompt over the context; a window
- * that scans nothing).
+ * `queryChatCount` tail left (the prompt must fit unless using lookahead); the next window would
+ * go under the target while the prompt fits; or one of the two errors (the tail left and the prompt
+ * over the context without lookahead; a window that scans nothing).
  */
 export type HypaV3StopReason =
     "notNeeded" | "targetReached" | "tailReached" | "nextWindowOvershoots" | "cannotSummarizeFurther" | "noProgress";
@@ -182,7 +216,10 @@ export interface HypaV3Plan {
     /** The windows that need a summary request. */
     readonly llmCalls: number;
     readonly stopReason: HypaV3StopReason;
-    /** The ledger's count after every planned window, subtracted one window at a time. */
+    /**
+     * The ledger's count after every planned window, subtracted one window at a time (a lookahead
+     * plan's count holds the full memory budget as its planning cost, not the ledger's reservation).
+     */
     readonly predictedTokens: number;
     /** The message of `cannotSummarizeFurther` and `noProgress`. */
     readonly error?: string;
@@ -195,7 +232,10 @@ export interface HypaV3ExecutedWindow {
 }
 
 interface HypaV3ExecutionState {
-    /** The windows that ended successfully, in plan order (experimental may list some past a failure). */
+    /**
+     * The windows that ended successfully, in plan order. Experimental's batch without hooks also
+     * lists the successes past a failure; with hooks the list is the accepted windows.
+     */
     completed: HypaV3ExecutedWindow[];
     /** How many windows from the plan's first completed one after another: `data` holds their summaries. */
     accepted: number;
@@ -207,12 +247,29 @@ interface HypaV3ExecutionState {
     cursor: number;
     /** The prepared data with the accepted summaries appended (a copy; the summary objects shared). */
     data: HypaV3Data;
+    /**
+     * The value the next memory write starts from: the candidate of the last committed checkpoint
+     * (an independent copy), else `prepared.snapshot`. Never the merged stored value.
+     */
+    baseline: SerializableHypaV3Data | null | undefined;
 }
 
-/** What a plan's execution made. Selection reads its cursor, count, and data from here. */
+/**
+ * What a plan's execution made. Selection reads its cursor, count, and data from here. Without hooks
+ * the end is `complete` or `providerFailed`; with hooks also `stopped` (`shouldStop` before a
+ * window), `writeSkipped` (a checkpoint refused: the window is not accepted), and `sourceInvalid`
+ * (a window failed validation: it and every later window are dropped). An abort is never an end
+ * reason: it is thrown through `host.fence()`.
+ */
 export type HypaV3ExecutionResult = HypaV3ExecutionState &
     (
         | { endReason: "complete" }
+        | { endReason: "stopped" }
+        | {
+              endReason: "writeSkipped" | "sourceInvalid";
+              /** The window's index in `plan.windows`. */
+              window: number;
+          }
         | {
               endReason: "providerFailed";
               /** The first failed window's index in `plan.windows`. */
@@ -220,6 +277,40 @@ export type HypaV3ExecutionResult = HypaV3ExecutionState &
               error: string;
           }
     );
+
+/**
+ * One summary save of an execution with hooks. `merge` places `candidate` onto the value stored at
+ * the write (`mergeHypaV3Write(baseline, candidate, stored, false)`, a stored or baseline `null`
+ * compared as today's job write compares it); it captures this checkpoint's baseline and candidate.
+ * The hook must not change either.
+ */
+export interface HypaV3Checkpoint {
+    /**
+     * The cumulative algorithm data: the prepared data, the accepted summaries, and this window's,
+     * with the metrics read moved to the same summaries after the orphan cleanup.
+     */
+    readonly candidate: SerializableHypaV3Data;
+    /** The candidate of the last committed checkpoint, or the prepared snapshot. */
+    readonly baseline: SerializableHypaV3Data | null | undefined;
+    merge(stored: SerializableHypaV3Data | null | undefined): SerializableHypaV3Data | null;
+}
+
+/** What an execution with hooks calls. Every hook is optional; `sequential` defaults to false. */
+export interface HypaV3ExecutionHooks {
+    /** After the start (`0`) and after each accepted summary: accepted summaries out of the plan's requests. */
+    progress?(done: number, total: number): void;
+    /**
+     * Saves a window's summary, synchronously. Only `"committed"` makes the candidate the next
+     * baseline; `"skipped"` ends the execution with `writeSkipped`.
+     */
+    checkpoint?(write: HypaV3Checkpoint): "committed" | "skipped";
+    /** Rechecks the accepted prefix and current window before acceptance (token-only windows too). */
+    validate?(window: HypaV3PlannedWindow): boolean;
+    /** Checked before each window starts and before a queued request starts: true ends with `stopped`. */
+    shouldStop?(): boolean;
+    /** Experimental: one summary request at a time, each window saved before the next starts. */
+    sequential?: boolean;
+}
 
 export async function hypaMemoryV3(
     host: MemoryHost,
@@ -308,6 +399,7 @@ export async function prepareHypaV3(
     maxContextTokens: number,
     room: Chat,
     tokenizer: MemoryTokenizer,
+    options?: HypaV3PrepareOptions,
 ): Promise<HypaV3PrepareOutcome> {
     const db = host.db;
     const settings = getCurrentHypaV3Preset(host).settings;
@@ -339,17 +431,25 @@ export async function prepareHypaV3(
           };
 
     // Clean orphaned summaries
-    if (!settings.preserveOrphanedMemory) {
+    if (!settings.preserveOrphanedMemory && options?.cleanup !== false) {
         cleanOrphanedSummary(chats, data);
     }
 
     // Determine starting index
     let startIdx = 0;
     let prefixTokens = 0;
+    let coverageAhead = false;
 
     if (data.summaries.length > 0) {
         const lastSummary = data.summaries.at(-1)!;
-        const lastChatIndex = chats.findIndex((chat) => chat.memo === [...lastSummary.chatMemos].at(-1));
+        const lastMemo = [...lastSummary.chatMemos].at(-1);
+        const lastHistoryIndex =
+            lastSummary.chatMemos.size > 0
+                ? chats.findIndex((chat) => isHistoryEntry(chat) && chat.memo === lastMemo)
+                : -1;
+        coverageAhead = lastHistoryIndex === -1;
+        const lastChatIndex =
+            options === undefined ? chats.findIndex((chat) => chat.memo === lastMemo) : lastHistoryIndex;
 
         if (lastChatIndex !== -1) {
             startIdx = lastChatIndex + 1;
@@ -403,6 +503,7 @@ export async function prepareHypaV3(
             snapshot,
             data,
             startIdx,
+            coverageAhead,
             ledger: {
                 incoming,
                 responseCorrection: db.maxResponse,
@@ -443,10 +544,15 @@ function shouldSummarizeChat(chat: OpenAIChat, settings: Readonly<HypaV3Settings
  * (standard scans `maxChatsPerSummary` messages, experimental until it has that many to summarize)
  * with its stop rules. Tokenizes every scanned message, as the mains do.
  */
-export async function planHypaV3Summaries(prepared: HypaV3Prepared): Promise<HypaV3Plan> {
-    const { settings, chats, maxContextTokens, tokenizer } = prepared;
+export async function planHypaV3Summaries(
+    prepared: HypaV3Prepared,
+    options: HypaV3PlanOptions = {},
+): Promise<HypaV3Plan> {
+    const { settings, chats, maxContextTokens, tokenizer, ledger } = prepared;
+    const lookahead = options.lookahead === true;
     const windows: HypaV3PlannedWindow[] = [];
-    let currentTokens = prepared.ledger.current;
+    // A lookahead plan counts the full memory budget in place of the ledger's reservation.
+    let currentTokens = lookahead ? ledger.current - ledger.reservation.tokens + ledger.memoryTokens : ledger.current;
     let startIdx = prepared.startIdx;
 
     const finish = (stopReason: HypaV3StopReason, error?: string): HypaV3Plan => ({
@@ -458,8 +564,12 @@ export async function planHypaV3Summaries(prepared: HypaV3Prepared): Promise<Hyp
     });
 
     // If summarization is needed
-    const summarizationMode = currentTokens > maxContextTokens;
-    const targetTokens = maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const summarizationMode = lookahead
+        ? currentTokens > maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)
+        : currentTokens > maxContextTokens;
+    const targetTokens = lookahead
+        ? Math.max(0, maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM - settings.extraSummarizationRatio))
+        : maxContextTokens * (1 - settings.extraSummarizationRatio);
 
     if (!summarizationMode) {
         return finish("notNeeded");
@@ -471,7 +581,8 @@ export async function planHypaV3Summaries(prepared: HypaV3Prepared): Promise<Hyp
         }
 
         if (chats.length - startIdx <= settings.queryChatCount) {
-            if (currentTokens <= maxContextTokens) {
+            // Lookahead: the protected tail is a normal end, even over the context.
+            if (lookahead || currentTokens <= maxContextTokens) {
                 return finish("tailReached");
             }
             return finish(
@@ -552,6 +663,7 @@ export function emptyHypaV3Execution(prepared: HypaV3Prepared): HypaV3ExecutionR
         currentTokens: prepared.ledger.current,
         cursor: prepared.startIdx,
         data: { ...prepared.data, summaries: [...prepared.data.summaries] },
+        baseline: prepared.snapshot,
     };
 }
 
@@ -578,13 +690,18 @@ function acceptWindow(state: HypaV3ExecutionState, executed: HypaV3ExecutedWindo
 /**
  * Summarizes a plan's windows: standard one window after another, ending at the first failure;
  * experimental every window as one rate-limited batch, keeping the consecutive successes from the
- * first window.
+ * first window. With `hooks`, each window is validated and its summary saved before it is accepted
+ * (`executeWithHooks`).
  */
 export async function executeHypaV3Plan(
     host: MemoryHost,
     prepared: HypaV3Prepared,
     plan: HypaV3Plan,
+    hooks?: HypaV3ExecutionHooks,
 ): Promise<HypaV3ExecutionResult> {
+    if (hooks) {
+        return executeWithHooks(host, prepared, plan, hooks);
+    }
     if (prepared.implementation === "experimental") {
         return executeExperimental(host, prepared, plan);
     }
@@ -668,10 +785,7 @@ async function executeExperimental(
         });
     }
 
-    // Note:
-    // We can't save some successful summaries to the DB temporarily
-    // because don't know the actual summarization model name.
-    // It is possible that the user can change the summarization model.
+    // The legacy batch deliberately defers acceptance until every request has settled.
     let batchIndex = 0;
     let failure: { failedWindow: number; error: string } | undefined;
 
@@ -703,28 +817,400 @@ async function executeExperimental(
     return failure ? { ...state, endReason: "providerFailed", ...failure } : state;
 }
 
+/** Where an execution with hooks ended before its plan did. */
+type HypaV3EarlyEnd =
+    | { endReason: "stopped" }
+    | { endReason: "writeSkipped" | "sourceInvalid"; window: number }
+    | { endReason: "providerFailed"; failedWindow: number; error: string };
+
+/** A queued experimental request that did not start: the execution had stopped or ended. */
+class RequestNotStarted extends Error {}
+
+/** A queued control hook's exception, kept separate from provider failures. */
+class RequestHookError extends Error {
+    constructor(cause: unknown) {
+        super("The pre-request hook failed", { cause });
+    }
+}
+
+/**
+ * A checkpoint's candidate: the prepared data with `summaries`, serialized and independent of the
+ * prepared state. The metrics read with the snapshot index its summaries: they are moved to the same
+ * summaries in the candidate, so a write of the candidate as it is never selects another summary.
+ */
+function checkpointCandidate(prepared: HypaV3Prepared, summaries: readonly Summary[]): SerializableHypaV3Data {
+    const candidate = structuredClone(toSerializableHypaV3Data({ ...prepared.data, summaries: [...summaries] }));
+    if (candidate.metrics) {
+        candidate.metrics = remapHypaV3MetricsByIdentity(
+            candidate.metrics,
+            prepared.snapshot?.summaries ?? [],
+            candidate.summaries,
+        );
+    }
+    return candidate;
+}
+
+/**
+ * `mergeHypaV3Write(baseline, candidate, stored, false)`, with a stored `null` (a chat without memory
+ * data) compared as the job's write compares it: equal to a `null` baseline, else a skip.
+ */
+function mergeCheckpoint(
+    baseline: SerializableHypaV3Data | null | undefined,
+    candidate: SerializableHypaV3Data,
+    stored: SerializableHypaV3Data | null | undefined,
+): SerializableHypaV3Data | null {
+    if (baseline === null || stored === null) {
+        return baseline === stored ? candidate : null;
+    }
+    return mergeHypaV3Write(baseline, candidate, stored, false);
+}
+
+/**
+ * Revalidates the accepted prefix and executed window and saves its summary: a failed validation ends with
+ * `sourceInvalid`, a refused checkpoint with `writeSkipped`; otherwise the window is accepted (a
+ * window without a summary needs no checkpoint) and the committed candidate is the next baseline.
+ */
+function settleWindow(
+    host: MemoryHost,
+    prepared: HypaV3Prepared,
+    state: HypaV3ExecutionState,
+    hooks: HypaV3ExecutionHooks,
+    progress: { saved: number; total: number },
+    index: number,
+    executed: HypaV3ExecutedWindow,
+): HypaV3EarlyEnd | undefined {
+    if (hooks.validate) {
+        for (let i = 0; i <= state.completed.length; i++) {
+            const valid = hooks.validate((state.completed[i] ?? executed).window);
+            host.fence();
+            if (!valid) {
+                const retained = state.completed.slice(0, i);
+                // Rewind whole windows, even an accepted token-only window or a committed window
+                // whose trailing excluded entries changed. Storage remains the caller's; retain
+                // its last committed baseline, but expose only the still-valid prefix as execution.
+                Object.assign(state, emptyHypaV3Execution(prepared), { baseline: state.baseline });
+                for (const prior of retained) {
+                    state.completed.push(prior);
+                    acceptWindow(state, prior);
+                }
+                return { endReason: "sourceInvalid", window: i };
+            }
+        }
+    }
+    if (executed.summary && hooks.checkpoint) {
+        const candidate = checkpointCandidate(prepared, [...state.data.summaries, executed.summary]);
+        const baseline = state.baseline;
+        const outcome = hooks.checkpoint({
+            candidate,
+            baseline,
+            merge: (stored) => mergeCheckpoint(baseline, candidate, stored),
+        });
+        if (outcome !== "committed") {
+            return { endReason: "writeSkipped", window: index };
+        }
+        state.baseline = structuredClone(candidate);
+    }
+    state.completed.push(executed);
+    acceptWindow(state, executed);
+    if (executed.summary) {
+        progress.saved++;
+        hooks.progress?.(progress.saved, progress.total);
+    }
+    return undefined;
+}
+
+/**
+ * The execution the job and the background task run: windows in plan order, each validated, saved,
+ * and accepted before the next is accepted, ending at the first failure, refusal, invalid window,
+ * or stop. Standard summarizes one window after another. Experimental keeps its rate limiter, its
+ * queue notices, and its abort listener: its requests start together (one at a time with
+ * `sequential`), their answers are taken in plan order, and when the accepted prefix ends the
+ * queued requests are cancelled and the active ones finish unsaved. An abort is thrown through
+ * `host.fence()` after every await.
+ */
+async function executeWithHooks(
+    host: MemoryHost,
+    prepared: HypaV3Prepared,
+    plan: HypaV3Plan,
+    hooks: HypaV3ExecutionHooks,
+): Promise<HypaV3ExecutionResult> {
+    const state = emptyHypaV3Execution(prepared);
+    const progress = { saved: 0, total: plan.llmCalls };
+    host.fence();
+    if (progress.total > 0) {
+        hooks.progress?.(0, progress.total);
+    }
+    host.fence();
+    const shouldStop = () => {
+        host.fence();
+        const stopped = hooks.shouldStop?.();
+        host.fence();
+        return stopped;
+    };
+
+    if (prepared.implementation === "standard" || plan.llmCalls === 0) {
+        if (prepared.implementation === "experimental" && shouldStop()) {
+            return { ...state, endReason: "stopped" };
+        }
+        for (const [index, window] of plan.windows.entries()) {
+            if (shouldStop()) {
+                return { ...state, endReason: "stopped" };
+            }
+            let summary: Summary | undefined;
+            if (window.needsLlm) {
+                let text: string;
+                try {
+                    text = await summarize(host, window.included);
+                } catch (error) {
+                    host.fence();
+                    return {
+                        ...state,
+                        endReason: "providerFailed",
+                        failedWindow: index,
+                        error: `${logPrefix} Summarization failed: ${error}`,
+                    };
+                }
+                host.fence();
+                summary = newSummary(window, text);
+            }
+            const end = settleWindow(host, prepared, state, hooks, progress, index, { window, summary });
+            host.fence();
+            if (end) {
+                return { ...state, ...end };
+            }
+        }
+        host.fence();
+        return state;
+    }
+
+    if (shouldStop()) {
+        return { ...state, endReason: "stopped" };
+    }
+    const settings = prepared.settings;
+    const rateLimiter = new TaskRateLimiter({
+        tasksPerMinute: settings.summarizationModel === "subModel" ? settings.summarizationRequestsPerMinute : 1000,
+        maxConcurrentTasks: settings.summarizationModel === "subModel" ? settings.summarizationMaxConcurrent : 1,
+    });
+    rateLimiter.taskQueueChangeCallback = () => {
+        host.progress({
+            open: true,
+            miniMsg: `${rateLimiter.queuedTaskCount}`,
+            msg: `${logPrefix} Summarizing...`,
+            subMsg: `${rateLimiter.queuedTaskCount} queued`,
+        });
+    };
+    let ended = false;
+    const request = (window: HypaV3PlannedWindow) => async () => {
+        // A queued request starts only while the execution goes on.
+        host.fence();
+        let stopped: boolean | undefined;
+        try {
+            stopped = ended || shouldStop();
+        } catch (error) {
+            throw new RequestHookError(error);
+        }
+        if (stopped) {
+            throw new RequestNotStarted("The summarization stopped before this request started");
+        }
+        return summarize(host, window.included);
+    };
+    // The requests of the windows that need one, by window index (all at once unless sequential).
+    const requests = new Map<number, Promise<TaskResult<string>>>();
+    const onAbort = () => rateLimiter.cancelPendingTasks("request aborted");
+    host.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+        if (!hooks.sequential) {
+            for (const [index, window] of plan.windows.entries()) {
+                if (window.needsLlm) {
+                    requests.set(index, rateLimiter.executeTask(request(window)));
+                }
+            }
+        }
+        for (const [index, window] of plan.windows.entries()) {
+            if (shouldStop()) {
+                return { ...state, endReason: "stopped" };
+            }
+            let summary: Summary | undefined;
+            if (window.needsLlm) {
+                const result = await (requests.get(index) ?? rateLimiter.executeTask(request(window)));
+                host.fence();
+                if (!result.success || !result.data) {
+                    if (result.error instanceof RequestHookError) {
+                        throw result.error.cause;
+                    }
+                    if (result.error instanceof RequestNotStarted) {
+                        return { ...state, endReason: "stopped" };
+                    }
+                    const errorMessage = !result.success ? result.error : "Empty summary returned";
+                    return {
+                        ...state,
+                        endReason: "providerFailed",
+                        failedWindow: index,
+                        error: `${logPrefix} Summarization failed: ${errorMessage}`,
+                    };
+                }
+                summary = newSummary(window, result.data);
+            }
+            const end = settleWindow(host, prepared, state, hooks, progress, index, { window, summary });
+            host.fence();
+            if (end) {
+                return { ...state, ...end };
+            }
+        }
+        return state;
+    } finally {
+        // Whatever ended the execution (a hook's throw included): the queued requests never start,
+        // and the active ones are awaited without being saved.
+        ended = true;
+        rateLimiter.cancelPendingTasks("summarization ended");
+        await Promise.allSettled(requests.values());
+        host.signal.removeEventListener("abort", onAbort);
+        if (progress.total > 0) {
+            host.progress({
+                open: false,
+                miniMsg: "",
+                msg: "",
+                subMsg: "",
+            });
+        }
+        host.fence();
+    }
+}
+
+export interface HypaV3SelectOptions {
+    /**
+     * Fit the prompt by dropping the history no summary covers instead of failing: the reservation
+     * is settled against the actual card, then raw history from the execution's cursor is dropped
+     * oldest first while the count is over the context, keeping the last `queryChatCount` history
+     * entries. When those and the rest of the prompt still do not fit, the selection returns
+     * `tooMuchToken` with the required count as its error.
+     */
+    trimUncovered?: { tooMuchToken: string };
+    /** Standard: the similarity correction's query to use instead of a summary request. */
+    correction?: string;
+}
+
+/** What the trimming of a selection with `trimUncovered` dropped and kept. */
+export interface HypaV3Trim {
+    /**
+     * The dropped history (the greeting and messages; examples and the new-chat marker are dropped
+     * without counting): their `tokenizeChat` total, count, and memos (the greeting's is `undefined`).
+     */
+    readonly gap: {
+        readonly tokens: number;
+        readonly messages: number;
+        readonly memos: readonly (string | undefined)[];
+    };
+    /** The kept tail: the last `count` entries of the returned chats, with their memos. */
+    readonly protected: { readonly count: number; readonly memos: readonly (string | undefined)[] };
+}
+
+/** A selection's result; `trim` and `correction` only when the selection got options. */
+export interface HypaV3Selection extends HypaV3Result {
+    trim?: HypaV3Trim;
+    /** The similarity correction's query the selection used (standard), for a later selection to reuse. */
+    correction?: string;
+}
+
 /**
  * Selects from an execution's summaries (important, recent, similar, random, as each main does),
  * releases the reservation for the actual card, and returns the prompt history from the
  * execution's cursor with the card. Records the selection in the returned memory's `metrics`
- * without changing the execution.
+ * without changing the execution. Without `options`, the mains' selection exactly (an over-context
+ * count throws; a no-summary return is not checked).
  */
 export async function selectHypaV3(
     host: MemoryHost,
     prepared: HypaV3Prepared,
     execution: HypaV3ExecutionResult,
-): Promise<HypaV3Result> {
+    options?: HypaV3SelectOptions,
+): Promise<HypaV3Selection> {
     if (prepared.implementation === "experimental") {
-        return selectExperimental(host, prepared, execution);
+        return selectExperimental(host, prepared, execution, options);
     }
-    return selectStandard(host, prepared, execution);
+    return selectStandard(host, prepared, execution, options);
+}
+
+/** Whether a prompt entry is chat history: not an example message nor a new-chat marker. */
+function isHistoryEntry(chat: OpenAIChat): boolean {
+    return !(
+        chat.name === "example_user" ||
+        chat.name === "example_assistant" ||
+        chat.memo === "NewChatExample" ||
+        chat.memo === "NewChat"
+    );
+}
+
+/**
+ * The trimming of a selection with `trimUncovered`, from `currentTokens` (the count with the actual
+ * card, the reservation released): raw history from `cursor` dropped oldest first while over the
+ * context, never the last `queryChatCount` history entries. `fits` is false when the count is still
+ * over the context with only those left.
+ */
+async function trimUncoveredHistory(
+    prepared: HypaV3Prepared,
+    cursor: number,
+    currentTokens: number,
+): Promise<{ fits: boolean; currentTokens: number; history: OpenAIChat[]; trim: HypaV3Trim }> {
+    const { settings, chats, maxContextTokens, tokenizer } = prepared;
+    const raw = chats.slice(cursor);
+    let protectedStart = raw.length;
+    for (let i = raw.length - 1, kept = 0; i >= 0 && kept < settings.queryChatCount; i--) {
+        if (isHistoryEntry(raw[i])) {
+            kept++;
+            protectedStart = i;
+        }
+    }
+
+    let dropped = 0;
+    let gapTokens = 0;
+    const gapMemos: (string | undefined)[] = [];
+    while (currentTokens > maxContextTokens && dropped < protectedStart) {
+        const entry = raw[dropped];
+        const entryTokens = await tokenizer.tokenizeChat(entry);
+        currentTokens -= entryTokens;
+        if (isHistoryEntry(entry)) {
+            gapTokens += entryTokens;
+            gapMemos.push(entry.memo);
+        }
+        dropped++;
+    }
+
+    return {
+        fits: currentTokens <= maxContextTokens,
+        currentTokens,
+        history: raw.slice(dropped),
+        trim: {
+            gap: { tokens: gapTokens, messages: gapMemos.length, memos: gapMemos },
+            protected: {
+                count: raw.length - protectedStart,
+                memos: raw.slice(protectedStart).map((chat) => chat.memo),
+            },
+        },
+    };
+}
+
+/** The error of a selection with `trimUncovered` whose protected entries do not fit. */
+function trimmedTooManyTokens(
+    prepared: HypaV3Prepared,
+    trimUncovered: { tooMuchToken: string },
+    currentTokens: number,
+    data: HypaV3Data,
+): HypaV3Selection {
+    return {
+        currentTokens,
+        chats: prepared.chats,
+        error: `${trimUncovered.tooMuchToken}\n\nRequired Tokens: ${currentTokens}`,
+        memory: toSerializableHypaV3Data(data),
+    };
 }
 
 async function selectStandard(
     host: MemoryHost,
     prepared: HypaV3Prepared,
     execution: HypaV3ExecutionResult,
-): Promise<HypaV3Result> {
+    options: HypaV3SelectOptions | undefined,
+): Promise<HypaV3Selection> {
     const db = host.db;
     const { settings, chats, maxContextTokens, tokenizer } = prepared;
     // The metrics go on a copy, so an execution can be selected from again.
@@ -737,6 +1223,24 @@ async function selectStandard(
     if (data.summaries.length === 0) {
         // Generate final memory prompt
         const memory = wrapWithXml(memoryPromptTag, "");
+
+        if (options?.trimUncovered) {
+            // The empty card in place of the reservation.
+            const trimmed = await trimUncoveredHistory(
+                prepared,
+                startIdx,
+                currentTokens - prepared.ledger.reservation.tokens + prepared.ledger.emptyMemoryTokens,
+            );
+            if (!trimmed.fits) {
+                return trimmedTooManyTokens(prepared, options.trimUncovered, trimmed.currentTokens, data);
+            }
+            return {
+                currentTokens: trimmed.currentTokens,
+                chats: [{ role: "system", content: memory, memo: "supaMemory" }, ...trimmed.history],
+                memory: toSerializableHypaV3Data(data),
+                trim: trimmed.trim,
+            };
+        }
 
         const newChats: OpenAIChat[] = [
             {
@@ -757,6 +1261,7 @@ async function selectStandard(
     const selectedSummaries: Summary[] = [];
     const randomMemoryRatio = 1 - settings.recentMemoryRatio - settings.similarMemoryRatio;
     const selectedImportantSummaries: Summary[] = [];
+    let correction: string | undefined;
 
     // Select important summaries
     {
@@ -872,7 +1377,11 @@ async function selectStandard(
             // Raw recent chat search
             const queries = recentChats.map((chat) => chat.content);
 
-            if (settings.enableSimilarityCorrection && recentChats.length > 1) {
+            if (settings.enableSimilarityCorrection && recentChats.length > 1 && options?.correction !== undefined) {
+                // A correction query made for an earlier selection of the same history
+                queries.push(options.correction);
+                correction = options.correction;
+            } else if (settings.enableSimilarityCorrection && recentChats.length > 1) {
                 // Raw + Summarized recent chat search
                 // Summarizing is meaningful when there are more than 2 recent chats
 
@@ -882,6 +1391,7 @@ async function selectStandard(
                     const summarizeResult = await summarize(host, recentChats);
 
                     queries.push(summarizeResult);
+                    correction = summarizeResult;
                 } catch (error) {
                     host.fence();
                     return {
@@ -987,7 +1497,15 @@ async function selectStandard(
 
     currentTokens += realMemoryTokens;
 
-    if (currentTokens > maxContextTokens) {
+    let history = chats.slice(startIdx);
+    let trim: HypaV3Trim | undefined;
+    if (options?.trimUncovered) {
+        const trimmed = await trimUncoveredHistory(prepared, startIdx, currentTokens);
+        if (!trimmed.fits) {
+            return trimmedTooManyTokens(prepared, options.trimUncovered, trimmed.currentTokens, data);
+        }
+        ({ currentTokens, history, trim } = trimmed);
+    } else if (currentTokens > maxContextTokens) {
         throw new Error(
             `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`,
         );
@@ -1015,13 +1533,15 @@ async function selectStandard(
             content: memory,
             memo: "supaMemory",
         },
-        ...chats.slice(startIdx),
+        ...history,
     ];
 
     return {
         currentTokens,
         chats: newChats,
         memory: toSerializableHypaV3Data(data),
+        ...(trim ? { trim } : {}),
+        ...(options && correction !== undefined ? { correction } : {}),
     };
 }
 
@@ -1029,7 +1549,8 @@ async function selectExperimental(
     host: MemoryHost,
     prepared: HypaV3Prepared,
     execution: HypaV3ExecutionResult,
-): Promise<HypaV3Result> {
+    options: HypaV3SelectOptions | undefined,
+): Promise<HypaV3Selection> {
     const { settings, chats, maxContextTokens, tokenizer } = prepared;
     // The metrics go on a copy, so an execution can be selected from again.
     const data: HypaV3Data = { ...execution.data };
@@ -1039,6 +1560,24 @@ async function selectExperimental(
 
     // Early return if no summaries
     if (data.summaries.length === 0) {
+        if (options?.trimUncovered) {
+            // No card: the reservation is released.
+            const trimmed = await trimUncoveredHistory(
+                prepared,
+                startIdx,
+                currentTokens - prepared.ledger.reservation.tokens,
+            );
+            if (!trimmed.fits) {
+                return trimmedTooManyTokens(prepared, options.trimUncovered, trimmed.currentTokens, data);
+            }
+            return {
+                currentTokens: trimmed.currentTokens,
+                chats: trimmed.history,
+                memory: toSerializableHypaV3Data(data),
+                trim: trimmed.trim,
+            };
+        }
+
         const newChats: OpenAIChat[] = chats.slice(startIdx);
 
         return {
@@ -1301,7 +1840,15 @@ async function selectExperimental(
 
     currentTokens += realMemoryTokens;
 
-    if (currentTokens > maxContextTokens) {
+    let history = chats.slice(startIdx);
+    let trim: HypaV3Trim | undefined;
+    if (options?.trimUncovered) {
+        const trimmed = await trimUncoveredHistory(prepared, startIdx, currentTokens);
+        if (!trimmed.fits) {
+            return trimmedTooManyTokens(prepared, options.trimUncovered, trimmed.currentTokens, data);
+        }
+        ({ currentTokens, history, trim } = trimmed);
+    } else if (currentTokens > maxContextTokens) {
         throw new Error(
             `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`,
         );
@@ -1329,13 +1876,205 @@ async function selectExperimental(
             content: memory,
             memo: "supaMemory",
         },
-        ...chats.slice(startIdx),
+        ...history,
     ];
 
     return {
         currentTokens,
         chats: newChats,
         memory: toSerializableHypaV3Data(data),
+        ...(trim ? { trim } : {}),
+    };
+}
+
+/**
+ * Embeds the document vectors a selection with the same settings would embed for `summaries`, so
+ * that selection finds them cached: the separator split, trim, and empty-chunk filter of the
+ * selection, through the active implementation's processor (standard `HypaProcesserEx`, grouped
+ * per summary for a contextual model; experimental `HypaProcessorV2`, whose ordinary requests use
+ * its embedding rate limiter and whose contextual requests call the provider directly). Nothing
+ * when the preset selects no similar summaries. Errors are thrown.
+ */
+export async function warmHypaV3Vectors(host: MemoryHost, summaries: readonly Summary[]): Promise<void> {
+    const settings = getCurrentHypaV3Preset(host).settings;
+    if (settings.similarMemoryRatio <= 0 || summaries.length === 0) {
+        return;
+    }
+    const chunkingStartedAt = performance.now();
+    const chunksOf = async (summary: Summary) =>
+        (await splitBySeparator(host, summary.text, settings.summaryChunkSeparator, chunkingStartedAt))
+            .filter((e) => e.trim().length > 0)
+            .map((e) => e.trim());
+
+    if (!settings.useExperimentalImpl) {
+        const summaryChunks: SummaryChunk[] = [];
+        for (const summary of summaries) {
+            summaryChunks.push(...(await chunksOf(summary)).map((text) => ({ text, summary })));
+        }
+        if (summaryChunks.length === 0) {
+            return;
+        }
+        const processor = new HypaProcesserEx(host.embeddings, host.db.hypaModel);
+        await processor.addSummaryChunks(summaryChunks);
+        host.fence();
+        return;
+    }
+
+    const ebdTexts: EmbeddingText<Summary>[] = [];
+    for (const [summaryIndex, summary] of summaries.entries()) {
+        ebdTexts.push(
+            ...(await chunksOf(summary)).map((content, chunkIndex) => ({
+                id: `${summaryIndex}-${chunkIndex}`,
+                content,
+                metadata: summary,
+            })),
+        );
+    }
+    if (ebdTexts.length === 0) {
+        return;
+    }
+    const processor = new HypaProcessorV2<Summary>(host.embeddings, {
+        rateLimiter: new TaskRateLimiter({
+            tasksPerMinute: settings.embeddingRequestsPerMinute,
+            maxConcurrentTasks: settings.embeddingMaxConcurrent,
+        }),
+    });
+    await processor.addTexts(ebdTexts);
+    host.fence();
+}
+
+/**
+ * Where an entry of the processed history came from, captured from the chat snapshot it was built
+ * from (one per entry, aligned with the history the step prepares): a stored message with its id
+ * and its stored text's hash, the greeting with the chat's `fmIndex` and the greeting text's hash,
+ * or another entry (the example dialogue, the new-chat marker) with its captured memo, including
+ * an explicit `undefined` for a memo-less example.
+ */
+export type HypaV3EntrySource =
+    | { readonly kind: "message"; readonly id: string | undefined; readonly textHash: string }
+    | { readonly kind: "greeting"; readonly fmIndex: Chat["fmIndex"]; readonly textHash: string }
+    | { readonly kind: "other"; readonly memo: string | undefined };
+
+/** The chat as stored now, for a window's validation. */
+export interface HypaV3CurrentSource {
+    readonly messages: readonly Pick<Message, "chatId" | "data" | "disabled">[];
+    readonly fmIndex: Chat["fmIndex"];
+    /** The stored text of the greeting `fmIndex` selects; `undefined` without one (a group). */
+    readonly greeting: string | undefined;
+}
+
+/** The hash of a stored text that a window's validation compares. */
+export function hypaV3SourceHash(text: string): string {
+    return createHash("sha256").update(Buffer.from(text, "utf16le")).digest("base64url");
+}
+
+/**
+ * A `validate` hook: whether a window's source is unchanged in the chat `readCurrent` reads (null:
+ * the chat is gone). The chat's history is the prompt's (the greeting unless a message resets the
+ * history, then the enabled messages after the last `allBefore`). The window's history entries,
+ * after the history entry before the window (when there is one; else from the history's start),
+ * must follow one another there with nothing between them, so a message inserted or re-enabled in
+ * or right before the window fails; every scanned message needs an id and its captured text hash
+ * (summarized or not: an edit can change whether it is), and a greeting the captured `fmIndex` and
+ * text hash. Duplicate message ids fail.
+ */
+export function createHypaV3SourceValidator(
+    sources: readonly HypaV3EntrySource[],
+    readCurrent: () => HypaV3CurrentSource | null,
+): (window: HypaV3PlannedWindow) => boolean {
+    return (window) => {
+        if (
+            !Number.isInteger(window.scanStart) ||
+            !Number.isInteger(window.scanEnd) ||
+            window.scanStart < 0 ||
+            window.scanEnd < window.scanStart ||
+            window.scanEnd > sources.length ||
+            window.scannedIds.length !== window.scanEnd - window.scanStart
+        ) {
+            return false;
+        }
+        const current = readCurrent();
+        if (!current) {
+            return false;
+        }
+
+        // `makeMs` of `assemblePrompt`: the enabled messages after the last reset.
+        const active: Pick<Message, "chatId" | "data" | "disabled">[] = [];
+        let reset = false;
+        for (let i = current.messages.length - 1; i >= 0; i--) {
+            const message = current.messages[i];
+            if (message.disabled === true) {
+                continue;
+            }
+            if (message.disabled === "allBefore") {
+                reset = true;
+                break;
+            }
+            active.push(message);
+        }
+        active.reverse();
+        const greetingPosition = !reset && current.greeting !== undefined ? 0 : -1;
+        const firstMessagePosition = greetingPosition + 1;
+        const positionOf = new Map<string, number>();
+        for (const [index, message] of active.entries()) {
+            if (message.chatId === undefined) {
+                continue;
+            }
+            if (positionOf.has(message.chatId)) {
+                return false;
+            }
+            positionOf.set(message.chatId, firstMessagePosition + index);
+        }
+        const locate = (source: HypaV3EntrySource): number =>
+            source.kind === "greeting"
+                ? greetingPosition
+                : source.kind === "message" && source.id !== undefined
+                  ? (positionOf.get(source.id) ?? -1)
+                  : -1;
+
+        let expected = 0;
+        for (let i = window.scanStart - 1; i >= 0; i--) {
+            const anchor = sources[i];
+            if (anchor.kind !== "other") {
+                const position = locate(anchor);
+                if (position === -1) {
+                    return false;
+                }
+                expected = position + 1;
+                break;
+            }
+        }
+
+        for (let i = window.scanStart; i < window.scanEnd; i++) {
+            const source = sources[i];
+            const scannedId = window.scannedIds[i - window.scanStart];
+            if (source.kind === "other") {
+                if (!("memo" in source) || source.memo !== scannedId) {
+                    return false;
+                }
+                continue;
+            }
+            if (
+                source.kind === "greeting"
+                    ? scannedId !== undefined
+                    : source.id === undefined || source.id !== scannedId
+            ) {
+                return false;
+            }
+            const position = locate(source);
+            if (position !== expected) {
+                return false;
+            }
+            expected++;
+            if (source.kind === "greeting") {
+                if (current.fmIndex !== source.fmIndex || hypaV3SourceHash(current.greeting!) !== source.textHash) {
+                    return false;
+                }
+            } else if (hypaV3SourceHash(active[position - firstMessagePosition].data) !== source.textHash) {
+                return false;
+            }
+        }
+        return true;
     };
 }
 

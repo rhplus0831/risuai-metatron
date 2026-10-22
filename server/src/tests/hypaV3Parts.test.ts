@@ -4,21 +4,38 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+import {
+    mergeHypaV3SelectionWrite,
+    mergeHypaV3Write,
+    type SerializableHypaV3Data,
+    type SerializableSummary,
+} from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "../prompt/memory/host.ts";
 import {
+    createHypaV3SourceValidator,
+    emptyHypaV3Execution,
     executeHypaV3Plan,
+    HYPAV3_LOOKAHEAD_HEADROOM,
+    hypaV3SourceHash,
+    type HypaV3Checkpoint,
+    type HypaV3CurrentSource,
+    type HypaV3EntrySource,
+    type HypaV3ExecutionHooks,
     type HypaV3ExecutionResult,
     type HypaV3Plan,
+    type HypaV3PlannedWindow,
     type HypaV3Prepared,
+    type HypaV3PrepareOptions,
     type HypaV3Result,
     hypaMemoryV3,
     planHypaV3Summaries,
     prepareHypaV3,
     selectHypaV3,
+    warmHypaV3Vectors,
 } from "../prompt/memory/hypav3.ts";
 import { runRegexOp } from "../scripts/worker.ts";
 import {
@@ -31,6 +48,7 @@ import {
     type Scenario,
     scenarios,
     tokenizeChat,
+    TOO_MUCH_TOKEN,
     USER_NAME,
 } from "./fixtures/memory/scenarios.ts";
 
@@ -45,6 +63,16 @@ import {
 // window with nothing to summarize, an out-of-order batch under concurrency, the prepared state and
 // the execution staying unchanged by the later parts, the stored value's snapshot, and the count
 // subtracted one window at a time.
+//
+// The options and hooks the composition never passes (the later sections, on a flat tokenizer so the
+// counts read off the message counts): an execution with hooks saves each summary through a
+// checkpoint whose baseline is the last committed candidate (edits saved between checkpoints and a
+// task's append survive to the final selection write), skips, stops, validates the accepted prefix
+// before every save (a token-only window or a committed window's trailing entry changed meanwhile
+// ends it), keeps only experimental's consecutive prefix, never ends `complete` after an abort, and
+// lets a hook's exception through; the source validator's rules; the selection that trims the
+// uncovered history and reports the gap; the prepare without cleanup and `coverageAhead`; lookahead
+// planning; and warming the summaries' vectors.
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures/memory/algorithms.json");
 const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as { cases: Record<string, Outcome> };
@@ -637,5 +665,999 @@ describe("beyond the fixture", () => {
         expect(execution.tokenDelta).toBe(0.1 + 0.2);
         expect(execution.currentTokens).toBe(sequential);
         expect(execution.currentTokens).not.toBe(prepared.ledger.current - execution.tokenDelta);
+    });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The options and hooks
+
+const TOKENS = 10;
+/** Every entry costs the same: the counts below read off the message counts. */
+const flat: MemoryTokenizer = { tokenizeChat: async () => TOKENS };
+const EMPTY_CARD = "<Past Events Summary>\n\n</Past Events Summary>";
+const CONTEXT = 100;
+/** The standard preset of these cases: two messages per window, a two-message tail, recent selection only. */
+const HOOKED_PRESET = {
+    maxChatsPerSummary: 2,
+    queryChatCount: 2,
+    recentMemoryRatio: 1,
+    similarMemoryRatio: 0,
+    memoryTokensRatio: 0.4,
+};
+const stored = (memos: string[], text: string): SerializableSummary => ({
+    text,
+    chatMemos: memos,
+    isImportant: false,
+    tags: [],
+});
+
+type Setup = {
+    world: World;
+    host: MemoryHost;
+    controller: AbortController;
+    chats: OpenAIChat[];
+    prepared: HypaV3Prepared;
+    plan: HypaV3Plan;
+};
+
+/**
+ * A scenario prepared and planned on the flat tokenizer, with a host whose `fence` throws once its
+ * signal is aborted (the job's fence) and whose summary answers `hold` can delay.
+ */
+async function setUp(
+    scenario: Scenario,
+    options: { hold?: (index: number) => Promise<void>; prepare?: HypaV3PrepareOptions; lookahead?: boolean } = {},
+): Promise<Setup> {
+    const world = createWorld(scenario);
+    const controller = new AbortController();
+    const host: MemoryHost = {
+        ...hostOf(scenario, world, { hold: options.hold }),
+        signal: controller.signal,
+        fence: () => {
+            if (controller.signal.aborted) {
+                throw new Error("aborted by the job");
+            }
+        },
+    };
+    const chats = structuredClone(scenario.chats);
+    const outcome = await prepareHypaV3(
+        host,
+        chats,
+        scenario.currentTokens!,
+        scenario.maxContextTokens,
+        structuredClone(scenario.room) as never,
+        flat,
+        options.prepare,
+    );
+    if (!outcome.ok) throw new Error(outcome.result.error);
+    const plan = await planHypaV3Summaries(outcome.prepared, { lookahead: options.lookahead });
+    expect(plan.error).toBeUndefined();
+    return { world, host, controller, chats, prepared: outcome.prepared, plan };
+}
+
+/** A stored memory value and the checkpoint hook that writes to it through the checkpoint's merge. */
+function fakeStore(initial: SerializableHypaV3Data | null | undefined) {
+    const store = {
+        value: structuredClone(initial) as SerializableHypaV3Data | null | undefined,
+        commits: 0,
+        checkpoints: [] as HypaV3Checkpoint[],
+    };
+    const checkpoint = (write: HypaV3Checkpoint): "committed" | "skipped" => {
+        store.checkpoints.push(write);
+        const merged = write.merge(store.value);
+        if (!merged) {
+            return "skipped";
+        }
+        store.value = structuredClone(merged);
+        store.commits++;
+        return "committed";
+    };
+    return { store, checkpoint };
+}
+
+/** The chat as stored, for a validator: one message per history entry, in order. */
+type StoredMessage = { chatId: string | undefined; data: string; disabled?: boolean | "allBefore" };
+const messagesOf = (chats: OpenAIChat[]): StoredMessage[] =>
+    chats.map((chat) => ({ chatId: chat.memo, data: chat.content }));
+const messageSources = (messages: StoredMessage[]): HypaV3EntrySource[] =>
+    messages.map((message) => ({ kind: "message", id: message.chatId, textHash: hypaV3SourceHash(message.data) }));
+const currentOf = (messages: StoredMessage[], greeting?: string, fmIndex: number | undefined = -1) => ({
+    messages,
+    fmIndex,
+    greeting,
+});
+
+/** A summarizing scenario on the flat tokenizer: `n` messages, `currentTokens` incoming. */
+const flatScenario = (name: string, currentTokens: number, extra: Partial<Scenario> = {}): Scenario => ({
+    name,
+    algorithm: "v3",
+    preset: HOOKED_PRESET,
+    chats: makeChats(14),
+    room: {},
+    char: { type: "character", name: "Mira" },
+    maxContextTokens: CONTEXT,
+    currentTokens,
+    ...extra,
+});
+
+const EXPERIMENTAL_HOOKED = { ...HOOKED_PRESET, ...EXPERIMENTAL_PRESET };
+/** A budget of 30 so that 160 incoming (160 − 50 + 30 = 140) plans exactly two windows. */
+const EXPERIMENTAL_TWO_WINDOWS = { ...EXPERIMENTAL_HOOKED, memoryTokensRatio: 0.3 };
+
+/** A deferred per summary request: `release(index)` lets that answer through. */
+function holds(expected: number) {
+    const releases = new Map<number, () => void>();
+    let started: () => void = () => {};
+    const allStarted = new Promise<void>((resolve) => {
+        started = resolve;
+    });
+    const hold = (index: number) =>
+        new Promise<void>((resolve) => {
+            releases.set(index, resolve);
+            if (releases.size === expected) {
+                started();
+            }
+        });
+    const release = async (index: number) => {
+        releases.get(index)!();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    return { hold, allStarted, release };
+}
+
+describe("execution with hooks: checkpoints", () => {
+    // Three stored summaries over m0..m5 (60 tokens of prefix), 220 incoming: 220 − 50 − 60 + 40 = 150,
+    // so three windows (m6..m11) reach the 100 target.
+    const withStored = (name: string, currentTokens = 220) =>
+        flatScenario(name, currentTokens, {
+            room: {
+                hypaV3Data: {
+                    summaries: [stored(["m0", "m1"], "A"), stored(["m2", "m3"], "B"), stored(["m4", "m5"], "C")],
+                },
+            },
+        });
+
+    it("saves each summary onto the stored value through a baseline that is the last committed candidate, so edits saved between checkpoints and the selection survive the final write", async () => {
+        const scenario = withStored("v3-three-checkpoints");
+        const { world, host, prepared, plan } = await setUp(scenario);
+        expect(plan.windows.map((window) => window.needsLlm)).toEqual([true, true, true]);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        let edited = false;
+        const execution = await executeHypaV3Plan(host, prepared, plan, {
+            checkpoint: (write) => {
+                const outcome = checkpoint(write);
+                if (store.commits === 1 && !edited) {
+                    // Saved between the first and the second checkpoint: a text edit, a middle deletion,
+                    // a category, and the modal's settings.
+                    edited = true;
+                    const value = store.value!;
+                    value.summaries[0].text = "A edited";
+                    value.summaries.splice(1, 1);
+                    value.summaries[1].categoryId = "cat";
+                    value.categories = [{ id: "cat", name: "Cat" }];
+                    value.modalSettings = { displayMode: "Recent" } as never;
+                }
+                return outcome;
+            },
+        });
+        expect(execution.endReason).toBe("complete");
+        expect(store.commits).toBe(3);
+        expect(world.log.requests).toHaveLength(3);
+        const [first, second, third] = store.checkpoints;
+        expect(first.baseline).toEqual(prepared.snapshot);
+        expect(second.baseline).toEqual(first.candidate);
+        expect(third.baseline).toEqual(second.candidate);
+        expect(execution.baseline).toEqual(third.candidate);
+        // The baseline is the algorithm's own data, never the merged value: it still says "A".
+        expect(execution.baseline!.summaries.map((summary) => summary.text)).toEqual([
+            "A",
+            "B",
+            "C",
+            ...plan.windows.map((_, i) => `Summary ${i + 1}: the events so far, in short.\n\nDetail ${i + 1}.`),
+        ]);
+        expect(store.value!.summaries.map((summary) => summary.text)).toEqual([
+            "A edited",
+            "C",
+            ...execution.data.summaries.slice(3).map((summary) => summary.text),
+        ]);
+        expect(store.value!.summaries[1].categoryId).toBe("cat");
+        expect(store.value!.categories).toEqual([{ id: "cat", name: "Cat" }]);
+        expect(store.value!.modalSettings).toEqual({ displayMode: "Recent" });
+        // Adopting the merged value as the baseline would hit the fast path and write the unedited text.
+        const adopted = mergeHypaV3Write(store.value!, third.candidate, store.value!, false)!;
+        expect(adopted.summaries[0].text).toBe("A");
+
+        // The final selection write: recent selection of the three new summaries, mapped by identity.
+        const selection = await selectHypaV3(host, prepared, execution);
+        expect(selection.error).toBeUndefined();
+        expect(selection.memory!.metrics!.lastRecentSummaries).toEqual([5, 4, 3]);
+        const written = mergeHypaV3SelectionWrite(execution.baseline, selection.memory!, store.value, {
+            selectionMade: true,
+        })!;
+        expect(written.summaries.map((summary) => summary.text)).toEqual(store.value!.summaries.map((s) => s.text));
+        expect(written.summaries[0].text).toBe("A edited");
+        expect(written.summaries[1].categoryId).toBe("cat");
+        expect(written.modalSettings).toEqual({ displayMode: "Recent" });
+        expect(written.metrics!.lastRecentSummaries).toEqual([4, 3, 2]);
+    });
+
+    it("normalizes the candidate's metrics to the summaries left after the orphan cleanup, so the fast path keeps each metric on its summary", async () => {
+        // Stored [A, O (orphan), B] with important [2] (B), recent [1] (O), similar [0] (A); 190 incoming:
+        // 190 − 50 − 40 + 40 = 140, two windows.
+        const scenario = flatScenario("v3-cleanup-append-metrics", 190, {
+            room: {
+                hypaV3Data: {
+                    summaries: [stored(["m0", "m1"], "A"), stored(["gone-1"], "O"), stored(["m2", "m3"], "B")],
+                    metrics: {
+                        lastImportantSummaries: [2],
+                        lastRecentSummaries: [1],
+                        lastSimilarSummaries: [0],
+                        lastRandomSummaries: [],
+                    },
+                },
+            },
+        });
+        const { host, prepared, plan } = await setUp(scenario);
+        expect(prepared.data.summaries.map((summary) => summary.text)).toEqual(["A", "B"]);
+        expect(plan.windows).toHaveLength(2);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const execution = await executeHypaV3Plan(host, prepared, plan, { checkpoint });
+        expect(execution.endReason).toBe("complete");
+        const [first] = store.checkpoints;
+        expect(first.candidate.summaries.map((summary) => summary.text)).toEqual(["A", "B", expect.any(String)]);
+        expect(first.candidate.metrics).toEqual({
+            lastImportantSummaries: [1],
+            lastRecentSummaries: [],
+            lastSimilarSummaries: [0],
+            lastRandomSummaries: [],
+        });
+        // Unchanged since the read: the candidate is written as it is, with the moved metrics.
+        expect(first.merge(prepared.snapshot)).toBe(first.candidate);
+        expect(store.value!.metrics).toEqual(first.candidate.metrics);
+        // The prepared and execution state keep the metrics as read.
+        expect(prepared.data.metrics!.lastImportantSummaries).toEqual([2]);
+        expect(execution.data.metrics!.lastImportantSummaries).toEqual([2]);
+    });
+
+    it("a refused checkpoint ends with writeSkipped: the window is not accepted and no later request is made", async () => {
+        // 190 incoming, no summaries: 190 − 50 + 40 = 180, four windows.
+        const { world, host, prepared, plan } = await setUp(flatScenario("v3-write-skipped", 190));
+        expect(plan.windows).toHaveLength(4);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const progress: [number, number][] = [];
+        const execution = await executeHypaV3Plan(host, prepared, plan, {
+            checkpoint: (write) => (store.commits === 1 ? "skipped" : checkpoint(write)),
+            progress: (done, total) => progress.push([done, total]),
+        });
+        expect(execution.endReason).toBe("writeSkipped");
+        if (execution.endReason !== "writeSkipped") throw new Error("unreachable");
+        expect(execution.window).toBe(1);
+        expect(execution.accepted).toBe(1);
+        expect(execution.completed.map((executed) => executed.window)).toEqual([plan.windows[0]]);
+        expect(execution.cursor).toBe(plan.windows[0].scanEnd);
+        expect(execution.data.summaries).toHaveLength(1);
+        expect(execution.baseline).toEqual(store.checkpoints[0].candidate);
+        expect(store.commits).toBe(1);
+        expect(world.log.requests).toHaveLength(2);
+        expect(progress).toEqual([
+            [0, 4],
+            [1, 4],
+        ]);
+    });
+
+    const stopCases = [
+        { label: "standard", algorithm: "v3", preset: HOOKED_PRESET, sequential: false },
+        { label: "experimental (sequential)", algorithm: "v3exp", preset: EXPERIMENTAL_HOOKED, sequential: true },
+    ] as const;
+    for (const { label, algorithm, preset, sequential } of stopCases) {
+        it(`${label}: shouldStop after window 2 of 4 leaves two saved summaries and the cursor after window 2`, async () => {
+            const scenario = flatScenario(`${algorithm}-stop-after-two`, 190, { algorithm, preset });
+            const { world, host, prepared, plan } = await setUp(scenario);
+            expect(plan.windows).toHaveLength(4);
+            expect(plan.llmCalls).toBe(4);
+            const { store, checkpoint } = fakeStore(prepared.snapshot);
+            const execution = await executeHypaV3Plan(host, prepared, plan, {
+                checkpoint,
+                shouldStop: () => store.commits >= 2,
+                sequential,
+            });
+            expect(execution.endReason).toBe("stopped");
+            expect(execution.accepted).toBe(2);
+            expect(execution.cursor).toBe(plan.windows[1].scanEnd);
+            expect(execution.data.summaries).toHaveLength(2);
+            expect(store.commits).toBe(2);
+            expect(store.value!.summaries).toHaveLength(2);
+            expect(world.log.requests).toHaveLength(2);
+            if (prepared.implementation === "experimental") {
+                expect(world.log.progress.at(-1)).toEqual({ open: false, miniMsg: "", msg: "", subMsg: "" });
+            }
+        });
+    }
+});
+
+describe("execution with hooks: source validation", () => {
+    /** The validator over the scenario's chats as the stored messages, which the test can change. */
+    const validatorOf = (chats: OpenAIChat[]) => {
+        const messages = messagesOf(chats);
+        return { messages, validate: createHypaV3SourceValidator(messageSources(messages), () => currentOf(messages)) };
+    };
+
+    it("revalidates an accepted token-only window before a later checkpoint: a message edited after its acceptance ends with sourceInvalid and nothing saved", async () => {
+        // One message per window, user messages left out of the summaries: window 1 (m0, a user message)
+        // needs no request, window 2 (m1) does. 150 incoming: 150 − 50 + 40 = 140, four windows.
+        const scenario = flatScenario("v3-token-only-then-edit", 150, {
+            preset: { ...HOOKED_PRESET, maxChatsPerSummary: 1, doNotSummarizeUserMessage: true },
+            chats: makeChats(8),
+        });
+        const { messages, validate } = validatorOf(scenario.chats);
+        const { world, host, prepared, plan } = await setUp(scenario, {
+            // While window 2's summary request waits, the message of window 1 gets other text.
+            hold: async () => {
+                messages[0].data = "Message 0, rewritten after the window passed.";
+            },
+        });
+        expect(plan.windows.map((window) => window.needsLlm)).toEqual([false, true, false, true]);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const execution = await executeHypaV3Plan(host, prepared, plan, { checkpoint, validate });
+        expect(execution.endReason).toBe("sourceInvalid");
+        if (execution.endReason !== "sourceInvalid") throw new Error("unreachable");
+        expect(execution.window).toBe(0);
+        expect(execution.accepted).toBe(0);
+        expect(execution.completed).toEqual([]);
+        expect(execution.cursor).toBe(prepared.startIdx);
+        expect(execution.data.summaries).toEqual([]);
+        expect(store.checkpoints).toHaveLength(0);
+        expect(store.value).toEqual(prepared.snapshot);
+        expect(world.log.requests).toHaveLength(1);
+    });
+
+    it("a committed window's trailing excluded entry changed before the next checkpoint ends with sourceInvalid: the stored summary stays, the execution rewinds", async () => {
+        // Window 1 scans m0 and a blank m1 and summarizes m0 alone; m1 gets text while window 2 waits.
+        const chats = makeChats(14);
+        chats[1].content = "";
+        const scenario = flatScenario("v3-trailing-blank-edited", 190, { chats });
+        const { messages, validate } = validatorOf(scenario.chats);
+        const { world, host, prepared, plan } = await setUp(scenario, {
+            hold: async (index) => {
+                if (index === 1) {
+                    messages[1].data = "Message 1, no longer blank.";
+                }
+            },
+        });
+        expect(plan.windows[0].includedMemos).toEqual(["m0"]);
+        expect(plan.windows[0].scannedIds).toEqual(["m0", "m1"]);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const execution = await executeHypaV3Plan(host, prepared, plan, { checkpoint, validate });
+        expect(execution.endReason).toBe("sourceInvalid");
+        if (execution.endReason !== "sourceInvalid") throw new Error("unreachable");
+        expect(execution.window).toBe(0);
+        expect(store.commits).toBe(1);
+        expect(store.value!.summaries.map((summary) => summary.chatMemos)).toEqual([["m0"]]);
+        expect(execution.baseline).toEqual(store.checkpoints[0].candidate);
+        expect(execution.accepted).toBe(0);
+        expect(execution.cursor).toBe(0);
+        expect(execution.data.summaries).toEqual([]);
+        expect(world.log.requests).toHaveLength(2);
+    });
+
+    it("experimental: a later window answered first is never saved when an earlier window's message was deleted", async () => {
+        // Two windows requested together (160 incoming: 160 − 50 + 30 = 140); m1 is deleted while both
+        // wait, window 2 answers first.
+        const scenario = flatScenario("v3exp-deleted-under-concurrency", 160, {
+            algorithm: "v3exp",
+            preset: { ...EXPERIMENTAL_TWO_WINDOWS, summarizationMaxConcurrent: 2 },
+        });
+        const { messages, validate } = validatorOf(scenario.chats);
+        const { hold, allStarted, release } = holds(2);
+        const { world, host, prepared, plan } = await setUp(scenario, { hold });
+        expect(plan.windows.map((window) => window.scannedIds)).toEqual([
+            ["m0", "m1"],
+            ["m2", "m3"],
+        ]);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const running = executeHypaV3Plan(host, prepared, plan, { checkpoint, validate });
+        await allStarted;
+        messages.splice(1, 1);
+        await release(1);
+        await release(0);
+        const execution = await running;
+        expect(execution.endReason).toBe("sourceInvalid");
+        if (execution.endReason !== "sourceInvalid") throw new Error("unreachable");
+        expect(execution.window).toBe(0);
+        expect(execution.accepted).toBe(0);
+        expect(execution.data.summaries).toEqual([]);
+        expect(store.checkpoints).toHaveLength(0);
+        expect(world.log.requests).toHaveLength(2);
+        expect(world.log.progress.at(-1)).toEqual({ open: false, miniMsg: "", msg: "", subMsg: "" });
+    });
+
+    describe("the validator", () => {
+        const greeting = "Hello there, traveler.";
+        /** The greeting, then six messages; a window scanning `[start, end)` of them. */
+        const history = () => {
+            const chats: OpenAIChat[] = [{ role: "assistant", content: greeting }, ...makeChats(6)];
+            const messages = messagesOf(chats.slice(1));
+            const sources: HypaV3EntrySource[] = [
+                { kind: "greeting", fmIndex: -1, textHash: hypaV3SourceHash(greeting) },
+                ...messageSources(messages),
+            ];
+            const current: HypaV3CurrentSource = currentOf(messages, greeting);
+            const windowOf = (scanStart: number, scanEnd: number, over = chats): HypaV3PlannedWindow => ({
+                scanStart,
+                scanEnd,
+                scannedIds: over.slice(scanStart, scanEnd).map((chat) => chat.memo),
+                included: [],
+                includedMemos: [],
+                removedTokens: 0,
+                needsLlm: true,
+            });
+            return { chats, messages, sources, current, windowOf };
+        };
+
+        it("accepts an unchanged window with the greeting and rejects a changed greeting, index, or edited message", () => {
+            const { messages, sources, current, windowOf } = history();
+            const validate = createHypaV3SourceValidator(sources, () => current);
+            expect(validate(windowOf(0, 3))).toBe(true);
+            expect(validate(windowOf(3, 5))).toBe(true);
+            expect(createHypaV3SourceValidator(sources, () => ({ ...current, greeting: "Hi." }))(windowOf(0, 3))).toBe(
+                false,
+            );
+            expect(createHypaV3SourceValidator(sources, () => ({ ...current, fmIndex: 0 }))(windowOf(0, 3))).toBe(
+                false,
+            );
+            // A window after the greeting does not read it; one anchored on the greeting needs it.
+            expect(createHypaV3SourceValidator(sources, () => ({ ...current, fmIndex: 0 }))(windowOf(3, 5))).toBe(true);
+            const noGreeting = createHypaV3SourceValidator(sources, () => ({ ...current, greeting: undefined }));
+            expect(noGreeting(windowOf(3, 5))).toBe(true);
+            expect(noGreeting(windowOf(1, 3))).toBe(false);
+            // An edit inside the window fails, outside it does not; a blank message's edit counts too.
+            const edited = messages.map((message) => ({ ...message }));
+            edited[3].data = "Message 2, rewritten.";
+            const validateEdited = createHypaV3SourceValidator(sources, () => currentOf(edited, greeting));
+            expect(validateEdited(windowOf(3, 5))).toBe(false);
+            expect(validateEdited(windowOf(0, 3))).toBe(true);
+            // The chat is gone.
+            expect(createHypaV3SourceValidator(sources, () => null)(windowOf(0, 3))).toBe(false);
+        });
+
+        it("rejects a message inserted, deleted, re-enabled, or duplicated in or right before the window, not one before its anchor", () => {
+            const { messages, sources, current, windowOf } = history();
+            // Inserted between m2 and m3: inside the window scanning them, right before the window
+            // starting at m3, and of no concern to the windows before it.
+            const inserted = [...messages.slice(0, 3), { chatId: "x", data: "inserted" }, ...messages.slice(3)];
+            const withInsertion = createHypaV3SourceValidator(sources, () => currentOf(inserted, greeting));
+            expect(withInsertion(windowOf(3, 5))).toBe(false);
+            expect(withInsertion(windowOf(4, 6))).toBe(false);
+            expect(withInsertion(windowOf(0, 3))).toBe(true);
+            expect(withInsertion(windowOf(5, 7))).toBe(true);
+            const deleted = messages.filter((message) => message.chatId !== "m3");
+            expect(createHypaV3SourceValidator(sources, () => currentOf(deleted, greeting))(windowOf(3, 5))).toBe(
+                false,
+            );
+            // A message disabled at the capture was not an entry; enabling it inserts one.
+            const disabled = [
+                ...messages.slice(0, 3),
+                { chatId: "d", data: "hidden", disabled: true },
+                ...messages.slice(3),
+            ];
+            expect(createHypaV3SourceValidator(sources, () => currentOf(disabled, greeting))(windowOf(3, 5))).toBe(
+                true,
+            );
+            disabled[3].disabled = false;
+            expect(createHypaV3SourceValidator(sources, () => currentOf(disabled, greeting))(windowOf(3, 5))).toBe(
+                false,
+            );
+            const duplicated = [...messages, { ...messages[2] }];
+            expect(createHypaV3SourceValidator(sources, () => currentOf(duplicated, greeting))(windowOf(3, 5))).toBe(
+                false,
+            );
+            // A deletion before the anchor leaves the window's interval as it was.
+            const earlier = messages.filter((message) => message.chatId !== "m0");
+            expect(createHypaV3SourceValidator(sources, () => currentOf(earlier, greeting))(windowOf(3, 5))).toBe(true);
+            expect(current.messages).toHaveLength(6);
+        });
+
+        it("follows a history reset: the entries after the last `allBefore` start the history, without the greeting", () => {
+            const { messages, windowOf } = history();
+            const reset: StoredMessage[] = [
+                ...messages.slice(0, 2),
+                { chatId: "r", data: "reset", disabled: "allBefore" },
+                ...messages.slice(2),
+            ];
+            // Captured after the reset: the history is m2..m5, no greeting.
+            const chats = makeChats(6).slice(2);
+            const sources = messageSources(messagesOf(chats));
+            const validate = createHypaV3SourceValidator(sources, () => currentOf(reset, greeting));
+            expect(validate(windowOf(0, 2, chats))).toBe(true);
+            // The reset undone: the greeting and two messages come before the window's first entry.
+            reset[2].disabled = undefined;
+            expect(validate(windowOf(0, 2, chats))).toBe(false);
+        });
+
+        it("rejects sources misaligned with the window, a message without an id, and keeps example entries by their memo", () => {
+            const { sources, current, windowOf } = history();
+            const validate = createHypaV3SourceValidator(sources, () => current);
+            expect(validate({ ...windowOf(0, 3), scannedIds: [undefined, "m0"] })).toBe(false);
+            expect(validate({ ...windowOf(0, 3), scannedIds: ["m0", "m0", "m1"] })).toBe(false);
+            expect(validate(windowOf(5, 8))).toBe(false);
+            expect(createHypaV3SourceValidator(sources.slice(0, 2), () => current)(windowOf(0, 3))).toBe(false);
+            // An example and the new-chat marker before the history: entries without a stored message.
+            const prelude: OpenAIChat[] = [
+                { role: "user", name: "example_user", content: "An example." },
+                { role: "system", content: "[Start a new chat]", memo: "NewChat" },
+            ];
+            const chats = [...prelude, ...makeChats(4)];
+            const messages = messagesOf(chats.slice(2));
+            const preludeSources: HypaV3EntrySource[] = [
+                { kind: "other", memo: undefined },
+                { kind: "other", memo: "NewChat" },
+                ...messageSources(messages),
+            ];
+            const withPrelude = createHypaV3SourceValidator(preludeSources, () => currentOf(messages));
+            expect(withPrelude(windowOf(0, 4, chats))).toBe(true);
+            expect(withPrelude({ ...windowOf(0, 4, chats), scannedIds: [undefined, undefined, "m0", "m1"] })).toBe(
+                false,
+            );
+            const noId = createHypaV3SourceValidator(
+                [...preludeSources.slice(0, 2), { kind: "message", id: undefined, textHash: hypaV3SourceHash("x") }],
+                () => currentOf([{ chatId: undefined, data: "x" }]),
+            );
+            expect(noId({ ...windowOf(0, 3, chats), scannedIds: [undefined, "NewChat", undefined] })).toBe(false);
+        });
+
+        it("hashes the stored text by its UTF-16 code units, so lone surrogates differ", () => {
+            expect(hypaV3SourceHash("\ud800")).not.toBe(hypaV3SourceHash("\ud801"));
+            expect(hypaV3SourceHash("same")).toBe(hypaV3SourceHash("same"));
+        });
+    });
+});
+
+describe("execution with hooks: experimental concurrency, aborts, and hook exceptions", () => {
+    it("experimental: out-of-order answers save only the consecutive prefix before a failure", async () => {
+        // Three windows requested together (170 incoming: 170 − 50 + 40 = 160); the answers arrive
+        // third, first, then the failing second.
+        const scenario = flatScenario("v3exp-prefix-under-failure", 170, {
+            algorithm: "v3exp",
+            preset: { ...EXPERIMENTAL_HOOKED, summarizationMaxConcurrent: 3 },
+            summaries: ["Batch summary one.", { fail: "the summary model is down" }, "Batch summary three."],
+        });
+        const { hold, allStarted, release } = holds(3);
+        const { world, host, prepared, plan } = await setUp(scenario, { hold });
+        expect(plan.llmCalls).toBe(3);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const running = executeHypaV3Plan(host, prepared, plan, { checkpoint });
+        await allStarted;
+        expect(store.commits).toBe(0);
+        await release(2);
+        expect(store.commits).toBe(0);
+        await release(0);
+        expect(store.commits).toBe(1);
+        await release(1);
+        const execution = await running;
+        expect(execution.endReason).toBe("providerFailed");
+        if (execution.endReason !== "providerFailed") throw new Error("unreachable");
+        expect(execution.failedWindow).toBe(1);
+        expect(execution.accepted).toBe(1);
+        expect(execution.completed.map((executed) => executed.summary?.text)).toEqual(["Batch summary one."]);
+        expect(store.value!.summaries.map((summary) => summary.text)).toEqual(["Batch summary one."]);
+        expect(store.checkpoints).toHaveLength(1);
+        expect(world.log.requests).toHaveLength(3);
+        expect(world.log.progress.at(-1)).toEqual({ open: false, miniMsg: "", msg: "", subMsg: "" });
+    });
+
+    it("experimental: a plan without summary requests runs without the rate limiter and emits no queue notice", async () => {
+        // Only user messages, left out of the summaries: one window that moves the cursor. The limiter
+        // settings would be refused if one were constructed.
+        const scenario = flatScenario("v3exp-token-only-plan", 160, {
+            algorithm: "v3exp",
+            preset: {
+                ...EXPERIMENTAL_HOOKED,
+                doNotSummarizeUserMessage: true,
+                summarizationRequestsPerMinute: 1,
+                summarizationMaxConcurrent: 2,
+            },
+            chats: makeChats(8).map((chat) => ({ ...chat, role: "user" as const })),
+        });
+        const { world, host, prepared, plan } = await setUp(scenario);
+        expect(plan.windows.map((window) => window.needsLlm)).toEqual([false]);
+        const progress: [number, number][] = [];
+        const execution = await executeHypaV3Plan(host, prepared, plan, {
+            checkpoint: () => "committed",
+            progress: (done, total) => progress.push([done, total]),
+        });
+        expect(execution.endReason).toBe("complete");
+        expect(execution.accepted).toBe(1);
+        expect(execution.cursor).toBe(plan.windows[0].scanEnd);
+        expect(world.log.progress).toEqual([]);
+        expect(world.log.requests).toEqual([]);
+        expect(progress).toEqual([]);
+    });
+
+    it("standard: an abort raised from a hook is thrown, never returned as complete, and the saved summaries stay", async () => {
+        // One message per window, user messages left out: window 1 (an assistant message) is summarized,
+        // window 2 (a user message) only moves the cursor; the progress hook aborts after the first save.
+        const chats = makeChats(8).map((chat, i) => ({
+            ...chat,
+            role: i % 2 === 0 ? ("assistant" as const) : ("user" as const),
+        }));
+        const scenario = flatScenario("v3-abort-from-progress", 150, {
+            preset: { ...HOOKED_PRESET, maxChatsPerSummary: 1, doNotSummarizeUserMessage: true },
+            chats,
+        });
+        const { world, host, controller, prepared, plan } = await setUp(scenario);
+        expect(plan.windows.map((window) => window.needsLlm)).toEqual([true, false, true, false]);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        await expect(
+            executeHypaV3Plan(host, prepared, plan, {
+                checkpoint,
+                progress: (done) => {
+                    if (done === 1) {
+                        controller.abort();
+                    }
+                },
+            }),
+        ).rejects.toThrow("aborted by the job");
+        expect(store.commits).toBe(1);
+        expect(world.log.requests).toHaveLength(1);
+
+        // An already-aborted execution makes no request.
+        const again = await setUp(scenario);
+        again.controller.abort();
+        await expect(executeHypaV3Plan(again.host, again.prepared, again.plan, { checkpoint })).rejects.toThrow(
+            "aborted by the job",
+        );
+        expect(again.world.log.requests).toHaveLength(0);
+
+        // An abort from the last window's save, with no window left to start: thrown all the same.
+        const lastIsSummary = await setUp({
+            ...scenario,
+            name: "v3-abort-from-last-progress",
+            chats: chats.map((chat, i) => ({
+                ...chat,
+                role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+            })),
+        });
+        expect(lastIsSummary.plan.windows.map((window) => window.needsLlm)).toEqual([false, true, false, true]);
+        const last = fakeStore(lastIsSummary.prepared.snapshot);
+        await expect(
+            executeHypaV3Plan(lastIsSummary.host, lastIsSummary.prepared, lastIsSummary.plan, {
+                checkpoint: last.checkpoint,
+                progress: (done) => {
+                    if (done === 2) {
+                        lastIsSummary.controller.abort();
+                    }
+                },
+            }),
+        ).rejects.toThrow("aborted by the job");
+        expect(last.store.commits).toBe(2);
+        expect(lastIsSummary.world.log.requests).toHaveLength(2);
+    });
+
+    it("experimental: a shouldStop hook that throws inside a queued request propagates its own exception and leaves the notice closed", async () => {
+        // Two windows requested together (160 incoming). The hook is read before the requests are
+        // submitted, then at the start of each queued request: the third reading (window 2's start) throws.
+        const scenario = flatScenario("v3exp-stop-hook-throws", 160, {
+            algorithm: "v3exp",
+            preset: { ...EXPERIMENTAL_TWO_WINDOWS, summarizationMaxConcurrent: 2 },
+        });
+        const { world, host, prepared, plan } = await setUp(scenario);
+        expect(plan.llmCalls).toBe(2);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        let readings = 0;
+        await expect(
+            executeHypaV3Plan(host, prepared, plan, {
+                checkpoint,
+                shouldStop: () => {
+                    readings++;
+                    if (readings === 3) {
+                        throw new Error("stop hook broke");
+                    }
+                    return false;
+                },
+            }),
+        ).rejects.toThrow("stop hook broke");
+        expect(store.commits).toBe(1);
+        expect(world.log.requests).toHaveLength(1);
+        expect(world.log.progress.at(-1)).toEqual({ open: false, miniMsg: "", msg: "", subMsg: "" });
+    });
+});
+
+describe("selection with trimUncovered", () => {
+    const trimUncovered = { tooMuchToken: TOO_MUCH_TOKEN };
+    /** The cost of a multimodal entry on top of its text. */
+    const withImages: MemoryTokenizer = {
+        tokenizeChat: async (chat) => TOKENS + (chat.multimodals?.length ?? 0) * 25,
+    };
+    const selectOnly = async (scenario: Scenario, tokenizer: MemoryTokenizer = flat) => {
+        const world = createWorld(scenario);
+        const host = hostOf(scenario, world);
+        const chats = structuredClone(scenario.chats);
+        const outcome = await prepareHypaV3(
+            host,
+            chats,
+            scenario.currentTokens!,
+            scenario.maxContextTokens,
+            structuredClone(scenario.room) as never,
+            tokenizer,
+        );
+        if (!outcome.ok) throw new Error(outcome.result.error);
+        const prepared = outcome.prepared;
+        const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared), { trimUncovered });
+        return { world, host, prepared, selection };
+    };
+
+    it("standard: drops the uncovered history oldest first, keeps the last queryChatCount entries, and reports the dropped entries' tokens as the gap", async () => {
+        // Eight messages, the second with an image (35 tokens). 200 incoming: 200 − 50 = 150, over the
+        // context with the empty card, so the full budget (20) is reserved: 170. Settled against the
+        // empty card: 160; m0..m3 go (10 + 35 + 10 + 10) until 95 fits.
+        const chats = makeChats(8);
+        chats[1].multimodals = [{ type: "image", base64: "" }];
+        const scenario = flatScenario("v3-trim-standard", 200, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2 },
+            chats,
+        });
+        const { selection, prepared } = await selectOnly(scenario, withImages);
+        expect(prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 20 });
+        expect(selection.error).toBeUndefined();
+        expect(selection.currentTokens).toBe(95);
+        expect(selection.chats.map((chat) => chat.memo)).toEqual(["supaMemory", "m4", "m5", "m6", "m7"]);
+        expect(selection.chats[0].content).toBe(EMPTY_CARD);
+        expect(selection.trim).toEqual({
+            gap: { tokens: 65, messages: 4, memos: ["m0", "m1", "m2", "m3"] },
+            protected: { count: 2, memos: ["m6", "m7"] },
+        });
+        // Not the excess over the context (160 − 100 = 60).
+        expect(selection.trim!.gap.tokens).not.toBe(160 - CONTEXT);
+        expect(selection.memory).toEqual({ summaries: [] });
+    });
+
+    it("returns the too-many-tokens error with the pre-selection memory when the protected entries do not fit", async () => {
+        // A short history: three messages, all protected, nothing to drop (170 settled to 160).
+        const short = await selectOnly(
+            flatScenario("v3-trim-short-history", 200, {
+                preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2, queryChatCount: 3 },
+                chats: makeChats(3),
+            }),
+        );
+        expect(short.selection.error).toBe(`${TOO_MUCH_TOKEN}\n\nRequired Tokens: 160`);
+        expect(short.selection.chats).toEqual(short.prepared.chats);
+        expect(short.selection.memory).toEqual({ summaries: [] });
+        expect(short.selection.trim).toBeUndefined();
+        // A large fixed prompt: every droppable entry goes (960 − 60 = 900) and the rest still does not fit.
+        const large = await selectOnly(
+            flatScenario("v3-trim-large-prompt", 1000, {
+                preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2 },
+                chats: makeChats(8),
+            }),
+        );
+        expect(large.selection.error).toBe(`${TOO_MUCH_TOKEN}\n\nRequired Tokens: 900`);
+    });
+
+    it("standard: with a zero memory ratio the empty card is still the settled cost", async () => {
+        // 200 incoming: 150 with an empty card over the context, the full budget is 0; settled: 160,
+        // six drops reach exactly 100.
+        const { selection, prepared } = await selectOnly(
+            flatScenario("v3-trim-zero-ratio", 200, {
+                preset: { ...HOOKED_PRESET, memoryTokensRatio: 0 },
+                chats: makeChats(8),
+            }),
+        );
+        expect(prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 0 });
+        expect(selection.error).toBeUndefined();
+        expect(selection.currentTokens).toBe(100);
+        expect(selection.chats.map((chat) => chat.memo)).toEqual(["supaMemory", "m6", "m7"]);
+        expect(selection.trim!.gap).toEqual({ tokens: 60, messages: 6, memos: ["m0", "m1", "m2", "m3", "m4", "m5"] });
+    });
+
+    it("experimental: no card without summaries, an empty card when none of the summaries is selected", async () => {
+        // No summaries: the full budget (20) is released and no card is added; 150 drops m0..m4.
+        const none = await selectOnly(
+            flatScenario("v3exp-trim-no-summaries", 200, {
+                algorithm: "v3exp",
+                preset: { ...EXPERIMENTAL_HOOKED, memoryTokensRatio: 0.2 },
+                chats: makeChats(8),
+            }),
+        );
+        expect(none.prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 20 });
+        expect(none.selection.error).toBeUndefined();
+        expect(none.selection.chats.map((chat) => chat.memo)).toEqual(["m5", "m6", "m7"]);
+        expect(none.selection.currentTokens).toBe(100);
+        expect(none.selection.trim!.gap).toEqual({ tokens: 50, messages: 5, memos: ["m0", "m1", "m2", "m3", "m4"] });
+        expect(none.selection.memory!.metrics).toBeUndefined();
+
+        // One stored summary (m0, m1) and a budget of 10 that leaves nothing for a summary: the empty
+        // card is the memory. 200 − 50 − 20 + 10 = 140; released and settled: 140; m2..m5 go.
+        const unselected = await selectOnly(
+            flatScenario("v3exp-trim-empty-card", 200, {
+                algorithm: "v3exp",
+                preset: { ...EXPERIMENTAL_HOOKED, memoryTokensRatio: 0.1 },
+                chats: makeChats(8),
+                room: { hypaV3Data: { summaries: [stored(["m0", "m1"], "A")] } },
+            }),
+        );
+        expect(unselected.selection.error).toBeUndefined();
+        expect(unselected.selection.chats.map((chat) => chat.memo)).toEqual(["supaMemory", "m6", "m7"]);
+        expect(unselected.selection.chats[0].content).toBe(EMPTY_CARD);
+        expect(unselected.selection.currentTokens).toBe(100);
+        expect(unselected.selection.trim).toEqual({
+            gap: { tokens: 40, messages: 4, memos: ["m2", "m3", "m4", "m5"] },
+            protected: { count: 2, memos: ["m6", "m7"] },
+        });
+        expect(unselected.selection.memory!.metrics).toEqual({
+            lastImportantSummaries: [],
+            lastRecentSummaries: [],
+            lastSimilarSummaries: [],
+            lastRandomSummaries: [],
+        });
+    });
+
+    it("standard: the similarity correction's query is returned and a selection given it makes no correction request", async () => {
+        const scenario = scenarioNamed("v3-similarity-correction");
+        const { world, host, prepared, execution, executeRequests } = await runParts(scenario);
+        const first = await selectHypaV3(host, prepared, execution, {});
+        expect(first.error).toBeUndefined();
+        expect(world.log.requests).toHaveLength(executeRequests + 1);
+        expect(typeof first.correction).toBe("string");
+        const { correction, ...rest } = first;
+        expect(normalize(rest)).toEqual(fixture.cases[scenario.name].result);
+
+        const second = await selectHypaV3(host, prepared, execution, { correction });
+        expect(world.log.requests).toHaveLength(executeRequests + 1);
+        expect(normalize(second)).toEqual(normalize(first));
+    });
+});
+
+describe("prepare options and lookahead planning", () => {
+    it("cleanup: false keeps a summary whose messages are absent from a stale input and sets coverageAhead", async () => {
+        const room = { hypaV3Data: { summaries: [stored(["m0", "m1"], "A")] } };
+        const scenario = flatScenario("v3-stale-input", 100, { chats: makeChats(6).slice(2), room });
+        const kept = await setUp(scenario, { prepare: { cleanup: false } });
+        expect(kept.prepared.data.summaries.map((summary) => summary.text)).toEqual(["A"]);
+        expect(kept.prepared.coverageAhead).toBe(true);
+        expect(kept.prepared.startIdx).toBe(0);
+        const cleaned = await setUp(scenario, { prepare: {} });
+        expect(cleaned.prepared.data.summaries).toEqual([]);
+        expect(cleaned.prepared.coverageAhead).toBe(false);
+        // Coverage inside the input: not ahead, the cursor after the covered message.
+        const covered = await setUp(flatScenario("v3-covered-input", 100, { chats: makeChats(6), room }), {
+            prepare: { cleanup: false },
+        });
+        expect(covered.prepared.coverageAhead).toBe(false);
+        expect(covered.prepared.startIdx).toBe(2);
+    });
+
+    it("coverageAhead is read off the history entries: an example without a memo never stands for the greeting", async () => {
+        // A summary that ends at the greeting (serialized null) and an input whose greeting is gone.
+        const room = { hypaV3Data: { summaries: [{ ...stored([], "G"), chatMemos: [null] as never }] } };
+        const chats: OpenAIChat[] = [{ role: "user", name: "example_user", content: "An example." }, ...makeChats(4)];
+        const scenario = flatScenario("v3-greeting-gone", 100, { chats, room });
+        const ahead = await setUp(scenario, { prepare: { cleanup: false } });
+        expect(ahead.prepared.coverageAhead).toBe(true);
+        expect(ahead.prepared.startIdx).toBe(0);
+        // The no-option composition keeps the legacy memo lookup, where the example matches.
+        const legacy = await setUp({ ...scenario, preset: { ...HOOKED_PRESET, preserveOrphanedMemory: true } });
+        expect(legacy.prepared.coverageAhead).toBe(true);
+        expect(legacy.prepared.startIdx).toBe(1);
+    });
+
+    it("lookahead plans windows below the context from the full memory budget, with the headroom's trigger and a clamped target", async () => {
+        // Twenty messages, a context of 1000, a budget of 200: 710 incoming is 660 with the empty card
+        // (670 held), which a plain plan leaves alone; the lookahead count 860 is over 850.
+        const base = flatScenario("v3-lookahead", 710, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2, extraSummarizationRatio: 0.1 },
+            chats: makeChats(20),
+            maxContextTokens: 1000,
+        });
+        expect(HYPAV3_LOOKAHEAD_HEADROOM).toBe(0.15);
+        const { prepared, plan } = await setUp(base, { lookahead: true });
+        expect(prepared.ledger.current).toBe(670);
+        expect((await planHypaV3Summaries(prepared)).stopReason).toBe("notNeeded");
+        // Target 750: five windows (860 → 760), the sixth would overshoot.
+        expect(plan.stopReason).toBe("nextWindowOvershoots");
+        expect(plan.windows).toHaveLength(5);
+        expect(plan.predictedTokens).toBe(760);
+        expect(plan.windows.every((window) => window.needsLlm)).toBe(true);
+
+        // Exactly at the trigger: nothing to do.
+        const atTrigger = await setUp(
+            { ...base, name: "v3-lookahead-at-trigger", currentTokens: 700 },
+            { lookahead: true },
+        );
+        expect(atTrigger.plan.stopReason).toBe("notNeeded");
+
+        // A large extra ratio clamps the target at 0: the plan runs to the protected tail without an error.
+        const clamped = await setUp(
+            { ...base, name: "v3-lookahead-clamped", preset: { ...base.preset, extraSummarizationRatio: 0.9 } },
+            { lookahead: true },
+        );
+        expect(clamped.plan.stopReason).toBe("tailReached");
+        expect(clamped.plan.windows).toHaveLength(9);
+        expect(clamped.plan.predictedTokens).toBe(680);
+
+        // Over the context with only the tail left: a normal stop with lookahead, the error without.
+        const over = { ...base, name: "v3-lookahead-over", currentTokens: 1300 };
+        const overLookahead = await setUp(over, { lookahead: true });
+        expect(overLookahead.prepared.ledger.reservation.kind).toBe("fullBudget");
+        expect(overLookahead.plan.stopReason).toBe("tailReached");
+        expect(overLookahead.plan.windows).toHaveLength(9);
+        expect(overLookahead.plan.predictedTokens).toBeGreaterThan(1000);
+        const plain = await planHypaV3Summaries(overLookahead.prepared);
+        expect(plain.stopReason).toBe("cannotSummarizeFurther");
+        expect(plain.error).toMatch(/^\[HypaV3\] Cannot summarize further/);
+    });
+});
+
+describe("warming the summaries' vectors", () => {
+    const chunkTexts = (prepared: HypaV3Prepared) =>
+        prepared.data.summaries.flatMap((summary) =>
+            summary.text
+                .split("\n\n")
+                .map((chunk) => chunk.trim())
+                .filter((chunk) => chunk.length > 0),
+        );
+    const mentionsChunk = (requests: { body: unknown }[], chunks: string[]) =>
+        requests.some((request) => {
+            const body = JSON.stringify(request.body);
+            return chunks.some((chunk) => body.includes(JSON.stringify(chunk).slice(1, -1)));
+        });
+
+    for (const name of ["v3-existing-selection", "v3-voyage-similar-full", "v3exp-existing-voyage-groups"]) {
+        it(`${name}: a selection after warming with the same settings embeds no summary document`, async () => {
+            const scenario = scenarioNamed(name);
+            const world = createWorld(scenario);
+            const host = hostOf(scenario, world);
+            const chats = structuredClone(scenario.chats);
+            const outcome = await prepareHypaV3(
+                host,
+                chats,
+                await defaultCurrentTokens(chats),
+                scenario.maxContextTokens,
+                structuredClone(scenario.room) as never,
+                { tokenizeChat },
+            );
+            if (!outcome.ok) throw new Error(outcome.result.error);
+            const prepared = outcome.prepared;
+            const chunks = chunkTexts(prepared);
+            expect(chunks.length).toBeGreaterThan(1);
+
+            await warmHypaV3Vectors(host, prepared.data.summaries);
+            const warmed = world.log.http.length;
+            expect(warmed).toBeGreaterThan(0);
+            expect(mentionsChunk(world.log.http, chunks)).toBe(true);
+
+            const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared));
+            expect(selection.error).toBeUndefined();
+            expect(selection.memory!.metrics!.lastSimilarSummaries.length).toBeGreaterThan(0);
+            const afterWarming = world.log.http.slice(warmed);
+            expect(afterWarming.length).toBeGreaterThan(0);
+            expect(mentionsChunk(afterWarming, chunks)).toBe(false);
+
+            // The same selection on a cold cache embeds the documents.
+            const cold = createWorld(scenario);
+            const coldHost = hostOf(scenario, cold);
+            const coldSelection = await selectHypaV3(coldHost, prepared, emptyHypaV3Execution(prepared));
+            expect(coldSelection.error).toBeUndefined();
+            expect(mentionsChunk(cold.log.http, chunks)).toBe(true);
+        });
+    }
+
+    it("does nothing when the preset selects no similar summaries", async () => {
+        const scenario = {
+            ...scenarioNamed("v3-existing-selection"),
+            preset: { similarMemoryRatio: 0, recentMemoryRatio: 1 },
+        };
+        const world = createWorld(scenario);
+        const host = hostOf(scenario, world);
+        const outcome = await prepareHypaV3(
+            host,
+            structuredClone(scenario.chats),
+            100,
+            560,
+            structuredClone(scenario.room) as never,
+            { tokenizeChat },
+        );
+        if (!outcome.ok) throw new Error(outcome.result.error);
+        await warmHypaV3Vectors(host, outcome.prepared.data.summaries);
+        expect(world.log.http).toEqual([]);
     });
 });

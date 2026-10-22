@@ -2,7 +2,9 @@
 import { describe, expect, it } from "vitest";
 import {
     mergeHypaV2Write,
+    mergeHypaV3SelectionWrite,
     mergeHypaV3Write,
+    remapHypaV3MetricsByIdentity,
     summaryKey,
     type SerializableHypaV2Data,
     type SerializableHypaV3Data,
@@ -18,7 +20,11 @@ import {
 // recomputed metrics carried; stored metrics shifted for a returned-error write), legacy `null` and
 // duplicate memos as one identity, the stored categories and the legacy field, damaged values, and
 // the V2 rule with a reused id, a colliding id, a legacy shape, and duplicate numeric ids. The job
-// path is `memoryJobs.test.ts`.
+// path is `memoryJobs.test.ts`. The selection write that follows per-summary saves
+// (`mergeHypaV3SelectionWrite`): only the orphan removals and the selection reach the stored value,
+// summaries appended meanwhile and edits stay, a reset is never undone, and the metrics follow
+// `selectionMade`, not their values; `remapHypaV3MetricsByIdentity` moves metrics between summary
+// lists by identity.
 
 const summary = (memos: (string | null)[], text = memos.join("+"), extra: Partial<SerializableSummary> = {}) =>
     ({ text, chatMemos: memos as string[], isImportant: false, ...extra }) as SerializableSummary;
@@ -217,6 +223,108 @@ describe("mergeHypaV3Write", () => {
         ).toBeNull();
         expect(mergeHypaV3Write({ summaries: 1 } as any, result, data([S.a, S.b]), true)).toBeNull();
         expect(mergeHypaV3Write(data([S.a]), result, [] as any, true)).toBeNull();
+    });
+});
+
+describe("remapHypaV3MetricsByIdentity", () => {
+    it("moves each index to the same summary's position in the target list and drops the unresolved ones", () => {
+        const from = [S.a, S.b, S.c, S.d];
+        // C left (cleanup), E appended, the order otherwise kept.
+        const to = [S.a, S.b, S.d, summary(["m8", "m9"], "E")];
+        expect(remapHypaV3MetricsByIdentity(metrics([3], [2], [0, 1], [9, -1, 0.5]), from, to)).toEqual(
+            metrics([2], [], [0, 1], []),
+        );
+    });
+
+    it("drops an index whose identity is duplicated in either list", () => {
+        const twice = [S.a, S.b, S.b];
+        expect(remapHypaV3MetricsByIdentity(metrics([0, 1, 2]), twice, [S.a, S.b])).toEqual(metrics([0]));
+        expect(remapHypaV3MetricsByIdentity(metrics([0, 1]), [S.a, S.b], [S.b, S.a, S.b])).toEqual(metrics([1]));
+    });
+});
+
+describe("mergeHypaV3SelectionWrite", () => {
+    const selection = { selectionMade: true };
+    const noSelection = { selectionMade: false };
+
+    it("keeps a summary a task appended meanwhile and carries the selection to the same summaries", () => {
+        // The job saved A and B one by one (its baseline), selected recent [1] (B) and similar [0] (A);
+        // a task appended C before the selection write.
+        const baseline = data([S.a, S.b]);
+        const algorithm = data([S.a, S.b], { metrics: metrics([], [1], [0]) });
+        const stored = data([S.a, S.b, S.c], { metrics: metrics([2], [], [], []) });
+        const merged = mergeHypaV3SelectionWrite(baseline, algorithm, stored, selection)!;
+        expect(texts(merged)).toEqual(["A", "B", "C"]);
+        expect(merged.summaries[2]).toBe(S.c);
+        expect(merged.metrics).toEqual(metrics([], [1], [0]));
+    });
+
+    it("removes only the orphaned identity the algorithm cleaned, keeping the task's append and the stored edits", () => {
+        // The baseline had an orphan (O); the algorithm's data lacks it; stored holds an edit of A, a
+        // category on B, the orphan, and a task's append C.
+        const orphan = summary(["gone-1"], "O");
+        const baseline = data([S.a, orphan, S.b]);
+        const algorithm = data([S.a, S.b], { metrics: metrics([], [1]) });
+        const edited = summary(["m0", "m1"], "A edited", { tags: ["t"] });
+        const categorized = summary(["m2", "m3"], "B", { categoryId: "cat" });
+        const stored = data([edited, orphan, categorized, S.c], {
+            categories: [{ id: "cat", name: "Cat" }],
+            modalSettings: { displayMode: "Recent" } as any,
+            metrics: metrics([1], [3]),
+        });
+        const made = mergeHypaV3SelectionWrite(baseline, algorithm, stored, selection)!;
+        expect(made.summaries).toEqual([edited, categorized, S.c]);
+        expect(made.categories).toEqual([{ id: "cat", name: "Cat" }]);
+        expect(made.modalSettings).toEqual({ displayMode: "Recent" });
+        expect(made.metrics).toEqual(metrics([], [1]));
+        // Without a selection, the stored metrics shift past the removal: O's index drops, C's moves.
+        const shifted = mergeHypaV3SelectionWrite(baseline, algorithm, stored, noSelection)!;
+        expect(shifted.metrics).toEqual(metrics([], [2]));
+    });
+
+    it("never adds a summary the stored value lacks: a reset saved meanwhile stays a reset", () => {
+        const algorithm = data([S.a, S.b], { metrics: metrics([], [1]) });
+        // The selection's indices resolve to nothing: empty metrics, no summary.
+        const empty = { summaries: [], metrics: metrics() };
+        expect(mergeHypaV3SelectionWrite(data([S.a, S.b]), algorithm, data([]), selection)).toEqual(empty);
+        expect(mergeHypaV3SelectionWrite(data([S.a]), algorithm, null, selection)).toEqual(empty);
+        expect(mergeHypaV3SelectionWrite(undefined, algorithm, undefined, selection)).toEqual(empty);
+        // "Delete after" the first: B is gone and its metric with it.
+        const deleted = mergeHypaV3SelectionWrite(data([S.a, S.b]), algorithm, data([S.a]), selection)!;
+        expect(texts(deleted)).toEqual(["A"]);
+        expect(deleted.metrics).toEqual(metrics());
+    });
+
+    it("maps equal-valued metrics by whether a selection was made, never by their values", () => {
+        // Baseline [O, A, B]; the algorithm cleaned O: data [A, B] with recent [1] (B). Stored [O, A, B]
+        // with recent [1] (A): the same numbers name different summaries.
+        const orphan = summary(["gone-1"], "O");
+        const baseline = data([orphan, S.a, S.b]);
+        const algorithm = data([S.a, S.b], { metrics: metrics([], [1]) });
+        const stored = data([orphan, S.a, S.b], { metrics: metrics([], [1]) });
+        expect(mergeHypaV3SelectionWrite(baseline, algorithm, stored, selection)!.metrics).toEqual(metrics([], [1]));
+        expect(mergeHypaV3SelectionWrite(baseline, algorithm, stored, noSelection)!.metrics).toEqual(metrics([], [0]));
+        // No metrics at all when neither side has any; the legacy field goes when the data has none.
+        const bare = mergeHypaV3SelectionWrite(
+            baseline,
+            data([S.a, S.b]),
+            data([S.a, S.b], {
+                lastSelectedSummaries: [0],
+            }),
+            selection,
+        )!;
+        expect(bare.metrics).toBeUndefined();
+        expect("lastSelectedSummaries" in bare).toBe(false);
+    });
+
+    it("skips a damaged value or an ambiguous identity in any of the three", () => {
+        const algorithm = data([S.a, S.b]);
+        expect(mergeHypaV3SelectionWrite({ summaries: "no" } as any, algorithm, data([S.a]), selection)).toBeNull();
+        expect(mergeHypaV3SelectionWrite(data([S.a]), algorithm, { summaries: [null] } as any, selection)).toBeNull();
+        expect(mergeHypaV3SelectionWrite(data([S.a]), { summaries: 1 } as any, data([S.a]), selection)).toBeNull();
+        expect(mergeHypaV3SelectionWrite(data([S.a, S.a]), algorithm, data([S.a]), selection)).toBeNull();
+        expect(mergeHypaV3SelectionWrite(data([S.a]), data([S.a, S.b, S.b]), data([S.a]), selection)).toBeNull();
+        expect(mergeHypaV3SelectionWrite(data([S.a]), algorithm, data([S.a, S.b, S.b]), selection)).toBeNull();
     });
 });
 

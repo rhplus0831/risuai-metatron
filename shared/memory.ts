@@ -216,6 +216,34 @@ function remapMetrics(
     };
 }
 
+/**
+ * `metrics` (indices into `from`) moved to the positions in `to` of the same summaries, matched by
+ * `summaryKey`. An index whose summary is absent from `to`, or whose key is not unique in `from` or
+ * `to`, is dropped, as are invalid indices.
+ */
+export function remapHypaV3MetricsByIdentity(
+    metrics: HypaV3Metrics,
+    from: readonly { chatMemos: unknown }[],
+    to: readonly { chatMemos: unknown }[],
+): HypaV3Metrics {
+    const fromKeys = from.map(summaryKey);
+    const toKeys = to.map(summaryKey);
+    const unique = (keys: readonly string[]) => {
+        const counts = new Map<string, number>();
+        for (const key of keys) {
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return (key: string) => counts.get(key) === 1;
+    };
+    const uniqueInFrom = unique(fromKeys);
+    const uniqueInTo = unique(toKeys);
+    const toIndex = new Map(toKeys.map((key, index) => [key, index]));
+    return remapMetrics(metrics, from.length, (index) => {
+        const key = fromKeys[index];
+        return uniqueInFrom(key) && uniqueInTo(key) ? toIndex.get(key) : undefined;
+    });
+}
+
 /** Whether the summaries and message-id lists can be used for a divergent V3 write. */
 function isHypaV3DataShape(data: unknown): data is SerializableHypaV3Data {
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -326,6 +354,76 @@ export function mergeHypaV3Write(
         delete merged.metrics;
     }
     if (!("lastSelectedSummaries" in result)) {
+        delete merged.lastSelectedSummaries;
+    }
+    return merged;
+}
+
+/**
+ * The `hypaV3Data` of a job's final selection write, after its summaries were saved one by one:
+ * from the algorithm's whole `data`, computed from `baseline` (the last committed algorithm
+ * candidate, or the pre-cleanup snapshot before any checkpoint committed), only the orphan removals
+ * and the selection are placed onto `stored` (the chat's value now). Null: skip the write.
+ *
+ * - Summaries are matched by `summaryKey`. The baseline summaries `data` no longer holds (the
+ *   orphan cleanup) leave `stored`; every other stored summary stays as stored, including the ones
+ *   appended meanwhile. A summary of `data` that `stored` lacks is never added, so a reset saved
+ *   meanwhile stays a reset.
+ * - `metrics`: with `selectionMade`, the selection of `data` carried to the same summaries in the
+ *   result (unresolved indices dropped); otherwise the stored selection shifted past the removals.
+ *   Equal index values never stand for a selection: only `selectionMade` says one was made.
+ * - The other fields (`categories`, `modalSettings`) are the stored ones; the legacy
+ *   `lastSelectedSummaries` goes when `data` has none.
+ * - A `null` or absent `baseline` or `stored` holds no summaries. Skipped when a value is damaged or
+ *   a summary identity is ambiguous (duplicate keys in any of the three).
+ */
+export function mergeHypaV3SelectionWrite(
+    baseline: SerializableHypaV3Data | null | undefined,
+    data: SerializableHypaV3Data,
+    stored: SerializableHypaV3Data | null | undefined,
+    options: { selectionMade: boolean },
+): SerializableHypaV3Data | null {
+    if (
+        (baseline != null && !isHypaV3DataShape(baseline)) ||
+        (stored != null && !isHypaV3DataShape(stored)) ||
+        !isHypaV3DataShape(data)
+    ) {
+        return null;
+    }
+    const baseKeys = (baseline?.summaries ?? []).map(summaryKey);
+    const dataKeys = data.summaries.map(summaryKey);
+    const storedSummaries = stored?.summaries ?? [];
+    const storedKeys = storedSummaries.map(summaryKey);
+    if (hasDuplicates(baseKeys) || hasDuplicates(dataKeys) || hasDuplicates(storedKeys)) {
+        return null;
+    }
+    const dataSet = new Set(dataKeys);
+    const removed = new Set(baseKeys.filter((key) => !dataSet.has(key)));
+
+    const summaries: SerializableSummary[] = [];
+    const storedToMerged = new Map<number, number>();
+    storedSummaries.forEach((summary, index) => {
+        if (!removed.has(storedKeys[index])) {
+            storedToMerged.set(index, summaries.length);
+            summaries.push(summary);
+        }
+    });
+    const mergedIndexOf = new Map(summaries.map((summary, index) => [summaryKey(summary), index]));
+
+    let metrics: HypaV3Metrics | undefined;
+    if (options.selectionMade && data.metrics) {
+        metrics = remapMetrics(data.metrics, data.summaries.length, (index) => mergedIndexOf.get(dataKeys[index]));
+    } else if (stored?.metrics) {
+        metrics = remapMetrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
+    }
+
+    const merged: SerializableHypaV3Data = { ...stored, summaries };
+    if (metrics) {
+        merged.metrics = metrics;
+    } else {
+        delete merged.metrics;
+    }
+    if (!("lastSelectedSummaries" in data)) {
         delete merged.lastSelectedSummaries;
     }
     return merged;
