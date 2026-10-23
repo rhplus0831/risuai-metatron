@@ -21,11 +21,19 @@ import type {
 } from "../../../shared/chatCheckpoints.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { nextRevision, ResourceConflictError, ResourceValidationError } from "./resourceStore.ts";
+import { normalizeChatMeta, normalizeMessage } from "./chats.ts";
+import {
+    isValidResourceId,
+    nextRevision,
+    ResourceConflictError,
+    ResourceValidationError,
+    serialize,
+} from "./resourceStore.ts";
 
 /**
  * Checkpoints belong to a chat incarnation; deleting it cascades to checkpoints, refs, and policy.
  * Content pages are shared across chats and collected separately, after their last ref disappears.
+ * Snapshots carry all four tables together; restore replaces them on the restored chat incarnations.
  */
 const CHECKPOINT_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS chatCheckpoints (
@@ -62,6 +70,27 @@ const CHECKPOINT_TABLES_SQL = `
     ) STRICT;
 `;
 
+const CHECKPOINT_TABLE_COLUMNS: Record<string, readonly string[]> = {
+    chatCheckpoints: [
+        "seq",
+        "chatSeq",
+        "id",
+        "kind",
+        "name",
+        "createdAt",
+        "revision",
+        "chatRevision",
+        "userTurns",
+        "messageCount",
+        "preview",
+        "pages",
+        "fields",
+    ],
+    checkpointPages: ["hash", "text"],
+    checkpointPageRefs: ["checkpointSeq", "hash"],
+    chatCheckpointPolicy: ["chatSeq", "autoEvery", "autoKeep", "lastAutoTurns"],
+};
+
 const MAX_PAGE_ROWS = 64;
 const MAX_PAGE_BYTES = 1024 * 1024;
 
@@ -77,6 +106,13 @@ type SummaryRow = Omit<CheckpointSummary, "revision" | "preview"> & {
     preview: string;
 };
 type CheckpointRow = SummaryRow & { pages: string; fields: string };
+
+/** Validated snapshot rows, with stored JSON and page text unchanged; refs are rebuilt from manifests. */
+export type CheckpointSnapshotRows = {
+    readonly checkpoints: readonly (CheckpointRow & { chatSeq: number; chatRevision: string })[];
+    readonly pages: readonly { hash: string; text: string }[];
+    readonly policies: readonly (CheckpointPolicyState & { chatSeq: number })[];
+};
 
 function checkpointName(name: string): string {
     if (typeof name !== "string") {
@@ -117,6 +153,11 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         "INSERT INTO chatCheckpoints " +
             "(chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns, messageCount, preview, pages, fields) " +
             "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertRestoredCheckpoint = db.prepare(
+        "INSERT INTO chatCheckpoints " +
+            "(chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns, messageCount, preview, pages, fields) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const insertRef = db.prepare("INSERT INTO checkpointPageRefs (checkpointSeq, hash) VALUES (?, ?)");
     const renameCheckpoint = db.prepare("UPDATE chatCheckpoints SET name = ?, revision = ? WHERE seq = ?");
@@ -438,6 +479,329 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             return true;
         },
 
+        /** Replaces pages and restores checkpoints and policies after the chat cascade, in the same transaction. */
+        replaceAll(rows: CheckpointSnapshotRows | undefined, chatSeqs: ReadonlyMap<number, number>) {
+            db.exec("DELETE FROM checkpointPages");
+            if (!rows) {
+                return;
+            }
+            for (const page of rows.pages) {
+                insertPage.run(page.hash, page.text);
+            }
+            for (const row of rows.checkpoints) {
+                const result = insertRestoredCheckpoint.run(
+                    chatSeqs.get(row.chatSeq)!,
+                    row.id,
+                    row.kind,
+                    row.name,
+                    row.createdAt,
+                    row.revision,
+                    row.chatRevision,
+                    row.userTurns,
+                    row.messageCount,
+                    row.preview,
+                    row.pages,
+                    row.fields,
+                );
+                const pages = JSON.parse(row.pages) as string[];
+                const fields = JSON.parse(row.fields) as Record<string, string>;
+                for (const hash of new Set([...pages, ...Object.values(fields)])) {
+                    insertRef.run(Number(result.lastInsertRowid), hash);
+                }
+            }
+            for (const row of rows.policies) {
+                upsertPolicy.run(chatSeqs.get(row.chatSeq)!, row.autoEvery, row.autoKeep, row.lastAutoTurns);
+            }
+        },
+
         sweep,
     };
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function snapshotJson(text: string, where: string): unknown {
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw new ResourceValidationError(`${where}: not JSON`);
+    }
+}
+
+/**
+ * Reads the optional checkpoint table group, checking every row and each distinct use of a content page.
+ * Returns stored texts verbatim, checkpoints in seq order, and only referenced pages. An absent
+ * group or empty result is undefined; a partial group or inconsistent row is a ResourceValidationError.
+ */
+export function readCheckpointSnapshotRows(
+    source: DatabaseSync,
+    chats: readonly { seq: number; id: string }[],
+): CheckpointSnapshotRows | undefined {
+    const tables = Object.entries(CHECKPOINT_TABLE_COLUMNS);
+    let present = 0;
+    for (const [table, columns] of tables) {
+        try {
+            const objects = source
+                .prepare("SELECT name, type, sql FROM sqlite_schema WHERE name = ? COLLATE NOCASE")
+                .all(table) as { name: string; type: string; sql: string | null }[];
+            if (objects.length === 0) {
+                continue;
+            }
+            if (
+                objects.length !== 1 ||
+                objects[0].name !== table ||
+                objects[0].type !== "table" ||
+                !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")
+            ) {
+                throw new ResourceValidationError(`${table}: not an ordinary checkpoint table`);
+            }
+            const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
+            if (
+                info.length !== columns.length ||
+                !info.every((column, index) => column.name === columns[index] && column.hidden === 0)
+            ) {
+                throw new ResourceValidationError(`${table}: invalid checkpoint table columns`);
+            }
+            present += 1;
+        } catch (error) {
+            if (error instanceof ResourceValidationError) {
+                throw error;
+            }
+            throw new ResourceValidationError(`${table}: cannot read checkpoint table layout`);
+        }
+    }
+    if (present === 0) {
+        return undefined;
+    }
+    if (present !== tables.length) {
+        throw new ResourceValidationError("Incomplete checkpoint tables in resource database");
+    }
+
+    function readRows(table: string, order: string): Record<string, unknown>[] {
+        try {
+            return source.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all() as Record<string, unknown>[];
+        } catch {
+            throw new ResourceValidationError(`${table}: cannot read checkpoint rows`);
+        }
+    }
+
+    const pageTexts = new Map<string, string>();
+    for (const [index, row] of readRows("checkpointPages", "hash").entries()) {
+        const where = `checkpointPages row ${index + 1}`;
+        if (typeof row.hash !== "string" || typeof row.text !== "string") {
+            throw new ResourceValidationError(`${where}: hash and text must be strings`);
+        }
+        if (pageTexts.has(row.hash)) {
+            throw new ResourceValidationError(`${where}: duplicate hash`);
+        }
+        if (createHash("sha256").update(row.text, "utf8").digest("hex") !== row.hash) {
+            throw new ResourceValidationError(`${where}: hash does not match text`);
+        }
+        pageTexts.set(row.hash, row.text);
+    }
+
+    const chatIds = new Map(chats.map((chat) => [chat.seq, chat.id]));
+    const checkpointKeys = new Set<string>();
+    const expectedRefs = new Map<number, Set<string>>();
+    const messagePageIds = new Map<string, string[]>();
+    const validatedFieldPages = new Set<string>();
+    const checkpoints = readRows("chatCheckpoints", "seq").map((row, index) => {
+        const where = `chatCheckpoints row ${index + 1}`;
+        if (!isPositiveSafeInteger(row.seq) || expectedRefs.has(row.seq) || !isPositiveSafeInteger(row.revision)) {
+            throw new ResourceValidationError(`${where}: invalid seq or revision`);
+        }
+        if (typeof row.chatSeq !== "number" || !chatIds.has(row.chatSeq)) {
+            throw new ResourceValidationError(`${where}: no such chat`);
+        }
+        if (!isValidResourceId(row.id)) {
+            throw new ResourceValidationError(`${where}: invalid id`);
+        }
+        const key = `${row.chatSeq}\u0000${row.id}`;
+        if (checkpointKeys.has(key)) {
+            throw new ResourceValidationError(`${where}: duplicate checkpoint id in chat`);
+        }
+        checkpointKeys.add(key);
+        if (row.kind !== "manual" && row.kind !== "auto" && row.kind !== "safety") {
+            throw new ResourceValidationError(`${where}: invalid kind`);
+        }
+        if (typeof row.name !== "string" || row.name.length > MAX_CHECKPOINT_NAME) {
+            throw new ResourceValidationError(`${where}: invalid name`);
+        }
+        if (
+            !isNonNegativeSafeInteger(row.createdAt) ||
+            !isNonNegativeSafeInteger(row.userTurns) ||
+            !isNonNegativeSafeInteger(row.messageCount)
+        ) {
+            throw new ResourceValidationError(`${where}: invalid createdAt or counts`);
+        }
+        if (typeof row.chatRevision !== "string") {
+            throw new ResourceValidationError(`${where}: chatRevision must be a string`);
+        }
+        if (typeof row.preview !== "string" || typeof row.pages !== "string" || typeof row.fields !== "string") {
+            throw new ResourceValidationError(`${where}: preview, pages, and fields must be JSON text`);
+        }
+        const preview = snapshotJson(row.preview, `${where} preview`);
+        if (
+            !isPlainObject(preview) ||
+            !Array.isArray(preview.messages) ||
+            preview.messages.length > 2 ||
+            !preview.messages.every(
+                (message) =>
+                    isPlainObject(message) &&
+                    (message.role === "user" || message.role === "char") &&
+                    typeof message.text === "string",
+            ) ||
+            !isNonNegativeSafeInteger(preview.summaries) ||
+            !isNonNegativeSafeInteger(preview.loreEntries) ||
+            !isNonNegativeSafeInteger(preview.variables)
+        ) {
+            throw new ResourceValidationError(`${where}: invalid preview`);
+        }
+        const pages = snapshotJson(row.pages, `${where} pages`);
+        const fields = snapshotJson(row.fields, `${where} fields`);
+        if (!Array.isArray(pages) || !pages.every((hash) => typeof hash === "string")) {
+            throw new ResourceValidationError(`${where}: pages must be an array of hashes`);
+        }
+        if (
+            !isPlainObject(fields) ||
+            !Object.entries(fields).every(([key, hash]) => {
+                const behavior = Object.hasOwn(CHECKPOINT_CHAT_FIELDS, key)
+                    ? CHECKPOINT_CHAT_FIELDS[key as keyof typeof CHECKPOINT_CHAT_FIELDS]
+                    : undefined;
+                return (behavior === "capture" || behavior === "split") && typeof hash === "string";
+            })
+        ) {
+            throw new ResourceValidationError(`${where}: fields must map captured field names to hashes`);
+        }
+        const hashes = new Set([...pages, ...Object.values(fields)] as string[]);
+        for (const hash of hashes) {
+            if (!pageTexts.has(hash)) {
+                throw new ResourceValidationError(`${where}: no such checkpointPages hash ${hash}`);
+            }
+        }
+        expectedRefs.set(row.seq, hashes);
+        try {
+            const messageIds = new Set<string>();
+            for (const hash of pages) {
+                let ids = messagePageIds.get(hash);
+                if (!ids) {
+                    const messages = snapshotJson(pageTexts.get(hash)!, `message page ${hash}`);
+                    if (!Array.isArray(messages)) {
+                        throw new ResourceValidationError(`message page ${hash} must be an array`);
+                    }
+                    ids = messages.map((input) => {
+                        // Check the original element before normalization; the page adds no depth to a message.
+                        const message = normalizeMessage(serialize(input).stored);
+                        return message.chatId as string;
+                    });
+                    messagePageIds.set(hash, ids);
+                }
+                for (const id of ids) {
+                    if (messageIds.has(id)) {
+                        throw new ResourceValidationError("duplicate message id across checkpoint pages");
+                    }
+                    messageIds.add(id);
+                }
+            }
+            for (const [key, hash] of Object.entries(fields)) {
+                const fieldPage = `${key}\u0000${hash}`;
+                if (validatedFieldPages.has(fieldPage)) {
+                    continue;
+                }
+                const value = snapshotJson(pageTexts.get(hash as string)!, `field page ${key}`);
+                if (
+                    CHECKPOINT_CHAT_FIELDS[key as keyof typeof CHECKPOINT_CHAT_FIELDS] === "split" &&
+                    (!isPlainObject(value) || Object.keys(value).some(isToggleKey))
+                ) {
+                    throw new ResourceValidationError(`${key} must be an object without toggle entries`);
+                }
+                // Captured metadata checks are per field; the wrapper preserves the stored nesting depth.
+                normalizeChatMeta(serialize({ [key]: value }).stored, chatIds.get(row.chatSeq)!);
+                validatedFieldPages.add(fieldPage);
+            }
+        } catch (error) {
+            throw new ResourceValidationError(
+                `${where}: ${error instanceof ResourceValidationError ? error.message : "invalid checkpoint content"}`,
+            );
+        }
+        return {
+            seq: row.seq,
+            chatSeq: row.chatSeq,
+            id: row.id,
+            kind: row.kind,
+            name: row.name,
+            createdAt: row.createdAt,
+            revision: row.revision,
+            chatRevision: row.chatRevision,
+            userTurns: row.userTurns,
+            messageCount: row.messageCount,
+            preview: row.preview,
+            pages: row.pages,
+            fields: row.fields,
+        } satisfies CheckpointSnapshotRows["checkpoints"][number];
+    });
+
+    const actualRefs = new Map<number, Set<string>>();
+    const referencedPages = new Set<string>();
+    for (const [index, row] of readRows("checkpointPageRefs", "checkpointSeq, hash").entries()) {
+        const where = `checkpointPageRefs row ${index + 1}`;
+        if (typeof row.checkpointSeq !== "number" || !expectedRefs.has(row.checkpointSeq)) {
+            throw new ResourceValidationError(`${where}: no such checkpoint`);
+        }
+        if (typeof row.hash !== "string" || !pageTexts.has(row.hash)) {
+            throw new ResourceValidationError(`${where}: no such checkpoint page`);
+        }
+        const refs = actualRefs.get(row.checkpointSeq) ?? new Set<string>();
+        if (refs.has(row.hash)) {
+            throw new ResourceValidationError(`${where}: duplicate checkpoint and hash`);
+        }
+        if (!expectedRefs.get(row.checkpointSeq)!.has(row.hash)) {
+            throw new ResourceValidationError(`${where}: hash is not in the checkpoint's pages or fields`);
+        }
+        refs.add(row.hash);
+        actualRefs.set(row.checkpointSeq, refs);
+        referencedPages.add(row.hash);
+    }
+    for (const [index, row] of checkpoints.entries()) {
+        if ((actualRefs.get(row.seq)?.size ?? 0) !== expectedRefs.get(row.seq)!.size) {
+            throw new ResourceValidationError(`chatCheckpoints row ${index + 1}: missing checkpointPageRefs`);
+        }
+    }
+
+    const policyChats = new Set<number>();
+    const policies = readRows("chatCheckpointPolicy", "chatSeq").map((row, index) => {
+        const where = `chatCheckpointPolicy row ${index + 1}`;
+        if (typeof row.chatSeq !== "number" || !chatIds.has(row.chatSeq) || policyChats.has(row.chatSeq)) {
+            throw new ResourceValidationError(`${where}: no such chat or a duplicate policy`);
+        }
+        policyChats.add(row.chatSeq);
+        if (
+            !isNonNegativeSafeInteger(row.autoEvery) ||
+            row.autoEvery < MIN_AUTO_EVERY ||
+            row.autoEvery > MAX_AUTO_EVERY ||
+            !isNonNegativeSafeInteger(row.autoKeep) ||
+            row.autoKeep < MIN_AUTO_KEEP ||
+            row.autoKeep > MAX_AUTO_KEEP ||
+            (row.lastAutoTurns !== null && !isNonNegativeSafeInteger(row.lastAutoTurns))
+        ) {
+            throw new ResourceValidationError(`${where}: invalid autoEvery, autoKeep, or lastAutoTurns`);
+        }
+        return {
+            chatSeq: row.chatSeq,
+            autoEvery: row.autoEvery,
+            autoKeep: row.autoKeep,
+            lastAutoTurns: row.lastAutoTurns,
+        };
+    });
+    if (checkpoints.length === 0 && policies.length === 0) {
+        return undefined;
+    }
+    const pages = [...referencedPages].map((hash) => ({ hash, text: pageTexts.get(hash)! }));
+    return { checkpoints, pages, policies };
 }

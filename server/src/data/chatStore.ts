@@ -1810,7 +1810,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             };
         },
 
-        /** Clears the chat tables and inserts validated snapshot rows (inside `replaceAll`'s transaction). */
+        /** Restores validated chat rows in the caller's transaction and returns the old-to-new chat seq map. */
         replaceAll(rows: ChatSnapshotRows) {
             db.exec("DELETE FROM messages; DELETE FROM chats; DELETE FROM chatOrders;");
             for (const order of rows.chatOrders) {
@@ -1839,6 +1839,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     message.generationHistory,
                 );
             }
+            return seqs;
         },
     };
 }

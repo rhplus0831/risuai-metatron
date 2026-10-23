@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
+import type { Chat } from "../../../shared/database.ts";
 import type {
     BackupArchiveManifest,
     ResourceBatchConflictBody,
@@ -15,7 +16,7 @@ import type {
 import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore } from "../data/resourceStore.ts";
+import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import {
     buildArchive,
     createResourceTestClient,
@@ -1295,6 +1296,181 @@ describe("chats in snapshots and archives", () => {
             untouched.close();
         } finally {
             rmSync(rootDir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("checkpoints in backups", () => {
+    async function checkpointServer(
+        label = "Saved",
+        beforeStart?: (store: ResourceStore, savePath: string) => Promise<void>,
+    ) {
+        const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-checkpoint-backups-"));
+        const savePath = path.join(rootDir, "save");
+        mkdirSync(path.join(rootDir, "dist"));
+        writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+        mkdirSync(path.join(savePath, "server"), { recursive: true });
+        writeFileSync(path.join(savePath, "server", "password"), "pw");
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: path.join(savePath, "data", "resources.sqlite"), kinds });
+        try {
+            store.put(kinds.get("characters")!, "c", character("c", { image: "assets/profile.png" }), null);
+            const chat: Chat = {
+                id: "k",
+                name: "K",
+                note: `${label} note`,
+                localLore: [],
+                fmIndex: -1,
+                sdData: "assets/checkpoint-only.png",
+                message: [
+                    { data: `${label}, "quoted"\n한글 😀`, role: "user", chatId: "a", time: 17 },
+                    { chatId: "b", role: "char", data: "{{img::assets/checkpoint-only.png}}", disabled: false },
+                ],
+            };
+            store.applyChanges({
+                chats: [
+                    { characterId: "c", chatId: "discarded", baseRevision: null, ops: [{ op: "create", chat: {} }] },
+                ],
+            });
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "discarded",
+                        baseRevision: store.chatRevision("c", "discarded"),
+                        ops: [{ op: "delete" }],
+                    },
+                ],
+            });
+            store.applyChanges({
+                chats: [{ characterId: "c", chatId: "k", baseRevision: null, ops: [{ op: "create", chat }] }],
+            });
+            const checkpoint = store.checkpoints.save("c", "k", label, "manual")!;
+            const policy = { autoEvery: 3, autoKeep: 4, lastAutoTurns: 11 };
+            store.checkpoints.writePolicy("c", "k", policy);
+            // The asset is referenced only by the saved checkpoint, not the live chat or resource records.
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("c", "k"),
+                        ops: [
+                            { op: "meta", set: { note: "Current note" }, unset: ["sdData"] },
+                            { op: "setText", id: "a", text: "Current question" },
+                            { op: "setText", id: "b", text: "Current answer" },
+                        ],
+                    },
+                ],
+            });
+            const expected = { chat, checkpoint, policy };
+            await beforeStart?.(store, savePath);
+            store.close();
+            return { s: await defaultServer({ rootDir }), expected };
+        } catch (error) {
+            store.close();
+            rmSync(rootDir, { recursive: true, force: true });
+            throw error;
+        }
+    }
+
+    function expectCheckpoint(
+        store: ResourceStore,
+        expected: Awaited<ReturnType<typeof checkpointServer>>["expected"],
+    ) {
+        expect(store.checkpoints.list("c", "k")?.map((item) => item.id)).toEqual([expected.checkpoint.id]);
+        const composed = store.checkpoints.compose("c", "k", expected.checkpoint.id);
+        expect(composed).toEqual(expected.chat);
+        expect(store.checkpoints.readPolicy("c", "k")).toEqual(expected.policy);
+    }
+
+    it.each(["full", "partial"])(
+        "round-trips checkpoints and policies through a %s archive with the selected assets",
+        async (mode) => {
+            const { s: source, expected } = await checkpointServer();
+            expect((await writeAsset(source, "assets/profile.png", "PROFILE")).status).toBe(200);
+            expect((await writeAsset(source, "assets/checkpoint-only.png", "CHECKPOINT")).status).toBe(200);
+            const archive = await exportArchive(source, mode === "partial" ? { partial: true } : {});
+            const records = parseArchive(archive);
+            const selected =
+                mode === "partial" ? ["assets/profile.png"] : ["assets/checkpoint-only.png", "assets/profile.png"];
+            expect(records.map((record) => record.name)).toEqual(["manifest.json", "resources.sqlite", ...selected]);
+            expect(JSON.parse(records[0].data.toString("utf8"))).toMatchObject({
+                partial: mode === "partial",
+                assets: selected,
+                missing: [],
+            });
+
+            const { s: target, expected: previous } = await checkpointServer("Target only", async (store) => {
+                store.checkpoints.writePolicy("c", "k", { autoEvery: 99, autoKeep: 19, lastAutoTurns: 99 });
+            });
+            const result = await importArchive(target, archive);
+            expect(result.status, await result.clone().text()).toBe(200);
+            expect(await readAsset(target, "assets/profile.png")).toBe("PROFILE");
+            expect(await readAsset(target, "assets/checkpoint-only.png")).toBe(mode === "partial" ? "" : "CHECKPOINT");
+            await target.context.dispose();
+            const restored = createResourceStore({
+                file: path.join(target.savePath, "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+            try {
+                expectCheckpoint(restored, expected);
+                expect(restored.checkpoints.compose("c", "k", previous.checkpoint.id)).toBeNull();
+            } finally {
+                restored.close();
+            }
+        },
+    );
+
+    it("restores the internal backup's checkpoints and policy and keeps later checkpoints in the safety snapshot", async () => {
+        const snapshotId = "resources-20260101T000000000Z-12345678";
+        const laterPolicy = { autoEvery: 23, autoKeep: 8, lastAutoTurns: 31 };
+        let laterId = "";
+        const { s, expected } = await checkpointServer("Saved", async (store, savePath) => {
+            mkdirSync(path.join(savePath, "backups"));
+            await store.backupTo(path.join(savePath, "backups", `${snapshotId}.sqlite`));
+            laterId = store.checkpoints.save("c", "k", "After backup", "auto")!.id;
+            store.checkpoints.writePolicy("c", "k", laterPolicy);
+        });
+        const laterChat = {
+            ...expected.chat,
+            note: "Current note",
+            message: [
+                { ...expected.chat.message[0], data: "Current question" },
+                { ...expected.chat.message[1], data: "Current answer" },
+            ],
+        };
+        delete laterChat.sdData;
+
+        const result = await restore(s, snapshotId);
+        expect(result.status, await result.clone().text()).toBe(200);
+        const backups = await listBackups(s);
+        expect(backups).toHaveLength(2);
+        const safety = backups.find((item) => item.id !== snapshotId)!;
+        await s.context.dispose();
+        const restored = createResourceStore({
+            file: path.join(s.savePath, "data", "resources.sqlite"),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        try {
+            expectCheckpoint(restored, expected);
+            expect(restored.checkpoints.compose("c", "k", laterId)).toBeNull();
+        } finally {
+            restored.close();
+        }
+        const safetyStore = createResourceStore({
+            file: path.join(backupsDir(s), `${safety.id}.sqlite`),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        try {
+            expect(safetyStore.checkpoints.list("c", "k")?.map((item) => item.id)).toEqual([
+                laterId,
+                expected.checkpoint.id,
+            ]);
+            expect(safetyStore.checkpoints.compose("c", "k", laterId)).toEqual(laterChat);
+            expect(safetyStore.checkpoints.readPolicy("c", "k")).toEqual(laterPolicy);
+        } finally {
+            safetyStore.close();
         }
     });
 });

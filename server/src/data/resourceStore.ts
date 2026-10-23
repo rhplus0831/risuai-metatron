@@ -37,7 +37,7 @@ import {
 import type { ChatStreaming } from "../../../shared/events.ts";
 import type { MessageSearchHit } from "../../../shared/messageSearch.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
-import { createCheckpointTables } from "./checkpointStore.ts";
+import { type CheckpointSnapshotRows, createCheckpointTables, readCheckpointSnapshotRows } from "./checkpointStore.ts";
 import { diffRecordText } from "./recordPatchText.ts";
 import {
     CHAT_TABLE_COLUMNS,
@@ -230,9 +230,10 @@ export type ResourceBatchOperation = {
     patch?: unknown;
 };
 
-/** Rows of a snapshot file that passed every check of `readSnapshot`, ready for `replaceAll`. */
+/** Validated snapshot rows ready for restore; absent checkpoint rows restore no checkpoints or policies. */
 export type ValidatedSnapshot = {
     readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
+    readonly checkpoints?: CheckpointSnapshotRows;
 } & ChatSnapshotRows;
 
 /** What `applyChanges` wrote: resource tokens in op order, chat group results, and every changed chat order. */
@@ -317,7 +318,9 @@ export function isValidResourceId(id: unknown): id is string {
  * its current schema version (rows of a `RETIRED_KINDS` kind are skipped), a valid id, singleton rules, unique kind and id, positive
  * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
  * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
- * chats, one exact order per character). Throws `ResourceValidationError` for anything else.
+ * chats, one exact order per character). The optional checkpoint tables must be all present or all
+ * absent; their rows, references, content hashes, messages, fields, and policies are checked without
+ * changing stored text. Throws `ResourceValidationError` for anything else.
  */
 export function readSnapshotFile(file: string, kinds: ResourceKindRegistry): ValidatedSnapshot {
     let source: DatabaseSync;
@@ -402,7 +405,9 @@ export function readSnapshotFile(file: string, kinds: ResourceKindRegistry): Val
             ];
         });
         const characterIds = new Set(rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id));
-        return { rows, ...readChatSnapshotRows(source, characterIds) };
+        const chats = readChatSnapshotRows(source, characterIds);
+        const checkpoints = readCheckpointSnapshotRows(source, chats.chats);
+        return { rows, ...chats, ...(checkpoints ? { checkpoints } : {}) };
     } finally {
         source.close();
     }
@@ -1763,7 +1768,9 @@ export function createResourceStore(options: {
          * epoch, in one transaction; every token issued before is stale afterwards. Returns the epoch.
          * Revision counters are restored as stored (the new epoch already makes every old token
          * stale; `nextRevision` keeps a counter a crafted snapshot placed at the limit from
-         * overflowing on the next write).
+         * overflowing on the next write). Replaces checkpoints, their content pages, and policies
+         * with the snapshot's, attached to the restored chats with their text unchanged; a snapshot
+         * without checkpoint rows clears them.
          */
         replaceAll(snapshot: ValidatedSnapshot): string {
             assertWritable();
@@ -1776,9 +1783,8 @@ export function createResourceStore(options: {
                 for (const row of snapshot.rows) {
                     insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
                 }
-                chatTables.replaceAll(snapshot);
-                // Deleting the chats cascades to their checkpoint refs, orphaning their pages.
-                checkpointTables.sweep();
+                const chatSeqs = chatTables.replaceAll(snapshot);
+                checkpointTables.replaceAll(snapshot.checkpoints, chatSeqs);
                 // The rows are normalized already (`readSnapshot`); this materializes the kinds the
                 // snapshot predates. A failure rolls the whole restore back.
                 normalizeStoredRecords();
