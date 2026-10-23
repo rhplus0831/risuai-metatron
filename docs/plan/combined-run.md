@@ -123,7 +123,7 @@ shares a file with a slice in flight):
 9. TK1–TK4.
 10. UP7–UP12.
 11. SF1–SF12, SF11 last of them.
-12. UP13–UP22, then UP23.
+12. UP3, UP13–UP22, then UP23.
 
 Wave 1 under this order and `--max-parallel 3`: DA0, SA1, UP1.
 
