@@ -691,7 +691,12 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 target as character,
                 String(payload.negative ?? ""),
                 "inlay",
-                { signal: entry.abort.signal },
+                {
+                    signal: entry.abort.signal,
+                    ...(payload.orientation === "landscape" || payload.orientation === "portrait"
+                        ? { orientation: payload.orientation }
+                        : {}),
+                },
             );
             stillWanted();
             if (!generated) {

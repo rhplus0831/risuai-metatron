@@ -8,6 +8,7 @@ import type {
     CallbackPayloads,
     CallbackResult,
     GenerationQuestion,
+    ImageOrientation,
     QuestionResult,
 } from "../../../shared/jobs.ts";
 import type {
@@ -172,7 +173,7 @@ export type LuaBindingServices = {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options?: { timeoutMs?: number; skipDisconnected?: boolean },
+        options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation },
     ): Promise<string | null>;
     tokenize(text: string): Promise<number>;
     /** `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). */
@@ -282,8 +283,8 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * the script awaits), its guard (the run's key, through `HostContext.access`: Safe is `safe` or
  * `lowLevel`, Safe|Edit adds `editDisplay`, Low is `lowLevel`; a refused key returns nil), and its
  * results. The table-taking functions cross as JSON through the prelude's wrappers
- * (`alertSelectMain`, `upsertLocalLoreBookMain`, `similarityMain`, `simpleLLMMain`, and the
- * immediate-nil `alertInputMain`/`alertConfirmMain`).
+ * (`alertSelectMain`, `upsertLocalLoreBookMain`, `similarityMain`, `simpleLLMMain`,
+ * `generateImageMain`, and the immediate-nil `alertInputMain`/`alertConfirmMain`).
  *
  * Chat functions work on the job's chat (`scope`), by index resolved to message ids when called,
  * and write through `job.write`; variable keys and note setters coalesce in the live scope until a
@@ -820,9 +821,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
+        options: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation } = {},
     ): Promise<string | null> => {
-        const answer = await callback("generateImage", { prompt, negative, characterId }, ctx, options);
+        const { orientation, ...callbackOptions } = options;
+        const payload: CallbackPayloads["generateImage"] = { prompt, negative, characterId };
+        if (orientation !== undefined) {
+            payload.orientation = orientation;
+        }
+        const answer = await callback("generateImage", payload, ctx, callbackOptions);
         return answer === null ? null : await answeredInlayId(answer, null, ctx);
     };
 
@@ -1597,16 +1603,22 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 await similarity(source as string, Array.isArray(values) ? (values as string[]) : [], ctx),
             );
         },
-        generateImage: async ([, value, negValue = ""], ctx) => {
+        generateImageMain: async ([, value, negValue = "", optionsStr], ctx) => {
             if (!isLow(ctx)) {
                 return undefined;
+            }
+            const { orientation } = parseLuaOptions(optionsStr) as { orientation?: unknown };
+            if (orientation !== undefined && orientation !== "landscape" && orientation !== "portrait") {
+                return "Error: Image orientation must be landscape or portrait, received " + String(orientation);
             }
             const target = runCharacter();
             if (!target || target.type === "group" || !deps.runCharacterId) {
                 // No character to generate for: refused without asking the tab.
                 return "Error: Image generation failed";
             }
-            const id = await generateImageInlay(String(value ?? ""), String(negValue ?? ""), deps.runCharacterId, ctx);
+            const id = await generateImageInlay(String(value ?? ""), String(negValue ?? ""), deps.runCharacterId, ctx, {
+                orientation,
+            });
             return id === null ? "Error: Image generation failed" : `{{inlay::${id}}}`;
         },
         getCharacterImageMain: async (_args, ctx) => {

@@ -41,6 +41,7 @@ import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import * as resourceSync from "../storage/resourceSync.svelte";
 import { endJobChannel, handleChannelEvent } from "../network/jobChannel";
 import { generateAIImage, stableDiff } from "./stableDiff";
+import * as inlays from "./files/inlays";
 
 const char = {
     chaId: "image-character",
@@ -266,6 +267,107 @@ describe("generated image delivery", () => {
                 [char.chaId]: [[expectedUri, expectedUri, expect.any(Number)]],
             });
             expect(deps.alert, provider).not.toHaveBeenCalled();
+        }
+    });
+});
+
+describe("image orientation", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        settings.memoryTranslateMedia.sdProvider = "novelai";
+        deps.globalFetch.mockResolvedValue({ ok: true, data: new Uint8Array([1, 2, 3]) });
+        deps.zip.mockResolvedValue(uri);
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it.each([
+        { width: 832, height: 1216 },
+        { width: 1216, height: 832 },
+    ])(
+        "uses the requested NovelAI orientation and preserves an omitted orientation for $width×$height",
+        async ({ width, height }) => {
+            settings.memoryTranslateMedia.NAIImgConfig.width = width;
+            settings.memoryTranslateMedia.NAIImgConfig.height = height;
+            for (const [options, expected] of [
+                [{ orientation: "landscape" }, { width: 1216, height: 832 }],
+                [{ orientation: "portrait" }, { width: 832, height: 1216 }],
+                [undefined, { width, height }],
+            ] as const) {
+                deps.globalFetch.mockClear();
+                await expect(generateAIImage("garden", char, "blurry", "inlay", options)).resolves.toBe(uri);
+                const parameters = deps.globalFetch.mock.lastCall?.[1].body.parameters;
+                expect(
+                    { width: parameters?.width, height: parameters?.height },
+                    options?.orientation ?? "configured",
+                ).toEqual(expected);
+            }
+        },
+    );
+
+    it("requests the callback's NovelAI orientation and keeps the configured size when the field is absent", async () => {
+        settings.memoryTranslateMedia.NAIImgConfig.width = 832;
+        settings.memoryTranslateMedia.NAIImgConfig.height = 1216;
+        // Canvas rendering and inlay persistence are I/O boundaries after the provider request.
+        vi.spyOn(inlays, "writeInlayImage").mockResolvedValue("generated-inlay");
+
+        for (const [orientation, expected] of [
+            ["landscape", { width: 1216, height: 832 }],
+            [undefined, { width: 832, height: 1216 }],
+        ] as const) {
+            deps.globalFetch.mockClear();
+            const jobId = `image-orientation-${orientation ?? "configured"}`;
+            jobs.push(jobId);
+            const sent = deferred<ChannelAnswer>();
+            handleChannelEvent(
+                jobId,
+                {
+                    type: "callback",
+                    epoch: "test",
+                    id: jobId,
+                    jobId,
+                    name: "generateImage",
+                    targets: {
+                        chatRef: { chaId: char.chaId, chatId: "image-chat" },
+                        presetId: "fixture-preset",
+                        modelPresetId: "fixture-preset",
+                        personaId: "",
+                    },
+                    revisions: [],
+                    deadline: Date.now() + 10_000,
+                    payload: {
+                        characterId: char.chaId,
+                        prompt: "garden",
+                        negative: "blurry",
+                        ...(orientation === undefined ? {} : { orientation }),
+                    },
+                },
+                {
+                    send: (message) => {
+                        sent.resolve(message as ChannelAnswer);
+                        return true;
+                    },
+                },
+            );
+            await expect(sent.promise).resolves.toMatchObject({ outcome: "answered" });
+            const parameters = deps.globalFetch.mock.lastCall?.[1].body.parameters;
+            expect({ width: parameters?.width, height: parameters?.height }, orientation ?? "configured").toEqual(
+                expected,
+            );
+        }
+    });
+
+    it("keeps WebUI's configured dimensions for either orientation", async () => {
+        settings.memoryTranslateMedia.sdProvider = "webui";
+        settings.memoryTranslateMedia.sdConfig.width = 832;
+        settings.memoryTranslateMedia.sdConfig.height = 1216;
+        deps.globalFetch.mockResolvedValue({ ok: true, data: { images: ["AQID"] } });
+        for (const orientation of ["landscape", "portrait"] as const) {
+            deps.globalFetch.mockClear();
+            await expect(generateAIImage("garden", char, "blurry", "inlay", { orientation })).resolves.toBe(uri);
+            const body = deps.globalFetch.mock.lastCall?.[1].body;
+            expect({ width: body?.width, height: body?.height }, orientation).toEqual({ width: 832, height: 1216 });
         }
     });
 });

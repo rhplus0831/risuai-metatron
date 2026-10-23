@@ -1,5 +1,6 @@
 import { settings } from "../storage/settingsViews.svelte";
 import { type character } from "../storage/database.svelte";
+import type { ImageOrientation } from "../../../shared/jobs.ts";
 import { requestChatData } from "./request/request";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import type { ChatRef } from "../storage/chatStore.svelte";
@@ -132,12 +133,12 @@ export async function generateAIImage(
     currentChar: character,
     neg: string,
     returnSdData: string,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; orientation?: ImageOrientation } = {},
 ): Promise<string | false> {
-    const { signal } = options;
+    const { signal, orientation } = options;
     signal?.throwIfAborted();
     try {
-        const result = await generateAIImageForProvider(genPrompt, currentChar, neg, returnSdData, signal);
+        const result = await generateAIImageForProvider(genPrompt, currentChar, neg, returnSdData, signal, orientation);
         signal?.throwIfAborted();
         return result;
     } catch (error) {
@@ -152,6 +153,7 @@ async function generateAIImageForProvider(
     neg: string,
     returnSdData: string,
     signal?: AbortSignal,
+    orientation?: ImageOrientation,
 ): Promise<string | false> {
     if (settings.memoryTranslateMedia.sdProvider === "webui") {
         const uri = new URL(settings.memoryTranslateMedia.webUiUrl);
@@ -196,6 +198,12 @@ async function generateAIImageForProvider(
         }
     }
     if (settings.memoryTranslateMedia.sdProvider === "novelai") {
+        const dimensions = applyImageOrientation(
+            settings.memoryTranslateMedia.NAIImgConfig.width,
+            settings.memoryTranslateMedia.NAIImgConfig.height,
+            orientation,
+        );
+
         genPrompt = genPrompt
             .replaceAll("\\(", "♧")
             .replaceAll("\\)", "♤")
@@ -222,8 +230,8 @@ async function generateAIImageForProvider(
                             ? settings.memoryTranslateMedia.NAIImgConfig.decrisp
                             : false,
                     n_samples: 1,
-                    width: settings.memoryTranslateMedia.NAIImgConfig.width,
-                    height: settings.memoryTranslateMedia.NAIImgConfig.height,
+                    width: dimensions.width,
+                    height: dimensions.height,
                     sampler: settings.memoryTranslateMedia.NAIImgConfig.sampler,
                     steps: settings.memoryTranslateMedia.NAIImgConfig.steps,
                     scale: settings.memoryTranslateMedia.NAIImgConfig.scale,
@@ -1032,4 +1040,26 @@ async function generateAIImageForProvider(
         }
     }
     return "";
+}
+
+/** Places the longer edge on the width for landscape and on the height for portrait. */
+export function applyImageOrientation(width: number, height: number, orientation?: ImageOrientation) {
+    if (!orientation) {
+        return { height, width };
+    }
+
+    const longerEdge = Math.max(height, width);
+    const shorterEdge = Math.min(height, width);
+
+    if (orientation === "landscape") {
+        return {
+            height: shorterEdge,
+            width: longerEdge,
+        };
+    }
+
+    return {
+        height: longerEdge,
+        width: shorterEdge,
+    };
 }

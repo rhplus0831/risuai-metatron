@@ -520,6 +520,8 @@ export type CallbackName =
     | "inlayImage"
     | "imggen";
 
+export type ImageOrientation = "landscape" | "portrait";
+
 /** A callback's payload by name. */
 export type CallbackPayloads = {
     replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
@@ -559,7 +561,7 @@ export type CallbackPayloads = {
      */
     selectedChat: { characterId: string };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
-    generateImage: { prompt: string; negative: string; characterId: string };
+    generateImage: { prompt: string; negative: string; characterId: string; orientation?: ImageOrientation };
     /**
      * An image inlay drawn by the client's canvas (`writeInlayImage`: PNG, at most 1024² pixels),
      * written under `id`, answered `{ id }`: a stored image `asset` (Lua `getCharacterImage`/

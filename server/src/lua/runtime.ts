@@ -263,6 +263,14 @@ function axLLM(id, prompt, useMultimodal, options)
     return json.decode(axLLMMain(id, json.encode(prompt), useMultimodal, json.encode(options)):await())
 end
 
+function generateImage(id, value, negValue, options)
+    local optionsStr = nil
+    if type(options) == "table" then
+        optionsStr = json.encode({ orientation = options.orientation })
+    end
+    return generateImageMain(id, value, negValue, optionsStr)
+end
+
 function getCharacterImage(id)
     return getCharacterImageMain(id):await()
 end

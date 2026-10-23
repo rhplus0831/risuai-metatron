@@ -469,6 +469,50 @@ describe("the job's Lua budget", () => {
 });
 
 describe("the host-function contract through the real worker", () => {
+    it("includes the requested image orientation in the callback and omits it when options are absent", async () => {
+        const chaId = await seedCharacter({
+            codes: [
+                button(`
+                    generateImage(id, "p", "n", { orientation = "portrait" }):await()
+                    generateImage(id, "p", "n"):await()
+                `),
+            ],
+        });
+        const { events, terminal } = await runButton(chaId, {
+            callback: () => ({ outcome: "failed", failure: "hook", error: "no image backend" }),
+        });
+        expect(terminal?.type).toBe("done");
+        const callbacks = events.filter((event) => event.type === "callback");
+        expect(callbacks.map(({ name, payload }) => ({ name, payload }))).toEqual([
+            {
+                name: "generateImage",
+                payload: { prompt: "p", negative: "n", characterId: chaId, orientation: "portrait" },
+            },
+            { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
+        ]);
+    });
+
+    it("returns orientation errors for an invalid string and a number without asking the tab to generate", async () => {
+        const chaId = await seedCharacter({
+            codes: [
+                button(`
+                    local invalidString = generateImage(id, "p", "n", { orientation = "square" }):await()
+                    local invalidNumber = generateImage(id, "p", "n", { orientation = 17 }):await()
+                    alertNormal(id, json.encode({invalidString, invalidNumber}))
+                `),
+            ],
+        });
+        const { events, terminal } = await runButton(chaId, {
+            callback: () => ({ outcome: "failed", failure: "hook", error: "no image backend" }),
+        });
+        expect(terminal?.type).toBe("done");
+        expect(JSON.parse(notice(events, "alertNormal")!)).toEqual([
+            "Error: Image orientation must be landscape or portrait, received square",
+            "Error: Image orientation must be landscape or portrait, received 17",
+        ]);
+        expect(events.filter((event) => event.type === "callback")).toEqual([]);
+    });
+
     it(
         "answers the client's shapes and values over the job scope: reads, variables, CBS, the bound persona, live character reads and setters, hash, tokens, questions, lore, LLM, similarity, and the staged refusals",
         async () => {
