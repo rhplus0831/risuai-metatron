@@ -398,7 +398,7 @@ describe("assemblePrompt final token recheck", () => {
             message: messages.map((message) => ({ ...message, role: "user" })),
         };
         const tokenizer = new ChatTokenCounter(3, "noName", {
-            encode: async (text) => Array.from(text, (_, i) => i),
+            count: async (text) => text.length,
             supportsInlayImage: () => true,
             mainModel: () => resolveModelInfo("gpt4o"),
             gptVisionQuality: () => "high",

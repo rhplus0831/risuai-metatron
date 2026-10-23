@@ -595,6 +595,88 @@ describe("the input", () => {
 });
 
 describe("scheduling", () => {
+    function deferredCount() {
+        let resolve!: (count: number) => void;
+        let reject!: (reason: unknown) => void;
+        const promise = new Promise<number>((resolveCount, rejectCount) => {
+            resolve = resolveCount;
+            reject = rejectCount;
+        });
+        return { promise, resolve, reject };
+    }
+
+    it("starts every active's count in CBS order before awaiting and preserves the sequential token budget", async () => {
+        const pending = Array.from({ length: 3 }, deferredCount);
+        const counted: string[] = [];
+        let parsed = 0;
+        const host = makeHost({
+            parseCBS: (text) => text.replace("{{x}}", String(++parsed)),
+            tokenize: (text) => {
+                counted.push(text);
+                return pending[counted.length - 1].promise;
+            },
+        });
+        const result = run(
+            [
+                lore("a", "x", "@@priority 30\n@@keep_activate_after_match\nA {{x}}", { id: "a", insertorder: 1 }),
+                lore("b", "x", "@@priority 20\n@@dont_activate_after_match\nB {{x}}", { id: "b", insertorder: 2 }),
+                lore("c", "x", "@@priority 10\nC {{x}}", { insertorder: 3 }),
+            ],
+            [user("x")],
+            host,
+            { loreBookToken: 7, loreSettings: { recursiveScanning: false } },
+        );
+        expect(counted).toEqual(["A 1", "B 2", "C 3"]);
+        expect([...host.vars]).toEqual([]);
+
+        // Complete out of order: neither a finished entry nor a higher-priority one may write
+        // its flag while another count is outstanding.
+        pending[2].resolve(3);
+        pending[0].resolve(4);
+        await Promise.all([pending[2].promise, pending[0].promise]);
+        expect([...host.vars]).toEqual([]);
+        pending[1].resolve(8);
+
+        // Sequential budgeting takes a (4), skips b (8 cannot fit), then takes c (3).
+        expect((await result).actives.map(({ source, prompt, tokens }) => ({ source, prompt, tokens }))).toEqual([
+            { source: "a", prompt: "A {{x}}", tokens: 4 },
+            { source: "c", prompt: "C {{x}}", tokens: 3 },
+        ]);
+        expect([...host.vars]).toEqual([
+            ["__internal_ka_a", "true"],
+            ["__internal_da_b", "true"],
+        ]);
+    });
+
+    it("rejects an activation whose count fails without writing keep or don't-activate flags", async () => {
+        const pending = Array.from({ length: 3 }, deferredCount);
+        let count = 0;
+        const writes: [string, string][] = [];
+        const host = makeHost({
+            tokenize: () => pending[count++].promise,
+            setChatVar: (key, value) => void writes.push([key, value]),
+        });
+        const reason = new Error("tokenizer refused an entry");
+        const result = run(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\nkept", { id: "keep" }),
+                lore("dont", "x", "@@dont_activate_after_match\nblocked", { id: "dont" }),
+                lore("fails", "x", "refused"),
+            ],
+            [user("x")],
+            host,
+        );
+        const rejected = expect(result).rejects.toBe(reason);
+        pending[0].resolve(4);
+        pending[1].resolve(5);
+        await Promise.all([pending[0].promise, pending[1].promise]);
+        pending[2].reject(reason);
+        await rejected;
+
+        expect(writes).toEqual([]);
+        expect([...host.vars]).toEqual([]);
+    });
+
     it("a synchronous host never yields before the first active's token count: a queued change is not seen", async () => {
         const messages = [user("nothing")];
         const input = makeInput(
@@ -609,7 +691,7 @@ describe("scheduling", () => {
         expect(sources(await activateLore(input, makeHost()))).toEqual(["dragon"]);
     });
 
-    it("yields only at tokenize: CBS and the chat variables of an active are read before the first await", async () => {
+    it("yields only after the loop: every active's CBS and chat variables are read before the first await", async () => {
         const host = makeHost();
         host.vars.set("x", "one");
         const parsed: string[] = [];
@@ -624,11 +706,11 @@ describe("scheduling", () => {
             [user("alpha beta")],
             host,
         );
-        // The first active's expansion read "one" synchronously; the second ran after the first
-        // tokenize yielded (where the client yielded before the move too).
-        expect(parsed).toEqual(["A one", "B two"]);
+        // Both expansions read "one" synchronously: the counts are started in the loop and awaited
+        // after it, so the queued change lands only after every active was parsed.
+        expect(parsed).toEqual(["A one", "B one"]);
         expect(result.actives.map((a) => [a.source, a.prompt, a.tokens])).toEqual([
-            ["beta", "B {{x}}", "B two".length],
+            ["beta", "B {{x}}", "B one".length],
             ["alpha", "A {{x}}", "A one".length],
         ]);
     });

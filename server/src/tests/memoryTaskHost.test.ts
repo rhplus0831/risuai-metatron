@@ -308,7 +308,7 @@ function runnerCounter(scope: JobScope, tokens: TokenCounter): ChatTokenCounter 
     const db = scope.db;
     const requestDb = scope.request.db;
     return new ChatTokenCounter(CHAT_ADDITIONAL, db.aiModel.startsWith("gpt") ? "noName" : "name", {
-        encode: (text) => tokens.encode(text, tokenScopeFor(requestDb)),
+        count: (text) => tokens.count(text, tokenScopeFor(requestDb)),
         supportsInlayImage: () => mainModelTakesImages(requestDb),
         mainModel: () => mainModelOf(requestDb),
         requestModel: () => {

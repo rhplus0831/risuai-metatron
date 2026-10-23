@@ -4,38 +4,192 @@ import {
     readSettingsRoot,
     scopedPresetRoot,
     settings,
-    activePreset,
     type PresetScope,
 } from "./storage/settingsViews.svelte";
-import type { Tiktoken } from "@dqbd/tiktoken";
-import type { Tokenizer } from "@mlc-ai/web-tokenizers";
-import { type groupChat, type character, type Chat, type DeepReadonly } from "./storage/database.svelte";
-import type { MultiModal, OpenAIChat } from "./process/index.svelte";
+import type { character, Chat, DeepReadonly } from "./storage/database.svelte";
+import type { OpenAIChat } from "./process/index.svelte";
 import { supportsInlayImage } from "./process/files/inlays";
 import { risuChatParser } from "./parser/parser.svelte";
-import { globalFetch } from "./globalApi.svelte";
-import { getModelInfoForMode, LLMTokenizer, type LLMModel } from "./model/modellist";
+import { getModelInfoForMode, type LLMModel } from "./model/modellist";
 import { pluginHooks } from "./plugins/pluginHooks";
-import type { GemmaTokenizer } from "@huggingface/transformers";
+import { authFetch } from "./storage/serverAuth";
 import { LRUMap } from "mnemonist";
-import { selectTokenizer, type TokenizerFamily } from "../../shared/tokenizerChoice.ts";
+import { tokenizerIdentityKey, type TabTokenScope } from "../../shared/tokenizerChoice.ts";
 import { ChatTokenCounter } from "../../shared/prompt/chatTokens.ts";
 
 const MAX_CACHE_SIZE = 1500;
+const MAX_BATCH_TEXTS = 256;
+const MAX_BATCH_TEXT_BYTES = 1024 * 1024;
+const countCache = new LRUMap<string, number>(MAX_CACHE_SIZE);
+const textEncoder = new TextEncoder();
 
-const encodeCache = new LRUMap<string, number[] | Uint32Array | Int32Array>(MAX_CACHE_SIZE);
+type PendingCount = {
+    text: string;
+    cacheKey: string;
+    resolve: (count: number) => void;
+    reject: (error: unknown) => void;
+};
 
-function getHash(
-    data: string,
-    aiModel: string,
-    customTokenizer: string,
-    currentPluginProvider: string,
-    googleClaudeTokenizing: boolean,
-    modelInfo: LLMModel,
-    pluginTokenizer: string,
-): string {
-    const combined = `${data}::${aiModel}::${customTokenizer}::${currentPluginProvider}::${googleClaudeTokenizing ? "1" : "0"}::${modelInfo.tokenizer}::${pluginTokenizer}`;
-    return combined;
+type PendingBatch = { scope: TabTokenScope; entries: PendingCount[] };
+const pendingBatches = new Map<string, PendingBatch>();
+
+/** The main model's tokenizer scope, captured before any request or queued count yields. */
+export function tabTokenScope(presetScope?: PresetScope, mainModel?: LLMModel): TabTokenScope {
+    const model = mainModel ?? getModelInfoForMode("model", presetScope);
+    const aiModel =
+        ((presetScope ? scopedPresetRoot(presetScope, "aiModel") : readSettingsRoot("aiModel")) as
+            string | undefined) ?? "";
+    const currentPluginProvider =
+        ((presetScope
+            ? scopedPresetRoot(presetScope, "currentPluginProvider")
+            : activeMainProfile.currentPluginProvider) as string | undefined) ?? "";
+    const customTokenizer =
+        ((presetScope ? scopedPresetRoot(presetScope, "customTokenizer") : activeMainProfile.customTokenizer) as
+            string | undefined) ?? "";
+    return {
+        aiModel,
+        currentPluginProvider,
+        modelTokenizer: model.tokenizer,
+        ...(model.internalID !== undefined ? { modelInternalID: model.internalID } : {}),
+        pluginTokenizer: pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none",
+        customTokenizer,
+        googleClaudeTokenizing: !!settings.providers.googleClaudeTokenizing,
+        useTokenizerCaching: !!settings.providers.useTokenizerCaching,
+    };
+}
+
+async function requestTokenJson(path: string, payload: unknown, signal?: AbortSignal) {
+    let response: Response;
+    try {
+        response = await authFetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal,
+        });
+    } catch (error) {
+        if (signal?.aborted) {
+            throw signal.reason;
+        }
+        throw new Error(`Token request failed (status unavailable): ${path}`, { cause: error });
+    }
+    if (!response.ok) {
+        throw new Error(`Token request failed (status ${response.status}): ${path}`);
+    }
+    try {
+        return { body: (await response.json()) as unknown, status: response.status };
+    } catch (error) {
+        if (signal?.aborted) {
+            throw signal.reason;
+        }
+        throw new Error(`Malformed token response (status ${response.status}): ${path}`, { cause: error });
+    }
+}
+
+function isTokenNumber(value: unknown): value is number {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+async function requestTokenCounts(scope: TabTokenScope, texts: string[], signal?: AbortSignal) {
+    const { body, status } = await requestTokenJson("/api/tokens/count", { scope, texts }, signal);
+    if (
+        !body ||
+        typeof body !== "object" ||
+        !("counts" in body) ||
+        !Array.isArray(body.counts) ||
+        body.counts.length !== texts.length ||
+        !body.counts.every((count) => count === null || isTokenNumber(count))
+    ) {
+        throw new Error(`Malformed token counts (status ${status})`);
+    }
+    return body.counts as (number | null)[];
+}
+
+/** Each request settles its own entries, including when another chunk fails. */
+async function dispatchCounts(scope: TabTokenScope, entries: PendingCount[], signal?: AbortSignal) {
+    try {
+        const counts = await requestTokenCounts(
+            scope,
+            entries.map((entry) => entry.text),
+            signal,
+        );
+        entries.forEach((entry, index) => {
+            const count = counts[index];
+            if (count === null) {
+                entry.reject(new Error("The server tokenizer refused the text"));
+                return;
+            }
+            if (scope.useTokenizerCaching) {
+                countCache.set(entry.cacheKey, count);
+            }
+            entry.resolve(count);
+        });
+    } catch (error) {
+        entries.forEach((entry) => entry.reject(error));
+    }
+}
+
+function flushCounts(key: string, batch: PendingBatch) {
+    pendingBatches.delete(key);
+    let entries: PendingCount[] = [];
+    let bytes = 0;
+    for (const entry of batch.entries) {
+        // JSON escaping and UTF-8 both affect the wire size. The scope and envelope have
+        // the remaining headroom below the server's 2 MiB body limit.
+        const textBytes = textEncoder.encode(JSON.stringify(entry.text)).byteLength;
+        if (entries.length && (entries.length >= MAX_BATCH_TEXTS || bytes + textBytes > MAX_BATCH_TEXT_BYTES)) {
+            void dispatchCounts(batch.scope, entries);
+            entries = [];
+            bytes = 0;
+        }
+        entries.push(entry);
+        bytes += textBytes;
+    }
+    if (entries.length) {
+        void dispatchCounts(batch.scope, entries);
+    }
+}
+
+/**
+ * Counts with the captured main model's scope. Signal-less calls in one macrotask share batches;
+ * a signal owns its request. Only the captured caching flag controls cache reads and writes.
+ */
+export async function countTokens(text: string, scope?: PresetScope, signal?: AbortSignal): Promise<number> {
+    if (signal?.aborted) {
+        throw signal.reason;
+    }
+    const captured = tabTokenScope(scope);
+    const cacheKey = captured.useTokenizerCaching
+        ? JSON.stringify([
+              text,
+              tokenizerIdentityKey({
+                  ...captured,
+                  model: { tokenizer: captured.modelTokenizer, internalID: captured.modelInternalID },
+              }),
+          ])
+        : "";
+    if (captured.useTokenizerCaching) {
+        const cached = countCache.get(cacheKey);
+        if (cached !== undefined) {
+            return cached;
+        }
+    }
+    return new Promise<number>((resolve, reject) => {
+        const entry: PendingCount = { text, cacheKey, resolve, reject };
+        if (signal) {
+            void dispatchCounts(captured, [entry], signal);
+            return;
+        }
+        const key = JSON.stringify(captured);
+        let batch = pendingBatches.get(key);
+        if (!batch) {
+            batch = { scope: captured, entries: [] };
+            pendingBatches.set(key, batch);
+            const pending = batch;
+            setTimeout(() => flushCounts(key, pending), 0);
+        }
+        batch.entries.push(entry);
+    });
 }
 
 export const tokenizerList = [
@@ -54,317 +208,42 @@ export const tokenizerList = [
     ["glm5", "GLM5"],
 ] as const;
 
-export async function encodeWithTokenizer(
-    data: string,
-    tokenizerType: string,
-): Promise<number[] | Uint32Array | Int32Array> {
-    switch (tokenizerType) {
-        case "tik":
-            return await tikJS(data, "cl100k_base");
-        case "mistral":
-            return await tokenizeWebTokenizers(data, "mistral");
-        case "novelai":
-            return await tokenizeWebTokenizers(data, "novelai");
-        case "claude":
-            return await tokenizeWebTokenizers(data, "claude");
-        case "llama":
-            return await tokenizeWebTokenizers(data, "llama");
-        case "llama3":
-            return await tokenizeWebTokenizers(data, "llama3");
-        case "novellist":
-            return await tokenizeWebTokenizers(data, "novellist");
-        case "gemma":
-            return await gemmaTokenize(data);
-        case "cohere":
-            return await tokenizeWebTokenizers(data, "cohere");
-        case "deepseek":
-            return await tokenizeWebTokenizers(data, "DeepSeek");
-        case "deepseek-v4":
-            return await tokenizeWebTokenizers(data, "DeepSeekV4");
-        case "glm4":
-            return await tokenizeWebTokenizers(data, "GLM4");
-        case "glm5":
-            return await tokenizeWebTokenizers(data, "GLM5");
-        default:
-            return await tikJS(data, "cl100k_base");
+export async function encodeWithTokenizer(data: string, tokenizerType: string): Promise<number[]> {
+    const { body, status } = await requestTokenJson("/api/tokens/encode", { tokenizer: tokenizerType, text: data });
+    if (
+        !body ||
+        typeof body !== "object" ||
+        !("ids" in body) ||
+        !Array.isArray(body.ids) ||
+        !body.ids.every(isTokenNumber)
+    ) {
+        throw new Error(`Malformed token ids (status ${status})`);
     }
-}
-
-/**
- * Encodes with the main model's tokenizer: of `scope`'s model preset (a caller that captured its
- * chat), else of the settings views' (the selected chat's or the tab's).
- */
-export async function encode(data: string, scope?: PresetScope): Promise<number[] | Uint32Array | Int32Array> {
-    const modelInfo = getModelInfoForMode("model", scope);
-    const aiModel = (scope ? scopedPresetRoot(scope, "aiModel") : readSettingsRoot("aiModel")) as string;
-    const { currentPluginProvider, customTokenizer } = scope
-        ? {
-              currentPluginProvider: scopedPresetRoot(scope, "currentPluginProvider") as string,
-              customTokenizer: scopedPresetRoot(scope, "customTokenizer") as string,
-          }
-        : activeMainProfile;
-    const pluginTokenizer = pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none";
-
-    let cacheKey = "";
-    if (settings.providers.useTokenizerCaching) {
-        cacheKey = getHash(
-            data,
-            aiModel,
-            customTokenizer,
-            currentPluginProvider,
-            settings.providers.googleClaudeTokenizing,
-            modelInfo,
-            pluginTokenizer,
-        );
-        const cachedResult = encodeCache.get(cacheKey);
-        if (cachedResult !== undefined) {
-            return cachedResult;
-        }
-    }
-
-    let result: number[] | Uint32Array | Int32Array;
-
-    // The routing is shared with the server counter (`shared/tokenizerChoice.ts`).
-    const choice = selectTokenizer({
-        aiModel,
-        customTokenizer,
-        pluginTokenizer,
-        modelTokenizer: modelInfo.tokenizer,
-        googleClaudeTokenizing: settings.providers.googleClaudeTokenizing,
-    });
-    switch (choice.kind) {
-        case "googleCloud":
-            result = await tokenizeGoogleCloud(data, modelInfo);
-            break;
-        case "pluginFunction":
-            result = (await pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizerFunc?.(data)) ?? [0];
-            break;
-        case "family":
-            result = await encodeFamily(data, choice.family);
-            break;
-    }
-    if (settings.providers.useTokenizerCaching) {
-        encodeCache.set(cacheKey, result);
-    }
-
-    return result;
-}
-
-async function encodeFamily(data: string, family: TokenizerFamily): Promise<number[] | Uint32Array | Int32Array> {
-    switch (family) {
-        case "cl100k_base":
-        case "o200k_base":
-            return await tikJS(data, family);
-        case "gemma":
-            return await gemmaTokenize(data);
-        case "gemmaSentencePiece":
-            return await tokenizeWebTokenizers(data, "gemma");
-        default:
-            return await tokenizeWebTokenizers(data, family);
-    }
-}
-
-type tokenizerType =
-    | "novellist"
-    | "claude"
-    | "novelai"
-    | "llama"
-    | "mistral"
-    | "llama3"
-    | "gemma"
-    | "cohere"
-    | "googleCloud"
-    | "DeepSeek"
-    | "DeepSeekV4"
-    | "GLM4"
-    | "GLM5";
-
-let tokenizersTokenizer: Tokenizer = null;
-let tokenizersType: tokenizerType = null;
-
-let googleCloudTokenizedCache = new Map<string, number>();
-
-async function tokenizeGoogleCloud(text: string, model: LLMModel) {
-    const cacheKey = text + model.internalID;
-
-    if (googleCloudTokenizedCache.has(cacheKey)) {
-        const count = googleCloudTokenizedCache.get(cacheKey) ?? 0;
-        return new Uint32Array(count);
-    }
-
-    // With the stored Google key, on the server (`auxFetch`); loaded on first use,
-    // as this module is imported nearly everywhere.
-    const { auxFetch } = await import("./network/auxFetch");
-    const res = await auxFetch(
-        "google-count-tokens",
-        `https://generativelanguage.googleapis.com/v1beta/models/${model.internalID}:countTokens`,
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                contents: [
-                    {
-                        parts: [
-                            {
-                                text: text,
-                            },
-                        ],
-                    },
-                ],
-            }),
-        },
-    );
-
-    if (res.status !== 200) {
-        return await tokenizeWebTokenizers(text, "gemma");
-    }
-
-    const json = await res.json();
-    googleCloudTokenizedCache.set(cacheKey, json.totalTokens as number);
-    const count = json.totalTokens as number;
-
-    return new Uint32Array(count);
-}
-
-let gemmaTokenizer: GemmaTokenizer = null;
-async function gemmaTokenize(text: string) {
-    if (!gemmaTokenizer) {
-        const { GemmaTokenizer } = await import("@huggingface/transformers");
-        gemmaTokenizer = new GemmaTokenizer(await (await fetch("/token/llama/llama3.json")).json(), {});
-    }
-    return gemmaTokenizer.encode(text);
-}
-
-type TikModel = "cl100k_base" | "o200k_base";
-
-/**
- * The tiktoken parsers, one per encoder, kept once loaded and never freed: counts for both encoders can
- * run at once, and none may encode on a handle another count has freed. A failed load is dropped, so a
- * later count tries again.
- */
-const tikParsers = new Map<TikModel, Promise<Tiktoken>>();
-
-async function loadTikParser(model: TikModel): Promise<Tiktoken> {
-    const { Tiktoken } = await import("@dqbd/tiktoken");
-    const encoder =
-        model === "o200k_base"
-            ? await import("src/etc/o200k_base.json")
-            : await import("@dqbd/tiktoken/encoders/cl100k_base.json");
-    return new Tiktoken(encoder.bpe_ranks, encoder.special_tokens, encoder.pat_str);
-}
-
-async function tikJS(text: string, model: TikModel = "cl100k_base") {
-    let parser = tikParsers.get(model);
-    if (!parser) {
-        parser = loadTikParser(model);
-        tikParsers.set(model, parser);
-        parser.catch(() => {
-            if (tikParsers.get(model) === parser) {
-                tikParsers.delete(model);
-            }
-        });
-    }
-    return (await parser).encode(text);
-}
-
-async function tokenizeWebTokenizers(text: string, type: tokenizerType) {
-    if (type !== tokenizersType || !tokenizersTokenizer) {
-        const webTokenizer = await import("@mlc-ai/web-tokenizers");
-        switch (type) {
-            case "novellist":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromSentencePiece(
-                    await (await fetch("/token/trin/spiece.model")).arrayBuffer(),
-                );
-                break;
-            case "claude":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/claude/claude.json")).arrayBuffer(),
-                );
-                break;
-            case "llama3":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/llama/llama3.json")).arrayBuffer(),
-                );
-                break;
-            case "cohere":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/cohere/tokenizer.json")).arrayBuffer(),
-                );
-                break;
-            case "novelai":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromSentencePiece(
-                    await (await fetch("/token/nai/nerdstash_v2.model")).arrayBuffer(),
-                );
-
-                break;
-            case "llama":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromSentencePiece(
-                    await (await fetch("/token/llama/llama.model")).arrayBuffer(),
-                );
-                break;
-            case "mistral":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromSentencePiece(
-                    await (await fetch("/token/mistral/tokenizer.model")).arrayBuffer(),
-                );
-                break;
-            case "gemma":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromSentencePiece(
-                    await (await fetch("/token/gemma/tokenizer.model")).arrayBuffer(),
-                );
-                break;
-            case "DeepSeek":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/deepseek/tokenizer.json")).arrayBuffer(),
-                );
-                break;
-            case "DeepSeekV4":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/deepseek/v4/tokenizer.json")).arrayBuffer(),
-                );
-                break;
-            case "GLM4":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/glm4/tokenizer.json")).arrayBuffer(),
-                );
-                break;
-            case "GLM5":
-                tokenizersTokenizer = await webTokenizer.Tokenizer.fromJSON(
-                    await (await fetch("/token/glm5/tokenizer.json")).arrayBuffer(),
-                );
-                break;
-        }
-        tokenizersType = type;
-    }
-    return tokenizersTokenizer.encode(text);
+    return body.ids;
 }
 
 export async function tokenizerChar(char: character) {
-    const encoded = await encode(char.name + "\n" + char.firstMessage + "\n" + char.desc);
-    return encoded.length;
+    return countTokens(char.name + "\n" + char.firstMessage + "\n" + char.desc);
 }
 
-/** The token count of `data` (`scope`: as `encode` takes it). */
+/** The token count of `data` with the main model of the captured preset scope, or the tab's. */
 export async function tokenize(data: string, scope?: PresetScope) {
-    const encoded = await encode(data, scope);
-    return encoded.length;
+    return countTokens(data, scope);
 }
 
-export async function tokenizeAccurate(data: string, consistantChar?: boolean) {
+export async function tokenizeAccurate(data: string, consistantChar?: boolean, signal?: AbortSignal) {
     data = risuChatParser(data.replace("{{slot}}", ""), {
         tokenizeAccurate: true,
         consistantChar: consistantChar,
     });
-    const encoded = await encode(data);
-    return encoded.length;
+    return countTokens(data, undefined, signal);
 }
 
-/** The shared token arithmetic (`shared/prompt/chatTokens.ts`) with the client's encoder. */
+/** The shared token arithmetic (`shared/prompt/chatTokens.ts`) with the client's server-backed counts. */
 export class ChatTokenizer extends ChatTokenCounter {
     constructor(chatAdditionalTokens: number, useName: "name" | "noName") {
         super(chatAdditionalTokens, useName, {
-            encode,
+            count: (text) => countTokens(text),
             supportsInlayImage,
             mainModel: () => getModelInfoForMode("model"),
             requestModel: () => {
@@ -379,9 +258,6 @@ export class ChatTokenizer extends ChatTokenCounter {
 }
 
 export async function getCharToken(char?: AnyClientCharacter | null) {
-    let persistant = 0;
-    let dynamic = 0;
-
     if (!char) {
         const c = selectedCharacter();
         char = c;
@@ -395,11 +271,9 @@ export async function getCharToken(char?: AnyClientCharacter | null) {
         return await tokenize(data);
     };
 
-    persistant += await basicTokenize(char.desc);
-    persistant += await basicTokenize(char.personality ?? "");
-    persistant += await basicTokenize(char.scenario ?? "");
+    const texts = [char.desc, char.personality ?? "", char.scenario ?? ""];
     for (const lore of char.globalLore) {
-        let cont = lore.content
+        const cont = lore.content
             .split("\n")
             .filter((line) => {
                 if (line.startsWith("@@")) {
@@ -411,17 +285,19 @@ export async function getCharToken(char?: AnyClientCharacter | null) {
                 return true;
             })
             .join("\n");
-        dynamic += await basicTokenize(cont);
+        texts.push(cont);
     }
 
+    const counts = await Promise.all(texts.map(basicTokenize));
+    const persistant = counts.slice(0, 3).reduce((sum, count) => sum + count, 0);
+    const dynamic = counts.slice(3).reduce((sum, count) => sum + count, 0);
     return { persistant, dynamic };
 }
 
 /** The tokens of a chat's messages (0 for none: a selected chat that is still loading). */
 export async function getChatToken(chat: DeepReadonly<Chat> | null) {
-    let persistant = 0;
     if (!chat) {
-        return persistant;
+        return 0;
     }
 
     const chatTokenizer = new ChatTokenizer(0, "name");
@@ -431,9 +307,6 @@ export async function getChatToken(chat: DeepReadonly<Chat> | null) {
             content: d.data,
         } as OpenAIChat;
     });
-    for (const chat of chatf) {
-        persistant += await chatTokenizer.tokenizeChat(chat);
-    }
-
-    return persistant;
+    const counts = await Promise.all(chatf.map((message) => chatTokenizer.tokenizeChat(message)));
+    return counts.reduce((sum, count) => sum + count, 0);
 }

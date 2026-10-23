@@ -10,12 +10,12 @@ import type { PromptItem, PromptRole } from "../../../shared/prompt.ts";
 export type * from "../../../shared/prompt.ts";
 
 export async function tokenizePreset(prompts: PromptItem[], consti: boolean = false) {
-    let total = 0;
+    const strings: string[] = [];
     for (const prompt of prompts) {
         switch (prompt.type) {
             case "plain":
             case "jailbreak": {
-                total += await tokenizeAccurate(prompt.text, consti);
+                strings.push(prompt.text);
                 break;
             }
             case "persona":
@@ -25,13 +25,14 @@ export async function tokenizePreset(prompts: PromptItem[], consti: boolean = fa
             case "authornote":
             case "memory": {
                 if (prompt.innerFormat) {
-                    total += await tokenizeAccurate(prompt.innerFormat, consti);
+                    strings.push(prompt.innerFormat);
                 }
                 break;
             }
         }
     }
-    return total;
+    const counts = await Promise.all(strings.map((text) => tokenizeAccurate(text, consti)));
+    return counts.reduce((sum, count) => sum + count, 0);
 }
 
 function normalizeImportedPromptRole(role: unknown): PromptRole {

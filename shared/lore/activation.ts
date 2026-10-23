@@ -259,6 +259,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
 
     let matching = true;
     let actives: LoreActive[] = [];
+    const pendingCounts: { active: LoreActive; count: Promise<number> }[] = [];
+    const pendingFlags = new Map<string, string>();
     let activatedIndexes: number[] = [];
     let disabledUIPrompts: string[] = [];
     let matchTimes = 0;
@@ -338,10 +340,10 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                         return;
                     }
                     case "keep_activate_after_match": {
-                        const vara = host.getChatVar(
+                        const key =
                             "__internal_ka_" +
-                                (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString()),
-                        );
+                            (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString());
+                        const vara = pendingFlags.get(key) ?? host.getChatVar(key);
                         if (vara === "true") {
                             forceState = "activate";
                         } else {
@@ -350,10 +352,10 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                         return false;
                     }
                     case "dont_activate_after_match": {
-                        const vara = host.getChatVar(
+                        const key =
                             "__internal_da_" +
-                                (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString()),
-                        );
+                            (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString());
+                        const vara = pendingFlags.get(key) ?? host.getChatVar(key);
                         if (vara === "true") {
                             forceState = "deactivate";
                         } else {
@@ -582,31 +584,35 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             }
 
             if (activated) {
-                actives.push({
+                const active: LoreActive = {
                     depth: depth,
                     pos: pos,
                     prompt: content,
                     role: role,
                     order: order,
-                    // Count tokens against the CBS-evaluated text (e.g. {{#if}}, {{getglobalvar}})
-                    // so cutoff reflects what actually reaches the context, not the unevaluated source.
-                    // runVar is left false (matching the output path in index.svelte.ts), so this
-                    // evaluation has no side effects like setvar.
-                    tokens: await host.tokenize(host.parseCBS(content)),
+                    tokens: 0,
                     priority: priority,
                     source: fullLore[i].comment || `lorebook ${i}`,
                     inject: inject ?? null,
-                });
+                };
+                // Parse CBS in entry order, with runVar left false as in the output path.
+                // Start each count now and await them together before the budget pass, so cutoff
+                // uses evaluated text without yielding at each entry's count.
+                const count = host.tokenize(host.parseCBS(content));
+                // A later regex test can yield or throw before the counts are awaited.
+                void count.catch(() => {});
+                pendingCounts.push({ active, count });
+                actives.push(active);
                 activatedIndexes.push(i);
 
                 if (keepActivateAfterMatch) {
-                    host.setChatVar(
+                    pendingFlags.set(
                         "__internal_ka_" + (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString()),
                         "true",
                     );
                 }
                 if (dontActivateAfterMatch) {
-                    host.setChatVar(
+                    pendingFlags.set(
                         "__internal_da_" + (fullLore[i].id ?? host.pickHashRand(5555, fullLore[i].content).toString()),
                         "true",
                     );
@@ -627,6 +633,16 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                 }
             }
         }
+    }
+
+    const counts = await Promise.all(pendingCounts.map(({ count }) => count));
+    pendingCounts.forEach(({ active }, index) => {
+        active.tokens = counts[index];
+    });
+    // Writes wait for the counts so an aborted or failed activation leaves no flag. Decorator
+    // reads use pendingFlags during the loop so entries sharing a key still see earlier writes.
+    for (const [key, value] of pendingFlags) {
+        host.setChatVar(key, value);
     }
 
     const activesSorted = actives.sort((a, b) => {

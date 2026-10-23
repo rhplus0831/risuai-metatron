@@ -9,7 +9,7 @@ describe("ChatTokenCounter image rules", () => {
     const image = (width?: number, height?: number): MultiModal => ({ type: "image", base64: "", width, height });
     const counter = (model: LLMModel | undefined, quality?: string, host: Partial<ChatTokenHost> = {}) =>
         new ChatTokenCounter(3, "noName", {
-            encode: async (text) => Array.from(text, (_, i) => i),
+            count: async (text) => text.length,
             supportsInlayImage: () => true,
             ...(model ? { mainModel: () => model } : {}),
             gptVisionQuality: () => quality,

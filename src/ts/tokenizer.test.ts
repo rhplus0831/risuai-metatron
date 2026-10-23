@@ -1,191 +1,352 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../shared/presets";
+import { LLMTokenizer } from "../../shared/llm";
+import { DEFAULT_MODEL_PROFILE_ID, normalizeModelPreset, normalizeModelProfile } from "../../shared/presets";
+import type { TabTokenScope } from "../../shared/tokenizerChoice";
+import { getModelInfo } from "./model/modellist";
+import { pluginHooks } from "./plugins/pluginHooks";
+import type { character, Chat } from "./storage/database.svelte";
 import { activeMainProfile, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
-import { encode } from "./tokenizer";
+import {
+    ChatTokenizer,
+    countTokens,
+    encodeWithTokenizer,
+    getCharToken,
+    getChatToken,
+    tabTokenScope,
+    tokenize,
+    tokenizeAccurate,
+} from "./tokenizer";
 
-const mocks = vi.hoisted(() => {
-    const fixture = {
-        modelId: "hf:::Xenova/opt-350m",
-        currentPluginProvider: "",
-        customTokenizer: "",
-        enableCustomFlags: false,
-    };
-    return { fixture, constructedWith: [] as string[], supportsImages: false };
-});
-
-// `database.svelte` (reached through the records' graph) re-exports the asset writer.
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: vi.fn(),
-    saveAsset: vi.fn(),
+const mocks = vi.hoisted(() => ({
+    authFetch: vi.fn<typeof import("./storage/serverAuth").authFetch>(),
 }));
 
-vi.mock("src/ts/parser/parser.svelte", () => ({
-    risuChatParser: (text: string) => text,
-}));
-
-vi.mock("src/ts/process/files/inlays", () => ({
-    supportsInlayImage: () => mocks.supportsImages,
-}));
-
-vi.mock("@dqbd/tiktoken", () => ({
-    Tiktoken: class {
-        freed = false;
-        constructor(bpeRanks: string) {
-            mocks.constructedWith.push(bpeRanks);
-        }
-        encode(text: string) {
-            // The WASM handle is gone once freed.
-            if (this.freed) {
-                throw new Error("encode on a freed Tiktoken");
-            }
-            return Array.from(text, (char) => char.codePointAt(0) ?? 0);
-        }
-        free() {
-            this.freed = true;
-        }
-    },
-}));
-
-vi.mock("@dqbd/tiktoken/encoders/cl100k_base.json", () => ({
-    bpe_ranks: "cl100k_base",
-    special_tokens: {},
-    pat_str: "",
-}));
-
-vi.mock("src/etc/o200k_base.json", () => ({
-    bpe_ranks: "o200k_base",
-    special_tokens: {},
-    pat_str: "",
-}));
-
-// The fixture installed into the records, since the tokenizer reads the settings through the record
-// views: its model fields (`modelId`, `currentPluginProvider`) are the main profile of the one
-// model preset, the tokenizer toggles the `providers` section's. A case changes them through the
-// views.
-installFlatDatabase(
-    {
-        modelProfiles: [normalizeModelProfile({ ...mocks.fixture }, { id: DEFAULT_MODEL_PROFILE_ID })],
-        googleClaudeTokenizing: false,
-        useTokenizerCaching: false,
-    },
-    "tokenizer-preset",
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
 );
 
-describe("encode", () => {
-    it("tokenizes WebLLM models (LLMTokenizer.Local) with the default tiktoken encoder", async () => {
-        // The installed main profile is what the tokenizer reads (not a default of an absent field).
-        expect(activeMainProfile.modelId).toBe(mocks.fixture.modelId);
-        const result = await encode("hi");
+type CountBody = { scope: TabTokenScope; texts: string[] };
+const countBodies = () => mocks.authFetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as CountBody);
 
-        expect(Array.from(result)).toEqual([104, 105]);
-        expect(mocks.constructedWith).toEqual(["cl100k_base"]);
+function serveCounts(count: (text: string) => number | null) {
+    mocks.authFetch.mockImplementation(async (path, init) => {
+        expect(path).toBe("/api/tokens/count");
+        expect(init).toMatchObject({ method: "POST", headers: { "Content-Type": "application/json" } });
+        const body = JSON.parse(String(init?.body)) as CountBody;
+        return Response.json({ counts: body.texts.map(count) });
     });
+}
+
+beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.authFetch.mockReset();
+    installFlatDatabase(
+        {
+            modelProfiles: [
+                normalizeModelProfile({ modelId: "hf:::Xenova/opt-350m" }, { id: DEFAULT_MODEL_PROFILE_ID }),
+            ],
+            googleClaudeTokenizing: false,
+            useTokenizerCaching: false,
+        },
+        "tokenizer-preset",
+    );
+    serveCounts(() => 1);
 });
 
-describe("the routing shared with the server", () => {
-    const base = { ...mocks.fixture };
-    const restore = () => {
-        activeMainProfile.modelId = base.modelId;
-        activeMainProfile.currentPluginProvider = base.currentPluginProvider;
-    };
+afterEach(async () => {
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+    pluginHooks.providerOptions.delete("tokenizer-test-plugin");
+});
 
-    it("a legacy plugin provider without options counts with o200k_base; a `custom` tokenizer without its function answers [0]", async () => {
-        const { pluginHooks } = await import("./plugins/pluginHooks");
-        try {
-            activeMainProfile.modelId = "custom";
-            activeMainProfile.currentPluginProvider = "absent";
-            expect(Array.from(await encode("hi"))).toEqual([104, 105]);
-            expect(mocks.constructedWith.at(-1)).toBe("o200k_base");
-            pluginHooks.providerOptions.set("p", { tokenizer: "custom" } as any);
-            activeMainProfile.currentPluginProvider = "p";
-            expect(Array.from(await encode("hi"))).toEqual([0]);
-            pluginHooks.providerOptions.set("p", { tokenizer: "custom", tokenizerFunc: async () => [7, 8, 9] } as any);
-            expect(Array.from(await encode("hi"))).toEqual([7, 8, 9]);
-        } finally {
-            pluginHooks.providerOptions.delete("p");
-            restore();
+describe("server token counts", () => {
+    it("coalesces same-tick calls by scope and returns each text's server count", async () => {
+        const answers: Record<string, number> = { alpha: 7, beta: 2, GAMMA: 11, delta: 5 };
+        serveCounts((text) => answers[text]);
+        const counts = Promise.all([
+            countTokens("alpha"),
+            tokenize("beta"),
+            tokenizeAccurate("{{upper::gamma}}{{slot}}"),
+        ]);
+        activeMainProfile.modelId = "gpt4om";
+        const otherScope = countTokens("delta");
+        expect(mocks.authFetch).not.toHaveBeenCalled();
+
+        await vi.runAllTimersAsync();
+
+        expect(await counts).toEqual([7, 2, 11]);
+        expect(await otherScope).toBe(5);
+        expect(countBodies().map(({ scope, texts }) => [scope.aiModel, texts])).toEqual([
+            ["hf:::Xenova/opt-350m", ["alpha", "beta", "GAMMA"]],
+            ["gpt4om", ["delta"]],
+        ]);
+    });
+
+    it("splits a batch after 256 texts without losing their results", async () => {
+        const texts = Array.from({ length: 257 }, (_, i) => `text-${i}`);
+        serveCounts((text) => Number(text.slice(5)) + 10);
+        const counts = Promise.all(texts.map((text) => countTokens(text)));
+        await vi.runAllTimersAsync();
+
+        expect(countBodies().map(({ texts }) => texts)).toEqual([texts.slice(0, 256), texts.slice(256)]);
+        expect(await counts).toEqual(Array.from({ length: 257 }, (_, i) => i + 10));
+    });
+
+    it("splits at one MiB of serialized UTF-8 text, including JSON escaping", async () => {
+        // Each quoted JSON string is 524,288 bytes: 3 bytes per Korean character, 2 per newline,
+        // and 2 quotes. Two fit exactly; the final text must start a new request.
+        const half = "한\n".repeat(104_857) + "a";
+        const texts = [half, half, "tail"];
+        serveCounts((text) => (text === "tail" ? 3 : 17));
+        const counts = Promise.all(texts.map((text) => countTokens(text)));
+        await vi.runAllTimersAsync();
+
+        expect(countBodies().map(({ texts }) => texts.length)).toEqual([2, 1]);
+        expect(countBodies().flatMap(({ texts }) => texts)).toEqual(texts);
+        expect(await counts).toEqual([17, 17, 3]);
+    });
+
+    it("reuses counts only for the same scope while caching is enabled", async () => {
+        settings.providers.useTokenizerCaching = true;
+        serveCounts(() => 23);
+        const first = countTokens("cached text");
+        await vi.runAllTimersAsync();
+        expect(await first).toBe(23);
+        const cached = countTokens("cached text");
+        await vi.runAllTimersAsync();
+        expect(await cached).toBe(23);
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+
+        activeMainProfile.modelId = "gpt4om";
+        serveCounts(() => 31);
+        const differentScope = countTokens("cached text");
+        await vi.runAllTimersAsync();
+        expect(await differentScope).toBe(31);
+        expect(mocks.authFetch).toHaveBeenCalledTimes(2);
+
+        settings.providers.useTokenizerCaching = false;
+        for (const answer of [41, 43]) {
+            serveCounts(() => answer);
+            const uncached = countTokens("cached text");
+            await vi.runAllTimersAsync();
+            expect(await uncached).toBe(answer);
         }
+        expect(mocks.authFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it("evicts the least recently used count when the cache exceeds 1500 texts", async () => {
+        settings.providers.useTokenizerCaching = true;
+        const texts = Array.from({ length: 1500 }, (_, i) => `lru-${i}`);
+        const initial = Promise.all(texts.map((text) => countTokens(text)));
+        await vi.runAllTimersAsync();
+        await initial;
+        mocks.authFetch.mockClear();
+
+        const refreshed = countTokens(texts[0]);
+        await vi.runAllTimersAsync();
+        expect(await refreshed).toBe(1);
+        expect(mocks.authFetch).not.toHaveBeenCalled();
+        const extra = countTokens("lru-extra");
+        await vi.runAllTimersAsync();
+        await extra;
+        const retained = countTokens(texts[0]);
+        const evicted = countTokens(texts[1]);
+        await vi.runAllTimersAsync();
+        expect(await retained).toBe(1);
+        expect(await evicted).toBe(1);
+        expect(countBodies().map(({ texts }) => texts)).toEqual([["lru-extra"], ["lru-1"]]);
+    });
+
+    it("isolates signal-bearing counts and rejects aborts with the signal's reason", async () => {
+        const controller = new AbortController();
+        const reason = new Error("editor superseded");
+        mocks.authFetch.mockImplementation(async (_path, init) => {
+            if (init?.signal) {
+                return new Promise<Response>((_resolve, reject) => {
+                    init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+                        once: true,
+                    });
+                });
+            }
+            return Response.json({ counts: [13, 17] });
+        });
+        const ordinary = Promise.all([countTokens("first"), countTokens("second")]);
+        const aborted = countTokens("editing", undefined, controller.signal);
+        const rejection = expect(aborted).rejects.toBe(reason);
+        await vi.runAllTimersAsync();
+        expect(countBodies().map(({ texts }) => texts)).toEqual([["editing"], ["first", "second"]]);
+        expect(mocks.authFetch.mock.calls[0][1]?.signal).toBe(controller.signal);
+        expect(await ordinary).toEqual([13, 17]);
+
+        controller.abort(reason);
+        await rejection;
+        const calls = mocks.authFetch.mock.calls.length;
+        await expect(countTokens("never sent", undefined, controller.signal)).rejects.toBe(reason);
+        await vi.runAllTimersAsync();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(calls);
+    });
+
+    it("rejects only the text whose server count is null", async () => {
+        const answers: Record<string, number | null> = { before: 5, "<|endoftext|>": null, after: 9 };
+        serveCounts((text) => answers[text]);
+        const results = Promise.allSettled(Object.keys(answers).map((text) => countTokens(text)));
+        await vi.runAllTimersAsync();
+
+        expect(await results).toEqual([
+            { status: "fulfilled", value: 5 },
+            { status: "rejected", reason: expect.any(Error) },
+            { status: "fulfilled", value: 9 },
+        ]);
+        expect(countBodies().map(({ texts }) => texts)).toEqual([["before", "<|endoftext|>", "after"]]);
+    });
+
+    it("sends the captured preset's complete tokenizer scope without calling its legacy plugin tokenizer", async () => {
+        const tokenizerFunc = vi.fn(async () => [101, 102, 103]);
+        pluginHooks.providerOptions.set("tokenizer-test-plugin", { tokenizer: "custom", tokenizerFunc });
+        installFlatDatabase({
+            botPresets: [
+                { id: "selected", name: "Selected" },
+                { id: "captured", name: "Captured" },
+            ],
+            modelPresets: [
+                normalizeModelPreset({ mainSlot: { profileId: "selected-profile" } }, { id: "selected" }),
+                normalizeModelPreset({ mainSlot: { profileId: "plugin-profile" } }, { id: "captured" }),
+            ],
+            modelProfiles: [
+                normalizeModelProfile({ modelId: "gpt4om", customTokenizer: "mistral" }, { id: "selected-profile" }),
+                normalizeModelProfile(
+                    { modelId: "custom", currentPluginProvider: "tokenizer-test-plugin", customTokenizer: "llama" },
+                    { id: "plugin-profile" },
+                ),
+            ],
+            googleClaudeTokenizing: true,
+            useTokenizerCaching: true,
+        });
+        const scope = { presetId: "captured", modelPresetId: "captured" };
+        const expected: TabTokenScope = {
+            aiModel: "custom",
+            currentPluginProvider: "tokenizer-test-plugin",
+            customTokenizer: "llama",
+            modelTokenizer: LLMTokenizer.Unknown,
+            modelInternalID: "custom",
+            pluginTokenizer: "custom",
+            googleClaudeTokenizing: true,
+            useTokenizerCaching: true,
+        };
+        expect(activeMainProfile.modelId).toBe("gpt4om");
+        expect(tabTokenScope(scope)).toEqual(expected);
+        const { modelInternalID: _internalID, ...withoutInternalID } = expected;
+        expect(tabTokenScope(scope, { ...getModelInfo("custom"), internalID: undefined })).toEqual(withoutInternalID);
+        const pluginCount = countTokens("plugin scope", scope);
+        const selectedCount = countTokens("selected scope");
+        await vi.runAllTimersAsync();
+
+        expect(await pluginCount).toBe(1);
+        expect(await selectedCount).toBe(1);
+        expect(countBodies()).toEqual([
+            { scope: expected, texts: ["plugin scope"] },
+            {
+                scope: {
+                    aiModel: "gpt4om",
+                    currentPluginProvider: "",
+                    customTokenizer: "mistral",
+                    modelTokenizer: LLMTokenizer.tiktokenO200Base,
+                    modelInternalID: "gpt-4o-mini",
+                    pluginTokenizer: "none",
+                    googleClaudeTokenizing: true,
+                    useTokenizerCaching: true,
+                },
+                texts: ["selected scope"],
+            },
+        ]);
+        expect(tokenizerFunc).not.toHaveBeenCalled();
+    });
+
+    it("counts all 51 chat messages in one request using content alone", async () => {
+        const texts = Array.from({ length: 51 }, (_, i) => `message-${i}`);
+        serveCounts((text) => Number(text.slice(8)) + 1);
+        const total = getChatToken({
+            message: texts.map((data, i) => ({ data, role: i % 2 ? "char" : "user", saying: "Bot" })),
+        } as Chat);
+        await vi.runAllTimersAsync();
+
+        expect(await total).toBe((51 * 52) / 2);
+        expect(countBodies().map(({ texts }) => texts)).toEqual([texts]);
+    });
+
+    it("counts character fields and filtered lore together while preserving their separate totals", async () => {
+        const texts = ["Ada desc", "kind Ada", "scene", "Ada lore\nmore", "second"];
+        const answers = [7, 3, 5, 11, 13];
+        serveCounts((text) => answers[texts.indexOf(text)]);
+        const total = getCharToken({
+            type: "character",
+            name: "Ada",
+            desc: "{{char}} desc",
+            personality: "kind <char>",
+            scenario: "scene",
+            globalLore: [{ content: "@@activate\n\n{{char}} lore\nmore" }, { content: "second" }],
+        } as character);
+        await vi.runAllTimersAsync();
+
+        expect(await total).toEqual({ persistant: 7 + 3 + 5, dynamic: 11 + 13 });
+        expect(countBodies().map(({ texts }) => texts)).toEqual([texts]);
+    });
+
+    it("posts the playground tokenizer and text to the encode route and returns its ids", async () => {
+        mocks.authFetch.mockResolvedValue(Response.json({ ids: [71, 0, 902] }));
+        expect(await encodeWithTokenizer("playground text", "llama3")).toEqual([71, 0, 902]);
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        expect(mocks.authFetch.mock.calls[0]).toEqual([
+            "/api/tokens/encode",
+            expect.objectContaining({
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tokenizer: "llama3", text: "playground text" }),
+            }),
+        ]);
     });
 });
 
 describe("ChatTokenizer", () => {
-    it("uses the main profile and its OpenRouter or NanoGPT wire model for image tokens", async () => {
-        const { ChatTokenizer } = await import("./tokenizer");
-        const saved = {
-            modelId: activeMainProfile.modelId,
-            openrouterRequestModel: activeMainProfile.openrouterRequestModel,
-            nanogptRequestModel: activeMainProfile.nanogptRequestModel,
-            quality: settings.providers.gptVisionQuality,
-        };
-        try {
-            mocks.supportsImages = true;
-            settings.providers.gptVisionQuality = "low";
-            const counter = new ChatTokenizer(3, "noName");
-            const image = { type: "image" as const, base64: "", width: 1024, height: 1024 };
-            activeMainProfile.modelId = "gpt4om";
-            expect(counter.tokenizeMultiModal(image)).toBe(2833);
-            activeMainProfile.openrouterRequestModel = "openai/gpt-4o-mini";
-            activeMainProfile.modelId = "openrouter";
-            expect(counter.tokenizeMultiModal(image)).toBe(2833);
-            activeMainProfile.nanogptRequestModel = "openai/gpt-5.5";
-            activeMainProfile.modelId = "nanogpt";
-            expect(counter.tokenizeMultiModal(image)).toBe(308);
-        } finally {
-            activeMainProfile.modelId = saved.modelId;
-            activeMainProfile.openrouterRequestModel = saved.openrouterRequestModel;
-            activeMainProfile.nanogptRequestModel = saved.nanogptRequestModel;
-            settings.providers.gptVisionQuality = saved.quality;
-            mocks.supportsImages = false;
-        }
+    it("uses the main profile and its OpenRouter or NanoGPT wire model for image tokens", () => {
+        settings.providers.gptVisionQuality = "low";
+        const counter = new ChatTokenizer(3, "noName");
+        const image = { type: "image" as const, base64: "", width: 1024, height: 1024 };
+        activeMainProfile.modelId = "gpt4om";
+        expect(counter.tokenizeMultiModal(image)).toBe(2833);
+        activeMainProfile.openrouterRequestModel = "openai/gpt-4o-mini";
+        activeMainProfile.modelId = "openrouter";
+        expect(counter.tokenizeMultiModal(image)).toBe(2833);
+        activeMainProfile.nanogptRequestModel = "openai/gpt-5.5";
+        activeMainProfile.modelId = "nanogpt";
+        expect(counter.tokenizeMultiModal(image)).toBe(308);
     });
 
-    it("is the shared arithmetic over the client's encode, inlay support, and vision quality", async () => {
-        const { ChatTokenizer } = await import("./tokenizer");
-        const counter = new ChatTokenizer(3, "name");
-        // The mocked tiktoken counts one id per character; inlay images are unsupported here, so an
-        // image counts as the additional tokens.
-        expect(
-            await counter.tokenizeChat({
+    it("keeps the shared arithmetic over server counts, names, thoughts, and unsupported images", async () => {
+        const answers: Record<string, number> = { hello: 7, ab: 2, thought: 11 };
+        serveCounts((text) => answers[text]);
+        const named = new ChatTokenizer(3, "name").tokenizeChat(
+            {
                 role: "user",
                 content: "hello",
                 name: "ab",
+                thoughts: ["thought"],
                 multimodals: [{ type: "image", base64: "", width: 512, height: 512 }],
-            }),
-        ).toBe(5 + 3 + (2 + 1) + 3);
-        expect(await new ChatTokenizer(1, "noName").tokenizeChats([{ role: "user", content: "ab", name: "x" }])).toBe(
-            3,
+            },
+            { countThoughts: true },
         );
-    });
-});
+        const unnamed = new ChatTokenizer(1, "noName").tokenizeChats([
+            { role: "user", content: "ab", name: "ignored" },
+        ]);
+        await vi.runAllTimersAsync();
 
-describe("tiktoken parsers (crosscheck row 14)", () => {
-    it("counts for both encoders at once, neither on a parser the other count freed", async () => {
-        const base = { ...mocks.fixture };
-        try {
-            // A cl100k_base parser is loaded (the WebLLM model of the fixture).
-            expect(Array.from(await encode("a"))).toEqual([97]);
-            // An o200k_base count starts loading its parser; a cl100k_base count runs meanwhile.
-            activeMainProfile.modelId = "custom";
-            activeMainProfile.currentPluginProvider = "absent";
-            const o200k = encode("hi");
-            activeMainProfile.modelId = base.modelId;
-            activeMainProfile.currentPluginProvider = base.currentPluginProvider;
-            const cl100k = encode("yo");
-            expect((await Promise.all([o200k, cl100k])).map((tokens) => Array.from(tokens))).toEqual([
-                [104, 105],
-                [121, 111],
-            ]);
-            // Both stay loaded: switching back and forth loads nothing more.
-            const built = mocks.constructedWith.length;
-            activeMainProfile.modelId = "custom";
-            activeMainProfile.currentPluginProvider = "absent";
-            expect(Array.from(await encode("hi"))).toEqual([104, 105]);
-            expect(mocks.constructedWith.length).toBe(built);
-        } finally {
-            activeMainProfile.modelId = base.modelId;
-            activeMainProfile.currentPluginProvider = base.currentPluginProvider;
-        }
+        expect(await named).toBe(7 + 3 + (2 + 1) + 3 + (11 + 1));
+        expect(await unnamed).toBe(2 + 1);
+        expect(countBodies().flatMap(({ texts }) => texts)).toEqual(
+            expect.arrayContaining(["hello", "ab", "ab", "thought"]),
+        );
+        expect(countBodies().flatMap(({ texts }) => texts)).not.toContain("ignored");
     });
 });

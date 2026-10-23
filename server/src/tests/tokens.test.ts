@@ -575,7 +575,7 @@ describe("ChatTokenCounter (the shared token arithmetic)", () => {
         host: Partial<ConstructorParameters<typeof ChatTokenCounter>[2]> = {},
     ) =>
         new ChatTokenCounter(chatAdditionalTokens, useName, {
-            encode: async (text) => Array.from(text, (_, i) => i),
+            count: async (text) => text.length,
             supportsInlayImage: () => true,
             gptVisionQuality: () => "high",
             ...host,

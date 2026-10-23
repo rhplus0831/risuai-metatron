@@ -1334,7 +1334,7 @@ async function runSpeaker(arg: {
                     arg.chatAdditonalTokens,
                     db.aiModel.startsWith("gpt") ? "noName" : "name",
                     {
-                        encode: (text) => deps.tokens.encode(text, tokenScopeFor(requestDb)),
+                        count: (text) => deps.tokens.count(text, tokenScopeFor(requestDb)),
                         supportsInlayImage: () => mainModelTakesImages(requestDb),
                         mainModel: () => mainModelOf(requestDb),
                         requestModel: () => {

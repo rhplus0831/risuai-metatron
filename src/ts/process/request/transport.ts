@@ -14,14 +14,7 @@ import {
     loadChat,
     pinChat,
 } from "../../storage/chatStore.svelte";
-import {
-    settings,
-    activeModelPreset,
-    activePersona,
-    activePreset,
-    missingScopeTarget,
-    scopedPresetRoot,
-} from "../../storage/settingsViews.svelte";
+import { activeModelPreset, activePersona, activePreset, missingScopeTarget } from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
     type BufferedResponse,
@@ -40,7 +33,7 @@ import { getModelInfoForMode, isDynamicModel, LLMFlags, type LLMModel } from "sr
 import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
-import { pluginHooks } from "src/ts/plugins/pluginHooks";
+import { tabTokenScope } from "src/ts/tokenizer";
 import { authFetch } from "src/ts/storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
@@ -185,8 +178,6 @@ export async function requestServer(
     const selectedPersonaId = chatRef ? personaId : (arg.requestIds?.personaId ?? activePersona.id ?? "");
     const scope = { presetId, modelPresetId, personaId };
     // The main model and tokenizer of the model preset whose id the request carries.
-    const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";
-    const currentPluginProvider = (scopedPresetRoot(presetScope, "currentPluginProvider") as string | undefined) ?? "";
     const mainModel = getModelInfoForMode("model", presetScope);
     const args: Record<string, unknown> = {};
     for (const key of REQUEST_ARG_KEYS) {
@@ -210,18 +201,8 @@ export async function requestServer(
             selectedCharacterId: chatRef ? chatRef.chaId : (selectedCharacter()?.chaId ?? null),
             speakerId: arg.currentChar?.chaId ?? null,
             mainModel: { imageInput: mainModel.flags.includes(LLMFlags.hasImageInput) },
-            // `encode`'s scope (`src/ts/tokenizer.ts`), as the tab would tokenize now.
-            // A field a fresh store has not set yet is sent as the value `encode` treats it as.
-            tokenizer: {
-                aiModel,
-                currentPluginProvider,
-                modelTokenizer: mainModel.tokenizer,
-                ...(mainModel.internalID !== undefined ? { modelInternalID: mainModel.internalID } : {}),
-                pluginTokenizer: pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none",
-                customTokenizer: (scopedPresetRoot(presetScope, "customTokenizer") as string | undefined) ?? "",
-                googleClaudeTokenizing: !!settings.providers.googleClaudeTokenizing,
-                useTokenizerCaching: !!settings.providers.useTokenizerCaching,
-            },
+            // The same captured main-model scope used by the tab's on-screen token counts.
+            tokenizer: tabTokenScope(presetScope, mainModel),
         },
         arg: requestArgs,
         tools: JSON.parse(

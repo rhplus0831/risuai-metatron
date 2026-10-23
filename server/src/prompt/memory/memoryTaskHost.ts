@@ -166,7 +166,7 @@ export function createMemoryTaskHost(arg: {
         googleAccessToken: requestDb.google?.accessToken,
     };
     const counter = new ChatTokenCounter(policy.chatAdditionalTokens, policy.useName, {
-        encode: (text) => deps.tokens.encode(text, tokenScope),
+        count: (text) => deps.tokens.count(text, tokenScope),
         supportsInlayImage: () => policy.supportsInlayImage,
         mainModel: () => policy.mainModel,
         requestModel: () => policy.requestModel,

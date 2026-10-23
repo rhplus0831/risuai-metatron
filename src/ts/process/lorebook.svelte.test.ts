@@ -157,7 +157,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await sources()).toEqual(["dragon"]);
     });
 
-    it("yields first at the first active's token count, after its CBS and chat-variable reads", async () => {
+    it("reads every active's CBS and chat variables before it first yields, to await the counts together", async () => {
         const { characterStore, chatVar, chaId, ref, lorebook } = await boot([message("m1", "user", "alpha beta")]);
         characterStore.updateCharacter(chaId, {
             globalLore: [lore("alpha", "alpha", "A {{getvar::x}}"), lore("beta", "beta", "B {{getvar::x}}")],
@@ -166,10 +166,11 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         hooks.parse = (text) => text.replaceAll("{{getvar::x}}", chatVar.getChatVarOf(ref, "x"));
         queueMicrotask(() => chatVar.setChatVarOf(ref, "x", "two"));
         const result = await lorebook.loadLoreBookV3Prompt(ref);
-        // alpha's expansion ran synchronously ("one"); beta's after the first tokenize yielded ("two").
-        expect(hooks.tokenized).toEqual(["A one", "B two"]);
+        // Both expansions ran synchronously ("one"): the counts are started in the loop and awaited
+        // after it, so the queued change lands only after every active was parsed.
+        expect(hooks.tokenized).toEqual(["A one", "B one"]);
         expect(result.actives.map((a) => [a.source, a.prompt, a.tokens])).toEqual([
-            ["beta", "B {{getvar::x}}", "B two".length],
+            ["beta", "B {{getvar::x}}", "B one".length],
             ["alpha", "A {{getvar::x}}", "A one".length],
         ]);
     });

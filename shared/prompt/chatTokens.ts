@@ -7,10 +7,10 @@ import { imageTokens, NON_IMAGE_TOKENS } from "./imageTokens.ts";
  * message's text plus `chatAdditionalTokens`, its name, its thoughts, and model-specific images.
  */
 export type ChatTokenHost = {
-    encode: (text: string) => Promise<ArrayLike<number>>;
+    count: (text: string) => Promise<number>;
     /** Whether the model takes inlay images (`supportsInlayImage` on the client). */
     supportsInlayImage: () => boolean;
-    /** Main model metadata; omitted by encoder-only hosts, which use the unknown-model fallback. */
+    /** Main model metadata; omitted by count-only hosts, which use the unknown-model fallback. */
     mainModel?: () => LLMModel;
     /** OpenRouter/NanoGPT's selected wire id, otherwise undefined. Both production hosts supply this. */
     requestModel?: () => string | undefined;
@@ -35,28 +35,28 @@ export class ChatTokenCounter {
             countThoughts?: boolean;
         } = {},
     ) {
-        let encoded = (await this.host.encode(data.content)).length + this.chatAdditionalTokens;
+        let tokens = (await this.host.count(data.content)) + this.chatAdditionalTokens;
         if (data.name && this.useName === "name") {
-            encoded += (await this.host.encode(data.name)).length + 1;
+            tokens += (await this.host.count(data.name)) + 1;
         }
         if (data.multimodals && data.multimodals.length > 0) {
             for (const multimodal of data.multimodals) {
-                encoded += await this.tokenizeMultiModal(multimodal);
+                tokens += await this.tokenizeMultiModal(multimodal);
             }
         }
         if (data.thoughts && data.thoughts.length > 0 && args.countThoughts) {
             for (const thought of data.thoughts) {
-                encoded += (await this.host.encode(thought)).length + 1;
+                tokens += (await this.host.count(thought)) + 1;
             }
         }
-        return encoded;
+        return tokens;
     }
     async tokenizeChats(data: OpenAIChat[]) {
-        let encoded = 0;
+        let tokens = 0;
         for (const chat of data) {
-            encoded += await this.tokenizeChat(chat);
+            tokens += await this.tokenizeChat(chat);
         }
-        return encoded;
+        return tokens;
     }
 
     tokenizeMultiModal(data: MultiModal) {
