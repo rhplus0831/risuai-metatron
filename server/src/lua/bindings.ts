@@ -1054,6 +1054,24 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!isLow(ctx)) {
             return undefined;
         }
+        const options = parseLuaOptions(optionsStr) as { mode?: unknown; streaming?: boolean };
+        let requestMode: ModelModeExtended = mode;
+        if (mode === "otherAx") {
+            const modes = [
+                "emotion",
+                "memory",
+                "otherAx",
+                "submodel",
+                "translate",
+            ] as const satisfies readonly ModelModeExtended[];
+            const optionMode = options.mode ?? "otherAx";
+            const axMode = typeof optionMode === "string" ? modes.find((value) => value === optionMode) : undefined;
+            if (axMode === undefined) {
+                const invalidMode = typeof optionMode === "string" ? optionMode : JSON.stringify(optionMode);
+                return JSON.stringify({ success: false, result: `Error: Invalid axLLM mode: ${invalidMode}` });
+            }
+            requestMode = axMode;
+        }
         const promptbody: OpenAIChat[] = prompt.map((dict) => {
             let role: "system" | "user" | "assistant" = "assistant";
             switch (dict["role"]) {
@@ -1103,7 +1121,6 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 msg.multimodals = multimodals.length > 0 ? multimodals : undefined;
             }
         }
-        const options = parseLuaOptions(optionsStr) as { streaming?: boolean };
         const result = await request(
             {
                 formated: promptbody,
@@ -1113,7 +1130,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 noMultiGen: true,
                 chatRef: ref,
             } as RequestArgs,
-            mode,
+            requestMode,
             ctx,
             "lua",
         );

@@ -131,12 +131,19 @@ beforeAll(async () => {
         ).json()) as any
     ).epoch;
 
-    // One profile on the mock provider for both the main and the aux model's slot; a second persona
+    // Distinct profiles on the mock provider for the main, sub, and each aux slot; a second persona
     // the chats can bind, with a prompt CBS parses; the embeddings on the mock embedding server.
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
-    const profileId = modelProfiles.data[0].id;
+    const slotProfiles = ["main", "submodel", "emotion", "memory", "otherAx", "translate"].map((slot) => ({
+        ...modelProfiles.data[0],
+        id: `lua-${slot}`,
+        name: `Lua ${slot}`,
+        modelId: "reverse_proxy",
+        forceReplaceUrl: providerUrl,
+        customProxyRequestModel: `mock-${slot}`,
+    }));
     const personas = await single("personas");
     const memorySettings = await single("memoryTranslateMedia");
     const secrets = await single("secrets");
@@ -153,23 +160,27 @@ beforeAll(async () => {
                     kind: "modelProfiles",
                     id: "main",
                     baseRevision: modelProfiles.revision,
-                    data: modelProfiles.data.map((profile: any, index: number) =>
-                        index === 0
-                            ? {
-                                  ...profile,
-                                  modelId: "reverse_proxy",
-                                  forceReplaceUrl: providerUrl,
-                                  customProxyRequestModel: "mock",
-                              }
-                            : profile,
-                    ),
+                    data: [...modelProfiles.data, ...slotProfiles],
                 },
                 {
                     kind: "modelPresets",
                     id: "main",
                     baseRevision: modelPresets.revision,
                     data: modelPresets.data.map((preset: any, index: number) =>
-                        index === 0 ? { ...preset, mainSlot: { profileId }, subSlot: { profileId } } : preset,
+                        index === 0
+                            ? {
+                                  ...preset,
+                                  mainSlot: { profileId: "lua-main" },
+                                  subSlot: { profileId: "lua-submodel" },
+                                  seperateModelsForAxModels: true,
+                                  auxSlots: {
+                                      emotion: { profileId: "lua-emotion" },
+                                      memory: { profileId: "lua-memory" },
+                                      otherAx: { profileId: "lua-otherAx" },
+                                      translate: { profileId: "lua-translate" },
+                                  },
+                              }
+                            : preset,
                     ),
                 },
                 {
@@ -593,7 +604,7 @@ describe("the host-function contract through the real worker", () => {
             expect(R.ax).toEqual({ success: true, result: "mock:ax" });
             const llmCall = providerCalls.find((call) => call.body.messages.at(-1)?.content === "hi from lua")!;
             expect(llmCall.body.messages.map((message) => message.role)).toEqual(["system", "user"]);
-            expect(providerCalls.every((call) => call.body.model === "mock")).toBe(true);
+            expect(providerCalls.map((call) => call.body.model)).toEqual(["mock-main", "mock-main", "mock-otherAx"]);
             // Similarity through the server embeddings (the job's `hypaModel: "custom"` on the mock
             // embedding server): the values as a table ranked by their similarity to the source, the
             // values embedded as documents and the source as the query, with the settings' key and model.
@@ -623,6 +634,84 @@ describe("the host-function contract through the real worker", () => {
             expect(chat.data.localLore.map((book: any) => book.comment)).toEqual(["lua-lore"]);
             expect(events.some((event) => event.type === "resource" && event.kind === "characters")).toBe(true);
             expect(events.some((event) => event.type === "resource" && event.kind === "chats")).toBe(true);
+        },
+        SLOW,
+    );
+
+    it(
+        "routes axLLM modes to their slots, defaults absent and null modes to otherAx, and keeps LLM on main",
+        async () => {
+            const chaId = await seedCharacter({
+                codes: [
+                    button(`
+                    local R = {}
+                    for _, mode in ipairs({"emotion", "memory", "otherAx", "submodel", "translate"}) do
+                        table.insert(R, axLLM(id, {{role = "user", content = mode}}, false, {mode = mode}))
+                    end
+                    table.insert(R, axLLM(id, {{role = "user", content = "default"}}))
+                    table.insert(R, json.decode(axLLMMain(id,
+                        json.encode({{role = "user", content = "null"}}), false, '{"mode":null}'):await()))
+                    table.insert(R, LLM(id, {{role = "user", content = "main"}}, false, {mode = "memory"}))
+                    table.insert(R, LLM(id, {{role = "user", content = "main-invalid"}}, false, {mode = "unknown"}))
+                    alertNormal(id, json.encode(R))
+                `),
+                ],
+            });
+            providerCalls.length = 0;
+            const { events, terminal } = await runButton(chaId);
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(providerCalls.map(({ body }) => [body.messages.at(-1)?.content, body.model])).toEqual([
+                ["emotion", "mock-emotion"],
+                ["memory", "mock-memory"],
+                ["otherAx", "mock-otherAx"],
+                ["submodel", "mock-submodel"],
+                ["translate", "mock-translate"],
+                ["default", "mock-otherAx"],
+                ["null", "mock-otherAx"],
+                ["main", "mock-main"],
+                ["main-invalid", "mock-main"],
+            ]);
+            expect(JSON.parse(notice(events, "alertNormal")!)).toEqual(
+                [
+                    "emotion",
+                    "memory",
+                    "otherAx",
+                    "submodel",
+                    "translate",
+                    "default",
+                    "null",
+                    "main",
+                    "main-invalid",
+                ].map((prompt) => ({ success: true, result: `mock:${prompt}` })),
+            );
+        },
+        SLOW,
+    );
+
+    it(
+        "returns axLLM failures for unknown, main-model, numeric, and table modes without provider requests",
+        async () => {
+            const chaId = await seedCharacter({
+                codes: [
+                    button(`
+                    local R = {}
+                    for _, mode in ipairs({"unknown", "model", 42, {"memory"}}) do
+                        table.insert(R, axLLM(id, {{role = "user", content = "invalid"}}, false, {mode = mode}))
+                    end
+                    alertNormal(id, json.encode(R))
+                `),
+                ],
+            });
+            providerCalls.length = 0;
+            const { events, terminal } = await runButton(chaId);
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(providerCalls).toEqual([]);
+            expect(JSON.parse(notice(events, "alertNormal")!)).toEqual([
+                { success: false, result: "Error: Invalid axLLM mode: unknown" },
+                { success: false, result: "Error: Invalid axLLM mode: model" },
+                { success: false, result: "Error: Invalid axLLM mode: 42" },
+                { success: false, result: expect.stringMatching(/^Error: Invalid axLLM mode: /) },
+            ]);
         },
         SLOW,
     );
