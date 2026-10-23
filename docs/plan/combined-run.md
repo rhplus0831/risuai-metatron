@@ -1,6 +1,6 @@
 # Combined Run Plan
 
-Status: planned 2026-10-23 at `7bcdb8030`. Landed: SA1 (`84ff35294`), UP4 (`128e6949c`), UP5 (`052b6cad9`), GS1 (`e1b49f057`), DA0 (`81015f89d`) probe a–e pass, SA7 (`5bcc152a7`), SA9 (`f3c4b942a`), SA2 (`ada2e3139`), UP1 (`ffc4d03aa`), UP6 (`717a371f5`), GS3 (`54e553623`), TK1 (`7a7ca32e7`), GS2 (`df489ec91`), SA8 (`fda8d2b35`), SA11 (`99ad3aada`), UP7 (`e555f2f0c`), CC1 (`b8b75f2e6`), UP9 (`4b9d23ada`), UP2 (`3c80346dc`), UP10 (`5909b8dfc`), GS4 (`34c7fe355`), SA3 (`4f545bc02`), SA10 (`c317b2bd4`), DA1 (`22f1da897`), SF1 (`8541758af`), UP11 (`9bd9501b6`), UP12 (`e4ea7c5a3`), SA6 (`8c6a67465`), SF3 (`5b015c118`), CC2 (`8f16dd41e`), SF2 (`b34906a7d`), SA5 (`8a3a6d00b`), UP8 (`15ea7614f`), DA2 (`2a7d338f8`), SF12 (`583505ebf`), SF5 (`8a756cfd3`), SF9 (`08c12e1db`), SF6 (`c64dfe7c6`), SA4 (`072e0f68d`), DA3 (`92c6d4b91`), UP13 (`385cc8da0`), UP3 (`43bb3c63d`), TK2 (`940c7f8c3`), CC3 (`30dfc52cf`), UP14 (`39f94aaff`), UP17 (`9d85d9b8f`), SF7 (`b06d449af`), SF8 (`3bf30c779`), SA12 (`9c460b847`), UP18 (`1bb7c82a3`), CC4 (`a5398dd28`), TK4 (`4227427ca`), DA4 (`560a3d86c`), UP15 (`3a9404635`), UP19 (`0d0927d7c`), TK3 (`a719cec11`), DA5 (`52192c078`), UP20 (`eb44b166c`), SA13 (`aaa118e9e`), DA6 (`c05c2bf88`), SF10 (`fd26e2dd9`), CC5 (`f3635120b`), UP21 (`695a13dc0`), SF4 (`d73df7c0a`), SA14 (`3811ebfd9`), CC6 (`56a21a914`), UP22 (`15503de1f`).
+Status: planned 2026-10-23 at `7bcdb8030`. Landed: SA1 (`84ff35294`), UP4 (`128e6949c`), UP5 (`052b6cad9`), GS1 (`e1b49f057`), DA0 (`81015f89d`) probe a–e pass, SA7 (`5bcc152a7`), SA9 (`f3c4b942a`), SA2 (`ada2e3139`), UP1 (`ffc4d03aa`), UP6 (`717a371f5`), GS3 (`54e553623`), TK1 (`7a7ca32e7`), GS2 (`df489ec91`), SA8 (`fda8d2b35`), SA11 (`99ad3aada`), UP7 (`e555f2f0c`), CC1 (`b8b75f2e6`), UP9 (`4b9d23ada`), UP2 (`3c80346dc`), UP10 (`5909b8dfc`), GS4 (`34c7fe355`), SA3 (`4f545bc02`), SA10 (`c317b2bd4`), DA1 (`22f1da897`), SF1 (`8541758af`), UP11 (`9bd9501b6`), UP12 (`e4ea7c5a3`), SA6 (`8c6a67465`), SF3 (`5b015c118`), CC2 (`8f16dd41e`), SF2 (`b34906a7d`), SA5 (`8a3a6d00b`), UP8 (`15ea7614f`), DA2 (`2a7d338f8`), SF12 (`583505ebf`), SF5 (`8a756cfd3`), SF9 (`08c12e1db`), SF6 (`c64dfe7c6`), SA4 (`072e0f68d`), DA3 (`92c6d4b91`), UP13 (`385cc8da0`), UP3 (`43bb3c63d`), TK2 (`940c7f8c3`), CC3 (`30dfc52cf`), UP14 (`39f94aaff`), UP17 (`9d85d9b8f`), SF7 (`b06d449af`), SF8 (`3bf30c779`), SA12 (`9c460b847`), UP18 (`1bb7c82a3`), CC4 (`a5398dd28`), TK4 (`4227427ca`), DA4 (`560a3d86c`), UP15 (`3a9404635`), UP19 (`0d0927d7c`), TK3 (`a719cec11`), DA5 (`52192c078`), UP20 (`eb44b166c`), SA13 (`aaa118e9e`), DA6 (`c05c2bf88`), SF10 (`fd26e2dd9`), CC5 (`f3635120b`), UP21 (`695a13dc0`), SF4 (`d73df7c0a`), SA14 (`3811ebfd9`), CC6 (`56a21a914`), UP22 (`15503de1f`), ST0 (`27b067220`).
 
 This plan is an index over the eight active plans so that `plan-runner` schedules their
 slices as one pool: a wave may hold slices of different plans, and a short slice of one plan
@@ -141,7 +141,7 @@ rebases onto the first. Files shared only within one plan are covered by that pl
 | `server/src/http/contentAsset.ts`              | SA12, DA2                                                 |
 | `server/src/routes/backups.ts`                 | SA12, DA2                                                 |
 | `server/src/tests/backups.test.ts`             | CC2, ST1                                                  |
-| `shared/diagnostics.ts`                        | DA1, ST1, TK1                                             |
+| `shared/diagnostics.ts`                        | DA1, TK1 (ST1 dropped it after ST0)                       |
 | `shared/jobs.ts`                               | GS1, UP15, UP16                                           |
 | `server/src/prompt/runner.ts`                  | SA10, GS2, TK2                                            |
 | `server/src/prompt/embeddings.ts`              | SA10, UP8                                                 |
@@ -154,7 +154,7 @@ rebases onto the first. Files shared only within one plan are covered by that pl
 | `shared/lore/activation.ts`                    | TK2, UP7                                                  |
 | `src/ts/plugins/apiV3/factory.ts`              | SF1, UP4                                                  |
 | `src/ts/globalApi.svelte.ts`                   | DA4, ST2                                                  |
-| `public/sw.js`                                 | DA3, DA6, ST2                                             |
+| `public/sw.js`                                 | DA3, DA6 (ST2 dropped it after ST0)                       |
 | `src/ts/characters.ts`                         | SF6, ST2                                                  |
 | `src/ts/storage/serverAuth.ts`                 | SA13 (CC5 and DA3 read it)                                |
 | `src/App.svelte`                               | CC5, SA4, UP22                                            |
@@ -254,18 +254,22 @@ original` answer, and the tests' intent; move the e2e case onto `/api/asset/`.
 ## Slice ST1. Thumbnail route and cache (_hard_, `self-host-server.md`)
 
 Source: `server-thumbnails.md` slice 1, as rewritten by ST0. Depends: ST0.
-Files (before ST0; the orchestrator updates this line after it): `package.json` (`sharp`),
-`server/src/assets/thumbnails.ts` (new), `server/src/routes/storage.ts`, `server/src/app.ts`,
-`shared/diagnostics.ts`; tests `server/src/tests/thumbnails.test.ts` (new),
-`server/src/tests/backups.test.ts`. Check: `docker build` and one request in the container.
+Files (updated after ST0): `package.json` (`sharp`), `pnpm-lock.yaml`,
+`server/src/http/assetThumbnails.ts` (new), `server/src/routes/storage.ts`, `server/src/app.ts`,
+`docs/structure/self-host-server.md`; tests `server/src/tests/assetThumbnails.test.ts` (new),
+`server/src/tests/backups.test.ts`. `shared/diagnostics.ts` is no longer edited (the
+`/api/asset/*` template exists and queries are not recorded). Check: `docker build` and one
+`/api/asset/<hex>?w=256` request in the container.
 
 ## Slice ST2. Client thumbnail source (_hard_, `global-api.md`)
 
 Source: `server-thumbnails.md` slice 2, as rewritten by ST0. Depends: ST1.
-Files (before ST0; the orchestrator updates this line after it): `src/ts/storage/assetClient.ts`,
-`src/ts/globalApi.svelte.ts`, `public/sw.js`, `src/ts/characters.ts`,
-`src/lib/UI/GUI/LazyCharImage.svelte`; tests `src/ts/globalApiThumbnails.test.ts` (new),
-`LazyCharImage.test.ts`, `e2e/storedFileSrc.spec.ts`.
+Files (updated after ST0): `src/ts/globalApi.svelte.ts`, `src/ts/characters.ts`,
+`src/lib/UI/GUI/LazyCharImage.svelte`, `src/lib/UI/tests/LazyCharImageFixture.svelte`,
+`docs/structure/global-api.md`, `docs/structure/ui-theming.md`; tests
+`src/ts/globalApiThumbnails.test.ts` (new), `src/lib/UI/GUI/LazyCharImage.test.ts`,
+`e2e/storedFileSrc.spec.ts`. No longer edited: `public/sw.js`, `src/ts/storage/assetClient.ts`,
+`build-test-platforms.md`.
 
 ## Slice ST3. Lists and settings previews (_small_, `ui-theming.md`)
 
@@ -286,8 +290,9 @@ specs. `Chat.svelte` is out of scope.
 ## Slice ST5. Measurement, browser check, docs close (_small_, `build-test-platforms.md`)
 
 Source: `server-thumbnails.md` slice 5. Depends: ST3, ST4.
-Files: `util/playwright/measureFileSources.mjs`, `docs/structure/build-test-platforms.md`. The
-measured numbers go in the final report for the archive entry.
+Files: `util/playwright/measureFileSources.mjs`, `docs/structure/build-test-platforms.md`,
+`docs/structure/ui-theming.md` (chat avatar rules, after ST0). The measured numbers go in the
+final report for the archive entry.
 
 ## Slice SA1. Toggle preset additions merge across tabs (_small_, `persistence.md`)
 
