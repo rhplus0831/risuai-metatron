@@ -69,6 +69,7 @@ export const RUNTIME_ORIGINS = [
     "generation.runnerSettle",
     "generation.listener",
     "generation.release",
+    "checkpoint.auto",
     "error",
     "unhandledrejection",
 ] as const;
@@ -291,6 +292,7 @@ export const ROUTE_TEMPLATES = [
     "/api/asset/*",
     "/api/chats/search",
     "/api/chat-checkpoints",
+    "/api/chat-checkpoints/policy",
     "/api/chat-checkpoints/save",
     "/api/chat-checkpoints/rename",
     "/api/chat-checkpoints/delete",

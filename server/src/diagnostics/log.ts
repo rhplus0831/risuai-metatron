@@ -39,6 +39,8 @@ export const LOG_EVENT_KINDS = [
     "generation.listener",
     /** Releasing a generation the send did not close threw. */
     "generation.release",
+    /** An automatic checkpoint after a finished job threw. */
+    "checkpoint.auto",
 ] as const;
 
 export type LogEventKind = (typeof LOG_EVENT_KINDS)[number];

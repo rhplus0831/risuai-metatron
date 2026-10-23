@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { SAFETY_KEEP, type CheckpointSummary } from "../../../shared/chatCheckpoints.ts";
+import { SAFETY_KEEP, type CheckpointPolicy, type CheckpointSummary } from "../../../shared/chatCheckpoints.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { MemoryTasks } from "../prompt/memory/memoryTasks.ts";
 import {
@@ -11,7 +11,7 @@ import {
     ResourceValidationError,
 } from "./resourceStore.ts";
 
-/** Parsed JSON (or the list's query fields), with the mutation's epoch header kept separate. */
+/** Parsed JSON (or query fields), with the mutation's epoch header kept separate. */
 export type CheckpointRequest = { body: unknown; epoch?: string };
 
 type CheckpointError =
@@ -96,6 +96,100 @@ export function createCheckpointService({
     }
 
     return {
+        autoSave(characterId: string, chatId: string): void {
+            if (busy(characterId, chatId)) {
+                return;
+            }
+            const policy = store.checkpoints.readPolicy(characterId, chatId);
+            if (!policy) {
+                return;
+            }
+            const chat = store.readChatSource(characterId, chatId);
+            if (chat.data === null) {
+                return;
+            }
+            const userTurns = chat.data.message.filter((message) => message.role === "user").length;
+            const { autoEvery, autoKeep } = policy;
+            if (policy.lastAutoTurns !== null && userTurns < policy.lastAutoTurns) {
+                store.checkpoints.writePolicy(characterId, chatId, { autoEvery, autoKeep, lastAutoTurns: userTurns });
+                return;
+            }
+            if (policy.lastAutoTurns === null || userTurns - policy.lastAutoTurns >= autoEvery) {
+                store.applyChanges(
+                    {},
+                    {
+                        inTransaction: {
+                            before(tx) {
+                                const saved = tx.save(characterId, chatId, "Auto", "auto");
+                                if (!saved) {
+                                    return;
+                                }
+                                tx.writePolicy(characterId, chatId, {
+                                    autoEvery,
+                                    autoKeep,
+                                    lastAutoTurns: saved.userTurns,
+                                });
+                                tx.prune(characterId, chatId, "auto", autoKeep);
+                            },
+                        },
+                    },
+                );
+            }
+        },
+
+        readPolicy(request: CheckpointRequest) {
+            return respond(() => {
+                const body = parseRequest(request.body, chatFields);
+                const characterId = idField(body, "characterId");
+                const chatId = idField(body, "chatId");
+                if (store.chatRevision(characterId, chatId) === null) {
+                    return notFound();
+                }
+                const policy = store.checkpoints.readPolicy(characterId, chatId);
+                return {
+                    status: 200,
+                    body: {
+                        epoch: store.epoch(),
+                        policy: policy ? { autoEvery: policy.autoEvery, autoKeep: policy.autoKeep } : null,
+                    },
+                };
+            });
+        },
+
+        writePolicy(request: CheckpointRequest) {
+            return respond(() => {
+                const body = parseRequest(request.body, [...chatFields, "autoEvery", "autoKeep", "off"]);
+                const characterId = idField(body, "characterId");
+                const chatId = idField(body, "chatId");
+                let policy: CheckpointPolicy | null;
+                if ("off" in body) {
+                    if (body.off !== true || "autoEvery" in body || "autoKeep" in body) {
+                        throw new ResourceValidationError(
+                            "off must be true and cannot be combined with autoEvery or autoKeep",
+                        );
+                    }
+                    policy = null;
+                } else {
+                    const { autoEvery, autoKeep } = body;
+                    if (
+                        typeof autoEvery !== "number" ||
+                        !Number.isInteger(autoEvery) ||
+                        typeof autoKeep !== "number" ||
+                        !Number.isInteger(autoKeep)
+                    ) {
+                        throw new ResourceValidationError("autoEvery and autoKeep must be integers");
+                    }
+                    policy = { autoEvery, autoKeep };
+                }
+                store.assertEpoch(request.epoch);
+                if (store.chatRevision(characterId, chatId) === null) {
+                    return notFound();
+                }
+                store.checkpoints.writePolicy(characterId, chatId, policy);
+                return { status: 200, body: { epoch: store.epoch(), policy } };
+            });
+        },
+
         list(request: CheckpointRequest) {
             return respond(() => {
                 const body = parseRequest(request.body, chatFields);

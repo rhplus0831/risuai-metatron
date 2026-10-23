@@ -1,4 +1,4 @@
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Handler, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { CheckpointService } from "../data/checkpointService.ts";
@@ -9,7 +9,7 @@ import type { AuthStore } from "./auth.ts";
 import { storeErrorResponse } from "./resources.ts";
 
 export const CHAT_CHECKPOINTS_PATH = "/api/chat-checkpoints";
-/** Ids, a name, and one revision token; no checkpoint content comes from the tab. */
+/** Ids, a name, a revision token, or a policy; no checkpoint content comes from the tab. */
 const MAX_CHECKPOINT_BODY_BYTES = 16 * 1024;
 
 /** Authenticated checkpoint operations; mutations require epoch and an open maintenance gate. */
@@ -57,14 +57,13 @@ export function registerChatCheckpointRoutes(
         const result = service.list({ body: c.req.query() });
         return c.json(result.body, result.status);
     });
+    app.get(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, (c) => {
+        const result = service.readPolicy({ body: c.req.query() });
+        return c.json(result.body, result.status);
+    });
 
-    for (const [path, method] of [
-        ["save", "save"],
-        ["rename", "rename"],
-        ["delete", "remove"],
-        ["load", "load"],
-    ] as const) {
-        app.post(`${CHAT_CHECKPOINTS_PATH}/${path}`, limiter, authenticated, limitedBody, async (c) => {
+    function mutationHandler(method: "save" | "rename" | "remove" | "load" | "writePolicy"): Handler<AppEnv> {
+        return async (c) => {
             let size: number;
             try {
                 size = (await c.req.arrayBuffer()).byteLength;
@@ -86,6 +85,16 @@ export function registerChatCheckpointRoutes(
             } catch (error) {
                 return storeErrorResponse(c, error);
             }
-        });
+        };
     }
+
+    for (const [path, method] of [
+        ["save", "save"],
+        ["rename", "rename"],
+        ["delete", "remove"],
+        ["load", "load"],
+    ] as const) {
+        app.post(`${CHAT_CHECKPOINTS_PATH}/${path}`, limiter, authenticated, limitedBody, mutationHandler(method));
+    }
+    app.put(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, limitedBody, mutationHandler("writePolicy"));
 }

@@ -394,6 +394,8 @@ export function createGenerationJobs(options: {
     /** The JWT check for the socket handshake. */
     authorize: (token: string | undefined) => Promise<boolean>;
     runner?: GenerationRunner;
+    /** Runs synchronously after a send, continue, reroll, or group job ends done; a throw is only logged. */
+    onChatJobDone?: (characterId: string, chatId: string, kind: GenerationKind) => void;
     /** The channel hub (tests inject one with a fake clock). */
     hub?: ChannelHub;
     /** The diagnostics journal: a `job` event at admission and at the end, and the caught faults. */
@@ -794,6 +796,16 @@ export function createGenerationJobs(options: {
             // An attach after the end gets the chat whole: the base is no longer needed.
             job.sentChat = null;
             job.resolveFinished();
+        }
+        if (
+            terminal.type === "done" &&
+            (job.kind === "send" || job.kind === "continue" || job.kind === "reroll" || job.kind === "group")
+        ) {
+            try {
+                options.onChatJobDone?.(job.context.characterId, job.context.chatId, job.kind);
+            } catch (error) {
+                logEvent("checkpoint.auto", { job: job.id, kind: job.kind }, error, diagnostics);
+            }
         }
     }
 

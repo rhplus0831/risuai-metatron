@@ -295,6 +295,8 @@ export function createServerContext(options: {
         // The default runner is built below (it needs the request layer and the script workers);
         // a job starts only after the context exists.
         runner: options.generationRunner ?? ((job) => defaultRunner(job)),
+        // The checkpoint service is built below; a job starts only after the context exists.
+        onChatJobDone: (characterId, chatId) => checkpoints.autoSave(characterId, chatId),
         diagnostics,
         abortGraceMs: options.generationAbortGraceMs,
     });
@@ -623,7 +625,7 @@ export function createServerContext(options: {
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, the memory task start's, the checkpoint mutations', and the token routes cap their bodies themselves
+    // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, and the token routes cap their bodies themselves
     // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
@@ -646,6 +648,7 @@ export function createServerContext(options: {
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
+            (c.req.method === "PUT" && route === `${CHAT_CHECKPOINTS_PATH}/policy`) ||
             (c.req.method === "PUT" && route === REQUEST_HISTORY_SHARE_PATH);
         return ownLimit ? next() : limitBody(c, next);
     });
@@ -795,14 +798,14 @@ export function createServerContext(options: {
         maintenance: snapshots.gate,
         limits: options.messageSearch,
     });
+    const checkpoints = createCheckpointService({
+        store: resources,
+        busy: (characterId, chatId) =>
+            generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0,
+        memoryTasks,
+    });
     registerChatCheckpointRoutes(app, {
-        service: createCheckpointService({
-            store: resources,
-            busy: (characterId, chatId) =>
-                generationJobs.chatBusy(characterId, chatId) ||
-                generationLock.chatHolders(characterId, chatId).size > 0,
-            memoryTasks,
-        }),
+        service: checkpoints,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
