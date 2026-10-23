@@ -1,7 +1,17 @@
 // @ts-nocheck
 
+let cachedAssetAuth = null
+let assetAuthPromise = null
+
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url)
+    if(url.origin === self.location.origin && url.pathname.startsWith('/api/asset/') &&
+        (event.request.method === 'GET' || event.request.method === 'HEAD') &&
+        typeof event.clientId === 'string' && event.clientId.length > 0 &&
+        ['image', 'audio', 'video', 'track', 'style', 'font'].includes(event.request.destination)){
+        event.respondWith(fetchAsset(event.request))
+        return
+    }
     const path = url.pathname.split('/')
     if(path[1] === 'sw'){
         try {
@@ -34,7 +44,9 @@ self.addEventListener('fetch', (event) => {
                     break
                 }
                 case "init":{
-                    event.respondWith(new Response("v2"))
+                    event.respondWith(new Response(JSON.stringify({ version: 'v3', directAssets: true }), {
+                        headers: { 'content-type': 'application/json' }
+                    }))
                     break
                 }
                 case 'share':{
@@ -70,6 +82,146 @@ self.addEventListener('fetch', (event) => {
         }))
     }}
 })
+
+/** Reads the page's key without leaving a new database behind before the page creates its store. */
+function readAssetKeyPair(){
+    return new Promise((resolve) => {
+        let db = null
+        let settled = false
+        const finish = (keyPair = null) => {
+            if(db){
+                db.close()
+            }
+            if(!settled){
+                settled = true
+                resolve(keyPair)
+            }
+        }
+        let request
+        try {
+            request = indexedDB.open('DPoPDB', 1)
+        } catch {
+            finish()
+            return
+        }
+        request.onupgradeneeded = () => {
+            db = request.result
+            request.transaction.abort()
+            finish()
+        }
+        request.onerror = () => finish()
+        request.onblocked = () => finish()
+        request.onsuccess = () => {
+            db = request.result
+            if(settled){
+                db.close()
+                return
+            }
+            try {
+                if(!db.objectStoreNames.contains('node')){
+                    finish()
+                    return
+                }
+                const transaction = db.transaction('node', 'readonly')
+                const read = transaction.objectStore('node').get('dpop')
+                transaction.oncomplete = () => finish(read.result || null)
+                transaction.onabort = () => finish()
+                transaction.onerror = () => finish()
+                read.onerror = () => finish()
+            } catch {
+                finish()
+            }
+        }
+    })
+}
+
+function assetBase64url(bytes){
+    return btoa(String.fromCharCode(...bytes)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+/** Keep the JWT format and UTF-8 encoding in parity with serverAuth.ts createAuth. */
+async function signAssetAuth(){
+    const keyPair = await readAssetKeyPair()
+    if(!keyPair){
+        return null
+    }
+    const iat = Math.floor(Date.now() / 1000)
+    const header = { alg: 'ES256', typ: 'JWT' }
+    const payload = {
+        iat,
+        exp: iat + 300,
+        pub: await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+    }
+    const encoder = new TextEncoder()
+    const unsigned = assetBase64url(encoder.encode(JSON.stringify(header))) + '.' +
+        assetBase64url(encoder.encode(JSON.stringify(payload)))
+    const signature = await crypto.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' }, keyPair.privateKey, encoder.encode(unsigned)
+    )
+    return { token: unsigned + '.' + assetBase64url(new Uint8Array(signature)), exp: payload.exp }
+}
+
+/** Concurrent loads share a signer; missing keys and failures can be tried again on the next load. */
+async function getAssetAuth(){
+    if(cachedAssetAuth && Date.now() / 1000 < cachedAssetAuth.exp - 60){
+        return cachedAssetAuth
+    }
+    if(!assetAuthPromise){
+        assetAuthPromise = signAssetAuth().then((auth) => {
+            cachedAssetAuth = auth
+            return auth
+        }).finally(() => {
+            assetAuthPromise = null
+        })
+    }
+    return assetAuthPromise
+}
+
+/** A fresh same-origin request permits the auth header even for no-cors media loads. */
+function fetchSignedAsset(request, token){
+    const headers = new Headers({ 'risu-auth': token })
+    for(const name of ['Range', 'If-Range']){
+        const value = request.headers.get(name)
+        if(value !== null){
+            headers.set(name, value)
+        }
+    }
+    return fetch(request.url, {
+        method: request.method,
+        headers,
+        mode: 'same-origin',
+        credentials: 'omit',
+        cache: 'default',
+        signal: request.signal
+    })
+}
+
+/** Only a 401 retries auth; network failures and aborts from the signed fetch stay rejected. */
+async function fetchAsset(request){
+    let auth
+    try {
+        auth = await getAssetAuth()
+    } catch {
+        return fetch(request)
+    }
+    if(!auth){
+        return fetch(request)
+    }
+    const response = await fetchSignedAsset(request, auth.token)
+    if(response.status !== 401){
+        return response
+    }
+    // A late failure must not discard a token another request has already refreshed.
+    if(cachedAssetAuth === auth){
+        cachedAssetAuth = null
+    }
+    try {
+        auth = await getAssetAuth()
+    } catch {
+        return fetch(request)
+    }
+    return auth ? fetchSignedAsset(request, auth.token) : fetch(request)
+}
 
 
 async function checkCache(url){
@@ -122,7 +274,8 @@ async function registerCache(urlr, buffer, noContentType = false){
 // Web Push for chat completions. A new worker takes over at once, so an installed app gets these
 // handlers without closing every tab; the cache routes above keep working (they read `risuCache`,
 // which outlives the worker). A rotated subscription (`pushsubscriptionchange`) is not handled
-// here: the worker has no credentials, and the page registers it again when it opens.
+// here: push has no credentials, and the page registers it again when it opens. Only asset requests
+// read the page's signing key.
 const NOTIFICATION_LOGO = '/logo_192.png'
 // The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
 // (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
