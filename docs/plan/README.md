@@ -8,7 +8,7 @@ Active planning and implementation:
 
 - [Combined Run](combined-run.md): an index over the eight plans below for one `plan-runner`
   run, so their slices are scheduled as one pool (77 slices, ids prefixed per plan, cross-plan
-  shared files, one added slice ST0); 39 of 77 slices landed. The plans below keep their
+  shared files, one added slice ST0); 40 of 77 slices landed. The plans below keep their
   design and slice text; their `Status:` lines are updated at retirement, not per slice.
 - [Chat Checkpoints](chat-checkpoints.md): named per-chat save slots on the server
   (messages, variables, chat lore, memory) with load, safety and auto checkpoints;
