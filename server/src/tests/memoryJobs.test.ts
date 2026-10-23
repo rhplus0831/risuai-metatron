@@ -33,9 +33,11 @@ import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } f
 // chat, or log when the provider echoes it; `additionalInformations` in the description; a WebLLM
 // model's `previewPrompt` answered without inference. The algorithms' outputs against the browser
 // are `memoryAlgorithms.test.ts`'s. The first stack runs without a memory task service (every HypaV3
-// step summarizes inside the job); the last block starts a second stack with a fake service for the
+// step summarizes inside the job); a later block starts a second stack with a fake service for the
 // select-only sends, the gap question, the initial runs with their stop control, the protected
-// history tail, and the hand-offs.
+// history tail, and the hand-offs; the last block starts a third stack with the server's own service
+// (production): the task's summaries written after the job's terminal and selected by the next send,
+// and a manual start through the route.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
@@ -507,7 +509,7 @@ const memoryCard = (messages: any[]) =>
  * from: the main and sub slots on one reverse-proxy profile to the fake provider, a 900-token
  * context, the fake embedding server, memory off.
  */
-async function startStack(options: { memoryTasks?: MemoryTaskService } = {}): Promise<Stack> {
+async function startStack(options: { memoryTasks?: "disabled" | MemoryTaskService } = {}): Promise<Stack> {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-jobs-"));
     mkdirSync(path.join(dir, "dist"));
     writeFileSync(path.join(dir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
@@ -596,7 +598,7 @@ beforeAll(async () => {
     allowListenerOrigin(embedder);
     providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
     embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
-    blockingStack = await startStack();
+    blockingStack = await startStack({ memoryTasks: "disabled" });
 }, SLOW);
 
 afterAll(async () => {
@@ -2367,6 +2369,163 @@ describe("HypaV3 with a memory task service", () => {
                     expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBe(summaries().length);
                 },
             );
+        },
+        SLOW,
+    );
+});
+
+// The server's own memory task service, as in production: a send over the lookahead line selects the
+// stored summaries and hands its chat to the service, whose task writes the summaries after the job
+// ended; the manual routes are open.
+describe("HypaV3 with the server's memory task service", () => {
+    let serviceStack: Stack;
+    const TERMINAL_STATES = new Set(["done", "failed", "cancelled", "skipped"]);
+    const tasks = () => server.context.memoryTasks!;
+    /** The chat's next terminal task status (listened for from now on). */
+    function nextTerminal(chaId: string) {
+        return new Promise<MemoryTaskStatus>((resolve) => {
+            const off = tasks().onStatus(({ chatRef, status }) => {
+                if (chatRef.chaId === chaId && chatRef.chatId === "k" && TERMINAL_STATES.has(status.state)) {
+                    off();
+                    resolve(status);
+                }
+            });
+        });
+    }
+    function deferred() {
+        let resolve!: () => void;
+        const promise = new Promise<void>((done) => (resolve = done));
+        return { promise, resolve };
+    }
+    /** The texts a summary's vectors are made of (the preset's `\n\n` separator). */
+    const chunksOf = (texts: string[]) => texts.flatMap((text) => text.split("\n\n").map((part) => part.trim()));
+
+    beforeAll(async () => {
+        serviceStack = await startStack();
+        // A small recent share leaves summaries for the similarity search (their chunks embedded).
+        await patchHypaV3({ recentMemoryRatio: 0.1, similarMemoryRatio: 0.6 });
+    }, SLOW);
+    afterAll(async () => {
+        use(blockingStack);
+        await closeStack(serviceStack);
+    });
+    // The file's `afterEach` turns memory off again: on before each test.
+    beforeEach(async () => {
+        await patchSettings({ hypaV3: true });
+    });
+
+    it(
+        "a send over the lookahead line ends `done` with no summary request, the task's summary requests start only after the job's terminal, and the next send selects the task's summaries without embedding them again",
+        async () => {
+            const chaId = await seedCharacter();
+            state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
+            // Every memory request the task makes records the send's job as it is at that moment.
+            const jobAtMemoryRequest: (ReturnType<typeof server.context.generationJobs.status> | undefined)[] = [];
+            const runInJob = server.context.llmRequests.runInJob;
+            const spy = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementation((spec) => {
+                if (spec.source === "memory") {
+                    jobAtMemoryRequest.push(structuredClone(server.context.generationJobs.status(currentJobId, "tab")));
+                }
+                return runInJob(spec);
+            });
+            // The task's first summary waits until the send's terminal reached the tab.
+            const reached = deferred();
+            const release = deferred();
+            state.holdSummary = async () => {
+                reached.resolve();
+                await release.promise;
+            };
+            const terminal = nextTerminal(chaId);
+            try {
+                const first = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+                expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+                expect(mains()).toHaveLength(1);
+                expect((mains()[0].chatAtRequest as { summaries?: unknown[] } | undefined)?.summaries ?? []).toEqual(
+                    [],
+                );
+                await reached.promise;
+                expect(upstream.findIndex((entry) => entry.summary)).toBeGreaterThan(
+                    upstream.findIndex((entry) => !entry.summary),
+                );
+                expect(tasks().status({ chaId, chatId: "k" })).toMatchObject({ state: "running", done: 0 });
+                release.resolve();
+                const status = await terminal;
+                expect(status.state).toBe("done");
+                expect(status.done).toBeGreaterThan(0);
+                expect(status.done).toBe(status.total);
+                expect(jobAtMemoryRequest.length).toBeGreaterThanOrEqual(status.done);
+                for (const at of jobAtMemoryRequest) {
+                    expect(at).toMatchObject({ jobId: currentJobId, state: "ended", terminal: { type: "done" } });
+                }
+            } finally {
+                state.holdSummary = null;
+                release.resolve();
+                spy.mockRestore();
+            }
+            const made = summaries();
+            const stored = (await readChat(chaId)).data.hypaV3Data.summaries.map((s: { text: string }) => s.text);
+            expect(stored).toEqual(made.map((_, i) => `Summary ${i + 1}: events happened.\n\nPart two of ${i + 1}.`));
+            // The task warmed the summaries' vectors.
+            const warmed = embedCalls.flatMap((call) => call.input);
+            expect(warmed).toEqual(expect.arrayContaining(chunksOf(stored)));
+
+            // The next send: the task's summaries in the card, their vectors from the cache. A task the
+            // send hands off holds its first summary until the send's embeddings are counted.
+            upstream.length = 0;
+            embedCalls.length = 0;
+            state.onMain = null;
+            const before = tasks().status({ chaId, chatId: "k" })!.taskId;
+            const next = nextTerminal(chaId);
+            const hold = deferred();
+            state.holdSummary = () => hold.promise;
+            try {
+                const second = await job("send", chaId, { input: "Hello again", userMessageId: "u2" });
+                expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+                // A summary request, if any, is the handed-off task's, after the main request.
+                const firstSummary = upstream.findIndex((entry) => entry.summary);
+                expect(firstSummary === -1 || firstSummary > upstream.findIndex((entry) => !entry.summary)).toBe(true);
+                const embedded = embedCalls.flatMap((call) => call.input);
+                expect(embedded.length).toBeGreaterThan(0);
+                expect(embedded.filter((text) => chunksOf(stored).includes(text))).toEqual([]);
+            } finally {
+                hold.resolve();
+                state.holdSummary = null;
+            }
+            if (tasks().status({ chaId, chatId: "k" })!.taskId !== before) {
+                expect((await next).state).toBe("done");
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a manual start from the route on a chat under the lookahead line waits for the next send (`pendingManual`), which hands the chat off; a later start reuses the retained input and runs",
+        async () => {
+            const chaId = await seedCharacter({ count: 4 });
+            const chatRef = { chaId, chatId: "k" };
+            const startTask = () =>
+                api("/api/memory/tasks", { method: "POST", body: JSON.stringify({ characterId: chaId, chatId: "k" }) });
+            const first = await job("send", chaId, { input: "Hello", userMessageId: "u1" });
+            expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+            // No summary is due: nothing is handed off.
+            expect(tasks().status(chatRef)).toBeNull();
+
+            expect(await startTask()).toEqual({ status: 200, body: { outcome: "pendingManual" } });
+            expect(tasks().pendingManual(chatRef)).toBe(true);
+            const handedOff = nextTerminal(chaId);
+            const second = await job("send", chaId, { input: "Hello again", userMessageId: "u2" });
+            expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+            expect(tasks().pendingManual(chatRef)).toBe(false);
+            const ran = await handedOff;
+            expect(ran).toMatchObject({ state: "done", done: 0, total: 0 });
+
+            const again = nextTerminal(chaId);
+            const restart = await startTask();
+            expect(restart.status).toBe(200);
+            expect(["running", "queued"]).toContain(restart.body.outcome);
+            expect(restart.body.status.taskId).not.toBe(ran.taskId);
+            expect(await again).toMatchObject({ taskId: restart.body.status.taskId, state: "done" });
         },
         SLOW,
     );

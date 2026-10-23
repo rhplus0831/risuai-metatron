@@ -62,13 +62,14 @@ export type TestServerOptions = {
     routeLimits?: RouteLimits;
     /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
     cbsTimeLimits?: ServerCbsTimeLimits;
-    /** The default runner's memory task service (a fake one); `"disabled"` or unset: none. */
-    memoryTasks?: "disabled" | MemoryTaskService;
     /**
-     * The context's own memory task service: `manualAdmission` opens its start and cancel routes
-     * (closed by default, as in production), `now` and `limits` replace its clock and caps.
+     * The default runner's memory task service in place of the context's own (as in production): a
+     * fake one, or `"disabled"` for none (HypaV3 summarizes inside each job). Either closes the manual
+     * routes (503 `notEnabled`).
      */
-    memoryTaskOptions?: { manualAdmission?: boolean; now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    memoryTasks?: "disabled" | MemoryTaskService;
+    /** The context's own memory task service: `now` and `limits` replace its clock and caps. */
+    memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
 };
 
 export function createTestServer(options: TestServerOptions = {}) {

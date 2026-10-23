@@ -10,7 +10,13 @@ import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, character, Message } from "../../../shared/database.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
-import type { GenerationContext, MemoryChatRef, MemoryEntrySource, MemoryTaskInput } from "../../../shared/jobs.ts";
+import type {
+    GenerationContext,
+    MemoryChatRef,
+    MemoryEntrySource,
+    MemoryTaskInput,
+    MemoryTaskService,
+} from "../../../shared/jobs.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -1720,8 +1726,8 @@ type SocketClient = {
 };
 
 /**
- * A server context with the real memory task service and the manual routes open, on a listening
- * server, seeded with `openStore`'s records (written through the resource routes from a local store of
+ * A server context with the real memory task service (the runner's, as in production) and the manual
+ * routes open, on a listening server, seeded with `openStore`'s records (written through the resource routes from a local store of
  * the same content, so a scope read from the local store is a scope of the server's data: the inputs
  * a job would hand off carry the server's epoch and chat revisions).
  */
@@ -1747,7 +1753,6 @@ async function wiring(options: { limits?: Partial<MemoryTaskLimits> } = {}) {
         cbsTimeLimits: UNHURRIED_CBS,
         generationHypaV3SeparatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
         memoryTaskOptions: {
-            manualAdmission: true,
             now: () => clock.now,
             limits: { drainWaitMs: 1000, ...options.limits },
         },
@@ -2205,28 +2210,44 @@ describe("the server wiring", () => {
         expect((await w.cancel("c", "k1")).body).toEqual({ cancelled: false });
     });
 
-    it("production keeps both routes closed (503 `notEnabled`, no Retry-After, `no-store`) after the epoch check; a context without a characters kind has no service", async () => {
+    it("production opens both routes on the runner's own service; with the runner's service `disabled` or a fake one both answer 503 `notEnabled` (no Retry-After, `no-store`) after the epoch check; a context without a characters kind has no service", async () => {
         const production = await createResourceTestClient();
         cleanups.push(() => production.close());
         expect(production.context.memoryTasks).not.toBeNull();
-        const start = await production.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
-        expect(start.status).toBe(503);
-        expect(await start.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
-        expect(start.headers.get("retry-after")).toBeNull();
-        expect(start.headers.get("cache-control")).toBe("no-store");
-        const cancel = await production.request("/api/memory/tasks/c/k", { method: "DELETE" });
-        expect(cancel.status).toBe(503);
-        expect(await cancel.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
-        expect(cancel.headers.get("retry-after")).toBeNull();
-        expect(cancel.headers.get("cache-control")).toBe("no-store");
-        expect(
-            (await production.json("/api/memory/tasks", { characterId: "c", chatId: "k" }, {}, "stale")).status,
-        ).toBe(412);
+        // Past the admission check: the chat does not exist.
+        const opened = await production.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
+        expect(opened.status).toBe(404);
+        expect(await opened.json()).toEqual({ error: "Chat not found" });
+        expect((await production.request("/api/memory/tasks/c/k", { method: "DELETE" })).status).toBe(404);
+
+        const fake = {
+            handOff() {},
+            status: () => null,
+            acquireSummaryWriter: async () => ({ release() {} }),
+            pendingManual: () => false,
+        } satisfies MemoryTaskService;
+        for (const memoryTasks of ["disabled", fake] as const) {
+            const closed = await createResourceTestClient({ memoryTasks });
+            cleanups.push(() => closed.close());
+            expect(closed.context.memoryTasks).not.toBeNull();
+            const start = await closed.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
+            expect(start.status).toBe(503);
+            expect(await start.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
+            expect(start.headers.get("retry-after")).toBeNull();
+            expect(start.headers.get("cache-control")).toBe("no-store");
+            const cancel = await closed.request("/api/memory/tasks/c/k", { method: "DELETE" });
+            expect(cancel.status).toBe(503);
+            expect(await cancel.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
+            expect(cancel.headers.get("retry-after")).toBeNull();
+            expect(cancel.headers.get("cache-control")).toBe("no-store");
+            expect(
+                (await closed.json("/api/memory/tasks", { characterId: "c", chatId: "k" }, {}, "stale")).status,
+            ).toBe(412);
+        }
 
         const bare = await createResourceTestClient({
             resourceKinds: [{ name: "docs", schemaVersion: 1, normalize: (input) => input }],
             epochKind: "docs",
-            memoryTaskOptions: { manualAdmission: true },
         });
         cleanups.push(() => bare.close());
         expect(bare.context.memoryTasks).toBeNull();

@@ -129,11 +129,12 @@ export type RouteLimits = {
  * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
  * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
  * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
- * `memoryTasks` gives the default runner a memory task service (tests pass a fake one): HypaV3 then
- * selects stored summaries in a send and hands its chat to the service; `"disabled"` or unset passes
- * none, and every HypaV3 step summarizes inside its job. The context's own memory task service
- * (`createMemoryTasks`, returned as `memoryTasks`) is not given to the runner; `memoryTaskOptions`
- * opens its manual routes (closed by default: 503) and replaces its clock and limits (tests).
+ * The default runner gets the context's own memory task service (`createMemoryTasks`, returned as
+ * `memoryTasks`): HypaV3 then selects stored summaries in a send and hands its chat to the service,
+ * and the manual start and cancel routes are open. The `memoryTasks` option replaces the runner's
+ * service (tests): a fake one, or `"disabled"` for none, where every HypaV3 step summarizes inside its
+ * job. With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to the context's
+ * service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -178,13 +179,13 @@ export function createServerContext(options: {
     routeLimits?: RouteLimits;
     /** The CBS wall times of the jobs, renders, and translations (default 5 s per template, 60 s per job). */
     cbsTimeLimits?: ServerCbsTimeLimits;
-    /** The default runner's memory task service; `"disabled"` or unset: none. */
-    memoryTasks?: "disabled" | MemoryTaskService;
     /**
-     * The context's memory task service: `manualAdmission` opens the start and cancel routes (default
-     * closed: 503 `notEnabled`), `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`).
+     * The default runner's memory task service in place of the context's own: a fake one, or
+     * `"disabled"` for none. Either closes the manual routes (503 `notEnabled`).
      */
-    memoryTaskOptions?: { manualAdmission?: boolean; now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    memoryTasks?: "disabled" | MemoryTaskService;
+    /** The context's memory task service: `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`). */
+    memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -372,6 +373,33 @@ export function createServerContext(options: {
         savePath,
         ...(options.pushTransport ? { transport: options.pushTransport } : {}),
     });
+    // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
+    // the script workers; a context whose resource kinds have no characters (tests) has none.
+    const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
+        ? createMemoryTasks({
+              store: resources,
+              kinds: resourceKinds,
+              gate: snapshots.gate,
+              hostDeps: {
+                  llm: llmRequests,
+                  embeddings,
+                  scriptWorkers,
+                  tokens: tokenCounter,
+                  rootDir: options.rootDir,
+                  ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
+                  ...(options.generationHypaV3SeparatorLimits
+                      ? { separatorLimits: options.generationHypaV3SeparatorLimits }
+                      : {}),
+              },
+              ...(options.memoryTaskOptions?.now ? { now: options.memoryTaskOptions.now } : {}),
+              ...(options.memoryTaskOptions?.limits ? { limits: options.memoryTaskOptions.limits } : {}),
+          })
+        : null;
+    // The runner's: the context's own service, unless a test disables it or passes a fake one. Only
+    // with its own service does the runner hand chats to the service the manual routes reach.
+    const runnerMemoryTasks: MemoryTaskService | null =
+        options.memoryTasks === "disabled" ? null : (options.memoryTasks ?? memoryTasks);
+    const manualMemoryTasks = memoryTasks !== null && runnerMemoryTasks === memoryTasks;
     const runnerDeps: GenerationRunnerDeps = {
         store: resources,
         kinds: resourceKinds,
@@ -393,32 +421,9 @@ export function createServerContext(options: {
             ? { hypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits }
             : {}),
         ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
-        ...(options.memoryTasks && options.memoryTasks !== "disabled" ? { memoryTasks: options.memoryTasks } : {}),
+        ...(runnerMemoryTasks ? { memoryTasks: runnerMemoryTasks } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
-    // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
-    // the script workers. Not given to the runner yet, so nothing hands a chat off; a context whose
-    // resource kinds have no characters (tests) has none.
-    const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
-        ? createMemoryTasks({
-              store: resources,
-              kinds: resourceKinds,
-              gate: snapshots.gate,
-              hostDeps: {
-                  llm: llmRequests,
-                  embeddings,
-                  scriptWorkers,
-                  tokens: tokenCounter,
-                  rootDir: options.rootDir,
-                  ...(options.cbsTimeLimits ? { cbsTimeLimits: options.cbsTimeLimits } : {}),
-                  ...(options.generationHypaV3SeparatorLimits
-                      ? { separatorLimits: options.generationHypaV3SeparatorLimits }
-                      : {}),
-              },
-              ...(options.memoryTaskOptions?.now ? { now: options.memoryTaskOptions.now } : {}),
-              ...(options.memoryTaskOptions?.limits ? { limits: options.memoryTaskOptions.limits } : {}),
-          })
-        : null;
     if (memoryTasks) {
         // After the live-update sockets' listener, so the clients get the `epoch` frame before any
         // status of the new registry. A superseded epoch (a newer one was published inside this
@@ -714,7 +719,7 @@ export function createServerContext(options: {
     });
     registerMemoryTaskRoutes(app, {
         tasks: memoryTasks,
-        enabled: () => options.memoryTaskOptions?.manualAdmission === true,
+        enabled: () => manualMemoryTasks,
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
@@ -865,7 +870,7 @@ export function createServerContext(options: {
         llmRequests,
         requestHistory,
         translationRunner,
-        /** The HypaV3 memory task service (null without a characters kind); not given to the runner. */
+        /** The HypaV3 memory task service (null without a characters kind), the default runner's unless a test replaces it. */
         memoryTasks,
         push,
         eventSockets,
