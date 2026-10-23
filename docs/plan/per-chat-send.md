@@ -1,6 +1,6 @@
 # Per-Chat Send Plan
 
-Status: planned 2026-10-23 at `fc4d52c5e`. Landed: 1 (`2d9d63b41`), 2 (`bf6146918`), 3 (`aa99e20ca`), 4 (`bd0cddb4c`), 5 (`371c01767`), 6 (`23ca77680`). Line numbers are approximate;
+Status: planned 2026-10-23 at `fc4d52c5e`. Landed: 1 (`2d9d63b41`), 2 (`bf6146918`), 3 (`aa99e20ca`), 4 (`bd0cddb4c`), 5 (`371c01767`), 6 (`23ca77680`), 7 (`c9e6cde40`). Line numbers are approximate;
 the identifiers are the anchors. Re-verify each cited location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
