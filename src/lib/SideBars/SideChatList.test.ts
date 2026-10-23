@@ -16,6 +16,7 @@ const alerts = vi.hoisted(() => ({ chatOption: 0 }));
 const sortables = vi.hoisted(
     () =>
         [] as {
+            el: HTMLElement;
             destroyed: boolean;
             options: { group: string; disabled?: boolean; onEnd: (event: unknown) => Promise<void> };
         }[],
@@ -25,7 +26,10 @@ vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
     class Sortable {
         options: any;
         destroyed = false;
-        constructor(_el: HTMLElement, options: any) {
+        constructor(
+            public el: HTMLElement,
+            options: any,
+        ) {
             this.options = options;
             sortables.push(this);
         }
@@ -236,6 +240,52 @@ describe("chat pins in the sidebar", () => {
         expect(findChat(source)).toHaveProperty("pinned", true);
         expect(chatEntry(source)).toHaveProperty("pinned", true);
     });
+});
+
+it("a folder created after mount accepts a chat drop with or without an existing folder", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        for (const existingFolder of [false, true]) {
+            byChaId("c").chatFolders = existingFolder ? [{ id: "existing", name: "Existing", folded: false }] : [];
+            setChatMeta({ chaId: "c", chatId: "k" }, {}, ["folderId"]);
+            const { target } = renderSide("c");
+            target.querySelector<HTMLButtonElement>("button:has(svg.lucide-folder-plus)")!.click();
+            flushSync();
+
+            const folders = byChaId("c").chatFolders;
+            const newFolder = folders.find((folder) => folder.id !== "existing")!;
+            expect(newFolder).toBeDefined();
+            const folderRows = [...target.querySelectorAll<HTMLElement>("[data-risu-chat-folder-idx]")];
+            const containers = folderRows.map((row) => row.querySelector<HTMLElement>(".risu-chat")!);
+            expect(containers).toHaveLength(existingFolder ? 2 : 1);
+            for (const container of containers) {
+                expect(
+                    sortables.find(
+                        (entry) => !entry.destroyed && entry.el === container && entry.options.group === "chats",
+                    ),
+                    "Every folder container must own a live Sortable instance before a drop",
+                ).toBeDefined();
+            }
+
+            const destination = containers[folders.findIndex((folder) => folder.id === newFolder.id)];
+            const sortable = sortables.find((entry) => !entry.destroyed && entry.el === destination)!;
+            const row = [...target.querySelectorAll<HTMLElement>("[data-risu-chat-idx]")].find((node) =>
+                node.textContent?.includes("Chat K"),
+            )!;
+            const from = row.parentElement;
+            destination.appendChild(row);
+            const dropped = sortable.options.onEnd.call(sortable, { item: row, from, to: destination });
+            await vi.runAllTimersAsync();
+            await dropped;
+            flushSync();
+
+            expect(chatEntry({ chaId: "c", chatId: "k" })?.folderId).toBe(newFolder.id);
+            await unmount(mounted.pop()!);
+            target.remove();
+        }
+    } finally {
+        vi.useRealTimers();
+    }
 });
 
 // A chat whose `folderId` names no folder of its character (a two-tab move/delete race, a refused

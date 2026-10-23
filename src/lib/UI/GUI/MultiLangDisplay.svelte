@@ -69,7 +69,7 @@
     {#if markdown}
         <div
             class="ml-2 max-w-full wrap-break-word text chat chattext prose"
-            class:prose-invert={$ColorSchemeTypeStore}
+            class:prose-invert={$ColorSchemeTypeStore !== "light"}
         >
             {#await ParseMarkdown(valueObject[selectedLang]) then md}
                 {@html md}
@@ -78,7 +78,7 @@
     {:else}
         <div
             class="ml-2 max-w-full wrap-break-word text chat chattext prose"
-            class:prose-invert={$ColorSchemeTypeStore}
+            class:prose-invert={$ColorSchemeTypeStore !== "light"}
         >
             {valueObject[selectedLang]}
         </div>

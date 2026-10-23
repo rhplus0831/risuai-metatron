@@ -202,7 +202,7 @@
         const chara = currentCharacter;
         const desc = chara.type !== "group" ? (chara as character).desc : null;
         const firstMsg = chara.type !== "group" ? chara.firstMessage : null;
-        const localNote = currentChat?.note;
+        const localNote = currentChat?.note ?? "";
 
         untrack(() => {
             loadTokenize(desc, firstMsg, localNote);

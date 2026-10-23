@@ -1,6 +1,6 @@
 <script lang="ts">
     import { type AnyClientCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { onDestroy, onMount, untrack } from "svelte";
+    import { onDestroy, untrack } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import {
@@ -161,6 +161,9 @@
 
     const createStb = () => {
         destroyStb();
+        if (!listEle || !folderEles) {
+            return;
+        }
         // A filtered view hides rows, so no drag may reorder it (the effect below toggles it later).
         const disabled = filterQuery !== null;
         for (let chat of listEle.querySelectorAll(".risu-chat")) {
@@ -252,7 +255,11 @@
         });
     };
 
-    onMount(createStb);
+    // The folder list is unkeyed: a folder added or removed after mount (New Folder, an import, another character) changes the containers, so the instances are recreated once the DOM has them.
+    $effect(() => {
+        void chara.chatFolders?.length;
+        untrack(createStb);
+    });
 
     $effect(() => {
         const disabled = filterQuery !== null;

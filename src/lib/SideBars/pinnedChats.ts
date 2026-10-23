@@ -36,7 +36,7 @@ export function collectPinnedChats(
     const pinned: PinnedChatItem[] = [];
     for (const chaId of orderedIds) {
         const character = charactersById.get(chaId);
-        if (!character || !chaId) {
+        if (!character || !chaId || character.trashTime) {
             continue;
         }
         for (const chat of chatListOf(chaId)) {

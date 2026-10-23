@@ -241,7 +241,10 @@
             {/if}
             {#if $alertStore.type === "markdown"}
                 <div class="overflow-y-auto">
-                    <span class="text-gray-300 chattext prose chattext2" class:prose-invert={$ColorSchemeTypeStore}>
+                    <span
+                        class="text-gray-300 chattext prose chattext2"
+                        class:prose-invert={$ColorSchemeTypeStore !== "light"}
+                    >
                         {#await ParseMarkdown($alertStore.msg) then msg}
                             {@html msg}
                         {/await}

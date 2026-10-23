@@ -966,7 +966,7 @@
         <span
             class="text chat-width chattext prose minw-0"
             class:hidden={editTranslationMode}
-            class:prose-invert={$ColorSchemeTypeStore}
+            class:prose-invert={$ColorSchemeTypeStore !== "light"}
             bind:this={bodyRoot}
             onclick={() => {
                 if (settings.ui.clickToEdit && idx > -1 && !isOptimizedStreamingMessage) {

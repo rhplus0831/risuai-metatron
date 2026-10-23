@@ -31,7 +31,7 @@
         return modules
             .filter((v) => !query || matchesAny([v.name], query))
             .sort((a, b) => {
-                let score = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+                let score = (a.name ?? "").toLowerCase().localeCompare((b.name ?? "").toLowerCase());
                 return score;
             });
     }

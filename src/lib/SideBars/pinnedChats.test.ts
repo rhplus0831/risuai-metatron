@@ -7,6 +7,21 @@ const character = (chaId: string): AnyClientCharacter =>
     ({ chaId, name: `Character ${chaId}`, image: `${chaId}.png`, type: "character" }) as AnyClientCharacter;
 
 describe("collectPinnedChats", () => {
+    it("excludes a trashed character's pins even when character order includes it, keeping other pins", () => {
+        const trashed = { ...character("trashed"), trashTime: 1234 };
+        const lists: Record<string, ChatListEntry[]> = {
+            trashed: [{ id: "trashed-pin", name: "Trashed pin", pinned: true, fmIndex: -1 }],
+            kept: [{ id: "kept-pin", name: "Kept pin", pinned: true, fmIndex: -1 }],
+        };
+
+        for (const order of [[], ["trashed", "kept"]]) {
+            const result = collectPinnedChats([trashed, character("kept")], order, (id) => lists[id], "Unnamed");
+            expect(result.map(({ chaId, chatId }) => ({ chaId, chatId }))).toEqual([
+                { chaId: "kept", chatId: "kept-pin" },
+            ]);
+        }
+    });
+
     it("collects only true pins in character order, expanding folders and appending unordered characters", () => {
         const lists: Record<string, ChatListEntry[]> = {
             a: [{ id: "a1", name: "A one", pinned: true, fmIndex: -1 }],

@@ -2,9 +2,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRawSnippet, mount, tick, unmount } from "svelte";
+import { get } from "svelte/store";
+import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
 import Button from "./Button.svelte";
 import CheckInput from "./CheckInput.svelte";
 import IconButton from "./IconButton.svelte";
+import MultiLangDisplay from "./MultiLangDisplay.svelte";
 import NumberInput from "./NumberInput.svelte";
 import OptionInput from "./OptionInput.svelte";
 import OptionalInput from "./OptionalInput.svelte";
@@ -66,6 +69,29 @@ afterEach(async () => {
 });
 
 describe("GUI rendering without a browser session", () => {
+    it("inverts multilingual prose in dark mode and removes the inversion in light mode", async () => {
+        const originalScheme = get(ColorSchemeTypeStore);
+        try {
+            ColorSchemeTypeStore.set("light");
+            const displays = [false, true].map((markdown) =>
+                renderGui(MultiLangDisplay, { value: "Theme text", markdown }),
+            );
+            await tick();
+            const prose = displays.map((display) => display.getBySelector(".prose"));
+            expect(prose.map((node) => node.classList.contains("prose-invert"))).toEqual([false, false]);
+
+            ColorSchemeTypeStore.set("dark");
+            await tick();
+            expect(prose.map((node) => node.classList.contains("prose-invert"))).toEqual([true, true]);
+
+            ColorSchemeTypeStore.set("light");
+            await tick();
+            expect(prose.map((node) => node.classList.contains("prose-invert"))).toEqual([false, false]);
+        } finally {
+            ColorSchemeTypeStore.set(originalScheme);
+        }
+    });
+
     it("renders button primitives with snippet content, variants, and disabled behavior", async () => {
         const onPrimaryClick = vi.fn();
         const onDisabledClick = vi.fn();

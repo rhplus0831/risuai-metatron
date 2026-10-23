@@ -20,6 +20,7 @@ vi.mock("src/ts/characters", async (importOriginal) => ({
     getCharImage: vi.fn(async () => ""),
 }));
 vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn(async () => 0) }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lib/SideBars/LoreBook/LoreBookSetting.svelte", () => ({ default: () => {} }));
 vi.mock("src/lib/SideBars/Scripts/RegexList.svelte", () => ({ default: () => {} }));
 vi.mock("src/lib/SideBars/Scripts/TriggerList.svelte", () => ({ default: () => {} }));
@@ -39,6 +40,9 @@ vi.mock("src/ts/storage/assetQueue", () => ({
 
 import CharConfig from "./CharConfig.svelte";
 import { language } from "src/lang";
+import { alertError } from "src/ts/alert";
+import { tokenizeAccurate } from "src/ts/tokenizer";
+import { assembleChats, currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
 import { ASSET_LIST_PAGE } from "src/ts/util";
 import { CharConfigSubMenu } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -154,6 +158,42 @@ afterEach(async () => {
     target.remove();
     CharConfigSubMenu.set(0);
     globalThis.IntersectionObserver = originalObserver;
+});
+
+it("mounts without an error when the selected character's chat is not loaded", async () => {
+    installFlatDatabaseWithChats({
+        characters: [
+            {
+                chaId: "waiting",
+                type: "character",
+                name: "Waiting character",
+                desc: "",
+                firstMessage: "",
+                chats: [{ id: "waiting-chat", name: "Waiting chat", note: "", message: [], localLore: [] }],
+            },
+        ],
+    });
+    selectCharacter("waiting");
+    assembleChats(
+        [{ chaId: "waiting" }],
+        [{ characterId: "waiting", id: "waiting-chat", revision: "r1", name: "Waiting chat", fmIndex: -1 }],
+        [{ characterId: "waiting", revision: "o1", ids: ["waiting-chat"] }],
+    );
+    expect(currentChatRef()).toEqual({ chaId: "waiting", chatId: "waiting-chat" });
+    expect(selectedChat()).toBeNull();
+    vi.mocked(alertError).mockClear();
+    vi.mocked(tokenizeAccurate).mockClear();
+
+    instance = mount(CharConfig, { target });
+    flushSync();
+    await settle();
+
+    expect([...target.querySelectorAll("input")].some((input) => input.value === "Waiting character")).toBe(true);
+    expect(alertError).not.toHaveBeenCalled();
+    // The real tokenizer rejects non-strings before it can load a tokenizer or count tokens.
+    for (const [text] of vi.mocked(tokenizeAccurate).mock.calls) {
+        expect(text).toEqual(expect.any(String));
+    }
 });
 
 describe("CharConfig emotion images", () => {

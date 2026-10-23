@@ -120,3 +120,18 @@ describe("MobileCharacters icons", () => {
         expect(changeChar).toHaveBeenCalledWith("cha-0");
     });
 });
+
+it("omits the first visible row's top border under search and separates every later visible row", async () => {
+    await unmount(instance!);
+    instance = null;
+    instance = mount(MobileCharacters, { target, props: { search: "Char 1" } });
+    flushSync();
+
+    const rows = [...target.querySelectorAll<HTMLButtonElement>("button.flex")];
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0].querySelector(".text-start > span")?.textContent).toBe("Char 10");
+    expect(rows[0].classList.contains("border-t")).toBe(false);
+    for (const row of rows.slice(1)) {
+        expect(row.classList.contains("border-t")).toBe(true);
+    }
+});

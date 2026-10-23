@@ -707,14 +707,14 @@ export function createBlankChar(): character {
 
 export async function makeGroupImage() {
     try {
-        alertStore.set({
-            type: "wait",
-            msg: `Loading..`,
-        });
         const group = selectedCharacter();
         if (group?.type !== "group") {
             return;
         }
+        alertStore.set({
+            type: "wait",
+            msg: `Loading..`,
+        });
         const chaId = group.chaId;
 
         const imageUrls = await Promise.all(

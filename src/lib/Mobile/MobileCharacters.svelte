@@ -40,6 +40,7 @@
                     agoText: makeAgoText(c.lastInteraction || 0),
                 };
             })
+            .filter((char) => !query || matchesAny([char.name], query))
             .sort((a, b) => {
                 if (a.interaction === b.interaction) {
                     return a.name.localeCompare(b.name);
@@ -51,31 +52,29 @@
 
 <div class="flex flex-col items-center w-full overflow-y-auto h-full">
     {#each sortChar(characterList()) as char, i}
-        {#if !query || matchesAny([char.name], query)}
-            <button
-                class="flex p-2 border-t-darkborderc gap-2 w-full"
-                class:border-t={i !== 0}
-                onclick={() => {
-                    changeChar(char.chaId);
-                    endGrid();
-                }}
-            >
-                <LazyCharImage path={char.image} type="css" class="shrink-0">
-                    {#snippet children(image)}
-                        <BarIcon additionalStyle={image}></BarIcon>
-                    {/snippet}
-                </LazyCharImage>
-                <div class="flex flex-1 w-full flex-col justify-start items-start text-start">
-                    <span>{char.name}</span>
-                    <div class="text-sm text-textcolor2 flex items-center w-full flex-wrap">
-                        <span class="mr-1">{char.chats}</span>
-                        <MessageSquareIcon size={14} />
-                        <span class="mr-1 ml-1">|</span>
-                        <span>{char.agoText}</span>
-                    </div>
+        <button
+            class="flex p-2 border-t-darkborderc gap-2 w-full"
+            class:border-t={i !== 0}
+            onclick={() => {
+                changeChar(char.chaId);
+                endGrid();
+            }}
+        >
+            <LazyCharImage path={char.image} type="css" class="shrink-0">
+                {#snippet children(image)}
+                    <BarIcon additionalStyle={image}></BarIcon>
+                {/snippet}
+            </LazyCharImage>
+            <div class="flex flex-1 w-full flex-col justify-start items-start text-start">
+                <span>{char.name}</span>
+                <div class="text-sm text-textcolor2 flex items-center w-full flex-wrap">
+                    <span class="mr-1">{char.chats}</span>
+                    <MessageSquareIcon size={14} />
+                    <span class="mr-1 ml-1">|</span>
+                    <span>{char.agoText}</span>
                 </div>
-            </button>
-        {/if}
+            </div>
+        </button>
     {/each}
 </div>
 
