@@ -23,6 +23,7 @@ import {
 } from "../data/resourceStore.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
+import { assetVerification, contentNameHash, hashAssetFile } from "../http/assetVerification.ts";
 import { readJsonBody } from "../http/body.ts";
 import { createImportSlot, type ImportSlot } from "../http/fileImport.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
@@ -413,8 +414,18 @@ export async function restoreValidated(arg: {
         }
         const staged = await asset.stage();
         try {
+            const name = decodeFileName(path.basename(asset.target));
+            const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
+            const verification = expectedHex === null ? null : await hashAssetFile(staged);
             // A hard link never replaces an existing file, unlike a rename.
             await fs.link(staged, asset.target);
+            if (verification) {
+                assetVerification.recordVerification(
+                    asset.target,
+                    verification.stat,
+                    verification.hashHex === expectedHex,
+                );
+            }
             written += 1;
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") {

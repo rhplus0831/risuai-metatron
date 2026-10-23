@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, type Hash, randomUUID } from "node:crypto";
 import { type Dirent, mkdirSync, rmSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +15,7 @@ import {
 } from "../../../shared/assetBatch.ts";
 import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../shared/assetMime.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
+import { assetVerification, contentNameHash } from "../http/assetVerification.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
@@ -182,9 +183,15 @@ export async function storageFileExists(savePath: string, key: string): Promise<
 /**
  * Writes a stored file by logical key in-process (a server job's asset write), staged under
  * `save/.tmp/` and renamed into place as the write route does. The caller holds the job's
- * admission: a job ends before maintenance replaces the data.
+ * admission: a job ends before maintenance replaces the data. A caller that already hashed the
+ * bytes can supply that digest; otherwise content names are hashed while streaming into staging.
  */
-export async function writeStorageFile(savePath: string, key: string, bytes: Uint8Array): Promise<void> {
+export async function writeStorageFile(
+    savePath: string,
+    key: string,
+    bytes: Uint8Array,
+    hashHex?: string,
+): Promise<void> {
     const fullPath = resolveStorageKey(savePath, key);
     if (fullPath === null) {
         throw new Error(`No storage location for ${key}`);
@@ -193,12 +200,28 @@ export async function writeStorageFile(savePath: string, key: string, bytes: Uin
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
     await fs.mkdir(tmpPath, { recursive: true });
     const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+    const expectedHex = contentNameHash(key);
+    const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
     try {
-        await fs.writeFile(stagedPath, bytes, { flag: "wx" });
+        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx" });
+        const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
+        const digest = hash ? hash.digest("hex") : hashHex;
         await fs.rename(stagedPath, fullPath);
+        if (stat) {
+            assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
+        }
     } catch (error) {
         await fs.rm(stagedPath, { force: true }).catch(() => {});
         throw error;
+    }
+}
+
+/** Hashes each chunk as the staged write consumes it, without a separate pass under admission. */
+function* hashedChunks(bytes: Uint8Array, hash: Hash): Generator<Uint8Array> {
+    for (let offset = 0; offset < bytes.byteLength; offset += 1024 * 1024) {
+        const chunk = bytes.subarray(offset, offset + 1024 * 1024);
+        hash.update(chunk);
+        yield chunk;
     }
 }
 
@@ -272,7 +295,10 @@ function matchesAssetEtag(header: string | undefined, etag: string): boolean {
     if (!header) {
         return false;
     }
-    return header.trim() === "*" || header.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag.slice(2));
+    return (
+        header.trim() === "*" ||
+        header.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag.replace(/^W\//, ""))
+    );
 }
 
 const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
@@ -416,8 +442,23 @@ export function registerStorageRoutes(
                 await handle.close();
                 return c.json({ error: "Not found" }, 404);
             }
-            const etag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
-            const unchanged = matchesAssetEtag(c.req.header("If-None-Match"), etag);
+            const weakEtag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
+            const expectedHex = contentNameHash(key);
+            const verification =
+                expectedHex === null ? "unknown" : assetVerification.lookupVerification(fullPath, stat);
+            const verified = verification === "verified";
+            if (expectedHex !== null && verification === "unknown") {
+                assetVerification.request(fullPath, expectedHex);
+            }
+            const etag = verified ? `"sha256-${expectedHex}"` : weakEtag;
+            const ifNoneMatch = c.req.header("If-None-Match");
+            // Keep the validator a cached copy matched so its 304 can upgrade that copy to immutable.
+            const matchedEtag = matchesAssetEtag(ifNoneMatch, etag)
+                ? etag
+                : verified && matchesAssetEtag(ifNoneMatch, weakEtag)
+                  ? weakEtag
+                  : null;
+            const unchanged = matchedEtag !== null;
             const rangeHeader = c.req.header("Range");
             const range =
                 !unchanged &&
@@ -441,8 +482,8 @@ export function registerStorageRoutes(
             const active = isActiveAssetExtension(extension);
             c.header("Content-Type", active ? "application/octet-stream" : assetMimeType(extension));
             c.header("Content-Disposition", active ? "attachment" : "inline");
-            c.header("ETag", etag);
-            c.header("Cache-Control", "private, no-cache");
+            c.header("ETag", matchedEtag ?? etag);
+            c.header("Cache-Control", verified ? "private, max-age=31536000, immutable" : "private, no-cache");
             if (unchanged) {
                 return c.body(null, 304);
             }
@@ -487,7 +528,11 @@ export function registerStorageRoutes(
             // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
             // leaves earlier deletions in place.
             for (const fullPath of fullPaths) {
-                await fs.rm(fullPath);
+                try {
+                    await fs.rm(fullPath);
+                } finally {
+                    assetVerification.forgetVerification(fullPath);
+                }
             }
         } finally {
             admitted.leave();
@@ -536,11 +581,13 @@ export function registerStorageRoutes(
         }
         const key = decodeKeyHeader(header);
         const fullPath = key === null ? null : resolveStorageKey(savePath, key);
-        if (fullPath === null) {
+        if (key === null || fullPath === null) {
             return c.json({ error: "Invaild Path" }, 400);
         }
         // Raw request bytes, whatever the content type; zero-length writes are allowed.
         const fileContent = new Uint8Array(await c.req.arrayBuffer());
+        const hashHex =
+            contentNameHash(key) === null ? undefined : createHash("sha256").update(fileContent).digest("hex");
         const admitted = enterMaintenanceGate(c);
         if ("closed" in admitted) {
             return admitted.closed;
@@ -548,16 +595,7 @@ export function registerStorageRoutes(
         try {
             // Stage then rename, so a reader or a crash sees the old or the new file, never a partial
             // one. This is atomic replacement, not a durability guarantee (no fsync).
-            await fs.mkdir(path.dirname(fullPath), { recursive: true });
-            await fs.mkdir(tmpPath, { recursive: true });
-            const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
-            try {
-                await fs.writeFile(stagedPath, fileContent, { flag: "wx" });
-                await fs.rename(stagedPath, fullPath);
-            } catch (error) {
-                await fs.rm(stagedPath, { force: true }).catch(() => {});
-                throw error;
-            }
+            await writeStorageFile(savePath, key, fileContent, hashHex);
         } finally {
             admitted.leave();
         }
@@ -581,7 +619,13 @@ export function registerStorageRoutes(
         const parser = new AssetRecordParser({ maxRecords: maxBatchRecords });
         let written = 0;
         /** The record whose bytes are being staged. */
-        let staged: { target: string; file: string; out: FileHandle } | null = null;
+        let staged: {
+            target: string;
+            file: string;
+            out: FileHandle;
+            expectedHex: string | null;
+            hash: Hash | null;
+        } | null = null;
         /** The first failure: the answer, or the error that becomes a 500, once the body is read. */
         let failure: { response: Response } | { error: unknown } | null = null;
         const refuse = (error: unknown) =>
@@ -605,14 +649,24 @@ export function registerStorageRoutes(
                 }
                 await fs.mkdir(tmpPath, { recursive: true });
                 const file = path.join(tmpPath, `${randomUUID()}.tmp`);
-                staged = { target, file, out: await fs.open(file, "wx") };
+                const expectedHex = contentNameHash(event.name);
+                staged = {
+                    target,
+                    file,
+                    out: await fs.open(file, "wx"),
+                    expectedHex,
+                    hash: expectedHex === null ? null : createHash("sha256"),
+                };
                 return null;
             }
             const current = staged!;
             if (event.type === "data") {
+                current.hash?.update(event.bytes);
                 await writeAll(current.out, event.bytes);
                 return null;
             }
+            const stat = current.hash ? await current.out.stat({ bigint: true }) : null;
+            const ok = current.hash?.digest("hex") === current.expectedHex;
             await current.out.close();
             const admitted = enterMaintenanceGate(c);
             if ("closed" in admitted) {
@@ -621,6 +675,9 @@ export function registerStorageRoutes(
             try {
                 await fs.mkdir(path.dirname(current.target), { recursive: true });
                 await fs.rename(current.file, current.target);
+                if (stat) {
+                    assetVerification.recordVerification(current.target, stat, ok);
+                }
             } finally {
                 admitted.leave();
             }

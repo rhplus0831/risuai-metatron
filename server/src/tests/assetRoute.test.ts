@@ -1,8 +1,11 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createResourceTestClient, hex, type ResourceTestClient } from "./testSupport.ts";
+import { assetVerification } from "../http/assetVerification.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
+import { buildArchive, createResourceTestClient, hex, parseArchive, type ResourceTestClient } from "./testSupport.ts";
 
 let s: ResourceTestClient;
 beforeEach(async () => {
@@ -13,6 +16,7 @@ beforeEach(async () => {
     s = await createResourceTestClient();
 });
 afterEach(async () => {
+    await assetVerification.idle();
     await s?.close();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -29,6 +33,192 @@ async function write(key: string, body: string | Uint8Array) {
     await response.arrayBuffer();
     expect(response.status, `write ${key}`).toBe(200);
 }
+
+const sha256 = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+const assetPath = (key: string) => resolveStorageKey(s.savePath, key)!;
+async function writeOnDisk(key: string, bytes: string) {
+    const fullPath = assetPath(key);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, bytes);
+}
+async function weakEtag(key: string) {
+    const stat = await fs.stat(assetPath(key), { bigint: true });
+    return `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
+}
+async function expectAssetCache(key: string, bytes: string, cacheControl: string, etag: string, method = "GET") {
+    const response = await read(key, { method });
+    expect(await response.text()).toBe(method === "HEAD" ? "" : bytes);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(cacheControl);
+    expect(response.headers.get("etag")).toBe(etag);
+}
+
+describe("verified content-name caching", () => {
+    it("makes matching writes immediately immutable with a strong SHA-256 ETag for GET and HEAD", async () => {
+        const bytes = "matching asset bytes";
+        const digest = sha256(bytes);
+        for (const key of [`assets/${digest}.png`, `assets/inlay_${digest}.png`]) {
+            await write(key, bytes);
+            for (const method of ["GET", "HEAD"]) {
+                await expectAssetCache(
+                    key,
+                    bytes,
+                    "private, max-age=31536000, immutable",
+                    `"sha256-${digest}"`,
+                    method,
+                );
+            }
+        }
+    });
+
+    it("keeps mismatched writes and disk files no-cache with their weak stat ETags after hashing", async () => {
+        const bytes = "bytes that do not match the name";
+        const digest = sha256("expected asset bytes");
+        for (const [key, put] of [
+            [`assets/${digest}.png`, write],
+            [`assets/inlay_${digest}.png`, writeOnDisk],
+        ] as const) {
+            await put(key, bytes);
+            const etag = await weakEtag(key);
+            await expectAssetCache(key, bytes, "private, no-cache", etag);
+            await assetVerification.idle();
+            for (const method of ["GET", "HEAD"]) {
+                await expectAssetCache(key, bytes, "private, no-cache", etag, method);
+            }
+        }
+    });
+
+    it("serves a disk-only content name no-cache first and immutable after background verification", async () => {
+        const bytes = "asset installed outside the server";
+        const digest = sha256(bytes);
+        const key = `assets/${digest}.png`;
+        await writeOnDisk(key, bytes);
+        await expectAssetCache(key, bytes, "private, no-cache", await weakEtag(key));
+        await assetVerification.idle();
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+    });
+
+    it("requires new verification when an outside replacement changes a verified file's stat", async () => {
+        const bytes = "unchanged content in a replacement file";
+        const digest = sha256(bytes);
+        const key = `assets/${digest}.png`;
+        await write(key, bytes);
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+        const oldStat = await fs.stat(assetPath(key), { bigint: true });
+        const replacement = path.join(s.savePath, ".tmp", "replacement.png");
+        await fs.writeFile(replacement, bytes);
+        // Fixed timestamps and a separately allocated inode make the stat change independent of clock resolution.
+        await fs.utimes(replacement, 1, 1);
+        await fs.rename(replacement, assetPath(key));
+        const newStat = await fs.stat(assetPath(key), { bigint: true });
+        expect(newStat.ino).not.toBe(oldStat.ino);
+        expect(newStat.mtimeNs).not.toBe(oldStat.mtimeNs);
+        await expectAssetCache(key, bytes, "private, no-cache", await weakEtag(key));
+        await assetVerification.idle();
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+    });
+
+    it("keeps custom IDs and uppercase hash names no-cache even after the queue is idle", async () => {
+        const bytes = "custom asset bytes";
+        for (const key of ["assets/custom.png", `assets/${sha256(bytes).toUpperCase()}.png`]) {
+            await write(key, bytes);
+            const etag = await weakEtag(key);
+            await expectAssetCache(key, bytes, "private, no-cache", etag);
+            await assetVerification.idle();
+            await expectAssetCache(key, bytes, "private, no-cache", etag);
+        }
+    });
+
+    it("upgrades strong and earlier weak validators to immutable on 304 while retaining the matching ETag", async () => {
+        const bytes = "cached before verification";
+        const digest = sha256(bytes);
+        const key = `assets/${digest}.png`;
+        await writeOnDisk(key, bytes);
+        const initial = await read(key);
+        expect(await initial.text()).toBe(bytes);
+        expect(initial.status).toBe(200);
+        expect(initial.headers.get("cache-control")).toBe("private, no-cache");
+        const earlierWeakEtag = initial.headers.get("etag")!;
+        expect(earlierWeakEtag).toBe(await weakEtag(key));
+        await assetVerification.idle();
+
+        for (const etag of [`"sha256-${digest}"`, earlierWeakEtag]) {
+            for (const method of ["GET", "HEAD"]) {
+                const response = await read(key, { method, headers: { "If-None-Match": etag } });
+                expect(await response.text()).toBe("");
+                expect(response.status).toBe(304);
+                expect(response.headers.get("etag")).toBe(etag);
+                expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+            }
+        }
+    });
+
+    it("makes a matching batch write immutable on the next GET", async () => {
+        const bytes = "batch asset bytes";
+        const digest = sha256(bytes);
+        const key = `assets/inlay_${digest}.png`;
+        const response = await s.request("/api/assets/write", {
+            method: "POST",
+            headers: { "content-type": "application/octet-stream" },
+            body: buildArchive([[key, bytes]]) as RequestInit["body"],
+        });
+        await response.arrayBuffer();
+        expect(response.status).toBe(200);
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+    });
+
+    it("forgets verification on removal even when a direct recreation preserves the bytes and stat", async () => {
+        const bytes = "removed and recreated asset";
+        const digest = sha256(bytes);
+        const key = `assets/${digest}.png`;
+        await write(key, bytes);
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+        const etag = await weakEtag(key);
+        const preserved = path.join(s.savePath, ".tmp", "preserved.png");
+        // Re-link the same inode so a changed stat cannot hide a failure to forget the verification.
+        await fs.link(assetPath(key), preserved);
+        const removed = await s.request("/api/remove", { headers: { "file-path": hex(key) } });
+        await removed.arrayBuffer();
+        expect(removed.status).toBe(200);
+        await fs.link(preserved, assetPath(key));
+        expect(await weakEtag(key)).toBe(etag);
+        await expectAssetCache(key, bytes, "private, no-cache", etag);
+        await assetVerification.idle();
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+    });
+
+    it("makes a content-name asset restored from a version-2 backup immutable on the next GET", async () => {
+        const bytes = "restored asset bytes";
+        const digest = sha256(bytes);
+        const key = `assets/${digest}.png`;
+        const exported = await s.json("/api/backups/export", {});
+        expect(exported.status).toBe(200);
+        const records = parseArchive(new Uint8Array(await exported.arrayBuffer()));
+        const database = records.find((record) => record.name === "resources.sqlite")!;
+        const archive = buildArchive([
+            [
+                "manifest.json",
+                JSON.stringify({
+                    version: 2,
+                    createdAt: "2026-01-01T00:00:00.000Z",
+                    partial: false,
+                    assets: [key],
+                    missing: [],
+                }),
+            ],
+            ["resources.sqlite", database.data],
+            [key, bytes],
+        ]);
+        const imported = await s.request("/api/backups/import", {
+            method: "POST",
+            headers: { "content-type": "application/octet-stream" },
+            body: archive as RequestInit["body"],
+        });
+        expect(await imported.json()).toMatchObject({ assetsWritten: 1 });
+        expect(imported.status).toBe(200);
+        await expectAssetCache(key, bytes, "private, max-age=31536000, immutable", `"sha256-${digest}"`);
+    });
+});
 
 describe("authenticated asset URLs", () => {
     it("requires a valid risu-auth JWT for GET and HEAD", async () => {

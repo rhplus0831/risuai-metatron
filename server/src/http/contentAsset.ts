@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { SnapshotManager } from "../data/snapshots.ts";
 import { resolveStorageKey, storageFileExists, writeStorageFile } from "../routes/storage.ts";
+import { assetVerification } from "./assetVerification.ts";
 
 /**
  * The content-addressed asset writes of the server's file imports (CharX, the Realm download's PNG
@@ -26,14 +27,15 @@ export async function writeContentAsset(
     bytes: Uint8Array,
     signal: AbortSignal,
 ): Promise<string | null> {
-    const key = contentAssetKey(createHash("sha256").update(bytes).digest("hex"));
+    const hashHex = createHash("sha256").update(bytes).digest("hex");
+    const key = contentAssetKey(hashHex);
     if (!(await storageFileExists(savePath, key))) {
         if (signal.aborted) {
             return null;
         }
         const leave = snapshots.gate.enter();
         try {
-            await writeStorageFile(savePath, key, bytes);
+            await writeStorageFile(savePath, key, bytes, hashHex);
         } finally {
             leave();
         }
@@ -64,10 +66,12 @@ export async function publishStagedContentAsset(
     if (fullPath === null) {
         throw new Error(`No storage location for ${key}`);
     }
+    const stat = await fs.stat(stagedPath, { bigint: true });
     const leave = snapshots.gate.enter();
     try {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
         await fs.rename(stagedPath, fullPath);
+        assetVerification.recordVerification(fullPath, stat, true);
     } finally {
         leave();
     }
