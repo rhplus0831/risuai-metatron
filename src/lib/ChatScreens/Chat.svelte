@@ -86,6 +86,7 @@
         ensureChatLoaded,
         findChat,
         isMessageLocked,
+        isStreamingMessage,
         patchMessage,
         removeMessages,
         setChatMeta,
@@ -992,6 +993,7 @@
                     bind:translated
                     bind:translating
                     bind:retranslate
+                    streaming={isStreamingMessage(displayedChat, messageId)}
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}

@@ -57,6 +57,8 @@
         renderRevision?: number;
         bodyRoot?: HTMLElement | null;
         modelShortName: string;
+        /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
+        streaming?: boolean;
         renderRawStreaming?: boolean;
         rawStreamingText?: string;
         /**
@@ -94,6 +96,7 @@
         renderRevision = 0,
         bodyRoot,
         modelShortName = "",
+        streaming = false,
         renderRawStreaming = false,
         rawStreamingText = "",
         storedPath = false,
@@ -177,6 +180,12 @@
                     text = bilingualInterleave(pairing.source, text, pairing.options);
                 }
                 const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
+                lastParsedQueue = marked;
+                return marked;
+            }
+            if (streaming) {
+                lastAutoTranslate = null;
+                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
             }

@@ -34,9 +34,10 @@ vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).cre
 vi.mock("src/ts/util", () => ({ sleep: async () => undefined }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ selectedCharacter: vi.fn() }));
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({
-    settings: { ui: {}, memoryTranslateMedia: {} },
+    settings: { ui: { showTranslationLoading: true }, memoryTranslateMedia: {} },
 }));
 
+import { translateHTML } from "src/ts/translator/translator";
 import ChatBody from "./ChatBody.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -130,5 +131,63 @@ describe("ChatBody pending body", () => {
 
         await settle("C");
         expect(text()).toBe("C");
+    });
+
+    it("renders streaming chunks without translation or a spinner and translates the final text once", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        vi.mocked(translateHTML).mockClear();
+        const target = document.createElement("div");
+        document.body.append(target);
+        const props = $state({
+            msgDisplay: "The",
+            role: "char",
+            translated: false,
+            translating: false,
+            retranslate: false,
+            modelShortName: "",
+            autoTranslate: true,
+            streaming: true,
+        });
+        const instance = mount(ChatBody, { target, props });
+        mounted.push(instance);
+        flushSync();
+
+        async function settleCurrentRender(text: string) {
+            await vi.runAllTimersAsync();
+            flushSync();
+            const parse = hoisted.parses.find((entry) => entry.text === text);
+            expect(parse).toBeDefined();
+            parse!.resolve(text);
+            await vi.runAllTimersAsync();
+            flushSync();
+            await instance.whenRendered();
+        }
+
+        await settleCurrentRender(props.msgDisplay);
+        for (const chunk of ["The stream", "The streaming", "The streaming message"]) {
+            props.msgDisplay = chunk;
+            flushSync();
+            await vi.runAllTimersAsync();
+            flushSync();
+            expect(target.querySelector('[style*="animation: spin"]')).toBeNull();
+
+            await settleCurrentRender(chunk);
+            expect(translateHTML).not.toHaveBeenCalled();
+            expect(target.textContent?.trim()).toBe(chunk);
+            expect(props.translating).toBe(false);
+            expect(target.querySelector('[style*="animation: spin"]')).toBeNull();
+        }
+
+        const finalText = "The streaming message is complete.";
+        const translatedText = "최종 번역 메시지.";
+        vi.mocked(translateHTML).mockResolvedValueOnce(`<p>${translatedText}</p>`);
+        props.msgDisplay = finalText;
+        props.streaming = false;
+        flushSync();
+        await settleCurrentRender(finalText);
+
+        expect(translateHTML).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(translateHTML).mock.calls[0][0]).toBe(finalText);
+        expect(target.textContent?.trim()).toBe(translatedText);
     });
 });
