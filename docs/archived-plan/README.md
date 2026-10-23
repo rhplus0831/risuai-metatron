@@ -200,8 +200,10 @@ verifying it through everyday use. Still open, per slice:
 - 3c: no HTTP compression (a `compress` scoped to `/api/resources/read` is the candidate for a
   remote deployment); `hydrateAll` still ships the whole chat per callback barrier, and `resync`
   reads whole.
-- 3d: inlay audio/video object URLs stay pinned; the recorded design is a URL-free placeholder
-  from the parser (`<source data-inlay-src="<key>">`).
+- 3d: resolved for direct mode by Direct Asset URLs (2026-10-23): with a capable worker
+  controlling the page, inlay audio/video use direct asset URLs with their real MIME type and
+  no object URL. The fallback (no worker or capability off) still makes typed object URLs
+  that stay for the page.
 - 3e: the temporary 100k-asset probe was removed; permanent scale tests were left for later.
 - 3f: Firefox/Safari and far-row containment unchecked.
 - 3g: still whole: creates, patches no smaller than the record, server `enabledModules`/
@@ -219,10 +221,13 @@ verifying it through everyday use. Still open, per slice:
 - 4f: no server fallback for a share POST without a worker; shares and other deep links before
   first setup; an installed app keeps `/receive-files/` until its manifest refreshes;
   `window.innerWidth` read at mount only; no physical-device check.
-- Phase 5 items not checked by a dedicated session: the Web Push browser matrix, the service
-  worker's MIME and Range handling (everything served as `image/png`), and the load-only flakes
-  (`cbsLimitsHost.test.ts` "does not yield between quick effects", `checkServerJobMatrix.mjs`
-  setup).
+- Phase 5: the worker's MIME and Range handling was resolved for direct mode by Direct Asset
+  URLs (2026-10-23): `/api/asset/*` sends the extension's MIME, single ranges (206/416), and
+  validators, and the worker passes `Range` through; Chromium video seeking was checked through
+  signed 206 responses. The capability-off fallback's `/sw/img/` entries still use `image/png`
+  without Range. Still not checked by a dedicated session: the Web Push browser matrix and
+  the load-only flakes (`cbsLimitsHost.test.ts` "does not yield between quick effects",
+  `checkServerJobMatrix.mjs` setup).
 
 Timing-Dependent Tests (from the 2026-10-19 timing inventory, refreshed 2026-10-21) landed every
 slice on metatron between 2026-10-21 and 2026-10-22:
@@ -459,9 +464,15 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `parserAssetInputs`, so a server-deleted module's assets stay reachable (+17.2 MB in
     the driver's `boot-module-delete` step, measured but unchecked).
   - D2b accepted: without a working service worker every distinct file shown keeps a Blob
-    of its bytes for the page's life (40.5 MB in the fixture); inlay audio/video object
-    URLs stay in both modes. The fix needs releasable avatar sources and a URL-free
-    placeholder for parser output, `fileSrcCache` with it.
+    of its bytes for the page's life (40.5 MB in the fixture); that baseline is unchanged.
+    Direct Asset URLs (2026-10-23) removes this retention with a worker reporting the
+    direct-asset capability and controlling the page: shown files keep no Blob and make no
+    object URL. `measureFileSources.mjs` on 2026-10-23 (production build, 21 avatars,
+    24 inlay images, 4 chat assets, 2 audio inlays) measured 0 live object URLs, 0 Blobs,
+    and 0 `/api/read` at every step in `sw` (direct) mode, against 51 Blobs (40.5 MB)
+    and 51 object URLs (49 `image/png`, 2 `audio/mpeg`) in `no-sw` mode. Still accepted:
+    pages without a worker and sources created before a switch to direct mode
+    (`fileSrcCache`, `mediaObjectUrls`) keep theirs for the page.
   - B1/B2: a same-record unproxied list or tuple assigned to a module's `assets` is frozen
     in place (later edits through its source wrapper throw; no production writer does
     this); a same-id `replaceCharacterRecordAt` with the character's own frozen list
