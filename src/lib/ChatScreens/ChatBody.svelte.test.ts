@@ -37,6 +37,8 @@ vi.mock("src/ts/storage/settingsViews.svelte", () => ({
     settings: { ui: { showTranslationLoading: true }, memoryTranslateMedia: {} },
 }));
 
+import { alertError } from "src/ts/alert";
+import { ParseMarkdown } from "src/ts/parser/parser.svelte";
 import { translateHTML } from "src/ts/translator/translator";
 import ChatBody from "./ChatBody.svelte";
 
@@ -189,5 +191,43 @@ describe("ChatBody pending body", () => {
         expect(translateHTML).toHaveBeenCalledTimes(1);
         expect(vi.mocked(translateHTML).mock.calls[0][0]).toBe(finalText);
         expect(target.textContent?.trim()).toBe(translatedText);
+    });
+});
+
+describe("ChatBody parse errors", () => {
+    it("alerts a clean parse error and preserves the original stack after retries fail", async () => {
+        const originalError = new Error("Malformed chat markup");
+        originalError.stack = "Error: Malformed chat markup\n    at ParseMarkdown (chat-parser.ts:42:7)";
+        vi.mocked(alertError).mockClear();
+
+        await vi.mocked(ParseMarkdown).withImplementation(
+            async () => {
+                throw originalError;
+            },
+            async () => {
+                const target = document.createElement("div");
+                document.body.append(target);
+                const instance = mount(ChatBody, {
+                    target,
+                    props: {
+                        msgDisplay: "A message that cannot be parsed",
+                        role: "char",
+                        translated: false,
+                        translating: false,
+                        retranslate: false,
+                        modelShortName: "",
+                    },
+                });
+                mounted.push(instance);
+                flushSync();
+                await instance.whenRendered();
+
+                expect(alertError).toHaveBeenCalledTimes(1);
+                const alert = vi.mocked(alertError).mock.calls[0][0] as Error;
+                expect(alert).toBeInstanceOf(Error);
+                expect(alert.message).toBe(`Error while parsing chat message: ${originalError.message}`);
+                expect(alert.stack).toBe(originalError.stack);
+            },
+        );
     });
 });
