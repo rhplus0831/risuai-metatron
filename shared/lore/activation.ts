@@ -657,7 +657,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
 
     //I know this will make token count wrong, but performance is more important here
 
-    console.log("loreinjectionLores", loreinjectionLores);
     for (const lore of loreinjectionLores) {
         const foundLoreIndex = activesResorted.findIndex((l) => {
             return l.source === lore.inject!.location;
