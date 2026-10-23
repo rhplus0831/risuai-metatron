@@ -1,5 +1,5 @@
 import { createHash, type Hash, randomUUID } from "node:crypto";
-import { type Dirent, mkdirSync, rmSync } from "node:fs";
+import { type BigIntStats, type Dirent, mkdirSync, rmSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { createStreamBody } from "@hono/node-server/utils/stream";
@@ -17,6 +17,12 @@ import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../
 import { mkdirDurable, syncDir } from "../data/durableWrite.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { assetVerification, contentNameHash } from "../http/assetVerification.ts";
+import {
+    THUMBNAIL_VERSION,
+    ThumbnailBusy,
+    ThumbnailsUnavailable,
+    type ThumbnailService,
+} from "../http/assetThumbnails.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
@@ -303,6 +309,97 @@ function matchesAssetEtag(header: string | undefined, etag: string): boolean {
     );
 }
 
+type AssetRepresentation = {
+    etag: string;
+    weakEtag?: string;
+    cacheControl: string;
+    contentType: string;
+    disposition: "inline" | "attachment";
+};
+
+function matchedAssetEtag(header: string | undefined, representation: AssetRepresentation): string | null {
+    // Keep the validator a cached copy matched so its 304 can upgrade that copy to immutable.
+    return matchesAssetEtag(header, representation.etag)
+        ? representation.etag
+        : representation.weakEtag && matchesAssetEtag(header, representation.weakEtag)
+          ? representation.weakEtag
+          : null;
+}
+
+/** Owns the handle until a byte stream takes it, including conditional, HEAD, and range answers. */
+async function serveAssetFile(
+    c: Context<AppEnv>,
+    handle: FileHandle,
+    stat: BigIntStats,
+    representation: AssetRepresentation,
+): Promise<Response> {
+    try {
+        const matchedEtag = matchedAssetEtag(c.req.header("If-None-Match"), representation);
+        const unchanged = matchedEtag !== null;
+        const rangeHeader = c.req.header("Range");
+        const range =
+            !unchanged &&
+            c.req.method !== "HEAD" &&
+            stat.size > 0n &&
+            c.req.header("If-Range") === undefined &&
+            rangeHeader !== undefined
+                ? assetByteRange(rangeHeader, stat.size)
+                : null;
+        if (range === "unsatisfiable") {
+            await handle.close();
+            c.header("Content-Range", `bytes */${stat.size}`);
+            return c.json({ error: "Range not satisfiable" }, 416);
+        }
+        const noBody = unchanged || c.req.method === "HEAD" || stat.size === 0n;
+        if (noBody) {
+            await handle.close();
+        }
+        const body = noBody ? null : createStreamBody(handle.createReadStream(range ?? {}));
+        c.header("Content-Type", representation.contentType);
+        c.header("Content-Disposition", representation.disposition);
+        c.header("ETag", matchedEtag ?? representation.etag);
+        c.header("Cache-Control", representation.cacheControl);
+        if (unchanged) {
+            return c.body(null, 304);
+        }
+        c.header("Content-Length", range ? String(range.end - range.start + 1) : String(stat.size));
+        if (range) {
+            c.header("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+        }
+        return body === null ? c.body(null, 200) : c.body(body, range ? 206 : 200);
+    } catch (error) {
+        await handle.close().catch(() => {});
+        throw error;
+    }
+}
+
+function thumbnailRedirect(
+    c: Context<AppEnv>,
+    hex: string,
+    reason: "original" | "unavailable" | "busy" | "error",
+    cacheControl = "no-store",
+): Response {
+    c.header("ETag", undefined);
+    c.header("Content-Type", undefined);
+    c.header("Content-Length", undefined);
+    c.header("Content-Range", undefined);
+    c.header("Content-Disposition", "inline");
+    c.header("Cache-Control", cacheControl);
+    c.header("x-risu-thumbnail", reason);
+    return c.redirect(`/api/asset/${hex}`, 307);
+}
+
+function thumbnailFailure(c: Context<AppEnv>, hex: string, error: unknown): Response {
+    if (error instanceof ThumbnailsUnavailable) {
+        return thumbnailRedirect(c, hex, "unavailable");
+    }
+    if (error instanceof ThumbnailBusy) {
+        return thumbnailRedirect(c, hex, "busy");
+    }
+    console.error(`Thumbnail request failed: ${String(error).replace(/[\r\n]+/g, " ")}`);
+    return thumbnailRedirect(c, hex, "error");
+}
+
 const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
     await next();
     c.header(
@@ -335,11 +432,12 @@ export function registerStorageRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         maintenance: MaintenanceGate;
+        thumbnails: ThumbnailService;
         /** Most records of one batch write (default `MAX_ASSET_BATCH_RECORDS`; tests lower it). */
         maxBatchRecords?: number;
     },
 ) {
-    const { savePath, auth, limiter, maintenance, maxBatchRecords } = arg;
+    const { savePath, auth, limiter, maintenance, thumbnails, maxBatchRecords } = arg;
 
     /** Admits a mutation, or answers 503 while maintenance holds the files. */
     function enterMaintenanceGate(c: Context<AppEnv>): { leave: () => void } | { closed: Response } {
@@ -416,6 +514,11 @@ export function registerStorageRoutes(
                 headers: denied.headers,
             });
         }
+        const widths = c.req.queries("w");
+        if (widths !== undefined && (widths.length !== 1 || (widths[0] !== "256" && widths[0] !== "512"))) {
+            return c.json({ error: "Invalid thumbnail width" }, 400);
+        }
+        const thumbnailSize = widths === undefined ? undefined : widths[0] === "256" ? 256 : 512;
         const hex = c.req.path.slice("/api/asset/".length);
         if (!hex) {
             return c.json({ error: "Not found" }, 404);
@@ -435,6 +538,9 @@ export function registerStorageRoutes(
             if (isMissingFileError(error)) {
                 return c.json({ error: "Not found" }, 404);
             }
+            if (thumbnailSize !== undefined) {
+                return thumbnailFailure(c, hex, error);
+            }
             throw error;
         }
         // The validator, length, and bytes describe the same open file even after an atomic replace.
@@ -444,7 +550,6 @@ export function registerStorageRoutes(
                 await handle.close();
                 return c.json({ error: "Not found" }, 404);
             }
-            const weakEtag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
             const expectedHex = contentNameHash(key);
             const verification =
                 expectedHex === null ? "unknown" : assetVerification.lookupVerification(fullPath, stat);
@@ -452,50 +557,60 @@ export function registerStorageRoutes(
             if (expectedHex !== null && verification === "unknown") {
                 assetVerification.request(fullPath, expectedHex);
             }
-            const etag = verified ? `"sha256-${expectedHex}"` : weakEtag;
+            const cacheControl = verified ? "private, max-age=31536000, immutable" : "private, no-cache";
+            if (thumbnailSize === undefined) {
+                const weakEtag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
+                const extension = assetExtension(key);
+                const active = isActiveAssetExtension(extension);
+                return await serveAssetFile(c, handle, stat, {
+                    etag: verified ? `"sha256-${expectedHex}"` : weakEtag,
+                    weakEtag: verified ? weakEtag : undefined,
+                    cacheControl,
+                    contentType: active ? "application/octet-stream" : assetMimeType(extension),
+                    disposition: active ? "attachment" : "inline",
+                });
+            }
+            const suffix = `-w${thumbnailSize}-v${THUMBNAIL_VERSION}`;
+            const weakEtag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}-${stat.dev}${suffix}"`;
+            const representation: AssetRepresentation = {
+                etag: verified ? `"sha256-${expectedHex}${suffix}"` : weakEtag,
+                weakEtag: verified ? weakEtag : undefined,
+                cacheControl,
+                contentType: "image/webp",
+                disposition: "inline",
+            };
             const ifNoneMatch = c.req.header("If-None-Match");
-            // Keep the validator a cached copy matched so its 304 can upgrade that copy to immutable.
-            const matchedEtag = matchesAssetEtag(ifNoneMatch, etag)
-                ? etag
-                : verified && matchesAssetEtag(ifNoneMatch, weakEtag)
-                  ? weakEtag
-                  : null;
-            const unchanged = matchedEtag !== null;
-            const rangeHeader = c.req.header("Range");
-            const range =
-                !unchanged &&
-                c.req.method !== "HEAD" &&
-                stat.size > 0n &&
-                c.req.header("If-Range") === undefined &&
-                rangeHeader !== undefined
-                    ? assetByteRange(rangeHeader, stat.size)
-                    : null;
-            if (range === "unsatisfiable") {
-                await handle.close();
-                c.header("Content-Range", `bytes */${stat.size}`);
-                return c.json({ error: "Range not satisfiable" }, 416);
+            if (ifNoneMatch?.trim() !== "*" && matchedAssetEtag(ifNoneMatch, representation) !== null) {
+                return await serveAssetFile(c, handle, stat, representation);
             }
-            const noBody = unchanged || c.req.method === "HEAD" || stat.size === 0n;
-            if (noBody) {
+            let thumbnail;
+            try {
+                thumbnail = await thumbnails.get({ key, size: thumbnailSize, source: { handle, stat } });
+            } finally {
                 await handle.close();
             }
-            const body = noBody ? null : createStreamBody(handle.createReadStream(range ?? {}));
-            const extension = assetExtension(key);
-            const active = isActiveAssetExtension(extension);
-            c.header("Content-Type", active ? "application/octet-stream" : assetMimeType(extension));
-            c.header("Content-Disposition", active ? "attachment" : "inline");
-            c.header("ETag", matchedEtag ?? etag);
-            c.header("Cache-Control", verified ? "private, max-age=31536000, immutable" : "private, no-cache");
-            if (unchanged) {
-                return c.body(null, 304);
+            if (thumbnail.kind === "original") {
+                return thumbnailRedirect(c, hex, "original", cacheControl);
             }
-            c.header("Content-Length", range ? String(range.end - range.start + 1) : String(stat.size));
-            if (range) {
-                c.header("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+            if (thumbnail.kind === "missing") {
+                return c.json({ error: "Not found" }, 404);
             }
-            return body === null ? c.body(null, 200) : c.body(body, range ? 206 : 200);
+            const cached = await fs.open(thumbnail.path, STORAGE_READ_FLAGS);
+            try {
+                const cachedStat = await cached.stat({ bigint: true });
+                if (!cachedStat.isFile()) {
+                    throw new Error("Thumbnail cache entry is not a regular file");
+                }
+                return await serveAssetFile(c, cached, cachedStat, representation);
+            } catch (error) {
+                await cached.close().catch(() => {});
+                throw error;
+            }
         } catch (error) {
             await handle.close().catch(() => {});
+            if (thumbnailSize !== undefined) {
+                return thumbnailFailure(c, hex, error);
+            }
             throw error;
         }
     });
@@ -510,17 +625,17 @@ export function registerStorageRoutes(
             return c.json({ error: "File path required" }, 400);
         }
         // Batch form: each key hex-encoded on its own, joined with `$$` (not a hex character).
-        const fullPaths = new Set<string>();
+        const fullPaths = new Map<string, string>();
         for (const segment of header.split("$$")) {
             if (!segment) {
                 return c.json({ error: "File path required" }, 400);
             }
             const key = decodeKeyHeader(segment);
             const fullPath = key === null ? null : resolveStorageKey(savePath, key);
-            if (fullPath === null) {
+            if (key === null || fullPath === null) {
                 return c.json({ error: "Invaild Path" }, 400);
             }
-            fullPaths.add(fullPath);
+            fullPaths.set(fullPath, key);
         }
         const admitted = enterMaintenanceGate(c);
         if ("closed" in admitted) {
@@ -529,11 +644,14 @@ export function registerStorageRoutes(
         try {
             // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
             // leaves earlier deletions in place.
-            for (const fullPath of fullPaths) {
+            for (const [fullPath, key] of fullPaths) {
                 try {
                     await fs.rm(fullPath);
                 } finally {
                     assetVerification.forgetVerification(fullPath);
+                    await thumbnails.removeKey(key).catch((error: unknown) => {
+                        console.error("Thumbnail removal failed:", error);
+                    });
                 }
             }
         } finally {

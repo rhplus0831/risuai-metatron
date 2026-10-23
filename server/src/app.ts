@@ -24,6 +24,7 @@ import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "./diagnostics/j
 import { createRequestShares } from "./diagnostics/share.ts";
 import { errorFields } from "./diagnostics/log.ts";
 import { createHistoryObserver } from "./llm/historyObserver.ts";
+import { createThumbnailService, type ThumbnailOptions } from "./http/assetThumbnails.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createImportSlot } from "./http/fileImport.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
@@ -192,6 +193,8 @@ export function createServerContext(options: {
     memoryTasks?: "disabled" | MemoryTaskService;
     /** The context's memory task service: `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`). */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    /** The thumbnail encoder loader and generation limits (default 2 running, 32 queued). */
+    thumbnailOptions?: ThumbnailOptions;
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -308,7 +311,7 @@ export function createServerContext(options: {
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
     // Memory on the server: the embedding vectors are a cache in a file of their own (in no snapshot
-    // or archive; `save/data/` and `save/models/` are not storage namespaces), and the local models
+    // or archive; `save/data/`, `save/models/`, and `save/cache/` are not storage namespaces), and the local models
     // run in a child process that starts with the first task.
     const vectorCache = createVectorCache({ file: path.join(savePath, "data", "vectors.sqlite") });
     // The vectors of another database (a restore or an import while the server was down) are dropped.
@@ -329,6 +332,13 @@ export function createServerContext(options: {
         limit: () => clampRequestHistoryLimit(readProviders()?.requestHistoryLimit),
     });
     const transformers = createTransformers({ cacheDir: path.join(savePath, "models", "transformers") });
+    const thumbnails = createThumbnailService({
+        ...options.thumbnailOptions,
+        savePath,
+        assetsPath: path.join(savePath, "assets"),
+    });
+    const thumbnailSweepController = new AbortController();
+    let thumbnailSweep: Promise<void> | undefined;
     const embeddings = createEmbeddings({ cache: vectorCache, transformers });
     const llmRequests = createLlmRequests({
         store: resources,
@@ -495,6 +505,7 @@ export function createServerContext(options: {
             return;
         }
         shuttingDown = true;
+        thumbnailSweepController.abort();
         diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
         // The memory tasks end `cancelled` (`shutdown`) first, before the jobs' aborts release their
         // writer leases and the request layer fails the tasks' requests; their terminals reach the
@@ -780,6 +791,7 @@ export function createServerContext(options: {
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
     registerStorageRoutes(app, {
         savePath,
+        thumbnails,
         auth,
         limiter: storageRouteLimiter.middleware,
         maintenance: snapshots.gate,
@@ -909,6 +921,7 @@ export function createServerContext(options: {
         llmRequests,
         requestHistory,
         translationRunner,
+        thumbnails,
         /** The HypaV3 memory task service (null without a characters kind), the default runner's unless a test replaces it. */
         memoryTasks,
         push,
@@ -940,6 +953,11 @@ export function createServerContext(options: {
             generationJobs.startGc();
             snapshots.start();
             diagnostics.start();
+            if (!shuttingDown) {
+                thumbnailSweep ??= thumbnails.sweep(thumbnailSweepController.signal).catch((error: unknown) => {
+                    console.error("Thumbnail cache sweep failed:", error);
+                });
+            }
         },
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
@@ -957,6 +975,7 @@ export function createServerContext(options: {
                 memoryTasks?.drain(),
                 llmRequests.dispose(),
                 transforms.close(),
+                thumbnailSweep,
             ])
                 .then(() => generationJobs.dispose())
                 // Admitted resource handlers and backup operations end here (a restore or an import

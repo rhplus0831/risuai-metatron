@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
@@ -419,7 +420,27 @@ describe("POST /api/backups/export", () => {
     it("streams the manifest, a fresh snapshot, and every asset of the assets namespace under its logical key", async () => {
         const s = await defaultServer();
         await s.create("characters", "a", character("a"));
-        await writeAsset(s, "assets/b.png", "PNG-B");
+        const portrait = await sharp({
+            create: { width: 1024, height: 1536, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 0.5 } },
+        })
+            .png()
+            .toBuffer();
+        const written = await s.request("/api/write", {
+            method: "POST",
+            headers: { "file-path": hex("assets/b.png") },
+            body: new Uint8Array(portrait),
+        });
+        expect(written.status).toBe(200);
+        await written.arrayBuffer();
+        const thumbnail = await s.request(`/api/asset/${hex("assets/b.png")}?w=256`);
+        expect(thumbnail.status).toBe(200);
+        expect(thumbnail.headers.get("content-type")).toBe("image/webp");
+        const thumbnailBytes = Buffer.from(await thumbnail.arrayBuffer());
+        const cachePath = path.join(s.savePath, "cache", "thumbnails");
+        const cacheFiles = readdirSync(cachePath);
+        expect(cacheFiles).toHaveLength(1);
+        expect(cacheFiles[0]).toMatch(/\.webp$/);
+        expect(readFileSync(path.join(cachePath, cacheFiles[0]))).toEqual(thumbnailBytes);
         await writeAsset(s, "assets/a.webp", "WEBP-A");
         await writeAsset(s, "assets/한글 name/x", "KO");
         mkdirSync(path.join(s.savePath, "assets", "subfolder"));
@@ -427,6 +448,9 @@ describe("POST /api/backups/export", () => {
         await writeAsset(s, "database/database.bin", "not an asset");
 
         const records = parseArchive(await exportArchive(s));
+        expect(records.some((record) => record.name.includes("cache/") || cacheFiles.includes(record.name))).toBe(
+            false,
+        );
         expect(records.map((r) => r.name)).toEqual([
             "manifest.json",
             "resources.sqlite",
@@ -442,7 +466,7 @@ describe("POST /api/backups/export", () => {
             assets: ["assets/a.webp", "assets/b.png", "assets/한글 name/x"],
             missing: [],
         });
-        expect(records.slice(2).map((r) => r.data.toString("utf-8"))).toEqual(["WEBP-A", "PNG-B", "KO"]);
+        expect(records.slice(2).map((r) => r.data)).toEqual([Buffer.from("WEBP-A"), portrait, Buffer.from("KO")]);
         const extracted = path.join(s.rootDir, "extracted.sqlite");
         writeFileSync(extracted, records[1].data);
         expect(writtenRows(reader.readSnapshot(extracted).rows).map((r) => r.id)).toEqual(["a"]);
