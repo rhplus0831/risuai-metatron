@@ -20,8 +20,8 @@ import { ArchiveRejectedError, MAX_ARCHIVE_RECORD_BYTES, MAX_ARCHIVE_RECORDS } f
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { UPSTREAM_DATABASE_RECORD, upstreamAssetRecordName } from "../data/upstream/archive.ts";
-import { buildUpstreamDatabase } from "../data/upstream/exportDatabase.ts";
-import { encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
+import { runUpstreamExportWorker, upstreamExportHeapMb } from "../data/upstream/exportRunner.ts";
+import type { UpstreamExportStageResult } from "../data/upstream/exportStage.ts";
 import { readJsonBody } from "../http/body.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
 import { makeStaging } from "../http/spool.ts";
@@ -29,6 +29,12 @@ import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { backupErrorResponse, listAssetKeys } from "./backups.ts";
 import { resolveStorageKey } from "./storage.ts";
+
+/**
+ * Upstream-compatible exports: copy the store and inventory assets on the serving thread, stage the
+ * database in a heap-capped worker, then keep it under a token until download, cancel, or expiry.
+ * A disconnect or shutdown terminates a running prepare's worker before its folder is removed.
+ */
 
 /** A prepared export waiting for its download: its staging folder, the encoded database, and the asset files. */
 type StagedUpstreamExport = {
@@ -44,8 +50,9 @@ type StagedUpstreamExport = {
  * cancel at most `ttlMs` (`UPSTREAM_EXPORT_STAGED_TTL_MS`) from its prepare's answer, and at most
  * `MAX_UPSTREAM_EXPORTS_STAGED` at once (the upstream import staging's pattern, `backupsUpstream.ts`).
  * Expiry, cancel, and `close` remove the staging folder; a download takes the export out (`take`) and
- * removes it itself when its stream ends. `close` (shutdown) waits for every removal it or an expiry
- * started. What a crash leaves under `save/.tmp` is emptied at the next start (`routes/storage.ts`).
+ * removes it itself when its stream ends. `close` (shutdown) aborts running prepares' workers and
+ * waits for every removal it or an expiry started; `snapshots.track` waits for prepares' cleanup.
+ * What a crash leaves under `save/.tmp` is emptied at the next start (`routes/storage.ts`).
  */
 export type UpstreamExportStaging = ReturnType<typeof createUpstreamExportStaging>;
 
@@ -53,6 +60,7 @@ export function createUpstreamExportStaging(options: { ttlMs?: number } = {}) {
     const ttlMs = options.ttlMs ?? UPSTREAM_EXPORT_STAGED_TTL_MS;
     const waiting = new Map<string, StagedUpstreamExport & { timer: ReturnType<typeof setTimeout> }>();
     const removals = new Set<Promise<void>>();
+    const controller = new AbortController();
     let closing: Promise<void> | null = null;
     const remove = (staged: StagedUpstreamExport): Promise<void> => {
         const removal = fs.rm(staged.staging, { recursive: true, force: true }).catch(() => {});
@@ -75,6 +83,8 @@ export function createUpstreamExportStaging(options: { ttlMs?: number } = {}) {
         }
     };
     return {
+        /** Aborted at close: a running prepare's worker is terminated. */
+        signal: controller.signal,
         /** Whether `close` was called: no export is added any more. */
         get closed() {
             return closing !== null;
@@ -113,12 +123,15 @@ export function createUpstreamExportStaging(options: { ttlMs?: number } = {}) {
         },
         /** Removes the export `token` names, if it still waits. */
         cancel,
-        /** Removes every waiting export, refuses new ones, and waits for the removals (an expiry's too). */
+        /** Aborts running workers, removes waiting exports, refuses new ones, and waits for removals. */
         close(): Promise<void> {
-            closing ??= (async () => {
-                await Promise.all([...waiting.keys()].map(cancel));
-                await Promise.all([...removals]);
-            })();
+            if (closing === null) {
+                closing = (async () => {
+                    await Promise.all([...waiting.keys()].map(cancel));
+                    await Promise.all([...removals]);
+                })();
+                controller.abort();
+            }
             return closing;
         },
     };
@@ -162,9 +175,10 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
  * 409 `UPSTREAM_EXPORT_TOO_MANY_STAGED` while that many prepared exports wait or are being prepared;
  * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown waits for it. One consistent copy of the store
  * (`snapshots.exclusive(() => store.backupTo(...))` into `save/.tmp/export-upstream-<uuid>/`), the
- * asset inventory listed after it (a blob is written before the record naming it), then on this
- * thread: `readSnapshot` of the copy, `buildUpstreamDatabase` with `hasAsset` and `now`, and
- * `encodeUpstreamDatabase`; the copy is removed and the encoded database written to the folder. Each
+ * asset inventory listed after it (a blob is written before the record naming it), then a heap-capped
+ * worker reads the copy, projects it with `buildUpstreamDatabase`, encodes it, checks its size, and
+ * writes `database.risudat`. A disconnect or shutdown terminates the worker before cleanup. The copy
+ * is removed after the worker ends, and references absent from the inventory are reported missing. Each
  * referenced asset becomes a record named by its key without `assets/` when such a record can hold it
  * (`upstreamAssetRecordName`; otherwise reported as `asset-names`) and its file is a regular file the
  * format can hold (otherwise reported missing). 413 when the database or the asset count does not fit
@@ -190,11 +204,14 @@ export function registerUpstreamExportRoutes(
         staging?: UpstreamExportStaging;
         /** The exporter's clock (the trash times); default `Date.now`. */
         now?: () => number;
+        /** The worker's old-generation heap cap; default `RISU_UPSTREAM_EXPORT_HEAP_MB`, read at registration. */
+        heapMb?: number;
     },
 ) {
     const { savePath, store, snapshots, auth, limiter } = arg;
     const staging = arg.staging ?? createUpstreamExportStaging();
     const now = arg.now ?? Date.now;
+    const heapMb = arg.heapMb ?? upstreamExportHeapMb(process.env.RISU_UPSTREAM_EXPORT_HEAP_MB);
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
 
@@ -215,22 +232,45 @@ export function registerUpstreamExportRoutes(
             if (signal.aborted) {
                 return null;
             }
-            const snapshot = store.readSnapshot(copy);
-            const { db, assetKeys, report } = buildUpstreamDatabase(snapshot.rows, snapshot, {
-                ...request,
-                hasAsset: (key) => onDisk.has(key),
-                now: now(),
-            });
-            const bytes = encodeUpstreamDatabase(db);
-            if (bytes.length > MAX_ARCHIVE_RECORD_BYTES) {
-                throw new ArchiveRejectedError("The database is too large for a RisuAI backup");
+            const databaseFile = path.join(folder, UPSTREAM_DATABASE_RECORD);
+            let result: UpstreamExportStageResult;
+            try {
+                result = await runUpstreamExportWorker(
+                    { copyFile: copy, databaseFile, request, now: now() },
+                    {
+                        signal: AbortSignal.any([signal, staging.signal]),
+                        resourceLimits: {
+                            maxOldGenerationSizeMb: heapMb,
+                            maxYoungGenerationSizeMb: 64,
+                            stackSizeMb: 4,
+                        },
+                    },
+                );
+            } catch (error) {
+                if (staging.closed) {
+                    throw new MaintenanceError("The server is shutting down");
+                }
+                if (signal.aborted) {
+                    return null;
+                }
+                throw error;
             }
             // The copy holds every credential; only the encoded database is kept.
             await fs.rm(copy, { force: true });
-            const databaseFile = path.join(folder, UPSTREAM_DATABASE_RECORD);
-            await fs.writeFile(databaseFile, bytes);
+            if (signal.aborted) {
+                return null;
+            }
+            const { assetKeys, report } = result;
+            for (const reference of assetKeys) {
+                if (!onDisk.has(reference.key)) {
+                    report.missing.push(reference);
+                }
+            }
             const assets: StagedUpstreamExport["assets"] = [];
             for (const reference of assetKeys) {
+                if (!onDisk.has(reference.key)) {
+                    continue;
+                }
                 const name = upstreamAssetRecordName(reference.key);
                 const file = name === null ? null : resolveStorageKey(savePath, reference.key);
                 if (name === null || file === null) {

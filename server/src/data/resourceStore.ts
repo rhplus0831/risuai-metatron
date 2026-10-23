@@ -310,6 +310,104 @@ export function isValidResourceId(id: unknown): id is string {
 }
 
 /**
+ * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading):
+ * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
+ * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
+ * its current schema version (rows of a `RETIRED_KINDS` kind are skipped), a valid id, singleton rules, unique kind and id, positive
+ * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
+ * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
+ * chats, one exact order per character). Throws `ResourceValidationError` for anything else.
+ */
+export function readSnapshotFile(file: string, kinds: ResourceKindRegistry): ValidatedSnapshot {
+    let source: DatabaseSync;
+    try {
+        source = new DatabaseSync(file, { readOnly: true });
+    } catch {
+        throw new ResourceValidationError("Not a resource database");
+    }
+    try {
+        let rawRows: Record<string, unknown>[];
+        try {
+            const integrity = source.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
+            if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
+                throw new ResourceValidationError("The resource database is damaged");
+            }
+            const { user_version: version } = source.prepare("PRAGMA user_version").get() as {
+                user_version: number;
+            };
+            if (version !== SCHEMA_VERSION) {
+                throw new ResourceValidationError(`Unsupported resource database version ${version}`);
+            }
+            assertSnapshotLayout(source);
+            rawRows = source
+                .prepare("SELECT seq, kind, id, revision, schemaVersion, data FROM resources ORDER BY seq")
+                .all() as Record<string, unknown>[];
+        } catch (error) {
+            if (error instanceof ResourceValidationError) {
+                throw error;
+            }
+            throw new ResourceValidationError("Not a resource database");
+        }
+        const seen = new Set<string>();
+        const rows = rawRows.flatMap((row, index) => {
+            if (typeof row.kind === "string" && RETIRED_KINDS.has(row.kind)) {
+                return [];
+            }
+            const where = `row ${index + 1}`;
+            const kind = typeof row.kind === "string" ? kinds.get(row.kind) : undefined;
+            if (!kind) {
+                throw new ResourceValidationError(`${where}: unknown kind`);
+            }
+            if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision)) {
+                throw new ResourceValidationError(`${where}: invalid seq or revision`);
+            }
+            if (row.schemaVersion !== kind.schemaVersion) {
+                throw new ResourceValidationError(`${where}: unsupported schema version`);
+            }
+            if (!isValidResourceId(row.id) || (kind.singleton && row.id !== SINGLETON_RESOURCE_ID)) {
+                throw new ResourceValidationError(`${where}: invalid id`);
+            }
+            const key = `${kind.name}\u0000${row.id}`;
+            if (seen.has(key)) {
+                throw new ResourceValidationError(`${where}: duplicate kind and id`);
+            }
+            seen.add(key);
+            if (typeof row.data !== "string") {
+                throw new ResourceValidationError(`${where}: data is not text`);
+            }
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(row.data);
+            } catch {
+                throw new ResourceValidationError(`${where}: data is not JSON`);
+            }
+            let text: string;
+            try {
+                text = serialize(normalizeInput(kind, parsed, row.id)).text;
+            } catch (error) {
+                if (error instanceof ResourceValidationError) {
+                    throw new ResourceValidationError(`${where}: ${error.message}`);
+                }
+                throw error;
+            }
+            return [
+                {
+                    kind: kind.name,
+                    id: row.id,
+                    revision: row.revision,
+                    schemaVersion: kind.schemaVersion,
+                    text,
+                },
+            ];
+        });
+        const characterIds = new Set(rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id));
+        return { rows, ...readChatSnapshotRows(source, characterIds) };
+    } finally {
+        source.close();
+    }
+}
+
+/**
  * Typed resource documents in one `node:sqlite` database. Every record carries an opaque revision
  * token `<epoch>:<seq>:<revision>`: the epoch is random per database (a restore replaces it), `seq`
  * is the record's incarnation (a deleted and recreated record gets a new one), and `revision` counts
@@ -1567,104 +1665,9 @@ export function createResourceStore(options: {
             }
         },
 
-        /**
-         * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading):
-         * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
-         * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
-         * its current schema version (rows of a `RETIRED_KINDS` kind are skipped), a valid id, singleton rules, unique kind and id, positive
-         * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
-         * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
-         * chats, one exact order per character). Throws `ResourceValidationError` for anything else.
-         */
+        /** Reads and checks a snapshot file with this store's registered kinds. */
         readSnapshot(file: string): ValidatedSnapshot {
-            let source: DatabaseSync;
-            try {
-                source = new DatabaseSync(file, { readOnly: true });
-            } catch {
-                throw new ResourceValidationError("Not a resource database");
-            }
-            try {
-                let rawRows: Record<string, unknown>[];
-                try {
-                    const integrity = source.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
-                    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
-                        throw new ResourceValidationError("The resource database is damaged");
-                    }
-                    const { user_version: version } = source.prepare("PRAGMA user_version").get() as {
-                        user_version: number;
-                    };
-                    if (version !== SCHEMA_VERSION) {
-                        throw new ResourceValidationError(`Unsupported resource database version ${version}`);
-                    }
-                    assertSnapshotLayout(source);
-                    rawRows = source
-                        .prepare("SELECT seq, kind, id, revision, schemaVersion, data FROM resources ORDER BY seq")
-                        .all() as Record<string, unknown>[];
-                } catch (error) {
-                    if (error instanceof ResourceValidationError) {
-                        throw error;
-                    }
-                    throw new ResourceValidationError("Not a resource database");
-                }
-                const seen = new Set<string>();
-                const rows = rawRows.flatMap((row, index) => {
-                    if (typeof row.kind === "string" && RETIRED_KINDS.has(row.kind)) {
-                        return [];
-                    }
-                    const where = `row ${index + 1}`;
-                    const kind = typeof row.kind === "string" ? kinds.get(row.kind) : undefined;
-                    if (!kind) {
-                        throw new ResourceValidationError(`${where}: unknown kind`);
-                    }
-                    if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision)) {
-                        throw new ResourceValidationError(`${where}: invalid seq or revision`);
-                    }
-                    if (row.schemaVersion !== kind.schemaVersion) {
-                        throw new ResourceValidationError(`${where}: unsupported schema version`);
-                    }
-                    if (!isValidResourceId(row.id) || (kind.singleton && row.id !== SINGLETON_RESOURCE_ID)) {
-                        throw new ResourceValidationError(`${where}: invalid id`);
-                    }
-                    const key = `${kind.name}\u0000${row.id}`;
-                    if (seen.has(key)) {
-                        throw new ResourceValidationError(`${where}: duplicate kind and id`);
-                    }
-                    seen.add(key);
-                    if (typeof row.data !== "string") {
-                        throw new ResourceValidationError(`${where}: data is not text`);
-                    }
-                    let parsed: unknown;
-                    try {
-                        parsed = JSON.parse(row.data);
-                    } catch {
-                        throw new ResourceValidationError(`${where}: data is not JSON`);
-                    }
-                    let text: string;
-                    try {
-                        text = serialize(normalizeInput(kind, parsed, row.id)).text;
-                    } catch (error) {
-                        if (error instanceof ResourceValidationError) {
-                            throw new ResourceValidationError(`${where}: ${error.message}`);
-                        }
-                        throw error;
-                    }
-                    return [
-                        {
-                            kind: kind.name,
-                            id: row.id,
-                            revision: row.revision,
-                            schemaVersion: kind.schemaVersion,
-                            text,
-                        },
-                    ];
-                });
-                const characterIds = new Set(
-                    rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id),
-                );
-                return { rows, ...readChatSnapshotRows(source, characterIds) };
-            } finally {
-                source.close();
-            }
+            return readSnapshotFile(file, kinds);
         },
 
         /**

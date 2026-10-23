@@ -19,13 +19,31 @@ import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import { stageUpstreamImport } from "../data/upstream/importStage.ts";
 import { decodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
 import { createUpstreamExportStaging } from "../routes/backupsUpstreamExport.ts";
-import { createResourceTestClient, hex, parseArchive, type ResourceTestClient } from "./testSupport.ts";
+import {
+    createResourceTestClient,
+    createTestServer,
+    hex,
+    parseArchive,
+    type ResourceTestClient,
+} from "./testSupport.ts";
+
+vi.mock(import("../data/upstream/exportRunner.ts"), async (importOriginal) => {
+    const { createExportRunnerMock } = await import("./exportRunnerMock.ts");
+    const { stageUpstreamExport } = await import("../data/upstream/exportStage.ts");
+    return createExportRunnerMock(await importOriginal(), {
+        runUpstreamExportWorker: async (input, { signal }) => {
+            signal.throwIfAborted();
+            return stageUpstreamExport(input);
+        },
+    });
+});
 
 /**
  * The upstream RisuAI-compatible `.bin` export routes (`routes/backupsUpstreamExport.ts`): prepare,
  * download, and cancel over `createTestServer`. What the projection holds is
  * `upstreamExport.test.ts`; here: the route lifecycle, the record layout, the asset name rule, and
- * that this server's own upstream import reads an export back.
+ * that this server's own upstream import reads an export back. The worker boundary runs the stage
+ * in process; cold workers, heap limits, and prepare cancellation are in `upstreamExportWorker.test.ts`.
  */
 
 const TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -106,6 +124,21 @@ const decode = (record: { data: Buffer }) =>
     decodeUpstreamDatabase(record.data, { maxDecodedBytes: 64 * 1024 * 1024 }) as Record<string, any>;
 
 describe("POST /api/backups/export-upstream/prepare and GET /download", () => {
+    it("refuses server creation when RISU_UPSTREAM_EXPORT_HEAP_MB is invalid", async () => {
+        const s = await server();
+        await s.context.dispose();
+        vi.stubEnv("RISU_UPSTREAM_EXPORT_HEAP_MB", "abc");
+        let started: ReturnType<typeof createTestServer> | undefined;
+        try {
+            expect(() => {
+                started = createTestServer({ rootDir: s.rootDir });
+            }).toThrow(/RISU_UPSTREAM_EXPORT_HEAP_MB/);
+        } finally {
+            await started?.context.dispose();
+            vi.unstubAllEnvs();
+        }
+    });
+
     it("stages the encoded database under a token, then streams the existing assets by basename and database.risudat last, and removes the staging", async () => {
         const s = await server();
         await seed(s);
