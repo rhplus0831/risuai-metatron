@@ -1,6 +1,6 @@
 # Combined Run Plan
 
-Status: planned 2026-10-23 at `7bcdb8030`. Landed: SA1 (`84ff35294`), UP4 (`128e6949c`), UP5 (`052b6cad9`), GS1 (`e1b49f057`), DA0 (`81015f89d`) probe a–e pass, SA7 (`5bcc152a7`), SA9 (`f3c4b942a`), SA2 (`ada2e3139`), UP1 (`ffc4d03aa`), UP6 (`717a371f5`).
+Status: planned 2026-10-23 at `7bcdb8030`. Landed: SA1 (`84ff35294`), UP4 (`128e6949c`), UP5 (`052b6cad9`), GS1 (`e1b49f057`), DA0 (`81015f89d`) probe a–e pass, SA7 (`5bcc152a7`), SA9 (`f3c4b942a`), SA2 (`ada2e3139`), UP1 (`ffc4d03aa`), UP6 (`717a371f5`), GS3 (`54e553623`).
 
 This plan is an index over the eight active plans so that `plan-runner` schedules their
 slices as one pool: a wave may hold slices of different plans, and a short slice of one plan
