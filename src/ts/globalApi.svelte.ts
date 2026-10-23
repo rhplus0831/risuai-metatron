@@ -158,6 +158,14 @@ export function holdFileSrc(loc: string): { src: Promise<string>; release(): voi
     };
 }
 
+/** Direct thumbnails need no read or pin; fallback returns getFileSrc's own promise for the original. */
+export function getThumbSrc(loc: string, size: 256 | 512): Promise<string> {
+    if (canUseDirectAssets()) {
+        return Promise.resolve(loc ? directAssetSrc(loc) + "?w=" + size : "");
+    }
+    return getFileSrc(loc);
+}
+
 /** Returns a direct asset URL when a capable worker controls this page, otherwise null. */
 export function getDirectAssetSrc(loc: string): string | null {
     return canUseDirectAssets() ? directAssetSrc(loc) : null;

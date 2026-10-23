@@ -84,6 +84,25 @@ const store = (page: Page, id: string) =>
         { id, png: PNG_1X1 },
     );
 
+/** Stores a portrait PNG with known dimensions for thumbnail and original-image decoding. */
+const storePortrait = (page: Page, width: number, height: number) =>
+    page.evaluate(
+        async ({ width, height, id }) => {
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d")!;
+            context.fillStyle = "#36845a";
+            context.fillRect(0, 0, width, height);
+            const png = await new Promise<Blob>((resolve, reject) =>
+                canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed"))), "image/png"),
+            );
+            const { saveAsset } = await import("/src/ts/globalApi.svelte.ts");
+            return await saveAsset(new Uint8Array(await png.arrayBuffer()), id, `${id}.png`);
+        },
+        { width, height, id: id("portrait") },
+    );
+
 /** `getFileSrc` for each path, called concurrently; a read that does not settle in 20 s fails. */
 const fileSrc = (page: Page, paths: string[]) =>
     page.evaluate(async (paths) => {
@@ -186,6 +205,31 @@ test("a controlled page displays a content-named direct asset and reloads it fro
     expect(await controlled(page)).toBe(true);
     await display();
     expect(await serverRequests()).toBe(0);
+
+    for (const [width, height, displayed, status] of [
+        [1024, 1536, 256, 200],
+        [200, 300, 200, 307],
+    ]) {
+        const portrait = await storePortrait(page, width, height);
+        const thumbnail = await page.evaluate(async (path) => {
+            const { getThumbSrc } = await import("/src/ts/globalApi.svelte.ts");
+            return await getThumbSrc(path, 256);
+        }, portrait);
+        const original = `/api/asset/${hex(portrait)}`;
+        expect(thumbnail).toBe(`${original}?w=256`);
+        const response = context.waitForEvent("response", {
+            predicate: (response) =>
+                response.url() === new URL(thumbnail, baseURL).href && response.request().serviceWorker() !== null,
+        });
+        expect(await displayedWidth(page, thumbnail)).toBe(displayed);
+        const signed = await response;
+        expect(signed.status()).toBe(status);
+        if (status === 307) {
+            expect(signed.headers()["location"]).toBe(original);
+        } else {
+            expect(signed.headers()["content-type"]).toBe("image/webp");
+        }
+    }
 });
 
 test("on a page without a worker: an object URL that displays, one read for concurrent and later reads, and a missing file read again", async ({
@@ -212,6 +256,16 @@ test("on a page without a worker: an object URL that displays, one read for conc
     // A later read of the same path answers the same URL without reading again.
     expect(await fileSrc(page, [path])).toEqual([concurrent[0]]);
     expect(count(await log(page), `read ${path}`)).toBe(1);
+
+    const portrait = await storePortrait(page, 1024, 1536);
+    const [thumbnail, original] = await page.evaluate(async (path) => {
+        const { getThumbSrc, getFileSrc } = await import("/src/ts/globalApi.svelte.ts");
+        return await Promise.all([getThumbSrc(path, 256), getFileSrc(path)]);
+    }, portrait);
+    expect(thumbnail).toBe(original);
+    expect(thumbnail).toMatch(/^blob:/);
+    expect(await displayedWidth(page, thumbnail)).toBe(1024);
+    expect(count(await log(page), `read ${portrait}`)).toBe(1);
 
     // A missing file answers "" and is not kept: once it exists, the next read answers it.
     const missingId = id("missing");

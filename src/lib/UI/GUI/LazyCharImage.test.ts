@@ -8,8 +8,10 @@ import { reactiveProps } from "../tests/reactiveProps.svelte";
 // settles, so its `{#await}` (`LazyCharImageFixture.svelte`) stays on the loading placeholder. The
 // list-level check over a real list: `src/lib/Mobile/MobileCharacters.test.ts`.
 
-const getCharImage = vi.fn(async (path: string, type: string) => `${type}:${path}`);
-vi.mock("src/ts/characters", () => ({ getCharImage: (path: string, type: string) => getCharImage(path, type) }));
+const getCharImage = vi.fn(async (path: string, type: string, _thumb?: 256 | 512) => `${type}:${path}`);
+vi.mock("src/ts/characters", () => ({
+    getCharImage: (path: string, type: string, thumb?: 256 | 512) => getCharImage(path, type, thumb),
+}));
 
 import LazyCharImageFixture from "../tests/LazyCharImageFixture.svelte";
 
@@ -44,8 +46,8 @@ let target: HTMLElement;
 let instance: ReturnType<typeof mount> | null = null;
 const originalObserver = globalThis.IntersectionObserver;
 
-function render(path: string) {
-    const props = reactiveProps({ path, type: "css" as const, class: "shrink-0" });
+function render(path: string, thumb?: 256 | 512) {
+    const props = reactiveProps({ path, thumb, type: "css" as const, class: "shrink-0" });
     instance = mount(LazyCharImageFixture, { target, props });
     flushSync();
     return props;
@@ -92,9 +94,18 @@ describe("LazyCharImage", () => {
         render("assets/a.png");
         FakeObserver.report(true);
         await settle();
-        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css"]]);
+        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css", undefined]]);
         expect(shown()).toBe("css:assets/a.png");
         expect(FakeObserver.live).toHaveLength(0);
+    });
+
+    it("forwards the thumbnail size through the fixture once the icon is visible", async () => {
+        render("assets/thumbnail.png", 256);
+        expect(getCharImage).not.toHaveBeenCalled();
+        FakeObserver.report(true);
+        await settle();
+        expect(getCharImage).toHaveBeenCalledExactlyOnceWith("assets/thumbnail.png", "css", 256);
+        expect(shown()).toBe("css:assets/thumbnail.png");
     });
 
     it("waits to be seen again after its path changes, back on the placeholder", async () => {
@@ -106,13 +117,13 @@ describe("LazyCharImage", () => {
         flushSync();
         await settle();
         expect(shown()).toBe("pending");
-        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css"]]);
+        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css", undefined]]);
 
         FakeObserver.report(true);
         await settle();
         expect(getCharImage.mock.calls).toEqual([
-            ["assets/a.png", "css"],
-            ["assets/b.png", "css"],
+            ["assets/a.png", "css", undefined],
+            ["assets/b.png", "css", undefined],
         ]);
         expect(shown()).toBe("css:assets/b.png");
     });
@@ -121,7 +132,7 @@ describe("LazyCharImage", () => {
         globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
         render("assets/a.png");
         await settle();
-        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css"]]);
+        expect(getCharImage.mock.calls).toEqual([["assets/a.png", "css", undefined]]);
         expect(shown()).toBe("css:assets/a.png");
     });
 

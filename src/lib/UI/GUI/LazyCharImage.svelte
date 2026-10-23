@@ -7,13 +7,15 @@
         path: string;
         /** `getCharImage`'s output form. */
         type: "plain" | "css" | "contain" | "lgcss";
+        /** The thumbnail size for direct assets; omitted or fallback loads use the original. */
+        thumb?: 256 | 512;
         /** The icon, given `getCharImage`'s result; before the wrapper is seen, a promise that never settles. */
         children: Snippet<[ReturnType<typeof getCharImage>]>;
         /** The wrapper's class: give it the icon's size, so an unseen icon takes its place. */
         class?: string;
     }
 
-    const { path, type, children, class: className = "" }: Props = $props();
+    const { path, type, thumb, children, class: className = "" }: Props = $props();
 
     // The image of an icon not yet seen: its `{#await}` stays on the loading placeholder. One per
     // instance, never shared: a promise that never settles keeps every callback attached to it, so a
@@ -46,7 +48,7 @@
         return () => observer.disconnect();
     });
 
-    const image = $derived(seenPath === path ? getCharImage(path, type) : notSeen);
+    const image = $derived(seenPath === path ? getCharImage(path, type, thumb) : notSeen);
 </script>
 
 <div bind:this={anchor} class={className}>

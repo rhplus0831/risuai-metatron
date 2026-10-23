@@ -5,13 +5,14 @@
     interface Props {
         path: string;
         type: "plain" | "css" | "contain" | "lgcss";
+        thumb?: 256 | 512;
         class?: string;
     }
 
-    const { path, type, class: className = "" }: Props = $props();
+    const { path, type, thumb, class: className = "" }: Props = $props();
 </script>
 
-<LazyCharImage {path} {type} class={className}>
+<LazyCharImage {path} {type} {thumb} class={className}>
     {#snippet children(image)}
         {#await image}
             <span class="icon">pending</span>

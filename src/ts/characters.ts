@@ -32,7 +32,14 @@ import {
     updateCharacter,
     characterList,
 } from "./storage/characterStore.svelte";
-import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
+import {
+    AppendableBuffer,
+    changeChatTo,
+    checkCharOrder,
+    downloadFile,
+    getFileSrc,
+    getThumbSrc,
+} from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
@@ -80,7 +87,7 @@ export function createNewGroup() {
     return chaId;
 }
 
-export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss") {
+export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss", thumb?: 256 | 512) {
     // Return placeholder when hideAllImages is enabled
     if (settings.ui.hideAllImages) {
         if (type === "plain") {
@@ -95,7 +102,7 @@ export async function getCharImage(loc: string, type: "plain" | "css" | "contain
         }
         return null;
     }
-    const filesrc = await getFileSrc(loc);
+    const filesrc = await (thumb ? getThumbSrc(loc, thumb) : getFileSrc(loc));
     if (type === "plain") {
         return filesrc;
     } else if (type === "css") {
