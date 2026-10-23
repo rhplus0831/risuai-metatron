@@ -13,6 +13,7 @@
         openPresetList,
     } from "src/ts/stores.svelte";
     import { currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
     import { selection } from "src/ts/storage/selection.svelte";
     import {
         closeMessageSearch,
@@ -246,7 +247,14 @@
     function closeOnEscape(event: KeyboardEvent) {
         if (!messageSearchPanel.open || event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
         if (doingAlert() || get(terminalNotice) !== null) return;
-        if (get(openPresetList) || get(openModelPresetList) || get(openPersonaList) || get(chatBindingDialog)) return;
+        if (
+            get(openPresetList) ||
+            get(openModelPresetList) ||
+            get(openPersonaList) ||
+            get(chatCheckpointsDialog) ||
+            get(chatBindingDialog)
+        )
+            return;
         event.stopPropagation();
         event.preventDefault();
         close();

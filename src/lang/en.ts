@@ -1588,6 +1588,58 @@ export const languageEnglish = {
         saveName: "Save name",
         export: "Export chat",
     },
+    chatCheckpoints: {
+        title: "Checkpoints",
+        close: "Close",
+        saveAs: "Save as",
+        load: "Load",
+        rename: "Rename",
+        delete: "Delete",
+        namePrompt: "Checkpoint name",
+        working: "Working…",
+        empty: "This chat has no checkpoints yet.",
+        kinds: { manual: "Manual", auto: "Automatic", safety: "Safety" },
+        roles: { user: "User", char: "Character" },
+        counts: (turns: number, messages: number) => `${turns} user turns · ${messages} messages`,
+        preview: "Preview",
+        selectPreview: "Select a checkpoint to see its preview.",
+        previewCounts: (summaries: number, lore: number, variables: number) =>
+            `${summaries} summaries · ${lore} lore entries · ${variables} variables`,
+        loadConfirm: (name: string) =>
+            `Load “${name}”? This replaces the chat's messages, variables, chat lorebook, memory, and author note. The chat's name, folder, bindings and presets, persona, toggles, translation settings, and modules stay as they are. A safety checkpoint of the current state is saved first.`,
+        deleteConfirm: (name: string) => `Delete checkpoint “${name}”? This cannot be undone.`,
+        loaded: "The checkpoint was loaded.",
+        refreshPending:
+            "The checkpoint was loaded on the server, but this tab still has changes based on the old state, so it does not show the loaded chat yet. Those changes will not be saved; the chat will be replaced with the loaded one and the reload notice will appear.",
+        loadUnknown:
+            "The checkpoint load's outcome is unknown. This tab tried to refresh the chat. Check the chat and its safety checkpoints before deciding whether to load again.",
+        autoPolicy: "Automatic checkpoints",
+        off: "Off",
+        on: "On",
+        every: "Save every (user turns)",
+        keep: "Keep the newest (checkpoints)",
+        applyPolicy: "Save policy",
+        errors: {
+            refused:
+                "This tab has a refused local change for this chat or its chat order. Resolve it with Retry or Discard in the refusal banner before saving or loading a checkpoint.",
+            saveFailed: "Local changes could not be saved. No checkpoint request was sent.",
+            discarded:
+                "This chat changed elsewhere while local changes were being saved. No checkpoint request was sent. Check the reloaded chat and try again.",
+            unsaved: "This chat is not saved on the server yet. No checkpoint was loaded.",
+            admission:
+                "The checkpoint request could not be sent. Check the connection and reload the app before trying again.",
+            busy: "A checkpoint load is already in progress. Wait until it finishes.",
+            missing: "The chat or checkpoint no longer exists.",
+            invalid:
+                "The server refused the checkpoint request. Check the name, policy limits, or number of manual checkpoints.",
+            conflict:
+                "The chat or checkpoint changed elsewhere. Its latest state was requested; check it and try again.",
+            maintenance: "The server is undergoing maintenance. Try again when it finishes.",
+            tooLarge: "The checkpoint request is too large. Shorten the checkpoint name and try again.",
+            request:
+                "The checkpoint request failed. Check the connection and refresh the checkpoint list before trying again.",
+        },
+    },
     chatBinding: {
         refused: "This chat cannot be sent until its model preset, prompt preset, and persona are set.",
         fields: {

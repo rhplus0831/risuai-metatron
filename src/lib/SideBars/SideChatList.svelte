@@ -49,6 +49,7 @@
     import { chatFolderOf } from "./chatFolders";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
+    import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
@@ -101,7 +102,7 @@
     }
 
     /**
-     * A chat row's options: copy the chat, or open its binding (chat settings). The chat (and its
+     * A chat row's options: copy the chat, open its binding (chat settings), or its checkpoints. The chat (and its
      * character) are captured before the dialogs, so a selection change or a reorder meanwhile cannot
      * redirect them.
      */
@@ -126,6 +127,12 @@
                 // The binding is in the list entry, so a chat that is not loaded opens too.
                 if (chatEntry(ref)) {
                     chatBindingDialog.set(ref);
+                }
+                break;
+            }
+            case 2: {
+                if (chatEntry(ref)) {
+                    chatCheckpointsDialog.set(ref);
                 }
                 break;
             }

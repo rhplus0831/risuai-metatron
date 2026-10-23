@@ -34,6 +34,7 @@ import { isChatBusy } from "./process/chatStatus.svelte";
 import { currentChatRef } from "./storage/chatStore.svelte";
 import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
 import { createDialogKeyGate } from "./alertQueue";
+import { chatCheckpointsDialog, checkpointLoadBusy } from "./checkpoints/chatCheckpoints.svelte";
 
 export function initHotkey() {
     // Every stroke of Enter and Escape, seen before any element can stop it: a dialog takes a key only
@@ -52,6 +53,14 @@ export function initHotkey() {
             // Panels underneath also listen on window; even a rejected Escape stays with the dialog.
             ev.preventDefault();
             ev.stopPropagation();
+        }
+        // A checkpoint load holds the modal through its flush and refresh. Alerts above it still
+        // handle Enter/Escape below, but no shortcut may send or switch screens behind it.
+        const loadingCheckpoint = get(checkpointLoadBusy);
+        if (loadingCheckpoint && !hasDialogs) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
         }
         // Escape closes the topmost picker list or binding dialog also from a text field (a preset's
         // rename, or the composer that kept the focus); an alert above it closes first (below).
@@ -78,7 +87,10 @@ export function initHotkey() {
             return;
         }
 
-        const hotKeys = hasDialogs && plainKey ? [] : enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
+        const hotKeys =
+            loadingCheckpoint || (hasDialogs && plainKey)
+                ? []
+                : enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {
@@ -241,7 +253,7 @@ export function initHotkey() {
             return;
         }
 
-        if (ev.ctrlKey) {
+        if (ev.ctrlKey && !loadingCheckpoint) {
             switch (ev.key) {
                 case "1": {
                     changeToPreset(0);
@@ -489,9 +501,9 @@ function focusQuery(query: string) {
     }
 }
 
-type BindingLayer = "personaList" | "modelPresetList" | "presetList" | "bindingDialog";
+type BindingLayer = "personaList" | "modelPresetList" | "presetList" | "checkpointsDialog" | "bindingDialog";
 
-/** The topmost open picker list or binding dialog (`App.svelte` mounts the dialog first, then the lists in this order). */
+/** The topmost open chat dialog or picker list, following their mount order in `App.svelte`. */
 function topBindingLayer(): BindingLayer | null {
     if (get(openPersonaList)) {
         return "personaList";
@@ -501,6 +513,9 @@ function topBindingLayer(): BindingLayer | null {
     }
     if (get(openPresetList)) {
         return "presetList";
+    }
+    if (get(chatCheckpointsDialog)) {
+        return "checkpointsDialog";
     }
     if (get(chatBindingDialog)) {
         return "bindingDialog";
@@ -521,6 +536,9 @@ function closeBindingLayer(layer: BindingLayer) {
             break;
         case "bindingDialog":
             chatBindingDialog.set(null);
+            break;
+        case "checkpointsDialog":
+            if (!get(checkpointLoadBusy)) chatCheckpointsDialog.set(null);
             break;
     }
 }

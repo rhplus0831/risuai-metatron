@@ -38,6 +38,8 @@
     import Botpreset from "./lib/Setting/botpreset.svelte";
     import ListedPersona from "./lib/Setting/listedPersona.svelte";
     import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
+    import ChatCheckpointsDialog from "./lib/Others/ChatCheckpointsDialog.svelte";
+    import { chatCheckpointsDialog } from "./ts/checkpoints/chatCheckpoints.svelte";
     import { checkCharOrder } from "./ts/globalApi.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
     import {
@@ -292,6 +294,16 @@
                 $chatBindingDialog = null;
             }}
         />
+    {/if}
+    {#if $chatCheckpointsDialog}
+        {#key `${$chatCheckpointsDialog.chaId}\u0000${$chatCheckpointsDialog.chatId}`}
+            <ChatCheckpointsDialog
+                chatRef={$chatCheckpointsDialog}
+                close={() => {
+                    $chatCheckpointsDialog = null;
+                }}
+            />
+        {/key}
     {/if}
     {#if $openPresetList}
         <Botpreset
