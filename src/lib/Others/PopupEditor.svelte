@@ -62,7 +62,10 @@
             <div class="flex items-center gap-2">
                 {#if ["markdown", "cbs"].includes(languageMode)}
                     {#if !previewing}
-                        <select bind:value={languageMode} class="bg-bgcolor border-none rounded px-2 py-1 text-sm">
+                        <select
+                            bind:value={languageMode}
+                            class="risu-select bg-bgcolor border-none rounded px-2 py-1 text-sm"
+                        >
                             <option value="markdown">Markdown</option>
                             <option value="cbs" disabled>CBS</option>
                         </select>
