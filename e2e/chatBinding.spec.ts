@@ -658,6 +658,10 @@ test("two tabs showing two bound chats send with their own presets: the provider
     // Two tabs of one browser context: they share `localStorage` (the tab selection's starting value)
     // and the server, while each keeps its own `sessionStorage` (its selection, its generation client).
     const context = await browser.newContext();
+    // The tabs share safe boot's counter of unsettled boots (`risu.safeBoot.attempts` in `localStorage`,
+    // `safeBoot.ts`): the seed opens the app twice within 10 s, so tab B would boot safe behind its notice.
+    // Every boot here starts without it.
+    await context.addInitScript(() => localStorage.removeItem("risu.safeBoot.attempts"));
     const sa = await session(context, baseURL!);
     const { chaId, chats, a, b } = await seed(sa);
     const sb = await session(context, baseURL!);

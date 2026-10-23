@@ -46,8 +46,11 @@ interface Session {
     errors: string[];
     /** The `/api/resources/read` bodies the page posted (the chats and summary lists each asked for). */
     reads: { chats: string[]; summaries: string[] }[];
-    /** The `/api/resources` boot reads' query strings. */
-    boots: string[];
+    /**
+     * The boot reads: `POST /api/resources/boot` (`bootCache.ts`) or its fallback, the plain
+     * `GET /api/resources`, each with what it asked for besides the records.
+     */
+    boots: { chats: boolean; chatSummaries: boolean }[];
     batches: number;
     api: (path: string, init?: { method?: string; body?: string }) => Promise<{ status: number; body: any }>;
     open: () => Promise<void>;
@@ -75,7 +78,14 @@ async function session(context: BrowserContext, baseURL: string): Promise<Sessio
         if (headers["x-resource-epoch"]) epoch = headers["x-resource-epoch"];
         const url = new URL(request.url());
         if (request.method() === "GET" && url.pathname === "/api/resources") {
-            s.boots.push(url.search);
+            s.boots.push({
+                chats: url.searchParams.get("chats") === "1",
+                chatSummaries: url.searchParams.get("chatSummaries") === "1",
+            });
+        }
+        if (request.method() === "POST" && url.pathname === "/api/resources/boot") {
+            const body = JSON.parse(request.postData() ?? "{}") as { chats?: unknown; chatSummaries?: unknown };
+            s.boots.push({ chats: body.chats !== undefined, chatSummaries: body.chatSummaries === true });
         }
         if (request.method() === "POST" && url.pathname === "/api/resources/read") {
             const body = JSON.parse(request.postData() ?? "{}") as {
@@ -280,7 +290,7 @@ test("boot holds summaries, chats load when selected, the trim keeps eight idle 
     await a.open();
     await settle(a.page);
     expect(a.boots.length).toBeGreaterThan(0);
-    expect(a.boots.every((query) => query.includes("chatSummaries=1") && !query.includes("chats=1"))).toBe(true);
+    expect(a.boots.every((boot) => boot.chatSummaries && !boot.chats)).toBe(true);
     let view = await store(a.page, chaId);
     expect(view.list.map((entry) => entry.id)).toEqual(CHATS);
     expect(view.list[2]).toEqual({ id: "s2", name: "S2", folderId: "folder-1" });
