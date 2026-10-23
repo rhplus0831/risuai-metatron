@@ -88,14 +88,32 @@ async function restart(s: Server, options: ThumbnailOptions) {
     await s.context.dispose();
     return server(options, s.rootDir);
 }
-async function entries(s: Server) {
-    return (
-        await fs.readdir(s.cachePath).catch((error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return [];
-            throw error;
-        })
-    ).sort();
+async function list(directory: string) {
+    return fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+    });
 }
+/** Entry names across key directories, which never hold another key's entry or stay empty. */
+async function entries(s: Server) {
+    const names: string[] = [];
+    for (const top of await list(s.cachePath)) {
+        if (!top.isDirectory()) {
+            // Never equal to an entry name, so a file outside its key directory fails any expectation.
+            names.push(`top-level file ${top.name}`);
+            continue;
+        }
+        const children = await list(path.join(s.cachePath, top.name));
+        expect(children.map((child) => child.name)).not.toEqual([]);
+        for (const child of children) {
+            expect(child.name.startsWith(`${top.name}-`)).toBe(true);
+            names.push(child.name);
+        }
+    }
+    return names.sort();
+}
+/** An entry lives in the directory named by its key hash, the entry name's prefix. */
+const cacheFile = (s: Server, name: string) => path.join(s.cachePath, name.slice(0, 64), name);
 const sourceStat = (s: Server, key: string) => fs.stat(s.assetPath(key), { bigint: true });
 const png = (width = 1024, height = 1536, background = { r: 240, g: 20, b: 40, alpha: 0.5 }) =>
     sharp({ create: { width, height, channels: 4, background } })
@@ -260,7 +278,7 @@ describe("asset thumbnails", () => {
             expect(info.channels).toBe(4);
             expect(data[3]).toBeGreaterThan(0);
             expect(data[3]).toBeLessThan(255);
-            expect(await fs.readFile(path.join(s.cachePath, entryName(key, stat, size)))).toEqual(body);
+            expect(await fs.readFile(cacheFile(s, entryName(key, stat, size)))).toEqual(body);
             cached.set(size, body);
         }
         expect(await entries(s)).toEqual([entryName(key, stat, 256), entryName(key, stat, 512)].sort());
@@ -310,7 +328,7 @@ describe("asset thumbnails", () => {
             await s.write(key, bytes);
             await redirect(await s.read(key), key);
             const marker = entryName(key, await sourceStat(s, key), 256, "orig");
-            expect((await fs.readFile(path.join(s.cachePath, marker))).length).toBe(0);
+            expect((await fs.readFile(cacheFile(s, marker))).length).toBe(0);
             markers.push(marker);
         }
         expect(loader).toHaveBeenCalledTimes(1);
@@ -336,9 +354,9 @@ describe("asset thumbnails", () => {
         await redirect(await s.read(pixelKey), pixelKey);
         expect(observed.encode).not.toHaveBeenCalled();
         for (const key of [byteKey, pixelKey]) {
-            expect(
-                await fs.readFile(path.join(s.cachePath, entryName(key, await sourceStat(s, key), 256, "orig"))),
-            ).toEqual(Buffer.alloc(0));
+            expect(await fs.readFile(cacheFile(s, entryName(key, await sourceStat(s, key), 256, "orig")))).toEqual(
+                Buffer.alloc(0),
+            );
         }
         const loader = vi.fn(async () => {
             throw new Error("caps are cached");
@@ -456,8 +474,7 @@ describe("asset thumbnails", () => {
                 );
             }
             expect(
-                (await fs.readFile(path.join(s.cachePath, entryName(key, await sourceStat(s, key), 256, "orig"))))
-                    .length,
+                (await fs.readFile(cacheFile(s, entryName(key, await sourceStat(s, key), 256, "orig")))).length,
             ).toBe(0);
         }
         const key = "assets/large.png";
@@ -466,7 +483,7 @@ describe("asset thumbnails", () => {
         expect(response.status).toBe(304);
         expect(response.headers.get("etag")).toBe(weakTag(await sourceStat(s, key)));
         expect(await response.text()).toBe("");
-        expect(await fs.stat(path.join(s.cachePath, entryName(key, await sourceStat(s, key))))).toMatchObject({
+        expect(await fs.stat(cacheFile(s, entryName(key, await sourceStat(s, key))))).toMatchObject({
             size: expect.any(Number),
         });
     });
@@ -763,21 +780,162 @@ describe("asset thumbnails", () => {
         expect((await s.read(key)).status).toBe(404);
     });
 
+    it("keeps one key's cache maintenance independent of unrelated cached keys", async () => {
+        const small = await png(20, 30);
+        const portrait = await png(400, 600);
+        const measurements = [];
+        for (const librarySize of [2, 64]) {
+            const s = await server();
+            const keep: string[] = [];
+            for (let index = 0; index < librarySize; index += 1) {
+                const key = `assets/library-${index}.png`;
+                await s.write(key, small);
+                await redirect(await s.read(key), key);
+                keep.push(entryName(key, await sourceStat(s, key), 256, "orig"));
+            }
+            keep.sort();
+            expect(await entries(s)).toEqual(keep);
+
+            async function measure(work: () => Promise<void>) {
+                const counts = { calls: 0, entries: 0 };
+                const readdir = fs.readdir.bind(fs);
+                const reading = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+                    const directory = String(args[0]);
+                    const inCache = directory === s.cachePath || directory.startsWith(s.cachePath + path.sep);
+                    if (inCache) counts.calls += 1;
+                    const names = await readdir(...args);
+                    if (inCache) counts.entries += names.length;
+                    return names;
+                });
+                try {
+                    await work();
+                    return counts;
+                } finally {
+                    reading.mockRestore();
+                }
+            }
+
+            const key = "assets/maintained.png";
+            await s.write(key, portrait);
+            const originalStat = await sourceStat(s, key);
+            const publish = await measure(async () => {
+                const response = await s.read(key);
+                await response.arrayBuffer();
+                expect(response.status).toBe(200);
+                await redirect(await s.read(key, {}, 512), key);
+            });
+            // Assertions inspect the whole cache outside the measured operations.
+            expect(await entries(s)).toEqual(
+                [...keep, entryName(key, originalStat), entryName(key, originalStat, 512, "orig")].sort(),
+            );
+
+            await s.write(key, small);
+            const replacementStat = await sourceStat(s, key);
+            expect(identity(replacementStat)).not.toBe(identity(originalStat));
+            const replace = await measure(async () => {
+                await redirect(await s.read(key), key);
+            });
+            expect(await entries(s)).toEqual([...keep, entryName(key, replacementStat, 256, "orig")].sort());
+
+            const handle = await fs.open(s.assetPath(key), "r");
+            try {
+                const source = { handle, stat: await handle.stat({ bigint: true }) };
+                const remove = await measure(async () => {
+                    const response = await s.request("/api/remove", { headers: { "file-path": hex(key) } });
+                    await response.arrayBuffer();
+                    expect(response.status).toBe(200);
+                });
+                expect(await entries(s)).toEqual(keep);
+                await expect(fs.stat(s.assetPath(key))).rejects.toMatchObject({ code: "ENOENT" });
+
+                // An open handle can finish generation after its source pathname was removed.
+                const publishAfterRemoval = await measure(async () => {
+                    expect(await s.context.thumbnails.get({ key, size: 256, source })).toEqual({ kind: "original" });
+                });
+                expect(await entries(s)).toEqual(keep);
+                measurements.push({ publish, replace, remove, publishAfterRemoval });
+            } finally {
+                await handle.close();
+            }
+        }
+        expect(measurements[1]).toEqual(measurements[0]);
+    });
+
+    it("sweeps the flat cache layout and unknown top-level directories while keeping current key entries", async () => {
+        const s = await server();
+        const key = "assets/current.png";
+        await s.write(key, await png(400, 600));
+        const stat = await sourceStat(s, key);
+        const response = await s.read(key);
+        await response.arrayBuffer();
+        expect(response.status).toBe(200);
+        await redirect(await s.read(key, {}, 512), key);
+        const keep = [entryName(key, stat), entryName(key, stat, 512, "orig")].sort();
+        expect(await entries(s)).toEqual(keep);
+
+        const flat = [entryName(key, stat, 256, "webp", 1), entryName(key, stat, 512, "orig", 1)];
+        for (const name of flat) {
+            const file = path.join(s.cachePath, name);
+            await fs.writeFile(file, "obsolete");
+            await fs.utimes(file, 1, 1);
+        }
+        const unknown = path.join(s.cachePath, "unknown-layout");
+        await fs.mkdir(path.join(unknown, "nested"), { recursive: true });
+        await fs.writeFile(path.join(unknown, "nested", "entry"), "obsolete");
+        await fs.utimes(unknown, 1, 1);
+        const empty = path.join(s.cachePath, digest("assets/empty.png"));
+        await fs.mkdir(empty);
+        await fs.utimes(empty, 1, 1);
+        for (const name of keep) await fs.utimes(cacheFile(s, name), 1, 1);
+
+        await s.context.thumbnails.sweep(new AbortController().signal);
+        expect(await entries(s)).toEqual(keep);
+    });
+
+    it("leaves cache paths at or after the sweep cutoff until a later sweep", async () => {
+        const s = await server();
+        const started = Date.now();
+        const files: string[] = [];
+        for (const offset of [0, 1]) {
+            const key = `assets/recent-${offset}.png`;
+            await s.write(key, await png(20, 30));
+            const name = entryName(key, await sourceStat(s, key), 256, "orig", 1);
+            const unknown = path.join(s.cachePath, `unknown-${offset}`);
+            const recent = [path.join(s.cachePath, name), path.join(unknown, "entry"), cacheFile(s, name)];
+            const mtime = started / 1000 + offset;
+            for (const file of recent) {
+                await fs.mkdir(path.dirname(file), { recursive: true });
+                await fs.writeFile(file, "recent");
+                await fs.utimes(file, mtime, mtime);
+                files.push(file);
+            }
+            await fs.utimes(unknown, mtime, mtime);
+            await fs.utimes(path.dirname(cacheFile(s, name)), 1, 1);
+        }
+
+        await s.context.thumbnails.sweep(new AbortController().signal);
+        for (const file of files) expect(await fs.readFile(file, "utf8")).toBe("recent");
+
+        vi.setSystemTime(started + 2000);
+        await s.context.thumbnails.sweep(new AbortController().signal);
+        expect(await entries(s)).toEqual([]);
+    });
+
     it("bypasses other-version WebP and original entries and sweeps stale identities while retaining current entries", async () => {
         const s = await server();
         const key = "assets/versioned.png";
         await s.write(key, await png());
         const stat = await sourceStat(s, key);
-        await fs.mkdir(s.cachePath, { recursive: true });
         const oldWebp = entryName(key, stat, 256, "webp", THUMBNAIL_VERSION + 1);
         const oldMarker = entryName(key, stat, 512, "orig", THUMBNAIL_VERSION + 1);
+        await fs.mkdir(path.dirname(cacheFile(s, oldWebp)), { recursive: true });
         await fs.writeFile(
-            path.join(s.cachePath, oldWebp),
+            cacheFile(s, oldWebp),
             await sharp(await png(20, 30))
                 .webp()
                 .toBuffer(),
         );
-        await fs.writeFile(path.join(s.cachePath, oldMarker), "");
+        await fs.writeFile(cacheFile(s, oldMarker), "");
         for (const size of [256, 512]) {
             const response = await s.read(key, {}, size);
             expect(response.status).toBe(200);
@@ -802,9 +960,12 @@ describe("asset thumbnails", () => {
             entryName("assets/deleted.png", stat),
             entryName("assets/deleted-marker.png", stat, 256, "orig"),
         ];
-        for (const name of stale) await fs.writeFile(path.join(s.cachePath, name), "");
+        for (const name of stale) {
+            await fs.mkdir(path.dirname(cacheFile(s, name)), { recursive: true });
+            await fs.writeFile(cacheFile(s, name), "");
+        }
         // Explicit old mtimes make the sweep's 'created during sweep' guard deterministic.
-        for (const name of await entries(s)) await fs.utimes(path.join(s.cachePath, name), 1, 1);
+        for (const name of await entries(s)) await fs.utimes(cacheFile(s, name), 1, 1);
         await s.context.thumbnails.sweep(new AbortController().signal);
         expect(await entries(s)).toEqual(keep);
     });

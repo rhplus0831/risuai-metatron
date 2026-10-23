@@ -437,10 +437,12 @@ describe("POST /api/backups/export", () => {
         expect(thumbnail.headers.get("content-type")).toBe("image/webp");
         const thumbnailBytes = Buffer.from(await thumbnail.arrayBuffer());
         const cachePath = path.join(s.savePath, "cache", "thumbnails");
-        const cacheFiles = readdirSync(cachePath);
+        const keyDirectories = readdirSync(cachePath);
+        expect(keyDirectories).toHaveLength(1);
+        const cacheFiles = readdirSync(path.join(cachePath, keyDirectories[0]));
         expect(cacheFiles).toHaveLength(1);
         expect(cacheFiles[0]).toMatch(/\.webp$/);
-        expect(readFileSync(path.join(cachePath, cacheFiles[0]))).toEqual(thumbnailBytes);
+        expect(readFileSync(path.join(cachePath, keyDirectories[0], cacheFiles[0]))).toEqual(thumbnailBytes);
         await writeAsset(s, "assets/a.webp", "WEBP-A");
         await writeAsset(s, "assets/한글 name/x", "KO");
         mkdirSync(path.join(s.savePath, "assets", "subfolder"));

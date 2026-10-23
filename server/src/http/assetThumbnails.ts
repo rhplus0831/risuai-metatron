@@ -7,7 +7,7 @@ import { decodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import { isMissingFileError } from "./recordStream.ts";
 
 /** Bump when the encoder, sizing, format, animation policy, or input caps change. */
-export const THUMBNAIL_VERSION = 1;
+export const THUMBNAIL_VERSION = 2;
 const MAX_INPUT_BYTES = 32n * 1024n * 1024n;
 const MAX_INPUT_PIXELS = 40_000_000;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -60,6 +60,17 @@ async function directoryEntries(directory: string): Promise<string[]> {
             return [];
         }
         throw error;
+    }
+}
+
+async function removeDirectoryIfEmpty(directory: string): Promise<void> {
+    try {
+        await fs.rmdir(directory);
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code !== "ENOENT" && code !== "ENOTEMPTY") {
+            throw error;
+        }
     }
 }
 
@@ -161,6 +172,10 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
     const waiting: Array<() => void> = [];
     let running = 0;
 
+    function keyDirectory(hash: string): string {
+        return path.join(cachePath, hash);
+    }
+
     function getEncoder(): Promise<typeof sharp> {
         encoder ??= Promise.resolve()
             .then(loadSharp)
@@ -213,14 +228,15 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
 
     async function publish(key: string, base: string, bytes: Buffer | null): Promise<ThumbnailResult> {
         const hash = keyHash(key);
-        const target = path.join(cachePath, `${base}.${bytes === null ? "orig" : "webp"}`);
+        const directory = keyDirectory(hash);
+        const target = path.join(directory, `${base}.${bytes === null ? "orig" : "webp"}`);
         await withKeyLock(hash, async () => {
-            // These directories are derived data and must not appear until an entry is published.
-            await fs.mkdir(cachePath, { recursive: true });
-            await fs.mkdir(tmpPath, { recursive: true });
             const staged = path.join(tmpPath, `${randomUUID()}.tmp`);
             let published = false;
             try {
+                // Create derived directories only when an entry is ready to be staged.
+                await fs.mkdir(directory, { recursive: true });
+                await fs.mkdir(tmpPath, { recursive: true });
                 await fs.writeFile(staged, bytes ?? Buffer.alloc(0), { flag: "wx", flush: true });
                 await fs.rename(staged, target);
                 published = true;
@@ -228,19 +244,18 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
                 const sourcePath = resolveStorageKey(options.savePath, key);
                 const current = sourcePath === null ? null : await fileStat(sourcePath);
                 const currentIdentity = current?.isFile() ? identity(current) : null;
-                for (const name of await directoryEntries(cachePath)) {
-                    if (
-                        name.startsWith(`${hash}-`) &&
-                        (!currentIdentity || ENTRY_NAME.exec(name)?.[4] !== currentIdentity)
-                    ) {
-                        await fs.rm(path.join(cachePath, name), { force: true });
+                for (const name of await directoryEntries(directory)) {
+                    if (!currentIdentity || ENTRY_NAME.exec(name)?.[4] !== currentIdentity) {
+                        await fs.rm(path.join(directory, name), { force: true });
                     }
                 }
+                await removeDirectoryIfEmpty(directory);
             } catch (error) {
                 await fs.rm(staged, { force: true }).catch(() => {});
                 if (published) {
                     await fs.rm(target, { force: true }).catch(() => {});
                 }
+                await removeDirectoryIfEmpty(directory).catch(() => {});
                 throw error;
             }
         });
@@ -298,7 +313,8 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
             if (!request.source.stat.isFile()) {
                 return { kind: "missing" };
             }
-            const base = `${keyHash(request.key)}-w${request.size}-v${THUMBNAIL_VERSION}-${identity(request.source.stat)}`;
+            const hash = keyHash(request.key);
+            const base = `${hash}-w${request.size}-v${THUMBNAIL_VERSION}-${identity(request.source.stat)}`;
             const existing = flights.get(base);
             if (existing) {
                 return existing;
@@ -306,11 +322,12 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
             // Include lookup in the flight so a completed generation cannot race a delayed cache miss.
             const flight = Promise.resolve()
                 .then(async (): Promise<ThumbnailResult> => {
-                    const webpPath = path.join(cachePath, `${base}.webp`);
+                    const directory = keyDirectory(hash);
+                    const webpPath = path.join(directory, `${base}.webp`);
                     if ((await fileStat(webpPath))?.isFile()) {
                         return { kind: "webp", path: webpPath };
                     }
-                    if ((await fileStat(path.join(cachePath, `${base}.orig`)))?.isFile()) {
+                    if ((await fileStat(path.join(directory, `${base}.orig`)))?.isFile()) {
                         return { kind: "original" };
                     }
                     await acquire();
@@ -328,11 +345,7 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
         async removeKey(key: string): Promise<void> {
             const hash = keyHash(key);
             await withKeyLock(hash, async () => {
-                for (const name of await directoryEntries(cachePath)) {
-                    if (name.startsWith(`${hash}-`)) {
-                        await fs.rm(path.join(cachePath, name), { force: true });
-                    }
-                }
+                await fs.rm(keyDirectory(hash), { recursive: true, force: true });
             });
         },
         /** Drops stale entries after listen, leaving files created during this sweep for the next run. */
@@ -359,24 +372,46 @@ export function createThumbnailService(options: ThumbnailOptions & { savePath: s
                 if (signal.aborted) {
                     return;
                 }
-                const parsed = ENTRY_NAME.exec(name);
-                const hash = /^([0-9a-f]{64})-/.exec(name)?.[1] ?? name;
-                await withKeyLock(hash, async () => {
+                await withKeyLock(name, async () => {
                     if (signal.aborted) {
                         return;
                     }
-                    const file = path.join(cachePath, name);
-                    const stat = await fileStat(file);
-                    if (!stat || stat.mtimeNs >= started || signal.aborted) {
+                    const directory = keyDirectory(name);
+                    const stat = await fileStat(directory);
+                    if (!stat || signal.aborted) {
                         return;
                     }
-                    if (
-                        !stat.isFile() ||
-                        !parsed ||
-                        parsed[3] !== String(THUMBNAIL_VERSION) ||
-                        sources.get(parsed[1]) !== parsed[4]
-                    ) {
-                        await fs.rm(file, { force: true });
+                    if (!stat.isDirectory() || !/^[0-9a-f]{64}$/.test(name)) {
+                        if (stat.mtimeNs < started) {
+                            await fs.rm(directory, { recursive: true, force: true });
+                        }
+                        return;
+                    }
+                    for (const entry of await directoryEntries(directory)) {
+                        if (signal.aborted) {
+                            return;
+                        }
+                        const file = path.join(directory, entry);
+                        const entryStat = await fileStat(file);
+                        if (signal.aborted) {
+                            return;
+                        }
+                        if (!entryStat || entryStat.mtimeNs >= started) {
+                            continue;
+                        }
+                        const parsed = ENTRY_NAME.exec(entry);
+                        if (
+                            !entryStat.isFile() ||
+                            !parsed ||
+                            parsed[1] !== name ||
+                            parsed[3] !== String(THUMBNAIL_VERSION) ||
+                            sources.get(name) !== parsed[4]
+                        ) {
+                            await fs.rm(file, { recursive: true, force: true });
+                        }
+                    }
+                    if (!signal.aborted) {
+                        await removeDirectoryIfEmpty(directory);
                     }
                 });
             }
