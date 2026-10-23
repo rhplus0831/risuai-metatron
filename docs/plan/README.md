@@ -27,9 +27,10 @@ Active planning and implementation:
 - [Generation Stage Spinner](generation-stage-spinner.md): the server reports each job's
   stage (preparing, memory, generating, finishing) and the send/stop spinner shows the
   selected chat's stage again; planned, 4 slices.
-- [Upstream Integration](upstream-integration.md): an intake ledger for upstream Risuai
-  changes and a seeded backlog (current `.bin` block saves, plugin boundaries, lore flags,
-  HypaV3 vectors, Gemini roles); planned, not in the slice format.
+- [Upstream Integration](upstream-integration.md): ports of upstream Risuai changes up to
+  `f50b5942` (current `.bin` block saves and plugin storage index, plugin boundaries, lore
+  flags, HypaV3 vectors, Gemini roles, catalog, Lua features, UI fixes), an inventory of all
+  79 upstream commits, and a lasting ledger at the end; planned, 23 slices in five chains.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
