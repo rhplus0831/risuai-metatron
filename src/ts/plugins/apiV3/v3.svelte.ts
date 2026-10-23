@@ -27,7 +27,6 @@ import {
     setModules,
     setPersonas,
     setPluginArgument,
-    setPlugins,
     updateSettings,
     upsertPlugin,
 } from "src/ts/storage/collectionStore.svelte";
@@ -1153,13 +1152,12 @@ function selectPersonaAt(index: unknown) {
  * (`characters`, `personas`, `modules`, `enabledModules`, `characterOrder`, `plugins`,
  * `pluginCustomStorage`), the persona selection, the settings keys of `allowedDbKeys` (a section
  * field, or a forwarded preset/profile root), and any other key into the top level of
- * `pluginCustomStorage`. `plugins` is the list to install: the full setter passes the plugins the
- * user confirmed (added or updated by name), the lite one the whole list (replaced).
+ * `pluginCustomStorage`. Only the full setter passes `plugins`: the plugins the user confirmed,
+ * added or updated by name.
  */
 function applyPluginKey(
     key: string,
     value: unknown,
-    full: boolean,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
 ) {
@@ -1175,13 +1173,10 @@ function applyPluginKey(
         case "characterOrder":
             return setCharacterOrder(value);
         case "plugins":
-            if (full) {
-                for (const plugin of value as RisuPlugin[]) {
-                    upsertPlugin(plugin);
-                }
-                return;
+            for (const plugin of value as RisuPlugin[]) {
+                upsertPlugin(plugin);
             }
-            return setPlugins(value);
+            return;
         case "pluginCustomStorage":
             return replacePluginCustomStorage(value);
         case "selectedPersona":
@@ -1197,15 +1192,15 @@ function applyPluginKey(
 }
 
 /**
- * Both database setters: each key is applied on its own, so a refused value (warned about) keeps
- * that key's previous value and the other keys still apply. A preset that is gone
+ * Both database setters: the lite setter has already dropped `plugins`, and the full setter has
+ * confirmed the plugins to install. Each key is applied on its own, so a refused value (warned
+ * about) keeps that key's previous value and the other keys still apply. A preset that is gone
  * (`MutationTargetGoneError`) and unexpected errors reach the plugin. Inside a hook (`context`), a
  * forwarded preset key goes to the hook's preset; when that preset is gone, nothing is applied
  * (`PluginTargetGoneError`).
  */
 function applyPluginDatabase(
     newDb: Record<string, unknown>,
-    full: boolean,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
 ) {
@@ -1221,7 +1216,7 @@ function applyPluginDatabase(
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
-            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context, vanished));
+            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], context, vanished));
         }
     });
 }
@@ -1246,8 +1241,12 @@ function vanishedOf(targets: readonly string[]): Set<string> {
 
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
+    if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
+        newDb = { ...newDb };
+        delete newDb.plugins;
+    }
     const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, false, context, vanishedOf(targets)));
+    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
 };
 
 const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
@@ -1268,7 +1267,7 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
     }
     // After the chats load, no await: a forwarded preset field lands in the hook's preset, else in the one selected now.
     const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, true, context, vanishedOf(targets)));
+    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
 };
 
 const readAssetImage = (path: string) => {

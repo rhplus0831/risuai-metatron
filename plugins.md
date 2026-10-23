@@ -789,7 +789,7 @@ How `setDatabase`/`setDatabaseLite` apply what you hand back:
 
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
-- `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` replaces the installed list without asking.
+- `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` ignores `plugins` and leaves the installed list as it is.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
 - Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles (the `modelProfiles` records, shown in the app as connections under Model > Connections) as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
 

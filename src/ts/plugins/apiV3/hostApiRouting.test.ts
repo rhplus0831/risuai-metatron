@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Pinned here:
 // - the routing table: each of the 23 keys lands in its owner through both setters (a forwarded key
 //   in the selected preset by id, a section key at the root and in no preset, the collections
-//   through their mutations), and every other key at the top level of `pluginCustomStorage`;
+//   through their mutations), except `plugins`, which the lite setter ignores, and every other key
+//   at the top level of `pluginCustomStorage`;
 // - the key order: `characterOrder` is applied after `characters` and `selectedPersona` last,
 //   whatever the object's key order, so an explicit order survives the additions of the same call
 //   and a persona index names a persona of the list the same call sets;
@@ -14,7 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   the previous mirror value while the other keys land; a `characters` or `plugins` list is
 //   preflighted whole; a gone preset (`MutationTargetGoneError`) and an unexpected error propagate;
 // - the full setter's `plugins`: the installed plugins stay, the user is asked once per new plugin,
-//   a denial installs nothing, and a malformed list asks nothing;
+//   a confirmed same-name update replaces its entry in place, a denial installs nothing, and a
+//   malformed list asks nothing;
 // - a reserved storage namespace a plugin replaced with a list stays readable, enumerable, and
 //   writable without losing an entry, own `constructor`/`__proto__` keys included;
 // - `setArg`/`setArgument` and the theme APIs go through the mutations; an unknown color scheme name
@@ -345,12 +347,16 @@ describe("the routing table: collections, the selection, and custom keys", () =>
         expect(warnings()).toEqual([expect.stringMatching(/^\[Plugin\] Refused the database key selectedPersona;/)]);
     });
 
-    it("plugins go through setPlugins in the lite setter (the whole list, no prompt)", async () => {
-        settings.plugins = [{ name: "installed", script: "s", version: "3.0", realArg: {} }] as any;
+    it("the lite setter ignores plugins: the installed list stays, nothing is asked, and the other keys land", async () => {
+        const installed = { name: "installed", script: "s", version: "3.0", realArg: {} };
+        settings.plugins = [plain(installed)] as any;
         const api = await makeApi();
-        await api.setDatabaseLite({ plugins: [{ name: "lite", script: "l", version: "3.0" }] });
-        expect(settings.plugins).toEqual([{ name: "lite", script: "l", version: "3.0" }]);
+        await api.setDatabaseLite({ theme: "lite", plugins: [{ name: "lite", script: "l", version: "3.0" }] });
+        await api.setDatabaseLite({ plugins: [], lineHeight: 3 });
+        expect(plain(settings.plugins)).toEqual([installed]);
         expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(ui().theme).toBe("lite");
+        expect(ui().lineHeight).toBe(3);
     });
 
     it("pluginCustomStorage replaces the whole object through both setters, and a list is refused", async () => {
@@ -750,6 +756,33 @@ describe("the full setter's plugins key", () => {
         await api.setDatabase({ plugins: [installed, newPlugin("new")] });
         expect(alerts.confirm).toHaveBeenCalledTimes(1);
         expect(plain(settings.plugins)).toEqual([installed, newPlugin("new")]);
+    });
+
+    it("an approved same-name update replaces the installed entry at the same index", async () => {
+        const before = newPlugin("before");
+        const after = newPlugin("after");
+        settings.plugins = plain([before, installed, after]);
+        const updated = { ...installed, script: "updated script" };
+        alerts.confirm.mockResolvedValueOnce(true);
+        const api = await makeApi();
+
+        await api.setDatabase({ plugins: [updated] });
+
+        expect(alerts.confirm).toHaveBeenCalledTimes(1);
+        expect(plain(settings.plugins)).toEqual([before, updated, after]);
+    });
+
+    it("a denied same-name update keeps the old entry unchanged", async () => {
+        const existing = [newPlugin("before"), installed, newPlugin("after")];
+        settings.plugins = plain(existing);
+        const updated = { ...installed, script: "updated script" };
+        alerts.confirm.mockResolvedValueOnce(false);
+        const api = await makeApi();
+
+        await api.setDatabase({ plugins: [updated] });
+
+        expect(alerts.confirm).toHaveBeenCalledTimes(1);
+        expect(plain(settings.plugins)).toEqual(existing);
     });
 
     it("a denial installs nothing and the other keys still land", async () => {

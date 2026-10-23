@@ -1544,9 +1544,10 @@ interface RisuaiPluginAPI {
      * with an id and string name, icon, personaPrompt, and note).
      * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
+     * The `plugins` property is ignored; use setDatabase() to install plugins with user confirmation.
      * @param db - DatabaseSubset object to save
      */
-    setDatabaseLite(db: DatabaseSubset): Promise<void>;
+    setDatabaseLite(db: Omit<DatabaseSubset, "plugins">): Promise<void>;
 
     /**
      * Sets the database (full save with sync)
