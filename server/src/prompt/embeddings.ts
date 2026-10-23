@@ -20,8 +20,9 @@ import type { TransformersService } from "./transformers.ts";
  * client's module state. One env is bound to one job (`createEmbeddings(...).forJob`).
  *
  * What differs from the tab, on purpose:
- * - The vectors are in the server's `VectorCache`, not LocalForage. The cache keys are the client's
- *   (text, `|`, the model, the custom-model suffix; the Voyage suffixes). The cache holds vectors
+ * - The vectors are in the server's `VectorCache`, not LocalForage. The cache keys keep the client's
+ *   bases (text, model, custom-model and Voyage suffixes); grouped contextual document keys also
+ *   add the chunk position and key version, so they differ from the tab's. The cache holds vectors
  *   only: a hit is rebuilt with the text it was asked for, which is what the client stored with it.
  * - The providers are called from the server: OpenAI with the stored memory key (`supaMemoryKey`, a
  *   write-only credential), Voyage and the custom URL with the keys the settings hold. The custom
@@ -228,6 +229,23 @@ function saveVector(env: EmbeddingEnv, key: string, embedding: VectorArray): voi
     }
 }
 
+export const CONTEXTUAL_CHUNK_CACHE_VERSION = 2;
+
+/** Repeated text can receive different vectors at different positions in the same group. */
+export function contextualChunkCacheKey(baseKey: string, index: number): string {
+    if (!Number.isSafeInteger(index) || index < 0) {
+        throw new Error(`Invalid contextual chunk index: ${index}`);
+    }
+    return `${baseKey}|chunk-cache-v${CONTEXTUAL_CHUNK_CACHE_VERSION}|index:${index}`;
+}
+
+export class ContextualEmbeddingCountError extends Error {
+    constructor(expected: number, received: number) {
+        super(`Contextual embedding count mismatch: expected ${expected}, received ${received}`);
+        this.name = "ContextualEmbeddingCountError";
+    }
+}
+
 export interface ContextualEmbeddingProvider {
     readonly modelId: string;
     embedDocumentGroups(groups: string[][]): Promise<VectorArray[][]>;
@@ -288,14 +306,20 @@ class VoyageContextProvider implements ContextualEmbeddingProvider {
             if (!response.ok || !response.data.data) {
                 throw new Error(errorText(this.env, response.data));
             }
-            if (!Array.isArray(response.data.data) || response.data.data.length !== batch.length) {
+            if (!Array.isArray(response.data.data)) {
                 throw new Error("The embedding provider returned malformed vectors");
+            }
+            if (response.data.data.length !== batch.length) {
+                throw new ContextualEmbeddingCountError(batch.length, response.data.data.length);
             }
 
             for (let i = 0; i < batch.length; i++) {
                 const groupEmbeddings: unknown = Array.isArray(response.data.data[i]?.data)
                     ? response.data.data[i].data.map((item: { embedding: VectorArray }) => item?.embedding)
                     : null;
+                if (Array.isArray(groupEmbeddings) && groupEmbeddings.length !== batch[i].length) {
+                    throw new ContextualEmbeddingCountError(batch[i].length, groupEmbeddings.length);
+                }
                 allResults[groupOffset + i] = checkVectors(groupEmbeddings, batch[i].length);
             }
 
@@ -722,20 +746,78 @@ export class HypaProcessorV2<TMetadata> {
         const ctxProvider = isContextModel(this.options.model)
             ? getContextProvider(this.env, this.options.model)
             : null;
-        const ctxGroups = new Map<string, string[]>();
         if (ctxProvider && saveToMemory) {
-            const groups = new Map<TMetadata | undefined, EmbeddingText<TMetadata>[]>();
+            const metadataGroups = new Map<TMetadata | undefined, EmbeddingText<TMetadata>[]>();
             for (const item of ebdTexts) {
-                const g = groups.get(item.metadata) || [];
-                g.push(item);
-                groups.set(item.metadata, g);
+                const group = metadataGroups.get(item.metadata) || [];
+                group.push(item);
+                metadataGroups.set(item.metadata, group);
             }
-            for (const [, g] of groups) {
-                const texts = g.map((item) => item.content);
-                for (const item of g) {
-                    ctxGroups.set(item.id, texts);
+
+            const groupsToEmbed: EmbeddingText<TMetadata>[][] = [];
+            const cacheKeys = new Map<string, string>();
+            for (const group of metadataGroups.values()) {
+                const texts = group.map((item) => item.content);
+                let allCached = true;
+                for (let index = 0; index < group.length; index++) {
+                    const item = group[index];
+                    if (this.vectors.has(item.id)) {
+                        resultMap.set(item.id, this.vectors.get(item.id)!);
+                        continue;
+                    }
+
+                    const key = this.getCacheKey(item.content, texts, "document", index);
+                    cacheKeys.set(item.id, key);
+                    const cached = loadVector(this.env, key, item.content);
+                    if (cached) {
+                        resultMap.set(item.id, { ...item, embedding: cached.embedding });
+                    } else {
+                        allCached = false;
+                    }
+                }
+
+                if (!allCached) {
+                    // Re-embed every member in its original position, including in-memory hits.
+                    for (let index = 0; index < group.length; index++) {
+                        const item = group[index];
+                        if (!cacheKeys.has(item.id)) {
+                            cacheKeys.set(item.id, this.getCacheKey(item.content, texts, "document", index));
+                        }
+                    }
+                    groupsToEmbed.push(group);
                 }
             }
+
+            if (groupsToEmbed.length > 0) {
+                const groups = groupsToEmbed.map((group) => group.map((item) => item.content));
+                const results = await ctxProvider.embedDocumentGroups(groups);
+
+                // Validate the entire call before saving any of its vectors.
+                if (results.length !== groups.length) {
+                    throw new ContextualEmbeddingCountError(groups.length, results.length);
+                }
+                for (let i = 0; i < groups.length; i++) {
+                    const received = results[i]?.length ?? 0;
+                    if (received !== groups[i].length) {
+                        throw new ContextualEmbeddingCountError(groups[i].length, received);
+                    }
+                }
+
+                for (let i = 0; i < groupsToEmbed.length; i++) {
+                    const group = groupsToEmbed[i];
+                    for (let j = 0; j < group.length; j++) {
+                        const item = group[j];
+                        const embedding = results[i][j];
+                        saveVector(this.env, cacheKeys.get(item.id)!, embedding);
+                        resultMap.set(item.id, { ...item, embedding });
+                    }
+                }
+            }
+
+            for (const item of ebdTexts) {
+                this.vectors.set(item.id, resultMap.get(item.id)!);
+            }
+            return ebdTexts.map((item) => resultMap.get(item.id)!);
         }
 
         // Load cache
@@ -749,7 +831,7 @@ export class HypaProcessorV2<TMetadata> {
             }
 
             // The client's cached object is `{ content, embedding }`: a hit has no `id` of its own.
-            const cached = loadVector(this.env, this.getCacheKey(content, ctxGroups.get(id), inputType), content) as
+            const cached = loadVector(this.env, this.getCacheKey(content, undefined, inputType), content) as
                 (memoryVector & { metadata?: TMetadata }) | null;
 
             if (cached) {
@@ -767,23 +849,6 @@ export class HypaProcessorV2<TMetadata> {
             }
         }
 
-        if (ctxProvider && toEmbed.length > 0 && saveToMemory) {
-            const missMetadatas = new Set(toEmbed.map((item) => item.metadata).filter(Boolean));
-
-            const additionalItems = ebdTexts.filter(
-                (item) => item.metadata && missMetadatas.has(item.metadata) && !toEmbed.some((e) => e.id === item.id),
-            );
-
-            for (const item of additionalItems) {
-                resultMap.delete(item.id);
-                if (this.vectors.has(item.id)) {
-                    this.vectors.delete(item.id);
-                }
-            }
-
-            toEmbed.push(...additionalItems);
-        }
-
         if (toEmbed.length === 0) {
             return ebdTexts.map((item) => resultMap.get(item.id)!);
         }
@@ -793,45 +858,7 @@ export class HypaProcessorV2<TMetadata> {
 
         const chunks = this.chunkArray(toEmbed, chunkSize);
 
-        if (ctxProvider && saveToMemory) {
-            const metadataGroups = new Map<TMetadata | undefined, EmbeddingText<TMetadata>[]>();
-            for (const item of toEmbed) {
-                const key = item.metadata;
-                const group = metadataGroups.get(key) || [];
-                group.push(item);
-                metadataGroups.set(key, group);
-            }
-
-            const groupEntries = Array.from(metadataGroups.entries());
-            const groups = groupEntries.map(([, group]) => group.map((item) => item.content));
-
-            const results = await ctxProvider.embedDocumentGroups(groups);
-
-            for (let i = 0; i < groupEntries.length; i++) {
-                const [, group] = groupEntries[i];
-                const embeddings = results[i];
-
-                for (let j = 0; j < group.length; j++) {
-                    const { id, content, metadata } = group[j];
-                    const embedding = embeddings[j];
-
-                    const ebdResult: EmbeddingResult<TMetadata> = {
-                        id,
-                        content,
-                        embedding,
-                        metadata,
-                    };
-
-                    saveVector(this.env, this.getCacheKey(content, ctxGroups.get(id)), embedding);
-
-                    if (saveToMemory) {
-                        this.vectors.set(id, ebdResult);
-                    }
-
-                    resultMap.set(id, ebdResult);
-                }
-            }
-        } else if (this.isLocalModel()) {
+        if (this.isLocalModel()) {
             // Local model: Sequential processing
             for (let i = 0; i < chunks.length; i++) {
                 // Progress callback
@@ -947,6 +974,7 @@ export class HypaProcessorV2<TMetadata> {
 
     /**
      * The vector's cache key: the text and the model (with the custom model, or the contextual group).
+     * Contextual documents also carry their position in the group and the chunk cache version.
      * A Voyage `/v1/embeddings` model embeds queries and documents differently (`input_type`), so its
      * query vectors are kept under their own key.
      */
@@ -954,6 +982,7 @@ export class HypaProcessorV2<TMetadata> {
         content: string,
         contextTexts?: string[],
         inputType: "query" | "document" = "document",
+        chunkIndex?: number,
     ): string {
         const db = this.env.db;
         const suffix =
@@ -971,7 +1000,8 @@ export class HypaProcessorV2<TMetadata> {
                 ? "|query"
                 : "";
 
-        return `${content}|${this.options.model}${suffix}${ctxSuffix}${querySuffix}`;
+        const baseKey = `${content}|${this.options.model}${suffix}${ctxSuffix}${querySuffix}`;
+        return ctxProvider && inputType === "document" ? contextualChunkCacheKey(baseKey, chunkIndex!) : baseKey;
     }
 
     /**

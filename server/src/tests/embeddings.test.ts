@@ -314,7 +314,7 @@ describe("what a provider answers", () => {
         });
     }
 
-    it("refuses malformed Voyage answers (a group with the wrong count, a missing query vector)", async () => {
+    it("refuses malformed Voyage answers (a missing group as a count error, a missing query vector)", async () => {
         const calls: Call[] = [];
         const e = env({
             fetch: fakeFetch({
@@ -326,7 +326,9 @@ describe("what a provider answers", () => {
             }),
             db: { hypaModel: "voyageContext3" },
         });
-        await expect(new HypaProcesser(e).addText(["a", "b"])).rejects.toThrow("malformed vectors");
+        await expect(new HypaProcesser(e).addText(["a", "b"])).rejects.toMatchObject({
+            name: "ContextualEmbeddingCountError",
+        });
         await expect(new HypaProcesser(e).similaritySearch("q")).rejects.toThrow("malformed vectors");
         expect(e.cache.stats().rows).toBe(0);
     });
@@ -511,7 +513,138 @@ describe("HypaProcessorV2", () => {
         expect(e.cache.get("local 0|nomic")).toBeInstanceOf(Float32Array);
     });
 
-    it("groups contextual documents by metadata identity, keys them with the group hash, and embeds a group whole on a partial miss", async () => {
+    it("keeps repeated contextual text under distinct positional keys and ranks each chunk by its own vector", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({
+            cache: shared,
+            db: { hypaModel: "voyageContext3" },
+            fetch: fakeFetch({
+                calls,
+                answer: (call) => ({
+                    body: {
+                        data: call.body.inputs.map((group: string[]) => ({
+                            data: group.map((_text, index) => ({ embedding: index === 0 ? [1, 0] : [0, 1] })),
+                        })),
+                    },
+                }),
+            }),
+        });
+        const metadata = { group: "repeated" };
+        const items = [
+            { id: "first", content: "same text", metadata },
+            { id: "second", content: "same text", metadata },
+        ];
+        const baseKey = `same text|voyageContext3|voyageContext3|ctx:${contextHash(["same text", "same text"])}`;
+
+        for (const state of ["cold", "warm"]) {
+            const processor = new HypaProcessorV2<Meta>(e);
+            await processor.addTexts(items);
+            expect(shared.get(`${baseKey}|chunk-cache-v2|index:0`), state).toEqual([1, 0]);
+            expect(shared.get(`${baseKey}|chunk-cache-v2|index:1`), state).toEqual([0, 1]);
+            const ranked = await processor.similaritySearchScored("query");
+            expect(
+                ranked.map(([chunk, score]) => [chunk.id, chunk.embedding, score]),
+                state,
+            ).toEqual([
+                ["first", [1, 0], 1],
+                ["second", [0, 1], 0],
+            ]);
+        }
+        const documents = calls.filter((call) => call.body.input_type === "document");
+        expect(documents).toHaveLength(1);
+        expect(documents[0].body.inputs).toEqual([["same text", "same text"]]);
+    });
+
+    it("re-embeds a partially cached contextual group in its original order and replaces both positional vectors", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const fetchImpl = fakeFetch({
+            calls,
+            answer: (call) => ({
+                body: {
+                    data: call.body.inputs.map((group: string[]) => ({
+                        data: group.map((text, index) => ({
+                            embedding: [index + 1, (text === "A" ? 10 : 20) + calls.length],
+                        })),
+                    })),
+                },
+            }),
+        });
+        const metadata = { group: "ordered" };
+        const items = [
+            { id: "a", content: "A", metadata },
+            { id: "b", content: "B", metadata },
+        ];
+        const hash = contextHash(["A", "B"]);
+        const keyA = `A|voyageContext3|voyageContext3|ctx:${hash}|chunk-cache-v2|index:0`;
+        const keyB = `B|voyageContext3|voyageContext3|ctx:${hash}|chunk-cache-v2|index:1`;
+        const cold = new HypaProcessorV2<Meta>(
+            env({ cache: shared, fetch: fetchImpl, db: { hypaModel: "voyageContext3" } }),
+        );
+        await cold.addTexts(items);
+        expect(shared.get(keyA)).toEqual([1, 11]);
+        expect(shared.get(keyB)).toEqual([2, 21]);
+
+        // VectorCache has no per-key delete: rebuild the warmed cache with only A retained.
+        const retained = shared.get(keyA)!;
+        shared.clear();
+        shared.set(keyA, retained, shared.generation());
+        expect(shared.get(keyB)).toBeNull();
+        const warm = new HypaProcessorV2<Meta>(
+            env({ cache: shared, fetch: fetchImpl, db: { hypaModel: "voyageContext3" } }),
+        );
+        const before = calls.length;
+        await warm.addTexts(items);
+
+        const documents = calls.slice(before).filter((call) => call.body.input_type === "document");
+        expect(documents).toHaveLength(1);
+        expect.soft(documents[0].body.inputs).toEqual([["A", "B"]]);
+        expect.soft(shared.get(keyA)).toEqual([1, 12]);
+        expect.soft(shared.get(keyB)).toEqual([2, 22]);
+        expect(shared.stats().rows).toBe(2);
+    });
+
+    it("rejects a contextual group missing one vector with ContextualEmbeddingCountError and caches none of the call", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({
+            cache: shared,
+            db: { hypaModel: "voyageContext3" },
+            fetch: fakeFetch({
+                calls,
+                answer: (call) => ({
+                    body: {
+                        data: call.body.inputs.map((group: string[], index: number) => ({
+                            // The first group is complete; only the second is one vector short.
+                            data: (index === 1 ? group.slice(0, -1) : group).map((text) => ({
+                                embedding: vector(text),
+                            })),
+                        })),
+                    },
+                }),
+            }),
+        });
+        const groupA = { group: "a" };
+        const groupB = { group: "b" };
+        const processor = new HypaProcessorV2<Meta>(e);
+        await expect(
+            processor.addTexts([
+                { id: "a1", content: "A", metadata: groupA },
+                { id: "a2", content: "B", metadata: groupA },
+                { id: "b1", content: "C", metadata: groupB },
+                { id: "b2", content: "D", metadata: groupB },
+            ]),
+        ).rejects.toMatchObject({ name: "ContextualEmbeddingCountError" });
+        expect(calls).toHaveLength(1);
+        expect(calls[0].body.inputs).toEqual([
+            ["A", "B"],
+            ["C", "D"],
+        ]);
+        expect(shared.stats().rows).toBe(0);
+    });
+
+    it("groups contextual documents by metadata identity and keys them with the group hash, the position, and the key version", async () => {
         const calls: Call[] = [];
         const shared = cache();
         const e = env({ cache: shared, fetch: fakeFetch({ calls }), db: { hypaModel: "voyageContext3" } });
@@ -529,12 +662,19 @@ describe("HypaProcessorV2", () => {
             input_type: "document",
         });
         // The client's V2 key: `<text>|<model>` plus the provider's suffix, which names the model again,
-        // plus `|ctx:<hash>` for a group of more than one text.
+        // plus `|ctx:<hash>` for a group of more than one text; the server adds the key version and the
+        // position in the group.
         const hashA = contextHash(["alpha one", "alpha two"]);
-        expect(shared.get(`alpha one|voyageContext3|voyageContext3|ctx:${hashA}`)).toEqual(vector("alpha one"));
-        expect(shared.get(`alpha one|voyageContext3|ctx:${hashA}`)).toBeNull();
+        expect(shared.get(`alpha one|voyageContext3|voyageContext3|ctx:${hashA}|chunk-cache-v2|index:0`)).toEqual(
+            vector("alpha one"),
+        );
+        expect(shared.get(`alpha two|voyageContext3|voyageContext3|ctx:${hashA}|chunk-cache-v2|index:1`)).toEqual(
+            vector("alpha two"),
+        );
+        expect(shared.get(`alpha one|voyageContext3|voyageContext3|ctx:${hashA}`)).toBeNull();
+        expect(shared.get(`alpha one|voyageContext3|ctx:${hashA}|chunk-cache-v2|index:0`)).toBeNull();
         // A group of one has no `|ctx:` part.
-        expect(shared.get("beta one|voyageContext3|voyageContext3")).toEqual(vector("beta one"));
+        expect(shared.get("beta one|voyageContext3|voyageContext3|chunk-cache-v2|index:0")).toEqual(vector("beta one"));
         // Warm, the same groups: no request.
         const warm = new HypaProcessorV2<Meta>(e);
         const again = { group: "a" };
@@ -543,7 +683,7 @@ describe("HypaProcessorV2", () => {
             { id: "a2", content: "alpha two", metadata: again },
         ]);
         expect(calls).toHaveLength(1);
-        // A group with a new member: the cached members are dropped and the whole group is embedded.
+        // A group with a new member has a new group hash: every key misses and the whole group is embedded.
         const grown = new HypaProcessorV2<Meta>(e);
         const groupC = { group: "c" };
         await grown.addTexts([
@@ -555,7 +695,7 @@ describe("HypaProcessorV2", () => {
         expect(grown.vectors.size).toBe(3);
         expect(
             shared.get(
-                `alpha one|voyageContext3|voyageContext3|ctx:${contextHash(["alpha one", "alpha two", "alpha three"])}`,
+                `alpha one|voyageContext3|voyageContext3|ctx:${contextHash(["alpha one", "alpha two", "alpha three"])}|chunk-cache-v2|index:0`,
             ),
         ).toEqual(vector("alpha one"));
         // A query has no group: `input_type: "query"`, the plain suffix.
@@ -589,7 +729,9 @@ describe("HypaProcessorV2", () => {
         const processor = new HypaProcessorV2<Meta>(e);
         await processor.addTexts([{ id: "d1", content: "same text" }]);
         expect(calls[0].body).toEqual({ model: "voyage-context-4", inputs: [["same text"]], input_type: "document" });
-        expect(shared.get("same text|voyageContext4|voyageContext4")).toEqual(vector("same text"));
+        expect(shared.get("same text|voyageContext4|voyageContext4|chunk-cache-v2|index:0")).toEqual(
+            vector("same text"),
+        );
         await processor.similaritySearchScored("same text");
         expect(calls[1].body).toEqual({ inputs: [["same text"]], model: "voyage-context-4", input_type: "query" });
         expect(shared.get("same text|voyageContext4|voyageContext4|query")).toEqual(vector("same text"));

@@ -14,6 +14,8 @@ import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { type BatchResult, type TaskResult, TaskRateLimiter } from "../../../../shared/taskRateLimiter.ts";
 import { DEFAULT_REGEX_DEADLINE_MS } from "../../scripts/workerPool.ts";
 import {
+    contextualChunkCacheKey,
+    ContextualEmbeddingCountError,
     type EmbeddingResult,
     type EmbeddingText,
     getContextProvider,
@@ -2269,8 +2271,8 @@ class HypaProcesserEx extends HypaProcesser {
     private async addSummaryChunksContextual(chunks: SummaryChunk[]): Promise<void> {
         const provider = getContextProvider(this.env, this.model)!;
 
-        const cacheKeyFor = (text: string, groupTexts: string[]) => {
-            return `${text}${provider.getCacheKeySuffix(groupTexts)}`;
+        const cacheKeyFor = (text: string, groupTexts: string[], index: number) => {
+            return contextualChunkCacheKey(`${text}${provider.getCacheKeySuffix(groupTexts)}`, index);
         };
 
         const summaryGroups = new Map<Summary, SummaryChunk[]>();
@@ -2281,28 +2283,29 @@ class HypaProcesserEx extends HypaProcesser {
         }
 
         const groupsToEmbed: SummaryChunk[][] = [];
-        const cachedVectors = new Map<string, memoryVector>();
+        const cachedVectors = new Map<SummaryChunk, memoryVector>();
         const chunkKeys = new Map<SummaryChunk, string>();
 
         for (const [, group] of summaryGroups) {
             const groupTexts = group.map((c) => c.text);
             let allCached = true;
-            const groupCache = new Map<string, memoryVector>();
+            const groupCache = new Map<SummaryChunk, memoryVector>();
 
-            for (const chunk of group) {
-                const cacheKey = cacheKeyFor(chunk.text, groupTexts);
+            for (let index = 0; index < group.length; index++) {
+                const chunk = group[index];
+                const cacheKey = cacheKeyFor(chunk.text, groupTexts, index);
                 chunkKeys.set(chunk, cacheKey);
                 const cached = this.cached(cacheKey, chunk.text);
                 if (cached) {
-                    groupCache.set(cacheKey, cached);
+                    groupCache.set(chunk, cached);
                 } else {
                     allCached = false;
                 }
             }
 
             if (allCached) {
-                for (const [cacheKey, vector] of groupCache) {
-                    cachedVectors.set(cacheKey, vector);
+                for (const [chunk, vector] of groupCache) {
+                    cachedVectors.set(chunk, vector);
                 }
             } else {
                 groupsToEmbed.push(group);
@@ -2313,6 +2316,17 @@ class HypaProcesserEx extends HypaProcesser {
             const groups = groupsToEmbed.map((group) => group.map((chunk) => chunk.text));
 
             const results = await provider.embedDocumentGroups(groups);
+
+            // Validate the entire call before saving any of its vectors.
+            if (results.length !== groups.length) {
+                throw new ContextualEmbeddingCountError(groups.length, results.length);
+            }
+            for (let i = 0; i < groups.length; i++) {
+                const received = results[i]?.length ?? 0;
+                if (received !== groups[i].length) {
+                    throw new ContextualEmbeddingCountError(groups[i].length, received);
+                }
+            }
 
             for (let i = 0; i < groupsToEmbed.length; i++) {
                 const group = groupsToEmbed[i];
@@ -2328,13 +2342,13 @@ class HypaProcesserEx extends HypaProcesser {
 
                     const cacheKey = chunkKeys.get(chunk)!;
                     this.store(cacheKey, vector);
-                    cachedVectors.set(cacheKey, vector);
+                    cachedVectors.set(chunk, vector);
                 }
             }
         }
 
         for (const chunk of chunks) {
-            const vector = cachedVectors.get(chunkKeys.get(chunk)!);
+            const vector = cachedVectors.get(chunk);
             if (!vector) {
                 throw new Error(`Failed to create vector for summary chunk:\n${chunk.text}`);
             }

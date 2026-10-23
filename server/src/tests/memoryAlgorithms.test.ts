@@ -190,9 +190,39 @@ describe("the server ports against the browser fixture", () => {
         expect(fixture.capturedFrom).toMatch(/client algorithms/);
     });
 
+    // The server's contextual document keys add the key version and the chunk's position in its group;
+    // the tab's keys, which the fixture records, do not (query keys are alike). The rest of these
+    // outcomes is the browser's.
+    const serverCacheKeys: Record<string, string[]> = {
+        "v3-voyage-similar-full": [
+            "Gravel underfoot.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:1",
+            "Old summary four: a whisper in the orchard.|voyageContext3|chunk-cache-v2|index:0",
+            "Old summary one: the river crossing.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
+            "Old summary six: ember and willow.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+        ],
+        "v3exp-existing-voyage-groups": [
+            "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3|query",
+            "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3|query",
+            "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3|query",
+            "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+        ],
+    };
+
     for (const scenario of scenarios) {
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
-            expect(await runServer(scenario)).toEqual(fixture.cases[scenario.name]);
+            const browser = fixture.cases[scenario.name];
+            const keys = serverCacheKeys[scenario.name];
+            if (keys) {
+                // Without the version and position, the keys are the tab's.
+                expect(keys.map((key) => key.replace(/\|chunk-cache-v2\|index:\d+$/, ""))).toEqual(browser.cacheKeys);
+            }
+            expect(await runServer(scenario)).toEqual(keys ? { ...browser, cacheKeys: keys } : browser);
         });
     }
 
@@ -253,9 +283,11 @@ describe("what the server adds to the algorithms", () => {
                         [0, 1],
                     ],
                 ],
+                // Query [1,0] matches only Context A's shared paragraph.
+                selected: 1,
             },
             {
-                name: "uses the last stored vector for both repeated positions in one summary, cold and warm",
+                name: "keeps a vector per position for a paragraph repeated in one summary, cold and warm",
                 groups: [
                     [shared, shared],
                     ["Other paragraph.", "Another paragraph."],
@@ -270,10 +302,13 @@ describe("what the server adds to the algorithms", () => {
                         [0.6, 0.8],
                     ],
                 ],
+                // The first shared position keeps its [1,0] and ranks first, ahead of both [0.6,0.8]
+                // chunks; with one vector for both positions ([0,1]) the other summary would win.
+                selected: 0,
             },
         ];
 
-        for (const { name, groups, vectors } of cases) {
+        for (const { name, groups, vectors, selected } of cases) {
             it(name, async () => {
                 const texts = groups.map((group) => group.join("\n\n"));
                 const scenario: Scenario = {
@@ -327,12 +362,10 @@ describe("what the server adds to the algorithms", () => {
                         { tokenizeChat: async ({ content }) => content.length },
                     );
                     expect(result.error).toBeUndefined();
-                    // Query [1,0] favors A. For the repeated case, BOTH B positions use the
-                    // last stored [0,1], so A's two [0.6,0.8] vectors win instead.
                     // Length counts leave 55 memory tokens: either summary fits, both do not.
-                    expect.soft(result.memory?.metrics?.lastSimilarSummaries, cacheState).toEqual([1]);
-                    expect.soft(result.chats[0].content, cacheState).toContain(texts[1]);
-                    expect.soft(result.chats[0].content, cacheState).not.toContain(texts[0]);
+                    expect.soft(result.memory?.metrics?.lastSimilarSummaries, cacheState).toEqual([selected]);
+                    expect.soft(result.chats[0].content, cacheState).toContain(texts[selected]);
+                    expect.soft(result.chats[0].content, cacheState).not.toContain(texts[1 - selected]);
                     const documents = http.mock.calls.filter(([, body]) => body.input_type === "document");
                     expect(documents, cacheState).toHaveLength(cacheState === "cold" ? 1 : 0);
                     if (cacheState === "cold") {
