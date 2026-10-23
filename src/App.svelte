@@ -1,3 +1,9 @@
+<script module lang="ts">
+    import { createKeepAliveAudio } from "./ts/keepAliveAudio";
+
+    const keepAliveAudio = createKeepAliveAudio();
+</script>
+
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
@@ -53,16 +59,20 @@
     import { currentChatRef, selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
-    import sendSound from "./etc/send.mp3";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
-    let keepingSessionAlive = $state(false);
     /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */
     const memoryProgress = $derived(memoryProgressFor($memoryProgressStore, currentChatRef()));
+
+    $effect(() => {
+        if (settings.ui.keepSessionAlive !== "sound") {
+            keepAliveAudio.stop();
+        }
+    });
 
     const getMainDropEffect = (e: DragEvent): DataTransfer["dropEffect"] => {
         const types = Array.from(e.dataTransfer?.types ?? []);
@@ -125,22 +135,13 @@
         }
     }}
     onclick={() => {
-        if (keepingSessionAlive) {
-            return;
-        }
-
         const aliveMode = settings.ui.keepSessionAlive;
         switch (aliveMode) {
             case "pip": {
                 break;
             }
             case "sound": {
-                console.log("Starting silent audio to keep session alive");
-                const silentAudio = new Audio(sendSound);
-                silentAudio.loop = true;
-                silentAudio.volume = 0.000001;
-                silentAudio.play();
-                keepingSessionAlive = true;
+                keepAliveAudio.start();
                 break;
             }
         }
