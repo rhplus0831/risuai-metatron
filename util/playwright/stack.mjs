@@ -195,6 +195,18 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
 }
 
 /**
+ * Clears safe boot's counter of unsettled boots (`risu.safeBoot.attempts`, `src/ts/safeBoot.ts`)
+ * before every page load in `target`. A boot settles 10 s after loading, and the tabs of one context
+ * share the counter, so a check that opens or reloads the app three times within that window would
+ * otherwise boot safe (plugins and custom CSS off) behind its notice dialog.
+ *
+ * @param {import("playwright-core").BrowserContext | import("playwright-core").Page} target
+ */
+export async function clearSafeBootAttempts(target) {
+    await target.addInitScript(() => localStorage.removeItem("risu.safeBoot.attempts"));
+}
+
+/**
  * Opens the app in `page`, answers the node-password prompts (set on a fresh server, input on a new
  * browser context), and resolves once `loadedStore` is true. Vite may reload the page once while it
  * optimizes dependencies, so the prompt can appear again; it is answered each time.

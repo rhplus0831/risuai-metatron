@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openApp } from "../util/playwright/stack.mjs";
+import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The forwarding layer and the per-client selection in the browser, against the isolated stack of
 // `playwright.config.ts`. Two things only the whole stack shows: an edit made in the real settings
@@ -63,6 +63,8 @@ test("an edit on the Prompt page followed by a hotkey switch while the input has
 }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
+    // `reload` loads the app twice (the reload, then `openApp`'s navigation).
+    await clearSafeBootAttempts(page);
     await openApp(page, baseURL!);
     await settle(page);
     const [p1, p2] = await seedPresets(page);
@@ -102,7 +104,9 @@ test("two clients keep their own selection across reloads, and so do two tabs of
     browser,
     baseURL,
 }) => {
+    // Each reload loads the app twice, and A's tabs reload in quick succession.
     const contextA = await browser.newContext();
+    await clearSafeBootAttempts(contextA);
     const pageA = await contextA.newPage();
     await openApp(pageA, baseURL!);
     await settle(pageA);
@@ -110,6 +114,7 @@ test("two clients keep their own selection across reloads, and so do two tabs of
     await select(pageA, p1);
 
     const contextB = await browser.newContext();
+    await clearSafeBootAttempts(contextB);
     const pageB = await contextB.newPage();
     await openApp(pageB, baseURL!);
     await settle(pageB);

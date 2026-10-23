@@ -2,7 +2,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { newPersonaId, normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../shared/presets.ts";
-import { openApp } from "../util/playwright/stack.mjs";
+import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // Per-chat binding: a chat is sent only with its own model preset, prompt preset, and persona,
 // never with the tab's selection, in the real app against the isolated stack of
@@ -658,10 +658,8 @@ test("two tabs showing two bound chats send with their own presets: the provider
     // Two tabs of one browser context: they share `localStorage` (the tab selection's starting value)
     // and the server, while each keeps its own `sessionStorage` (its selection, its generation client).
     const context = await browser.newContext();
-    // The tabs share safe boot's counter of unsettled boots (`risu.safeBoot.attempts` in `localStorage`,
-    // `safeBoot.ts`): the seed opens the app twice within 10 s, so tab B would boot safe behind its notice.
-    // Every boot here starts without it.
-    await context.addInitScript(() => localStorage.removeItem("risu.safeBoot.attempts"));
+    // The seed opens the app twice in tab A, so tab B would boot safe behind its notice.
+    await clearSafeBootAttempts(context);
     const sa = await session(context, baseURL!);
     const { chaId, chats, a, b } = await seed(sa);
     const sb = await session(context, baseURL!);
