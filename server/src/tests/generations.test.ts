@@ -857,6 +857,62 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(owner.events[4]).not.toHaveProperty("messageId");
     });
 
+    it("validates form commands and preserves an own __proto__ field as runner data", async () => {
+        await listen();
+        const body = { kind: "command", clientId: "tab", context: await context() };
+        const form = { type: "form", key: "survey", values: { answer: "yes" } };
+        // Multibyte text crosses 64 KiB while remaining below 64 Ki characters.
+        const tooLarge = "한".repeat(Math.floor((64 * 1024) / 3) + 1);
+        const invalid = [
+            ["missing key", { type: "form", values: {} }],
+            ["non-string key", { ...form, key: 1 }],
+            ["missing values", { type: "form", key: "survey" }],
+            ["null values", { ...form, values: null }],
+            ["array values", { ...form, values: [] }],
+            ["string values", { ...form, values: "yes" }],
+            ["non-string value", { ...form, values: { answer: 1 } }],
+            ["non-string array member", { ...form, values: { answer: ["yes", 1] } }],
+            ["key over 64 KiB UTF-8", { ...form, key: tooLarge }],
+            ["values JSON over 64 KiB UTF-8", { ...form, values: { answer: tooLarge } }],
+        ] as const;
+        for (const [reason, command] of invalid) {
+            expect((await create({ ...body, command })).status, reason).toBe(400);
+        }
+
+        const command = {
+            type: "form",
+            key: "survey",
+            values: { answer: "yes", choices: ["", "second"], ["__proto__"]: ["kept", "as data"] },
+        };
+        let receive!: (command: RunningJob["command"]) => void;
+        const received = new Promise<RunningJob["command"]>((resolve) => {
+            receive = resolve;
+        });
+        step((job) => receive(job.command));
+        expect((await create({ ...body, command })).status).toBe(200);
+        const actual = await received;
+        expect(actual).toEqual(command);
+        if (actual?.type !== "form") {
+            throw new Error("The runner did not receive a form command");
+        }
+        expect(Object.hasOwn(actual.values, "__proto__")).toBe(true);
+        expect(actual.values.__proto__).toEqual(["kept", "as data"]);
+        expect(Object.getPrototypeOf(actual.values)).not.toEqual(["kept", "as data"]);
+    });
+
+    it("refuses a form command while its chat has a running job", async () => {
+        await listen();
+        const jobId = await createOk();
+        expect(
+            await create({
+                kind: "command",
+                clientId: "tab",
+                context: await context(),
+                command: { type: "form", key: "survey", values: { answer: "yes" } },
+            }),
+        ).toEqual({ status: 409, body: { error: "chatBusy", jobId } });
+    });
+
     it("sends the job chat as a patch from the copy a socket last took (rows with their anchor, removed ids, the meta when it changed), whole on `resync`, on a reorder, and after the end; an event no socket took does not move the base", async () => {
         await listen();
         const chatRef = { characterId: "c", id: "k" };

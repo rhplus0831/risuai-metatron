@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { ParseMarkdown } from "../parser.svelte";
+import { ParseMarkdown, trimMarkdown } from "../parser.svelte";
 
 //#region module mocks
 
@@ -41,6 +41,23 @@ const expectScopedStyles = (body: HTMLElement, count: number) => {
 };
 
 describe("trimMarkdown style handling", () => {
+    it("keeps risu-form and its inputs while stripping submit handlers and javascript actions", () => {
+        const body = parse(
+            trimMarkdown(`<form risu-form="survey" onsubmit="alert(1)" action="javascript:alert(2)">
+                <input name="answer" value="yes"><input name="choices" value="">
+            </form>`),
+        );
+        const form = body.querySelector("form");
+        expect(form).not.toBeNull();
+        expect(form!.getAttribute("risu-form")).toBe("survey");
+        expect([...form!.querySelectorAll("input")].map((input) => [input.name, input.value])).toEqual([
+            ["answer", "yes"],
+            ["choices", ""],
+        ]);
+        expect(form!.hasAttribute("onsubmit")).toBe(false);
+        expect(form!.hasAttribute("action")).toBe(false);
+    });
+
     it("decodes <style> into a scoped style tag", async () => {
         const out = await ParseMarkdown(
             '<style>.mybox { color: red; }</style><div class="mybox">hello</div>',

@@ -70,17 +70,24 @@ export const MAX_CLIENT_EMOTIONS = 5;
 /** The longest emotion name `GenerationClientEnv.emotions` carries, in characters. */
 export const MAX_CLIENT_EMOTION_NAME_CHARS = 256;
 
-/** The largest `command.data`, in UTF-8 bytes (a `risu-btn` attribute). */
+/** The largest `command.data` or `command.key`, in UTF-8 bytes (a `risu-btn` or `risu-form` attribute). */
 export const MAX_COMMAND_DATA_BYTES = 64 * 1024;
+
+/** The largest serialized JSON of `command.values`, in UTF-8 bytes. */
+export const MAX_FORM_VALUES_BYTES = 64 * 1024;
 
 /** The longest manual trigger name (a trigger's comment) and `context.triggerId`, in UTF-8 bytes. */
 export const MAX_TRIGGER_NAME_BYTES = 4096;
 
 /**
- * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, or a manual
- * trigger (`risu-trigger`, `/trigger`) by name (its `risu-id` is `context.triggerId`).
+ * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, a Lua form
+ * (`risu-form`) with its attribute's key and submitted string values, or a manual trigger
+ * (`risu-trigger`, `/trigger`) by name (its `risu-id` is `context.triggerId`).
  */
-export type GenerationCommand = { type: "button"; data: string } | { type: "manual"; name: string };
+export type GenerationCommand =
+    | { type: "button"; data: string }
+    | { type: "form"; key: string; values: Record<string, string | string[]> }
+    | { type: "manual"; name: string };
 
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 

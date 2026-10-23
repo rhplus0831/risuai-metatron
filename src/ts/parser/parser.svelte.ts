@@ -1018,6 +1018,7 @@ const trimPurifyConfig = {
         "scrolling",
         "risu-ctrl",
         "risu-btn",
+        "risu-form",
         "risu-trigger",
         "risu-mark",
         "risu-id",

@@ -9,6 +9,7 @@ import {
     MAX_CLIENT_EMOTION_NAME_CHARS,
     MAX_CLIENT_EMOTIONS,
     MAX_COMMAND_DATA_BYTES,
+    MAX_FORM_VALUES_BYTES,
     MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
@@ -72,14 +73,35 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
     if (kind !== "command") {
         return value === undefined ? undefined : "command is only for a command job";
     }
+    const invalidShape =
+        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, or { type: "manual", name: string }';
     if (isPlainObject(value) && value.type === "manual" && typeof value.name === "string") {
         if (Buffer.byteLength(value.name, "utf8") > MAX_TRIGGER_NAME_BYTES) {
             return `command.name must be at most ${MAX_TRIGGER_NAME_BYTES} bytes`;
         }
         return { type: "manual", name: value.name };
     }
+    if (isPlainObject(value) && value.type === "form" && typeof value.key === "string" && isPlainObject(value.values)) {
+        if (Buffer.byteLength(value.key, "utf8") > MAX_COMMAND_DATA_BYTES) {
+            return `command.key must be at most ${MAX_COMMAND_DATA_BYTES} bytes`;
+        }
+        const values: Record<string, string | string[]> = Object.create(null);
+        for (const [key, entry] of Object.entries(value.values)) {
+            if (typeof entry === "string") {
+                values[key] = entry;
+            } else if (Array.isArray(entry) && entry.every((item) => typeof item === "string")) {
+                values[key] = [...entry];
+            } else {
+                return invalidShape;
+            }
+        }
+        if (Buffer.byteLength(JSON.stringify(values), "utf8") > MAX_FORM_VALUES_BYTES) {
+            return `command.values must serialize to at most ${MAX_FORM_VALUES_BYTES} bytes`;
+        }
+        return { type: "form", key: value.key, values };
+    }
     if (!isPlainObject(value) || value.type !== "button" || typeof value.data !== "string") {
-        return 'command must be { type: "button", data: string } or { type: "manual", name: string }';
+        return invalidShape;
     }
     if (Buffer.byteLength(value.data, "utf8") > MAX_COMMAND_DATA_BYTES) {
         return `command.data must be at most ${MAX_COMMAND_DATA_BYTES} bytes`;

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, tick, unmount } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat as ChatRecord, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -95,11 +96,13 @@ vi.mock("src/ts/storage/resourceSync.svelte", () => {
 });
 
 import { language } from "src/lang";
+import { runServerJob } from "src/ts/process/serverCommands";
 import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     ackChatWork,
     assembleChats,
     chatList,
+    createChat,
     findChat,
     hydrateChat,
     removeMessages,
@@ -114,7 +117,7 @@ import { setResourceEpoch } from "src/ts/storage/resourceClient";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { createSimpleCharacter, popupStore } from "src/ts/stores.svelte";
+import { createSimpleCharacter, popupStore, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
 import PopupList from "../UI/PopupList.svelte";
 import Chat from "./Chat.svelte";
 
@@ -296,9 +299,118 @@ beforeEach(() => {
     hoisted.alerts.confirm.mockResolvedValue(true);
     hoisted.translateHTML.mockClear();
     hoisted.edittrans.mockClear();
+    vi.mocked(runServerJob).mockReset();
+    vi.mocked(runServerJob).mockResolvedValue({ outcome: "refused", terminal: null });
+    ReloadChatPointer.set({});
     hoisted.auth.fetch = async () => {
         throw new Error("no transport scripted");
     };
+});
+
+describe("chat row form submissions", () => {
+    const markup = `<form risu-form="survey">
+        <input name="answer" value="initial">
+        <input name="choices" value=""><input name="choices" value="second">
+        <input name="choices" value="third"><input name="__proto__" value="data">
+        <input type="file" name="attachment"><button type="submit">Submit</button>
+    </form>`;
+
+    async function renderForm(message = markup, messageId = "a") {
+        const ui = render({ message, messageId });
+        await ui.instance.whenRendered();
+        flushSync();
+        const form = ui.body().querySelector("form")!;
+        expect(form).not.toBeNull();
+        return { ui, form };
+    }
+
+    function submit(form: HTMLFormElement) {
+        const event = new SubmitEvent("submit", { bubbles: true, cancelable: true });
+        form.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+    }
+
+    it("submits string values once to the chat captured before a pending job and a chat switch", async () => {
+        const { ref } = boot("form-source");
+        const character = selectedCharacter();
+        const second = createChat("c", {
+            ...findChat(ref)!,
+            id: "form-other",
+            message: [{ role: "char", data: "Other chat", chatId: "other-message" }],
+        });
+        const pending = deferred<Awaited<ReturnType<typeof runServerJob>>>();
+        vi.mocked(runServerJob).mockReturnValueOnce(pending.promise);
+        const { form } = await renderForm();
+        form.querySelector<HTMLInputElement>('[name="answer"]')!.value = "typed";
+        const transfer = new DataTransfer();
+        transfer.items.add(new File(["file contents"], "answer.txt", { type: "text/plain" }));
+        form.querySelector<HTMLInputElement>('[type="file"]')!.files = transfer.files;
+
+        submit(form);
+        // The call must already exist before the selection changes or an awaited task runs.
+        expect(runServerJob).toHaveBeenCalledTimes(1);
+        const [target, capturedRef, request] = vi.mocked(runServerJob).mock.calls[0];
+        expect(target).toBe(character);
+        expect(capturedRef).toEqual(ref);
+        expect(request).toMatchObject({
+            kind: "command",
+            context: { mode: "form" },
+        });
+        expect(request.command).toEqual({
+            type: "form",
+            key: "survey",
+            values: { answer: "typed", choices: ["", "second", "third"], ["__proto__"]: "data" },
+        });
+
+        selectChat("c", second.id);
+        flushSync();
+        pending.resolve({ outcome: "started", terminal: null });
+        await tick();
+        flushSync();
+        expect(runServerJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("prevents navigation without sending unmarked forms, stale rows, or group forms", async () => {
+        boot("form-refusals");
+        const unmarked = await renderForm('<form><input name="answer" value="typed"></form>');
+        submit(unmarked.form);
+        expect(runServerJob).not.toHaveBeenCalled();
+
+        const stale = await renderForm(markup, "message-in-another-chat");
+        submit(stale.form);
+        expect(runServerJob).not.toHaveBeenCalled();
+
+        characterList().find((entry) => entry.chaId === "c")!.type = "group";
+        flushSync();
+        const group = await renderForm();
+        submit(group.form);
+        await tick();
+        expect(runServerJob).not.toHaveBeenCalled();
+        expect(get(ReloadChatPointer)).toEqual({});
+    });
+
+    it("keeps typed values and the row reload counter on refusal and increments it for a started form", async () => {
+        boot("form-reload");
+        const key = reloadChatKey("a", 0);
+        ReloadChatPointer.set({ [key]: 4, [reloadChatKey("b", 1)]: 9 });
+        const { ui, form } = await renderForm();
+        const answer = form.querySelector<HTMLInputElement>('[name="answer"]')!;
+        answer.value = "keep my draft";
+        submit(form);
+        await tick();
+        flushSync();
+        expect(runServerJob).toHaveBeenCalledTimes(1);
+        expect(get(ReloadChatPointer)).toEqual({ [key]: 4, [reloadChatKey("b", 1)]: 9 });
+        expect(ui.body().querySelector("form")).toBe(form);
+        expect(answer.value).toBe("keep my draft");
+
+        vi.mocked(runServerJob).mockResolvedValueOnce({ outcome: "started", terminal: null });
+        submit(form);
+        await tick();
+        flushSync();
+        expect(runServerJob).toHaveBeenCalledTimes(2);
+        expect(get(ReloadChatPointer)).toEqual({ [key]: 5, [reloadChatKey("b", 1)]: 9 });
+    });
 });
 
 afterEach(() => {

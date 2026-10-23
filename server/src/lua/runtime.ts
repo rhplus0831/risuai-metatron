@@ -758,6 +758,13 @@ async function dispatch(engine: LuaEngine, input: LuaRunInput, accessKey: string
             return await call("onStart", accessKey);
         case "onButtonClick":
             return await call("onButtonClick", accessKey, primitiveIn("onButtonClick", input.data));
+        case "onFormSubmit":
+            return await call(
+                "onFormSubmit",
+                accessKey,
+                primitiveIn("onFormSubmit", input.data),
+                JSON.stringify(input.meta ?? {}),
+            );
         case "editRequest":
         case "editDisplay":
         case "editInput":

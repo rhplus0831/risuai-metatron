@@ -47,7 +47,7 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
-    import { runServerButton, runServerManualTrigger } from "src/ts/process/serverCommands";
+    import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
     import { ReloadChatPointer, CurrentTriggerIdStore, popupStore, reloadChatKey } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
@@ -758,6 +758,70 @@
             await runServerButton(currentChar, btnEvent, ref);
             ReloadChatPointer.update((v) => {
                 v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
+                return v;
+            });
+        }
+    }
+
+    /**
+     * Submissions never navigate. The chat is captured before any await and must hold the row's
+     * message when `messageId` is present. Only string values are sent, with repeated names as arrays,
+     * for the server to run Lua `onFormSubmit`. Only a started job remounts the row, so a refused
+     * submit keeps the typed values.
+     */
+    async function handleFormTriggerWithin(event: SubmitEvent) {
+        event.preventDefault();
+
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) {
+            return;
+        }
+        const key = form.getAttribute("risu-form");
+        if (!key) {
+            return;
+        }
+        const currentChar = selectedCharacter();
+        if (!currentChar || currentChar.type === "group") {
+            return;
+        }
+        const ref = currentChatRef();
+        if (!ref || (messageId !== undefined && !findChat(ref)?.message.some((entry) => entry.chatId === messageId))) {
+            return;
+        }
+
+        let formData: FormData;
+        try {
+            formData = new FormData(form, event.submitter ?? undefined);
+        } catch {
+            formData = new FormData(form);
+        }
+        const values: Record<string, string | string[]> = Object.create(null);
+        for (const [name, value] of formData) {
+            if (typeof value !== "string") {
+                continue;
+            }
+            if (Object.hasOwn(values, name)) {
+                const previous = values[name];
+                if (Array.isArray(previous)) {
+                    previous.push(value);
+                } else {
+                    values[name] = [previous, value];
+                }
+            } else {
+                values[name] = value;
+            }
+        }
+
+        const reloadKey = reloadChatKey(messageId, idx);
+        const { outcome } = await runServerJob(currentChar, ref, {
+            kind: "command",
+            command: { type: "form", key, values },
+            label: "button",
+            context: { mode: "form" },
+        });
+        if (outcome === "started") {
+            ReloadChatPointer.update((v) => {
+                v[reloadKey] = (v[reloadKey] ?? 0) + 1;
                 return v;
             });
         }
@@ -1825,6 +1889,7 @@
     data-chat-id={currentChat?.message?.[idx]?.chatId ?? ""}
     style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
+    onsubmitcapture={handleFormTriggerWithin}
 >
     <div
         class="text-textcolor mt-1 ml-4 mr-4 mb-1 p-2 bg-transparent grow border-t-gray-900 border-opacity/30 border-transparent flexium items-start max-w-full"

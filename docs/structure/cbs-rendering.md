@@ -119,6 +119,7 @@ Display:
 
 - `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not a final one.
 - Keep the DOMPurify hooks intact: class prefixing, the href policy, the YouTube iframe allowlist, and blob `src` retention.
+- `trimMarkdown`'s config (`trimPurifyConfig`) keeps the chat's script attributes `risu-btn`, `risu-trigger`, `risu-id`, and `risu-form` (a Lua form, `scripts-triggers.md`); DOMPurify's defaults keep the form controls and strip `on*` handlers and `javascript:` values. A form's submit never navigates (`Chat.svelte` default-prevents every submit in a row).
 - CSS must stay scoped:
   - Selectors are prefixed with `.chattext`.
   - Classes get the `x-risu-` prefix.

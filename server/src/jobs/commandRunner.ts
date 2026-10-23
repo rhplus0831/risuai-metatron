@@ -1,4 +1,5 @@
 import type { character } from "../../../shared/database.ts";
+import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runPromptJob } from "../prompt/runner.ts";
@@ -22,7 +23,7 @@ import {
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
- * The server's generation runner: `command` jobs run here (Lua buttons and manual triggers); every
+ * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers); every
  * other kind is a send, a continue, or a preview (`src/server/prompt/runner.ts`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
@@ -37,7 +38,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
 /**
  * Loads the job's scope and sends `accepted`; refuses a group chat (as `Chat.svelte` refuses
- * buttons and manual triggers) or a missing character; sets up the run on the chat's character.
+ * buttons, forms, and manual triggers) or a missing character; sets up the run on the chat's character.
  */
 function prepare(
     job: RunningJob,
@@ -65,7 +66,9 @@ function prepareRun(
             400,
             job.command?.type === "manual"
                 ? "Manual triggers do not run in a group chat"
-                : "Buttons do not run in a group chat",
+                : job.command?.type === "form"
+                  ? "Forms do not run in a group chat"
+                  : "Buttons do not run in a group chat",
         );
     }
     const state = createJobRunState(job, deps.scriptWorkers.createBudget());
@@ -83,14 +86,14 @@ function prepareRun(
  */
 async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
     const command = job.command;
-    if (command?.type !== "button" && command?.type !== "manual") {
-        throw new GenerationRunnerError(400, "A command job needs a button or a manual trigger command", {
+    if (command?.type !== "button" && command?.type !== "form" && command?.type !== "manual") {
+        throw new GenerationRunnerError(400, "A command job needs a button, form, or manual trigger command", {
             stage: "setup",
         });
     }
     try {
-        if (command.type === "button") {
-            await runButton(job, deps, command.data);
+        if (command.type === "button" || command.type === "form") {
+            await runLuaInteractionTrigger(job, deps, command);
         } else {
             await runManualTrigger(job, deps, command.name);
         }
@@ -100,16 +103,20 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
 }
 
 /**
- * A Lua button (`runLuaButtonTrigger` of the former `src/ts/process/scriptings.ts`) as a command job: each Lua
- * trigger of the character and of its modules, in the client's order, runs `onButtonClick` with the
- * button's data on a fresh engine (no Lua global survives between runs), all under one aggregate
- * budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
+ * A Lua button or form as a command job: each Lua trigger of the character and of its modules, in
+ * the client's order, runs `onButtonClick` with the button's data or `onFormSubmit` with the form's
+ * key and values as metadata on a fresh engine (no Lua global survives between runs), all under one
+ * aggregate budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
  * (the client's `doString` throws out of the loop), as do a spent budget and a worker failure; a
  * failure inside the handler is logged and the next trigger runs (the client's catch); a fatal host
  * failure (a write conflict, a lost owner, an abort) ends the job. `accepted` and `done` carry no
  * message.
  */
-async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: string): Promise<void> {
+async function runLuaInteractionTrigger(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    command: Extract<GenerationCommand, { type: "button" | "form" }>,
+): Promise<void> {
     const { store } = deps;
     const { characterId, chatId } = job.context;
     const { setup, state, character } = prepare(job, deps);
@@ -135,8 +142,9 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
         const result = await deps.scriptWorkers.runLua(
             {
                 code: effect.code,
-                mode: "onButtonClick",
-                data,
+                mode: command.type === "button" ? "onButtonClick" : "onFormSubmit",
+                data: command.type === "button" ? command.data : command.key,
+                ...(command.type === "form" ? { meta: { data: command.values } } : {}),
                 lowLevelAccess: !!trigger.lowLevelAccess,
                 identity: {
                     characterId,
