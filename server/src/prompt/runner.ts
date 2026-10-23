@@ -6,6 +6,7 @@ import { completionNotification } from "../../../shared/notifications.ts";
 import {
     type CallbackPayloads,
     type CallbackResult,
+    type GenerationStage,
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
     type MemoryBlockingReason,
@@ -25,6 +26,7 @@ import type { OwnedGeneration } from "../jobs/chatResult.ts";
 import {
     failureOf,
     type GenerationFailure,
+    GenerationJobEndedError,
     GenerationRunnerError,
     JobWriteConflictError,
     markFailure,
@@ -241,6 +243,17 @@ class SendError extends GenerationRunnerError {
     }
 }
 
+/** Reports a presentation stage, ignoring a report after the job ended. */
+function reportStage(job: RunningJob, stage: GenerationStage): void {
+    try {
+        job.emit({ type: "stage", stage });
+    } catch (error) {
+        if (!(error instanceof GenerationJobEndedError)) {
+            throw error;
+        }
+    }
+}
+
 /**
  * A send, continue, group send, or preview: `sendMain`'s input stage and `sendChat` up to the
  * provider call and the raw reply, on the server. The sequence:
@@ -344,6 +357,7 @@ async function runSend(
     let scope = loadJobScope(store, kinds, job.context);
     admitProviderModels(scope, job.hooks.providers);
     job.emit({ type: "accepted", jobId: job.id, revision: scope.chatRevision, text: "" });
+    reportStage(job, "preparing");
     const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!owner) {
         throw new GenerationRunnerError(404, "The job's character no longer exists");
@@ -687,6 +701,7 @@ async function runSpeaker(arg: {
     const { store, kinds } = deps;
     // Every speaker and every round of one starts over: its setup, then assembly, request, tail.
     state.stage = "setup";
+    reportStage(job, "preparing");
     const { characterId, chatId } = job.context;
     const db = scope.db;
 
@@ -1281,6 +1296,7 @@ async function runSpeaker(arg: {
                         });
                     }
                 },
+                stage: (stage) => reportStage(job, stage),
                 captionImage: async (dataUrl) => {
                     setup.check();
                     try {
@@ -1336,6 +1352,9 @@ async function runSpeaker(arg: {
 
         const stage3Start = Date.now();
         state.stage = "request";
+        if (job.kind !== "previewPrompt") {
+            reportStage(job, "generating");
+        }
         const req = await services.request(
             {
                 formated,
@@ -1576,6 +1595,7 @@ async function runSpeaker(arg: {
                 return { type: "stop" };
             }
             state.stage = "tail";
+            reportStage(job, "finishing");
             // The completed raw text is stored before any hook runs: a failure in the tail keeps it.
             // Every later write of the reply claims the stream's last chunk.
             coverSeq = stream.seq;
@@ -1609,6 +1629,7 @@ async function runSpeaker(arg: {
             sayTTS(result);
         } else {
             state.stage = "tail";
+            reportStage(job, "finishing");
             // Non-streaming: the first text is the reply; every text is a reroll alternative.
             const msgs: readonly (readonly ["user" | "char", string])[] =
                 req.type === "success" ? [["char", req.result]] : req.type === "multiline" ? req.result : [];

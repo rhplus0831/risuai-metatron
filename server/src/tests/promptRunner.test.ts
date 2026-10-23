@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
@@ -303,6 +303,9 @@ async function clientSetText(chaId: string, messageId: string, text: string) {
 
 let attach = 0;
 type JobOptions = {
+    /** Hold the first script worker call until attach can replay preparing. */
+    observeStages?: boolean;
+    onEvent?: (event: GenerationEvent) => void;
     abortAfterChunks?: number;
     /** Runs at every `chunk` event the owner socket gets. */
     onChunk?: () => void;
@@ -325,6 +328,23 @@ async function job(
     socketOpen = new Promise<void>((resolve) => {
         opened = resolve;
     });
+    const ownerAttached = socketOpen;
+    const workers = server.context.scriptWorkers;
+    const runScripts = workers.runScripts.bind(workers);
+    // This preset has a regex script: editinput (sends with input), or editprocess on the
+    // greeting/history (previews and groups), reaches the worker before memory or the request.
+    const workerHold = options.observeStages
+        ? vi.spyOn(workers, "runScripts").mockImplementationOnce(async (...args) => {
+              await ownerAttached;
+              return runScripts(...args);
+          })
+        : undefined;
+    if (workerHold) {
+        onTestFinished(() => {
+            opened();
+            workerHold.mockRestore();
+        });
+    }
     let socket: WebSocket | undefined;
     let fallback: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -368,6 +388,7 @@ async function job(
                     return;
                 }
                 events.push(event);
+                options.onEvent?.(event);
                 if (event.type === "chunk") {
                     options.onChunk?.();
                 }
@@ -403,6 +424,7 @@ async function job(
         opened();
         clearTimeout(fallback);
         socket?.close();
+        workerHold?.mockRestore();
     }
 }
 /**
@@ -624,16 +646,50 @@ describe("a send", () => {
     );
 
     it(
-        "runs the input stage (the input trigger, editinput in the worker, the user message under its id) and streams the raw reply",
+        "runs the input stage (the input trigger, editinput in the worker, the user message under its id), streams the raw reply while generating, and reports preparing then generating then finishing before done",
         async () => {
             const chaId = await seedCharacter({
                 name: "Ann",
                 triggerscript: [trig("input", [ef("v2SetVar", { var: "seen", operator: "=", ...v("yes") })])],
             });
-            mode = { chunks: ["Hel", "lo ", "there."], delayMs: 40 };
+            const release = deferred<void>();
+            const firstChunk = deferred<void>();
+            const stages: string[] = [];
+            mode = {
+                chunks: ["Hel", "lo ", "there."],
+                delayMs: 0,
+                holdBeforeChunk: { index: 1, until: release.promise },
+            };
             const before = bodies.length;
-            const { events, terminal } = await job("send", chaId, { input: "hi you", userMessageId: "user-1" });
+            const pending = job(
+                "send",
+                chaId,
+                { input: "hi you", userMessageId: "user-1" },
+                {
+                    observeStages: true,
+                    onEvent: (event) => {
+                        if (event.type === "stage") stages.push(event.stage);
+                    },
+                    onChunk: () => firstChunk.resolve(),
+                },
+            );
+            const cleanup = cleanupOnce(() => release.resolve());
+            try {
+                await Promise.race([firstChunk.promise, pending]);
+                // The second chunk and stream end are still held: the spinner remains generating.
+                expect(stages.at(-1)).toBe("generating");
+            } finally {
+                cleanup();
+                await pending;
+            }
+            const { events, terminal } = await pending;
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            // Exact wire order also rejects consecutive duplicate stages.
+            expect(
+                events
+                    .filter((event) => event.type === "stage" || event.type === "done")
+                    .map((event) => (event.type === "stage" ? event.stage : event.type)),
+            ).toEqual(["preparing", "generating", "finishing", "done"]);
             const chat = await readChat(chaId);
             expect(texts(chat)).toEqual(["user:hello you", "char:Hello there."]);
             const [user, reply] = chat.data.message;
@@ -642,7 +698,7 @@ describe("a send", () => {
             expect(reply.saying).toBe(chaId);
             expect(reply.generationInfo).toMatchObject({ generationId: reply.chatId, model: "custom-m" });
             // The events: the bare accepted, the input stage's, the reply's, the chunks, one done.
-            // The bare first `accepted` may precede the socket's attach (an attach re-sends only the current one).
+            // The worker hold keeps preparing current until attach replays it and the bare accepted.
             const accepted = events.filter(
                 (event) => event.type === "accepted" && (event.userMessageId || event.messageId),
             );
@@ -872,8 +928,16 @@ describe("a send", () => {
                 await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "changed-during-job" });
             };
             try {
-                const { events, terminal } = await job("group", grp);
+                const { events, terminal } = await job("group", grp, {}, { observeStages: true });
                 expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
+                    "preparing",
+                    "generating",
+                    "finishing",
+                    "preparing",
+                    "generating",
+                    "finishing",
+                ]);
                 expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
                 const chat = await readChat(grp);
                 expect(texts(chat)).toEqual(["user:hello all", "char:Reply.", "char:Reply."]);
@@ -1051,13 +1115,19 @@ describe("a send", () => {
         async () => {
             const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
             const before = bodies.length;
-            const body = await job("previewPrompt", chaId);
+            const body = await job("previewPrompt", chaId, {}, { observeStages: true });
             expect(body.terminal?.type).toBe("done");
+            expect(body.events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
+                "preparing",
+            ]);
             const parsed = JSON.parse((body.terminal as any).result);
             expect(parsed.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1\/chat\/completions$/);
             expect(parsed.body.model).toBe("m");
-            const preview = await job("preview", chaId);
+            const preview = await job("preview", chaId, {}, { observeStages: true });
             expect(preview.terminal?.type).toBe("done");
+            expect(preview.events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
+                "preparing",
+            ]);
             const formated = (preview.terminal as any).result as { role: string; content: string }[];
             expect(formated[0]).toEqual({ role: "system", content: "Main Ann\n\nDesc of Ann" });
             expect(formated.at(-1)).toMatchObject({ role: "user", content: "q" });

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     type GenerationTerminalEvent,
     type MemoryChatRef,
@@ -432,6 +432,7 @@ async function job(
     chaId: string,
     extra: Record<string, unknown> = {},
     options: {
+        observeStages?: boolean;
         onEvent?: (event: any) => void;
         answer?: (event: any) => unknown | Promise<unknown>;
         hooks?: Record<string, unknown>;
@@ -439,6 +440,26 @@ async function job(
     } = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId, (extra.chatId as string | undefined) ?? "k");
+    let opened!: () => void;
+    const ownerAttached = new Promise<void>((resolve) => {
+        opened = resolve;
+    });
+    const workers = server.context.scriptWorkers;
+    const runScripts = workers.runScripts.bind(workers);
+    // When observing stages, the fixture's input regex reaches this worker while preparing, before
+    // assembly can enter memory. Attach then replays preparing and sees later stages live.
+    const workerHold = options.observeStages
+        ? vi.spyOn(workers, "runScripts").mockImplementationOnce(async (...args) => {
+              await ownerAttached;
+              return runScripts(...args);
+          })
+        : undefined;
+    if (workerHold) {
+        onTestFinished(() => {
+            opened();
+            workerHold.mockRestore();
+        });
+    }
     const created = await api("/api/generations", {
         method: "POST",
         body: JSON.stringify({
@@ -460,6 +481,7 @@ async function job(
         }),
     });
     if (created.status !== 200) {
+        opened();
         return { ...created, events: [], terminal: undefined };
     }
     currentJobId = created.body.jobId as string;
@@ -467,6 +489,8 @@ async function job(
         `${base.replace("http", "ws")}/api/generations/${currentJobId}/ws` +
         `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
     const ws = new WebSocket(url);
+    ws.onopen = opened;
+    ws.onerror = opened;
     const events: any[] = [];
     await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 55_000);
@@ -493,6 +517,7 @@ async function job(
         };
     });
     ws.close();
+    workerHold?.mockRestore();
     return { ...created, events, terminal: events.find((event) => event.type === "done" || event.type === "error") };
 }
 const summaries = () => upstream.filter((entry) => entry.summary);
@@ -631,11 +656,66 @@ describe("HypaV3", () => {
             await patchSettings({ hypaV3: true });
             // A small recent share leaves summaries for the similarity search (their chunks embedded).
             await patchHypaV3({ recentMemoryRatio: 0.1, similarMemoryRatio: 0.6 });
-            const chaId = await seedCharacter();
+            const chaId = await seedCharacter({
+                // Leave input unchanged while providing a worker call before the memory step.
+                extra: {
+                    customscript: [
+                        { comment: "Preserve input", in: "^", out: "", type: "editinput", flag: "", ableFlag: true },
+                    ],
+                },
+            });
             state.onMain = async () => (await readChat(chaId)).data.hypaV3Data;
-            // The spy is restored after the job (the file's `afterAll` restores it if the job fails).
+            // Restore even when a stage assertion fails while the summary is held.
             const regexes = vi.spyOn(server.context.scriptWorkers, "regex");
-            const first = await job("send", chaId, { input: "Hello V3", userMessageId: "u1" });
+            onTestFinished(() => regexes.mockRestore());
+            let releaseSummary!: () => void;
+            const held = new Promise<void>((resolve) => {
+                releaseSummary = resolve;
+            });
+            onTestFinished(releaseSummary);
+            let summaryStarted!: () => void;
+            const summarizing = new Promise<void>((resolve) => {
+                summaryStarted = resolve;
+            });
+            state.holdSummary = async () => {
+                summaryStarted();
+                await held;
+            };
+            const stages: string[] = [];
+            let progressReceived!: () => void;
+            const progress = new Promise<void>((resolve) => {
+                progressReceived = resolve;
+            });
+            const pending = job(
+                "send",
+                chaId,
+                { input: "Hello V3", userMessageId: "u1" },
+                {
+                    observeStages: true,
+                    onEvent: (event) => {
+                        if (event.type === "stage") stages.push(event.stage);
+                        // This later frame fences delivery of the preceding stage even if that stage
+                        // is missing; waiting for `memory` itself would hide the defect behind a hang.
+                        if (event.type === "notice" && event.kind === "memoryProgress" && event.payload.open) {
+                            progressReceived();
+                        }
+                    },
+                },
+            );
+            try {
+                await Promise.race([Promise.all([summarizing, progress]), pending]);
+                expect(stages.at(-1)).toBe("memory");
+            } finally {
+                releaseSummary();
+                await pending;
+                state.holdSummary = null;
+            }
+            const first = await pending;
+            expect(
+                first.events
+                    .filter((event) => event.type === "stage" || event.type === "done")
+                    .map((event) => (event.type === "stage" ? event.stage : event.type)),
+            ).toEqual(["preparing", "memory", "preparing", "generating", "finishing", "done"]);
             const splits = regexes.mock.calls.filter(([op]) => op.op === "split");
             regexes.mockRestore();
             expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");

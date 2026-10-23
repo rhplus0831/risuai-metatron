@@ -441,6 +441,7 @@ describe("assemblePrompt final token recheck", () => {
             memory: { embeddings: { db: {} } } as AssemblyHost["memory"],
             writeMemory() {},
             endMemoryProgress() {},
+            stage() {},
             captionImage: async () => {
                 throw new Error("Images must remain multimodal");
             },

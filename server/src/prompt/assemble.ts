@@ -12,6 +12,7 @@ import type {
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
+    GenerationStage,
     MemoryBlockingReason,
     MemoryGapChoice,
     MemoryTaskInput,
@@ -134,6 +135,8 @@ export type AssemblyHost = {
     writeMemory(build: (chat: Chat) => Record<string, unknown> | null): void;
     /** The memory step ended (a result, an error, an abort): a progress notice left open is closed. */
     endMemoryProgress(): void;
+    /** Reports the job's presentation stage during assembly. */
+    stage(stage: GenerationStage): void;
     /** `runImageEmbedding(dataUrl)[0].generated_text`: the caption of an image a model cannot take. */
     captionImage(dataUrl: string): Promise<string>;
     tokenizer: ChatTokenCounter;
@@ -1498,6 +1501,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     if (useMemory) {
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
         const stage2Start = Date.now();
+        host.stage("memory");
         // The algorithms count through the job's tokenizer and repair and extend the chat they are
         // given: a detached copy (the result is saved below).
         const memoryTokenizer = { tokenizeChat };
@@ -1610,6 +1614,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         } finally {
             host.endMemoryProgress();
         }
+        host.stage("preparing");
         input.stageTimings.stage2Duration = Date.now() - stage2Start;
     } else {
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
