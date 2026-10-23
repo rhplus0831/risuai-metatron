@@ -225,6 +225,9 @@ describe("planUpstreamArchive", () => {
     });
 });
 
+const data = (value: unknown) => ({ ok: true, kind: "data", value, pluginValue: value });
+const plugin = (value: unknown) => ({ ok: true, kind: "plugin", value, pluginValue: value });
+
 describe("readColdRecord", () => {
     async function readCold(data: Uint8Array | string, cap?: number) {
         const name = `coldstorage_${COLD_A}.json`;
@@ -243,24 +246,21 @@ describe("readColdRecord", () => {
     it("parses a character payload, a chat payload and an older bare message array", async () => {
         const character = { character: { name: "A", chaId: "c" } };
         const chat = { message: [{ role: "user", data: "안녕" }], localLore: [] };
-        expect(await readCold(JSON.stringify(character))).toEqual({ ok: true, value: character });
-        expect(await readCold(JSON.stringify(chat))).toEqual({ ok: true, value: chat });
-        expect(await readCold('[{"role":"char","data":"x"}]')).toEqual({
-            ok: true,
-            value: [{ role: "char", data: "x" }],
-        });
+        expect(await readCold(JSON.stringify(character))).toEqual(data(character));
+        expect(await readCold(JSON.stringify(chat))).toEqual(data(chat));
+        expect(await readCold('[{"role":"char","data":"x"}]')).toEqual(data([{ role: "char", data: "x" }]));
         // TextDecoder drops a byte-order mark, as upstream's restore does.
-        expect(await readCold("﻿[]")).toEqual({ ok: true, value: [] });
+        expect(await readCold("﻿[]")).toEqual(data([]));
     });
 
-    it("reports an oversized, unparsable or unknown payload instead of throwing", async () => {
+    it("reports an oversized or unparsable payload instead of throwing and reads any other JSON as plugin storage", async () => {
         const payload = JSON.stringify({ message: [] });
         expect(await readCold(payload, payload.length - 1)).toEqual({ ok: false, reason: "tooLarge" });
-        expect(await readCold(payload, payload.length)).toEqual({ ok: true, value: { message: [] } });
+        expect(await readCold(payload, payload.length)).toEqual(data({ message: [] }));
         expect(await readCold("{not json")).toEqual({ ok: false, reason: "invalidJson" });
         expect(await readCold("")).toEqual({ ok: false, reason: "invalidJson" });
-        expect(await readCold('{"other":1}')).toEqual({ ok: false, reason: "invalidPayload" });
-        expect(await readCold("null")).toEqual({ ok: false, reason: "invalidPayload" });
+        expect(await readCold('{"other":1}')).toEqual(plugin({ other: 1 }));
+        expect(await readCold("null")).toEqual(plugin(null));
     });
 });
 
@@ -275,17 +275,32 @@ describe("readColdEntry", () => {
     }
 
     it("takes the last valid payload, as upstream's restore keeps the last one it accepted", async () => {
-        expect(await readEntry(["[1]", "[2]"])).toEqual({ ok: true, value: [2] });
-        expect(await readEntry(['{"message":[]}', "{"])).toEqual({ ok: true, value: { message: [] } });
-        expect(await readEntry(['{"message":[]}', '{"other":1}'])).toEqual({ ok: true, value: { message: [] } });
-        expect(await readEntry(['{"message":[]}', JSON.stringify({ message: ["x".repeat(40)] })], 20)).toEqual({
+        expect(await readEntry(["[1]", "[2]"])).toEqual(data([2]));
+        expect(await readEntry(['{"message":[]}', "{"])).toEqual(data({ message: [] }));
+        // A data record stays the character/chat payload; plugin storage reads the later plugin record.
+        expect(await readEntry(['{"message":[]}', '{"other":1}'])).toEqual({
             ok: true,
+            kind: "data",
             value: { message: [] },
+            pluginValue: { other: 1 },
         });
+        expect(await readEntry(['{"message":[]}', JSON.stringify({ message: ["x".repeat(40)] })], 20)).toEqual(
+            data({ message: [] }),
+        );
     });
 
     it("reports the last record's failure when none is valid", async () => {
-        expect(await readEntry(["{", '{"other":1}'])).toEqual({ ok: false, reason: "invalidPayload" });
-        expect(await readEntry(['{"other":1}', "{"])).toEqual({ ok: false, reason: "invalidJson" });
+        expect(await readEntry(["{", "[1,2,3]"], 3)).toEqual({ ok: false, reason: "tooLarge" });
+        expect(await readEntry(["[1,2,3]", "{"], 3)).toEqual({ ok: false, reason: "invalidJson" });
+    });
+
+    it("keeps an earlier plugin value beside later data and uses the last plugin value when there is no data", async () => {
+        expect(await readEntry(['"plugin text"', '{"message":[]}'])).toEqual({
+            ok: true,
+            kind: "data",
+            value: { message: [] },
+            pluginValue: "plugin text",
+        });
+        expect(await readEntry(['"older plugin text"', "null"])).toEqual(plugin(null));
     });
 });

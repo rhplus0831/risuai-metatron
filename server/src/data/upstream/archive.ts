@@ -145,18 +145,21 @@ export async function planUpstreamArchive(
     return { database, assets, cold, ignored };
 }
 
+/**
+ * A parsed cold payload. `kind` describes `value`: arrays and objects with `character` or `message`
+ * are `data`, all other JSON is `plugin`. For a grouped key, `value` prefers the last data record and
+ * `pluginValue` prefers the last plugin record; for a single record both hold the same value.
+ */
 export type ColdRecordResult =
-    | { ok: true; value: unknown }
-    /**
-     * `tooLarge`: over the cap, never read. `invalidJson`: not JSON. `invalidPayload`: JSON that is
-     * neither a message array nor an object with `character` or `message` (upstream skips those too).
-     */
-    | { ok: false; reason: "tooLarge" | "invalidJson" | "invalidPayload" };
+    | { ok: true; kind: "data" | "plugin"; value: unknown; pluginValue: unknown }
+    /** `tooLarge`: over the cap, never read. `invalidJson`: not JSON. */
+    | { ok: false; reason: "tooLarge" | "invalidJson" };
 
 /**
  * Reads and parses one cold-storage payload, as upstream's restore does (`TextDecoder`, so a BOM is
- * dropped and invalid UTF-8 replaced, then `JSON.parse`). A record over `cap` bytes, unparsable, or of
- * an unknown shape is reported in the result, not thrown; a read error of the file still throws.
+ * dropped and invalid UTF-8 replaced, then `JSON.parse`). Any JSON value is accepted and classified
+ * as data or plugin storage. A record over `cap` bytes or unparsable is reported in the result, not
+ * thrown; a read error of the file still throws.
  */
 export async function readColdRecord(
     handle: FileHandle,
@@ -173,16 +176,17 @@ export async function readColdRecord(
     } catch {
         return { ok: false, reason: "invalidJson" };
     }
-    const known =
+    const data =
         Array.isArray(value) ||
         (typeof value === "object" && value !== null && ("character" in value || "message" in value));
-    return known ? { ok: true, value } : { ok: false, reason: "invalidPayload" };
+    return { ok: true, kind: data ? "data" : "plugin", value, pluginValue: value };
 }
 
 /**
- * The payload of one cold-storage key: the last of its records that `readColdRecord` accepts, as
- * upstream's restore writes each valid record in archive order and skips the others. When none is
- * accepted, the failure of the last record.
+ * The payloads of one cold-storage key. Upstream writes data records in archive order, then restores
+ * queued plugin records for referenced plugin keys. `value` keeps the last accepted data record,
+ * falling back to the last plugin record; `pluginValue` prefers the last plugin record, falling back
+ * to data. `kind` describes `value`. When none is accepted, returns the last record's failure.
  */
 export async function readColdEntry(
     handle: FileHandle,
@@ -190,12 +194,26 @@ export async function readColdEntry(
     cap: number = MAX_COLD_RECORD_BYTES,
 ): Promise<ColdRecordResult> {
     let last: ColdRecordResult | null = null;
+    let data: Extract<ColdRecordResult, { ok: true }> | undefined;
+    let plugin: Extract<ColdRecordResult, { ok: true }> | undefined;
     for (let i = entry.records.length - 1; i >= 0; i--) {
         const result = await readColdRecord(handle, entry.records[i], cap);
         if (result.ok) {
-            return result;
+            if (result.kind === "data") {
+                data ??= result;
+            } else {
+                plugin ??= result;
+            }
+            if (data && plugin) {
+                break;
+            }
+        } else {
+            last ??= result;
         }
-        last ??= result;
+    }
+    const selected = data ?? plugin;
+    if (selected) {
+        return { ...selected, pluginValue: plugin ? plugin.value : selected.value };
     }
     return last ?? { ok: false, reason: "invalidJson" };
 }

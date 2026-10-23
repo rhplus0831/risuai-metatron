@@ -19,6 +19,7 @@ const PLUGIN_STORAGE_KEY = "_pluginStorage";
 const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
 /** Upstream's map of v3 `pluginStorage` keys to cold-storage keys (U `plugins/apiV3/v3.svelte.ts`). */
 const COLD_PLUGIN_KEY = "_coldplugin";
+const COLD_PLUGIN_INDEX_KEY = "_coldpluginIndex";
 
 function invalidSetting(report: UpstreamImportReport, path: string) {
     const pending = new PendingReport();
@@ -220,18 +221,18 @@ export function convertPlugins(value: unknown, report: UpstreamImportReport): un
 }
 
 /**
- * The `pluginStorage` record (`pluginCustomStorage`), or null when upstream had none. Upstream's v3
- * `pluginStorage` lived at the top level of `pluginCustomStorage` (U `plugins.svelte.ts`
- * `pluginStorage`) until `cad8595a` moved it to cold storage behind `_coldplugin`, next to the
- * `setDatabase` custom keys (U `plugins.svelte.ts` ~681), which the old format does not tell apart;
- * metatron keeps v3 values in `_pluginStorage`. So the top-level values stay where they are (the
- * custom keys' place in metatron too) and, in a file without `_pluginStorage` (one upstream wrote),
- * are also copied into `_pluginStorage` (`legacy-plugin-storage`), and each `_coldplugin` value found in the backup goes into
- * `_pluginStorage`, over a copied one (`cold-plugin-storage-restored`; else `cold-missing`).
- * `_coldplugin` itself is dropped. The top-level `_safeLocalPluginStorage` is not copied into v3
- * storage: it is metatron's reserved SafeLocal key. An array `_pluginStorage` becomes a dictionary
- * via `Object.fromEntries(Object.entries(array))`, as the client reads it. Any other non-dictionary
- * `_pluginStorage` is kept as it is and nothing is folded into it.
+ * The `pluginStorage` record (`pluginCustomStorage`), or null when upstream had none. Upstream's
+ * three forms are inline top-level values, `_coldplugin` per-key pointers, and a `_coldpluginIndex`
+ * pointer to small JSON strings and large-value pointers. Metatron keeps v3 values in `_pluginStorage`.
+ * An existing dictionary is the base; index values override it. Without `_pluginStorage`, top-level
+ * custom values stay in place and are also copied into v3 storage, overriding index values. With an
+ * index pointer, legacy cold pointers are used only for keys neither claimed by an index descriptor
+ * nor copied inline; without one, they override inline copies. Only the final retained sources are
+ * reported as `legacy-plugin-storage` or `cold-plugin-storage-restored`.
+ * `_coldplugin` and `_coldpluginIndex` are dropped, as is the index's trash. Those reserved keys and
+ * `_safeLocalPluginStorage` are never copied inline into v3 storage. An array `_pluginStorage` becomes
+ * a dictionary via `Object.fromEntries(Object.entries(array))`, as the client reads it. Any other
+ * non-dictionary `_pluginStorage` is kept as it is and nothing is folded into it.
  */
 export function convertPluginStorage(
     value: unknown,
@@ -270,7 +271,7 @@ export function convertPluginStorage(
         return true;
     };
     for (const key of Object.keys(value)) {
-        if (key !== COLD_PLUGIN_KEY && (key !== PLUGIN_STORAGE_KEY || !foldable)) {
+        if (key !== COLD_PLUGIN_KEY && key !== COLD_PLUGIN_INDEX_KEY && (key !== PLUGIN_STORAGE_KEY || !foldable)) {
             keep(out, key, value[key], `pluginCustomStorage.${key}`);
         }
     }
@@ -284,28 +285,104 @@ export function convertPluginStorage(
     }
     const legacyKeys = new Set<string>();
     const coldKeys = new Set<string>();
+    const indexPointer = value[COLD_PLUGIN_INDEX_KEY];
+    const hasIndex = typeof indexPointer === "string";
+    const indexPath = `pluginCustomStorage.${COLD_PLUGIN_INDEX_KEY}`;
+    const indexEntries = new Map<string, { kind: "large" | "small"; source: string }>();
+    if (hasIndex) {
+        const result = cold?.get(indexPointer);
+        if (!result?.ok) {
+            pending.excluded("cold-missing", COLD_PLUGIN_INDEX_KEY);
+        } else {
+            const index = result.pluginValue;
+            if (
+                !isPlainObject(index) ||
+                index.type !== "risu-plugin-storage-index" ||
+                !Array.isArray(index.entries) ||
+                !Array.isArray(index.trash)
+            ) {
+                pending.excluded("invalid-setting", indexPath);
+            } else {
+                index.entries.forEach((entry, position) => {
+                    if (
+                        !isPlainObject(entry) ||
+                        typeof entry.k !== "string" ||
+                        (typeof entry.l !== "string" && typeof entry.s !== "string")
+                    ) {
+                        pending.excluded("invalid-data", `${indexPath}.entries[${position}]`);
+                        return;
+                    }
+                    if (indexEntries.has(entry.k)) {
+                        pending.excluded("invalid-data", `${indexPath}.${entry.k}`);
+                    }
+                    indexEntries.set(
+                        entry.k,
+                        typeof entry.l === "string"
+                            ? { kind: "large", source: entry.l }
+                            : { kind: "small", source: entry.s as string },
+                    );
+                });
+            }
+        }
+    } else if (indexPointer !== undefined && indexPointer !== null) {
+        pending.excluded("invalid-setting", indexPath);
+    }
+    // Decide duplicates before reading values: a failed winner still shadows legacy cold storage.
+    for (const [key, entry] of indexEntries) {
+        let restored: unknown;
+        if (entry.kind === "large") {
+            const result = cold?.get(entry.source);
+            if (!result?.ok) {
+                pending.excluded("cold-missing", key);
+                continue;
+            }
+            restored = result.pluginValue;
+        } else {
+            try {
+                restored = JSON.parse(entry.source);
+            } catch {
+                pending.excluded("invalid-data", `${indexPath}.${key}`);
+                continue;
+            }
+        }
+        if (!foldable) {
+            pending.excluded("cold-missing", key);
+            continue;
+        }
+        if (keep(v3, key, restored, `${indexPath}.${key}`)) {
+            coldKeys.add(key);
+        }
+    }
     // Only a file upstream wrote: a metatron backup from before the resource records already
     // has `_pluginStorage`, and its top-level keys are `setDatabase` custom keys only.
     if (!hasStorage) {
         for (const key of Object.keys(out)) {
-            if (key === PLUGIN_STORAGE_KEY || key === SAFE_LOCAL_PLUGIN_STORAGE_KEY || Object.hasOwn(v3, key)) {
+            if (
+                key === PLUGIN_STORAGE_KEY ||
+                key === SAFE_LOCAL_PLUGIN_STORAGE_KEY ||
+                (!hasIndex && Object.hasOwn(v3, key))
+            ) {
                 continue;
             }
             if (keep(v3, key, out[key], `pluginCustomStorage.${PLUGIN_STORAGE_KEY}.${key}`)) {
                 legacyKeys.add(key);
+                coldKeys.delete(key);
             }
         }
     }
     const pointers = value[COLD_PLUGIN_KEY];
     if (isPlainObject(pointers)) {
         for (const key of Object.keys(pointers)) {
+            if (hasIndex && (indexEntries.has(key) || legacyKeys.has(key))) {
+                continue;
+            }
             const pointer = pointers[key];
             const result = typeof pointer === "string" ? cold?.get(pointer) : undefined;
             if (!result?.ok || !foldable) {
                 pending.excluded("cold-missing", key);
                 continue;
             }
-            if (keep(v3, key, result.value, `pluginCustomStorage.${COLD_PLUGIN_KEY}.${key}`)) {
+            if (keep(v3, key, result.pluginValue, `pluginCustomStorage.${COLD_PLUGIN_KEY}.${key}`)) {
                 legacyKeys.delete(key);
                 coldKeys.add(key);
             }

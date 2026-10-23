@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { RESOURCE_KIND, type ResourceKindName } from "../../../shared/resources.ts";
 import { COLLECTION_KIND } from "../../../shared/sections.ts";
 import { createUpstreamImportReport, type UpstreamImportReport } from "../../../shared/upstreamBackup.ts";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, isValidResourceId } from "../data/resourceStore.ts";
 import type { ColdRecordResult } from "../data/upstream/archive.ts";
@@ -38,7 +39,15 @@ const K = {
 type Dict = Record<string, unknown>;
 type Out = UpstreamConversion;
 
-const ok = (value: unknown): ColdRecordResult => ({ ok: true, value });
+const ok = (value: unknown): ColdRecordResult => ({
+    ok: true,
+    kind:
+        Array.isArray(value) || (isPlainObject(value) && ("character" in value || "message" in value))
+            ? "data"
+            : "plugin",
+    value,
+    pluginValue: value,
+});
 
 function convert(db: Dict, options: UpstreamConversionOptions = {}): Out {
     return convertUpstreamDatabase(db, { now: 1, ...options });
@@ -502,6 +511,200 @@ describe("convertUpstreamDatabase: cold storage", () => {
         expect(excluded(out, "cold-missing")?.examples).toContain("plugB");
         expect(excluded(out, "cold-missing")?.examples).toContain("plugC");
     });
+
+    it("restores small, empty and large index values without retaining the index pointer or trash", () => {
+        const out = convert(
+            { formatversion: 5, pluginCustomStorage: { _coldpluginIndex: "index" } },
+            {
+                cold: new Map([
+                    [
+                        "index",
+                        ok({
+                            type: "risu-plugin-storage-index",
+                            version: 1,
+                            entries: [
+                                { k: "small", s: '{"enabled":true}' },
+                                { k: "empty", s: '""' },
+                                { k: "large", s: '"superseded"', l: "large-record" },
+                            ],
+                            trash: [{ id: "discarded-record", at: 1 }],
+                        }),
+                    ],
+                    ["large-record", ok({ history: [1, 2] })],
+                    ["discarded-record", ok("discarded")],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({
+            _pluginStorage: { small: { enabled: true }, empty: "", large: { history: [1, 2] } },
+        });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 3,
+            examples: ["small", "empty", "large"],
+        });
+        expect(converted(out, "legacy-plugin-storage")).toBeUndefined();
+        expect(excluded(out, "cold-missing")).toBeUndefined();
+        expect(excluded(out, "invalid-data")).toBeUndefined();
+        expect(excluded(out, "invalid-setting")).toBeUndefined();
+    });
+
+    it("reports unavailable and malformed plugin indexes while importing the remaining data", () => {
+        const cases: { label: string; result?: ColdRecordResult; code: string; example: string }[] = [
+            { label: "missing", code: "cold-missing", example: "_coldpluginIndex" },
+            ...[
+                { type: "other", entries: [], trash: [] },
+                { type: "risu-plugin-storage-index", entries: {}, trash: [] },
+                { type: "risu-plugin-storage-index", entries: [] },
+            ].map((index) => ({
+                label: JSON.stringify(index),
+                result: ok(index),
+                code: "invalid-setting",
+                example: "pluginCustomStorage._coldpluginIndex",
+            })),
+        ];
+        for (const { label, result, code, example } of cases) {
+            const out = convert(
+                {
+                    formatversion: 5,
+                    characters: [{ chaId: "survivor", name: "Survivor", chats: [] }],
+                    pluginCustomStorage: { _coldpluginIndex: "index", retained: true },
+                },
+                { cold: new Map(result ? [["index", result]] : []) },
+            );
+            expect(
+                out.characters.map((character) => character.data.name),
+                label,
+            ).toEqual(["Survivor"]);
+            expect(excluded(out, code), label).toEqual({ code, count: 1, examples: [example] });
+            expect(record<Dict>(out, RESOURCE_KIND.pluginStorage), label).toEqual({
+                retained: true,
+                _pluginStorage: { retained: true },
+            });
+            expect(excluded(out, code === "cold-missing" ? "invalid-setting" : "cold-missing"), label).toBeUndefined();
+            expect(converted(out, "cold-plugin-storage-restored"), label).toBeUndefined();
+        }
+    });
+
+    it("reports damaged index entries by path or key and keeps the valid values", () => {
+        const out = convert(
+            {
+                formatversion: 5,
+                pluginCustomStorage: { _coldpluginIndex: "index", _coldplugin: { badJson: "legacy" } },
+            },
+            {
+                cold: new Map([
+                    [
+                        "index",
+                        ok({
+                            type: "risu-plugin-storage-index",
+                            version: 1,
+                            entries: [
+                                { k: "kept", s: "true" },
+                                { k: 7, s: "1" },
+                                { k: "noSource" },
+                                { k: "badJson", s: "{" },
+                                { k: "missing", l: "absent" },
+                                { k: "oversized", l: "big" },
+                                { k: "unparsable", l: "broken" },
+                            ],
+                            trash: [],
+                        }),
+                    ],
+                    ["big", { ok: false, reason: "tooLarge" }],
+                    ["broken", { ok: false, reason: "invalidJson" }],
+                    ["legacy", ok("must not recover badJson")],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({ _pluginStorage: { kept: true } });
+        expect(excluded(out, "invalid-data")).toEqual({
+            code: "invalid-data",
+            count: 3,
+            examples: [
+                "pluginCustomStorage._coldpluginIndex.entries[1]",
+                "pluginCustomStorage._coldpluginIndex.entries[2]",
+                "pluginCustomStorage._coldpluginIndex.badJson",
+            ],
+        });
+        expect(excluded(out, "cold-missing")).toEqual({
+            code: "cold-missing",
+            count: 3,
+            examples: ["missing", "oversized", "unparsable"],
+        });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 1,
+            examples: ["kept"],
+        });
+    });
+
+    it("uses the last duplicate index entry even when it fails and reports every displaced entry", () => {
+        const out = convert(
+            {
+                formatversion: 5,
+                pluginCustomStorage: { _coldpluginIndex: "index", _coldplugin: { lost: "legacy" } },
+            },
+            {
+                cold: new Map([
+                    [
+                        "index",
+                        ok({
+                            type: "risu-plugin-storage-index",
+                            version: 1,
+                            entries: [
+                                { k: "duplicate", s: '"first"' },
+                                { k: "duplicate", s: '"second"' },
+                                { k: "duplicate", s: "null" },
+                                { k: "lost", s: '"earlier"' },
+                                { k: "lost", s: '"small fallback"', l: "absent" },
+                            ],
+                            trash: [],
+                        }),
+                    ],
+                    ["legacy", ok("legacy fallback")],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({ _pluginStorage: { duplicate: null } });
+        expect(excluded(out, "invalid-data")).toEqual({
+            code: "invalid-data",
+            count: 3,
+            examples: ["pluginCustomStorage._coldpluginIndex.duplicate", "pluginCustomStorage._coldpluginIndex.lost"],
+        });
+        expect(excluded(out, "cold-missing")).toEqual({ code: "cold-missing", count: 1, examples: ["lost"] });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 1,
+            examples: ["duplicate"],
+        });
+    });
+
+    it("restores legacy cold strings and null over inline copies using the plugin payload", () => {
+        const out = convert(
+            {
+                formatversion: 5,
+                pluginCustomStorage: { text: "inline", _coldplugin: { text: "text-record", empty: "null-record" } },
+            },
+            {
+                cold: new Map([
+                    ["text-record", { ok: true, kind: "data", value: ["chat data"], pluginValue: "cold text" }],
+                    ["null-record", ok(null)],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({
+            text: "inline",
+            _pluginStorage: { text: "cold text", empty: null },
+        });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 2,
+            examples: ["text", "empty"],
+        });
+        expect(converted(out, "legacy-plugin-storage")).toBeUndefined();
+        expect(excluded(out, "cold-missing")).toBeUndefined();
+    });
 });
 
 describe("convertUpstreamDatabase: chats and messages", () => {
@@ -697,6 +900,90 @@ describe("convertUpstreamDatabase: collections, modules, plugins", () => {
             { cold: cold() },
         );
         expect(record<Dict>(list, RESOURCE_KIND.pluginStorage)._pluginStorage).toEqual({ "0": "z", k: ["v"] });
+    });
+
+    it("overrides an existing plugin dictionary with index values while preserving custom top-level values", () => {
+        const out = convert(
+            {
+                formatversion: 5,
+                pluginCustomStorage: {
+                    shared: "custom",
+                    _pluginStorage: { shared: "stored", untouched: 1 },
+                    _coldpluginIndex: "index",
+                    _coldplugin: { shared: "legacy", fallback: "legacy" },
+                },
+            },
+            {
+                cold: new Map([
+                    [
+                        "index",
+                        ok({
+                            type: "risu-plugin-storage-index",
+                            version: 1,
+                            entries: [{ k: "shared", s: '"indexed"' }],
+                            trash: [],
+                        }),
+                    ],
+                    ["legacy", ok("legacy")],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({
+            shared: "custom",
+            _pluginStorage: { shared: "indexed", untouched: 1, fallback: "legacy" },
+        });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 2,
+            examples: ["shared", "fallback"],
+        });
+        expect(converted(out, "legacy-plugin-storage")).toBeUndefined();
+    });
+
+    it("prefers inline copies over index values and uses legacy cold pointers only for unclaimed keys", () => {
+        const out = convert(
+            {
+                formatversion: 5,
+                pluginCustomStorage: {
+                    shared: "inline",
+                    inlineOnly: false,
+                    _coldpluginIndex: "index",
+                    _coldplugin: { shared: "legacy", inlineOnly: "legacy", indexed: "legacy", fallback: "legacy" },
+                },
+            },
+            {
+                cold: new Map([
+                    [
+                        "index",
+                        ok({
+                            type: "risu-plugin-storage-index",
+                            version: 1,
+                            entries: [
+                                { k: "shared", s: '"indexed"' },
+                                { k: "indexed", s: "0" },
+                            ],
+                            trash: [],
+                        }),
+                    ],
+                    ["legacy", ok("legacy")],
+                ]),
+            },
+        );
+        expect(record<Dict>(out, RESOURCE_KIND.pluginStorage)).toEqual({
+            shared: "inline",
+            inlineOnly: false,
+            _pluginStorage: { shared: "inline", inlineOnly: false, indexed: 0, fallback: "legacy" },
+        });
+        expect(converted(out, "cold-plugin-storage-restored")).toEqual({
+            code: "cold-plugin-storage-restored",
+            count: 2,
+            examples: ["indexed", "fallback"],
+        });
+        expect(converted(out, "legacy-plugin-storage")).toEqual({
+            code: "legacy-plugin-storage",
+            count: 2,
+            examples: ["shared", "inlineOnly"],
+        });
     });
 });
 

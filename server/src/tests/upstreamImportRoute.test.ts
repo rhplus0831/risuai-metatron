@@ -246,6 +246,57 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
         expect(s.context.upstreamStaging.size).toBe(0);
     });
 
+    it("restores indexed plugin values after preparing and committing a block backup", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const s = await server();
+        const indexId = "11111111-1111-4111-8111-111111111111";
+        const largeId = "22222222-2222-4222-8222-222222222222";
+        const index = {
+            type: "risu-plugin-storage-index",
+            version: 1,
+            entries: [
+                { k: "preferences", s: '{"enabled":true}' },
+                { k: "empty", s: '""' },
+                { k: "large", l: largeId },
+            ],
+            trash: [{ id: "33333333-3333-4333-8333-333333333333", at: 1 }],
+        };
+        const bytes = buildArchive([
+            ["3f2a9c.png", PROFILE],
+            ["joy.png", JOY],
+            [`coldstorage_${indexId}.json`, JSON.stringify(index)],
+            // Both name forms share a key; plugin storage must select the plugin payload.
+            [`${largeId}.json`, '{"message":[]}'],
+            [`coldstorage_${largeId}.json`, "null"],
+            [
+                "database.risudat",
+                encodeBlockSave({
+                    ...UPSTREAM_FIXTURE_DATABASE,
+                    pluginCustomStorage: { _coldpluginIndex: indexId },
+                }),
+            ],
+        ]);
+        const prepared = await prepare(s, bytes);
+        const committed = await commitRequest(s, { token: prepared.token });
+        expect(committed.status).toBe(200);
+        await s.readEpoch();
+        const res = await s.request("/api/resources?kinds=pluginStorage");
+        expect(res.status).toBe(200);
+        const state = (await res.json()) as ResourceReadKindsResult;
+        expect(state.kinds.pluginStorage).toHaveLength(1);
+        expect(state.kinds.pluginStorage[0].data).toEqual({
+            _pluginStorage: { preferences: { enabled: true }, empty: "", large: null },
+        });
+        expect(prepared.report.converted).toContainEqual({
+            code: "cold-plugin-storage-restored",
+            count: 3,
+            examples: ["preferences", "empty", "large"],
+        });
+        expect(prepared.report.excluded).not.toEqual(
+            expect.arrayContaining([expect.objectContaining({ code: "cold-missing" })]),
+        );
+    });
+
     it("ends a REMOTE block prepare with an error and leaves the live epoch, resources and assets untouched with no staging", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const s = await server();
