@@ -3,7 +3,7 @@
     import { untrack } from "svelte";
     import { ChevronUpIcon, ChevronDownIcon } from "@lucide/svelte";
     import { type SerializableSummary, summarize } from "src/ts/process/memory/hypav3";
-    import { alertError, alertNormalWait } from "src/ts/alert";
+    import { alertError, alertNormal, alertNormalWait } from "src/ts/alert";
     import { hypaV3ModalOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { translateHTML } from "src/ts/translator/translator";
@@ -35,6 +35,16 @@
 
     import { type ChatRef, currentChatRef, setChatMeta, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
+    import {
+        cancelMemoryTask,
+        memoryTaskAwaitingSync,
+        memoryTaskFenced,
+        memoryTaskPendingManual,
+        memoryTaskRequestPending,
+        memoryTaskStatus,
+        startMemoryTask,
+        type MemoryTaskActionResult,
+    } from "src/ts/process/memoryTasks.svelte";
     import { sendingChatRef } from "src/ts/process/index.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
@@ -51,17 +61,25 @@
     //
     // While a send of this tab or a job this tab knows of runs in the chat, nothing is written: the
     // job writes the memory data from the chat as stored then (`mergeHypaV3Write`), and a whole value
-    // written from this copy afterwards would drop the job's summaries. A refused change is undone in
-    // the copy with the notice (never kept to be written later); the job's write replaces the copy
-    // when it reaches the chat.
+    // written from this copy afterwards would drop the job's summaries. The same holds while the
+    // chat's background memory task is queued or running, and until this tab holds what a task
+    // committed (`memoryTaskFenced`). A refused change is undone in the copy with the notice (never
+    // kept to be written later); the job's or task's write replaces the copy when it reaches the chat.
 
-    /** Whether a send of this tab or a job this tab knows of runs in `ref` (reactive). */
-    function memoryWriteFenced(ref: ChatRef): boolean {
+    /**
+     * The notice a write of `ref`'s memory data is refused with, or null when it may be written: a
+     * send of this tab or a job this tab knows of runs in it, or its memory task fence holds
+     * (reactive, except that a held revision catching up alone does not notify).
+     */
+    function memoryWriteFence(ref: ChatRef): string | null {
         const sending = $sendingChatRef;
-        return (
+        if (
             (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
             generatingChatKeys().has(chatStatusKey(ref))
-        );
+        ) {
+            return language.chatGenerating;
+        }
+        return memoryTaskFenced(ref) ? language.memoryTasks.editFenced : null;
     }
 
     /** The memory data of a chat that has none yet. */
@@ -94,7 +112,7 @@
     $effect(() => {
         const text = JSON.stringify($state.snapshot(hypaV3Data));
         const ref = currentChatRef();
-        const fenced = ref !== null && memoryWriteFenced(ref);
+        const fence = ref === null ? null : memoryWriteFence(ref);
         untrack(() => {
             if (text === syncedHypaV3Text || text === undefined || !ref) {
                 return;
@@ -104,8 +122,8 @@
             if (text === chatText) {
                 return;
             }
-            if (fenced) {
-                alertError(language.chatGenerating);
+            if (fence !== null) {
+                alertError(fence);
                 hypaV3Data = JSON.parse(chatText);
                 return;
             }
@@ -116,21 +134,132 @@
 
     /**
      * Writes new memory data to the selected chat (the copy follows). False when nothing was written:
-     * no chat, or a send runs in it (with the notice, unless `quiet`).
+     * no chat, or it is fenced (`memoryWriteFence`; with the notice, unless `quiet`).
      */
     function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false): boolean {
         const ref = currentChatRef();
         if (!ref) {
             return false;
         }
-        if (untrack(() => memoryWriteFenced(ref))) {
+        const fence = untrack(() => memoryWriteFence(ref));
+        if (fence !== null) {
             if (!quiet) {
-                alertError(language.chatGenerating);
+                alertError(fence);
             }
             return false;
         }
         setChatMeta(ref, { hypaV3Data: data });
         return true;
+    }
+
+    // The selected chat's background memory task: its status line and the manual controls.
+    const taskRef = $derived(currentChatRef());
+    const taskStatus = $derived(taskRef ? memoryTaskStatus(taskRef) : null);
+    const taskLive = $derived(taskStatus?.state === "queued" || taskStatus?.state === "running");
+    const taskPendingManual = $derived(taskRef ? memoryTaskPendingManual(taskRef) : false);
+    const taskRequestPending = $derived(taskRef ? memoryTaskRequestPending(taskRef) : false);
+    // A held revision catching up notifies nothing: while the fence only waits for it, check again
+    // every second so the line and the fence state follow without an edit.
+    let syncCheck = $state(0);
+    $effect(() => {
+        syncCheck;
+        if (!taskRef || !memoryTaskAwaitingSync(taskRef)) {
+            return;
+        }
+        const timer = setTimeout(() => (syncCheck += 1), 1000);
+        return () => clearTimeout(timer);
+    });
+    const taskAwaitingSync = $derived.by(() => {
+        syncCheck;
+        return taskRef !== null && memoryTaskAwaitingSync(taskRef);
+    });
+
+    function taskReasonText(reason: string | undefined): string {
+        return reason === undefined ? "" : (language.memoryTasks.reasons[reason] ?? reason);
+    }
+
+    /** The status line of the chat's task: running or queued, else its last notable end. */
+    const taskStatusLine = $derived.by((): string | null => {
+        const status = taskStatus;
+        if (!status) {
+            return null;
+        }
+        switch (status.state) {
+            case "queued":
+                return language.memoryTasks.queued;
+            case "running":
+                return language.memoryTasks.running(status.done, status.total);
+            case "done":
+                return status.reason || status.error
+                    ? language.memoryTasks.done(status.error ?? taskReasonText(status.reason))
+                    : null;
+            case "failed":
+                return language.memoryTasks.failed(status.error ?? taskReasonText(status.reason));
+            case "skipped":
+                return language.memoryTasks.skipped(taskReasonText(status.reason));
+            case "cancelled":
+                return status.reason && status.reason !== "cancelled"
+                    ? language.memoryTasks.cancelled(taskReasonText(status.reason))
+                    : null;
+        }
+    });
+
+    /** Shows the notice of a start or cancel that did not simply run. */
+    function showMemoryTaskResult(result: MemoryTaskActionResult, action: "start" | "cancel") {
+        switch (result.outcome) {
+            case "pendingManual":
+                alertNormal(language.memoryTasks.pendingManual);
+                return;
+            case "refused":
+                switch (result.reason) {
+                    case "notEnabled":
+                        alertError(language.memoryTasks.notEnabled);
+                        return;
+                    case "chatGone":
+                        alertError(language.memoryTasks.chatGone);
+                        return;
+                    case "queueFull":
+                        alertError(language.memoryTasks.queueFull);
+                        return;
+                    case "shuttingDown":
+                    case "maintenance":
+                        alertError(language.memoryTasks.unavailable);
+                        return;
+                    case "discarded":
+                        alertError(language.memoryTasks.discarded);
+                        return;
+                    case "generating":
+                        alertError(language.chatGenerating);
+                        return;
+                    case "epoch":
+                        // The restore notice is shown by the epoch check.
+                        return;
+                }
+                return;
+            case "failed":
+                alertError(
+                    result.stage === "save"
+                        ? language.serverJob.saveFailed.replace("{0}", () => result.error)
+                        : action === "start"
+                          ? language.memoryTasks.startFailed(result.error)
+                          : language.memoryTasks.cancelFailed(result.error),
+                );
+                return;
+        }
+    }
+
+    async function handleSummarizeNow() {
+        const ref = currentChatRef();
+        if (ref) {
+            showMemoryTaskResult(await startMemoryTask(ref), "start");
+        }
+    }
+
+    async function handleCancelMemoryTask() {
+        const ref = currentChatRef();
+        if (ref) {
+            showMemoryTaskResult(await cancelMemoryTask(ref), "cancel");
+        }
     }
 
     let categories = $derived(
@@ -772,7 +901,7 @@
                 })),
             };
 
-            // Refused while a send runs in the chat (the notice is shown).
+            // Refused while the chat is fenced (the notice is shown).
             if (!writeHypaV3Data(newHypaV3Data)) {
                 return { success: false };
             }
@@ -825,6 +954,46 @@
                 onToggleBulkEditMode={handleToggleBulkEditMode}
                 onOpenCategoryManager={handleOpenCategoryManager}
             />
+
+            <!-- Background memory task -->
+            {#if taskRef}
+                <div
+                    class="flex flex-wrap items-center gap-2 px-1 py-2 text-sm text-textcolor2"
+                    data-risu-memory-task={taskStatus?.state ?? "none"}
+                >
+                    <div class="flex min-w-0 flex-1 flex-col gap-1">
+                        {#if taskStatusLine}
+                            <span role="status">{taskStatusLine}</span>
+                        {/if}
+                        {#if taskAwaitingSync}
+                            <span role="status" data-risu-memory-task-sync>{language.memoryTasks.awaitingSync}</span>
+                        {/if}
+                        {#if taskPendingManual}
+                            <span role="status">{language.memoryTasks.pendingManual}</span>
+                        {/if}
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-md bg-darkbutton px-3 py-1 text-textcolor transition-colors hover:bg-selected disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={taskLive || taskRequestPending}
+                        onclick={handleSummarizeNow}
+                        data-risu-memory-task-start
+                    >
+                        {language.memoryTasks.summarizeNow}
+                    </button>
+                    {#if taskLive || taskPendingManual}
+                        <button
+                            type="button"
+                            class="rounded-md bg-darkbutton px-3 py-1 text-textcolor transition-colors hover:bg-selected disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={taskRequestPending}
+                            onclick={handleCancelMemoryTask}
+                            data-risu-memory-task-cancel
+                        >
+                            {language.memoryTasks.cancel}
+                        </button>
+                    {/if}
+                </div>
+            {/if}
 
             <!-- Scrollable Container -->
             <div class="flex flex-col gap-2 overflow-y-auto sm:gap-4" tabindex="-1">

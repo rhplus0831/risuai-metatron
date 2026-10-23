@@ -12,14 +12,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // still initializes it; the V2→V3 conversion is offered for a chat without `hypaV3Data` and reports no
 // success while fenced.
 
-const mocks = vi.hoisted(() => ({ alertError: vi.fn(), alertNormalWait: vi.fn(async () => undefined) }));
+const mocks = vi.hoisted(() => ({
+    alertError: vi.fn(),
+    alertNormal: vi.fn(),
+    alertNormalWait: vi.fn(async () => undefined),
+    /** The save loop's flush, as "Summarize now" awaits it (the loop itself is not under test here). */
+    flushResources: vi.fn(async () => ({ discarded: [] as string[] })),
+    /** The memory task routes' answers. */
+    authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
+}));
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: mocks.alertError,
+        alertNormal: mocks.alertNormal,
         alertNormalWait: mocks.alertNormalWait,
     }),
 );
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
+);
+vi.mock("src/ts/storage/resourceSync.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/storage/resourceSync.svelte")>()),
+    flushResources: mocks.flushResources,
+}));
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -45,12 +61,25 @@ vi.mock("src/ts/stores.svelte", async () => {
     return { hypaV3ModalOpen: writable(true), settingsOpen: writable(false), SettingsMenuIndex: writable(-1) };
 });
 
+import { MEMORY_TASKS_PATH } from "../../../shared/events.ts";
+import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { summarize } from "src/ts/process/memory/hypav3";
-import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
+import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
 import { sendingChatRef } from "src/ts/process/index.svelte";
+import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
-import { findChat, selectChat, setChatMeta, setChatWorkListener, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import {
+    ackChatWork,
+    findChat,
+    hydrateChat,
+    seedChats,
+    takeChatWork,
+    selectChat,
+    setChatMeta,
+    setChatWorkListener,
+    type ChatRef,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import HypaV3Modal from "./HypaV3Modal.svelte";
@@ -368,5 +397,165 @@ describe("HypaV3Modal's bulk resummary", () => {
         run.apply();
         expect(mocks.alertError).toHaveBeenCalledWith(language.hypaV3Modal.bulkResummaryTargetsGone);
         expect(storedSummaries(withData)).toEqual(["two", "three"]);
+    });
+});
+
+// The modal's half of the memory task fence (`memoryTasks.svelte.ts`): over the real chat module, an
+// edit is refused with `editFenced` while the chat's task runs and until the mirror holds the
+// terminal's revision, and accepted after; lore is not fenced by a task; "Summarize now" fences the
+// chat from before its flush, shows the answer's notice, and offers Cancel while a start waits.
+describe("HypaV3Modal's memory task fence", () => {
+    const E = "0f3d4b9a-0000-4000-8000-000000000001";
+    const rev = (n: number) => `${E}:1:${n}`;
+    const frame = (status: MemoryTaskStatus) => noteMemoryTaskFrame({ characterId: "c", chatId: "k", status });
+    /** The chat as the server holds it after a task wrote these summaries. */
+    const serverCopy = (texts: string[]) => ({
+        ...JSON.parse(JSON.stringify(findChat(withData))),
+        hypaV3Data: {
+            summaries: texts.map((text, index) => ({ text, chatMemos: [`m${index}`], isImportant: false })),
+            categories: [],
+        },
+    });
+    const json = (status: number, body: unknown) => Response.json(body, { status });
+    const taskBlock = (target: HTMLElement) => target.querySelector<HTMLElement>("[data-risu-memory-task]")!;
+    const startButton = (target: HTMLElement) =>
+        target.querySelector<HTMLButtonElement>("[data-risu-memory-task-start]")!;
+    const cancelButton = (target: HTMLElement) =>
+        target.querySelector<HTMLButtonElement>("[data-risu-memory-task-cancel]");
+    const syncLine = (target: HTMLElement) => target.querySelector("[data-risu-memory-task-sync]");
+    /** The microtasks of a click's action (the flush, the request, its JSON, the notice), no timer. */
+    const settleMicrotasks = async () => {
+        for (let i = 0; i < 50; i++) {
+            await Promise.resolve();
+        }
+    };
+
+    beforeEach(() => {
+        // The fixture's chats hold no revision; the fence compares real tokens.
+        seedChats(
+            [
+                { characterId: "c", id: "k", revision: rev(2) },
+                { characterId: "c", id: "n", revision: rev(2) },
+            ],
+            [{ characterId: "c", revision: rev(1), ids: ["k", "n"] }],
+        );
+        // Earlier cases left their edits queued (their work listener takes nothing); a read applies
+        // only to a chat without local work, so settle them as the save loop would.
+        const work = takeChatWork(new Set());
+        ackChatWork(
+            work,
+            work.groups.map((group) => ({ characterId: group.characterId, id: group.chatId, revision: rev(2) })),
+            work.orders.map((order) => ({ characterId: order.characterId, revision: rev(1), ids: [...order.ids] })),
+        );
+        resetMemoryTasks();
+        mocks.alertNormal.mockClear();
+        mocks.flushResources.mockReset().mockResolvedValue({ discarded: [] });
+        mocks.authFetch.mockReset();
+    });
+
+    afterEach(() => resetMemoryTasks());
+
+    it("refuses an edit while the task runs and until the terminal's revision is in the mirror, and accepts after", () => {
+        const modal = open(withData);
+        expect(taskBlock(modal.target).dataset.risuMemoryTask).toBe("none");
+        expect(startButton(modal.target).disabled).toBe(false);
+        expect(cancelButton(modal.target)).toBeNull();
+
+        frame({ taskId: "A", state: "running", done: 0, total: 1 });
+        flushSync();
+        expect(taskBlock(modal.target).dataset.risuMemoryTask).toBe("running");
+        expect(taskBlock(modal.target).textContent).toContain(language.memoryTasks.running(0, 1));
+        expect(startButton(modal.target).disabled).toBe(true);
+        expect(cancelButton(modal.target)).not.toBeNull();
+        modal.type("one, edited");
+        expect(mocks.alertError).toHaveBeenCalledWith(language.memoryTasks.editFenced);
+        expect(modal.textarea().value).toBe("one");
+        expect(storedSummaries(withData)).toEqual(["one", "two"]);
+        expect(chatWork).not.toHaveBeenCalled();
+        // Lore writes are not fenced by a task: the generation fence does not know the chat.
+        expect(generatingChatKeys().has(chatStatusKey(withData))).toBe(false);
+
+        // The task ends at a revision the mirror lacks: still refused, waiting for the read.
+        frame({
+            taskId: "A",
+            state: "done",
+            done: 1,
+            total: 1,
+            terminalRevision: rev(3),
+            lastCommittedRevision: rev(3),
+        });
+        flushSync();
+        expect(taskBlock(modal.target).dataset.risuMemoryTask).toBe("done");
+        expect(syncLine(modal.target)).not.toBeNull();
+        expect(startButton(modal.target).disabled).toBe(false);
+        expect(cancelButton(modal.target)).toBeNull();
+        modal.type("one, again");
+        expect(mocks.alertError).toHaveBeenCalledTimes(2);
+        expect(mocks.alertError).toHaveBeenLastCalledWith(language.memoryTasks.editFenced);
+        expect(modal.textarea().value).toBe("one");
+        expect(storedSummaries(withData)).toEqual(["one", "two"]);
+
+        // The read lands (the chat is replaced, which the fence reads reactively): the copy follows
+        // the task's summaries, the line goes, and the next edit is written.
+        expect(
+            hydrateChat({ characterId: "c", id: "k", revision: rev(3), data: serverCopy(["one", "two", "three"]) }),
+        ).toBe(true);
+        flushSync();
+        expect(modal.target.querySelectorAll("textarea")).toHaveLength(3);
+        expect(syncLine(modal.target)).toBeNull();
+        modal.type("one, later");
+        expect(storedSummaries(withData)).toEqual(["one, later", "two", "three"]);
+        expect(mocks.alertError).toHaveBeenCalledTimes(2);
+        expect(chatWork).toHaveBeenCalled();
+    });
+
+    it("fences the chat during Summarize now's flush, shows the refusal, and offers Cancel for a waiting start", async () => {
+        const modal = open(withData);
+        let finishFlush!: (value: { discarded: string[] }) => void;
+        mocks.flushResources.mockReturnValueOnce(new Promise((resolve) => (finishFlush = resolve)));
+        mocks.authFetch.mockResolvedValueOnce(
+            json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" }),
+        );
+        startButton(modal.target).click();
+        flushSync();
+        expect(startButton(modal.target).disabled).toBe(true);
+        // An edit while the flush runs would escape it: refused and undone.
+        modal.type("one, edited");
+        expect(mocks.alertError).toHaveBeenCalledWith(language.memoryTasks.editFenced);
+        expect(modal.textarea().value).toBe("one");
+        expect(storedSummaries(withData)).toEqual(["one", "two"]);
+        expect(mocks.authFetch).not.toHaveBeenCalled();
+
+        finishFlush({ discarded: [] });
+        await settleMicrotasks();
+        flushSync();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        expect(mocks.authFetch.mock.calls[0][0]).toBe(MEMORY_TASKS_PATH);
+        expect(mocks.authFetch.mock.calls[0][1]).toMatchObject({ method: "POST" });
+        expect(JSON.parse(mocks.authFetch.mock.calls[0][1]!.body as string)).toEqual({ characterId: "c", chatId: "k" });
+        expect(mocks.alertError).toHaveBeenLastCalledWith(language.memoryTasks.notEnabled);
+        expect(startButton(modal.target).disabled).toBe(false);
+        // Released: the next edit is written.
+        modal.type("one, edited");
+        expect(storedSummaries(withData)).toEqual(["one, edited", "two"]);
+
+        // A `pendingManual` answer: its notice and line, and Cancel ends the waiting start.
+        mocks.authFetch.mockResolvedValueOnce(json(200, { outcome: "pendingManual" }));
+        startButton(modal.target).click();
+        await settleMicrotasks();
+        flushSync();
+        expect(mocks.alertNormal).toHaveBeenCalledWith(language.memoryTasks.pendingManual);
+        expect(taskBlock(modal.target).textContent).toContain(language.memoryTasks.pendingManual);
+        expect(cancelButton(modal.target)).not.toBeNull();
+        mocks.authFetch.mockResolvedValueOnce(json(200, { cancelled: true }));
+        cancelButton(modal.target)!.click();
+        await settleMicrotasks();
+        flushSync();
+        expect(mocks.authFetch).toHaveBeenLastCalledWith(
+            `${MEMORY_TASKS_PATH}/c/k`,
+            expect.objectContaining({ method: "DELETE" }),
+        );
+        expect(cancelButton(modal.target)).toBeNull();
+        expect(taskBlock(modal.target).textContent).not.toContain(language.memoryTasks.pendingManual);
     });
 });

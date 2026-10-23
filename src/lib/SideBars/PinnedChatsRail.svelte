@@ -2,7 +2,7 @@
     import { language } from "src/lang";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import ChatStatusBadge from "./ChatStatusBadge.svelte";
-    import { chatStatusLabel, type ChatStatus } from "./chatStatus";
+    import { chatStatusLabel, type ChatStatus, type MemoryCount } from "./chatStatus";
     import type { PinnedChatItem } from "./pinnedChats";
 
     interface Props {
@@ -12,9 +12,19 @@
         rounded: boolean;
         onOpen: (item: PinnedChatItem) => void;
         statuses?: ReadonlyMap<string, ChatStatus>;
+        /** The summarizing chats' counts (`summarizingChats`), keyed like `statuses`. */
+        memoryCounts?: ReadonlyMap<string, MemoryCount | null>;
     }
 
-    let { items, selectedChaId, selectedChatId, rounded, onOpen, statuses = new Map() }: Props = $props();
+    let {
+        items,
+        selectedChaId,
+        selectedChatId,
+        rounded,
+        onOpen,
+        statuses = new Map(),
+        memoryCounts = new Map(),
+    }: Props = $props();
 </script>
 
 {#if items.length > 0}
@@ -25,8 +35,10 @@
     >
         {#each items as item (JSON.stringify([item.chaId, item.chatId]))}
             {@const isCurrent = selectedChaId === item.chaId && selectedChatId === item.chatId}
-            {@const status = statuses.get(`${item.chaId}\u0000${item.chatId}`)}
-            {@const statusLabel = status ? chatStatusLabel(status, item.chatName) : ""}
+            {@const statusKey = `${item.chaId}\u0000${item.chatId}`}
+            {@const status = statuses.get(statusKey)}
+            {@const statusCount = status === "memory" ? (memoryCounts.get(statusKey) ?? null) : null}
+            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount) : ""}
             {@const label =
                 language.openPinnedChat(item.chatName, item.characterName) + (status ? ` · ${statusLabel}` : "")}
             <div
@@ -64,7 +76,7 @@
                             />
                         {/await}
                         {#if status}
-                            <ChatStatusBadge {status} label={statusLabel} />
+                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
                         {/if}
                     {/snippet}
                 </LazyCharImage>

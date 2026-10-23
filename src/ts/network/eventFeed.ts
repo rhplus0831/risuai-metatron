@@ -4,6 +4,12 @@ import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
 import { noteRemoteStreaming, releaseFeedLocks } from "../storage/chatStore.svelte";
 import { recordClientEvent } from "../diagnostics/collector";
+import {
+    noteMemoryTaskFrame,
+    noteMemoryTaskHello,
+    noteMemoryTaskListing,
+    resetMemoryTasks,
+} from "../process/memoryTasks.svelte";
 
 /**
  * The live-update socket (`server/src/routes/events.ts`): another tab's or device's committed
@@ -17,6 +23,11 @@ import { recordClientEvent } from "../diagnostics/collector";
  * lock. For a chat the mirror lacks, an unloaded chat, or a patch that does not fit, the lock is
  * installed by id and the row arrives locked with the read. A `hello` drops the feed's locks, since
  * a release may have been sent while disconnected.
+ *
+ * HypaV3 memory task statuses go to `memoryTasks.svelte.ts`: a `memoryTask` frame of the loaded epoch
+ * as it comes, a `hello`'s snapshot as the whole status set, and the revision listing that follows
+ * the `hello` (before it is reconciled) for the chats whose fences wait for it. Another epoch resets
+ * them.
  */
 
 const MAX_BACKOFF_MS = 30_000;
@@ -45,14 +56,16 @@ function scheduleReconnect() {
     }, delay);
 }
 
-async function reconcile(ws: WebSocket) {
+async function reconcile(ws: WebSocket, hello: number) {
     try {
         const listing = await listRevisions();
         if (socket === ws) {
+            noteMemoryTaskListing(hello, listing);
             reconcileRemote(listing);
         }
     } catch (error) {
         if (error instanceof ResourceEpochMismatchError) {
+            resetMemoryTasks();
             return;
         }
         console.error("[Live updates]", error);
@@ -66,17 +79,19 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
     switch (frame.type) {
         case "hello":
             if (frame.epoch !== loaded) {
+                resetMemoryTasks();
                 epochMismatch(frame.epoch);
                 return;
             }
             // Nothing is replayed: a running job announces its locks again with its next write.
             releaseFeedLocks();
+            const hello = noteMemoryTaskHello(frame.memoryTasks);
             if (connectedSocket !== ws) {
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
             attempt = 0;
-            void reconcile(ws);
+            void reconcile(ws, hello);
             return;
         case "change":
             if (frame.epoch === loaded) {
@@ -86,8 +101,14 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
                 }
             }
             return;
+        case "memoryTask":
+            if (frame.epoch === loaded) {
+                noteMemoryTaskFrame(frame);
+            }
+            return;
         case "epoch":
             if (frame.epoch !== loaded) {
+                resetMemoryTasks();
                 epochMismatch(frame.epoch);
             }
             return;

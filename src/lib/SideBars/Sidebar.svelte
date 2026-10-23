@@ -8,6 +8,7 @@
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
+    import { summarizingChats } from "src/ts/process/memoryTasks.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
@@ -52,9 +53,12 @@
     import {
         chatStatusLabel,
         collectCharacterStatuses,
+        collectMemoryProgress,
         folderStatus,
+        groupMemoryCount,
         resolveChatStatus,
         type ChatStatus,
+        type MemoryCount,
     } from "./chatStatus";
     import OpenChatPanel from "./OpenChatPanel.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
@@ -66,12 +70,15 @@
     const pinnedChats = $derived(
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
+    const summarizing = $derived(summarizingChats());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         generating: generatingChatKeys(),
+        memory: summarizing,
         unseen: $unseenChatKeys,
     });
     const characterStatuses = $derived(collectCharacterStatuses(statusSets));
+    const memoryProgress = $derived(collectMemoryProgress(summarizing));
     const pinnedStatuses = $derived.by(() => {
         const statuses = new Map<string, ChatStatus>();
         for (const item of pinnedChats) {
@@ -83,6 +90,10 @@
         }
         return statuses;
     });
+    /** A character's or folder's memory count, only when memory is the status it shows. */
+    function memoryCountOf(status: ChatStatus | null, chaIds: readonly string[]): MemoryCount | null {
+        return status === "memory" ? groupMemoryCount(memoryProgress, chaIds) : null;
+    }
     let sideBarMode = $state(0);
     let editMode = $state(false);
     let menuMode = $state(0);
@@ -496,6 +507,7 @@
         <PinnedChatsRail
             items={pinnedChats}
             statuses={pinnedStatuses}
+            memoryCounts={summarizing}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -581,6 +593,7 @@
         <PinnedChatsRail
             items={pinnedChats}
             statuses={pinnedStatuses}
+            memoryCounts={summarizing}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -628,7 +641,11 @@
                                 char.folder.map((member) => member.chaId),
                             )
                           : null}
-                {@const statusLabel = status ? chatStatusLabel(status, char.name) : ""}
+                {@const statusCount = memoryCountOf(
+                    status,
+                    char.type === "normal" ? [char.chaId] : char.folder.map((member) => member.chaId),
+                )}
+                {@const statusLabel = status ? chatStatusLabel(status, char.name, statusCount) : ""}
                 {@const name = status ? `${char.name} · ${statusLabel}` : char.name}
                 <div
                     class="group relative flex items-center px-2"
@@ -807,7 +824,7 @@
                             </LazyCharImage>
                         {/if}
                         {#if status}
-                            <ChatStatusBadge {status} label={statusLabel} />
+                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
                         {/if}
                     </div>
                 </div>
@@ -867,8 +884,9 @@
                             ></div>
                             {#each char.folder as char2}
                                 {@const memberStatus = characterStatuses.get(char2.chaId)}
+                                {@const memberCount = memoryCountOf(memberStatus ?? null, [char2.chaId])}
                                 {@const memberStatusLabel = memberStatus
-                                    ? chatStatusLabel(memberStatus, char2.name)
+                                    ? chatStatusLabel(memberStatus, char2.name, memberCount)
                                     : ""}
                                 {@const memberName = memberStatus ? `${char2.name} · ${memberStatusLabel}` : char2.name}
                                 <div
@@ -924,7 +942,11 @@
                                             {/snippet}
                                         </LazyCharImage>
                                         {#if memberStatus}
-                                            <ChatStatusBadge status={memberStatus} label={memberStatusLabel} />
+                                            <ChatStatusBadge
+                                                status={memberStatus}
+                                                label={memberStatusLabel}
+                                                count={memberCount}
+                                            />
                                         {/if}
                                     </div>
                                 </div>

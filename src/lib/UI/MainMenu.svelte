@@ -8,6 +8,7 @@
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
+    import { summarizingChats } from "src/ts/process/memoryTasks.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
     import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
@@ -28,9 +29,11 @@
     const pinnedChats = $derived(
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
+    const summarizing = $derived(summarizingChats());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         generating: generatingChatKeys(),
+        memory: summarizing,
         unseen: $unseenChatKeys,
     });
     const pinnedStatuses = $derived.by(() => {
@@ -82,7 +85,9 @@
                     <div class="grid grid-cols-1 gap-3 md:grid-cols-2" data-risu-home-pinned-list>
                         {#each visiblePinnedChats as item (JSON.stringify([item.chaId, item.chatId]))}
                             {@const status = pinnedStatuses.get(chatStatusKey(item))}
-                            {@const statusLabel = status ? chatStatusLabel(status, item.chatName) : ""}
+                            {@const statusCount =
+                                status === "memory" ? (summarizing.get(chatStatusKey(item)) ?? null) : null}
+                            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount) : ""}
                             {@const label =
                                 language.openPinnedChat(item.chatName, item.characterName) +
                                 (status ? ` · ${statusLabel}` : "")}
@@ -110,7 +115,7 @@
                                         />
                                     {/await}
                                     {#if status}
-                                        <ChatStatusBadge {status} label={statusLabel} />
+                                        <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
                                     {/if}
                                 </span>
                                 <span class="min-w-0">

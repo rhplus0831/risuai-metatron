@@ -6,6 +6,7 @@ import type { PinnedChatItem } from "./pinnedChats";
 
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
 
+import ChatStatusBadge from "./ChatStatusBadge.svelte";
 import PinnedChatsRail from "./PinnedChatsRail.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -166,5 +167,79 @@ describe("PinnedChatsRail status badges", () => {
                 }
             }
         });
+    });
+});
+
+// A summarizing chat's badge (`memory`): the count `k/n` as text instead of the icon, the icon
+// without a count, and a count passed with another status ignored; the label carries the count.
+describe("PinnedChatsRail memory badges", () => {
+    const memoryStatuses = new Map<string, ChatStatus>([
+        ["a\u0000shared", "memory"],
+        ["a\u0000working", "memory"],
+        ["b\u0000shared", "generating"],
+    ]);
+    const memoryCounts = new Map<string, { done: number; total: number } | null>([
+        ["a\u0000shared", { done: 2, total: 5 }],
+        ["a\u0000working", null],
+        ["b\u0000shared", { done: 1, total: 1 }],
+    ]);
+
+    it("shows the count of a running task as text, the icon for a queued one, and no count under another status", () => {
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        mounted.push(
+            mount(PinnedChatsRail, {
+                target,
+                props: {
+                    items,
+                    selectedChaId: null,
+                    selectedChatId: null,
+                    rounded: false,
+                    onOpen: vi.fn(),
+                    statuses: memoryStatuses,
+                    memoryCounts,
+                },
+            }),
+        );
+        flushSync();
+        const rows = [...target.querySelectorAll<HTMLElement>("[data-risu-pinned-chat]")];
+        const badge = (index: number) => rows[index].querySelector<HTMLElement>(badgeSelector)!;
+
+        expect(badge(0).dataset.risuChatStatus).toBe("memory");
+        expect(badge(0).classList.contains("bg-secondary-500")).toBe(true);
+        expect(badge(0).textContent?.trim()).toBe("2/5");
+        expect(badge(0).querySelector("svg")).toBeNull();
+        expect(badge(0).getAttribute("aria-label")).toBe(language.chatStatus.memory(items[0].chatName, "2/5"));
+        expect(rows[0].getAttribute("aria-label")).toContain("2/5");
+
+        expect(badge(1).dataset.risuChatStatus).toBe("memory");
+        expect(badge(1).textContent?.trim()).toBe("");
+        expect(badge(1).querySelector("svg")).not.toBeNull();
+        expect(badge(1).getAttribute("aria-label")).toBe(language.chatStatus.memory(items[1].chatName));
+
+        expect(badge(2).dataset.risuChatStatus).toBe("generating");
+        expect(badge(2).textContent?.trim()).toBe("");
+        expect(badge(2).getAttribute("aria-label")).toBe(language.chatStatus.generating(items[2].chatName));
+        expect(rows[3].querySelector(badgeSelector)).toBeNull();
+
+        // The badge itself ignores a count passed with another status (the callers filter too): the
+        // icon at the fixed width, not the widened count badge.
+        const alone = document.createElement("div");
+        document.body.appendChild(alone);
+        mounted.push(
+            mount(ChatStatusBadge, {
+                target: alone,
+                props: { status: "generating", label: "busy", count: { done: 1, total: 1 } },
+            }),
+        );
+        flushSync();
+        const lone = alone.querySelector<HTMLElement>(badgeSelector)!;
+        expect(lone.textContent?.trim()).toBe("");
+        expect(lone.querySelector("svg")).not.toBeNull();
+        expect(lone.classList.contains("w-5")).toBe(true);
+        expect(lone.classList.contains("px-1")).toBe(false);
+        // The widened count badge, for comparison.
+        expect(badge(0).classList.contains("w-5")).toBe(false);
+        expect(badge(0).classList.contains("px-1")).toBe(true);
     });
 });

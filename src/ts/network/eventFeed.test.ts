@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => {
         EpochMismatch,
         /** `recordClientEvent`: the feed's diagnostics. */
         record: vi.fn<(input: unknown) => void>(),
+        /** The chat module's view of chat `c`/`k` for the memory task module's fence predicate. */
+        held: { revision: null as string | null, loaded: true },
     };
 });
 
@@ -41,6 +43,9 @@ vi.mock("../storage/resourceSync.svelte", () => ({
 vi.mock("../storage/chatStore.svelte", () => ({
     noteRemoteStreaming: mocks.noteRemoteStreaming,
     releaseFeedLocks: mocks.releaseFeedLocks,
+    chatEntry: () => ({ id: "k" }),
+    findChat: () => (mocks.held.loaded ? { id: "k" } : undefined),
+    heldChatRevision: () => mocks.held.revision,
 }));
 vi.mock("../diagnostics/collector", () => ({ recordClientEvent: mocks.record }));
 
@@ -327,5 +332,93 @@ describe("the feed's diagnostics", () => {
         feed.stopEventFeed();
         expect(ws.closed).toBe(true);
         expect(feedEvents()).toEqual([{ kind: "feed", phase: "connected", attempt: 0 }]);
+    });
+});
+
+// The HypaV3 memory task statuses on the socket go to `memoryTasks.svelte.ts` (the real module, over
+// the mocked storage): the `hello` snapshot, `memoryTask` frames of the loaded epoch, the reconnect's
+// listing before `reconcileRemote`, and the reset on another epoch.
+describe("the memory task frames", () => {
+    const E = "0f3d4b9a-0000-4000-8000-000000000001";
+    const rev = (n: number) => `${E}:1:${n}`;
+    const ref = { chaId: "c", chatId: "k" };
+    const status = (state: string, extra: Record<string, unknown> = {}) => ({
+        taskId: "A",
+        state,
+        done: 0,
+        total: 0,
+        ...extra,
+    });
+    const taskFrame = (epoch: string, value: ReturnType<typeof status>) => ({
+        type: "memoryTask",
+        epoch,
+        characterId: "c",
+        chatId: "k",
+        status: value,
+    });
+
+    beforeEach(() => {
+        mocks.held.revision = rev(2);
+        mocks.held.loaded = true;
+    });
+
+    it("takes the hello's snapshot and the loaded epoch's frames, asks the loop to read a terminal's revision, and resets on another epoch", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        const ws = await started();
+        const running = status("running", { done: 1, total: 2 });
+        ws.frame({ type: "hello", epoch: "E1", memoryTasks: [{ characterId: "c", chatId: "k", status: running }] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(tasks.memoryTaskStatus(ref)).toEqual(running);
+        expect(tasks.memoryTaskFenced(ref)).toBe(true);
+
+        // A frame of another epoch is ignored; one of the loaded epoch is the chat's status.
+        ws.frame(taskFrame("E0", status("done", { terminalRevision: rev(3) })));
+        expect(tasks.memoryTaskStatus(ref)?.state).toBe("running");
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        ws.frame(taskFrame("E1", status("done", { terminalRevision: rev(3) })));
+        expect(tasks.memoryTaskStatus(ref)?.state).toBe("done");
+        // The mirror holds an older revision: the loop is told to read the chat; fenced until it did.
+        expect(mocks.noteRemoteChanges).toHaveBeenCalledWith({
+            resources: [],
+            chats: [{ characterId: "c", id: "k", revision: rev(3) }],
+            chatOrders: [],
+        });
+        expect(tasks.memoryTaskAwaitingSync(ref)).toBe(true);
+
+        // Another epoch's `hello` resets the module as it halts.
+        ws.frame({ type: "hello", epoch: "E2" });
+        expect(mocks.epochMismatch).toHaveBeenCalledWith("E2");
+        expect(tasks.memoryTaskStatus(ref)).toBeNull();
+        expect(tasks.memoryTaskFenced(ref)).toBe(false);
+    });
+
+    it("gives the module the reconnect's listing before the loop reconciles it", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", memoryTasks: [] });
+        await vi.advanceTimersByTimeAsync(0);
+        ws.frame(taskFrame("E1", status("done", { terminalRevision: rev(3) })));
+        expect(tasks.memoryTaskFenced(ref)).toBe(true);
+
+        // The socket drops and comes back; the mirror adopted the revision meanwhile. At the time the
+        // loop reconciles, the module has already matched the listing against the mirror.
+        ws.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const next = FakeSocket.instances.at(-1)!;
+        mocks.listRevisions.mockResolvedValueOnce({
+            ...listing,
+            chats: [{ characterId: "c", id: "k", revision: rev(3) }],
+        });
+        let fencedAtReconcile: boolean | null = null;
+        mocks.reconcileRemote.mockImplementationOnce(() => {
+            fencedAtReconcile = tasks.memoryTaskFenced(ref);
+        });
+        next.frame({ type: "hello", epoch: "E1", memoryTasks: [] });
+        expect(tasks.memoryTaskFenced(ref)).toBe(true);
+        mocks.held.revision = rev(3);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenCalledTimes(2);
+        expect(fencedAtReconcile).toBe(false);
+        expect(tasks.memoryTaskFenced(ref)).toBe(false);
     });
 });
