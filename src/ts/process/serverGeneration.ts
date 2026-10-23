@@ -33,8 +33,8 @@ export type ServerSendRefusal = "definite" | "ambiguous";
  * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for
  * a group chat, else `send`) with the input and the message ids, and follows it to its end. The
  * target's `lastInteraction` is the job's to stamp (a field patch on the server, so the character
- * record is not uploaded before every send). A preview's `done.result` is returned for
- * `previewFormated`/`previewBody`; a reply's reroll alternatives go to `addRerolls` under the
+ * record is not uploaded before every send). A preview's `done.result` is returned (for
+ * `previewChat`); a reply's reroll alternatives go to `addRerolls` under the
  * reply's generation (a continue keeps none, as its alternatives are never looked up on the client
  * either). `ok` is the browser path's result: the job ended with `done` and counted as sent (not
  * `stopped`). `refusal` says why a send did not run. The target chat needs to be listed, not

@@ -1,5 +1,4 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { get } from "svelte/store";
 import {
     appendMessage,
     type ChatRef,
@@ -14,23 +13,23 @@ import { setChatVarOf } from "../parser/chatVar.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
-import { doingChat, sendChat } from "./index.svelte";
+import { sendChat } from "./index.svelte";
+import { isChatBusy } from "./chatStatus.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runServerManualTrigger } from "./serverCommands";
 
 /**
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
- * `ref`; with `clearMode` the chat's messages are removed before each part. Nothing happens while a
- * send runs. Stops at the first part that does not send or when the chat is gone; false then.
- * A server command job's `/multisend` runs it too, after the job (`serverCommands.ts`).
+ * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
+ * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
+ * this check only considers that chat, while `sendChat` still refuses any send while this tab sends.
+ * Stops at the first part refused by either check; false then. A server command job's `/multisend`
+ * runs it too, after the job (`serverCommands.ts`).
  */
 export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
-    if (get(doingChat)) {
-        return false;
-    }
     for (const e of parts) {
         const chat = findChat(ref);
-        if (!chat) {
+        if (!chat || isChatBusy(ref)) {
             return false;
         }
         if (clearMode) {

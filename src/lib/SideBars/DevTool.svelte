@@ -19,7 +19,9 @@
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { selectSingleFile } from "src/ts/util";
-    import { doingChat, previewFormated, previewBody, sendChat } from "src/ts/process/index.svelte";
+    import { previewChat, sendChat, type OpenAIChat } from "src/ts/process/index.svelte";
+    import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { alertStore } from "src/ts/stores.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { applyChatTemplate, chatTemplates } from "src/ts/process/templates/chatTemplate";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
@@ -34,15 +36,49 @@
     let instructCustom = $state("");
 
     const preview = async () => {
-        if ($doingChat) {
+        // The chat and the options as they are at the click; the result is rendered with them.
+        const ref = currentChatRef();
+        if (ref && isChatBusy(ref)) {
             return false;
         }
+        const join = previewJoin;
+        const mode = previewMode;
+        const template = { type: instructType, custom: instructCustom };
         alertWait("Loading...");
-        await sendChat(-1, {
-            preview: previewJoin !== "prompt",
-            previewPrompt: previewJoin === "prompt",
-        });
+        const wait = alertStore.status();
+        try {
+            if (join === "prompt") {
+                const body = await previewChat("previewPrompt", ref ?? undefined);
+                if (body !== null) {
+                    showPreviewBody(body);
+                }
+            } else {
+                const formated = await previewChat("preview", ref ?? undefined);
+                if (formated !== null) {
+                    showPreviewMessages(formated, join, mode, template);
+                }
+            }
+        } finally {
+            // A refused or failed preview shows nothing; a result or an alert has replaced the wait.
+            if (wait) {
+                alertStore.clearStatus(wait);
+            }
+        }
+    };
 
+    function showPreviewBody(body: string) {
+        let md = "";
+        md += "### Prompt\n";
+        md += "```json\n" + JSON.stringify(JSON.parse(body), null, 2).replaceAll("```", "\\`\\`\\`") + "\n```\n";
+        alertMd(md);
+    }
+
+    function showPreviewMessages(
+        result: OpenAIChat[],
+        join: string,
+        mode: string,
+        template: { type: string; custom: string },
+    ) {
         let md = "";
         const styledRole = {
             function: "📐 Function",
@@ -51,19 +87,9 @@
             assistant: "✨ Assistant",
         };
 
-        if (previewJoin === "prompt") {
-            md += "### Prompt\n";
-            md +=
-                "```json\n" +
-                JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll("```", "\\`\\`\\`") +
-                "\n```\n";
-            alertMd(md);
-            return;
-        }
+        let formated = safeStructuredClone(result);
 
-        let formated = safeStructuredClone(previewFormated);
-
-        if (previewJoin === "yes") {
+        if (join === "yes") {
             let newFormated = [];
             let latestRole = "";
 
@@ -79,11 +105,8 @@
             formated = newFormated;
         }
 
-        if (previewMode === "instruct") {
-            const instructed = applyChatTemplate(formated, {
-                type: instructType,
-                custom: instructCustom,
-            });
+        if (mode === "instruct") {
+            const instructed = applyChatTemplate(formated, template);
 
             md += "### Instruction\n";
             md += "```\n" + instructed.replaceAll("```", "\\`\\`\\`") + "\n```\n";
@@ -110,7 +133,7 @@
             md += "```\n" + formated[i].content.replaceAll("```", "\\`\\`\\`") + "\n```\n";
         }
         alertMd(md);
-    };
+    }
 
     let autopilot = $state([]);
 
@@ -248,7 +271,7 @@
                 return;
             }
             for (const line of autopilot) {
-                if ($doingChat || !findChat(ref)) {
+                if (!findChat(ref) || isChatBusy(ref)) {
                     return;
                 }
                 appendMessage(ref, { role: "user", data: line });

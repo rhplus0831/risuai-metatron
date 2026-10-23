@@ -29,7 +29,9 @@ import {
 import { language } from "src/lang";
 import { updateTextThemeAndCSS } from "./gui/colorscheme";
 import { defaultHotkeys } from "./defaulthotkeys";
-import { doingChat, previewBody, sendChat } from "./process/index.svelte";
+import { previewChat } from "./process/index.svelte";
+import { isChatBusy } from "./process/chatStatus.svelte";
+import { currentChatRef } from "./storage/chatStore.svelte";
 import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
 import { createDialogKeyGate } from "./alertQueue";
 
@@ -158,23 +160,34 @@ export function initHotkey() {
                     break;
                 }
                 case "previewRequest": {
-                    if (get(doingChat) && selectedCharacter() !== undefined) {
+                    // The selected chat's request body; refused while that chat has work of its own.
+                    const ref = currentChatRef();
+                    if (ref && isChatBusy(ref)) {
                         return false;
                     }
                     alertWait("Loading...");
+                    const wait = alertStore.status();
                     ev.preventDefault();
                     ev.stopPropagation();
-                    await sendChat(-1, {
-                        previewPrompt: true,
-                    });
-
-                    let md = "";
-                    md += "### Prompt\n";
-                    md +=
-                        "```json\n" +
-                        JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll("```", "\\`\\`\\`") +
-                        "\n```\n";
-                    alertMd(md);
+                    try {
+                        const body = await previewChat("previewPrompt", ref ?? undefined);
+                        if (body === null) {
+                            // Refused or failed: nothing to show.
+                            return;
+                        }
+                        let md = "";
+                        md += "### Prompt\n";
+                        md +=
+                            "```json\n" +
+                            JSON.stringify(JSON.parse(body), null, 2).replaceAll("```", "\\`\\`\\`") +
+                            "\n```\n";
+                        alertMd(md);
+                    } finally {
+                        // A result or an alert has replaced the wait; a silent refusal leaves it to clear.
+                        if (wait) {
+                            alertStore.clearStatus(wait);
+                        }
+                    }
                     return;
                 }
                 case "toggleLog": {

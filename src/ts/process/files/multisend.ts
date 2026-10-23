@@ -1,5 +1,6 @@
 import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
 import { sendChat } from "../index.svelte";
+import { isChatBusy } from "../chatStatus.svelte";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
@@ -16,7 +17,8 @@ async function sendPofile(arg: sendFileArg) {
     let note = "";
     let speaker = "";
     let parseMode = 0;
-    // Every line is sent in the chat selected when the file was sent.
+    // Every line is sent in the chat selected when the file was sent. The run stops, downloading
+    // nothing, when that chat is gone or busy before an entry, or an entry's send does not run.
     const ref = currentChatRef();
     if (!ref) {
         return;
@@ -37,11 +39,16 @@ async function sendPofile(arg: sendFileArg) {
             if (note !== "") {
                 text = `Note: ${note}\n${text}`;
             }
+            if (!findChat(ref) || isChatBusy(ref)) {
+                return;
+            }
             appendMessage(ref, { role: "user", data: text });
-            await sendChat(-1, { target: ref });
+            if (!(await sendChat(-1, { target: ref }))) {
+                return;
+            }
             const res = findChat(ref)?.message.at(-1);
             if (!res) {
-                break;
+                return;
             }
             const msgStr = res.data
                 .split("\n")

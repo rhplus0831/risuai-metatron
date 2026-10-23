@@ -10,6 +10,8 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 const hooks = vi.hoisted(() => ({
     sends: [] as { index: number; arg: any }[],
     sendResult: [] as boolean[],
+    /** Runs while a send's server work is in flight (before its result). */
+    onSend: null as null | (() => void),
     input: null as null | ((prompt: string) => Promise<string>),
     /** The manual triggers handed to the server (every `/trigger`). */
     serverRuns: [] as { char: any; name: string; ref: any }[],
@@ -41,7 +43,10 @@ vi.mock("./index.svelte", async (importOriginal) => {
     };
 });
 vi.mock("./serverGeneration", () => ({
-    sendChatOnServer: vi.fn(async () => ({ ok: hooks.sendResult.shift() ?? true, outcome: "started" })),
+    sendChatOnServer: vi.fn(async () => {
+        hooks.onSend?.();
+        return { ok: hooks.sendResult.shift() ?? true, outcome: "started" };
+    }),
 }));
 vi.mock("./lorebook.svelte", () => ({ loadLoreBookV3Prompt: vi.fn(async () => ({ actives: [] })) }));
 vi.mock("./modules", () => ({
@@ -51,16 +56,20 @@ vi.mock("./modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("./serverCommands", () => ({
-    runServerManualTrigger: vi.fn(async (char: any, name: string, ref: any) => {
-        hooks.serverRuns.push({ char, name, ref });
-        return "started";
+// The followed-job registry is the factory's real writable: a test registers a job in another chat.
+vi.mock("./serverCommands", async () =>
+    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
+        runServerManualTrigger: vi.fn(async (char: any, name: string, ref: any) => {
+            hooks.serverRuns.push({ char, name, ref });
+            return "started" as const;
+        }),
     }),
-}));
+);
 
 import { processMultiCommand } from "./command";
 import { sendChat } from "./index.svelte";
 import { beginLocalSend, localSends } from "./localSends";
+import { followedJobs } from "./serverCommands";
 import * as chat from "../storage/chatStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
@@ -147,7 +156,10 @@ afterAll(() => {
 beforeEach(() => {
     hooks.sends.length = 0;
     hooks.sendResult.length = 0;
+    hooks.onSend = null;
     hooks.input = null;
+    followedJobs.set(new Map());
+    chat.releaseFeedLocks();
     hooks.serverRuns.length = 0;
     vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -321,18 +333,71 @@ describe("/trigger on the server", () => {
 });
 
 describe("/multisend", () => {
-    it("refuses to start while a send is running", async () => {
+    const keyOf = (ref: chat.ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
+    /** A feed lock on message `a` of `ref` (another tab's job, as the change feed announces it). */
+    const lockFromFeed = (ref: chat.ChatRef) =>
+        chat.noteRemoteStreaming([
+            { characterId: ref.chaId, id: ref.chatId, streaming: [{ messageId: "a", generationId: "g", seq: 0 }] },
+        ]);
+
+    it("refuses a part while the line's chat has a local send, a followed job, or a lock, appending nothing", async () => {
         const ref = freshChat();
-        const release = beginLocalSend({ chaId: "c", chatId: "first" })!;
+        const release = beginLocalSend(ref)!;
         try {
             expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
             expect(sendChat).not.toHaveBeenCalled();
             expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
             // The refusal releases nothing.
-            expect([...get(localSends).keys()]).toEqual(["c\u0000first"]);
+            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
         } finally {
             release();
         }
+        followedJobs.set(new Map([["job", keyOf(ref)]]));
+        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
+        followedJobs.set(new Map());
+        lockFromFeed(ref);
+        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
+        chat.releaseFeedLocks();
+        expect(sendChat).not.toHaveBeenCalled();
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+    });
+
+    it("runs in its chat while another chat has a followed job or a lock; another chat's local send does not refuse its own check", async () => {
+        const other = freshChat();
+        const ref = freshChat();
+        followedJobs.set(new Map([["job", keyOf(other)]]));
+        lockFromFeed(other);
+        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
+        expect(hooks.sends).toEqual([
+            { index: -1, arg: { target: ref } },
+            { index: -1, arg: { target: ref } },
+        ]);
+        expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
+        expect(texts(other)).toEqual(["A", "B", "C", "D"]);
+
+        // A local send in the other chat: the part is appended and handed to `sendChat` for this
+        // chat (whether `sendChat` admits it beside the other send is its own rule, `index.test.ts`).
+        hooks.sends.length = 0;
+        followedJobs.set(new Map());
+        chat.releaseFeedLocks();
+        const release = beginLocalSend(other)!;
+        try {
+            expect(await processMultiCommand('/multisend "three|||four"')).toBe("");
+            expect(hooks.sends[0]).toEqual({ index: -1, arg: { target: ref } });
+            expect(texts(ref)[6]).toBe('"three');
+        } finally {
+            release();
+        }
+    });
+
+    it("stops before the next part when its chat becomes busy during a send, appending nothing more", async () => {
+        const ref = freshChat();
+        // Another tab's job locks the chat while the first part's send is in flight.
+        hooks.onSend = () => lockFromFeed(ref);
+        expect(await processMultiCommand('/multisend "one|||two|||three"')).toBe("");
+        expect(hooks.sends).toHaveLength(1);
+        expect(texts(ref).slice(4)).toEqual(['"one']);
+        expect(get(localSends).size).toBe(0);
     });
 
     it("sends every segment to the line's chat with sendChat owning its registry entry, and stops at a failed send", async () => {

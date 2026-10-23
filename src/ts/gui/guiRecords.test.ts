@@ -21,7 +21,6 @@ vi.mock("../process/modules", () => ({
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../process/index.svelte", () => ({
     sendChat: vi.fn(),
-    previewBody: vi.fn(),
     doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 

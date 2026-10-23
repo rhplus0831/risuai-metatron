@@ -64,7 +64,9 @@ vi.mock("./observer.svelte", () => ({ startObserveDom: vi.fn() }));
 vi.mock("./model/modellist", () => ({ registerModelDynamic: vi.fn() }));
 vi.mock("./network/eventFeed", () => ({ startEventFeed: vi.fn() }));
 vi.mock("./network/pushNotifications", () => ({ startPushNotifications: vi.fn() }));
-vi.mock("./process/serverCommands", () => ({ resumeServerJobs: vi.fn() }));
+vi.mock("./process/serverCommands", async () =>
+    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),
+);
 
 let originalServiceWorker: PropertyDescriptor | undefined;
 let listeners: [string, EventListenerOrEventListenerObject][];

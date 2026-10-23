@@ -35,6 +35,8 @@ const stubs = vi.hoisted(() => ({
     follows: [] as Follow[],
     closeWithoutTerminal: false,
     read: vi.fn(),
+    /** The sends `sendChat` handed to the server (a command job's follow-ups). */
+    serverSends: [] as { target?: ChatRef }[],
 }));
 
 vi.mock("src/lang", () => ({ language: { serverJob: { lost: "job lost" } } }));
@@ -75,6 +77,23 @@ vi.mock("../storage/resourceSync.svelte", () => ({
 }));
 vi.mock("../util", () => ({ sleep: async () => {} }));
 vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
+// A command job's follow-ups reach the real `runMultisend` and `sendChat`; only the server send and
+// the command module's unrelated services (TTS, the parser, lore) are stand-ins.
+vi.mock("./serverGeneration", () => ({
+    sendChatOnServer: vi.fn(async (arg: { target?: ChatRef }) => {
+        stubs.serverSends.push({ target: arg.target });
+        return { ok: true, outcome: "started" };
+    }),
+}));
+vi.mock("./tts", () => ({ sayTTS: vi.fn() }));
+vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
+vi.mock("./lorebook.svelte", () => ({ loadLoreBookV3Prompt: vi.fn(async () => ({ actives: [] })) }));
+vi.mock("./modules", () => ({
+    moduleUpdate: vi.fn(),
+    getModules: vi.fn(() => []),
+    getModuleLorebooks: vi.fn(() => []),
+    getModuleAssets: vi.fn(() => []),
+}));
 
 let status: typeof import("./chatStatus.svelte");
 let commands: typeof import("./serverCommands");
@@ -136,6 +155,7 @@ beforeEach(async () => {
     localStorage.clear();
     sessionStorage.clear();
     stubs.follows.length = 0;
+    stubs.serverSends.length = 0;
     stubs.closeWithoutTerminal = false;
     stubs.read.mockReset().mockResolvedValue({ characterId: "c", chatId: "k", epoch: EPOCH, state: "running" });
     chat = await import("../storage/chatStore.svelte");
@@ -371,5 +391,60 @@ describe("chat status sources", () => {
         await finish("after-disposal", b, done());
         flushSync();
         expectMarks([keyA, keyB]);
+    });
+});
+
+describe("isChatBusy", () => {
+    it("is true for a chat with a local send, a followed job, or a lock (this tab's or the feed's), for that chat only", async () => {
+        const { beginLocalSend } = await import("./localSends");
+        expect(status.isChatBusy(a)).toBe(false);
+        const release = beginLocalSend(a)!;
+        expect(status.isChatBusy(a)).toBe(true);
+        expect(status.isChatBusy(b)).toBe(false);
+        release();
+        expect(status.isChatBusy(a)).toBe(false);
+
+        const follow = await attach("follow-b", b);
+        expect(status.isChatBusy(b)).toBe(true);
+        expect(status.isChatBusy(a)).toBe(false);
+        follow.socket.end(done());
+        await follow.end;
+        expect(status.isChatBusy(b)).toBe(false);
+
+        expect(
+            chat.applyServerGeneration(other, {
+                jobId: "lock-other-1",
+                messageId: "m1",
+                generationId: "lock-other-1",
+                text: "partial",
+                seq: 0,
+            }),
+        ).toBe(true);
+        expect(status.isChatBusy(other)).toBe(true);
+        expect(status.isChatBusy(a)).toBe(false);
+        chat.endServerJob("lock-other-1");
+        expect(status.isChatBusy(other)).toBe(false);
+
+        chat.noteRemoteStreaming([
+            { characterId: "c", id: "j", streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        expect(status.isChatBusy(b)).toBe(true);
+        expect(status.isChatBusy(a)).toBe(false);
+        chat.releaseFeedLocks();
+        expect(status.isChatBusy(b)).toBe(false);
+    });
+});
+
+describe("a command job's follow-ups", () => {
+    it("pass isChatBusy once the job's own follow has ended: each part is appended to the job's chat and sent there", async () => {
+        const follow = await attach("command", a);
+        const terminal = done({ followUps: [{ clear: false, parts: ["first", "second"] }] });
+        follow.socket.end(terminal);
+        expect(await follow.end).toEqual(terminal);
+        await vi.waitFor(() => expect(stubs.serverSends).toHaveLength(2));
+        expect(stubs.serverSends).toEqual([{ target: a }, { target: a }]);
+        expect(chat.findChat(a)!.message.map((message) => message.data)).toEqual(["one", "two", "first", "second"]);
+        expect(status.isChatBusy(a)).toBe(false);
+        expect(status.generatingChatKeys()).toEqual(new Set());
     });
 });

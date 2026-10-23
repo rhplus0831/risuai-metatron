@@ -50,7 +50,9 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     saveAsset: vi.fn(),
 }));
 vi.mock("src/ts/model/modellist", () => ({ getModelInfo: vi.fn(() => ({ shortName: "model" })) }));
-vi.mock("src/ts/process/serverCommands", () => ({ runServerButton: vi.fn(), runServerManualTrigger: vi.fn() }));
+vi.mock("src/ts/process/serverCommands", async () =>
+    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),
+);
 vi.mock("src/ts/process/tts", () => ({ sayTTS: vi.fn() }));
 vi.mock("src/ts/util", () => ({
     capitalize: (text: string) => text,

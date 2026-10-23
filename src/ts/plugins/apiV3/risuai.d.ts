@@ -2212,9 +2212,12 @@ interface RisuaiPluginAPI {
 
     /**
      * Sends a chat message as if it were sent by the user, triggering the normal chat processing flow.
+     * Inside a hook it sends in the hook's chat, else in the selected chat. Throws "A chat is already in
+     * progress" while that chat generates or a job callback (a hook or a provider) runs in this tab.
      * @param message - The chat message to send, if string is a blank message, it will trigger the send action without adding a new message.
+     * @returns Whether the send ran; false without the permission, or when the send was refused, failed, or stopped.
      */
-    sendChat(message: string): Promise<void>;
+    sendChat(message: string): Promise<boolean>;
 }
 
 // ============================================================================

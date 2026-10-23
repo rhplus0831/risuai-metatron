@@ -25,7 +25,12 @@ const stubs = vi.hoisted(() => ({
     db: { characters: [] as Record<string, unknown>[] },
 }));
 
-vi.mock("./serverCommands", () => ({ runServerJob: stubs.run }));
+vi.mock("./serverCommands", async () =>
+    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
+        // The stub answers loosely typed outcomes the mapping cases need.
+        runServerJob: stubs.run as unknown as typeof import("./serverCommands").runServerJob,
+    }),
+);
 vi.mock("../storage/chatStore.svelte", () => ({
     findChat: stubs.findChat,
     currentChatRef: stubs.currentChatRef,

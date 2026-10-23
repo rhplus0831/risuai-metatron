@@ -24,11 +24,13 @@ vi.mock("./process/modules", () => ({
 vi.mock("./parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("./process/index.svelte", () => ({
     sendChat: vi.fn(),
-    previewBody: vi.fn(),
+    previewChat: vi.fn(),
     doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 
-import { alertNormal, alertToast, doingAlert, terminalNotice } from "./alert";
+import { alertMd, alertNormal, alertToast, alertWait, doingAlert, terminalNotice } from "./alert";
+import { previewChat } from "./process/index.svelte";
+import { beginLocalSend } from "./process/localSends";
 import { activeHotkeys, hotkeyMatches, initHotkey } from "./hotkey";
 import { NEXT_DIALOG_GAP_MS } from "./alertQueue";
 import { defaultHotkeys } from "./defaulthotkeys";
@@ -684,5 +686,92 @@ describe("the model select hotkey (crosscheck row 14)", () => {
         expect(get(openModelPresetList)).toBe(true);
         press("m");
         expect(get(openModelPresetList)).toBe(false);
+    });
+});
+
+// The preview hotkey (`previewRequest`): the selected chat's request body comes back from
+// `previewChat`, so a refused or failed preview shows nothing (it used to parse the last preview's
+// body again), the chat's own work refuses it before anything is shown, and the hotkey clears only
+// the wait it set.
+describe("the preview hotkey", () => {
+    const refK = { chaId: "c", chatId: "k" };
+    const chat = (id: string) => ({
+        id,
+        name: id.toUpperCase(),
+        note: "",
+        localLore: [],
+        message: [{ role: "char", data: "hi", chatId: `m-${id}` }],
+    });
+    const pressU = () =>
+        document.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "u", ctrlKey: true, bubbles: true, cancelable: true }),
+        );
+    /** The last status set through the real queue (`alertWait` is a mock: it writes the status itself). */
+    const status = () => alertStore.status();
+
+    beforeEach(() => {
+        installFlatDatabaseWithChats({
+            characters: [{ chaId: "c", type: "character", name: "C", chatPage: 0, chats: [chat("k")] }],
+            botPresets: [{ id: "a", name: "A" }],
+            hotkeys: [{ key: "u", ctrl: true, action: "previewRequest" }],
+        } as unknown as Database);
+        selectCharacter("c");
+        selectChat("c", "k");
+        vi.mocked(alertMd).mockClear();
+        vi.mocked(alertWait)
+            .mockReset()
+            .mockImplementation((msg: string) => alertStore.set({ type: "wait", msg }));
+        vi.mocked(previewChat).mockReset();
+        alertStore.clearStatus();
+    });
+
+    afterEach(() => {
+        alertStore.clearStatus();
+        selectCharacter(null);
+    });
+
+    it("shows the body previewChat returns for the selected chat, and nothing for a preview that did not run", async () => {
+        vi.mocked(previewChat).mockResolvedValueOnce('{"model":"m","messages":[]}');
+        pressU();
+        await vi.waitFor(() => expect(alertMd).toHaveBeenCalledTimes(1));
+        expect(previewChat).toHaveBeenCalledExactlyOnceWith("previewPrompt", refK);
+        expect(vi.mocked(alertMd).mock.calls[0][0]).toContain('"model": "m"');
+        expect(status()).toBeNull();
+
+        // Refused (null): the earlier body is not shown again, and the wait is cleared.
+        vi.mocked(previewChat).mockResolvedValueOnce(null);
+        pressU();
+        await vi.waitFor(() => expect(previewChat).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(status()).toBeNull());
+        expect(alertWait).toHaveBeenCalledTimes(2);
+        expect(alertMd).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses while the selected chat has a send of its own, before any wait is shown", async () => {
+        const release = beginLocalSend(refK)!;
+        try {
+            pressU();
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(previewChat).not.toHaveBeenCalled();
+            expect(alertWait).not.toHaveBeenCalled();
+            expect(alertMd).not.toHaveBeenCalled();
+        } finally {
+            release();
+        }
+    });
+
+    it("clears only its own wait: a status set during the preview is left to its owner", async () => {
+        const newer = { type: "wait", msg: "another caller" } as const;
+        vi.mocked(previewChat).mockImplementationOnce(async () => {
+            alertStore.set(newer);
+            return null;
+        });
+        pressU();
+        await vi.waitFor(() => expect(previewChat).toHaveBeenCalledTimes(1));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(status()).toBe(newer);
+        expect(alertMd).not.toHaveBeenCalled();
     });
 });

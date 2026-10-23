@@ -32,19 +32,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   `getCurrentLorebookEntries` answers the hook's character, chat, and module lore. Another plugin
 //   instance observes the forwarded context, since the calling plugin's own hooks would see it
 //   ambiently either way;
-// - `sendChat` inside a hook appends to the hook's chat and sends that chat with the context; its
-//   busy refusal is unchanged;
+// - `sendChat` inside a hook appends to the hook's chat and sends that chat with the context;
+//   admission: the target chat's own local send, followed job, or lock refuses it without appending
+//   (checked again after the chat load), another chat's does not, every send is refused while a job
+//   channel callback runs in this tab (so no hook run as a callback can start, let alone await, a
+//   send in any chat), and the call answers the send's own result;
 // - unload: a reload removes the old instance's script handlers, replacers, and listeners, the old
 //   instance's stack is not the reloaded instance's, and `SandboxHost.terminate` rejects a pending
 //   callback so the hook's entry pops.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
-const { captured, alerts, grants, sends, transforms } = vi.hoisted(() => ({
+const { captured, alerts, grants, sends, sendResults, transforms } = vi.hoisted(() => ({
     captured: { apis: [] as CapturedApi[] },
     alerts: { confirm: vi.fn(async (_text: string) => true) },
     grants: { value: true },
     sends: [] as { index: number; arg: any }[],
+    /** What the next sends answer (true: the send ran), in order; true once the list is spent. */
+    sendResults: [] as boolean[],
     /** The calls to the server transform stand-in (`/api/transform` and its continuation). */
     transforms: [] as { path: string; body: any }[],
 }));
@@ -116,9 +121,8 @@ vi.mock("src/ts/process/index.svelte", async () => {
         doingChat: anyLocalSend,
         sendChat: vi.fn(async (index: number, arg: any) => {
             sends.push({ index, arg });
-            return true;
+            return sendResults.shift() ?? true;
         }),
-        previewBody: vi.fn(),
     };
 });
 
@@ -209,6 +213,8 @@ import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDa
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { doingChat } from "src/ts/process/index.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
+import { followedJobs } from "src/ts/process/serverCommands";
+import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModuleLorebooks } from "src/ts/process/modules";
@@ -387,6 +393,7 @@ beforeEach(() => {
     liveDatabase();
     selectCharacterAt(0);
     sends.length = 0;
+    sendResults.length = 0;
     transforms.length = 0;
     // No chat is saved on the server unless a test says so.
     chatStore.seedChats([], []);
@@ -1136,6 +1143,99 @@ describe("sendChat inside a hook", () => {
             release();
         }
         expect(get(doingChat)).toBe(false);
+    });
+});
+
+describe("sendChat admission", () => {
+    const refA0 = { chaId: "a", chatId: "a0" };
+    const busy = "A chat is already in progress";
+    /** A lock the change feed announced on the chat's message (another tab's job). */
+    const lockFromFeed = (ref: chatStore.ChatRef) =>
+        chatStore.noteRemoteStreaming([
+            {
+                characterId: ref.chaId,
+                id: ref.chatId,
+                streaming: [{ messageId: `m-${ref.chatId}`, generationId: "g", seq: 0 }],
+            },
+        ]);
+
+    afterEach(() => {
+        followedJobs.set(new Map());
+        chatStore.releaseFeedLocks();
+        noteChannelCallbacks(0);
+    });
+
+    it("refuses the target chat's followed job or lock without appending, outside a hook too; another chat's does not refuse it", async () => {
+        const api = await makeApi();
+        followedJobs.set(new Map([["job", "a\u0000a0"]]));
+        await expect(api.sendChat("busy")).rejects.toThrow(busy);
+        followedJobs.set(new Map());
+        lockFromFeed(refA0);
+        await expect(api.sendChat("busy")).rejects.toThrow(busy);
+        chatStore.releaseFeedLocks();
+        expect(texts(refA0)).toEqual(["hello from a0"]);
+        expect(sends).toEqual([]);
+
+        followedJobs.set(new Map([["job", "b\u0000b1"]]));
+        lockFromFeed(refB1);
+        expect(await api.sendChat("ok")).toBe(true);
+        expect(texts(refA0)).toEqual(["hello from a0", "ok"]);
+        expect(sends).toEqual([{ index: -1, arg: { target: refA0 } }]);
+    });
+
+    it("checks the chat again after its load: a send that began meanwhile refuses it without appending", async () => {
+        const api = await makeApi();
+        let release: (() => void) | null = null;
+        const load = vi.spyOn(chatStore, "ensureChatLoaded").mockImplementation(async (ref) => {
+            release = beginLocalSend(ref);
+            return chatStore.findChat(ref);
+        });
+        try {
+            await expect(api.sendChat("late")).rejects.toThrow(busy);
+            expect(load).toHaveBeenCalledTimes(1);
+            expect(release).not.toBeNull();
+        } finally {
+            load.mockRestore();
+            release?.();
+        }
+        expect(texts(refA0)).toEqual(["hello from a0"]);
+        expect(sends).toEqual([]);
+    });
+
+    it("refuses every send while a job channel callback runs in this tab: a hook's own idle chat and the selected chat alike", async () => {
+        const api = await makeApi();
+        noteChannelCallbacks(1);
+        const listener = await listenerOf(api, async () => {
+            await expect(api.sendChat("from the callback")).rejects.toThrow(busy);
+        });
+        await invokeHook(listener, capturePluginContext(refB1), listenerArg);
+        await expect(api.sendChat("from a timer")).rejects.toThrow(busy);
+        expect(texts(refB1)).toEqual(["hello from b1"]);
+        expect(texts(refA0)).toEqual(["hello from a0"]);
+        expect(sends).toEqual([]);
+
+        // The callback settled: the same calls run.
+        noteChannelCallbacks(0);
+        await invokeHook(
+            await listenerOf(api, async () => {
+                expect(await api.sendChat("after")).toBe(true);
+            }),
+            capturePluginContext(refB1),
+            listenerArg,
+        );
+        expect(await api.sendChat("after, outside")).toBe(true);
+        expect(texts(refB1)).toEqual(["hello from b1", "after"]);
+        expect(texts(refA0)).toEqual(["hello from a0", "after, outside"]);
+        expect(sends).toHaveLength(2);
+    });
+
+    it("answers the send's result: false for a send that did not run", async () => {
+        const api = await makeApi();
+        sendResults.push(false);
+        expect(await api.sendChat("not sent")).toBe(false);
+        // The message is appended before the send is asked; the refusal leaves it.
+        expect(texts(refA0)).toEqual(["hello from a0", "not sent"]);
+        expect(sends).toEqual([{ index: -1, arg: { target: refA0 } }]);
     });
 });
 

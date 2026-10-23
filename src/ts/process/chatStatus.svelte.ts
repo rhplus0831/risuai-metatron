@@ -3,6 +3,7 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { chatEntry, currentChatRef, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
+import { isLocalSend } from "src/ts/process/localSends";
 
 const MAX_UNSEEN_CHATS = 256;
 
@@ -22,6 +23,15 @@ export function chatStatusKey(ref: ChatRef): string {
 export function generatingChatKeys(): ReadonlySet<string> {
     const jobs = (followedView ??= fromStore(followedJobs)).current;
     return new Set([...jobs.values(), ...lockedChatKeys()]);
+}
+
+/**
+ * Whether `ref`'s chat has work that a new send in it would collide with: a send of this tab
+ * (`isLocalSend`), a job this tab follows, or a server generation lock (the change feed's included).
+ * The server runs one job per chat. Read once, for an admission check.
+ */
+export function isChatBusy(ref: ChatRef): boolean {
+    return isLocalSend(ref) || generatingChatKeys().has(chatStatusKey(ref));
 }
 
 /** Lost follows, held until the chat is viewed or another job of it is followed. */

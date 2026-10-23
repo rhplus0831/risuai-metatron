@@ -96,9 +96,14 @@ import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
-import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
+import { sendChat as processSendChat } from "src/ts/process/index.svelte";
+import { isChatBusy } from "src/ts/process/chatStatus.svelte";
 import { anyLocalSend } from "src/ts/process/localSends";
-import { generationPluginWorkActive, onGenerationPluginWork } from "src/ts/network/generationJobs";
+import {
+    channelCallbacksRunning,
+    generationPluginWorkActive,
+    onGenerationPluginWork,
+} from "src/ts/network/generationJobs";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
@@ -2225,12 +2230,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 return false;
             }
 
+            // Inside a hook, the send goes to the hook's chat, else to the selection after permission.
+            const ref = context ? context.chatRef : currentChatRef();
+
             if (typeof message !== "string") {
                 throw new Error("Message must be a string");
             }
 
-            if (get(doingChat)) {
-                throw new Error("A chat is already in progress");
+            // A hook's chat that is gone refuses the call at once.
+            if (context) {
+                contextMember(context);
             }
 
             if (getModelInfoForMode("model", context ?? undefined).id.startsWith("pluginmodel:::")) {
@@ -2238,12 +2247,18 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }
 
-            // Inside a hook, the send goes to the hook's chat (refused at once when it is gone), else to
-            // the selected one; loaded first, the target found again after the load.
-            if (context) {
-                contextMember(context);
-            }
-            const ref = context ? context.chatRef : currentChatRef();
+            // Refused while the target chat has work of its own (a send of this tab, a followed job,
+            // or a lock), as a generation hook's chat in a job channel callback always does.
+            // Also refused while any job callback runs in this tab: a hook that waited for the new
+            // job would hold the channel lane that job's callbacks need.
+            const refuseBusy = () => {
+                if ((ref && isChatBusy(ref)) || channelCallbacksRunning()) {
+                    throw new Error("A chat is already in progress");
+                }
+            };
+            refuseBusy();
+
+            // Loaded first, the target found again after the load.
             if (ref) {
                 // The same chat after the load: deleted or replaced meanwhile (even under the same
                 // ids) refuses the call.
@@ -2267,6 +2282,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("No active chat found");
             }
 
+            // Again after the load: from here to the send's registry entry nothing awaits.
+            refuseBusy();
+
             if (message && chat.id) {
                 appendMessage(
                     { chaId: char.chaId, chatId: chat.id },
@@ -2274,14 +2292,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 );
             }
 
-            // The chat captured before the load (the hook's, else the one selected when the call came).
+            // The chat captured before the load (the hook's, else the selection after permission).
             const sendTarget = { chaId: char.chaId, chatId: chat.id };
-            await processSendChat(
+            return await processSendChat(
                 -1,
                 context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
             );
-
-            return true;
         },
         addPluginChannelListener: (channelName: string, callback: Function) => {
             pluginChannel.set(plugin.name + channelName, callback);

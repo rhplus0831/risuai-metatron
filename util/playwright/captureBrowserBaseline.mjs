@@ -3,7 +3,7 @@
 //
 // - scenario.json: the seed (settings, personas, presets, characters, chats, messages) the capture
 //   applied, so a server test can rebuild the same state.
-// - prompts.json: the DevTool preview prompts (`sendChat(-1, { preview: true })` -> `previewFormated`)
+// - prompts.json: the DevTool preview prompts (`previewChat("preview")`)
 //   of the fixture characters: plain, group, presetChain, jinja (plus the instruct renders and the
 //   `previewPrompt` body), lore (every insertion position).
 // - markdown.json: `ParseMarkdown` HTML (and the `editprocess` text) of fixture messages with
@@ -1029,9 +1029,9 @@ try {
             applySettings(fixture.settings);
             selectCharacter(fixture.chaId, fixture.chatId);
             window.__risuReseed();
-            const ok = await proc.sendChat(-1, { preview: true });
-            if (!ok) throw new Error("preview failed for " + fixture.name);
-            const formated = clone(proc.previewFormated);
+            const previewed = await proc.previewChat("preview");
+            if (!previewed) throw new Error("preview failed for " + fixture.name);
+            const formated = clone(previewed);
             const out = { formated };
             out.selectedPresetName = DBState.db.botPresets[DBState.db.botPresetsId]?.name ?? null;
             if (fixture.instructTypes) {
@@ -1042,9 +1042,9 @@ try {
             }
             if (fixture.previewPrompt) {
                 window.__risuReseed();
-                const ok2 = await proc.sendChat(-1, { previewPrompt: true });
-                if (!ok2) throw new Error("previewPrompt failed for " + fixture.name);
-                out.previewBody = JSON.parse(proc.previewBody);
+                const body = await proc.previewChat("previewPrompt");
+                if (body === null) throw new Error("previewPrompt failed for " + fixture.name);
+                out.previewBody = JSON.parse(body);
             }
             if (fixture.restorePreset) {
                 dbm.changeToPreset(defaultPresetId, true);

@@ -89,6 +89,15 @@ export function onGenerationPluginWork(listener: () => void): () => void {
     };
 }
 
+/**
+ * Whether the job channel runs a callback in this tab now (a hook or a provider). The
+ * channel holds the tab's lane meanwhile, so a callback that waited for a new job of this tab would
+ * wait for that job's own callbacks behind itself.
+ */
+export function channelCallbacksRunning(): boolean {
+    return channelCallbacks > 0;
+}
+
 /** The job channel's count of running callbacks (`jobChannel.ts` `outstanding`). */
 export function noteChannelCallbacks(count: number) {
     if (count === channelCallbacks) {

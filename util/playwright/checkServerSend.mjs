@@ -307,8 +307,8 @@ try {
                 const views = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const proc = await import("/src/ts/process/index.svelte.ts");
                 views.activePreset.mainPrompt = "Edited main for {{char}}.";
-                const ok = await proc.sendChat(-1, { preview: true });
-                return ok ? proc.previewFormated[0]?.content : null;
+                const formated = await proc.previewChat("preview");
+                return formated ? formated[0]?.content : null;
             });
             check(
                 "server: an edit right before the preview is in its prompt",
