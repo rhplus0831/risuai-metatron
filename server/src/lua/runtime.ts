@@ -130,16 +130,16 @@ type ExtensionHost = {
     registerTypeExtension(priority: number, extension: PushExtension): void;
 };
 
-/** Above wasmoon's own extensions (the highest is the promise one, at 5). */
+/** Above wasmoon's own extensions. */
 const VALUE_GUARD_PRIORITY = 10;
 
 /**
- * Nothing that enters Lua refers to a worker JS object. With wasmoon's proxy extension (the
- * default), an object pushed to Lua is a live proxy, and through `__proto__` a run could change
- * `Object.prototype` for every later run on the worker. Every push goes through this guard first:
- * an error, thrown by a host function or by wasmoon itself, or a rejection, becomes its message
- * string (no stack, so no server paths); any other object or array becomes a copied Lua table,
- * whose values pass the guard again. Promises and functions keep wasmoon's handling.
+ * The engine disables wasmoon's proxy extension, so undecorated objects are copied by its table
+ * extension. Every push still goes through this guard first: an error, thrown by a host function
+ * or by wasmoon itself, or a rejection, becomes its message string (no stack, so no server paths);
+ * any other object or array becomes a copied Lua table, whose values pass the guard again. This
+ * keeps values detached from worker JS objects even if wasmoon changes how it routes a push.
+ * Promises and functions keep wasmoon's handling.
  */
 function installValueGuard(engine: LuaEngine): void {
     const host = engine.global as unknown as ExtensionHost;
@@ -466,10 +466,9 @@ function plain(value: unknown): unknown {
 }
 
 /**
- * What enters Lua from JS is a primitive too. With `injectObjects`, a JS object or array reaches
- * Lua as a live proxy of the worker's own object, and through `__proto__` a run could change
- * `Object.prototype` for every later run on the worker. Structured data crosses as a JSON string,
- * as the client prelude's `*Main` functions already expect.
+ * What enters Lua from host answers is a primitive too. Structured data crosses as a JSON string,
+ * as the client prelude's `*Main` functions already expect, keeping host data detached from worker
+ * JS objects without depending on wasmoon's object conversion.
  */
 function primitiveIn(name: string, value: unknown): unknown {
     if (!isPrimitive(value)) {
@@ -537,7 +536,13 @@ export function createLuaRuntime(options: { jsonLua: string; sleepCaps?: SleepCa
     }
 
     async function createPrepared(): Promise<PreparedEngine> {
-        const engine = await (await factory()).createEngine({ injectObjects: true, traceAllocations: true });
+        const engine = await (
+            await factory()
+        ).createEngine({
+            injectObjects: true,
+            enableProxy: false,
+            traceAllocations: true,
+        });
         const previous = current;
         current = { cpuMs: prepareCpuMs, startActive: activeMs(), excludedMs: 0, aborted: () => false };
         try {

@@ -386,7 +386,7 @@ console.log(JSON.stringify({ ok, redirect, big, cut, slow, wrongHost, e2e: JSON.
 
 describe("the engine lifecycle inside a worker (plain Node)", () => {
     it(
-        "keeps the wasm function table flat across runs with awaits, raises the budget inside a resumed coroutine, and runs one task at a time",
+        "keeps the wasm function table flat across runs with awaits, raises the budget inside a resumed coroutine, and runs one task at a time, with every engine created without wasmoon's JS object proxies",
         { tags: ["slow"], timeout: 60_000 },
         async () => {
             const dir = makeTempDir("risu-lua-runtime-");
@@ -397,9 +397,11 @@ describe("the engine lifecycle inside a worker (plain Node)", () => {
 import { LuaFactory } from ${JSON.stringify(path.join(REPO_ROOT, "node_modules/wasmoon/dist/index.js"))};
 import { createLuaRuntime } from ${JSON.stringify(path.join(REPO_ROOT, "server/src/lua/runtime.ts"))};
 let adds = 0, removes = 0;
+const engineOptions = [];
 const patched = new Set();
 const createEngine = LuaFactory.prototype.createEngine;
 LuaFactory.prototype.createEngine = async function (...args) {
+    engineOptions.push({ ...args[0] });
     const engine = await createEngine.apply(this, args);
     const module = engine.global.lua.module;
     if (!patched.has(module)) {
@@ -428,18 +430,23 @@ for (let i = 1; i <= 30; i++) {
 const resumed = await run("probe = async(function(id) slowHost():await() while true do end end)", 200);
 const concurrent = run("function probe(id) return 1 end");
 const overlap = await run("function probe(id) return 2 end").catch((error) => error.message);
-console.log(JSON.stringify({ net, resumed: { error: resumed.error, timedOut: resumed.timedOut, cpuMs: resumed.cpuMs }, overlap, concurrent: (await concurrent).res }));
+console.log(JSON.stringify({ engineOptions, net, resumed: { error: resumed.error, timedOut: resumed.timedOut, cpuMs: resumed.cpuMs }, overlap, concurrent: (await concurrent).res }));
 `,
             );
             const result = await runNode([script]);
             expect(result.stderr).toBe("");
             expect(result.code).toBe(0);
             const out = JSON.parse(result.stdout.trim()) as {
+                engineOptions: Record<string, unknown>[];
                 net: number[];
                 resumed: { error?: string; timedOut?: boolean; cpuMs: number };
                 overlap: string;
                 concurrent: unknown;
             };
+            expect(out.engineOptions.length).toBeGreaterThan(0);
+            for (const options of out.engineOptions) {
+                expect(options).toMatchObject({ injectObjects: true, enableProxy: false, traceAllocations: true });
+            }
             expect(out.net).toEqual([0, 0, 0]);
             expect(out.resumed).toMatchObject({ error: "Lua CPU budget exceeded (timeout)", timedOut: true });
             expect(out.resumed.cpuMs).toBeGreaterThanOrEqual(150);
