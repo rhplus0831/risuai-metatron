@@ -902,25 +902,36 @@ describe("the restore watch of a job ended by maintenance", () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
         const { fake, sync } = await boot();
         let hang = true;
-        let hung = 0;
+        const hungSignals: RequestInit["signal"][] = [];
         server.current = {
             fetch: (path: string, init?: RequestInit) => {
                 if (hang && path === "/api/resources/ui/main") {
-                    hung += 1;
+                    hungSignals.push(init?.signal);
                     return new Promise<Response>(() => {});
                 }
                 return fake.fetch(path, init);
             },
         };
         let settled: boolean | undefined;
+        const until = Date.now() + 120_000;
         void sync.watchForRestore().then((replaced) => (settled = replaced));
         await vi.advanceTimersByTimeAsync(1000);
-        expect(hung).toBe(1);
-        await vi.advanceTimersByTimeAsync(5000);
-        expect(hung).toBe(1);
-        await vi.advanceTimersByTimeAsync(1000);
-        expect(hung).toBe(2);
-        await vi.advanceTimersByTimeAsync(120_000);
+        expect(hungSignals).toHaveLength(1);
+        while (Date.now() < until) {
+            const reads = hungSignals.length;
+            const signal = hungSignals.at(-1)!;
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(4999);
+            expect(signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(signal.aborted).toBe(true);
+            expect(hungSignals).toHaveLength(reads);
+            if (Date.now() < until) {
+                await vi.advanceTimersByTimeAsync(1000);
+                expect(hungSignals).toHaveLength(reads + 1);
+            }
+        }
         expect(settled).toBe(false);
         expect(alerts.terminal).not.toHaveBeenCalled();
         // A new watch starts its own reads (the slot was freed) and sees a later replacement.

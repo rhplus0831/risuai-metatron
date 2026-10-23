@@ -1986,9 +1986,9 @@ let restoreWatch: Promise<boolean> | null = null;
  * `maintenance` terminal, which comes before the replacement): reads one small record every second
  * until the server answers with another epoch, which `getResource`'s epoch check turns into
  * `haltForRestore` (the restore notice and a reload). An answer with the old epoch, the maintenance
- * 503, a network failure, and a read that takes over 5 s keep it waiting (a late answer with the
- * new epoch still halts through the same check); a maintenance that replaced nothing ends the watch
- * after two minutes, however its reads hang. Writes need no pause meanwhile: each names the epoch it was based on, so one
+ * 503, and a network failure keep it waiting. A read that takes over 5 s is aborted and the watch
+ * reads again; a maintenance that replaced nothing ends the watch after two minutes, however its
+ * reads hang. Writes need no pause meanwhile: each names the epoch it was based on, so one
  * after the replacement is refused (412) and halts too. One watch at a time; resolves true when the
  * data was replaced (or saving had already halted).
  */
@@ -2001,14 +2001,18 @@ export function watchForRestore(): Promise<boolean> {
             const until = Date.now() + RESTORE_WATCH_MS;
             while (Date.now() < until && !halted) {
                 await new Promise((resolve) => setTimeout(resolve, RESTORE_POLL_MS));
-                const read = getResource(SECTION_KIND.ui, "main").then(
+                const controller = new AbortController();
+                const read = getResource(SECTION_KIND.ui, "main", { signal: controller.signal }).then(
                     () => false,
                     (error) => error instanceof ResourceEpochMismatchError,
                 );
                 const budget = Math.max(0, Math.min(RESTORE_READ_MS, until - Date.now()));
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 const timedOut = new Promise<false>((resolve) => {
-                    timer = setTimeout(() => resolve(false), budget);
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        resolve(false);
+                    }, budget);
                 });
                 const replaced = await Promise.race([read, timedOut]);
                 clearTimeout(timer);

@@ -220,9 +220,17 @@ function resourcePath(kind: string, id: string) {
 }
 
 /** One record, or null when it does not exist. */
-export async function getResource<T>(kind: string, id: string): Promise<{ revision: string; data: T } | null> {
+export async function getResource<T>(
+    kind: string,
+    id: string,
+    options: { signal?: AbortSignal } = {},
+): Promise<{ revision: string; data: T } | null> {
     try {
-        return checkedEpoch(await sendJson<{ epoch?: string; revision: string; data: T }>(resourcePath(kind, id)));
+        return checkedEpoch(
+            await sendJson<{ epoch?: string; revision: string; data: T }>(resourcePath(kind, id), {
+                signal: options.signal,
+            }),
+        );
     } catch (error) {
         if (error instanceof ResourceRequestError && error.status === 404) {
             return null;
