@@ -6,7 +6,8 @@ import path from "node:path";
  * (unset: every interface, Node's default) pick the listener; `RISU_SAVE_DIR` (relative to the root)
  * replaces `cwd/save`. `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` lets every protected route through without a
  * login (`pnpm dev:agent`, `util/agentDev.mjs`); it is refused unless `RISU_HOST` is a loopback
- * address, so the bypass can never answer another machine.
+ * address, so the bypass can never answer another machine. `parsePasswordSeed` validates
+ * `RISU_PASSWORD_SHA256` for `createServerContext`: a password digest that seeds only a missing file.
  */
 export type ListenConfig = {
     port: number;
@@ -30,6 +31,19 @@ export function readListenConfig(env: NodeJS.ProcessEnv, rootDir: string): Liste
         savePath: saveDir ? path.resolve(rootDir, saveDir) : path.join(rootDir, "save"),
         authBypass,
     };
+}
+
+export function parsePasswordSeed(raw: string | undefined): string | undefined {
+    const value = raw?.trim();
+    if (!value) {
+        return undefined;
+    }
+    if (!/^[0-9a-f]{64}$/i.test(value)) {
+        throw new Error(
+            "Invalid RISU_PASSWORD_SHA256: expected the 64-character SHA-256 hex of the password, as printf '%s' '<password>' | sha256sum prints it",
+        );
+    }
+    return value.toLowerCase();
 }
 
 /**

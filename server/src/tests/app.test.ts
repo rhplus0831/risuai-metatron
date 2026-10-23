@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
@@ -22,6 +23,7 @@ const servers: ReturnType<typeof createTestServer>[] = [];
 beforeAll(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterAll(() => {
     vi.restoreAllMocks();
@@ -130,6 +132,119 @@ describe("auth routes", () => {
         expect(await success.json()).toEqual({ status: "success" });
     });
 
+    it("quarantines malformed known keys on restart and lets a previously registered browser log in again", async () => {
+        for (const damaged of ["{bad JSON", "{}", '["a hash", 42]']) {
+            const s = freshServer({ password: "pw" });
+            const signer = await createSigner();
+            const headers = { "risu-auth": await signer.jwt() };
+            expect((await s.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }))).ok).toBe(
+                true,
+            );
+            expect(await (await s.app.request("/api/test_auth", { headers })).json()).toEqual({ status: "success" });
+            await s.context.dispose();
+
+            const serverDir = path.join(s.savePath, "server");
+            const keysPath = path.join(serverDir, "known_public_key_hashes.json");
+            writeFileSync(keysPath, damaged);
+            const restarted = createServerContext({ rootDir: s.rootDir, savePath: s.savePath });
+            try {
+                const quarantined = readdirSync(serverDir).filter((name) =>
+                    name.startsWith("known_public_key_hashes.json.corrupt-"),
+                );
+                expect(quarantined, damaged).toHaveLength(1);
+                expect(readFileSync(path.join(serverDir, quarantined[0]), "utf-8")).toBe(damaged);
+                expect(existsSync(keysPath)).toBe(false);
+                expect(await (await restarted.app.request("/api/test_auth", { headers })).json()).toEqual({
+                    status: "incorrect",
+                });
+                const login = await restarted.app.request(
+                    "/api/login",
+                    json({ password: "pw", publicKey: signer.publicJwk }),
+                );
+                expect(login.ok).toBe(true);
+                expect(await (await restarted.app.request("/api/test_auth", { headers })).json()).toEqual({
+                    status: "success",
+                });
+            } finally {
+                await restarted.dispose();
+            }
+        }
+    });
+
+    it("keeps setup closed and refuses password login when the password file is empty or whitespace only", async () => {
+        const signer = await createSigner();
+        for (const damaged of ["", " \t\n "]) {
+            const { app, savePath } = freshServer({ password: damaged });
+            const passwordPath = path.join(savePath, "server", "password");
+            expect(await (await app.request("/api/test_auth")).json()).not.toEqual(
+                expect.objectContaining({ status: "unset" }),
+            );
+
+            const setup = await app.request("/api/set_password", json({ password: "replacement" }));
+            expect(setup.ok).toBe(false);
+            expect(readFileSync(passwordPath, "utf-8")).toBe(damaged);
+            const login = await app.request("/api/login", json({ password: damaged, publicKey: signer.publicJwk }));
+            expect(login.ok).toBe(false);
+            expect(await login.json()).toEqual({ error: expect.any(String) });
+            expect(await (await app.request("/api/test_auth")).json()).not.toEqual(
+                expect.objectContaining({ status: "unset" }),
+            );
+        }
+    });
+
+    it("seeds a missing password with a lowercase SHA-256 digest and preserves existing password files", async () => {
+        const digest = createHash("sha256").update("hunter2").digest("hex");
+        const existing = createHash("sha256").update("existing password").digest("hex");
+        const signer = await createSigner();
+        for (const [initialPassword, passwordSeed] of [
+            [undefined, digest],
+            [undefined, digest.toUpperCase()],
+            [existing, digest.toUpperCase()],
+            ["", digest.toUpperCase()],
+        ] as const) {
+            const s = freshServer({ password: initialPassword });
+            await s.context.dispose();
+            const seeded = createServerContext({ rootDir: s.rootDir, savePath: s.savePath, passwordSeed });
+            try {
+                expect(await (await seeded.app.request("/api/crypto", json({ data: "hunter2" }))).text()).toBe(digest);
+                const expectedPassword = initialPassword ?? digest;
+                expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe(expectedPassword);
+                expect(await (await seeded.app.request("/api/test_auth")).json()).not.toEqual(
+                    expect.objectContaining({ status: "unset" }),
+                );
+                const login = await seeded.app.request(
+                    "/api/login",
+                    json({ password: expectedPassword, publicKey: signer.publicJwk }),
+                );
+                expect(login.ok).toBe(expectedPassword !== "");
+                if (initialPassword !== undefined) {
+                    const replacement = await seeded.app.request(
+                        "/api/login",
+                        json({ password: digest, publicKey: signer.publicJwk }),
+                    );
+                    expect(replacement.ok).toBe(false);
+                }
+            } finally {
+                await seeded.dispose();
+            }
+        }
+    });
+
+    it("refuses to create a server context when an explicit password seed is not 64 hex characters", async () => {
+        const s = freshServer();
+        await s.context.dispose();
+        for (const passwordSeed of ["hunter2", "g".repeat(64)]) {
+            let context: ReturnType<typeof createServerContext> | undefined;
+            try {
+                expect(() => {
+                    context = createServerContext({ rootDir: s.rootDir, savePath: s.savePath, passwordSeed });
+                }, passwordSeed).toThrow();
+            } finally {
+                await context?.dispose();
+            }
+        }
+    });
+
     it("keeps the exact JWT failure bodies of the former server", async () => {
         const { app } = freshServer({ password: "pw" });
         const signer = await createSigner();
@@ -216,6 +331,53 @@ describe("auth routes", () => {
             const auth = await app.request("/api/test_auth");
             expect(auth.headers.get("RateLimit-Policy")).toBe("2000;w=60");
             expect(auth.headers.get("RateLimit-Remaining")).toBe("1999");
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
+    it("limits password setup to 10 attempts per IP per 30 seconds in the same bucket as login", async () => {
+        const { app } = freshServer({ password: "pw" });
+        const client = { incoming: { socket: { remoteAddress: "192.0.2.1" }, headers: {} } };
+        const otherClient = { incoming: { socket: { remoteAddress: "192.0.2.2" }, headers: {} } };
+        let now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        try {
+            for (let i = 0; i < 10; i++) {
+                const setup = await app.request("/api/set_password", json({ password: "other" }), client);
+                expect(setup.status).not.toBe(429);
+                expect(await setup.text()).toBe("already set");
+            }
+            expect((await app.request("/api/set_password", json({ password: "other" }), client)).status).toBe(429);
+            expect((await app.request("/api/login", json({ password: "bad" }), client)).status).toBe(429);
+            expect((await app.request("/api/set_password", json({ password: "other" }), otherClient)).status).not.toBe(
+                429,
+            );
+            now += 29_999;
+            expect((await app.request("/api/set_password", json({ password: "other" }), client)).status).toBe(429);
+            now += 1;
+            expect(await (await app.request("/api/set_password", json({ password: "other" }), client)).text()).toBe(
+                "already set",
+            );
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
+    it("limits crypto requests with the shared per-minute auth bucket", async () => {
+        const limit = 3;
+        const s = createTestServer({ routeLimits: { requestsPerMinute: limit } });
+        servers.push(s);
+        let now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        try {
+            for (let i = 0; i < limit; i++) {
+                expect((await s.app.request("/api/crypto", json({ data: "password" }))).ok).toBe(true);
+            }
+            expect((await s.app.request("/api/crypto", json({ data: "password" }))).status).toBe(429);
+            expect((await s.app.request("/api/test_auth")).status).toBe(429);
+            now += 60_000;
+            expect((await s.app.request("/api/crypto", json({ data: "password" }))).ok).toBe(true);
         } finally {
             clock.mockRestore();
         }

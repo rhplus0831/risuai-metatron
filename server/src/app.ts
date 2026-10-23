@@ -3,7 +3,7 @@ import { credentialSlotOf } from "../../shared/llm/credentialSlots.ts";
 import { resolveModelInfo } from "../../shared/llm/models.ts";
 import type { MemoryTaskService } from "../../shared/jobs.ts";
 import { resolveCredential } from "./llm/credentials.ts";
-import { mkdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
@@ -16,6 +16,7 @@ import { routePath } from "hono/route";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createCheckpointService } from "./data/checkpointService.ts";
+import { mkdirDurableSync } from "./data/durableWrite.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
@@ -34,6 +35,7 @@ import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJo
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
+import { parsePasswordSeed } from "./listenConfig.ts";
 import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
@@ -143,6 +145,8 @@ export function createServerContext(options: {
     rootDir: string;
     savePath?: string;
     authBypass?: boolean;
+    /** Raw initial password SHA-256 hex (default `RISU_PASSWORD_SHA256`); seeds only a missing password file. */
+    passwordSeed?: string;
     trustProxy?: string;
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
@@ -192,12 +196,13 @@ export function createServerContext(options: {
 }) {
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
-    mkdirSync(savePath, { recursive: true });
+    mkdirDurableSync(savePath);
 
     const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
     const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
 
-    const auth = createAuthStore(savePath, { bypass: options.authBypass });
+    const passwordSeed = parsePasswordSeed(options.passwordSeed ?? process.env.RISU_PASSWORD_SHA256);
+    const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
     // The diagnostics folder: content-free events and `state.json`, which the developer pulls over

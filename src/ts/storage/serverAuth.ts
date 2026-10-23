@@ -63,6 +63,16 @@ async function createAuth() {
     return JSONStringlifyAndbase64Url(header) + "." + JSONStringlifyAndbase64Url(payload) + "." + sigString;
 }
 
+function failedResponseMessage(text: string, fallback: string): string {
+    try {
+        const body = JSON.parse(text);
+        if (typeof body?.error === "string") {
+            return body.error;
+        }
+    } catch {}
+    return text || fallback;
+}
+
 /** Registers this browser's public key with the password digest; alerts and throws on failure. */
 async function login(passwordDigest: string) {
     const keypair = await getKeyPair();
@@ -78,13 +88,7 @@ async function login(passwordDigest: string) {
         },
     });
     if (s.status < 200 || s.status >= 300) {
-        let message = `Login failed (${s.status})`;
-        try {
-            const body = await s.json();
-            if (body?.error) {
-                message = body.error;
-            }
-        } catch {}
+        const message = failedResponseMessage(await s.text(), `Login failed (${s.status})`);
         alertError(message);
         await waitAlert();
         throw message;
@@ -107,17 +111,23 @@ async function checkAuth() {
 
 async function runAuthCheck() {
     if (!authChecked) {
-        const data = await (
-            await fetch("/api/test_auth", {
-                headers: {
-                    "risu-auth": await createAuth(),
-                },
-            })
-        ).json();
+        const response = await fetch("/api/test_auth", {
+            headers: {
+                "risu-auth": await createAuth(),
+            },
+        });
+        const text = await response.text();
+        let status: unknown;
+        try {
+            status = JSON.parse(text)?.status;
+        } catch {}
+        if (!response.ok || (status !== "success" && status !== "unset" && status !== "incorrect")) {
+            throw failedResponseMessage(text, `Authentication failed (${response.status})`);
+        }
 
-        if (data.status === "unset") {
+        if (status === "unset") {
             const input = await digestPassword(await alertInput(language.setNodePassword));
-            await fetch("/api/set_password", {
+            const setup = await fetch("/api/set_password", {
                 method: "POST",
                 body: JSON.stringify({
                     password: input,
@@ -126,17 +136,23 @@ async function runAuthCheck() {
                     "content-type": "application/json",
                 },
             });
+            if (!setup.ok) {
+                const message = failedResponseMessage(await setup.text(), `Password setup failed (${setup.status})`);
+                alertError(message);
+                await waitAlert();
+                throw message;
+            }
             // Register this browser's key with the password just set, so the first request after
             // setup is authorized instead of failing with "Unknown public key".
             await login(input);
             authChecked = true;
             return await createAuth();
-        } else if (data.status === "incorrect") {
+        } else if (status === "incorrect") {
             const input = await digestPassword(await alertInput(language.inputNodePassword));
             await login(input);
             authChecked = true;
             return await createAuth();
-        } else {
+        } else if (status === "success") {
             authChecked = true;
         }
     }
@@ -181,14 +197,7 @@ async function digestPassword(message: string) {
     });
 
     if (response.status < 200 || response.status >= 300) {
-        let message = `Password crypto failed (${response.status})`;
-        try {
-            const body = await response.json();
-            if (body?.error) {
-                message = body.error;
-            }
-        } catch {}
-        throw message;
+        throw failedResponseMessage(await response.text(), `Password crypto failed (${response.status})`);
     }
     const crypt = await response.text();
 

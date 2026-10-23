@@ -1,7 +1,8 @@
 import { createHash, webcrypto } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 
@@ -22,24 +23,72 @@ export function hashJSON(json: unknown): string {
 
 export type AuthStore = ReturnType<typeof createAuthStore>;
 
+type PasswordState = { state: "unset" | "damaged" } | { state: "set"; value: string };
+
+const damagedPasswordMessage = "Password file is empty. The operator must fix or delete save/server/password.";
+
+function readPasswordState(file: string): PasswordState {
+    let password: string;
+    try {
+        password = readFileSync(file, "utf-8");
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return { state: "unset" };
+        }
+        throw error;
+    }
+    return password.trim() ? { state: "set", value: password } : { state: "damaged" };
+}
+
+function readKnownPublicKeys(file: string): string[] {
+    let text: string;
+    try {
+        text = readFileSync(file, "utf-8");
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return [];
+        }
+        throw error;
+    }
+    try {
+        const hashes: unknown = JSON.parse(text);
+        if (Array.isArray(hashes) && hashes.every((hash) => typeof hash === "string")) {
+            return hashes;
+        }
+    } catch {}
+    const corruptPath = `${file}.corrupt-${Date.now()}`;
+    renameSync(file, corruptPath);
+    console.warn(`Malformed registered public key file moved to ${corruptPath}; starting with no known keys.`);
+    return [];
+}
+
 /**
  * Password (`save/server/password`, the client-side SHA-256 digest) and registered ES256 public key
  * hashes (`save/server/known_public_key_hashes.json`), plus JWT verification. `save/server/` is not a
  * storage namespace, so the `/api/*` storage routes cannot reach these files. `bypass` (the
  * loopback-only `pnpm dev:agent` server, `listenConfig.ts`) accepts every token and answers
- * `/api/test_auth` with success, so the tab never asks for a password.
+ * `/api/test_auth` with success, so the tab never asks for a password. `passwordSeed` initializes a
+ * missing password file; an empty file keeps setup closed until the operator fixes or deletes it.
  */
-export function createAuthStore(savePath: string, options: { bypass?: boolean } = {}) {
+export function createAuthStore(savePath: string, options: { bypass?: boolean; passwordSeed?: string } = {}) {
     const bypass = options.bypass === true;
     const serverDir = path.join(savePath, "server");
-    mkdirSync(serverDir, { recursive: true });
+    mkdirDurableSync(serverDir);
     const passwordPath = path.join(serverDir, "password");
     const knownPublicKeysPath = path.join(serverDir, "known_public_key_hashes.json");
 
-    let password = existsSync(passwordPath) ? readFileSync(passwordPath, "utf-8") : "";
-    const knownPublicKeysHashes: string[] = existsSync(knownPublicKeysPath)
-        ? JSON.parse(readFileSync(knownPublicKeysPath, "utf-8"))
-        : [];
+    let password = readPasswordState(passwordPath);
+    if (password.state === "damaged") {
+        console.warn(`${passwordPath}: ${damagedPasswordMessage}`);
+        if (options.passwordSeed) {
+            console.warn(`RISU_PASSWORD_SHA256 ignored: ${passwordPath} already exists and is empty.`);
+        }
+    } else if (password.state === "unset" && options.passwordSeed) {
+        writeFileDurableSync(passwordPath, options.passwordSeed);
+        password = { state: "set", value: options.passwordSeed };
+        console.log(`Initialized ${passwordPath} from RISU_PASSWORD_SHA256.`);
+    }
+    let knownPublicKeysHashes = readKnownPublicKeys(knownPublicKeysPath);
 
     async function verifyJwt(token: string | undefined): Promise<JwtFailure | null> {
         if (bypass) {
@@ -87,7 +136,7 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean } 
     }
 
     function isStoredPassword(token: string | undefined): boolean {
-        return !!token && token.trim() === password.trim();
+        return password.state === "set" && !!token && token.trim() === password.value.trim();
     }
 
     /** Returns the error response for a failed JWT check, or null when authorized. */
@@ -128,7 +177,7 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean } 
             if (bypass) {
                 return c.json({ status: "success" });
             }
-            if (!password) {
+            if (password.state === "unset") {
                 return c.json({ status: "unset" });
             }
             if (await verifyJwt(c.req.header("risu-auth"))) {
@@ -142,19 +191,23 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean } 
             if (!parsed.ok) {
                 return parsed.response;
             }
-            if (password === "") {
+            if (password.state === "unset") {
                 return c.json({ error: "Password not set" }, 400);
             }
+            if (password.state === "damaged") {
+                return c.json({ error: damagedPasswordMessage }, 503);
+            }
             const body = parsed.body;
-            if (body.password && body.password.trim() === password.trim()) {
-                knownPublicKeysHashes.push(hashJSON(body.publicKey));
-                writeFileSync(knownPublicKeysPath, JSON.stringify(knownPublicKeysHashes), "utf-8");
+            if (typeof body.password === "string" && isStoredPassword(body.password)) {
+                const next = [...knownPublicKeysHashes, hashJSON(body.publicKey)];
+                writeFileDurableSync(knownPublicKeysPath, JSON.stringify(next));
+                knownPublicKeysHashes = next;
                 return c.json({ status: "success" });
             }
             return c.json({ error: "Password incorrect" }, 400);
         });
 
-        app.post("/api/crypto", async (c) => {
+        app.post("/api/crypto", limiters.auth, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;
@@ -166,18 +219,30 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean } 
             }
         });
 
-        app.post("/api/set_password", async (c) => {
+        app.post("/api/set_password", limiters.login, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;
             }
-            if (password !== "") {
+            if (password.state === "damaged") {
+                return c.json({ error: damagedPasswordMessage }, 400);
+            }
+            if (password.state === "set") {
                 return c.text("already set", 400);
             }
-            // Persist before updating memory so a rejected value (e.g. missing) leaves the server unset.
             const nextPassword = parsed.body.password;
-            writeFileSync(passwordPath, nextPassword, "utf-8");
-            password = nextPassword;
+            if (typeof nextPassword !== "string" || !nextPassword.trim()) {
+                return c.json({ error: "Password must be a non-empty string" }, 400);
+            }
+            try {
+                writeFileDurableSync(passwordPath, nextPassword);
+            } catch (error) {
+                // Directory sync can fail after publication. Keep setup closed until disk state is known.
+                password = { state: "damaged" };
+                password = readPasswordState(passwordPath);
+                throw error;
+            }
+            password = { state: "set", value: nextPassword };
             return c.json({ status: "success" });
         });
     }

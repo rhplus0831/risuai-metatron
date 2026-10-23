@@ -41,6 +41,8 @@ type FakeAuth = {
     registered: Set<string>;
     calls: { path: string; body?: any; auth?: string | null }[];
     loginStatus: number;
+    setPasswordFailure: { status: number; message: string; plainText?: boolean } | null;
+    testAuthStatus: number;
 };
 
 function jwtPublicKeyThumb(token: string): string {
@@ -53,7 +55,14 @@ let auth: FakeAuth;
 beforeEach(async () => {
     vi.resetModules();
     auth$ = await import("../serverAuth");
-    auth = { password: null, registered: new Set(), calls: [], loginStatus: 200 };
+    auth = {
+        password: null,
+        registered: new Set(),
+        calls: [],
+        loginStatus: 200,
+        setPasswordFailure: null,
+        testAuthStatus: 200,
+    };
     prompts.answers = [];
     prompts.asked = [];
     vi.stubGlobal(
@@ -67,6 +76,9 @@ beforeEach(async () => {
                 case "/api/crypto":
                     return new Response(`digest(${body.data})`);
                 case "/api/test_auth":
+                    if (auth.testAuthStatus !== 200) {
+                        return Response.json({ error: "Auth check throttled" }, { status: auth.testAuthStatus });
+                    }
                     if (auth.password === null) {
                         return Response.json({ status: "unset" });
                     }
@@ -74,6 +86,12 @@ beforeEach(async () => {
                         status: token && auth.registered.has(jwtPublicKeyThumb(token)) ? "success" : "incorrect",
                     });
                 case "/api/set_password":
+                    if (auth.setPasswordFailure) {
+                        const { status, message, plainText } = auth.setPasswordFailure;
+                        return plainText
+                            ? new Response(message, { status })
+                            : Response.json({ error: message }, { status });
+                    }
                     auth.password = body.password;
                     return Response.json({ success: true });
                 case "/api/login":
@@ -124,9 +142,39 @@ describe("first run", () => {
         expect(auth.calls.length).toBe(before);
         expect(auth.registered.has(jwtPublicKeyThumb(token))).toBe(true);
     });
+
+    it.each([
+        { format: "JSON", status: 503, message: "The operator must repair the password file", plainText: false },
+        { format: "plain text", status: 400, message: "already set", plainText: true },
+    ])("reports a rejected password setup in $format, skips login, and retries the check", async (failure) => {
+        auth.setPasswordFailure = failure;
+        prompts.answers = ["pw"];
+        await auth$.ensureAuth().catch(() => {});
+        expect(alerts.alertError).toHaveBeenCalledWith(failure.message);
+        expect(paths()).not.toContain("/api/login");
+
+        auth.setPasswordFailure = null;
+        prompts.answers = ["pw"];
+        const response = await auth$.authFetch("/api/ping");
+        expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(2);
+        expect(paths().filter((path) => path === "/api/login")).toHaveLength(1);
+        expect(await response.json()).toEqual({ ok: true });
+    });
 });
 
 describe("existing server", () => {
+    it("retries authentication after a non-OK auth check instead of caching it as complete", async () => {
+        auth.testAuthStatus = 429;
+        await auth$.ensureAuth().catch(() => {});
+
+        auth.testAuthStatus = 200;
+        auth.password = "digest(pw)";
+        prompts.answers = ["pw"];
+        const response = await auth$.authFetch("/api/ping");
+        expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(2);
+        expect(await response.json()).toEqual({ ok: true });
+    });
+
     it("asks for the password when this browser's key is unknown and logs in once", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
