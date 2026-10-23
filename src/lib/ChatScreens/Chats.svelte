@@ -6,7 +6,7 @@
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
-    import { currentChatRef, selectedChatId, streamingState } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChatId, streamingEntry } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
@@ -476,15 +476,10 @@
 
     // Cache the id scan independently of the window/reload/context diff. Text is never an input.
     const activeStreamingIndex = $derived.by(() => {
-        const id = streamingState.messageId;
-        if (
-            id === null ||
-            streamingState.mode === "off" ||
-            streamingState.chaId !== currentCharacter.chaId ||
-            streamingState.chatId !== selectedChatId(currentCharacter.chaId)
-        )
-            return -1;
-        return messages.findIndex((message) => message.chatId === id);
+        const chatId = selectedChatId(currentCharacter.chaId);
+        const entry = chatId === null ? null : streamingEntry({ chaId: currentCharacter.chaId, chatId });
+        if (entry === null || entry.mode === "off") return -1;
+        return messages.findIndex((message) => message.chatId === entry.messageId);
     });
 
     function updateChatBody(
@@ -648,10 +643,10 @@
         });
         const ctx = context;
         const currentChatId = selectedChatId(ctx.character.chaId);
-        const streaming = streamingState.chaId === ctx.character.chaId && streamingState.chatId === currentChatId;
-        const streamingId = streaming ? streamingState.messageId : null;
-        const mode =
-            streamingId !== null ? streamingState.mode : (settings.ui.streamingDisplayOptimizationMode ?? "off");
+        const streaming =
+            currentChatId === null ? null : streamingEntry({ chaId: ctx.character.chaId, chatId: currentChatId });
+        const streamingId = streaming?.messageId ?? null;
+        const mode = streaming !== null ? streaming.mode : (settings.ui.streamingDisplayOptimizationMode ?? "off");
         const streamingIndex = activeStreamingIndex;
         const window = loadPages;
         const folded = chatFoldedStateMessageIndex.index;

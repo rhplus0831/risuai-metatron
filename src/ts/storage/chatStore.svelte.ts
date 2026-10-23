@@ -63,8 +63,9 @@ import { readRefs } from "./resourceClient";
  *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, except its edits of the locked
  *   messages the refusal names, which are dropped with the reload notice and read back with the chat
  *   (also for a tab whose follow of its own job was lost). A conflict on a chat a job
- *   streams into is deferred: it reloads once the job ends. The streamed message is `streamingState`
- *   (the chat screen's display optimization) from its first stream update until its lock is released.
+ *   streams into is deferred: it reloads once the job ends. A chat's streamed message is its
+ *   `streamingEntry` (the chat screen's display optimization) from its generation's first stream
+ *   update until that generation's lock is released; each chat has its own.
  *   `lockedChatKeys` reads the distinct chat keys holding these locks (reactive).
  */
 
@@ -274,8 +275,6 @@ const feedLocks = new Map<string, { generationId: string; revision: string | nul
 const jobMetadataRevisions = new Map<string, string>();
 /** Chats whose work the server refused for a generating message → when it may be sent again. */
 const jobBlocked = new Map<string, number>();
-/** The server generation `streamingState` shows; its lock's release clears the state. */
-let streamingGeneration: string | null = null;
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
 const versions = new Map<string, number>();
 let localSeq = 0;
@@ -285,17 +284,17 @@ let remoteListener: ((ref: ChatRef) => void) | null = null;
 /** Bumped by every mirror write this module makes (the development drift check compares it). */
 let mutationToken = 0;
 
+/** The message a chat shows as streaming and the display optimization mode it streams with. */
+export type StreamingEntry = { messageId: string; mode: Chat["activeStreamingDisplayOptimizationMode"] };
+
 /**
- * The message a server job of this tab streams into, for the chat screen's display optimization
- * (client-only; replaces the persisted flags): set on the generation's first stream update with the
- * configured mode, cleared when its lock is released.
+ * Per chat (`keyOf`): the message a server job of this tab streams into, for the chat screen's
+ * display optimization (client-only; replaces the persisted flags), and the generation that set it
+ * (null: set by `setStreamingState`). Set on the generation's first stream update with the
+ * configured mode, cleared when that generation's lock is released; a job in another chat has its
+ * own entry.
  */
-export const streamingState = $state({
-    chaId: null as string | null,
-    chatId: null as string | null,
-    messageId: null as string | null,
-    mode: undefined as Chat["activeStreamingDisplayOptimizationMode"],
-});
+const streamingChats: Record<string, StreamingEntry & { generationId: string | null }> = $state({});
 
 /** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
 type ChatEntryMeta = {
@@ -955,19 +954,19 @@ function lockedKeys(): string[] {
     return [...serverGenerations.keys(), ...feedLocks.keys()];
 }
 
+/** The message `ref`'s chat shows as streaming, with its display optimization mode (reactive; null: none). */
+export function streamingEntry(ref: ChatRef | null): StreamingEntry | null {
+    const entry = ref === null ? undefined : streamingChats[keyOf(ref.chaId, ref.chatId)];
+    return entry === undefined ? null : { messageId: entry.messageId, mode: entry.mode };
+}
+
 /**
  * Whether the chat screen shows `messageId` of `ref` as the message being generated (reactive, from
- * `streamingState`). The chat id is part of the identity: a branched or copied chat keeps its
- * source's message ids, and its copy of the generating message is not locked.
+ * the chat's `streamingEntry`). The chat id is part of the identity: a branched or copied chat keeps
+ * its source's message ids, and its copy of the generating message is not locked.
  */
 export function isStreamingMessage(ref: ChatRef | null, messageId: string | undefined): boolean {
-    return (
-        ref !== null &&
-        messageId !== undefined &&
-        streamingState.messageId === messageId &&
-        streamingState.chatId === ref.chatId &&
-        streamingState.chaId === ref.chaId
-    );
+    return messageId !== undefined && streamingEntry(ref)?.messageId === messageId;
 }
 
 /** Whether any message of a chat is locked (reactive), by this tab's job or one the change feed announced. */
@@ -1072,10 +1071,12 @@ function flushStreamText(which?: (target: ChatRef & { messageId: string }, messa
     }
 }
 
-/** Clears `streamingState` when it shows `generationId` (its lock was released). */
+/** Clears the streaming entry `generationId` set (its lock was released); other chats' entries stay. */
 function releaseStreaming(generationId: string) {
-    if (streamingGeneration === generationId) {
-        setStreamingState(null);
+    for (const [key, entry] of Object.entries(streamingChats)) {
+        if (entry.generationId === generationId) {
+            delete streamingChats[key];
+        }
     }
 }
 
@@ -1084,7 +1085,7 @@ function releaseStreaming(generationId: string) {
  * the job and writes `text` into the mirror. Nothing is queued and the chat's revision does not
  * move: only stored chat copies or patches advance it. A chunk older than the last one
  * of its generation (`seq`) is dropped. The generation's first stream update makes its message the
- * streaming one (`streamingState`, with the configured display optimization mode). The mirror takes
+ * streaming one of its chat (`streamingEntry`, with the configured display optimization mode). The mirror takes
  * at most one stream update per frame: the generation's first update, and one when no frame flush is
  * pending, are written at once; a later one stays in the stream buffer until the frame flush
  * (`heldStreamText`). Returns false when the chat or message is not in the mirror (its hydration
@@ -1125,12 +1126,11 @@ export function applyServerGeneration(
         lockState.version += 1;
     }
     if (firstUpdate) {
-        setStreamingState({
-            ...ref,
+        streamingChats[keyOf(ref.chaId, ref.chatId)] = {
             messageId: update.messageId,
             mode: settings.ui.streamingDisplayOptimizationMode ?? "off",
-        });
-        streamingGeneration = update.generationId;
+            generationId: update.generationId,
+        };
     }
     if (older) {
         return false;
@@ -1905,16 +1905,14 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
     return requests;
 }
 
-/** Sets or clears the message the chat screen shows as streaming. */
-export function setStreamingState(
-    target: (ChatRef & { messageId: string; mode: Chat["activeStreamingDisplayOptimizationMode"] }) | null,
-) {
-    streamingState.chaId = target?.chaId ?? null;
-    streamingState.chatId = target?.chatId ?? null;
-    streamingState.messageId = target?.messageId ?? null;
-    streamingState.mode = target?.mode;
-    // A server generation that owns the state records itself after this call.
-    streamingGeneration = null;
+/** Sets or clears the message `ref`'s chat shows as streaming (owned by no generation). */
+export function setStreamingState(ref: ChatRef, entry: StreamingEntry | null) {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (entry === null) {
+        delete streamingChats[key];
+    } else {
+        streamingChats[key] = { ...entry, generationId: null };
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3807,7 +3805,7 @@ export function ackChatWork(
 /**
  * The server renamed messages of the group's last create or replace (a missing, invalid, or
  * duplicate id): rename them in the mirror (all at once, by occurrence), in queued ops, and in the
- * streaming state.
+ * chat's streaming entry.
  */
 function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const last = [...group.ops].reverse().find((op) => op.op === "create" || op.op === "replace") as
@@ -3852,9 +3850,9 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
             op.anchor = { after: rename(op.anchor.after) };
         }
     }
-    const streamed = streamingState.messageId;
-    if (streamed !== null && streamingState.chaId === ref.chaId && streamingState.chatId === ref.chatId) {
-        streamingState.messageId = rename(streamed);
+    const streamed = streamingChats[keyOf(ref.chaId, ref.chatId)];
+    if (streamed !== undefined) {
+        streamed.messageId = rename(streamed.messageId);
     }
 }
 
@@ -5259,7 +5257,7 @@ function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
         !isChatGenerating(ref) &&
         !staleChats.has(key) &&
         !noticedChats.has(key) &&
-        !(streamingState.chaId === ref.chaId && streamingState.chatId === ref.chatId)
+        streamingChats[key] === undefined
     );
 }
 

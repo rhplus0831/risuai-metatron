@@ -63,11 +63,20 @@ vi.mock("src/ts/stores.svelte", () => ({
 }));
 vi.mock("src/ts/storage/chatStore.svelte", () => {
     const selection = $state({ chaId: "c", chatId: "chat" });
-    const streamingState = $state({ chaId: null, chatId: null, messageId: null, mode: "off" });
+    // Chat key → the entry that chat shows as streaming.
+    const streaming: Record<string, { messageId: string; mode: string }> = $state({});
     return {
         currentChatRef: () => selection,
         selectedChatId: () => selection.chatId,
-        streamingState,
+        streamingEntry: (ref: { chaId: string; chatId: string } | null) =>
+            (ref === null ? undefined : streaming[`${ref.chaId}/${ref.chatId}`]) ?? null,
+        setStreamingState: (
+            ref: { chaId: string; chatId: string },
+            entry: { messageId: string; mode: string } | null,
+        ) => {
+            if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
+            else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
+        },
     };
 });
 vi.mock("src/ts/globalApi.svelte", () => {
@@ -76,7 +85,7 @@ vi.mock("src/ts/globalApi.svelte", () => {
 });
 
 import { chatFoldedStateMessageIndex as folded } from "src/ts/globalApi.svelte";
-import { currentChatRef, streamingState } from "src/ts/storage/chatStore.svelte";
+import { currentChatRef, setStreamingState } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { ReloadChatPointer } from "src/ts/stores.svelte";
 import Chats from "./Chats.svelte";
@@ -172,7 +181,7 @@ function render(
 beforeEach(() => {
     vi.stubGlobal("IntersectionObserver", Observer);
     vi.stubGlobal("ResizeObserver", undefined);
-    Object.assign(streamingState, { chaId: null, chatId: null, messageId: null, mode: "off" });
+    setStreamingState({ chaId: "c", chatId: "chat" }, null);
     Object.assign(currentChatRef()!, { chaId: "c", chatId: "chat" });
     Object.assign(settings.ui, {
         autoScrollToNewMessage: false,
@@ -193,7 +202,7 @@ afterEach(async () => {
 
 describe("chat row invalidation", () => {
     it.each(["off", "balanced", "strong"] as const)("isolates streamed chunks with mode %s", (mode) => {
-        Object.assign(streamingState, { chaId: "c", chatId: "chat", messageId: "m4", mode });
+        setStreamingState({ chaId: "c", chatId: "chat" }, { messageId: "m4", mode });
         const untouchedReads = vi.fn();
         const input = messages(6);
         // A prop getter observes transcript work, including a full diff which emits no updates.
@@ -856,7 +865,7 @@ describe("opening staged mounting", () => {
     });
 
     it("does no component or transcript work for deferred stream chunks", async () => {
-        Object.assign(streamingState, { chaId: "c", chatId: "chat", messageId: "m0", mode: "off" });
+        setStreamingState({ chaId: "c", chatId: "chat" }, { messageId: "m0", mode: "off" });
         const input = longMessages();
         const structureRead = vi.fn(() => "char" as const);
         Object.defineProperty(input[2], "role", { enumerable: true, get: structureRead });

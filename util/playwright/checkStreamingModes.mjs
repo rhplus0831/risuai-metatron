@@ -1,7 +1,7 @@
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for the streaming display optimization on server streams: for each
 // `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a server send makes its reply
-// the streaming message (`streamingState`, with the configured mode) from its first chunk until the
+// its chat's streaming message (`streamingEntry`, with the configured mode) from its first chunk until the
 // job ends. While it streams, "strong" renders the reply raw (no markdown) and the others render it
 // parsed; every mode keeps the reply's row mounted across chunks (rows are keyed by message id). At
 // the end the state is cleared and the final reply renders parsed.
@@ -178,10 +178,10 @@ try {
     await page.waitForTimeout(1000);
 
     const streaming = () =>
-        page.evaluate(async () => {
-            const { streamingState } = await import("/src/ts/storage/chatStore.svelte.ts");
-            return { ...streamingState };
-        });
+        page.evaluate(async (id) => {
+            const { streamingEntry } = await import("/src/ts/storage/chatStore.svelte.ts");
+            return streamingEntry({ chaId: id, chatId: "s" }) ?? { messageId: null, mode: undefined };
+        }, chaId);
     const lastMessage = () =>
         page.evaluate(async (id) => {
             const { findChat } = await import("/src/ts/storage/chatStore.svelte.ts");
@@ -229,11 +229,7 @@ try {
         const reply = await lastMessage();
         check(
             `${mode}: the reply is the streaming message with the configured mode`,
-            set === true &&
-                state.chaId === chaId &&
-                state.chatId === "s" &&
-                state.messageId === reply?.id &&
-                state.mode === mode,
+            set === true && state.messageId === reply?.id && state.mode === mode,
             { state, reply },
         );
         const replyId = state.messageId;

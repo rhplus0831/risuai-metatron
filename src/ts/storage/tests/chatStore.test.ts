@@ -1036,7 +1036,7 @@ describe("streaming message identity", () => {
         expect(ids(branch)).toEqual(ids(source));
         const refBranch = { chaId: "c", chatId: branch.id! };
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
-        chat.setStreamingState({ ...ref, messageId: "a", mode: "off" });
+        chat.setStreamingState(ref, { messageId: "a", mode: "off" });
         expect(chat.isStreamingMessage(ref, "a")).toBe(true);
         expect(chat.isStreamingMessage(refBranch, "a")).toBe(false);
         expect(chat.isStreamingMessage({ chaId: "other", chatId: "k" }, "a")).toBe(false);
@@ -1046,8 +1046,42 @@ describe("streaming message identity", () => {
         // The copy's message is editable while the source's is locked.
         chat.setMessageText(refBranch, "a", "edited in the branch");
         expect(() => chat.setMessageText(ref, "a", "edited in the source")).toThrow(/being generated/);
-        chat.setStreamingState(null);
+        chat.setStreamingState(ref, null);
         expect(chat.isStreamingMessage(ref, "a")).toBe(false);
+    });
+
+    it("keeps one streaming entry per chat: a stream in another chat neither takes over nor clears this chat's entry", async () => {
+        const { chat, ref } = await boot();
+        chat.createChat("c", { id: "j", name: "J", message: [m("x", "X", "char")] } as any);
+        const refJ = { chaId: "c", chatId: "j" };
+        chat.applyServerGeneration(ref, { jobId: "A", messageId: "a", generationId: "gA", text: "A1", seq: 0 });
+        expect(chat.streamingEntry(ref)).toEqual({ messageId: "a", mode: "off" });
+        expect(chat.streamingEntry(refJ)).toBeNull();
+        // B's first update sets its own chat's entry and leaves A's.
+        chat.applyServerGeneration(refJ, { jobId: "B", messageId: "x", generationId: "gB", text: "X1", seq: 0 });
+        expect(chat.streamingEntry(refJ)).toEqual({ messageId: "x", mode: "off" });
+        expect(chat.streamingEntry(ref)).toEqual({ messageId: "a", mode: "off" });
+        expect(chat.isStreamingMessage(ref, "a")).toBe(true);
+        expect(chat.isStreamingMessage(refJ, "x")).toBe(true);
+        expect(chat.isStreamingMessage(refJ, "a")).toBe(false);
+        // A's later chunk keeps both.
+        chat.applyServerGeneration(ref, { jobId: "A", messageId: "a", generationId: "gA", text: "A2", seq: 1 });
+        expect(chat.isStreamingMessage(ref, "a")).toBe(true);
+        expect(chat.isStreamingMessage(refJ, "x")).toBe(true);
+        // B's release clears only B's entry.
+        chat.endServerJob("B");
+        expect(chat.streamingEntry(refJ)).toBeNull();
+        expect(chat.isStreamingMessage(ref, "a")).toBe(true);
+        expect(chat.streamingEntry(ref)).toEqual({ messageId: "a", mode: "off" });
+        chat.endServerJob("A");
+        expect(chat.streamingEntry(ref)).toBeNull();
+
+        // The other order: the earlier stream ends first and the later one stays.
+        chat.applyServerGeneration(ref, { jobId: "C", messageId: "c", generationId: "gC", text: "C1", seq: 0 });
+        chat.applyServerGeneration(refJ, { jobId: "D", messageId: "x", generationId: "gD", text: "X2", seq: 0 });
+        chat.endServerJob("C");
+        expect(chat.streamingEntry(ref)).toBeNull();
+        expect(chat.isStreamingMessage(refJ, "x")).toBe(true);
     });
 
     it("renames the streaming message when the server renames it in a whole-chat write of its chat, and leaves another character's chat with the same ids alone", async () => {
@@ -1060,15 +1094,17 @@ describe("streaming message identity", () => {
             result.chats[0] = { ...result.chats[0], messageIds: renamed };
             ack(work, result);
         };
-        chat.setStreamingState({ chaId: "other", chatId: "k", messageId: "b", mode: "balanced" });
+        const other = { chaId: "other", chatId: "k" };
+        chat.setStreamingState(other, { messageId: "b", mode: "balanced" });
         replaceRenaming(["a", "b2", "c"]);
         expect(ids(chat.findChat(ref))).toEqual(["a", "b2", "c"]);
-        expect({ ...chat.streamingState }).toEqual({ chaId: "other", chatId: "k", messageId: "b", mode: "balanced" });
+        expect(chat.streamingEntry(other)).toEqual({ messageId: "b", mode: "balanced" });
 
-        chat.setStreamingState({ ...ref, messageId: "b2", mode: "strong" });
+        chat.setStreamingState(ref, { messageId: "b2", mode: "strong" });
         replaceRenaming(["a", "b3", "c"]);
         expect(ids(chat.findChat(ref))).toEqual(["a", "b3", "c"]);
-        expect({ ...chat.streamingState }).toEqual({ ...ref, messageId: "b3", mode: "strong" });
+        expect(chat.streamingEntry(ref)).toEqual({ messageId: "b3", mode: "strong" });
+        expect(chat.streamingEntry(other)).toEqual({ messageId: "b", mode: "balanced" });
         expect(chat.isStreamingMessage(ref, "b3")).toBe(true);
     });
 });

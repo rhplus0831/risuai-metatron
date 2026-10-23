@@ -31,7 +31,7 @@ vi.mock("src/ts/stores.svelte", () => ({
 vi.mock("src/ts/storage/chatStore.svelte", () => ({
     currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
     selectedChatId: () => "chat",
-    streamingState: { chaId: null, chatId: null, messageId: null },
+    streamingEntry: () => null,
 }));
 vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
 

@@ -316,12 +316,15 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         expect(await streaming.innerText()).not.toContain("[lua");
         // The reply is the streaming message with the configured mode; "strong" shows its text without
         // markdown, the others parse it.
-        const live = await page.evaluate(async () => {
-            const { streamingState } = await import("/src/ts/storage/chatStore.svelte.ts");
-            return { ...streamingState };
-        });
-        expect(live.mode).toBe(mode);
-        expect(live.messageId).toBe(await streaming.getAttribute("data-chat-id"));
+        const live = await page.evaluate(
+            async (ref) => {
+                const { streamingEntry } = await import("/src/ts/storage/chatStore.svelte.ts");
+                return streamingEntry(ref);
+            },
+            { chaId, chatId },
+        );
+        expect(live?.mode).toBe(mode);
+        expect(live?.messageId).toBe(await streaming.getAttribute("data-chat-id"));
         if (mode === "strong") {
             expect(await streaming.innerText()).toContain("**slow**");
             expect(await streaming.locator("strong").count()).toBe(0);
@@ -340,10 +343,13 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         expect(replyMessage.data).toBe("Hello **slow** stream reply.");
         // The end cleared the streaming state, and the final reply renders parsed in every mode.
         expect(
-            await page.evaluate(async () => {
-                const { streamingState } = await import("/src/ts/storage/chatStore.svelte.ts");
-                return streamingState.messageId;
-            }),
+            await page.evaluate(
+                async (ref) => {
+                    const { streamingEntry } = await import("/src/ts/storage/chatStore.svelte.ts");
+                    return streamingEntry(ref);
+                },
+                { chaId, chatId },
+            ),
         ).toBeNull();
         await expect(reply.locator("strong").filter({ hasText: "slow" })).toHaveCount(1);
         expect(await reply.innerText()).not.toContain("**");

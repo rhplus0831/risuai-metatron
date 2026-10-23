@@ -12,7 +12,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 type RowProps = { message: string; idx: number };
 const hoisted = vi.hoisted(() => ({
     mounts: [] as { props: RowProps; updates: Record<string, unknown>[] }[],
-    streaming: { chaId: null as string | null, chatId: null as string | null, messageId: null as string | null },
+    // Chat key → the message that chat shows as streaming (`streamingEntry`).
+    streaming: new Map<string, string>(),
 }));
 
 vi.mock("./Chat.svelte", () => ({
@@ -34,7 +35,10 @@ vi.mock("src/ts/stores.svelte", () => ({
 vi.mock("src/ts/storage/chatStore.svelte", () => ({
     currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
     selectedChatId: () => "chat",
-    streamingState: hoisted.streaming,
+    streamingEntry: (ref: { chaId: string; chatId: string } | null) => {
+        const messageId = ref === null ? undefined : hoisted.streaming.get(`${ref.chaId}/${ref.chatId}`);
+        return messageId === undefined ? null : { messageId, mode: undefined };
+    },
 }));
 vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
 
@@ -49,7 +53,7 @@ afterEach(() => {
         unmount(instance);
     }
     hoisted.mounts.length = 0;
-    Object.assign(hoisted.streaming, { chaId: null, chatId: null, messageId: null });
+    hoisted.streaming.clear();
     document.body.innerHTML = "";
     vi.spyOn(console, "log").mockRestore();
 });
@@ -112,11 +116,21 @@ describe("Chats row reuse", () => {
     });
 
     it("sends a streaming message's text through updateRow instead of mounting it again", () => {
-        Object.assign(hoisted.streaming, { chaId: "c", chatId: "chat", messageId: "m1" });
+        hoisted.streaming.set("c/chat", "m1");
         const props = render([{ role: "char", data: "Hel", chatId: "m1" }]);
         props.messages = [{ role: "char", data: "Hello", chatId: "m1" }];
         flushSync();
         expect(hoisted.mounts).toHaveLength(1);
         expect(hoisted.mounts[0].updates).toEqual([{ message: "Hello", rawStreamingText: "Hello" }]);
+    });
+
+    it("does not treat a row as streaming for another chat's streaming entry with the same message id", () => {
+        hoisted.streaming.set("c/other", "m1");
+        const props = render([{ role: "char", data: "Hel", chatId: "m1" }]);
+        props.messages = [{ role: "char", data: "Hello", chatId: "m1" }];
+        flushSync();
+        // A text change of a row that is not streaming mounts it again.
+        expect(hoisted.mounts).toHaveLength(2);
+        expect(hoisted.mounts[1].props.message).toBe("Hello");
     });
 });
