@@ -25,8 +25,8 @@ import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } fr
 
 // The server side of the job channel. First the hub in isolation (`server/src/jobs/channel.ts`) over
 // a recording transport with an injected clock: the hook list validation, notices, the request
-// lifecycle (FIFO per client, nesting at most two deep, one absolute deadline from enqueue that the
-// clock decides, the hydration receipts of a callback, answers bound to the outstanding request,
+// lifecycle (FIFO per client, nesting at most two deep, one absolute deadline from dispatch that the
+// clock decides and none while queued, the hydration receipts of a callback, answers bound to the outstanding request,
 // delivery and replay, close). Then the registry wired to it (`generationJobs.ts`) on a real
 // listening server with a fake runner: the 400 for a malformed list, a callback requested before the
 // owner attaches, a reconnect with a pending question, answers only from the current socket, the
@@ -313,53 +313,139 @@ describe("the hub: deadlines", () => {
         expect(h.ofType("question").filter((event) => event.id === id2)).toHaveLength(1);
     });
 
-    it("expires queued roots in the queue (never hydrated or sent), then dispatches the live one once and reuses the lane", async () => {
+    it("starts a root's deadline at its dispatch: a hook callback and a question queued behind another job's long provider callback wait without one and keep their full allowances", async () => {
         const h = harness();
-        const a = h.open("a");
+        const a = h.open("a", { hooks: { providers: validHooks.providers } });
         const b = h.open("b");
-        const blocking = a.channel.callback("editoutput", { text: "first" });
-        const blockingId = h.last("callback").id;
-        const expired = Array.from({ length: 20 }, () =>
-            b.channel.callback("editoutput", { text: "expired" }, { timeoutMs: 10 }),
-        );
-        const live = b.channel.callback("editoutput", { text: "live" });
-        h.clock.value += 10;
-        h.answer(a, blockingId);
-        expect(await blocking).toEqual({ outcome: "answered", value: "ok" });
-        expect((await Promise.all(expired)).every((result) => result.outcome === "timedOut")).toBe(true);
+        const provider = a.channel.callback("provider", { name: "prov", argument: {} }, { timeoutMs: 30 * 60_000 });
+        const providerId = h.last("callback").id;
+        const hook = b.channel.callback("editoutput", { text: "hook" });
+        const question = b.channel.ask({ kind: "alertConfirm", payload: { message: "q" } });
+        // Past both allowances the two are still queued: nothing hydrated, sent, or cancelled.
+        await h.tick(QUESTION_TIMEOUT_MS + CALLBACK_TIMEOUT_MS);
+        expect(await h.state(hook)).toBe("pending");
+        expect(await h.state(question)).toBe("pending");
+        expect(h.hydrations).toEqual(["a"]);
+        expect(h.sent.map((event) => `${event.job}:${event.type}`)).toEqual(["a:callback"]);
+        h.answer(a, providerId, { success: true, content: "x" });
+        expect(await provider).toMatchObject({ outcome: "answered" });
+        // The hook callback is dispatched now, with its whole allowance from now.
+        const hookDispatchedAt = h.clock.value;
+        const hookId = h.last("callback").id;
+        expect(h.last("callback")).toMatchObject({
+            job: "b",
+            payload: { text: "hook" },
+            deadline: hookDispatchedAt + CALLBACK_TIMEOUT_MS,
+        });
         expect(h.hydrations).toEqual(["a", "b"]);
-        expect(h.ofType("callback").map((event) => (event.payload as { text: string }).text)).toEqual([
-            "first",
-            "live",
-        ]);
-        // No `cancel` for a request the client never got.
-        expect(h.ofType("cancel")).toHaveLength(0);
-        h.answer(b, h.last("callback").id, "L");
-        expect(await live).toEqual({ outcome: "answered", value: "L" });
-        const later = a.channel.callback("editoutput", { text: "later" });
-        h.answer(a, h.last("callback").id, "later");
-        expect(await later).toEqual({ outcome: "answered", value: "later" });
+        await h.tick(CALLBACK_TIMEOUT_MS - 1);
+        expect(await h.state(hook)).toBe("pending");
+        await h.tick(1);
+        expect(await hook).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("cancel").id).toBe(hookId);
+        // The question likewise.
+        expect(h.last("question")).toMatchObject({ job: "b", deadline: h.clock.value + QUESTION_TIMEOUT_MS });
+        await h.tick(QUESTION_TIMEOUT_MS - 1);
+        expect(await h.state(question)).toBe("pending");
+        await h.tick(1);
+        expect(await question).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("cancel").id).toBe(h.last("question").id);
     });
 
-    it("expires a request whose deadline passes between the queue's check and its dispatch, and promotes the next root exactly once", async () => {
+    it("expires requests without an owner one after another, each its allowance from its own dispatch, while a queued one past its allowance still ends only with its job or its signal, without a cancel", async () => {
+        const h = harness();
+        h.attached.value = false;
+        h.delivering.value = false;
+        const a = h.open("a");
+        const b = h.open("b");
+        const c = h.open("c");
+        const controller = new AbortController();
+        const first = a.channel.callback("editoutput", { text: "1" }, { timeoutMs: 100 });
+        const second = b.channel.callback("editoutput", { text: "2" }, { timeoutMs: 100 });
+        const third = a.channel.callback("editoutput", { text: "3" }, { timeoutMs: 100 });
+        const closing = b.channel.ask({ kind: "alertConfirm", payload: { message: "closing" } }, { timeoutMs: 100 });
+        const signalled = c.channel.ask(
+            { kind: "alertConfirm", payload: { message: "signalled" } },
+            { timeoutMs: 100, signal: controller.signal },
+        );
+        expect(h.last("callback")).toMatchObject({ job: "a", deadline: 1_100 });
+        await h.tick(100);
+        expect(await first).toMatchObject({ outcome: "disconnected" });
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "2" }, deadline: 1_200 });
+        await h.tick(99);
+        expect(await h.state(second)).toBe("pending");
+        await h.tick(1);
+        expect(await second).toMatchObject({ outcome: "disconnected" });
+        expect(h.last("callback")).toMatchObject({ job: "a", payload: { text: "3" }, deadline: 1_300 });
+        // Long past their own allowances, the two questions are still queued.
+        await h.tick(50);
+        expect(await h.state(closing)).toBe("pending");
+        expect(await h.state(signalled)).toBe("pending");
+        b.close("The job has ended");
+        expect(await closing).toEqual({ outcome: "aborted", error: "The job has ended" });
+        controller.abort();
+        expect(await signalled).toEqual({ outcome: "aborted", error: "The request ended" });
+        await h.tick(50);
+        expect(await third).toMatchObject({ outcome: "disconnected" });
+        expect(h.ofType("question")).toHaveLength(0);
+        expect(h.hydrations).toEqual(["a", "b", "a"]);
+        expect(h.ofType("cancel").map((event) => event.job)).toEqual(["a", "b", "a"]);
+        // Nothing is left on the lane.
+        void c.channel.callback("editoutput", { text: "later" });
+        expect(h.last("callback")).toMatchObject({ job: "c", deadline: h.clock.value + CALLBACK_TIMEOUT_MS });
+    });
+
+    it("expires a root whose allowance is used up at its dispatch (a zero timeout) without hydrating or sending it, and promotes the next root exactly once", async () => {
         const h = harness();
         const a = h.open("a");
         const b = h.open("b");
         const c = h.open("c");
         const blocking = a.channel.callback("editoutput", { text: "first" });
         const blockingId = h.last("callback").id;
-        const borderline = b.channel.callback("editoutput", { text: "borderline" }, { timeoutMs: 10 });
+        const zero = b.channel.callback("editoutput", { text: "zero" }, { timeoutMs: 0 });
         const next = c.channel.callback("editoutput", { text: "next" });
-        // The answer's own check and the queue's check read the old time; the dispatch reads the new one.
-        h.clock.value += 10;
-        h.clock.reads = [1_000, 1_000, 1_010];
+        h.clock.value += 5_000;
         h.answer(a, blockingId);
         expect(await blocking).toMatchObject({ outcome: "answered" });
-        expect(await borderline).toMatchObject({ outcome: "timedOut" });
         expect(h.hydrations).toEqual(["a", "c"]);
         expect(h.ofType("callback").map((event) => event.job)).toEqual(["a", "c"]);
+        expect(await zero).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        // No `cancel` for a request the client never got.
+        expect(h.ofType("cancel")).toHaveLength(0);
         h.answer(c, h.last("callback").id);
         expect(await next).toMatchObject({ outcome: "answered" });
+        // Its timer is gone with it.
+        await h.tick(CALLBACK_TIMEOUT_MS + 1);
+        expect(h.ofType("cancel")).toHaveLength(0);
+    });
+
+    it("caps a child by its parent's dispatch deadline after a delayed dispatch, and watches a callback only while it is outstanding and in time", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b");
+        const blocking = a.channel.callback("editoutput", { text: "first" }, { timeoutMs: 1_000 });
+        const blockingId = h.last("callback").id;
+        const parent = b.channel.callback("editoutput", { text: "parent" }, { timeoutMs: 500 });
+        h.clock.value += 300;
+        h.answer(a, blockingId);
+        expect(await blocking).toMatchObject({ outcome: "answered" });
+        const parentId = h.last("callback").id;
+        expect(h.last("callback")).toMatchObject({ job: "b", deadline: 1_800 });
+        const settled = vi.fn();
+        expect(b.watchCallback(parentId, settled)).not.toBeNull();
+        // Only its own job knows it; a settled one is not watched.
+        expect(a.watchCallback(parentId, () => {})).toBeNull();
+        expect(a.watchCallback(blockingId, () => {})).toBeNull();
+        // A child made after the delayed dispatch is capped by the parent's deadline from that dispatch.
+        const child = a.channel.callback("editoutput", { text: "child" }, { parentId, timeoutMs: 5_000 });
+        expect(h.last("callback")).toMatchObject({ job: "a", parentId, deadline: 1_800 });
+        // At the parent's deadline, before its timer fired: the watch is refused and the clock settles it.
+        h.clock.value = 1_800;
+        expect(b.watchCallback(parentId, () => {})).toBeNull();
+        expect(await parent).toMatchObject({ outcome: "timedOut" });
+        expect(await child).toMatchObject({ outcome: "aborted" });
+        expect(settled).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -563,6 +649,74 @@ describe("the hub: delivery, replay, and close", () => {
         link.handleAttach();
         expect(h.ofType("question")).toHaveLength(2);
         expect(h.ofType("question")[1]).toMatchObject({ id: h.ofType("question")[0].id, replay: true });
+    });
+
+    it("replays a callback that waited in the queue with its dispatch deadline, and sends a root an expiry during the attach promotes exactly once", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const first = a.channel.callback("editoutput", { text: "first" }, { timeoutMs: 100 });
+        const firstId = h.last("callback").id;
+        const second = a.channel.callback("editoutput", { text: "second" });
+        h.clock.value += 50;
+        h.answer(a, firstId);
+        expect(await first).toMatchObject({ outcome: "answered" });
+        const dispatchedAt = h.clock.value;
+        const secondId = h.last("callback").id;
+        expect(h.last("callback").deadline).toBe(dispatchedAt + CALLBACK_TIMEOUT_MS);
+        // A reattach much later: the same deadline, not one from the attach.
+        h.clock.value += 1_000;
+        a.handleAttach();
+        expect(h.ofType("callback").filter((event) => event.id === secondId)).toHaveLength(2);
+        expect(h.last("callback")).toMatchObject({
+            id: secondId,
+            replay: true,
+            deadline: dispatchedAt + CALLBACK_TIMEOUT_MS,
+        });
+        h.answer(a, secondId);
+        expect(await second).toMatchObject({ outcome: "answered" });
+
+        // An attach at an outstanding request's deadline: it expires, and the root of the same job
+        // queued behind it is dispatched by that expiry, sent once as a first delivery.
+        const expiring = a.channel.callback("editoutput", { text: "expiring" }, { timeoutMs: 100 });
+        const expiringId = h.last("callback").id;
+        const promoted = a.channel.callback("editoutput", { text: "promoted" });
+        h.clock.value += 100;
+        a.handleAttach();
+        expect(await expiring).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("cancel").id).toBe(expiringId);
+        const promotedEvents = h
+            .ofType("callback")
+            .filter((event) => (event.payload as { text: string }).text === "promoted");
+        expect(promotedEvents).toHaveLength(1);
+        expect(promotedEvents[0].replay).toBeUndefined();
+        expect(promotedEvents[0].deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        expect(h.sent.slice(-2).map((event) => event.type)).toEqual(["cancel", "callback"]);
+        h.answer(a, promotedEvents[0].id);
+        expect(await promoted).toMatchObject({ outcome: "answered" });
+    });
+
+    it("skips an attach delivery of a request that an earlier step of the same attach settled", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const controller = new AbortController();
+        const parent = a.channel.callback(
+            "editoutput",
+            { text: "parent" },
+            { timeoutMs: 1_000, signal: controller.signal },
+        );
+        const parentId = h.last("callback").id;
+        const child = a.channel.callback("editoutput", { text: "child" }, { parentId, timeoutMs: 100 });
+        const childId = h.last("callback").id;
+        // The aux request that runs inside the child ends with it, and its end ends the parent's caller.
+        a.watchCallback(childId, () => controller.abort());
+        h.clock.value += 100;
+        a.handleAttach();
+        expect(await child).toMatchObject({ outcome: "timedOut" });
+        expect(await parent).toEqual({ outcome: "aborted", error: "The request ended" });
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([childId, parentId]);
+        // The parent was collected live before the child's expiry settled it: no delivery after its cancel.
+        expect(h.ofType("callback").filter((event) => event.id === parentId)).toHaveLength(1);
+        expect(h.sent.at(-1)).toMatchObject({ type: "cancel", id: parentId });
     });
 
     it("settles a request whose send throws as aborted without a cancel, and keeps the lane usable", async () => {

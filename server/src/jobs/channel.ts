@@ -18,9 +18,12 @@ import {
     TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 
-/** A question waits this long from the moment it is queued. */
+/** A question waits this long from the moment it is dispatched (not while it waits in the client's queue). */
 export const QUESTION_TIMEOUT_MS = 120_000;
-/** A callback waits this long from the moment it is queued (a `provider` callback: the caller's). */
+/**
+ * A callback waits this long from the moment it is dispatched (a `provider` callback: the caller's), not
+ * while it waits in the client's queue.
+ */
 export const CALLBACK_TIMEOUT_MS = 60_000;
 /** Most requests one client may have queued. */
 const MAX_QUEUED_PER_CLIENT = 256;
@@ -76,8 +79,12 @@ type Request = {
     id: string;
     channel: ChannelState;
     kind: "question" | "callback";
-    /** Builds the event to send; a callback hydrates first (the barrier). */
-    build: (replay: boolean) => GenerationChannelEvent;
+    /** Makes `build` once the deadline is known (at dispatch). */
+    makeBuild: (id: string, deadline: number) => (replay: boolean) => GenerationChannelEvent;
+    /** Builds the event to send; a callback hydrates first (the barrier). Set at dispatch. */
+    build: ((replay: boolean) => GenerationChannelEvent) | null;
+    timeoutMs: number;
+    /** Set at dispatch (`timeoutMs` from then, capped by the parent's); `Infinity` while queued. */
     deadline: number;
     parent: Request | null;
     children: Set<Request>;
@@ -245,8 +252,10 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * of queued requests and a stack of outstanding ones: a request without a parent waits until the
  * client has none outstanding; a child (an aux request's callback, `parentId` = the client's
  * outstanding callback) runs at once, one level deep; anything else is refused. Notices are never
- * queued. Every request has one deadline from the moment it is queued, capped by its parent's; at
- * the deadline it is `timedOut` with an owner socket attached, else `disconnected`. A job's end
+ * queued. Every request has one deadline from the moment it is dispatched (it takes the client's
+ * slot, with or without an owner socket attached), capped by its parent's; at the deadline it is
+ * `timedOut` with an owner socket attached, else `disconnected`. A queued root has no deadline: it
+ * waits until it is dispatched, its job ends, or the signal it was given aborts. A job's end
  * (`close`) settles its requests `aborted` and cancels their children.
  */
 export function createChannelHub(options: { now?: () => number } = {}) {
@@ -318,8 +327,20 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     }
 
     function dispatch(request: Request, lane: ClientLane) {
-        // Every dispatch path (a queued root, a child) stops here when the deadline passed: an
-        // expired request never hydrates or sends.
+        // The deadline starts now: time spent behind other requests in the queue is not counted.
+        const deadline = Math.min(now() + request.timeoutMs, request.parent?.deadline ?? Infinity);
+        request.deadline = deadline;
+        const build = request.makeBuild(request.id, deadline);
+        request.build = build;
+        // A wakeup only: `expireIfDue` compares the clock, so a late timer and an early one agree.
+        const wake = () => {
+            if (!expireIfDue(request)) {
+                request.timer = setTimeout(wake, Math.max(1, request.deadline - now()));
+            }
+        };
+        request.timer = setTimeout(wake, Math.max(0, deadline - now()));
+        // Every dispatch path (a queued root, a child) stops here when the deadline passed (a zero
+        // timeout, an overdue parent): an expired request never hydrates or sends.
         if (expireIfDue(request)) {
             return;
         }
@@ -327,7 +348,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         lane.stack.push(request);
         try {
             // Without an owner socket nothing was delivered: the attach sends it as a first delivery.
-            request.delivered = request.channel.transport.send(request.build(false));
+            request.delivered = request.channel.transport.send(build(false));
         } catch (error) {
             settle(
                 request,
@@ -343,7 +364,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         const lane = laneOf(clientId);
         while (lane.stack.length === 0 && lane.queue.length > 0) {
             const next = lane.queue.shift()!;
-            if (!next.settled && !next.channel.closed && !expireIfDue(next)) {
+            if (!next.settled && !next.channel.closed) {
                 dispatch(next, lane);
             }
         }
@@ -392,14 +413,14 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 });
                 return;
             }
-            const id = randomUUID();
-            const deadline = Math.min(now() + timeoutMs, parent?.deadline ?? Infinity);
             const request: Request = {
-                id,
+                id: randomUUID(),
                 channel,
                 kind,
-                build: build(id, deadline),
-                deadline,
+                makeBuild: build,
+                build: null,
+                timeoutMs,
+                deadline: Infinity,
                 parent,
                 children: new Set(),
                 dispatched: false,
@@ -424,13 +445,6 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 signal.addEventListener("abort", onAbort, { once: true });
                 request.onSettled.add(() => signal.removeEventListener("abort", onAbort));
             }
-            // A wakeup only: `expireIfDue` compares the clock, so a late timer and an early one agree.
-            const wake = () => {
-                if (!expireIfDue(request)) {
-                    request.timer = setTimeout(wake, Math.max(1, request.deadline - now()));
-                }
-            };
-            request.timer = setTimeout(wake, Math.max(0, deadline - now()));
             if (parent) {
                 dispatch(request, lane);
             } else {
@@ -576,14 +590,22 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                             transport.send(event);
                         },
                     }));
-                    for (const request of [...state.requests]) {
-                        if (!request.dispatched || request.settled || expireIfDue(request)) {
+                    // Only the requests outstanding now: one an expiry below promotes from the queue
+                    // is sent by its dispatch and must not be sent again here.
+                    const outstanding = [...state.requests].filter((request) => request.dispatched);
+                    for (const request of outstanding) {
+                        if (request.settled || expireIfDue(request)) {
                             continue;
                         }
+                        const build = request.build!;
                         sends.push({
                             order: request.order,
                             send: () => {
-                                const sent = transport.send(request.build(request.delivered));
+                                // An earlier send of this batch may have settled it, or used up its time.
+                                if (request.settled || expireIfDue(request)) {
+                                    return;
+                                }
+                                const sent = transport.send(build(request.delivered));
                                 request.delivered ||= sent;
                             },
                         });

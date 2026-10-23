@@ -284,7 +284,7 @@ export const MAX_FOLLOW_UP_PART_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------------------------
 // The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
-// the owner answers. Every request has one deadline from the moment it is queued; the server alone
+// the owner answers. Every request has one deadline from the moment it is dispatched; the server alone
 // decides `timedOut`, `disconnected`, `aborted`, and `refused`.
 
 /** A notice: a UI effect the job asks the owner's tab to show. */
