@@ -121,7 +121,7 @@ exists today and is tracked separately.
 
 ## Order
 
-(1, 2, 3) → 4 → 5 → 6.
+(1, 2, 3) → 4 → 5 → (6, 7).
 
 - Slices 1, 2 and 3 share no file: 1 is the registry and its readers (`src/ts/process/`,
   `Suggestion.svelte`, the fences, translator, `pluginWorkIdle`), 2 is
@@ -132,6 +132,8 @@ exists today and is tracked separately.
 - Slice 5 is the only slice that lets two chats send at once (`sendChat`'s check and the
   chat screen). It needs 1–4: before it, every hazard above is unreachable.
 - Slice 6 is notifications, docs, and the end-to-end check, after 5.
+- Slice 7 (added 2026-10-23 after slice 5's review) fixes two channel hazards slice 5
+  makes reachable; it shares no source file with 6, so they run in parallel.
 
 ## Slice 1. Local send registry, behavior unchanged (_hard_, `chat-pipeline.md`)
 
@@ -271,6 +273,48 @@ Depends: 5.
 - Test: `shared/notifications` tests (two chats get different tags; the budget still
   holds), `pushNotifications` dismissal test.
 
+## Slice 7. Channel lane and callback parentage across chats (_hard_, `plugins-mcp.md`)
+
+Depends: 5. Added 2026-10-23: the Sol review of slice 5 found two hazards that per-chat
+sends make reachable (pre-existing for boot-resumed jobs). Both must be fixed before the
+run ends; D1 (one root callback at a time per tab) still holds.
+
+- Stop in one chat ends another chat's job. `src/ts/network/jobChannel.ts`
+  `handleCallback` (~973) refuses a root callback while `outstanding` is non-empty
+  (`failure: "protocol"`); a server `cancel` only marks the entry `cancelled` (~118), and
+  it leaves `outstanding` when the plugin hook's promise settles (~986). The server
+  (`server/src/jobs/channel.ts` `settle` ~286) frees the lane at once and dispatches the
+  next queued root, so Stop in chat A while A's slow hook runs lets chat B's next hook or
+  provider callback be refused, which can end B's job (`server/src/prompt/runner.ts`
+  ~1444). Fix: the server keeps the lane held after cancelling a dispatched callback until
+  the tab reports that callback drained (an explicit message in `shared/jobs.ts`), with a
+  bound so a hook that never settles does not hold the lane forever (the cancelled
+  callback's own remaining deadline, or `CALLBACK_TIMEOUT_MS` from the cancel). The tab
+  must not run a new root while a cancelled one is still running (D1). Check whether
+  `channelCallbacksRunning()` (`generationJobs.ts`, plugin `sendChat`'s guard) should then
+  follow lane occupancy; a never-settling hook keeping plugin `sendChat` refused after its
+  job ended is the same root.
+- UI requests become another job's callback children. `src/ts/process/request/transport.ts`
+  (~239) sets `body.channelCall = activeChannelCall()` for every auxiliary LLM request,
+  and `src/ts/network/channelCallSource.ts` returns the top of the tab's outstanding
+  callbacks, not the request's own origin. A request the UI starts while another job's
+  callback runs (a suggestion request when chat A's send ends while chat B's hook runs, a
+  message translation during a plugin-provider reply) becomes that callback's child: it is
+  aborted when the callback settles, refused if it settles before the POST
+  (`server/src/llm/requests.ts` ~1165), and may get B's interceptors. Fix: carry callback
+  provenance explicitly from plugin code that runs inside a callback; UI-originated
+  requests (suggestions, translation, memory, the composer) carry none. Check
+  `request.ts` `activeChannelCallTargets` (~205) the same way. Also pass
+  `Suggestion.svelte`'s captured `requestChatRef` to its request (~149).
+- `plugins-mcp.md` and `self-host-server.md` where they describe the lane and callback
+  parentage.
+- Test: `server/src/tests/jobChannel.test.ts` (a cancelled dispatched callback holds the
+  lane until the tab's drain message, then the next root dispatches; the bound releases a
+  never-drained one), a `jobChannel.ts` test (Stop in A while A's hook runs; B's next root
+  callback is not refused), `transport.test.ts` / `request` tests (a UI request made while
+  another job's callback is outstanding carries no `channelCall`; a request from plugin
+  code inside the callback still does).
+
 ## Decisions
 
 The runner takes each default unless the user overrides it.
@@ -293,6 +337,8 @@ The runner takes each default unless the user overrides it.
   documented, not fixed.
 - D7. Locales. `chatGeneratingElsewhere` is removed from every locale; no new strings
   are expected. If one is, `en.ts` only.
+- D8. Channel hazards found in slice 5's review (decided 2026-10-23): land slice 5,
+  fix both in slice 7 within this run.
 
 ## Open Questions
 
