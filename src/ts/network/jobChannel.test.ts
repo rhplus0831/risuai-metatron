@@ -40,7 +40,12 @@ const deps = vi.hoisted(() => ({
     sayTTS: vi.fn(),
     showCompletion: vi.fn(async (_payload: unknown) => {}),
     followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
-    stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
+    stableDiff:
+        vi.fn<
+            (char: unknown, text: string, target: { check?: () => void; signal?: AbortSignal }) => Promise<unknown>
+        >(),
+    generateAIImage: vi.fn<typeof import("../process/stableDiff").generateAIImage>(),
+    writeInlayImage: vi.fn<typeof import("../process/files/inlays").writeInlayImage>(),
     /** The server behind `authFetch` (the memory-stop route here). */
     authFetch: vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(),
     epochMismatch: vi.fn<(epoch: string) => unknown>(),
@@ -136,7 +141,8 @@ vi.mock("../translator/storedTranslation.svelte", () => ({
     followStoredTranslations: (ref: unknown, ids: unknown, follow: { report: (message: string) => void }) =>
         deps.followTranslations(ref, ids, follow),
 }));
-vi.mock("../process/stableDiff", () => ({ stableDiff: deps.stableDiff }));
+vi.mock("../process/stableDiff", () => ({ stableDiff: deps.stableDiff, generateAIImage: deps.generateAIImage }));
+vi.mock("../process/files/inlays", () => ({ writeInlayImage: deps.writeInlayImage }));
 vi.mock("../model/modellist", () => ({ getModelInfo: deps.getModelInfo }));
 
 type Channel = typeof import("./jobChannel");
@@ -289,6 +295,8 @@ beforeEach(async () => {
     deps.sayTTS.mockReset();
     deps.showCompletion.mockReset();
     deps.stableDiff.mockReset();
+    deps.generateAIImage.mockReset();
+    deps.writeInlayImage.mockReset();
     deps.followTranslations.mockReset();
     // The server behind the drain reports of cancelled callbacks (the memory-stop tests set their own).
     deps.authFetch.mockReset().mockImplementation(async () => jsonResponse(200, { drained: true }));
@@ -1290,6 +1298,49 @@ describe("the reply tail's callbacks", () => {
         await pump();
         expect(tx.answers[2]).toEqual(failed("hook", "The character to generate for is gone"));
         expect(deps.stableDiff).toHaveBeenCalledTimes(3);
+    });
+
+    it("cancelling a pending imggen callback aborts its image request and sends no answer for a late result", async () => {
+        const image = deferred<boolean>();
+        deps.stableDiff.mockReturnValueOnce(image.promise);
+        send(callback("image", "imggen", { characterId: "c", text: "user: draw a tree" }));
+        await pump();
+        try {
+            expect(deps.stableDiff).toHaveBeenCalledTimes(1);
+            const signal = deps.stableDiff.mock.calls[0][2].signal;
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(signal?.aborted).toBe(false);
+
+            send(cancel("image"));
+            expect(signal?.aborted).toBe(true);
+        } finally {
+            // The image service may finish even after it receives the abort.
+            image.resolve(true);
+            await pump();
+        }
+        expect(tx.answers).toEqual([]);
+    });
+
+    it("cancelling a pending generateImage callback aborts its image request and neither writes nor answers a late image", async () => {
+        const image = deferred<string>();
+        deps.generateAIImage.mockReturnValueOnce(image.promise);
+        deps.writeInlayImage.mockResolvedValue("late-inlay");
+        send(callback("image", "generateImage", { characterId: "c", prompt: "a tree", negative: "fog" }));
+        await pump();
+        try {
+            expect(deps.generateAIImage).toHaveBeenCalledTimes(1);
+            const signal = deps.generateAIImage.mock.calls[0][4]?.signal;
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(signal?.aborted).toBe(false);
+
+            send(cancel("image"));
+            expect(signal?.aborted).toBe(true);
+        } finally {
+            image.resolve("data:image/png;base64,bGF0ZQ==");
+            await pump();
+        }
+        expect(deps.writeInlayImage).not.toHaveBeenCalled();
+        expect(tx.answers).toEqual([]);
     });
 
     it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", async () => {

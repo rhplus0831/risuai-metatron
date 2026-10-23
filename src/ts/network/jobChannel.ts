@@ -118,6 +118,8 @@ type Outstanding = {
     id: string;
     targets: CallbackTargets;
     cancelled: boolean;
+    /** Aborted when the server cancels the callback or its job ends; image hooks pass its signal to their requests. */
+    abort: AbortController;
     /** Called when the server cancels the callback or its job ends (a provider's request is aborted). */
     onCancel?: () => void;
 };
@@ -128,6 +130,7 @@ function cancelOutstanding(entry: Outstanding) {
         return;
     }
     entry.cancelled = true;
+    entry.abort.abort(cancelledByServer());
     try {
         entry.onCancel?.();
     } catch (error) {
@@ -521,6 +524,8 @@ class CallbackFailed extends Error {
     }
 }
 
+const cancelledByServer = () => new CallbackFailed("protocol", "The server cancelled this callback");
+
 /** Whether this client holds `receipt`'s record at its revision or a newer one. */
 function holds(receipt: HydrationReceipt): boolean {
     const held =
@@ -565,7 +570,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
     const payload = event.payload as Record<string, unknown>;
     const stillWanted = () => {
         if (entry.cancelled) {
-            throw new CallbackFailed("protocol", "The server cancelled this callback");
+            throw cancelledByServer();
         }
     };
     const unavailable = () => new CallbackFailed("protocol", `The ${event.name} hook is not registered any more`);
@@ -686,6 +691,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 target as character,
                 String(payload.negative ?? ""),
                 "inlay",
+                { signal: entry.abort.signal },
             );
             stillWanted();
             if (!generated) {
@@ -782,7 +788,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 chatRef: context.chatRef,
                 pluginContext: context,
                 check: stillWanted,
+                signal: entry.abort.signal,
             });
+            stillWanted();
             return shown !== false;
         }
         case "provider": {
@@ -994,7 +1002,13 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
         refuse("A callback may run only inside the outstanding one, one level deep");
         return;
     }
-    const entry: Outstanding = { jobId, id: event.id, targets: event.targets, cancelled: false };
+    const entry: Outstanding = {
+        jobId,
+        id: event.id,
+        targets: event.targets,
+        cancelled: false,
+        abort: new AbortController(),
+    };
     outstanding.push(entry);
     // A running callback is plugin work: a plugin reload waits for it (`generationJobs.ts`).
     noteChannelCallbacks(outstanding.length);
