@@ -25,7 +25,9 @@ import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 // The README's "Not captured" items get independent cases below: a v2 `display` trigger, and
 // additional assets (the first asset pass, and a regex output that the second pass turns into an
 // asset), against `fixtures/transform/display-trigger-assets.json`, which the browser path recorded
-// at 219dfb51 (before browser generation was removed; its `capturedFrom` gives the provenance).
+// at 219dfb51 (before browser generation was removed; its `capturedFrom` gives the provenance). Its
+// asset URLs are the direct `/api/asset/<hex>` URLs a page the worker controls renders; a page
+// without a worker renders object URLs in their place.
 // Inlays (they need stored inlay records) and dynamic assets (they need an embedding model) are not
 // covered here.
 
@@ -456,8 +458,8 @@ const renderExtra = (page: Page, chaId: string, chatId: string) =>
         { chaId, chatId },
     );
 
-/** The `/sw/img/` URL the recording holds for a stored path. */
-const swUrl = (path: string) => `/sw/img/${Buffer.from(path, "utf-8").toString("hex")}`;
+/** The direct `/api/asset/` URL the recording holds for a stored path. */
+const assetUrl = (path: string) => `/api/asset/${Buffer.from(path, "utf-8").toString("hex")}`;
 
 test("a display trigger and additional assets render on the server path as the browser path recorded them", async ({
     page,
@@ -470,9 +472,9 @@ test("a display trigger and additional assets render on the server path as the b
     const chatId = "chat-golden-extra";
     await seedExtra(page, { chaId, chatId, pics: ["golden-pic-1", "golden-pic-2"] });
 
-    // The recording holds the service worker's URLs, so the render runs in a page the worker
-    // controls: reloaded (the worker does not control the page that registered it, its first load;
-    // that render is the next test's).
+    // The recording holds the direct asset URLs, so the render runs in a page the worker controls:
+    // reloaded (the worker does not control the page that registered it, its first load; that
+    // render is the next test's).
     await page.reload();
     await openApp(page, baseURL!);
     const transformPosts: string[] = [];
@@ -483,13 +485,7 @@ test("a display trigger and additional assets render on the server path as the b
     });
     const rendered = await renderExtra(page, chaId, chatId);
     expect(transformPosts.length).toBeGreaterThan(0);
-    // The controlled page renders the worker-signed direct URLs; the recording holds the worker's
-    // `/sw/img/` URLs of the same paths.
-    expect(rendered["x-1"]).toContain(`src="/api/asset/${swUrl("assets/golden-pic-1.png").slice("/sw/img/".length)}"`);
-    const serverPath: Record<string, string> = {};
-    for (const [id, html] of Object.entries(rendered)) {
-        serverPath[id] = html.replaceAll("/api/asset/", "/sw/img/");
-    }
+    expect(rendered["x-1"]).toContain(`src="${assetUrl("assets/golden-pic-1.png")}"`);
 
     // The recorded browser path: the trigger appended its text before the regex scripts (the `em`
     // script ran on it), on every message and the greeting, and both asset passes ran (the message's
@@ -501,7 +497,7 @@ test("a display trigger and additional assets render on the server path as the b
     expect(recorded["x-1"].match(/<img /g)).toHaveLength(2);
     expect(recorded["x-1"]).not.toContain("{{img::");
     // The server path renders the same.
-    expect(differences(recorded, serverPath)).toEqual([]);
+    expect(differences(recorded, rendered)).toEqual([]);
     expect(unexpected(errors)).toEqual([]);
 });
 
@@ -564,13 +560,13 @@ test("on a page without a worker the same render holds object URLs, a large imag
     expect(firstLoad["x-1"]).toContain(`src="${sources[0].src}"`);
     expect(firstLoad["x-1"]).toContain(`src="${sources[1].src}"`);
 
-    // With the object URLs in place of the recording's worker URLs, the render is the recording.
-    const asRecorded: Record<string, string> = {};
-    for (const [id, html] of Object.entries(firstLoad)) {
-        asRecorded[id] = html
-            .replaceAll(sources[0].src, swUrl("assets/golden-pic-1.png"))
-            .replaceAll(sources[1].src, swUrl("assets/golden-pic-2.png"));
+    // With the object URLs in place of the recording's direct URLs, the render is the recording.
+    const expected: Record<string, string> = {};
+    for (const [id, html] of Object.entries(extra.cases as Record<string, string>)) {
+        expected[id] = html
+            .replaceAll(assetUrl("assets/golden-pic-1.png"), sources[0].src)
+            .replaceAll(assetUrl("assets/golden-pic-2.png"), sources[1].src);
     }
-    expect(differences(extra.cases, asRecorded)).toEqual([]);
+    expect(differences(expected, firstLoad)).toEqual([]);
     expect(unexpected(errors)).toEqual([]);
 });

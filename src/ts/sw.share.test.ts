@@ -21,16 +21,19 @@ type FakeWindow = {
 
 function worker(windows: FakeWindow[] = []) {
     const entries = new Map<string, Response>();
+    const cacheKey = (url: Request | URL | string) => (url instanceof Request ? url.url : String(url));
     const cache = {
-        match: async (url: URL) => entries.get(String(url))?.clone(),
-        put: async (url: URL, response: Response) => {
-            entries.set(String(url), response.clone());
+        match: async (url: Request | URL | string) => entries.get(cacheKey(url))?.clone(),
+        put: async (url: Request | URL | string, response: Response) => {
+            entries.set(cacheKey(url), response.clone());
         },
-        delete: async (url: URL) => entries.delete(String(url)),
+        delete: async (url: Request | URL | string) => entries.delete(cacheKey(url)),
+        keys: async () => [...entries.keys()].map((url) => new Request(url)),
     };
     const open = vi.fn(async () => cache);
     const listeners = new Map<string, (event: unknown) => void>();
     const clients = {
+        claim: vi.fn(async () => {}),
         matchAll: vi.fn(async () => windows),
         openWindow: vi.fn(async () => null),
     };
@@ -64,6 +67,12 @@ function worker(windows: FakeWindow[] = []) {
         for (const kind of files) body.append(kind, new File([`${kind} bytes\u0000`], `${kind}.bin`));
         return dispatch(new Request(new URL(manifest.share_target.action, origin), { method: "POST", body }));
     };
+    const activate = async () => {
+        const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+        listeners.get("activate")!({ waitUntil });
+        expect(waitUntil).toHaveBeenCalledTimes(1);
+        await waitUntil.mock.calls[0][0];
+    };
     /** A click on a completion notification; resolves when the worker's `waitUntil` work is done. */
     const click = async (url: string) => {
         const waitUntil = vi.fn();
@@ -78,13 +87,41 @@ function worker(windows: FakeWindow[] = []) {
         expect(waitUntil).toHaveBeenCalledTimes(1);
         await waitUntil.mock.calls[0][0];
     };
-    return { entries, open, dispatch, post, clients, click, push, registration };
+    return { entries, open, dispatch, post, activate, clients, click, push, registration };
 }
 
 function redirected(response: Response, path: string) {
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(origin + path);
 }
+
+describe("PWA worker activation", () => {
+    it("removes stored assets while preserving pending shares and other cache entries, then claims clients", async () => {
+        const sw = worker();
+        sw.entries.set(`${origin}/sw/img/6162`, new Response("first asset"));
+        sw.entries.set(`${origin}/sw/img/6364?version=old`, new Response("second asset"));
+        sw.entries.set(`${origin}/sw/share/module`, new Response("pending module bytes\u0000"));
+        sw.entries.set(`${origin}/other`, new Response("other bytes"));
+
+        await sw.activate();
+
+        expect(sw.open).toHaveBeenCalledWith("risuCache");
+        expect(new Set(sw.entries.keys())).toEqual(new Set([`${origin}/sw/share/module`, `${origin}/other`]));
+        expect(await sw.entries.get(`${origin}/sw/share/module`)!.text()).toBe("pending module bytes\u0000");
+        expect(await sw.entries.get(`${origin}/other`)!.text()).toBe("other bytes");
+        expect(sw.clients.claim).toHaveBeenCalledTimes(1);
+    });
+
+    it("settles activation and claims clients when the cache cannot be opened", async () => {
+        const sw = worker();
+        sw.open.mockRejectedValueOnce(new Error("cache unavailable"));
+
+        await expect(sw.activate()).resolves.toBeUndefined();
+
+        expect(sw.open).toHaveBeenCalledWith("risuCache");
+        expect(sw.clients.claim).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe("PWA share receiver", () => {
     it("receives the manifest's multipart module POST at an absolute cache URL", async () => {

@@ -7,7 +7,9 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 const origin = "https://installed.example:8443";
-const assetUrl = `${origin}/api/asset/${Buffer.from("assets/private.png").toString("hex")}`;
+const assetHex = Buffer.from("assets/private.png").toString("hex");
+const assetUrl = `${origin}/api/asset/${assetHex}`;
+const cachedAssetUrl = `${origin}/sw/img/${assetHex}`;
 const source = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const issuedAt = Date.parse("2026-01-15T12:00:00Z") / 1000;
 
@@ -54,12 +56,18 @@ function worker(indexedDB = new IDBFactory()) {
     }
     const listeners = new Map<string, (event: unknown) => void>();
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("asset bytes"));
+    const entries = new Map<string, Response>();
+    const cache = {
+        match: async (url: Request | URL | string) =>
+            entries.get(url instanceof Request ? url.url : String(url))?.clone(),
+    };
     runInNewContext(source, {
         self: {
             location: { origin },
             addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
         },
         indexedDB,
+        caches: { open: vi.fn(async () => cache) },
         crypto: webcrypto,
         TextEncoder,
         btoa,
@@ -91,7 +99,16 @@ function worker(indexedDB = new IDBFactory()) {
         expect(value).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
         return value!;
     };
-    return { indexedDB, fetch, dispatch, respond, sent, token, setTime: (seconds: number) => (now = seconds * 1000) };
+    return {
+        indexedDB,
+        entries,
+        fetch,
+        dispatch,
+        respond,
+        sent,
+        token,
+        setTime: (seconds: number) => (now = seconds * 1000),
+    };
 }
 
 function payload(token: string) {
@@ -115,6 +132,67 @@ async function expectJwt(token: string, keyPair: webcrypto.CryptoKeyPair, iat: n
         ),
     ).toBe(true);
 }
+
+describe("PWA cached asset requests", () => {
+    it("fetches allowed GET and HEAD cache misses from the matching direct asset route with signed auth and range headers", async () => {
+        const sw = worker();
+        const keyPair = await generateKeyPair();
+        await storeKeyPair(sw.indexedDB, keyPair);
+
+        for (const destination of ["image", "audio", "video", "track", "style", "font"]) {
+            for (const method of ["GET", "HEAD"]) {
+                const call = sw.fetch.mock.calls.length;
+                const response = await sw.respond(
+                    assetRequest(
+                        destination,
+                        { method, headers: { Range: "bytes=2-5", "If-Range": '"asset-version"' } },
+                        cachedAssetUrl,
+                    ),
+                );
+
+                expect(sw.fetch).toHaveBeenCalledTimes(call + 1);
+                expect(sw.sent(call).url).toBe(assetUrl);
+                expect(sw.sent(call).method).toBe(method);
+                expect(sw.sent(call).headers.get("range")).toBe("bytes=2-5");
+                expect(sw.sent(call).headers.get("if-range")).toBe('"asset-version"');
+                await expectJwt(sw.token(call), keyPair, issuedAt);
+                expect(await response.text()).toBe("asset bytes");
+            }
+        }
+    });
+
+    it("does not fetch cache misses for fetches, navigations, or requests outside page subresources", async () => {
+        const sw = worker();
+        await storeKeyPair(sw.indexedDB, await generateKeyPair());
+        const cases: { request: Request; clientId?: string }[] = [
+            ...["", "document", "iframe"].map((destination) => ({
+                request: assetRequest(destination, {}, cachedAssetUrl),
+            })),
+            { request: assetRequest("image", { method: "POST" }, cachedAssetUrl) },
+            { request: assetRequest("image", {}, cachedAssetUrl), clientId: "" },
+        ];
+
+        for (const { request, clientId } of cases) {
+            await sw.dispatch(request, clientId);
+            expect(
+                sw.fetch,
+                `${request.method} ${request.destination} client=${clientId ?? "page-client"}`,
+            ).not.toHaveBeenCalled();
+        }
+    });
+
+    it("answers an allowed asset cache hit with the stored bytes without fetching", async () => {
+        const sw = worker();
+        await storeKeyPair(sw.indexedDB, await generateKeyPair());
+        const bytes = new Uint8Array([137, 80, 78, 71, 0, 255]);
+        sw.entries.set(cachedAssetUrl, new Response(bytes));
+
+        const response = await sw.respond(assetRequest("image", {}, cachedAssetUrl));
+
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+        expect(sw.fetch).not.toHaveBeenCalled();
+    });
+});
 
 describe("PWA direct asset requests", () => {
     it("signs allowed GET and HEAD subresources with fresh cacheable fetches and range headers", async () => {

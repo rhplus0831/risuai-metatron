@@ -2,13 +2,15 @@
 
 let cachedAssetAuth = null
 let assetAuthPromise = null
+const ASSET_DESTINATIONS = ['image', 'audio', 'video', 'track', 'style', 'font']
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url)
-    if(url.origin === self.location.origin && url.pathname.startsWith('/api/asset/') &&
+    const allowedAssetRequest = url.origin === self.location.origin &&
         (event.request.method === 'GET' || event.request.method === 'HEAD') &&
         typeof event.clientId === 'string' && event.clientId.length > 0 &&
-        ['image', 'audio', 'video', 'track', 'style', 'font'].includes(event.request.destination)){
+        ASSET_DESTINATIONS.includes(event.request.destination)
+    if(allowedAssetRequest && url.pathname.startsWith('/api/asset/')){
         event.respondWith(fetchAsset(event.request))
         return
     }
@@ -27,7 +29,7 @@ self.addEventListener('fetch', (event) => {
                     break
                 }
                 case "img": {
-                    event.respondWith(getSource(url))
+                    event.respondWith(getSource(url, allowedAssetRequest ? event.request : null))
                     break
                 }
                 case "register": {
@@ -239,9 +241,25 @@ async function checkCache(url){
     }))
 }
 
-async function getSource(url){
+async function getSource(url, request = null){
     const cache = await caches.open('risuCache')
-    return await cache.match(url)
+    const response = await cache.match(url)
+    if(response || !request || !url.pathname.startsWith('/sw/img/')){
+        return response
+    }
+    const assetUrl = new URL('/api/asset/' + url.pathname.slice('/sw/img/'.length), self.location.origin)
+    const headers = new Headers()
+    for(const name of ['Range', 'If-Range']){
+        const value = request.headers.get(name)
+        if(value !== null){
+            headers.set(name, value)
+        }
+    }
+    return fetchAsset(new Request(assetUrl, {
+        method: request.method,
+        headers,
+        signal: request.signal
+    }))
 }
 
 async function check(){
@@ -272,10 +290,11 @@ async function registerCache(urlr, buffer, noContentType = false){
     }))
 }
 // Web Push for chat completions. A new worker takes over at once, so an installed app gets these
-// handlers without closing every tab; the cache routes above keep working (they read `risuCache`,
-// which outlives the worker). A rotated subscription (`pushsubscriptionchange`) is not handled
-// here: push has no credentials, and the page registers it again when it opens. Only asset requests
-// read the page's signing key.
+// handlers without closing every tab. Activation removes stored asset copies under `/sw/img/`
+// from `risuCache` and keeps share files. A `/sw/img/` miss from an allowed subresource is answered
+// from the signed `/api/asset/` route. A rotated subscription (`pushsubscriptionchange`) is not
+// handled here: push has no credentials, and the page registers it again when it opens. Only asset
+// requests read the page's signing key.
 const NOTIFICATION_LOGO = '/logo_192.png'
 // The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
 // (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
@@ -286,7 +305,18 @@ self.addEventListener('install', (event) => {
 })
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil(self.clients.claim())
+    event.waitUntil((async () => {
+        try {
+            const cache = await caches.open('risuCache')
+            const requests = await cache.keys()
+            await Promise.allSettled(requests.map(async (request) => {
+                if(new URL(request.url).pathname.startsWith('/sw/img/')){
+                    await cache.delete(request)
+                }
+            }))
+        } catch {}
+        await self.clients.claim()
+    })())
 })
 
 // Every push is shown, also while a window is in front: Safari revokes the permission of a site whose
