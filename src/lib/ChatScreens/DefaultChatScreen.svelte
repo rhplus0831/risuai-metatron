@@ -43,6 +43,7 @@
         nextGreetingIndex,
         previousGreetingIndex,
     } from "../../../shared/greetings.ts";
+    import { GENERATION_STAGES } from "../../../shared/jobs.ts";
     import { ChatStyleRegistry, setChatStyleRegistry } from "../../ts/parser/chatStyles";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
@@ -64,6 +65,7 @@
     import { isChatBusy } from "src/ts/process/chatStatus.svelte";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
+    import { jobStages, chatStageOf } from "src/ts/process/jobStages";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
@@ -553,6 +555,12 @@
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
+    // The selected chat's own job stage.
+    const processStage = $derived.by(() => {
+        const ref = currentChatRef();
+        const stage = ref ? chatStageOf($jobStages, ref) : null;
+        return stage === null ? 0 : GENERATION_STAGES.indexOf(stage) + 1;
+    });
 
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
@@ -1044,7 +1052,7 @@
                         onclick={abortChat}
                         style:height={inputHeight}
                     >
-                        <div class="loadmove chat-process-stage-0" class:autoload={autoMode}></div>
+                        <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
                     </button>
                 {:else if bindingIncomplete}
                     <!-- Keeps `button-icon-send`: the send hotkey clicks it and opens the setup too. -->

@@ -8,24 +8,37 @@ import { openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 // - a send in chat A, a switch to chat B, a send in B: both run at once, the chat screen shows Stop
 //   only for the selected chat's own send, and each reply lands in its own chat;
 // - Stop in B ends B's job only: A's reply goes on streaming and completes afterwards;
+// - each selected chat's circle shows its own server stage: generating in A while a separate
+//   SupaMemory chat is held at memory, including switches between them;
 // - suggestions per chat: each chat's end requests its own (B's at once, A's when it is selected),
 //   none is requested for a chat while its send runs, and each chat stores only its own;
 // - auto mode in a group chat runs rounds in the chat it started in, ends after the current round
-//   when another chat is selected (the other chat is not sent to), and Stop ends it.
+//   when another chat is selected (the other chat is not sent to), and Stop ends it; its circle
+//   keeps autoload and its green color over the server stage color.
 // The provider is a local mock that tells the chats apart by their seeded messages; no plugin
 // callback is involved. The characters are deleted and the changed records restored at the end.
 
 /** The chat a provider request is for: each chat's seeded history carries its marker. */
-const MARKERS = { a: "alpha seed", b: "bravo seed", g1: "gamma one seed", g2: "gamma two seed" } as const;
+const MARKERS = {
+    a: "alpha seed",
+    b: "bravo seed",
+    g1: "gamma one seed",
+    g2: "gamma two seed",
+    m: "memory seed",
+} as const;
 type ChatName = keyof typeof MARKERS;
+const MEMORY_SUMMARY_MARKER = "Summarize for the held memory circle check.";
 
 let provider: http.Server;
 let providerUrl = "";
-/** Every provider request: its chat, whether it streamed (a send) or not (a suggestion), and its end. */
-const requests: { chat: ChatName | null; stream: boolean; closed: boolean }[] = [];
+/** Every provider request: its chat, whether it streamed, whether it is a memory summary, and its end. */
+const requests: { chat: ChatName | null; stream: boolean; summary: boolean; closed: boolean }[] = [];
 /** Releases A's held reply (its first chunk is sent at once, the rest waits for this). */
 let releaseA: () => void = () => {};
 let heldA = new Promise<void>((resolve) => (releaseA = resolve));
+/** Holds the non-streamed summary response, keeping the memory chat at the server's memory stage. */
+let releaseMemory: () => void = () => {};
+const heldMemory = new Promise<void>((resolve) => (releaseMemory = resolve));
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -36,10 +49,24 @@ test.beforeAll(async () => {
         const body = JSON.parse(Buffer.concat(parts).toString() || "{}");
         const text = JSON.stringify(body.messages ?? body);
         const chat = (Object.keys(MARKERS) as ChatName[]).find((name) => text.includes(MARKERS[name])) ?? null;
-        const entry = { chat, stream: body.stream === true, closed: false };
+        const entry = {
+            chat,
+            stream: body.stream === true,
+            summary: body.stream !== true && text.includes(MEMORY_SUMMARY_MARKER),
+            closed: false,
+        };
         requests.push(entry);
         res.on("close", () => (entry.closed = true));
         if (!entry.stream) {
+            if (entry.summary) {
+                await heldMemory;
+                if (res.destroyed) return;
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(
+                    JSON.stringify({ choices: [{ message: { role: "assistant", content: "Short memory summary." } }] }),
+                );
+                return;
+            }
             // A suggestion: one line per suggestion, `-` first.
             const content = chat === "a" ? "- Alpha next" : chat === "b" ? "- Bravo next" : "- Other next";
             res.writeHead(200, { "content-type": "application/json" });
@@ -60,6 +87,8 @@ test.beforeAll(async () => {
             for (let i = 0; i < 120 && !res.destroyed; i++) await sleep(500);
             if (res.destroyed) return;
             write("late.");
+        } else if (chat === "m") {
+            write("Memory reply.");
         } else {
             write("Round ");
             await sleep(300);
@@ -75,12 +104,14 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
     releaseA();
+    releaseMemory();
     provider.closeAllConnections();
     await new Promise((resolve) => provider.close(resolve));
 });
 
 const sends = (chat: ChatName) => requests.filter((entry) => entry.chat === chat && entry.stream);
-const suggestions = (chat: ChatName) => requests.filter((entry) => entry.chat === chat && !entry.stream);
+const suggestions = (chat: ChatName) =>
+    requests.filter((entry) => entry.chat === chat && !entry.stream && !entry.summary);
 
 interface Session {
     page: Page;
@@ -157,11 +188,24 @@ const blank = (chaId: string, name: string, extra: Record<string, unknown> = {})
 });
 
 /** What the seed changes besides the characters, to be restored at the end (the specs after this one share the store). */
-let restore: { ui: any; modelPresets: any; modelProfiles: any; providers: any } | null = null;
+let restore: {
+    ui: any;
+    modelPresets: any;
+    modelProfiles: any;
+    providers: any;
+    presets: any;
+    memoryTranslateMedia: any;
+} | null = null;
 
-/** Seeds a character with chats A and B, a group of two members with chats G1 and G2, and the mock provider. */
+/** Seeds chats A/B, group chats G1/G2, a separate SupaMemory character and prompt preset, and the mock provider. */
 async function seed(s: Session) {
     await s.open();
+    // Settle boot's writes and leave the app so its save loop cannot race the API seed revisions.
+    await s.page.evaluate(async () => {
+        const { flushResources } = await import("/src/ts/storage/resourceSync.svelte.ts");
+        await flushResources();
+    });
+    await s.page.goto("about:blank");
     const ui = (await s.api("/api/resources/ui/main")).body;
     s.setEpoch(ui.epoch);
     const order = (await s.api("/api/resources/characterOrder/main")).body;
@@ -170,20 +214,26 @@ async function seed(s: Session) {
     const presets = (await s.api("/api/resources/presets/main")).body;
     const personas = (await s.api("/api/resources/personas/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
+    const memoryTranslateMedia = (await s.api("/api/resources/memoryTranslateMedia/main")).body;
     restore = {
         ui: ui.data,
         modelPresets: modelPresets.data,
         modelProfiles: modelProfiles.data,
         providers: providers.data,
+        presets: presets.data,
+        memoryTranslateMedia: memoryTranslateMedia.data,
     };
     const chaId = randomUUID();
     const memberA = randomUUID();
     const memberB = randomUUID();
     const groupId = randomUUID();
+    const memoryId = randomUUID();
+    const memoryPromptId = randomUUID();
     const characters = [
         blank(chaId, `Pair ${chaId.slice(0, 6)}`),
         blank(memberA, "Member Ann"),
         blank(memberB, "Member Bo"),
+        blank(memoryId, `Memory ${memoryId.slice(0, 6)}`, { supaMemory: true }),
     ];
     const group = {
         chaId: groupId,
@@ -209,7 +259,7 @@ async function seed(s: Session) {
     const model = { aiModel: "reverse_proxy", forceReplaceUrl: providerUrl, customProxyRequestModel: "mock" };
     // Every chat is bound: a send runs only with a complete binding.
     const binding = chatBindingFixture(modelPresets, presets, personas);
-    const chat = (characterId: string, id: ChatName) => ({
+    const chat = (characterId: string, id: ChatName, extra: Record<string, unknown> = {}) => ({
         characterId,
         chatId: id,
         baseRevision: null,
@@ -230,6 +280,7 @@ async function seed(s: Session) {
                             ...(characterId === groupId ? { saying: memberA } : {}),
                         },
                     ],
+                    ...extra,
                 },
             },
         ],
@@ -246,6 +297,37 @@ async function seed(s: Session) {
                 },
                 ...modelFixtureOps(model, modelPresets, modelProfiles),
                 {
+                    kind: "presets",
+                    id: "main",
+                    baseRevision: presets.revision,
+                    data: [
+                        ...presets.data,
+                        {
+                            ...presets.data[0],
+                            id: memoryPromptId,
+                            name: "Held memory",
+                            mainPrompt: "Continue {{char}}'s conversation.",
+                            maxContextOverride: true,
+                            maxContextOverrideSize: 900,
+                            maxResponse: 100,
+                        },
+                    ],
+                },
+                {
+                    kind: "memoryTranslateMedia",
+                    id: "main",
+                    baseRevision: memoryTranslateMedia.revision,
+                    data: {
+                        ...memoryTranslateMedia.data,
+                        hypaV3: false,
+                        hypav2: false,
+                        hanuraiEnable: false,
+                        hypaMemory: false,
+                        supaModelType: "subModel",
+                        supaMemoryPrompt: MEMORY_SUMMARY_MARKER,
+                    },
+                },
+                {
                     kind: "providers",
                     id: "main",
                     baseRevision: providers.revision,
@@ -257,14 +339,30 @@ async function seed(s: Session) {
                     kind: "characterOrder",
                     id: "main",
                     baseRevision: order.revision,
-                    data: [...(Array.isArray(order.data) ? order.data : []), chaId, groupId],
+                    data: [...(Array.isArray(order.data) ? order.data : []), chaId, groupId, memoryId],
                 },
             ],
-            chats: [chat(chaId, "a"), chat(chaId, "b"), chat(groupId, "g1"), chat(groupId, "g2")],
+            chats: [
+                chat(chaId, "a"),
+                chat(chaId, "b"),
+                chat(groupId, "g1"),
+                chat(groupId, "g2"),
+                // Only this chat uses the smaller context; the existing chats keep their prompt bindings.
+                chat(memoryId, "m", {
+                    promptPresetId: memoryPromptId,
+                    message: Array.from({ length: 24 }, (_, i) => ({
+                        role: i % 2 === 0 ? "user" : "char",
+                        data:
+                            `${MARKERS.m} message ${i}: ` +
+                            "The party walked through the forest and discussed the journey. ".repeat(8),
+                        chatId: `m-m${i}`,
+                    })),
+                }),
+            ],
         }),
     });
     expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
-    return { chaId, groupId, members: [memberA, memberB] };
+    return { chaId, groupId, memoryId, members: [memberA, memberB] };
 }
 
 const selectChat = (page: Page, chatId: string) =>
@@ -291,10 +389,11 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     baseURL,
 }) => {
     const s = await session(context, baseURL!);
-    const { chaId, groupId, members } = await seed(s);
+    const { chaId, groupId, memoryId, members } = await seed(s);
     await s.open();
     const page = s.page;
     const stop = page.locator('button[aria-labelledby="cancel"]');
+    const circle = stop.locator("div.loadmove");
     const sendButton = page.locator("button.button-icon-send");
     const composer = page.locator("textarea.input-text").first();
 
@@ -308,6 +407,7 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     await expect.poll(() => sends("a").length, { timeout: 30_000 }).toBe(1);
     await expect(page.getByText("Alpha part").first()).toBeVisible({ timeout: 20_000 });
     await expect(stop).toBeVisible();
+    await expect(circle).toHaveClass(/\bchat-process-stage-3\b/);
     await expect(page.getByText("Alpha next")).toHaveCount(0);
     const suggestionsOfA = suggestions("a").length;
 
@@ -335,7 +435,32 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     await page.waitForTimeout(1000);
     expect(sends("a")[0].closed).toBe(false);
 
+    // Hold a different job at memory while A is generating: neither selection may borrow the other's stage.
+    await openCharacterChat(page, memoryId);
+    await expect(page.locator(".risu-chat[data-chat-id='m-m23']")).toBeVisible({ timeout: 20_000 });
+    await composer.fill("Remember the journey");
+    await composer.press("Enter");
+    await expect.poll(() => requests.filter((entry) => entry.summary).length, { timeout: 30_000 }).toBe(1);
+    await expect(circle).toHaveClass(/\bchat-process-stage-2\b/);
+    expect(sends("a")[0].closed).toBe(false);
+
+    await openCharacterChat(page, chaId);
+    await selectChat(page, "a");
+    await expect(page.getByText("Alpha part").first()).toBeVisible({ timeout: 20_000 });
+    await expect(circle).toHaveClass(/\bchat-process-stage-3\b/);
+
+    await openCharacterChat(page, memoryId);
+    await expect(page.locator(".risu-chat[data-chat-id='m-m23']")).toBeVisible({ timeout: 20_000 });
+    await expect(circle).toHaveClass(/\bchat-process-stage-2\b/);
+    releaseMemory();
+    await expect(page.locator(".risu-chat").filter({ hasText: "Memory reply." }).last()).toBeVisible({
+        timeout: 30_000,
+    });
+    await expect(stop).toHaveCount(0, { timeout: 20_000 });
+    expect(sends("a")[0].closed).toBe(false);
+
     // Back in A: its send still runs (Stop shown, the reply streaming, no suggestions), then completes.
+    await openCharacterChat(page, chaId);
     await selectChat(page, "a");
     await expect(page.locator(".risu-chat[data-chat-id='a-m1']")).toBeVisible({ timeout: 20_000 });
     await expect(stop).toBeVisible();
@@ -378,12 +503,24 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     };
     await toggleAutoMode();
     await expect.poll(() => sends("g1").length, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
-    await expect(page.locator(".autoload")).toBeVisible();
+    await expect(circle).toHaveClass(/\bautoload\b/);
+    await expect(circle).toHaveClass(/\bchat-process-stage-[1-4]\b/);
+    await expect
+        .poll(() =>
+            circle.evaluate((element) => ({
+                autoload: element.classList.contains("autoload"),
+                activeStage: /\bchat-process-stage-[1-4]\b/.test(element.className),
+                borderTopColor: getComputedStyle(element).borderTopColor,
+            })),
+        )
+        .toEqual({ autoload: true, activeStage: true, borderTopColor: "rgb(16, 185, 129)" });
 
     // Switching to G2 ends the run after the current round; G2 is not sent to and shows no Stop.
     await selectChat(page, "g2");
     await expect(page.locator(".risu-chat[data-chat-id='g2-m1']")).toBeVisible({ timeout: 20_000 });
     await expect(stop).toHaveCount(0);
+    // One member's stream can close before the next member's request in the same round starts.
+    await expect.poll(() => sends("g1").length % members.length, { timeout: 30_000 }).toBe(0);
     await expect.poll(() => sends("g1").every((entry) => entry.closed), { timeout: 30_000 }).toBe(true);
     const roundsEnded = sends("g1").length;
     expect(roundsEnded % members.length).toBe(0);
@@ -412,11 +549,18 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     // Cleanup: the characters (their chats and order go with them), and the records the seed changed
     // as they were before it (the specs after this one share the store).
     const ops: unknown[] = [];
-    for (const id of [chaId, groupId, ...members]) {
+    for (const id of [chaId, groupId, memoryId, ...members]) {
         const record = (await s.api(`/api/resources/characters/${id}`)).body;
         ops.push({ kind: "characters", id, baseRevision: record.revision, delete: true });
     }
-    for (const kind of ["ui", "modelPresets", "modelProfiles", "providers"] as const) {
+    for (const kind of [
+        "ui",
+        "modelPresets",
+        "modelProfiles",
+        "providers",
+        "presets",
+        "memoryTranslateMedia",
+    ] as const) {
         const now = (await s.api(`/api/resources/${kind}/main`)).body;
         ops.push({ kind, id: "main", baseRevision: now.revision, data: restore![kind] });
     }
