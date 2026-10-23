@@ -119,6 +119,22 @@ Coordination with other active plans (same files; whichever lands second rebases
   `server/src/prompt/embeddings.ts`.
 - Slice 3 checks the upstream export; Static Audit Fixes slice 9 moves that export into a
   worker without changing its bytes. Either order works.
+- Slice 15 and Static Audit Fixes slices 7 and 11 edit `src/ts/process/stableDiff.ts`
+  (`generateAIImage`, ~87–92) and the Lua image callback in `src/ts/network/jobChannel.ts`
+  (~658–696).
+- Slices 15 and 16 and [Generation Stage Spinner](generation-stage-spinner.md) slice 1 edit
+  `shared/jobs.ts` (different unions).
+- Slice 16 edits `src/lib/ChatScreens/Chat.svelte`, which Small Fixes slices 6, 10 and 11,
+  [Direct Asset URLs](direct-asset-urls.md) slice 4, and [Server Thumbnails](server-thumbnails.md)
+  slice 4 also edit, and the sanitizer in `src/ts/parser/parser.svelte.ts`, which Direct Asset
+  URLs slice 5 edits.
+- Slice 17 and Server Tokenizer slice 3 edit `src/lib/Others/PopupEditor.svelte`.
+- Slice 19 and Small Fixes slice 6 edit `ModuleSettings.svelte`.
+- Slice 21, Small Fixes slice 10, and Direct Asset URLs slice 4 edit `ChatBody.svelte`.
+- Slice 22 and [Chat Checkpoints](chat-checkpoints.md) slice 5 edit `src/App.svelte`.
+
+A slice that lands second keeps to its own lines of the shared file and rebases onto the
+first. In a combined run, two such slices never run in one wave.
 
 ## Order
 
@@ -128,7 +144,8 @@ Five chains. Chains run in parallel; within a chain, arrows are file or result d
 - Plugins: 4; 5 → 6 (both edit `v3.svelte.ts`).
 - Chat correctness: 7, 8, 9, 10, 11, 12 are independent of each other.
 - Lua: 13; 14 → 15 → 16, and 16 after 13 (`runtime.ts`).
-- UI and collections: 17, 19, 21, 22 independent; 18 → 20 (both edit `characterCards.ts`).
+- UI and collections: 17, 19, 21, 22 independent; 18 → 20 (both edit `characterCards.ts`),
+  and 20 after 1 (both edit `importDatabase.ts`).
 - Close-out: 23 after every other slice landed or was dropped by a decision.
 
 Priority when slots are short: 1, 2, 4, 5, 6 first (data and permission boundaries), then
@@ -389,7 +406,9 @@ Depends: 5 (same file).
 
 ## Slice 15. Lua image generation takes a NovelAI orientation (_small_, `media-aux.md`)
 
-Depends: 14 (same file).
+Depends: 14 (same file). Same files as Static Audit Fixes slices 7 and 11 (`stableDiff.ts`,
+the `jobChannel.ts` image callback) and Generation Stage Spinner slice 1 (`shared/jobs.ts`); see
+Approach.
 
 - `server/src/lua/bindings.ts` (~1583–1593): accept an optional JSON options argument with
   `orientation: "portrait" | "landscape" | "square"` and validate it.
@@ -405,7 +424,9 @@ Depends: 14 (same file).
 
 ## Slice 16. Lua form submission (_hard_, `scripts-triggers.md`)
 
-Depends: 13, 15. Included by D4.
+Depends: 13, 15. Included by D4. Same files as Small Fixes slices 6, 10, 11, Direct Asset URLs
+slices 4 and 5, Server Thumbnails slice 4, and Generation Stage Spinner slice 1 (`Chat.svelte`,
+`parser.svelte.ts`, `shared/jobs.ts`); see Approach.
 
 - Upstream (`7ac7a204`, `be431696`, `536a2514`): a sanitizer-allowed `risu-form` attribute
   (`src/ts/parser/parser.svelte.ts` ~779–782); the chat captures `submit`, prevents navigation,
@@ -429,6 +450,8 @@ Depends: 13, 15. Included by D4.
 
 ## Slice 17. Select text does not clip in Safari (_small_, `ui-theming.md`)
 
+Same file as Server Tokenizer slice 3 (`PopupEditor.svelte`); see Approach.
+
 - Port `9499b870`'s select styling (upstream `src/styles.css` ~549–575: own chevron, padding,
   forced-colors fallback) as a class on `src/lib/UI/GUI/SelectInput.svelte` (~19–33) and the
   popup editor's select (`src/lib/Others/PopupEditor.svelte` ~65–68). Colors from theme
@@ -446,6 +469,8 @@ Depends: 13, 15. Included by D4.
 
 ## Slice 19. Creating a module adds it once (_small_, `characters-modules.md`)
 
+Same file as Small Fixes slice 6 (`ModuleSettings.svelte`); see Approach.
+
 - `src/lib/Setting/Pages/Module/ModuleSettings.svelte`: create mode pushes the module on entry
   (~204) and again on save (~241). Push only on save, and label the final button Close when
   nothing changed (upstream `3a19c2a5`).
@@ -453,7 +478,7 @@ Depends: 13, 15. Included by D4.
 
 ## Slice 20. Realm creator blocking (_hard_, `persistence.md`)
 
-Depends: 18 (same file). Included by D4.
+Depends: 18 (same file), 1 (`importDatabase.ts`). Included by D4.
 
 - Persisted field: a blocked creator list in settings (upstream `656cd3cf`,
   `src/ts/realmBlocking.ts` ~1–34). Add it to `shared/database.ts`, its section owner, server
@@ -469,6 +494,9 @@ Depends: 18 (same file). Included by D4.
 
 ## Slice 21. A chat parse error shows its stack (_small_, `ui-theming.md`)
 
+Same file as Small Fixes slice 10 and Direct Asset URLs slice 4 (`ChatBody.svelte`); see
+Approach.
+
 - `src/lib/ChatScreens/ChatBody.svelte` (~301) concatenates `error.stack` into the alert text.
   Pass an `Error` carrying the message so `alertError` (`src/ts/alert.ts` ~107) shows the stack
   in its details view (upstream `1f8180c1`).
@@ -477,7 +505,7 @@ Depends: 18 (same file). Included by D4.
 
 ## Slice 22. Keep-alive audio counts as audible (_small_, `app-shell.md`)
 
-Included by D8.
+Included by D8. Same file as Chat Checkpoints slice 5 (`src/App.svelte`); see Approach.
 
 - `src/App.svelte` (~134–140): the `sound` mode loops `send.mp3` at volume `0.000001`, which
   Chrome treats as silent. Port `67e7b8cb` (`src/ts/keepAliveAudio.ts` ~1–48): a generated
@@ -486,9 +514,9 @@ Included by D8.
 - Test: a unit test of the module with a stubbed `Audio`/media session (starts, loops, resumes,
   stops); check by hand that Chrome shows the tab as playing audio.
 
-## Slice 23. Upstream ledger and close-out (_small_, `build-test-platforms.md`)
+## Slice 23. Upstream ledger (_small_, `build-test-platforms.md`)
 
-After every other slice landed or was dropped.
+Depends: 1–22 (each landed, or dropped by a decision).
 
 - Write the ledger at the place D5 names. Header: observed upstream sha, inventoried-through
   sha, triaged-through sha, Metatron sha checked, and the two harness targets. One row per
@@ -508,8 +536,10 @@ After every other slice landed or was dropped.
   4. Advance the inventoried sha only when every commit in the range has a row, and the triaged
      sha only when every row has a disposition.
   5. Turn new gaps into a plan with slices.
-- Archive this plan (`docs/archived-plan/README.md`), remove it from `docs/plan/README.md`,
-  and link the ledger from `backup-sync-hub.md` or the research README.
+- Link the ledger from `backup-sync-hub.md` or the research README.
+- Do not archive this plan or edit `docs/plan/README.md` here: retiring the plan (the archive
+  entry, the index link) is the orchestrator's step after every slice landed, with the user's
+  yes.
 
 ## Inventory
 
