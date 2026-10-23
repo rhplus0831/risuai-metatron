@@ -1,3 +1,4 @@
+import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
@@ -262,6 +263,37 @@ describe("the requests", () => {
 });
 
 describe("following a job", () => {
+    it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
+        const { jobStages } = await import("../process/jobStages");
+        const ref = { chaId: "c", chatId: "k" };
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
+            transport.applyGenerationEvent("j1", ref, event),
+        );
+        const follow = transport.followGenerationJob("j1", dispatch);
+        try {
+            stubs.auth[0].resolve("jwt");
+            await vi.runAllTimersAsync();
+            const [socket] = FakeSocket.instances;
+            socket.open();
+
+            socket.message({ type: "stage", epoch: "other-epoch", stage: "memory" });
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(get(jobStages).size).toBe(0);
+
+            socket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+            expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "generating" });
+            dispatch.mockClear();
+
+            socket.message({ type: "stage", epoch: "other-epoch", stage: "finishing" });
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "generating" });
+        } finally {
+            follow.close();
+            await follow.closed;
+        }
+    });
+
     it("connects with a fresh JWT, the client id, and an increasing attach stamp; delivers events of this epoch and closes on the terminal", async () => {
         const seen: unknown[] = [];
         const follow = transport.followGenerationJob("j1", (event) => seen.push(event));
@@ -377,6 +409,15 @@ describe("following a job", () => {
 
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
+
+    it("records stage events under their job and chat, replacing the job's previous stage", async () => {
+        const { jobStages } = await import("../process/jobStages");
+        transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "preparing" });
+        expect([...get(jobStages)]).toEqual([["j1", { chatKey: "c\u0000k", stage: "preparing" }]]);
+
+        transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "memory" });
+        expect([...get(jobStages)]).toEqual([["j1", { chatKey: "c\u0000k", stage: "memory" }]]);
+    });
 
     it("routes accepted and chunk to the chat module, resource to the save adapter (with the job's streaming list), and the terminal to the job's end", () => {
         transport.rememberGenerationJob(ref, "j1");

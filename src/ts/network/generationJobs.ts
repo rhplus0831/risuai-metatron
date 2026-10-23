@@ -23,6 +23,7 @@ import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storag
 import { applyHydration, applyPatchHydration, flushResources } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
 import { recordClientEvent } from "../diagnostics/collector";
+import { setJobStage } from "../process/jobStages";
 
 /**
  * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
@@ -621,11 +622,12 @@ function runRecovery(transport: ChannelTransport, recovery: Recovery) {
 }
 
 /**
- * Mirrors one event of a job on `ref`'s chat: the reply's text and lock (`accepted`, `chunk`), the
- * records the job changed (`resource`, through `applyHydration`; the job chat's changes as
- * `chatPatch`, through `applyPatchHydration`), and the end (`done`, `error`: every lock of the job
- * is released and the saved job is forgotten). A patch the mirror cannot take asks the job for its
- * chat whole through `transport` (`resync`); a missing chunk base asks only for the reply (`resyncReply`).
+ * Mirrors one event of a job on `ref`'s chat: its presentation stage (`stage`), the reply's text and
+ * lock (`accepted`, `chunk`), the records the job changed (`resource`, through `applyHydration`;
+ * the job chat's changes as `chatPatch`, through `applyPatchHydration`), and the end (`done`,
+ * `error`: every lock of the job is released and the saved job is forgotten). A patch the mirror
+ * cannot take asks the job for its chat whole through `transport` (`resync`); a missing chunk base
+ * asks only for the reply (`resyncReply`).
  */
 export function applyGenerationEvent(
     jobId: string,
@@ -703,6 +705,10 @@ export function applyGenerationEvent(
             if (transport) {
                 onChannel((channel) => channel.handleChannelEvent(jobId, event, transport));
             }
+            return;
+        case "stage":
+            // The job's latest presentation stage, kept per job for the selected chat's spinner.
+            setJobStage(jobId, ref, event.stage);
             return;
         case "preset":
             // A `presetChain` pick is the job's own: neither the tab's selection nor the chat's binding

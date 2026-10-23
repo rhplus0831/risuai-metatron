@@ -39,6 +39,7 @@ import {
 import { sleep } from "../util";
 import { recordClientEvent } from "../diagnostics/collector";
 import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/process/chatStatus.svelte";
+import { dropJobStage } from "./jobStages";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
 const MAX_ATTACHES = 5;
@@ -148,6 +149,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     next.delete(jobId);
                     return next;
                 });
+                dropJobStage(jobId);
                 release?.();
             }
         })();

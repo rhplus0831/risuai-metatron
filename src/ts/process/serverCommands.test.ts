@@ -1107,59 +1107,80 @@ describe("followedJobs", () => {
     const jobsOf = (chat: { chaId: string; chatId: string }) =>
         commands.followedJobsOf(get(commands.followedJobs), chat);
 
-    it("lists a followed job under its chat from the follow's start until its end, for done and for an error", async () => {
+    it("lists a followed job under its chat from the follow's start until its end, for done and for an error, and drops its stage with it", async () => {
+        const { jobStages, setJobStage } = await import("./jobStages");
         const end = commands.followJobToEnd("j", ref);
         await flush();
+        setJobStage("j", ref, "finishing");
         expect(jobsOf(ref)).toEqual(["j"]);
         expect(jobsOf({ chaId: "c", chatId: "other" })).toEqual([]);
         endWith(follows()[0], done);
         expect(await end).toEqual(done);
         expect(jobsOf(ref)).toEqual([]);
+        expect(get(jobStages).has("j")).toBe(false);
 
         const failing = commands.followJobToEnd("j2", ref);
         await flush();
+        setJobStage("j2", ref, "generating");
         expect(jobsOf(ref)).toEqual(["j2"]);
         endWith(follows()[1], failed);
         await failing;
         expect(jobsOf(ref)).toEqual([]);
+        expect(get(jobStages).has("j2")).toBe(false);
     });
 
-    it("lists a job resumed at boot under the chat its status names, and drops it when the job is lost", async () => {
+    it("lists a job resumed at boot under the chat its status names, and drops it and its stage when the job is lost", async () => {
+        const { jobStages, setJobStage } = await import("./jobStages");
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockResolvedValue(status);
         const boot = commands.resumeServerJobs();
         await flush();
         await flush();
+        setJobStage("j", ref, "memory");
         expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual(["j"]);
         // The socket closes without a terminal and the server no longer knows the job: lost.
         stubs.read.mockResolvedValue(null);
         follows()[0].end(null);
         await boot;
         expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual([]);
+        expect(get(jobStages).has("j")).toBe(false);
     });
 
-    it("keeps a newer job of the same chat listed when the older follow ends after it started", async () => {
+    it("keeps a newer job of the same chat listed, with its stage, when the older follow ends after it started", async () => {
+        const { jobStages, setJobStage, chatStageOf } = await import("./jobStages");
         const older = commands.followJobToEnd("old", ref);
         await flush();
+        setJobStage("old", ref, "finishing");
         const newer = commands.followJobToEnd("new", ref);
         await flush();
+        setJobStage("new", ref, "generating");
         expect(jobsOf(ref).sort()).toEqual(["new", "old"]);
         endWith(follows()[0], done);
         await older;
         expect(jobsOf(ref)).toEqual(["new"]);
+        expect([...get(jobStages)]).toEqual([["new", { chatKey: "c\u0000k", stage: "generating" }]]);
+        expect(chatStageOf(get(jobStages), ref)).toBe("generating");
         endWith(follows()[1], done);
         await newer;
         expect(jobsOf(ref)).toEqual([]);
+        expect(get(jobStages).size).toBe(0);
     });
 
-    it("drops a job whose chat cannot be loaded once the follow ends as lost, and never lists a job the server does not know", async () => {
+    it("drops a job whose chat cannot be loaded, and its stage, once the follow ends as lost, and never keeps a job the server does not know", async () => {
+        const { jobStages, setJobStage } = await import("./jobStages");
         stubs.load.mockReset().mockRejectedValue(new Error("offline"));
-        expect(await commands.followJobToEnd("j", ref)).toBe("lost");
+        const end = commands.followJobToEnd("j", ref);
+        setJobStage("j", ref, "preparing");
+        expect(await end).toBe("lost");
         expect(jobsOf(ref)).toEqual([]);
+        expect(get(jobStages).has("j")).toBe(false);
 
         stubs.saved.mockReturnValue(["gone"]);
         stubs.read.mockResolvedValue(null);
-        await commands.resumeServerJobs();
+        const boot = commands.resumeServerJobs();
+        setJobStage("gone", ref, "memory");
+        await boot;
         expect(get(commands.followedJobs).size).toBe(0);
+        expect(get(jobStages).has("gone")).toBe(false);
     });
 });
