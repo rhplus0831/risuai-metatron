@@ -230,8 +230,8 @@ function prepareWholeChat(
         throw new ResourceValidationError("chat must be an object");
     }
     const meta = serialize(normalizeChatMeta(chat, chatId)).text;
-    // The JSON copy of the messages, as `prepareMessage` checks it.
-    const sent = chat.message === undefined ? undefined : serialize(chat.message).stored;
+    // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
+    const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
     const messages = normalizeMessageList(sent).map((message) => ({
         id: message.chatId as string,
         text: serialize(message).text,
@@ -644,6 +644,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
+    const selectRestoreFloor = db.prepare("SELECT revision FROM chatRestoreFloors WHERE chatSeq = ?");
     const insertChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, 0, ?, ?)",
     );
@@ -1053,7 +1054,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
         } else {
             const base = tokens.parse(group.baseRevision);
-            if (!row || !base || base.seq !== row.seq || (group.needsCurrent && base.revision !== row.revision)) {
+            if (
+                !row ||
+                !base ||
+                base.seq !== row.seq ||
+                base.revision <
+                    ((selectRestoreFloor.get(row.seq) as { revision: number } | undefined)?.revision ?? 0) ||
+                (group.needsCurrent && base.revision !== row.revision)
+            ) {
                 conflictHere(row);
             }
             stale = base!.revision !== row!.revision;

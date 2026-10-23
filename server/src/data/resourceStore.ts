@@ -243,6 +243,17 @@ export type AppliedChanges = {
     chatOrders: ChatOrderResult[];
 };
 
+/** Checkpoint access valid only inside one `applyChanges` transaction callback. */
+export type CheckpointTransaction = Pick<
+    ReturnType<typeof createCheckpointTables>,
+    "save" | "prune" | "setFloor" | "readPolicy" | "writePolicy"
+>;
+
+export type ApplyChangesTransaction = {
+    before?: (tx: CheckpointTransaction) => unknown;
+    after?: (applied: AppliedChanges, tx: CheckpointTransaction) => unknown;
+};
+
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
 /**
@@ -558,6 +569,8 @@ export function createResourceStore(options: {
      * no longer write, so a body that awaited cannot autocommit writes after the rollback.
      */
     const transactionScope = new AsyncLocalStorage<{ ended: boolean }>();
+    // Public writes, including async continuations, cannot escape a checkpoint callback's writer.
+    const checkpointCallbackScope = new AsyncLocalStorage<boolean>();
 
     const token = (seq: number, revision: number) => `${epoch}:${seq}:${revision}`;
 
@@ -765,8 +778,8 @@ export function createResourceStore(options: {
         return Number.isSafeInteger(seq) && Number.isSafeInteger(revision) ? { seq, revision } : null;
     }
 
-    const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
     const checkpointTables = createCheckpointTables(db, { token, parse: parseToken });
+    const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
     if (checkpointTables.sweep() > 0) {
         countWrite();
     }
@@ -780,6 +793,9 @@ export function createResourceStore(options: {
 
     function assertWritable() {
         assertOpen();
+        if (checkpointCallbackScope.getStore()) {
+            throw new Error("Use the transaction-bound checkpoint writer inside applyChanges callbacks");
+        }
         if (transactionScope.getStore()?.ended) {
             throw new Error("Resource transaction already ended");
         }
@@ -948,7 +964,7 @@ export function createResourceStore(options: {
             chats?: unknown;
             chatOrders?: unknown;
         },
-        options: { epoch?: string; jobToken?: string },
+        options: { epoch?: string; jobToken?: string; inTransaction?: ApplyChangesTransaction },
     ): AppliedChanges {
         assertNotInTransaction();
         if (options.epoch !== undefined) {
@@ -1010,7 +1026,71 @@ export function createResourceStore(options: {
 
         beginTransaction();
         let committed = false;
+        let checkpointWrites = 0;
+        function runCheckpointCallback(callback: (tx: CheckpointTransaction) => unknown) {
+            let active = true;
+            const transaction = transactionInvalidations;
+            function check() {
+                assertOpen();
+                if (!active || !db.isTransaction || transactionInvalidations !== transaction) {
+                    throw new Error("Checkpoint transaction callback already ended");
+                }
+            }
+            const tx: CheckpointTransaction = {
+                save(...args) {
+                    check();
+                    const result = checkpointTables.save(...args);
+                    checkpointWrites += result ? 1 : 0;
+                    return result;
+                },
+                prune(...args) {
+                    check();
+                    const result = checkpointTables.prune(...args);
+                    checkpointWrites += Number(result.deleted > 0) + Number(result.pagesRemoved > 0);
+                    return result;
+                },
+                setFloor(...args) {
+                    check();
+                    const changed = checkpointTables.setFloor(...args);
+                    checkpointWrites += Number(changed);
+                    return changed;
+                },
+                readPolicy(...args) {
+                    check();
+                    return checkpointTables.readPolicy(...args);
+                },
+                writePolicy(...args) {
+                    check();
+                    const changed = checkpointTables.writePolicy(...args);
+                    checkpointWrites += Number(changed);
+                    return changed;
+                },
+            };
+            try {
+                checkpointCallbackScope.run(true, () => {
+                    let value: unknown;
+                    try {
+                        value = callback(tx);
+                    } finally {
+                        active = false;
+                    }
+                    if (isThenable(value)) {
+                        try {
+                            value.then(undefined, () => {});
+                        } catch {
+                            // Report the synchronous contract, not a rejected continuation.
+                        }
+                        throw new Error("applyChanges transaction callbacks must be synchronous");
+                    }
+                });
+            } finally {
+                active = false;
+            }
+        }
         try {
+            if (options.inTransaction?.before) {
+                runCheckpointCallback(options.inTransaction.before);
+            }
             const conflicts: BatchConflict[] = [];
             const bases = prepared.map(({ operation: { kind, id, baseRevision }, mode }) => {
                 const row = selectRevision.get(kind.name, id) as { seq: number; revision: number } | undefined;
@@ -1087,9 +1167,13 @@ export function createResourceStore(options: {
             for (const chat of chatOutcome.invalidated) {
                 recordInvalidation(chat.characterId, chat.id);
             }
+            const applied = { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
+            if (options.inTransaction?.after) {
+                runCheckpointCallback((tx) => options.inTransaction!.after!(applied, tx));
+            }
             commitTransaction();
             committed = true;
-            writeCount += prepared.length + chatOutcome.applied;
+            writeCount += prepared.length + chatOutcome.applied + checkpointWrites;
             for (const [index, result] of results.entries()) {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
@@ -1099,7 +1183,7 @@ export function createResourceStore(options: {
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);
             }
-            return { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
+            return applied;
         } finally {
             if (!committed) {
                 rollbackTransaction();
@@ -1166,6 +1250,10 @@ export function createResourceStore(options: {
 
         /** Cold checkpoint data: writes count toward snapshots without publishing chat changes. */
         checkpoints: {
+            readFloor(...args: Parameters<typeof checkpointTables.readFloor>) {
+                assertOpen();
+                return checkpointTables.readFloor(...args);
+            },
             save(...args: Parameters<typeof checkpointTables.save>) {
                 assertWritable();
                 return transactionInScope(() => {
@@ -1672,6 +1760,13 @@ export function createResourceStore(options: {
          * (`server/src/jobs/`) passes its `epoch` and `jobToken`: the epoch is asserted and the token
          * must be live (`JobTokenError` otherwise), in the same synchronous call as the write.
          *
+         * `options.inTransaction`: `before(tx)` runs after BEGIN, before any batch writes;
+         * `after(applied, tx)` runs only with no conflicts, before COMMIT. Both must be synchronous:
+         * a throw or returned thenable rolls back the entire batch, including checkpoint writes.
+         * `tx` exposes only save/prune/setFloor/readPolicy/writePolicy, joins this transaction, and
+         * expires when its callback returns. Public store writes from a callback or its asynchronous
+         * continuations throw. Callback writes count toward `writeCount` only after COMMIT.
+         *
          * `options.committed` (a generation job's write): runs once the write has committed, before
          * its change is published, and returns the generation locks of the chats it touched, which
          * the published change carries (`streaming`). It runs whether or not a feed is attached and
@@ -1687,6 +1782,7 @@ export function createResourceStore(options: {
             options: {
                 epoch?: string;
                 jobToken?: string;
+                inTransaction?: ApplyChangesTransaction;
                 committed?: (applied: AppliedChanges) => readonly ChatStreaming[];
             } = {},
         ): AppliedChanges {
@@ -2120,11 +2216,16 @@ function normalizeInput(kind: ResourceKind, input: unknown, id: string): unknown
  * applies, `undefined` fields drop, and Dates become strings. Refuses data whose JSON form would turn
  * a non-finite number into `null`, that `JSON.stringify` cannot serialize (a bigint, a cycle, a
  * throwing getter, runaway nesting), or whose JSON form nests deeper than `MAX_JSON_DEPTH`. Returns
- * the text and the value parsed back from it, which is what a read returns.
+ * the text and the value parsed back from it, which is what a read returns. `arrayElementDepth`
+ * measures a root array's elements separately, for a whole chat's independently stored messages;
+ * serialization still uses the whole array's toJSON and element keys.
  */
-export function serialize(value: unknown): { text: string; stored: unknown } {
+export function serialize(
+    value: unknown,
+    options: { arrayElementDepth?: boolean } = {},
+): { text: string; stored: unknown } {
     const text = stringifyStored(value);
-    return { text, stored: readStored(text) };
+    return { text, stored: readStored(text, options.arrayElementDepth) };
 }
 
 /** `serialize`'s first half: the text, or the refusal of a value `JSON.stringify` cannot store. */
@@ -2145,9 +2246,9 @@ function stringifyStored(value: unknown): string {
 }
 
 /** `serialize`'s second half: the value read back from the text, checked (`assertStoredJson`). */
-function readStored(text: string): unknown {
+function readStored(text: string, arrayElementDepth = false): unknown {
     const stored: unknown = JSON.parse(text);
-    assertStoredJson(stored, 0);
+    assertStoredJson(stored, arrayElementDepth && Array.isArray(stored) ? -1 : 0);
     return stored;
 }
 

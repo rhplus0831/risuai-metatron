@@ -1428,6 +1428,11 @@ export function createGenerationJobs(options: {
     return {
         create,
 
+        /** A job of any kind holds the chat from admission, before it owns any message. */
+        chatBusy(characterId: string, chatId: string): boolean {
+            return chatSlots.has(chatKey(characterId, chatId));
+        },
+
         /** The owner's view of its job, or null for an unknown job or another client's. */
         /**
          * The job callback an aux request runs inside (`POST /api/llm/request` with `channelCall`),

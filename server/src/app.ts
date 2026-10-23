@@ -15,6 +15,7 @@ import { HTTPException } from "hono/http-exception";
 import { routePath } from "hono/route";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
+import { createCheckpointService } from "./data/checkpointService.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
@@ -43,6 +44,7 @@ import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
+import { CHAT_CHECKPOINTS_PATH, registerChatCheckpointRoutes } from "./routes/chatCheckpoints.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
 import { createUpstreamExportStaging, registerUpstreamExportRoutes } from "./routes/backupsUpstreamExport.ts";
@@ -566,10 +568,12 @@ export function createServerContext(options: {
         // The memory task routes read the store and change the memory task registry; every answer of
         // theirs is `no-store`, the limiter's 429 and the body limit's 413 included.
         const memoryTask = c.req.path === MEMORY_TASKS_PATH || c.req.path.startsWith(`${MEMORY_TASKS_PATH}/`);
+        const checkpoint = c.req.path === CHAT_CHECKPOINTS_PATH || c.req.path.startsWith(`${CHAT_CHECKPOINTS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
             c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH ||
-            memoryTask;
+            memoryTask ||
+            checkpoint;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
@@ -605,7 +609,7 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask || tokenRoute) {
+            if (history || memoryTask || tokenRoute || checkpoint) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -619,8 +623,8 @@ export function createServerContext(options: {
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, the memory task start's, and the token routes cap their bodies themselves
-    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 2 MiB).
+    // message search's, the memory task start's, the checkpoint mutations', and the token routes cap their bodies themselves
+    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -636,6 +640,7 @@ export function createServerContext(options: {
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
                     route === MEMORY_TASKS_PATH ||
+                    route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
@@ -789,6 +794,18 @@ export function createServerContext(options: {
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
         limits: options.messageSearch,
+    });
+    registerChatCheckpointRoutes(app, {
+        service: createCheckpointService({
+            store: resources,
+            busy: (characterId, chatId) =>
+                generationJobs.chatBusy(characterId, chatId) ||
+                generationLock.chatHolders(characterId, chatId).size > 0,
+            memoryTasks,
+        }),
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
     });
     registerLlmSecretRoutes(app, {
         store: resources,

@@ -21,7 +21,8 @@ import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore } from "../data/resourceStore.ts";
+import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { createVectorCache } from "../data/vectorCache.ts";
 import {
@@ -1933,6 +1934,100 @@ async function wiring(options: { limits?: Partial<MemoryTaskLimits> } = {}) {
     });
     return w;
 }
+
+describe("checkpoint loads and memory tasks", () => {
+    it("a checkpoint load cancels the context's running task with writerLease and drops its retained manual input", async () => {
+        const w = await wiring();
+        const service = w.context.memoryTasks!;
+        const saved = await w.api(
+            "/api/chat-checkpoints/save",
+            jsonInit({ characterId: "c", chatId: "k1", name: "Fork" }),
+        );
+        expect(saved.status).toBe(200);
+        const terminal = deferred<MemoryTaskEvent>();
+        const unsubscribe = service.onStatus((event) => {
+            if (event.chatRef.chatId === "k1" && TERMINAL.has(event.status.state)) terminal.resolve(event);
+        });
+        cleanups.push(unsubscribe);
+        w.handOff("k1", { entries: 2 });
+        const held = await w.provider.request(0);
+        const loaded = await w.api(
+            "/api/chat-checkpoints/load",
+            jsonInit({
+                characterId: "c",
+                chatId: "k1",
+                id: saved.body.checkpoint.id,
+                chatBaseRevision: w.revisions.k1,
+            }),
+        );
+        expect(loaded.status).toBe(200);
+        expect(loaded.headers.get("cache-control")).toBe("no-store");
+        expect((await terminal.promise).status).toMatchObject({ state: "cancelled", reason: "writerLease", done: 0 });
+        const restored = await w.chat("k1");
+        expect(restored.revision).toBe(loaded.body.chatRevision);
+        held.answer("Late summary must not survive");
+        // Wait for the cancelled work to finish, without racing the service's drain deadline.
+        while (service.aliveCount() > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(await w.chat("k1")).toEqual(restored);
+        expect(restored.data!.hypaV3Data).toBeUndefined();
+        const manual = await w.start({ characterId: "c", chatId: "k1" });
+        expect(manual.status).toBe(200);
+        expect(manual.body).toMatchObject({ outcome: "pendingManual" });
+        expect(w.provider.requests).toHaveLength(1);
+    });
+
+    it("failed checkpoint loads leave the source generation unchanged and release the memory writer for a later hand-off", async () => {
+        for (const failure of ["stale", "afterLoad"] as const) {
+            const t = harness({ ignoreAbort: true });
+            const saved = t.store.checkpoints.save("c", "k1", "Fork", "manual")!;
+            const base = t.revision("k1")!;
+            if (failure === "stale") t.write("k1", [{ op: "meta", set: { note: "newer revision" } }]);
+            const generation = t.store.chatSourceGeneration("c", "k1");
+            const notices: ChatInvalidation[] = [];
+            t.store.onChatInvalidated((notice) => notices.push(notice));
+            const before = { chat: t.chat("k1"), revision: t.revision("k1"), writes: t.store.writeCount() };
+            handOff(t, "k1", { entries: 2 });
+            const held = await t.provider.request(0);
+            const service = createCheckpointService({
+                store: t.store,
+                busy: () => false,
+                memoryTasks: t.service,
+                afterLoad:
+                    failure === "afterLoad"
+                        ? () => {
+                              throw new Error("after load failed");
+                          }
+                        : undefined,
+            });
+            const load = () =>
+                service.load({
+                    epoch: t.store.epoch(),
+                    body: { characterId: "c", chatId: "k1", id: saved.id, chatBaseRevision: base },
+                });
+            if (failure === "stale") {
+                expect(load().status).toBe(409);
+                expect(t.service.status(ref("k1"))).toMatchObject({ state: "running" });
+                t.service.cancel(ref("k1"));
+            } else {
+                expect(load).toThrow("after load failed");
+                expect(t.service.status(ref("k1"))).toMatchObject({ state: "cancelled", reason: "writerLease" });
+            }
+            held.answer("Late failed-load summary");
+            while (t.service.aliveCount() > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+            expect({ chat: t.chat("k1"), revision: t.revision("k1"), writes: t.store.writeCount() }).toEqual(before);
+            expect(t.store.chatSourceGeneration("c", "k1")).toBe(generation);
+            expect(notices).toEqual([]);
+            expect(t.store.checkpoints.list("c", "k1")).toEqual([saved]);
+            const finished = t.nextTerminal("k1");
+            handOff(t, "k1", { entries: 2 });
+            (await t.provider.request(1)).answer("Fresh hand-off summary");
+            expect((await finished).status).toMatchObject({ state: "done", done: 1 });
+            expect(t.summaries("k1")).toEqual(["Fresh hand-off summary"]);
+            expect(t.store.chatSourceGeneration("c", "k1")).toBe(generation);
+            expect(notices).toEqual([]);
+        }
+    });
+});
 
 describe("the server wiring", () => {
     it("answers 400, not 500, when the task body stream fails without a declared length", async () => {

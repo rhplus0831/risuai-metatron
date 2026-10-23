@@ -70,6 +70,14 @@ const CHECKPOINT_TABLES_SQL = `
     ) STRICT;
 `;
 
+/** Restore barriers are local to this epoch, outside the snapshot's four-table checkpoint group. */
+const RESTORE_FLOORS_SQL = `
+    CREATE TABLE IF NOT EXISTS chatRestoreFloors (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        revision INTEGER NOT NULL
+    ) STRICT;
+`;
+
 const CHECKPOINT_TABLE_COLUMNS: Record<string, readonly string[]> = {
     chatCheckpoints: [
         "seq",
@@ -135,6 +143,7 @@ function assertKind(kind: CheckpointKind) {
  */
 export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions) {
     db.exec(CHECKPOINT_TABLES_SQL);
+    db.exec(RESTORE_FLOORS_SQL);
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectMessages = db.prepare("SELECT id, data FROM messages WHERE chatSeq = ? ORDER BY position");
     const summaryColumns = "seq, id, kind, name, createdAt, revision, userTurns, messageCount, preview";
@@ -178,6 +187,12 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         "INSERT INTO chatCheckpointPolicy (chatSeq, autoEvery, autoKeep, lastAutoTurns) VALUES (?, ?, ?, ?) " +
             "ON CONFLICT (chatSeq) DO UPDATE SET autoEvery = excluded.autoEvery, " +
             "autoKeep = excluded.autoKeep, lastAutoTurns = excluded.lastAutoTurns",
+    );
+    const selectFloor = db.prepare("SELECT revision FROM chatRestoreFloors WHERE chatSeq = ?");
+    const upsertFloor = db.prepare(
+        "INSERT INTO chatRestoreFloors (chatSeq, revision) VALUES (?, ?) " +
+            "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision " +
+            "WHERE excluded.revision > chatRestoreFloors.revision",
     );
 
     function summary(row: SummaryRow): CheckpointSummary {
@@ -225,6 +240,18 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
     }
 
     return {
+        /** The restore barrier's numeric revision, or null for a chat without one. */
+        readFloor(characterId: string, chatId: string): number | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return chat ? ((selectFloor.get(chat.seq) as { revision: number } | undefined)?.revision ?? null) : null;
+        },
+
+        /** Copies the chat's current revision into its restore barrier, never lowering an existing one. */
+        setFloor(characterId: string, chatId: string): boolean {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return !!chat && Number(upsertFloor.run(chat.seq, chat.revision).changes) > 0;
+        },
+
         /** Captures stored message text and story fields without changing the chat. Missing chat: null. */
         save(characterId: string, chatId: string, name: string, kind: CheckpointKind): CheckpointSummary | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
