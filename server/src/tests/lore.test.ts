@@ -411,6 +411,25 @@ describe("the decorators", () => {
         expect(result.actives[0]).toMatchObject({ prompt: "body", role: "user", depth: 0, pos: "" });
     });
 
+    it("writes after-match flags only for the entries carrying each decorator", async () => {
+        const host = makeHost();
+        // Processing follows this array; insertorder keeps the same order in the prompt.
+        const result = await run(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\nk", { id: "keep-id", insertorder: 1 }),
+                lore("plain", "x", "p", { id: "plain-id", insertorder: 2 }),
+                lore("dont", "x", "@@dont_activate_after_match\nd", { id: "dont-id", insertorder: 3 }),
+            ],
+            [user("x")],
+            host,
+        );
+        expect(sources(result)).toEqual(["keep", "plain", "dont"]);
+        expect([...host.vars.entries()]).toEqual([
+            ["__internal_ka_keep-id", "true"],
+            ["__internal_da_dont-id", "true"],
+        ]);
+    });
+
     it("the keep and don't-activate-after-match flags read and write the host's chat variables", async () => {
         const host = makeHost();
         const keep = lore("keep", "x", "@@keep_activate_after_match\nk", { id: "keep-id" });
@@ -418,11 +437,9 @@ describe("the decorators", () => {
         // First run: both match and both flags are written (the one without an id by pickHashRand).
         expect(sources(await run([keep, dont], [user("x")], host))).toEqual(["dont", "keep"]);
         const dontHash = host.pickHashRand(5555, dont.content).toString();
-        // Inherited: the two "seen" flags are function-wide, not per entry, so once the keep entry
-        // raised its flag every later active also gets a keep write (`__internal_ka_` of `dont`).
+        // Each entry writes only its own flag: `dont` gets no `__internal_ka_` from the keep entry.
         expect([...host.vars.entries()]).toEqual([
             ["__internal_ka_keep-id", "true"],
-            ["__internal_ka_" + dontHash, "true"],
             ["__internal_da_" + dontHash, "true"],
         ]);
         // Second run without the key: the kept entry still activates, the other never again.

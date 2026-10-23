@@ -143,6 +143,7 @@ Not in `sendChat`:
   - Supports selective secondary keys, negative keys, and all-key mode.
   - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no explicit depth counter.
   - Decorators are parsed with `CCardLib.decorator.parse`.
+  - `@@keep_activate_after_match` and `@@dont_activate_after_match` are per entry: an activated entry writes `__internal_ka_<id>`/`__internal_da_<id>` (its `id`, else `pickHashRand(5555, content)`) only for its own decorator. On later runs a set `__internal_ka_` activates the entry without a key match, and a set `__internal_da_` keeps it off.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
@@ -199,5 +200,4 @@ Not in `sendChat`:
 - Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group wrapper.
 - Group lore activation takes the group as the character: its own `globalLore`, the chat's, and the modules'; the members' `globalLore` is not included, even with the group's `useCharacterLore`.
 - Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/` becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a malformed later entry ends that key search instead of being skipped.
-- `activateLore`'s `keepActivateAfterMatch` and `dontActivateAfterMatch` are function-wide, not per entry: once a decorator raises one, every later activated entry also gets the matching `__internal_ka_`/`__internal_da_` chat variable write.
 - `exportLoreBook("local")` dereferences `selectedChat()` without waiting, so while the selected chat loads it alerts a `TypeError` instead of refusing; `exportLoreBook("sglobal")` takes the same path with no chat and also alerts an error instead of exporting.

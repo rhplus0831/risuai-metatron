@@ -262,8 +262,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let activatedIndexes: number[] = [];
     let disabledUIPrompts: string[] = [];
     let matchTimes = 0;
-    let keepActivateAfterMatch = false;
-    let dontActivateAfterMatch = false;
     while (matching) {
         matching = false;
         for (let i = 0; i < fullLore.length; i++) {
@@ -294,6 +292,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             }[] = [];
             let fullWordMatching = fullWordMatchingSetting;
             let dontSearchWhenRecursive = false;
+            let keepActivateAfterMatch = false;
+            let dontActivateAfterMatch = false;
 
             if (fullLore[i].mode === "child") {
                 activated = false;
