@@ -122,7 +122,7 @@
                         class:ring-3={persona.id === selectedPersonaId}
                     ></div>
                 {:else}
-                    <LazyCharImage path={persona.icon} type="css">
+                    <LazyCharImage path={persona.icon} type="css" thumb={256}>
                         {#snippet children(image)}
                             {#await image}
                                 <div
@@ -186,7 +186,7 @@
             {#if activePersona.icon === ""}
                 <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
             {:else}
-                {#await getCharImage(activePersona.icon, activePersona.largePortrait ? "lgcss" : "css")}
+                {#await getCharImage(activePersona.icon, activePersona.largePortrait ? "lgcss" : "css", 512)}
                     <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
                 {:then im}
                     <div

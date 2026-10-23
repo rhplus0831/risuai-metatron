@@ -688,7 +688,7 @@
                         }}
                     >
                         {#if char.type === "normal"}
-                            <LazyCharImage path={char.img ?? ""} type="plain">
+                            <LazyCharImage path={char.img ?? ""} type="plain" thumb={256}>
                                 {#snippet children(image)}
                                     <SidebarAvatar
                                         src={char.img ? image : "/none.webp"}
@@ -700,7 +700,7 @@
                                 {/snippet}
                             </LazyCharImage>
                         {:else if char.type === "folder"}
-                            <LazyCharImage path={char.img ?? ""} type="plain">
+                            <LazyCharImage path={char.img ?? ""} type="plain" thumb={256}>
                                 {#snippet children(image)}
                                     {#key char.color}
                                         {#key char.name}
@@ -933,7 +933,7 @@
                                             }
                                         }}
                                     >
-                                        <LazyCharImage path={char2.img ?? ""} type="plain">
+                                        <LazyCharImage path={char2.img ?? ""} type="plain" thumb={256}>
                                             {#snippet children(image)}
                                                 <SidebarAvatar
                                                     src={char2.img ? image : "/none.webp"}

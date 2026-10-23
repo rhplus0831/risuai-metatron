@@ -103,7 +103,7 @@
                                 onclick={() => openPinnedChat(item)}
                             >
                                 <span class="relative h-11 w-11 shrink-0">
-                                    {#await getCharImage(item.characterImage, "plain")}
+                                    {#await getCharImage(item.characterImage, "plain", 256)}
                                         <span
                                             class="block h-full w-full animate-pulse rounded-lg bg-selected"
                                             aria-hidden="true"
@@ -179,7 +179,7 @@
                                 data-risu-home-recent-character={item.chaId}
                                 onclick={() => changeChar(item.chaId)}
                             >
-                                {#await getCharImage(item.image, "plain")}
+                                {#await getCharImage(item.image, "plain", 256)}
                                     <span
                                         class="h-11 w-11 shrink-0 animate-pulse rounded-lg bg-selected"
                                         aria-hidden="true"

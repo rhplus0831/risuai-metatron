@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
+import { getCharImage } from "src/ts/characters";
 import { resolveChatStatus, type ChatStatus, type ChatStatusSets } from "./chatStatus";
 import type { PinnedChatItem } from "./pinnedChats";
 
@@ -10,13 +11,21 @@ import ChatStatusBadge from "./ChatStatusBadge.svelte";
 import PinnedChatsRail from "./PinnedChatsRail.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
+const originalObserver = globalThis.IntersectionObserver;
 afterEach(async () => {
     await Promise.all(mounted.splice(0).map((instance) => unmount(instance)));
     document.body.replaceChildren();
+    globalThis.IntersectionObserver = originalObserver;
 });
 
 const items: PinnedChatItem[] = [
-    { chaId: "a", chatId: "shared", chatName: "Lost reply", characterName: "Alice", characterImage: "" },
+    {
+        chaId: "a",
+        chatId: "shared",
+        chatName: "Lost reply",
+        characterName: "Alice",
+        characterImage: "assets/alice.png",
+    },
     { chaId: "a", chatId: "working", chatName: "Working reply", characterName: "Alice", characterImage: "" },
     { chaId: "b", chatId: "shared", chatName: "New reply", characterName: "Bob", characterImage: "" },
     { chaId: "a", chatId: "idle", chatName: "Quiet chat", characterName: "Alice", characterImage: "" },
@@ -52,6 +61,13 @@ function render(statuses?: ReadonlyMap<string, ChatStatus>) {
 }
 
 describe("PinnedChatsRail status badges", () => {
+    it("requests the 256 thumbnail class for a pinned character icon", () => {
+        globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+        vi.mocked(getCharImage).mockClear();
+        render();
+        expect(getCharImage).toHaveBeenCalledWith(items[0].characterImage, "plain", 256);
+    });
+
     it("renders a labeled refused badge, including when the pinned chat is also unseen", () => {
         const sets: ChatStatusSets = {
             recovery: new Set(),

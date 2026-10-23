@@ -418,7 +418,7 @@
                 <div class="text-center">{language.talkness}</div>
                 <div class="text-center">{language.active}</div>
                 {#each (currentCharacter as groupChat).characters as char, i}
-                    {#await getCharImage(findCharacterbyId(char).image, "css")}
+                    {#await getCharImage(findCharacterbyId(char).image, "css", 256)}
                         <BarIcon
                             onClick={() => {
                                 rmCharFromGroup(i);
@@ -533,7 +533,7 @@
                     await selectCharImg(currentCharacter.chaId);
                 }}
             >
-                {#await getCharImage(currentCharacter.image, "css")}
+                {#await getCharImage(currentCharacter.image, "css", 512)}
                     <div class="rounded-md h-24 w-24 shadow-lg bg-textcolor2 cursor-pointer ring-3"></div>
                 {:then im}
                     <div class="rounded-md h-24 w-24 shadow-lg bg-textcolor2 cursor-pointer ring-3" style={im}></div>
@@ -561,7 +561,7 @@
                             }
                         }}
                     >
-                        {#await getCharImage(currentCharacter.image, (currentCharacter as character).largePortrait ? "lgcss" : "css")}
+                        {#await getCharImage(currentCharacter.image, (currentCharacter as character).largePortrait ? "lgcss" : "css", 512)}
                             <div
                                 class="rounded-md h-24 w-24 shadow-lg bg-textcolor2 cursor-pointer ring-3 transition-shadow"
                                 class:ring-red-500={iconRemoveMode}
@@ -588,7 +588,7 @@
                                 }
                             }}
                         >
-                            {#await getCharImage(assets.uri, (currentCharacter as character).largePortrait ? "lgcss" : "css")}
+                            {#await getCharImage(assets.uri, (currentCharacter as character).largePortrait ? "lgcss" : "css", 512)}
                                 <div
                                     class="rounded-md h-24 w-24 shadow-lg bg-textcolor2 cursor-pointer hover:ring-3 transition-shadow"
                                     class:ring-red-500={iconRemoveMode}

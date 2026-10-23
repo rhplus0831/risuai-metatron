@@ -476,7 +476,7 @@
                     {#each characterList() as char, i}
                         {#if char.type !== "group"}
                             {#if char.image}
-                                {#await getCharImage(char.image, "css")}
+                                {#await getCharImage(char.image, "css", 256)}
                                     <BarIcon
                                         onClick={() => {
                                             alertStore.answer(char.chaId);

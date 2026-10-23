@@ -128,7 +128,7 @@
                     {#each formatChars(query) as char}
                         <div class="flex items-center text-textcolor">
                             {#if char.image}
-                                <LazyCharImage path={char.image} type="css">
+                                <LazyCharImage path={char.image} type="css" thumb={256}>
                                     {#snippet children(image)}
                                         <BarIcon
                                             onClick={() => {
@@ -161,7 +161,7 @@
         {:else if selected === 1}
             {#each formatChars(query) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
-                    <LazyCharImage path={char.image} type="css" class="shrink-0">
+                    <LazyCharImage path={char.image} type="css" thumb={256} class="shrink-0">
                         {#snippet children(image)}
                             <BarIcon
                                 onClick={() => {
@@ -203,7 +203,7 @@
             <span class="text-textcolor2 text-sm mb-2">{language.trashDesc}</span>
             {#each formatChars(query, true) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
-                    <LazyCharImage path={char.image} type="css" class="shrink-0">
+                    <LazyCharImage path={char.image} type="css" thumb={256} class="shrink-0">
                         {#snippet children(image)}
                             <BarIcon
                                 onClick={() => {

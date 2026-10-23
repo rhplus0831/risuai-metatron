@@ -59,7 +59,12 @@
                     }
                 }}
             >
-                <LazyCharImage path={item.characterImage} type="plain" class="relative h-[42px] w-[42px] shrink-0">
+                <LazyCharImage
+                    path={item.characterImage}
+                    type="plain"
+                    thumb={256}
+                    class="relative h-[42px] w-[42px] shrink-0"
+                >
                     {#snippet children(image)}
                         {#await image}
                             <span

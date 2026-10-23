@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `getCharImage`; an off-screen row keeps its placeholder icon and makes no request. The wrapper itself:
 // `src/lib/UI/GUI/LazyCharImage.test.ts`.
 
-const getCharImage = vi.fn(async (path: string, _type: string) => `background: url("/img/${path}");`);
+const getCharImage = vi.fn(
+    async (path: string, _type: string, _thumb?: 256 | 512) => `background: url("/img/${path}");`,
+);
 const changeChar = vi.fn();
 const characters = Array.from({ length: 50 }, (_, i) => ({
     name: `Char ${String(i).padStart(2, "0")}`,
@@ -15,7 +17,7 @@ const characters = Array.from({ length: 50 }, (_, i) => ({
     lastInteraction: 1000 - i,
 }));
 vi.mock("src/ts/characters", () => ({
-    getCharImage: (path: string, type: string) => getCharImage(path, type),
+    getCharImage: (path: string, type: string, thumb?: 256 | 512) => getCharImage(path, type, thumb),
     changeChar: (chaId: string) => changeChar(chaId),
     addCharacter: vi.fn(),
 }));
@@ -93,9 +95,9 @@ describe("MobileCharacters icons", () => {
         FakeObserver.reportVisible(new Set(rows.slice(0, 3)));
         await settle();
         expect(getCharImage.mock.calls).toEqual([
-            ["assets/0.png", "css"],
-            ["assets/1.png", "css"],
-            ["assets/2.png", "css"],
+            ["assets/0.png", "css", 256],
+            ["assets/1.png", "css", 256],
+            ["assets/2.png", "css", 256],
         ]);
         expect(rows[0].querySelector(".ico")?.getAttribute("style")).toBe('background: url("/img/assets/0.png");');
         expect(rows[3].querySelector(".ico")?.hasAttribute("style")).toBe(false);

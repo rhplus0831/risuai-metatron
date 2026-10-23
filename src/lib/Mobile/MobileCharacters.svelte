@@ -60,7 +60,7 @@
                 endGrid();
             }}
         >
-            <LazyCharImage path={char.image} type="css" class="shrink-0">
+            <LazyCharImage path={char.image} type="css" thumb={256} class="shrink-0">
                 {#snippet children(image)}
                     <BarIcon additionalStyle={image}></BarIcon>
                 {/snippet}
