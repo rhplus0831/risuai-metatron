@@ -19,6 +19,13 @@ export type TransformersResponse =
  * and a model's memory is not the server's.
  *
  * - One task runs at a time; the others wait in order. Two sends never load two models at once.
+ * - Admission requires fewer than `maxQueuedTasks` queued plus active tasks (default 64,
+ *   `RISU_LOCAL_MODEL_MAX_QUEUED_TASKS`) and queued payloads including the new task within
+ *   `maxQueuedBytes` (default 256 Mi, `RISU_LOCAL_MODEL_MAX_QUEUED_BYTES`). Payload sizes are
+ *   estimated in UTF-16 string length units, not heap bytes; active payloads are excluded.
+ * - A queued task expires after `queueWaitMs` (default 5 minutes, `RISU_LOCAL_MODEL_QUEUE_WAIT_MS`)
+ *   without affecting the worker. Options override the environment; invalid limits fail startup.
+ *   The runtime timeout starts only when a task is dispatched.
  * - A task whose signal aborts while it waits is removed. One that aborts (or passes `taskTimeoutMs`)
  *   while it runs kills the process, which is the only way to stop native inference; the next task
  *   starts a new one once the killed one is gone. A failed task, a crashed process, or one that could
@@ -145,9 +152,75 @@ const KILL_WAIT_MS = 10 * 1000;
 export const TRANSFORMERS_IDLE_MS = 5 * 60 * 1000;
 /** A task's limit, the first model download included. */
 export const TRANSFORMERS_TASK_TIMEOUT_MS = 15 * 60 * 1000;
+export const TRANSFORMERS_MAX_QUEUED_TASKS = 64;
+export const TRANSFORMERS_MAX_QUEUED_BYTES = 256 * 1024 * 1024;
+export const TRANSFORMERS_QUEUE_WAIT_MS = 5 * 60 * 1000;
+
+export class TransformersQueueFullError extends Error {
+    readonly reason = "queueFull";
+    constructor() {
+        super("Local model queue is full");
+        this.name = "TransformersQueueFullError";
+    }
+}
+
+export class TransformersQueueWaitError extends Error {
+    readonly reason = "queueWait";
+    constructor() {
+        super("Local model queue wait timed out");
+        this.name = "TransformersQueueWaitError";
+    }
+}
+
+export function localModelRefusal(error: unknown): {
+    status: 429 | 503;
+    message: string;
+    reason: "queueFull" | "queueWait";
+} | null {
+    if (error instanceof TransformersQueueFullError) {
+        return { status: 429, message: error.message, reason: error.reason };
+    }
+    if (error instanceof TransformersQueueWaitError) {
+        return { status: 503, message: error.message, reason: error.reason };
+    }
+    return null;
+}
+
+function queueLimit(
+    name: string,
+    raw: number | string | undefined,
+    fallback: number,
+    max = Number.MAX_SAFE_INTEGER,
+): number {
+    if (raw === undefined || raw === "") {
+        return fallback;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0 || value > max) {
+        throw new Error(`Invalid ${name}: ${raw}`);
+    }
+    return value;
+}
+
+/** String length units estimate the queued payload, not its heap allocation. */
+function payloadSize(task: TransformersTask): number {
+    switch (task.kind) {
+        case "embed":
+            return task.texts.reduce((size, text) => size + text.length, task.model.length);
+        case "summarize":
+            return task.text.length;
+        case "caption":
+            return task.dataUrl.length;
+        case "generate":
+            return task.text.length + task.model.length + JSON.stringify(task.config).length;
+    }
+}
 
 type Pending = {
     task: TransformersTask;
+    size: number;
+    deadline: number;
+    waitTimer?: ReturnType<typeof setTimeout>;
     signal?: AbortSignal;
     resolve(response: TransformersResponse & { ok: true }): void;
     reject(error: unknown): void;
@@ -160,10 +233,29 @@ export function createTransformers(options: {
     cacheDir: string;
     idleMs?: number;
     taskTimeoutMs?: number;
+    maxQueuedTasks?: number;
+    maxQueuedBytes?: number;
+    queueWaitMs?: number;
     spawn?: (cacheDir: string) => TransformersWorkerLike;
 }): TransformersService {
     const idleMs = options.idleMs ?? TRANSFORMERS_IDLE_MS;
     const taskTimeoutMs = options.taskTimeoutMs ?? TRANSFORMERS_TASK_TIMEOUT_MS;
+    const maxQueuedTasks = queueLimit(
+        "RISU_LOCAL_MODEL_MAX_QUEUED_TASKS",
+        options.maxQueuedTasks ?? process.env.RISU_LOCAL_MODEL_MAX_QUEUED_TASKS,
+        TRANSFORMERS_MAX_QUEUED_TASKS,
+    );
+    const maxQueuedBytes = queueLimit(
+        "RISU_LOCAL_MODEL_MAX_QUEUED_BYTES",
+        options.maxQueuedBytes ?? process.env.RISU_LOCAL_MODEL_MAX_QUEUED_BYTES,
+        TRANSFORMERS_MAX_QUEUED_BYTES,
+    );
+    const queueWaitMs = queueLimit(
+        "RISU_LOCAL_MODEL_QUEUE_WAIT_MS",
+        options.queueWaitMs ?? process.env.RISU_LOCAL_MODEL_QUEUE_WAIT_MS,
+        TRANSFORMERS_QUEUE_WAIT_MS,
+        2147483647,
+    );
     const spawn = options.spawn ?? forkWorker;
 
     const queue: Pending[] = [];
@@ -177,13 +269,27 @@ export function createTransformers(options: {
     /** A process could not be ended: no other one is started beside it, and every task fails. */
     let broken: Error | null = null;
 
+    const removeQueued = (pending: Pending): boolean => {
+        const at = queue.indexOf(pending);
+        if (at === -1) {
+            return false;
+        }
+        queue.splice(at, 1);
+        clearTimeout(pending.waitTimer);
+        pending.waitTimer = undefined;
+        if (pending.onAbort) {
+            pending.signal?.removeEventListener("abort", pending.onAbort);
+            pending.onAbort = undefined;
+        }
+        return true;
+    };
+
     const breakDown = () => {
         broken = new Error("The local model process could not be stopped; local models are unavailable");
-        for (const pending of queue.splice(0)) {
-            if (pending.onAbort) {
-                pending.signal?.removeEventListener("abort", pending.onAbort);
+        for (const pending of [...queue]) {
+            if (removeQueued(pending)) {
+                pending.reject(broken);
             }
-            pending.reject(broken);
         }
     };
 
@@ -266,7 +372,15 @@ export function createTransformers(options: {
         if (active || disposed || stopping || broken) {
             return;
         }
-        const pending = queue.shift();
+        let pending = queue[0];
+        while (pending) {
+            removeQueued(pending);
+            if (Date.now() < pending.deadline) {
+                break;
+            }
+            pending.reject(new TransformersQueueWaitError());
+            pending = queue[0];
+        }
         if (!pending) {
             worker?.hold?.(false);
             if (worker && !idleTimer) {
@@ -283,10 +397,6 @@ export function createTransformers(options: {
         if (idleTimer) {
             clearTimeout(idleTimer);
             idleTimer = null;
-        }
-        // Its queue listener is replaced by the running one.
-        if (pending.onAbort) {
-            pending.signal?.removeEventListener("abort", pending.onAbort);
         }
         const id = nextId++;
         /** Native inference cannot be interrupted: the process is killed, and the next task starts a new one. */
@@ -325,15 +435,34 @@ export function createTransformers(options: {
                 reject(abortReason(signal));
                 return;
             }
-            const pending: Pending = { task, signal, resolve, reject };
+            if (queue.length + (active ? 1 : 0) >= maxQueuedTasks) {
+                reject(new TransformersQueueFullError());
+                return;
+            }
+            if (task.kind === "embed") {
+                task = { ...task, texts: [...task.texts] };
+            }
+            const size = payloadSize(task);
+            const queuedBytes = queue.reduce((total, pending) => total + pending.size, 0);
+            if (queuedBytes + size > maxQueuedBytes) {
+                reject(new TransformersQueueFullError());
+                return;
+            }
+            const pending: Pending = { task, size, deadline: Date.now() + queueWaitMs, signal, resolve, reject };
             pending.onAbort = () => {
-                const at = queue.indexOf(pending);
-                if (at !== -1) {
-                    queue.splice(at, 1);
+                if (removeQueued(pending)) {
                     reject(abortReason(signal!));
+                    pump();
                 }
             };
             signal?.addEventListener("abort", pending.onAbort, { once: true });
+            pending.waitTimer = setTimeout(() => {
+                if (removeQueued(pending)) {
+                    reject(new TransformersQueueWaitError());
+                    pump();
+                }
+            }, queueWaitMs);
+            pending.waitTimer.unref?.();
             queue.push(pending);
             pump();
         });
@@ -348,11 +477,10 @@ export function createTransformers(options: {
         async dispose() {
             disposed = true;
             const error = new Error("The server is shutting down");
-            for (const pending of queue.splice(0)) {
-                if (pending.onAbort) {
-                    pending.signal?.removeEventListener("abort", pending.onAbort);
+            for (const pending of [...queue]) {
+                if (removeQueued(pending)) {
+                    pending.reject(error);
                 }
-                pending.reject(error);
             }
             settle((pending) => pending.reject(error));
             await endWorker();

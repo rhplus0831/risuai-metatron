@@ -76,6 +76,7 @@ import { postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
+import { localModelRefusal } from "./transformers.ts";
 import { hasRequestTriggers, parseChatML } from "./triggers.ts";
 
 /** How often a streaming reply's raw text is checkpointed (the client's `CHECKPOINT_INTERVAL_MS`). */
@@ -237,8 +238,8 @@ const INPUT_KINDS = new Set(["send", "continue", "reroll", "group"]);
 
 /** The error a send's `throwError` shows when `inlayErrorResponse` is off. */
 class SendError extends GenerationRunnerError {
-    constructor(message: string, failure?: GenerationFailure) {
-        super(500, message, failure);
+    constructor(message: string, failure?: GenerationFailure, status = 500) {
+        super(status, message, failure);
         this.name = "SendError";
     }
 }
@@ -304,8 +305,13 @@ export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps):
         if (job.signal.aborted || error instanceof GenerationRunnerError || error instanceof LuaJobFatalError) {
             throw markFailure(error, stage);
         }
+        const refusal = localModelRefusal(error);
         throw markFailure(
-            new GenerationRunnerError(500, error instanceof Error ? error.message : String(error), failureOf(error)),
+            new GenerationRunnerError(
+                refusal?.status ?? 500,
+                refusal?.message ?? (error instanceof Error ? error.message : String(error)),
+                failureOf(error),
+            ),
             stage,
         );
     }
@@ -786,13 +792,13 @@ async function runSpeaker(arg: {
      * `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the
      * job's error, with `failure` (a failed request's id and provider code).
      */
-    function throwError(error: string, failure?: GenerationFailure): SpeakerResult {
+    function throwError(error: string, failure?: GenerationFailure, status = 500): SpeakerResult {
         if (!db.inlayErrorResponse) {
-            throw new SendError(error, failure);
+            throw new SendError(error, failure, status);
         }
         const chat = chatNow();
         if (!chat) {
-            throw new SendError(error, failure);
+            throw new SendError(error, failure, status);
         }
         const lastMessage = chat.message[chat.message.length - 1];
         const suffix = `\n\`\`\`risuerror\n${error}\n\`\`\``;
@@ -1037,7 +1043,24 @@ async function runSpeaker(arg: {
         const stageTimings = { stage1Duration: 0, stage2Duration: 0 };
         // The memory algorithms' services of this run (`memory-on-server`): the job's settings, its
         // own requests and embeddings, its chat's CBS, and its abort.
+        // Memory algorithms can replace an error's text; keep the latest local outcome for this assembly.
+        const localModelOutcome = { refusal: null as ReturnType<typeof localModelRefusal> };
+        async function trackLocalModel<T>(call: () => Promise<T>): Promise<T> {
+            try {
+                const result = await call();
+                localModelOutcome.refusal = null;
+                return result;
+            } catch (error) {
+                localModelOutcome.refusal = localModelRefusal(error);
+                throw error;
+            }
+        }
         const embeddingEnv = services.embeddings(nativeCtx);
+        const embeddingTransformers = embeddingEnv.transformers;
+        embeddingEnv.transformers = {
+            ...embeddingTransformers,
+            runEmbedding: (...args) => trackLocalModel(() => embeddingTransformers.runEmbedding(...args)),
+        };
         let memoryProgressOpen = false;
         const memory: MemoryHost = {
             db,
@@ -1078,14 +1101,15 @@ async function runSpeaker(arg: {
                 }
                 return response;
             },
-            summarizer: async (text) => {
-                setup.check();
-                try {
-                    return await deps.transformers.runSummarizer(text, nativeCtx.signal);
-                } finally {
+            summarizer: (text) =>
+                trackLocalModel(async () => {
                     setup.check();
-                }
-            },
+                    try {
+                        return await deps.transformers.runSummarizer(text, nativeCtx.signal);
+                    } finally {
+                        setup.check();
+                    }
+                }),
             embeddings: embeddingEnv,
             regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
             ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
@@ -1297,14 +1321,15 @@ async function runSpeaker(arg: {
                     }
                 },
                 stage: (stage) => reportStage(job, stage),
-                captionImage: async (dataUrl) => {
-                    setup.check();
-                    try {
-                        return await deps.transformers.runImageCaption(dataUrl, nativeCtx.signal);
-                    } finally {
+                captionImage: (dataUrl) =>
+                    trackLocalModel(async () => {
                         setup.check();
-                    }
-                },
+                        try {
+                            return await deps.transformers.runImageCaption(dataUrl, nativeCtx.signal);
+                        } finally {
+                            setup.check();
+                        }
+                    }),
                 tokenizer: new ChatTokenCounter(
                     arg.chatAdditonalTokens,
                     db.aiModel.startsWith("gpt") ? "noName" : "name",
@@ -1336,12 +1361,13 @@ async function runSpeaker(arg: {
         if (assembled.type === "stopped") {
             return { type: "stop" };
         }
+        const refusal = localModelOutcome.refusal;
         if (assembled.type === "error") {
-            return throwError(assembled.error);
+            return throwError(refusal?.message ?? assembled.error, { stage: "assembly" }, refusal?.status);
         }
         if (assembled.type === "alert") {
             // The client's `alertError` and `return false`: the job's error, never an inlay error message.
-            throw new SendError(assembled.error);
+            throw new SendError(refusal?.message ?? assembled.error, { stage: "assembly" }, refusal?.status);
         }
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;
@@ -1391,10 +1417,14 @@ async function runSpeaker(arg: {
         const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
 
         if (req.type === "fail") {
-            return throwError(req.result, {
-                stage: "request",
-                ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
-            });
+            return throwError(
+                req.result,
+                {
+                    stage: "request",
+                    ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+                },
+                req.localModelRefusal?.status,
+            );
         }
 
         // ---- The tail: what `sendChatInner` does after the provider answers, in its order on each

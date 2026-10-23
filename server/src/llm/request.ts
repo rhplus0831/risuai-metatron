@@ -19,6 +19,7 @@ import type {
     StreamResponseChunk,
     ToolDescriptor,
 } from "../../../shared/llm/request.ts";
+import { localModelRefusal } from "../prompt/transformers.ts";
 import { applyChatTemplate } from "./chatTemplate.ts";
 import type { RequestContext } from "./context.ts";
 import { defaultCredentialKey, resolveCredential } from "./credentials.ts";
@@ -65,7 +66,10 @@ export interface RequestDataArgumentExtended extends RequestArgs {
 export type JobRequestInfo = { id: string; providerCode: string | null };
 
 export type requestDataResponse = (
-    | BufferedResponse
+    | (BufferedResponse & {
+          /** A server-local failure, preserved through the job's request loop. */
+          localModelRefusal?: Pick<NonNullable<ReturnType<typeof localModelRefusal>>, "status" | "reason">;
+      })
     | {
           type: "streaming";
           result: ReadableStream<StreamResponseChunk>;
@@ -707,6 +711,15 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     } catch (error) {
         if (arg.ctx.signal.aborted) {
             throw error;
+        }
+        const refusal = localModelRefusal(error);
+        if (refusal) {
+            return {
+                type: "fail",
+                result: refusal.message,
+                noRetry: true,
+                localModelRefusal: { status: refusal.status, reason: refusal.reason },
+            };
         }
         return {
             type: "fail",

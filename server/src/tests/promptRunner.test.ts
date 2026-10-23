@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, v
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -123,6 +124,7 @@ const provider = http.createServer(async (req, res) => {
 
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
+let transformers: localModels.TransformersService;
 let node: http.Server;
 let base = "";
 let epoch = "";
@@ -476,13 +478,20 @@ beforeAll(async () => {
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
     // An aborted job gets a ten-minute grace: no 5 s deadline races the runner's last write.
-    server = createTestServer({
-        rootDir,
-        generationRandom: () => 0,
-        generationAbortGraceMs: 10 * 60_000,
-        scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
-        cbsTimeLimits: UNHURRIED_CBS,
-    });
+    // Capture the real service so a test can refuse local inference at the process boundary.
+    const createdModels = vi.spyOn(localModels, "createTransformers");
+    try {
+        server = createTestServer({
+            rootDir,
+            generationRandom: () => 0,
+            generationAbortGraceMs: 10 * 60_000,
+            scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+            cbsTimeLimits: UNHURRIED_CBS,
+        });
+        transformers = createdModels.mock.results[0].value;
+    } finally {
+        createdModels.mockRestore();
+    }
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -572,6 +581,44 @@ afterAll(async () => {
 });
 
 describe("a send", () => {
+    it("ends with status 429 and the queue-full message when SupaMemory's local summarizer is refused", async () => {
+        const memorySettings = (await single("memoryTranslateMedia")).data;
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        const summarizer = vi
+            .spyOn(transformers, "runSummarizer")
+            .mockRejectedValue(new localModels.TransformersQueueFullError());
+        try {
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "distilbart",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                extra: { supaMemory: true },
+                messages: Array.from({ length: 8 }, (_, i) => ({
+                    role: i % 2 === 0 ? "user" : "char",
+                    data: `Message ${i}: ` + "The party explored the forest and discussed the journey. ".repeat(12),
+                    chatId: `m${i}`,
+                })),
+            });
+            const { terminal } = await job("send", chaId, { input: "Continue", userMessageId: "next" });
+            expect(summarizer).toHaveBeenCalled();
+            expect(terminal).toMatchObject({
+                type: "error",
+                status: 429,
+                message: "Local model queue is full",
+            });
+        } finally {
+            summarizer.mockRestore();
+            await patchSection("memoryTranslateMedia", memorySettings);
+            await patchPreset("modelProfiles", profileId, { maxContext: profile.maxContext });
+        }
+    });
+
     it(
         "counts images with the runner's main profile and routed request model",
         async () => {

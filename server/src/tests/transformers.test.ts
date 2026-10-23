@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
     createTransformers,
+    localModelRefusal,
+    TransformersQueueFullError,
+    TransformersQueueWaitError,
     type TransformersRequest,
     type TransformersResponse,
     type TransformersService,
@@ -48,7 +51,7 @@ type SpawnOptions = {
     neverStartOn?: number[];
 };
 
-function harness(options: SpawnOptions & { idleMs?: number; taskTimeoutMs?: number } = {}) {
+function harness(options: SpawnOptions & Omit<Parameters<typeof createTransformers>[0], "cacheDir" | "spawn"> = {}) {
     const workers: FakeWorker[] = [];
     let attempts = 0;
     const spawn = (): TransformersWorkerLike => {
@@ -121,6 +124,9 @@ function harness(options: SpawnOptions & { idleMs?: number; taskTimeoutMs?: numb
         spawn,
         idleMs: options.idleMs ?? 60_000,
         taskTimeoutMs: options.taskTimeoutMs ?? 60_000,
+        maxQueuedTasks: options.maxQueuedTasks,
+        maxQueuedBytes: options.maxQueuedBytes,
+        queueWaitMs: options.queueWaitMs,
     });
     services.push(service);
     return { service, workers, attempts: () => attempts };
@@ -128,7 +134,11 @@ function harness(options: SpawnOptions & { idleMs?: number; taskTimeoutMs?: numb
 
 /** The settled state of a promise, read without awaiting it. */
 function track<T>(promise: Promise<T>) {
-    const state = { status: "pending" as "pending" | "resolved" | "rejected", value: undefined as unknown };
+    const state = {
+        status: "pending" as "pending" | "resolved" | "rejected",
+        value: undefined as unknown,
+        error: undefined as unknown,
+    };
     promise.then(
         (value) => {
             state.status = "resolved";
@@ -136,6 +146,7 @@ function track<T>(promise: Promise<T>) {
         },
         (error: unknown) => {
             state.status = "rejected";
+            state.error = error;
             state.value = error instanceof Error ? error.message : String(error);
         },
     );
@@ -160,6 +171,178 @@ afterEach(async () => {
 });
 
 describe("the queue", () => {
+    it("refuses immediately when queued and active tasks reach the count limit", async () => {
+        vi.useFakeTimers();
+        const { service, workers } = harness({ maxQueuedTasks: 2 });
+        const active = track(service.runSummarizer("active"));
+        const queued = track(service.runSummarizer("queued"));
+        const refused = track(service.runSummarizer("refused"));
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(active.status).toBe("pending");
+        expect(queued.status).toBe("pending");
+        expect(refused.error).toBeInstanceOf(TransformersQueueFullError);
+        expect(refused.error).toMatchObject({ reason: "queueFull", message: "Local model queue is full" });
+        expect(workers[0].sent).toHaveLength(1);
+
+        workers[0].answer({ ok: true, text: "first" });
+        const later = track(service.runSummarizer("later"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(active.value).toBe("first");
+        expect(later.status).toBe("pending");
+        workers[0].answer({ ok: true, text: "second" });
+        workers[0].answer({ ok: true, text: "third" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(queued.value).toBe("second");
+        expect(later.value).toBe("third");
+    });
+
+    it("bounds queued payload string lengths across task kinds and refuses an oversized task even when idle", async () => {
+        vi.useFakeTimers();
+        const texts = ["가", "bb"];
+        const embeddingModel = "embed";
+        const summary = "요약";
+        const dataUrl = "data:image/png;base64,AA==";
+        const prompt = "go";
+        const generationModel = "gen";
+        const config = { temperature: 0.5 };
+        const maxQueuedBytes =
+            texts.join("").length +
+            embeddingModel.length +
+            summary.length +
+            dataUrl.length +
+            prompt.length +
+            generationModel.length +
+            JSON.stringify(config).length;
+        const { service, workers, attempts } = harness({ maxQueuedTasks: 8, maxQueuedBytes });
+        const oversized = track(service.runSummarizer("x".repeat(maxQueuedBytes + 1)));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(oversized.error).toBeInstanceOf(TransformersQueueFullError);
+        expect(oversized.error).toMatchObject({ reason: "queueFull", message: "Local model queue is full" });
+        expect(attempts()).toBe(0);
+
+        const active = track(service.runSummarizer("busy"));
+        const queued = [
+            track(service.runEmbedding(texts, embeddingModel)),
+            track(service.runSummarizer(summary)),
+            track(service.runImageCaption(dataUrl)),
+            track(service.runTextGeneration(prompt, generationModel, config)),
+        ];
+        const refused = track(service.runSummarizer("x"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(queued.map((task) => task.status)).toEqual(["pending", "pending", "pending", "pending"]);
+        expect(refused.error).toBeInstanceOf(TransformersQueueFullError);
+        expect(refused.error).toMatchObject({ reason: "queueFull", message: "Local model queue is full" });
+
+        workers[0].answer({ ok: true, text: "done" });
+        for (const _ of queued) {
+            workers[0].answer({ ok: true, text: "done", vectors: [] });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        expect(active.status).toBe("resolved");
+        expect(queued.map((task) => task.status)).toEqual(["resolved", "resolved", "resolved", "resolved"]);
+        expect(workers[0].sent).toHaveLength(5);
+    });
+
+    it("releases queued task count and payload capacity on abort so another task is admitted", async () => {
+        vi.useFakeTimers();
+        const { service, workers } = harness({ maxQueuedTasks: 2, maxQueuedBytes: 6 });
+        const active = track(service.runSummarizer("active"));
+        const controller = new AbortController();
+        const queued = track(service.runSummarizer("queued", controller.signal));
+        controller.abort(new Error("cancel queued"));
+        const later = track(service.runSummarizer("later!"));
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(queued).toMatchObject({ status: "rejected", value: "cancel queued" });
+        expect(active.status).toBe("pending");
+        expect(later.status).toBe("pending");
+        expect(workers[0].kills).toBe(0);
+        workers[0].answer({ ok: true, text: "first" });
+        expect(workers[0].sent.map(({ task }) => task)).toEqual([
+            { kind: "summarize", text: "active" },
+            { kind: "summarize", text: "later!" },
+        ]);
+        workers[0].answer({ ok: true, text: "last" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(active.value).toBe("first");
+        expect(later.value).toBe("last");
+    });
+
+    it("releases queued payload capacity at dispatch while the dispatched task is still running", async () => {
+        vi.useFakeTimers();
+        const { service, workers } = harness({ maxQueuedTasks: 3, maxQueuedBytes: 6 });
+        const active = track(service.runSummarizer("active"));
+        const queued = track(service.runSummarizer("queued"));
+        const refused = track(service.runSummarizer("later!"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refused.error).toBeInstanceOf(TransformersQueueFullError);
+
+        workers[0].answer({ ok: true, text: "first" });
+        const later = track(service.runSummarizer("later!"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(active.value).toBe("first");
+        expect(queued.status).toBe("pending");
+        expect(later.status).toBe("pending");
+        expect(workers[0].sent).toHaveLength(2);
+        workers[0].answer({ ok: true, text: "second" });
+        workers[0].answer({ ok: true, text: "third" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(queued.value).toBe("second");
+        expect(later.value).toBe("third");
+    });
+
+    it("expires a queued task without disturbing the running task and admits a later task", async () => {
+        vi.useFakeTimers();
+        const { service, workers } = harness({
+            maxQueuedTasks: 2,
+            maxQueuedBytes: 6,
+            queueWaitMs: 50,
+            taskTimeoutMs: 200,
+        });
+        const active = track(service.runSummarizer("active"));
+        const queued = track(service.runSummarizer("queued"));
+        await vi.advanceTimersByTimeAsync(49);
+        expect(queued.status).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        expect(queued.error).toBeInstanceOf(TransformersQueueWaitError);
+        expect(queued.error).toMatchObject({ reason: "queueWait", message: "Local model queue wait timed out" });
+        expect(localModelRefusal(queued.error)).toEqual({
+            status: 503,
+            reason: "queueWait",
+            message: "Local model queue wait timed out",
+        });
+        expect(active.status).toBe("pending");
+        expect(workers[0].kills).toBe(0);
+        expect(workers[0].sent).toHaveLength(1);
+
+        const later = track(service.runSummarizer("later!"));
+        workers[0].answer({ ok: true, text: "first" });
+        expect(workers[0].sent[1].task).toEqual({ kind: "summarize", text: "later!" });
+        workers[0].answer({ ok: true, text: "last" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(active.value).toBe("first");
+        expect(later.value).toBe("last");
+    });
+
+    it("gives a task its full runtime timeout after dispatch even after waiting in the queue", async () => {
+        vi.useFakeTimers();
+        const { service, workers } = harness({ taskTimeoutMs: 100, queueWaitMs: 200 });
+        const active = track(service.runSummarizer("active"));
+        const queued = track(service.runSummarizer("queued"));
+        await vi.advanceTimersByTimeAsync(60);
+        workers[0].answer({ ok: true, text: "first" });
+        expect(workers[0].sent[1].task).toEqual({ kind: "summarize", text: "queued" });
+
+        await vi.advanceTimersByTimeAsync(99);
+        expect(active.value).toBe("first");
+        expect(queued.status).toBe("pending");
+        expect(workers[0].kills).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(queued).toMatchObject({ status: "rejected", value: "The local model took too long" });
+        expect(workers[0].kills).toBe(1);
+    });
+
     it("runs one task at a time in order on one process, holding it only while busy, and answers each kind", async () => {
         const { service, workers, attempts } = harness();
         const embed = track(service.runEmbedding(["a", "b"], "Xenova/all-MiniLM-L6-v2"));
