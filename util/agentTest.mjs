@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [vitest args]`: `pnpm test`
-// for agents.
+// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [vitest args]`:
+// `pnpm test` for agents.
 //
 // Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with
 // `util/agentTestReporter.ts` (failures and one summary line only, on stdout; `--slow-tests` adds a
@@ -14,13 +14,27 @@
 // cached too (the same tree gives the same result); `--force` runs anyway and replaces the entry.
 // An explicit `--tags-filter` replaces the default one. The child gets `AGENT_TEST=1`, which is what
 // lets it through the human gate in `vitest.config.ts` (`util/requireHuman.mjs`).
+// When a run fails in at most MAX_RERUN_FILES files (and has no unhandled errors), each of those files
+// runs again alone, one at a time, after the full run: a file that passes alone counts as passed, its
+// full-run failures are listed in a FLAKY warning and appended to FLAKY_LOG, and a file that fails again
+// shows the failures of its run alone. `--no-rerun` (which `test:overload` passes) turns this off.
 // See `docs/structure/build-test-platforms.md`.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    copyFileSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
@@ -29,6 +43,8 @@ const reporter = "./util/agentTestReporter.ts";
 /** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
 const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
 const STDERR_TAIL = 60;
+/** One JSON line per test that failed in a full run and passed when its file ran alone. */
+const FLAKY_LOG = join(cacheDir, "flaky.jsonl");
 
 const SLOW_TESTS_DEFAULT_MS = 1000;
 
@@ -36,6 +52,7 @@ const args = process.argv.slice(2);
 const force = args.includes("--force");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
+const rerun = !args.includes("--no-rerun");
 const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
 // `--slow-tests[=<ms>]`: the reporter also lists the passed tests slower than this (it gets the
 // threshold through SLOW_TESTS_ENV); never forwarded to Vitest.
@@ -49,15 +66,19 @@ for (const arg of args.filter(isSlowTests)) {
     slowTestsMs = Number(value);
 }
 const vitestArgs = args.filter(
-    (arg) => arg !== "--force" && arg !== "--verbose" && arg !== "--all" && !isSlowTests(arg),
+    (arg) => arg !== "--force" && arg !== "--verbose" && arg !== "--all" && arg !== "--no-rerun" && !isSlowTests(arg),
 );
 if (!all && !vitestArgs.some((arg) => arg === "--tags-filter" || arg.startsWith("--tags-filter="))) {
     vitestArgs.unshift("--tags-filter=!slow");
 }
 
 const log = (line) => process.stdout.write(`[agent-test] ${line}\n`);
-// The cache key's arguments: a plain run keeps the key it had before `--slow-tests` existed.
-const keyArgs = slowTestsMs === undefined ? vitestArgs : [...vitestArgs, `--slow-tests=${slowTestsMs}`];
+// The cache key's arguments: the Vitest arguments plus the wrapper options that change the output.
+const keyArgs = [
+    ...vitestArgs,
+    ...(slowTestsMs === undefined ? [] : [`--slow-tests=${slowTestsMs}`]),
+    rerun ? `--rerun-alone=${MAX_RERUN_FILES}` : "--no-rerun",
+];
 
 function git(gitArgs, env = {}) {
     return spawnSync("git", gitArgs, { cwd: root, env: { ...process.env, ...env }, encoding: "utf8" });
@@ -106,31 +127,39 @@ function readEntry(file) {
     }
 }
 
-function run() {
+// Runs Vitest with `runArgs`, holding its stdout and stderr; the reporter prints nothing until the end.
+// Returns the exit code (null when killed by a signal), the output, and the parsed results file (null
+// when the reporter wrote none).
+function run(runArgs, slowTests) {
+    const tmp = mkdtempSync(join(tmpdir(), "agent-test-results-"));
+    const resultsFile = join(tmp, "results.json");
     return new Promise((done) => {
         const out = [];
         const err = [];
-        const result = (code) => ({
-            code,
-            stdout: Buffer.concat(out).toString("utf8"),
-            stderr: Buffer.concat(err).toString("utf8"),
-        });
-        const child = spawn(process.execPath, [vitestBin, "run", ...vitestArgs, `--reporter=${reporter}`], {
+        const result = (code) => {
+            const report = readEntry(resultsFile);
+            rmSync(tmp, { recursive: true, force: true });
+            return {
+                code,
+                stdout: Buffer.concat(out).toString("utf8"),
+                stderr: Buffer.concat(err).toString("utf8"),
+                report,
+            };
+        };
+        const child = spawn(process.execPath, [vitestBin, "run", ...runArgs, `--reporter=${reporter}`], {
             cwd: root,
             env: {
                 ...process.env,
                 NO_COLOR: "1",
                 FORCE_COLOR: "0",
                 AGENT_TEST: "1",
-                [SLOW_TESTS_ENV]: slowTestsMs === undefined ? "" : String(slowTestsMs),
+                [SLOW_TESTS_ENV]: slowTests,
+                [RESULTS_FILE_ENV]: resultsFile,
             },
             stdio: ["inherit", "pipe", "pipe"],
             windowsHide: true,
         });
-        child.stdout.on("data", (chunk) => {
-            process.stdout.write(chunk);
-            out.push(chunk);
-        });
+        child.stdout.on("data", (chunk) => out.push(chunk));
         child.stderr.on("data", (chunk) => err.push(chunk));
         child.on("error", (error) => {
             err.push(Buffer.from(`${error.message}\n`));
@@ -184,13 +213,54 @@ if (cached && cached.key === key && typeof cached.exitCode === "number") {
     process.exit(cached.exitCode);
 }
 
-const startedAt = Date.now();
-const { code, stdout, stderr } = await run();
-if (code === null) {
+function interrupted(stdout, stderr) {
+    process.stdout.write(stdout);
     printStderr(stderr, 1);
     log("interrupted: nothing cached");
     process.exit(1);
 }
+
+// Runs each file of a failed full run that `planRerun` accepts again alone, one at a time, and returns
+// the final output (`mergeRerun`), or the full run's own when there is nothing to rerun.
+async function rerunFailedFiles(full) {
+    const plan = planRerun(full.report);
+    if (plan.files.length === 0) {
+        return {
+            ...full,
+            stdout: plan.reason ? `${full.stdout}[agent-test] ${plan.reason}\n` : full.stdout,
+        };
+    }
+    log(`${plan.files.length} failed ${plan.files.length === 1 ? "file" : "files"}; running each again alone`);
+    const { parseCLI } = await import("vitest/node");
+    const options = withoutFilters(vitestArgs, parseCLI(["vitest", "run", ...vitestArgs]).filter);
+    const startedAt = Date.now();
+    const reruns = [];
+    let stderr = full.stderr;
+    for (const file of plan.files) {
+        const alone = await run([...options, file], "");
+        stderr += alone.stderr === "" ? "" : `[agent-test] stderr of ${file} run alone:\n${alone.stderr}`;
+        if (alone.code === null) interrupted(full.stdout + alone.stdout, stderr);
+        reruns.push({ file, ...alone });
+    }
+    const merged = mergeRerun(full.report, reruns, Date.now() - startedAt);
+    if (merged.flaky.length > 0) {
+        mkdirSync(cacheDir, { recursive: true });
+        const at = new Date().toISOString();
+        appendFileSync(
+            FLAKY_LOG,
+            merged.flaky
+                .map(({ name, message }) => `${JSON.stringify({ at, tree, args: vitestArgs, name, message })}\n`)
+                .join(""),
+        );
+    }
+    return { code: merged.code, stdout: merged.stdout, stderr };
+}
+
+const startedAt = Date.now();
+const full = await run(vitestArgs, slowTestsMs === undefined ? "" : String(slowTestsMs));
+if (full.code === null) interrupted(full.stdout, full.stderr);
+const { code, stdout, stderr } = full.code !== 0 && rerun ? await rerunFailedFiles(full) : full;
+process.stdout.write(stdout);
 printStderr(stderr, code);
 if (key !== null) {
     mkdirSync(cacheDir, { recursive: true });

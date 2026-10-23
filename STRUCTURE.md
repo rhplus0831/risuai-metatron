@@ -43,6 +43,8 @@ Verification:
 - V1. Run `pnpm check` and `pnpm --silent test:agent`. Run affected slow tests with
   `pnpm --silent test:agent --tags-filter=slow`, or `--all` when both sets are needed.
   The agent wrapper caches by working tree and arguments; `--force` reruns.
+  It reruns failed files alone after the run; a `FLAKY` block (failed in the
+  full run, passed alone) is a warning, not a failure to fix in this change.
   Plain `test`, `test:slow`, `test:all`, direct Vitest, and `test:e2e` are human/CI
   commands; agents do not set `HUMAN` to bypass their gate. Build changes also need
   `pnpm build`. Commands, harness details, slow-test selection, and browser tooling:

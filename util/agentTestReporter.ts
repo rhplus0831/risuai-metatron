@@ -2,10 +2,14 @@
 // error message, diff, in-repo stack frames, that test's console output) and one summary line. With
 // `test:agent --slow-tests[=<ms>]` it also lists the passed tests slower than that, as a warning
 // that never changes the exit code (the wrapper passes the threshold in RISU_REPORT_SLOW_TESTS_MS).
+// When the wrapper sets RESULTS_FILE_ENV it also writes the run's per-file results there, for the
+// wrapper's rerun of failed files alone (`util/agentTestResults.mjs`).
 // Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/build-test-platforms.md`.
+import { writeFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
 import type { Reporter, TestModule, TestRunEndReason, UserConsoleLog, Vitest } from "vitest/node";
+import { RESULTS_FILE_ENV, summaryLine } from "./agentTestResults.mjs";
 
 // The text fields are `unknown`: an error thrown outside `expect` (node:assert, a custom error) can
 // carry a number or an object as `actual`/`expected`, and the reporter must still print the failure.
@@ -27,10 +31,29 @@ const MAX_LOG_LINES = 40;
 const MAX_CAUSE_DEPTH = 3;
 const MAX_SLOW_TESTS = 10;
 
+/** One test file's line in the results file (`util/agentTestResults.mjs`). */
+interface FileResult {
+    file: string;
+    passed: number;
+    failed: number;
+    skipped: number;
+    pending: number;
+    /** Module and suite errors. */
+    errors: number;
+    failures: { name: string; message: string }[];
+}
+
 const ANSI = /\u001b\[[0-9;]*m/g;
 const toText = (value: unknown): string =>
     typeof value === "string" ? value : inspect(value, { depth: 4, breakLength: 100 });
 const stripAnsi = (value: unknown): string => toText(value).replace(ANSI, "");
+
+const firstLine = (errors: ReadonlyArray<ErrorLike>): string =>
+    errors.length === 0
+        ? ""
+        : (stripAnsi(errors[0].message ?? "")
+              .trim()
+              .split("\n")[0] ?? "");
 
 const capLines = (text: unknown, max: number): string[] => {
     const lines = stripAnsi(text).replace(/\s+$/, "").split("\n");
@@ -74,85 +97,83 @@ export default class AgentTestReporter implements Reporter {
         unhandledErrors: ReadonlyArray<ErrorLike>,
         reason: TestRunEndReason,
     ): void {
-        let failed = 0;
-        let passed = 0;
-        let skipped = 0;
-        let pending = 0;
-        let moduleErrors = 0;
-        const failedFiles = new Set<string>();
+        const files: FileResult[] = [];
         const slow: { duration: number; name: string }[] = [];
 
         for (const module of modules) {
             const file = this.relative(module.moduleId);
+            const result: FileResult = { file, passed: 0, failed: 0, skipped: 0, pending: 0, errors: 0, failures: [] };
+            files.push(result);
+            const fail = (name: string, errors: ReadonlyArray<ErrorLike>, taskId: string) => {
+                result.failures.push({ name, message: firstLine(errors) });
+                this.printFailure(`FAIL ${name}`, errors, taskId);
+            };
             const errors = module.errors();
             if (errors.length > 0) {
-                moduleErrors += 1;
-                failedFiles.add(file);
-                this.printFailure(`FAIL ${file} (module)`, errors, module.id);
+                result.errors += 1;
+                fail(`${file} (module)`, errors, module.id);
             }
             for (const suite of module.children.allSuites()) {
                 const suiteErrors = suite.errors();
                 if (suiteErrors.length === 0) continue;
-                moduleErrors += 1;
-                failedFiles.add(file);
-                this.printFailure(`FAIL ${file} > ${suite.fullName} (suite)`, suiteErrors, suite.id);
+                result.errors += 1;
+                fail(`${file} > ${suite.fullName} (suite)`, suiteErrors, suite.id);
             }
             for (const test of module.children.allTests()) {
-                const result = test.result();
-                if (result.state === "failed") {
-                    failed += 1;
-                    failedFiles.add(file);
-                    this.printFailure(`FAIL ${file} > ${test.fullName}`, result.errors, test.id);
-                } else if (result.state === "passed") {
-                    passed += 1;
+                const testResult = test.result();
+                if (testResult.state === "failed") {
+                    result.failed += 1;
+                    fail(`${file} > ${test.fullName}`, testResult.errors, test.id);
+                } else if (testResult.state === "passed") {
+                    result.passed += 1;
                     const duration = test.diagnostic()?.duration ?? 0;
                     if (this.slowTestsMs !== undefined && duration > this.slowTestsMs)
                         slow.push({ duration, name: `${file} > ${test.fullName}` });
-                } else if (result.state === "skipped") {
-                    skipped += 1;
+                } else if (testResult.state === "skipped") {
+                    result.skipped += 1;
                 } else {
-                    pending += 1;
+                    result.pending += 1;
                 }
             }
         }
         for (const error of unhandledErrors) {
             this.printFailure("UNHANDLED ERROR", [error]);
         }
-        this.printSlow(slow);
+        const slowLines = this.slowLines(slow);
+        for (const line of slowLines) this.write(line);
 
-        const seconds = ((Date.now() - this.startedAt) / 1000).toFixed(1);
-        const files = `${modules.length} files`;
-        const parts = [`${failed} failed`, `${passed} passed`];
-        if (skipped > 0) parts.push(`${skipped} skipped`);
-        if (pending > 0) parts.push(`${pending} not run`);
-        if (moduleErrors > 0) parts.push(`${moduleErrors} module/suite errors`);
-        if (unhandledErrors.length > 0) parts.push(`${unhandledErrors.length} unhandled errors`);
-
-        const ok = failed === 0 && moduleErrors === 0 && unhandledErrors.length === 0 && reason === "passed";
-        if (reason === "interrupted") {
-            this.write(`INTERRUPTED ${parts.join(", ")} (${files}, ${seconds}s)`);
-        } else if (modules.length === 0) {
-            this.write(`FAIL no test files matched (${seconds}s)`);
-        } else if (ok) {
-            this.write(`OK ${parts.slice(1).join(", ")} (${files}, ${seconds}s)`);
-        } else {
-            this.write(`FAIL ${parts.join(", ")} (${failedFiles.size} of ${files} failed, ${seconds}s)`);
+        const durationMs = Date.now() - this.startedAt;
+        this.write(
+            summaryLine({
+                reason,
+                files,
+                unhandledErrors: unhandledErrors.length,
+                seconds: (durationMs / 1000).toFixed(1),
+            }),
+        );
+        const resultsFile = process.env[RESULTS_FILE_ENV];
+        if (resultsFile) {
+            writeFileSync(
+                resultsFile,
+                JSON.stringify({ reason, durationMs, unhandledErrors: unhandledErrors.length, slowLines, files }),
+            );
         }
     }
 
     // A warning only: the gate's timeout is a hang guard (`STRUCTURE.md` V3), and a duration measured
     // beside parallel workers or other load says little about the test alone.
-    private printSlow(slow: { duration: number; name: string }[]): void {
-        if (this.slowTestsMs === undefined || slow.length === 0) return;
+    private slowLines(slow: { duration: number; name: string }[]): string[] {
+        if (this.slowTestsMs === undefined || slow.length === 0) return [];
         slow.sort((a, b) => b.duration - a.duration);
         const seconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
-        this.write(
+        const lines = [
             `SLOW ${slow.length} passed ${slow.length === 1 ? "test" : "tests"} took over ${seconds(this.slowTestsMs)} in this run ` +
                 "(a warning, not a failure; durations under load or beside parallel workers are inflated):",
-        );
-        for (const { duration, name } of slow.slice(0, MAX_SLOW_TESTS)) this.write(`  ${seconds(duration)} ${name}`);
-        if (slow.length > MAX_SLOW_TESTS) this.write(`  ... and ${slow.length - MAX_SLOW_TESTS} more`);
-        this.write("");
+        ];
+        for (const { duration, name } of slow.slice(0, MAX_SLOW_TESTS)) lines.push(`  ${seconds(duration)} ${name}`);
+        if (slow.length > MAX_SLOW_TESTS) lines.push(`  ... and ${slow.length - MAX_SLOW_TESTS} more`);
+        lines.push("");
+        return lines;
     }
 
     private printFailure(header: string, errors: ReadonlyArray<ErrorLike>, taskId?: string): void {
