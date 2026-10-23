@@ -129,7 +129,20 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
 
 beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
+// Each boot installs a new handler; retired module graphs must not warn for later tests.
+const unloadListeners = new Set<EventListenerOrEventListenerObject>();
+const warnsOnUnload = () => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+};
+
 beforeEach(() => {
+    const addEventListener = window.addEventListener.bind(window);
+    vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+        if (type === "beforeunload" && listener) unloadListeners.add(listener);
+        addEventListener(type, listener, options);
+    });
     localStorage.clear();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", { reload: vi.fn() });
@@ -138,6 +151,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    for (const listener of unloadListeners) window.removeEventListener("beforeunload", listener);
+    unloadListeners.clear();
+    vi.mocked(window.addEventListener).mockRestore();
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -439,13 +455,15 @@ describe("one chat's trouble does not block the rest", () => {
         // validation error of a chat group, including one found while applying the group (a `meta`
         // patch whose merged result the normalizer refuses).
         const { fake, sync, chat, settings } = await boot();
+        expect(warnsOnUnload()).toBe(false);
+        chat.setMessageText(refK, "a", "refused draft");
         chat.setChatMeta(refK, { fmIndex: "not a number" as any });
         chat.setChatMeta(refJ, { note: "fine" });
         settings.ui.theme = "section edit";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["chats/c/k"]);
         expect(alerts.error).toHaveBeenCalledTimes(1);
-        expect(alerts.error.mock.calls[0][0]).toMatch(/chat k could not be saved: chats\[0\]\.ops\[0\]/);
+        expect(alerts.error.mock.calls[0][0]).toMatch(/chat k could not be saved: chats\[0\]\.ops\[/);
         expect((fake.chat("c", "j")!.data as any).note).toBe("fine");
         expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section edit" });
         // The refused value did not land: the chat keeps the server's default (-1).
@@ -454,6 +472,166 @@ describe("one chat's trouble does not block the rest", () => {
         chat.setChatMeta(refJ, { note: "still saving" });
         await sync.flushResources();
         expect((fake.chat("c", "j")!.data as any).note).toBe("still saving");
+        expect(warnsOnUnload()).toBe(true);
+        expect(chat.findChat(refK)!.message[0].data).toBe("refused draft");
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({
+                kind: "chat",
+                key: expect.any(String),
+                chaId: "c",
+                chatId: "k",
+                reason: expect.stringMatching(/chats\[0\]\.ops\[/),
+            }),
+        ]);
+        const batches = fake.batchCount();
+        await vi.advanceTimersByTimeAsync(30_000);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+        expect(warnsOnUnload()).toBe(true);
+
+        // Discard reads the server's current copy, including changes made after the refusal.
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [
+                    { op: "setText", id: "a", text: "server copy" },
+                    { op: "meta", set: { note: "remote note" } },
+                ],
+            },
+        ]);
+        const serverCopy = JSON.parse(JSON.stringify(fake.chat("c", "k")!.data));
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        expect(chat.findChat(refK)).toEqual(serverCopy);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+    });
+
+    it("resends the whole refused chat on its held revision after an edit and warns until acceptance", async () => {
+        const { fake, sync, chat } = await boot();
+        const saved = JSON.parse(JSON.stringify(fake.chat("c", "k")!.data));
+        const heldRevision = fake.chat("c", "k")!.revision;
+        expect(warnsOnUnload()).toBe(false);
+        fake.failNext = {
+            status: 413,
+            body: { error: "chat too large" },
+            times: 1,
+            match: (path) => path === "/api/resources/batch",
+        };
+        chat.setChatMeta(refK, { note: "unsaved note" });
+        chat.setMessageText(refK, "a", "unsaved text");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(warnsOnUnload()).toBe(true);
+        expect(sync.refusedItems()).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(30_000);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(1);
+
+        chat.appendMessage(refK, m("d", "explicit edit"));
+        const expectedChat = {
+            ...saved,
+            note: "unsaved note",
+            message: [
+                { ...saved.message[0], data: "unsaved text" },
+                ...saved.message.slice(1),
+                m("d", "explicit edit"),
+            ],
+        };
+        fake.holdNextBatchResponse = true;
+        const flush = sync.flushResources();
+        await vi.waitFor(() => expect(fake.releaseBatchResponse).not.toBeNull());
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.batchBodies()[1].chats).toEqual([
+            expect.objectContaining({
+                characterId: "c",
+                chatId: "k",
+                baseRevision: heldRevision,
+                ops: [{ op: "replace", chat: expectedChat }],
+            }),
+        ]);
+        expect(warnsOnUnload()).toBe(true);
+        fake.releaseBatchResponse!();
+        expect(await flush).toEqual({ discarded: [] });
+        expect(fake.chat("c", "k")!.data).toEqual(expectedChat);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+    });
+
+    it("quarantines a refused chat again after an edit or explicit retry, alerts only once, and sends nothing automatically", async () => {
+        const { fake, sync, chat } = await boot();
+        chat.setChatMeta(refK, { fmIndex: "not a number" as any });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        const key = sync.refusedItems()[0].key;
+        chat.setMessageText(refK, "a", "still refused");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(fake.batchCount()).toBe(2);
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({ kind: "chat", key, reason: expect.any(String) }),
+        ]);
+        expect(warnsOnUnload()).toBe(true);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(30_000);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(2);
+
+        sync.retryRefused(key);
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(fake.batchCount()).toBe(3);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({ kind: "chat", key, reason: expect.any(String) }),
+        ]);
+        await vi.advanceTimersByTimeAsync(30_000);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(3);
+        expect(warnsOnUnload()).toBe(true);
+        await sync.discardRefused(key);
+        expect(warnsOnUnload()).toBe(false);
+    });
+
+    it("protects a refused chat order until an explicit retry saves it or discard restores the server order", async () => {
+        const { fake, sync, chat, mirrorIds } = await boot();
+        const refuseOrder = () => {
+            fake.failNext = {
+                status: 413,
+                body: { error: "order too large" },
+                times: 1,
+                match: (path) => path === "/api/resources/batch",
+            };
+        };
+        expect(warnsOnUnload()).toBe(false);
+        refuseOrder();
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({ kind: "order", key: expect.any(String), chaId: "c", reason: "order too large" }),
+        ]);
+        expect(warnsOnUnload()).toBe(true);
+        expect(fake.order("c")!.ids).toEqual(["k", "j"]);
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fake.batchCount()).toBe(1);
+        sync.retryRefused(sync.refusedItems()[0].key);
+        expect(warnsOnUnload()).toBe(true);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.order("c")!.ids).toEqual(["j", "k"]);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+
+        refuseOrder();
+        chat.reorderChats("c", ["k", "j"]);
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(warnsOnUnload()).toBe(true);
+        expect(sync.refusedItems()).toHaveLength(1);
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        expect(mirrorIds()).toEqual(["j", "k"]);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(3);
     });
 
     it("defers the conflict of a chat a server job streams into, saves the rest on its own, and reloads the chat once the job ends", async () => {
@@ -1484,24 +1662,24 @@ describe("kept absent chats leave the order", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("no longer holds a reorder for the delete of a quarantined chat deleted here once the list shows another tab deleted it", async () => {
+    it("releases a quarantined chat deleted here: its delete is sent, settles against another tab's deletion, and the reorder lands without it", async () => {
         const { fake, sync, chat, mirrorIds } = await bootWithR();
         await quarantineJ(sync, chat);
-        // Deleted here too: the delete can never go out (quarantined), and `j` stays held.
+        // Deleted here too: the delete is an explicit local edit, so it leaves the quarantine.
         chat.deleteChat(refJ);
         expect(mirrorIds()).toEqual(["k", "r"]);
-        expect(chat.heldChatRevision(refJ)).not.toBeNull();
+        expect(sync.refusedItems()).toEqual([]);
         deleteElsewhere(fake);
         const afterDelete = fake.order("c")!.revision;
         announce(sync, fake);
         await vi.advanceTimersByTimeAsync(700);
         chat.reorderChats("c", ["r", "k"]);
-        // The quarantined chat's unsendable delete stays an open obligation of this flush; the
-        // reorder itself no longer waits for it.
-        await expect(sync.flushResources()).rejects.toThrow(/Could not save every change/);
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(chat.heldChatRevision(refJ)).toBeNull();
         expect(sentOrders(fake)).toEqual([{ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] }]);
         expect(fake.order("c")!.ids).toEqual(["r", "k"]);
         expect(mirrorIds()).toEqual(["r", "k"]);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });

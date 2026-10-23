@@ -91,6 +91,11 @@ import {
     type ChatPatch,
     JOB_RETRY_MS,
     hasUnsavedChatWork,
+    hasRefusedChatWork,
+    refusedChatItems,
+    retryRefusedChat,
+    discardRefusedChat,
+    type RefusedChatItem,
     isCharacterGenerating,
     isChatDeferred,
     noteMirrorReplaced,
@@ -268,7 +273,18 @@ const inDoubt = new Map<string, { baseRevision: string | null; text: string; par
 const dirty = new Map<string, number>();
 /** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
 const quarantinedRecords = new Map<string, { text: string | null; error: ResourceRequestError }>();
+let refusalVersion = $state(0);
 const recordAlerts = new Set<string>();
+
+function notifyRefusals() {
+    untrack(() => {
+        refusalVersion += 1;
+    });
+}
+
+function clearRecordRefusal(key: string) {
+    if (quarantinedRecords.delete(key)) notifyRefusals();
+}
 /** An unindexed refusal is isolated into one resource, chat group, or order per request. */
 let isolateBatches = false;
 /**
@@ -408,6 +424,8 @@ export function onPluginStorageDiscarded(listener: PluginStorageDiscardListener)
 function markKey(key: string) {
     generation += 1;
     dirty.set(key, generation);
+    // Cached projections and whole-record replacements need a notification too.
+    if (quarantinedRecords.has(key)) notifyRefusals();
     permanentError = null;
     schedule();
 }
@@ -415,6 +433,7 @@ function markKey(key: string) {
 function markMembership() {
     generation += 1;
     membershipGeneration = generation;
+    if (quarantinedRecords.size > 0) notifyRefusals();
     permanentError = null;
     schedule();
 }
@@ -910,7 +929,7 @@ function recordQuarantine(key: string): ResourceRequestError | null {
         }
         return refused.error;
     }
-    quarantinedRecords.delete(key);
+    clearRecordRefusal(key);
     return null;
 }
 
@@ -976,12 +995,15 @@ function hasUnsavedWork(): boolean {
         llmSecretState.queue.length > 0 ||
         [...dirty.keys()].some((key) => !recordQuarantine(key)) ||
         hasPendingMembership() ||
-        hasUnsavedChatWork(canSaveCharacter)
+        hasUnsavedChatWork(canSaveCharacter) ||
+        refusedRecords().length > 0 ||
+        hasRefusedChatWork()
     );
 }
 
 function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
     quarantinedRecords.set(op.key, { text: op.text, error });
+    notifyRefusals();
     // Indexed errors alert once per key per session. An isolated unindexed refusal alerts once
     // per content change; unchanged content never makes it back to this function.
     if (!indexed || !recordAlerts.has(op.key)) {
@@ -998,6 +1020,70 @@ function quarantineReason(): ResourceRequestError | null {
         }
     }
     return null;
+}
+
+export type RefusedItem =
+    { kind: "record"; key: string; reason: string; resourceKind: string; id: string } | RefusedChatItem;
+
+/** Reads projections without pruning quarantine: safe inside a reactive derived expression. */
+function refusedRecords(): Extract<RefusedItem, { kind: "record" }>[] {
+    void refusalVersion;
+    const items: Extract<RefusedItem, { kind: "record" }>[] = [];
+    for (const [key, refused] of quarantinedRecords) {
+        const [resourceKind, id] = key.split("\u0000");
+        const text = projectRecord(resourceKind, id) ?? null;
+        if (text === refused.text && text !== (persisted.get(key)?.text ?? null)) {
+            items.push({ kind: "record", key, reason: refused.error.message, resourceKind, id });
+        }
+    }
+    return items;
+}
+
+/** Reactive inventory of refused local data. Pass an item's opaque key to Retry or Discard. */
+export function refusedItems(): RefusedItem[] {
+    return [...refusedRecords(), ...refusedChatItems()];
+}
+
+/** Releases one current refusal for one new save attempt, preserving its session alert guard. */
+export function retryRefused(key: string) {
+    assertSaveAdmission();
+    if (refusedRecords().some((item) => item.key === key)) {
+        clearRecordRefusal(key);
+        markKey(key);
+    } else if (retryRefusedChat(key)) {
+        schedule();
+    }
+}
+
+/** Reads and discards only the refusal still current after the read; newer local intent wins. */
+export async function discardRefused(key: string): Promise<void> {
+    assertSaveAdmission();
+    const item = refusedRecords().find((item) => item.key === key);
+    if (!item) {
+        if (await discardRefusedChat(key, () => !halted)) schedule();
+        return;
+    }
+    const refused = quarantinedRecords.get(key);
+    const marked = dirty.get(key);
+    const membership = membershipGeneration;
+    const owner = item.resourceKind === RESOURCE_KIND.characters ? chatOwnerToken(item.id) : null;
+    const read = await readRefs([{ kind: item.resourceKind, id: item.id }]);
+    if (
+        halted ||
+        quarantinedRecords.get(key) !== refused ||
+        dirty.get(key) !== marked ||
+        (owner !== null && (membershipGeneration !== membership || chatOwnerToken(item.id) !== owner)) ||
+        (projectRecord(item.resourceKind, item.id) ?? null) !== refused?.text
+    )
+        return;
+    const server = read.items.find((record) => record.kind === item.resourceKind && record.id === item.id);
+    if (!server) return;
+    if (server.kind === RESOURCE_KIND.characters && server.revision !== null && !findMirrorCharacter(server.id)) {
+        hydrate.add(server.id);
+    }
+    acceptRemote(server, true);
+    schedule();
+    if (hydrate.size > 0) await hydrateCharacters();
 }
 
 type PendingOp = {
@@ -1503,8 +1589,8 @@ async function cycle() {
     const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
-        quarantineChat(group);
-        alertError(`The chat ${group.chatId} is too large to save`);
+        const reason = `The chat ${group.chatId} is too large to save`;
+        quarantineChat(group, reason, reason);
     }
     if (batches.length > 0) {
         saving.state = true;
@@ -1535,6 +1621,21 @@ async function cycle() {
                 if (quarantineRejectedChat(error, batch.work)) {
                     return;
                 }
+                if (
+                    error instanceof ResourceRequestError &&
+                    (error.status === 400 || error.status === 413) &&
+                    batch.ops.length + batch.work.groups.length + batch.work.orders.length === 1
+                ) {
+                    // Quarantine before requeueing, so retained refused ops occur exactly once.
+                    if (batch.work.groups[0]) {
+                        quarantineChat(batch.work.groups[0], error.message);
+                        return;
+                    }
+                    if (batch.work.orders[0]) {
+                        quarantineChatOrder(batch.work.orders[0], error.message);
+                        return;
+                    }
+                }
                 // No answer: the server may have committed the batch (a lost response). Its chat
                 // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
                 // in doubt.
@@ -1557,12 +1658,6 @@ async function cycle() {
                     } else if (batch.ops[0]) {
                         inDoubt.delete(batch.ops[0].key);
                         quarantineRecord(batch.ops[0], error, false);
-                    } else if (batch.work.groups[0]) {
-                        quarantineChat(batch.work.groups[0]);
-                        alertError(`${language.chatSaveRefused}\n${error.message}`);
-                    } else if (batch.work.orders[0]) {
-                        quarantineChatOrder(batch.work.orders[0]);
-                        alertError(`${language.chatOrderRefused}\n${error.message}`);
                     }
                     return;
                 }
@@ -1809,8 +1904,7 @@ function quarantineRejectedChat(error: unknown, work: ChatWork): boolean {
     if (!group) {
         return false;
     }
-    quarantineChat(group);
-    alertError(`The chat ${group.chatId} could not be saved: ${error.message}`);
+    quarantineChat(group, error.message, `The chat ${group.chatId} could not be saved: ${error.message}`);
     requeueChatWork({ groups: work.groups.filter((entry) => entry !== group), orders: work.orders });
     return true;
 }
@@ -1937,16 +2031,20 @@ type RemoteItem = { kind: string; id: string; revision: string | null; data: unk
  * the hydrated mirror (its own key order), so the watcher that fires next compares equal and
  * nothing is echoed back. The local edit of that record counts as discarded.
  */
-function acceptRemote(item: RemoteItem) {
+function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
     const key = recordKey(item.kind, item.id);
     // What the plugins lose, taken before the mirror changes and told after the record is settled.
     const lost =
         item.kind === RESOURCE_KIND.pluginStorage && pluginStorageDiscardListeners.size > 0
             ? pluginStorageLosses(key, item)
             : null;
-    quarantinedRecords.delete(key);
+    clearRecordRefusal(key);
     inDoubt.delete(key);
     applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
+    if (removeAbsentSingleton && item.revision === null && COLLECTIONS.includes(item.kind as Collection)) {
+        // An explicitly discarded absent singleton (notably pluginStorage) must leave no local copy.
+        applyRaw(item.kind as RecordKind, undefined);
+    }
     if (item.revision === null) {
         persisted.delete(key);
     } else {

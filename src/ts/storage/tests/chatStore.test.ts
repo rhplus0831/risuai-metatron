@@ -472,6 +472,33 @@ describe("conflict recovery", () => {
             chats: [],
         });
         expect(texts(chat.findChat(ref))).toEqual(["typed before the refusal"]);
+        const beforeEdit = clone(chat.findChat(ref)!);
+        chat.setChatMeta(ref, { note: "explicit edit after refusal" });
+        const retry = chat.takeChatWork(new Set(["z"]));
+        const chats = chat.chatWorkBody(retry).chats.map((text) => JSON.parse(text));
+        expect(chats).toEqual([
+            expect.objectContaining({
+                characterId: "z",
+                chatId: "n",
+                baseRevision: null,
+                ops: [
+                    expect.objectContaining({
+                        op: "create",
+                        chat: { ...beforeEdit, note: "explicit edit after refusal" },
+                    }),
+                ],
+            }),
+        ]);
+        // Once its parent exists, this is an ordinary create and saves both the draft and the edit.
+        server.set("characters", "z", { chaId: "z", name: "Z" });
+        const saved = server.store.applyChanges({ chats });
+        chat.ackChatWork(retry, saved.chats, saved.chatOrders);
+        expect(server.chat("z", "n")!.data).toMatchObject({
+            note: "explicit edit after refusal",
+            message: [m("u", "typed before the refusal")],
+        });
+        expect(chat.takeChatWork(new Set(["z"])).groups).toEqual([]);
+        expect(alert.alertError).toHaveBeenCalledTimes(1);
     });
 
     it("recognizes a create whose acknowledgement was lost and sends the edit made meanwhile after it", async () => {

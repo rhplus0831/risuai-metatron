@@ -230,10 +230,28 @@ const ordersSettled = new Map<string, number>();
 /** Keys whose work a conflict discarded, with the discard sequence (for `flushResources`). */
 const discarded = new Map<string, number>();
 let discardSequence = 0;
-/** Chats whose work the server refused as invalid; nothing more is sent for them this session. */
-const quarantined = new Set<string>();
+/** Refused intent, retained until an explicit local edit, retry, or discard. Identity fences discards. */
+type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean };
+const quarantined = new Map<string, ChatRefusal>();
 /** Refused reorders wait until the ordered ids change. */
-const quarantinedOrders = new Map<string, string>();
+const quarantinedOrders = new Map<string, { ids: string; reason: string }>();
+const chatAlerts = new Set<string>();
+const orderAlerts = new Set<string>();
+let refusalVersion = $state(0);
+
+function notifyRefusals() {
+    untrack(() => {
+        refusalVersion += 1;
+    });
+}
+
+function clearChatRefusal(key: string) {
+    if (quarantined.delete(key)) notifyRefusals();
+}
+
+function clearOrderRefusal(chaId: string) {
+    if (quarantinedOrders.delete(chaId)) notifyRefusals();
+}
 /** Chats whose conflict reload waits for the server job streaming into them. */
 const deferred = new Set<string>();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
@@ -816,8 +834,13 @@ function workSeq(key: string): number {
     return Math.max(entry?.seq ?? 0, entry?.resend?.seq ?? 0, inflight.get(key)?.seq ?? 0);
 }
 
-/** Queues an op for a chat, coalescing it with the previous unsent op when that is safe. */
-function enqueue(ref: ChatRef, op: ChatOp) {
+/** Queues an explicit local edit after its mirror write, releasing any refused intent first. */
+function enqueueLocalEdit(ref: ChatRef, op: ChatOp) {
+    if (releaseChatRefusal(ref) === "snapshot") {
+        // The replacement/create already includes this edit, including an append's new ids.
+        notifyWork();
+        return;
+    }
     const entry = pendingFor(ref);
     entry.seq = nextSeq();
     const last = entry.ops[entry.ops.length - 1];
@@ -1954,9 +1977,12 @@ export function createChat(
     const created = insertChat(chaId, index, chat);
     const key = keyOf(chaId, chat.id);
     changed(key);
-    const entry = pendingFor({ chaId, chatId: chat.id });
-    entry.create = true;
-    entry.seq = nextSeq();
+    const ref = { chaId, chatId: chat.id };
+    if (!releaseChatRefusal(ref)) {
+        const entry = pendingFor(ref);
+        entry.create = true;
+        entry.seq = nextSeq();
+    }
     syncSelection(chaId);
     if (options.select) {
         selectChat(chaId, chat.id);
@@ -1990,8 +2016,10 @@ export function deleteChat(ref: ChatRef) {
     const key = keyOf(ref.chaId, ref.chatId);
     changed(key);
     const entry = pending.get(key);
+    const refused = quarantined.get(key);
+    clearChatRefusal(key);
     const seq = nextSeq();
-    if (entry?.create && !entry.resend && !inflight.has(key)) {
+    if ((refused?.create || (entry?.create && !entry.resend)) && !inflight.has(key)) {
         // Never sent: nothing to delete on the server.
         pending.delete(key);
         settleKey(key, seq);
@@ -2219,7 +2247,7 @@ export function appendMessage(
     }
     chat.message.splice(position, 0, ...messages);
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "append", messages: clone(messages), anchor });
+    enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor });
     return messages.map((message) => message.chatId!);
 }
 
@@ -2244,7 +2272,7 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     }
     chat.message[index] = message;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "setMessage", message: clone(message) });
+    enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) });
 }
 
 /** A message field patch as the server takes it (`patchMessage`): fields to set and fields to remove. */
@@ -2326,7 +2354,7 @@ function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, 
     if (patch.unset.length > 0) {
         op.unset = [...patch.unset] as typeof op.unset;
     }
-    enqueue(ref, op);
+    enqueueLocalEdit(ref, op);
 }
 
 /**
@@ -2366,7 +2394,7 @@ export function setMessageText(ref: ChatRef, id: string, text: string) {
         chat.message[index].data = text;
         changed(keyOf(ref.chaId, ref.chatId));
     }
-    enqueue(ref, { op: "setText", id, text });
+    enqueueLocalEdit(ref, { op: "setText", id, text });
 }
 
 /**
@@ -2402,7 +2430,7 @@ export function setMessageTranslation(
     }
     changed(keyOf(ref.chaId, ref.chatId));
     // Never coalesced: a set lands only on a matching text, so dropping an earlier op could change the result.
-    enqueue(ref, { op: "setTranslation", id, translation: value });
+    enqueueLocalEdit(ref, { op: "setTranslation", id, translation: value });
     return true;
 }
 
@@ -2423,7 +2451,7 @@ function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
     const kept = chat.message.filter((message) => !removing.has(message.chatId!));
     chat.message.splice(0, chat.message.length, ...kept);
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "remove", ids: [...removing] });
+    enqueueLocalEdit(ref, { op: "remove", ids: [...removing] });
 }
 
 /**
@@ -2576,7 +2604,7 @@ export function setChatMeta(
         delete chat[key];
     }
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "meta", set: changes, unset: removals });
+    enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals });
 }
 
 /**
@@ -2632,7 +2660,7 @@ export function mergeChatMeta(
     if (removed.length > 0) {
         op.mergeUnset = { [key]: removed };
     }
-    enqueue(ref, op);
+    enqueueLocalEdit(ref, op);
 }
 
 /**
@@ -2657,7 +2685,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     delete chat.activeStreamingDisplayOptimizationMode;
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "replace", chat: projectChat(chat) });
+    enqueueLocalEdit(ref, { op: "replace", chat: projectChat(chat) });
 }
 
 /**
@@ -3088,20 +3116,139 @@ function isOrderQuarantined(chaId: string): boolean {
         return false;
     }
     // The ids `takeChatWork` would send now (before this batch's creates).
-    const ids = memberIds(chaId).filter((id) => serverHolds(keyOf(chaId, id)));
-    if (JSON.stringify(ids) === refused) {
+    if (sendableOrderText(chaId) === refused.ids) {
         return true;
     }
-    quarantinedOrders.delete(chaId);
+    clearOrderRefusal(chaId);
     return false;
 }
 
-export function quarantineChatOrder(order: SentChatOrder) {
+function sendableOrderText(chaId: string): string {
+    return JSON.stringify(memberIds(chaId).filter((id) => serverHolds(keyOf(chaId, id))));
+}
+
+export function quarantineChatOrder(order: SentChatOrder, reason = language.chatOrderRefused) {
     inflightOrders.delete(order.characterId);
-    quarantinedOrders.set(order.characterId, JSON.stringify(order.ids));
+    quarantinedOrders.set(order.characterId, { ids: JSON.stringify(order.ids), reason });
+    notifyRefusals();
     if (!pendingOrders.has(order.characterId)) {
         pendingOrders.set(order.characterId, order.seq);
     }
+    if (!orderAlerts.has(order.characterId)) {
+        orderAlerts.add(order.characterId);
+        alertError(`${language.chatOrderRefused}\n${reason}`);
+    }
+}
+
+export type RefusedChatItem =
+    | { kind: "chat"; key: string; reason: string; chaId: string; chatId: string }
+    | { kind: "order"; key: string; reason: string; chaId: string };
+
+/** Reactive, read-only refusal inventory. A refused delete still owns intent without a local chat. */
+export function refusedChatItems(): RefusedChatItem[] {
+    void refusalVersion;
+    const items: RefusedChatItem[] = [];
+    for (const [key, refused] of quarantined) {
+        const [chaId, chatId] = key.split("\u0000");
+        if (findCharacter(chaId) && (isMember({ chaId, chatId }) || refused.delete)) {
+            items.push({ kind: "chat", key: `chats\u0000${key}`, reason: refused.reason, chaId, chatId });
+        }
+    }
+    for (const [chaId, refused] of quarantinedOrders) {
+        if (findCharacter(chaId) && sendableOrderText(chaId) === refused.ids) {
+            items.push({ kind: "order", key: `chatOrder\u0000${chaId}`, reason: refused.reason, chaId });
+        }
+    }
+    return items;
+}
+
+/** Refused local intent protects page close, but is not runnable save work. */
+export function hasRefusedChatWork(): boolean {
+    return refusedChatItems().length > 0;
+}
+
+/**
+ * Releases only at an explicit edit/retry. A loaded chat sends its whole current copy on the held
+ * revision; an unloaded chat replays retained metadata ops without inventing an empty transcript.
+ */
+function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const refused = quarantined.get(key);
+    if (!refused) return false;
+    const chat = heldChat(ref);
+    const entry = pendingFor(ref);
+    const seq = nextSeq();
+    if (refused.delete && !isMember(ref)) {
+        if (refused.create) {
+            pending.delete(key);
+            settleKey(key, seq);
+        } else {
+            entry.create = false;
+            entry.resend = null;
+            entry.ops = [{ op: "delete" }];
+            entry.seq = seq;
+        }
+    } else {
+        entry.create = refused.create;
+        entry.resend = null;
+        entry.ops = chat
+            ? refused.create
+                ? []
+                : [{ op: "replace", chat: projectChat(chat) }]
+            : [...refused.ops, ...entry.ops];
+        entry.seq = seq;
+    }
+    clearChatRefusal(key);
+    return chat ? "snapshot" : "ops";
+}
+
+/** Explicit retry of one chat or order from the refusal inventory. */
+export function retryRefusedChat(key: string): boolean {
+    const item = refusedChatItems().find((item) => item.key === key);
+    if (!item) return false;
+    if (item.kind === "chat") {
+        releaseChatRefusal(item);
+    } else {
+        pendingOrders.set(item.chaId, nextSeq());
+        clearOrderRefusal(item.chaId);
+    }
+    notifyWork();
+    return true;
+}
+
+/** Applies a server copy only while this exact refusal and owner still survive the read. */
+export async function discardRefusedChat(key: string, canApply: () => boolean): Promise<boolean> {
+    const item = refusedChatItems().find((item) => item.key === key);
+    if (!item) return false;
+    const owner = chatOwnerToken(item.chaId);
+    if (item.kind === "chat") {
+        const chatKey = keyOf(item.chaId, item.chatId);
+        const refused = quarantined.get(chatKey);
+        const read = await readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }] });
+        if (!canApply() || chatOwnerToken(item.chaId) !== owner || quarantined.get(chatKey) !== refused) return false;
+        const server = read.chats?.find((chat) => chat.characterId === item.chaId && chat.id === item.chatId);
+        if (!server) return false;
+        acceptRemoteChat(server as RemoteChat);
+        clearChatRefusal(chatKey);
+    } else {
+        const refused = quarantinedOrders.get(item.chaId);
+        const seq = pendingOrders.get(item.chaId);
+        const read = await readRefs([], { chatSummaryCollections: [item.chaId] });
+        if (
+            !canApply() ||
+            chatOwnerToken(item.chaId) !== owner ||
+            quarantinedOrders.get(item.chaId) !== refused ||
+            pendingOrders.get(item.chaId) !== seq ||
+            sendableOrderText(item.chaId) !== refused?.ids
+        )
+            return false;
+        const collection = read.chatSummaryCollections?.find((collection) => collection.characterId === item.chaId);
+        if (!collection) return false;
+        acceptRemoteCollection(collection);
+        clearOrderRefusal(item.chaId);
+    }
+    notifyWork();
+    return true;
 }
 
 /**
@@ -3150,6 +3297,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
     const known = new Set(
         [
             ...chatRevisions.keys(),
+            ...quarantined.keys(),
             ...inflight.keys(),
             ...[...pending].filter(([, entry]) => entry.create || entry.resend).map(([key]) => key),
         ].filter((key) => key.startsWith(prefix)),
@@ -3159,6 +3307,8 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
     renewLifetime(chaId);
     dropLoadState(chaId);
     setChatList(chaId, loadedEntries(prepareCharacterChats(chats, character)));
+    // Explicit recreation supersedes the refused intent; reconciliation below queues its replacement.
+    for (const key of known) clearChatRefusal(key);
     if (reconcile) {
         const ids = new Set(memberIds(chaId));
         for (const key of known) {
@@ -3321,7 +3471,13 @@ export function adoptCharacter(chaId: string) {
     for (const chatId of memberIds(chaId)) {
         const key = keyOf(chaId, chatId);
         const entry = pending.get(key);
-        if (!chatRevisions.has(key) && !entry?.create && !entry?.resend && !inflight.has(key)) {
+        if (
+            !chatRevisions.has(key) &&
+            !entry?.create &&
+            !entry?.resend &&
+            !inflight.has(key) &&
+            !quarantined.has(key)
+        ) {
             const created = pendingFor({ chaId, chatId });
             created.create = true;
             created.seq = nextSeq();
@@ -3406,7 +3562,10 @@ function forgetCharacterRevisions(chaId: string) {
         }
     }
     orderRevisions.delete(chaId);
-    quarantinedOrders.delete(chaId);
+    clearOrderRefusal(chaId);
+    for (const key of quarantined.keys()) {
+        if (key.startsWith(prefix)) clearChatRefusal(key);
+    }
 }
 
 /**
@@ -3432,11 +3591,11 @@ export function settleCharacterDelete(chaId: string) {
  */
 export function ackCharacterDelete(chaId: string) {
     const prefix = `${chaId}\u0000`;
-    for (const key of [...quarantined]) {
+    for (const key of quarantined.keys()) {
         if (key.startsWith(prefix)) {
             // The refused chat was of the deleted incarnation: a chat of a later one under its id is
             // a new create.
-            quarantined.delete(key);
+            clearChatRefusal(key);
         }
     }
     if (!findCharacter(chaId)) {
@@ -3902,21 +4061,37 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
     }
 }
 
-/** Stops sending a chat whose work the server refused as invalid. */
-export function quarantineChat(group: Pick<SentChatGroup, "key" | "seq">) {
+/** Holds refused work locally, reporting it discarded to flush callers, until an explicit release. */
+export function quarantineChat(
+    group: Pick<SentChatGroup, "key" | "seq" | "ops">,
+    reason = language.chatSaveRefused,
+    alertText = `${language.chatSaveRefused}\n${reason}`,
+) {
+    const entry = pending.get(group.key);
+    const ops = [...group.ops, ...(entry?.resend?.ops ?? []), ...(entry?.ops ?? [])];
+    const seq = Math.max(group.seq, workSeq(group.key));
     inflight.delete(group.key);
     jobBlocked.delete(group.key);
-    quarantined.add(group.key);
+    const [chaId, chatId] = group.key.split("\u0000");
+    quarantined.set(group.key, {
+        reason,
+        ops: clone(ops),
+        create: (!chatRevisions.has(group.key) && !!entry?.create) || ops.some((op) => op.op === "create"),
+        delete: !isMember({ chaId, chatId }) && ops.some((op) => op.op === "delete"),
+    });
+    notifyRefusals();
     deferred.delete(group.key);
     staleChats.delete(group.key);
-    const seq = Math.max(group.seq, workSeq(group.key));
     pending.delete(group.key);
     markDiscarded(group.key, seq);
+    if (!chatAlerts.has(group.key)) {
+        chatAlerts.add(group.key);
+        alertError(alertText);
+    }
 }
 
-function quarantineRefusedCreate(key: string, seq: number) {
-    quarantineChat({ key, seq });
-    alertError(language.chatCreateRefused);
+function quarantineRefusedCreate(group: Pick<SentChatGroup, "key" | "seq" | "ops">) {
+    quarantineChat(group, language.chatCreateRefused, language.chatCreateRefused);
 }
 
 function markDiscarded(key: string, seq: number) {
@@ -4026,7 +4201,7 @@ export function recoverChatConflicts(
         if (create && server.revision === null) {
             // This create never landed. Keep the local chat; a missing parent is recovered by
             // the character read, and retrying this same group would loop.
-            quarantineRefusedCreate(group.key, group.seq);
+            quarantineRefusedCreate(group);
             refresh.add(group.characterId);
             continue;
         }
@@ -5343,7 +5518,7 @@ export function finishDeferredReload(server: RemoteChat): string | null {
     if (server.revision === null) {
         const entry = pending.get(key);
         if (entry?.create || isCreateResend(entry)) {
-            quarantineRefusedCreate(key, workSeq(key));
+            quarantineRefusedCreate({ key, seq: workSeq(key), ops: [] });
         } else {
             discardChatWork(key, 0);
         }

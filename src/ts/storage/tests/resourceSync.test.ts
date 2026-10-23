@@ -117,7 +117,20 @@ async function boot(
 
 beforeAll(() => warmMutationGraph(), 60_000);
 
+// Each boot installs a new handler; retired module graphs must not warn for later tests.
+const unloadListeners = new Set<EventListenerOrEventListenerObject>();
+const warnsOnUnload = () => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+};
+
 beforeEach(() => {
+    const addEventListener = window.addEventListener.bind(window);
+    vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+        if (type === "beforeunload" && listener) unloadListeners.add(listener);
+        addEventListener(type, listener, options);
+    });
     // The adapter's debounce and backoff timers; cleared after each test so an earlier test's
     // adapter instance never wakes up against a later test's fake server.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -125,6 +138,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    for (const listener of unloadListeners) window.removeEventListener("beforeunload", listener);
+    unloadListeners.clear();
+    vi.mocked(window.addEventListener).mockRestore();
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -707,9 +723,20 @@ describe("restore (412) and errors", () => {
 
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
         const { fake, sync, settings } = await boot();
+        expect(warnsOnUnload()).toBe(false);
         fake.maxBodyBytes = 200;
         settings.ui.theme = "x".repeat(300);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
+        expect(warnsOnUnload()).toBe(true);
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({
+                kind: "record",
+                key: expect.any(String),
+                resourceKind: "ui",
+                id: "main",
+                reason: expect.any(String),
+            }),
+        ]);
         expect(alerts.error).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(1200);
         expect(fake.batchCount()).toBe(1);
@@ -729,10 +756,14 @@ describe("restore (412) and errors", () => {
                 .ops.map((op) => op.kind),
         ).toEqual(["presets"]);
         expect(fake.batchCount()).toBe(2);
+        expect(warnsOnUnload()).toBe(true);
         fake.maxBodyBytes = Infinity;
         settings.ui.theme = "small again";
+        expect(warnsOnUnload()).toBe(true);
         await sync.flushResources();
         expect(fake.data("ui", "main").theme).toBe("small again");
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
         expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
@@ -769,6 +800,59 @@ describe("restore (412) and errors", () => {
         await sync.flushResources();
         expect(fake.data("ui", "main").theme).toBe("repaired");
         expect(alerts.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries a refused record on request and protects a later refusal until discard restores the server copy", async () => {
+        const { fake, sync, settings } = await boot();
+        const refuse = () => {
+            fake.failNext = {
+                status: 400,
+                body: { error: "ops[0]: ui main: refused theme" },
+                times: 1,
+                match: (path) => path === "/api/resources/batch",
+            };
+        };
+        expect(warnsOnUnload()).toBe(false);
+        refuse();
+        settings.ui.theme = "first draft";
+        await expect(sync.flushResources()).rejects.toMatchObject({
+            status: 400,
+            message: "ops[0]: ui main: refused theme",
+        });
+        expect(sync.refusedItems()).toEqual([
+            expect.objectContaining({
+                kind: "record",
+                key: expect.any(String),
+                resourceKind: "ui",
+                id: "main",
+                reason: "ops[0]: ui main: refused theme",
+            }),
+        ]);
+        expect(warnsOnUnload()).toBe(true);
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fake.batchCount()).toBe(1);
+        const key = sync.refusedItems()[0].key;
+        sync.retryRefused(key);
+        expect(warnsOnUnload()).toBe(true);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.data("ui", "main").theme).toBe("first draft");
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+
+        refuse();
+        settings.ui.theme = "second draft";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
+        expect(warnsOnUnload()).toBe(true);
+        // Fetch the current server version, rather than merely undoing to the old saved text.
+        const serverCopy = { ...fake.data("ui", "main"), theme: "changed elsewhere" };
+        fake.set("ui", "main", serverCopy);
+        await sync.discardRefused(key);
+        expect(JSON.parse(JSON.stringify(settings.ui))).toEqual(serverCopy);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(3);
     });
 
     it("keeps everything dirty through a retryable failure and saves once the server answers", async () => {
