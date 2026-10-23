@@ -23,7 +23,7 @@ import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { globalFetch } from "../globalApi.svelte";
 import { alertError } from "../alert";
 import { requestChatData } from "../process/request/request";
-import { doingChat } from "../process/index.svelte";
+import { anyLocalSend } from "../process/localSends";
 import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } from "../parser/parser.svelte";
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
@@ -399,7 +399,7 @@ export async function translateHTML(
     // translation read the same cache entry.
     const llmContext = settings.memoryTranslateMedia.translatorType === "llm" ? llmTranslationContext() : null;
     let cached: string | null = null;
-    if (get(doingChat) && isExpTranslator()) {
+    if (get(anyLocalSend) && isExpTranslator()) {
         cached = llmContext ? await readLLMCacheEntry(llmCacheKeyPrefix(llmContext) + html) : null;
         if (cached === null) {
             return html;

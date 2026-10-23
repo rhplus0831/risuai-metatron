@@ -107,11 +107,13 @@ vi.mock("./permissionStore", () => ({
     recordPermissionGrants: vi.fn(async () => undefined),
 }));
 
-// The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it.
+// The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it; its
+// busy view is the real registry's, as the product wires it.
 vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
+    const { anyLocalSend } =
+        await vi.importActual<typeof import("src/ts/process/localSends")>("src/ts/process/localSends");
     return {
-        doingChat: writable(false),
+        doingChat: anyLocalSend,
         sendChat: vi.fn(async (index: number, arg: any) => {
             sends.push({ index, arg });
             return true;
@@ -206,6 +208,7 @@ import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { doingChat } from "src/ts/process/index.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModuleLorebooks } from "src/ts/process/modules";
@@ -383,7 +386,6 @@ beforeEach(() => {
     localStorage.clear();
     liveDatabase();
     selectCharacterAt(0);
-    doingChat.set(false);
     sends.length = 0;
     transforms.length = 0;
     // No chat is saved on the server unless a test says so.
@@ -1122,12 +1124,18 @@ describe("sendChat inside a hook", () => {
         const listener = await listenerOf(api, async () => {
             await expect(api.sendChat("busy")).rejects.toThrow("A chat is already in progress");
         });
-        doingChat.set(true);
-        await invokeHook(listener, capturePluginContext(refB1), listenerArg);
-        expect(texts(refB1)).toEqual(["hello from b1"]);
-        expect(sends).toEqual([]);
-        // The refusal does not release the flag of the send in progress.
-        expect(get(doingChat)).toBe(true);
+        const release = beginLocalSend(refB1)!;
+        try {
+            expect(get(doingChat)).toBe(true);
+            await invokeHook(listener, capturePluginContext(refB1), listenerArg);
+            expect(texts(refB1)).toEqual(["hello from b1"]);
+            expect(sends).toEqual([]);
+            // The refusal does not release the entry of the send in progress.
+            expect(get(doingChat)).toBe(true);
+        } finally {
+            release();
+        }
+        expect(get(doingChat)).toBe(false);
     });
 });
 

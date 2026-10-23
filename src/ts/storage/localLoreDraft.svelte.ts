@@ -3,7 +3,7 @@ import { fromStore } from "svelte/store";
 import { language } from "src/lang";
 import { alertError } from "../alert";
 import { chatStatusKey, generatingChatKeys } from "../process/chatStatus.svelte";
-import { sendingChatRef } from "../process/index.svelte";
+import { isLocalSend, localSends } from "../process/localSends";
 import { type ChatRef, currentChatRef, selectedChat, setChatMeta } from "./chatStore.svelte";
 import type { loreBook } from "./database.svelte";
 
@@ -23,14 +23,12 @@ export const localLoreDraft = $state({ value: [] as loreBook[], key: "" });
 let synced = "";
 let started = false;
 // Lazy: subscribed by the effect below only.
-let sendingView: { current: ChatRef | null } | undefined;
+let sendsView: { current: ReadonlyMap<string, ChatRef | null> } | undefined;
 
 /** Whether a send of this tab or a job this tab knows of runs in `ref` (reactive). */
 function loreWriteFenced(ref: ChatRef): boolean {
-    const sending = (sendingView ??= fromStore(sendingChatRef)).current;
     return (
-        (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
-        generatingChatKeys().has(chatStatusKey(ref))
+        isLocalSend(ref, (sendsView ??= fromStore(localSends)).current) || generatingChatKeys().has(chatStatusKey(ref))
     );
 }
 

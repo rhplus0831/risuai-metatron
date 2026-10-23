@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `pluginWorkIdle` / `onPluginWorkChange` (`plugins-mcp.md` Flows step 6): the idle definition a
-// deferred reload waits for, collected over the tab's send (`doingChat`), the jobs' plugin work
+// deferred reload waits for, collected over the tab's sends (`localSends`), the jobs' plugin work
 // (`generationJobs.ts`), the host-side hook invocations still running (a wrapped hook; a provider
 // from before its permission prompt), and each loaded sandbox's `isIdle`. The sandbox is mocked
 // with a controllable idle flag; the job channel is real.
@@ -72,7 +72,8 @@ vi.mock("./permissionStore", () => ({
 import { executePluginV3, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./v3.svelte";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
-import { doingChat } from "src/ts/process/index.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
+import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
@@ -93,6 +94,16 @@ function deferred<T>() {
 let counter = 0;
 let changed: ReturnType<typeof vi.fn<() => void>>;
 let unsubscribe: () => void;
+const chatA: ChatRef = { chaId: "a", chatId: "a0" };
+const chatB: ChatRef = { chaId: "b", chatId: "b0" };
+/** The sends begun on the registry, released at the test's end at the latest. */
+const releases: (() => void)[] = [];
+const send = (ref: ChatRef) => {
+    const release = beginLocalSend(ref)!;
+    expect(release).not.toBeNull();
+    releases.push(release);
+    return release;
+};
 
 async function makeApi(): Promise<{ api: CapturedApi; plugin: any }> {
     harness.captured.api = null;
@@ -119,7 +130,6 @@ const argument = (): PluginProviderArgument => ({
 beforeEach(() => {
     harness.hosts.length = 0;
     harness.confirm.mockReset().mockResolvedValue(true);
-    doingChat.set(false);
     changed = vi.fn<() => void>();
     unsubscribe = onPluginWorkChange(changed);
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -129,7 +139,9 @@ beforeEach(() => {
 afterEach(async () => {
     unsubscribe();
     await loadV3Plugins([]);
-    doingChat.set(false);
+    for (const release of releases.splice(0)) {
+        release();
+    }
     vi.restoreAllMocks();
 });
 
@@ -228,10 +240,10 @@ describe("pluginWorkIdle", () => {
         await makeApi();
         const [host] = harness.hosts;
 
-        doingChat.set(true);
+        const release = send(chatA);
         expect(pluginWorkIdle()).toBe(false);
         changed.mockClear();
-        doingChat.set(false);
+        release();
         expect(pluginWorkIdle()).toBe(true);
         expect(changed).toHaveBeenCalledTimes(1);
 
@@ -262,8 +274,24 @@ describe("pluginWorkIdle", () => {
         changed.mockClear();
         noteChannelCallbacks(1);
         noteChannelCallbacks(0);
-        doingChat.set(true);
-        doingChat.set(false);
+        send(chatA)();
         expect(changed).not.toHaveBeenCalled();
+    });
+
+    it("stays busy until the last of two sends ends, and reports idle at that final release", () => {
+        const observed: boolean[] = [];
+        changed.mockImplementation(() => observed.push(pluginWorkIdle()));
+        const releaseA = send(chatA);
+        const releaseB = send(chatB);
+        expect(pluginWorkIdle()).toBe(false);
+        observed.length = 0;
+
+        releaseA();
+        expect(pluginWorkIdle()).toBe(false);
+        expect(observed).not.toContain(true);
+
+        releaseB();
+        expect(pluginWorkIdle()).toBe(true);
+        expect(observed.at(-1)).toBe(true);
     });
 });

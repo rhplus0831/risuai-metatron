@@ -45,7 +45,7 @@
         startMemoryTask,
         type MemoryTaskActionResult,
     } from "src/ts/process/memoryTasks.svelte";
-    import { sendingChatRef } from "src/ts/process/index.svelte";
+    import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
     import { summaryKey } from "../../../shared/memory.ts";
@@ -72,11 +72,7 @@
      * (reactive, except that a held revision catching up alone does not notify).
      */
     function memoryWriteFence(ref: ChatRef): string | null {
-        const sending = $sendingChatRef;
-        if (
-            (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
-            generatingChatKeys().has(chatStatusKey(ref))
-        ) {
+        if (isLocalSend(ref, $localSends) || generatingChatKeys().has(chatStatusKey(ref))) {
             return language.chatGenerating;
         }
         return memoryTaskFenced(ref) ? language.memoryTasks.editFenced : null;

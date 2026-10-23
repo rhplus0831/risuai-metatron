@@ -231,7 +231,7 @@ describe("the lorebook conversion of an imported file", () => {
 });
 
 // The local import sends the chat's whole `localLore`, so while a send of this tab
-// (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in the captured chat at the
+// (a `localSends` entry) or a job this tab follows (`followedJobs`) runs in the captured chat at the
 // write, it is refused with the `chatGenerating` notice and nothing is written, as the lore draft's
 // fence does (`localLoreDraft.fence.test.ts`). A job that starts while the dialog is open counts:
 // the fence is checked after it.
@@ -240,7 +240,8 @@ describe("importLoreBook(local) during a job in the chat", () => {
         const booted = await boot();
         const { followedJobs } = await import("./serverCommands");
         const { chatStatusKey } = await import("./chatStatus.svelte");
-        const { sendingChatRef } = await import("./index.svelte");
+        // The registry of this graph (the fence reads it): imported after the reset, with the wrapper.
+        const { beginLocalSend } = await import("./localSends");
         const selected = booted.character(booted.alpha);
         const ref = { chaId: booted.alpha, chatId: selected.chats[selected.chatPage].id };
         const follow = (target: { chaId: string; chatId: string } | null) =>
@@ -253,7 +254,7 @@ describe("importLoreBook(local) during a job in the chat", () => {
             };
             await booted.lorebook.importLoreBook("local");
         };
-        return { ...booted, ref, follow, sendingChatRef, stored, runLocal };
+        return { ...booted, ref, follow, beginLocalSend, stored, runLocal };
     }
 
     it("refuses while a job this tab follows runs in the chat, also one started while the dialog was open", async () => {
@@ -279,16 +280,17 @@ describe("importLoreBook(local) during a job in the chat", () => {
     });
 
     it("is fenced by this tab's own send of the chat only", async () => {
-        const { runLocal, sendingChatRef, ref, stored } = await local();
-        sendingChatRef.set({ chaId: ref.chaId, chatId: "other" });
+        const { runLocal, beginLocalSend, ref, stored } = await local();
+        const releaseOther = beginLocalSend({ chaId: ref.chaId, chatId: "other" })!;
         await runLocal(nativeFile([lore("Other", "o")]));
         expect(alerts.error).not.toHaveBeenCalled();
         expect(stored()).toEqual([lore("Other", "o")]);
 
-        sendingChatRef.set(ref);
+        const releaseOwn = beginLocalSend(ref)!;
         await runLocal(nativeFile([lore("Mine", "m")]));
         expect(alerts.error).toHaveBeenCalledWith("generating");
         expect(stored()).toEqual([lore("Other", "o")]);
-        sendingChatRef.set(null);
+        releaseOwn();
+        releaseOther();
     });
 });

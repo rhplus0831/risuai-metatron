@@ -7,7 +7,8 @@
     } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
-    import { doingChat, sendingChatRef, type OpenAIChat } from "../../ts/process/index.svelte";
+    import { type OpenAIChat } from "../../ts/process/index.svelte";
+    import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
     import { translate } from "src/ts/translator/translator";
     import { chatAutoTranslate } from "src/ts/translator/chatTranslation.svelte";
@@ -49,7 +50,8 @@
     let abortController: AbortController | undefined;
     let suggestionRequestId = 0;
     let chatId: string | null = $state(null);
-    let sendingChat: ChatRef | null = $state(null);
+    /** This tab's sends (`localSends`), as the subscription below last saw them. */
+    let sends: ReadonlyMap<string, ChatRef | null> = $state.raw(new Map());
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
     const pendingChatKeys = new SvelteSet<string>();
 
@@ -57,7 +59,10 @@
         const selected = currentChatRef();
         return selected?.chaId === ref.chaId && selected?.chatId === ref.chatId;
     };
-    const sendingSelectedChat = $derived(sendingChat !== null && isSelectedChat(sendingChat));
+    const sendingSelectedChat = $derived.by(() => {
+        const selected = currentChatRef();
+        return selected !== null && isLocalSend(selected, sends);
+    });
 
     const cancelSuggestionRequest = () => {
         suggestionRequestId += 1;
@@ -186,12 +191,8 @@
             });
     };
 
-    const unsubSendingChat = sendingChatRef.subscribe((ref) => {
-        if (!ref) {
-            // sendChat clears this store before doingChat; keep the target until its end below.
-            return;
-        }
-        sendingChat = ref;
+    /** A send started in `ref`'s chat: its suggestions are cleared and nothing is requested for it. */
+    const sendStarted = (ref: ChatRef) => {
         pendingChatKeys.delete(chatKeyOf(ref));
         if (progressChatRef?.chaId === ref.chaId && progressChatRef?.chatId === ref.chatId) {
             cancelSuggestionRequest();
@@ -202,18 +203,40 @@
         if (isSelectedChat(ref)) {
             suggestMessages = [];
         }
-    });
+    };
 
-    const unsub = doingChat.subscribe((v) => {
-        if (v) {
-            return;
-        }
-        const finishedChat = sendingChat;
-        sendingChat = null;
-        if (finishedChat === null || isSelectedChat(finishedChat)) {
+    /**
+     * A send ended (`ref` null: one without a chat): requests suggestions if its chat is selected,
+     * else queues the chat's key for when it is.
+     */
+    const sendEnded = (ref: ChatRef | null) => {
+        if (ref === null || isSelectedChat(ref)) {
             requestSuggestions();
-        } else if (chatEntry(finishedChat)) {
-            pendingChatKeys.add(chatKeyOf(finishedChat));
+        } else if (chatEntry(ref)) {
+            pendingChatKeys.add(chatKeyOf(ref));
+        }
+    };
+
+    let initialized = false;
+    const unsub = localSends.subscribe((next) => {
+        const previous = sends;
+        sends = next;
+        for (const [key, ref] of next) {
+            if (ref !== null && !previous.has(key)) {
+                sendStarted(ref);
+            }
+        }
+        for (const [key, ref] of previous) {
+            if (!next.has(key)) {
+                sendEnded(ref);
+            }
+        }
+        // Opened while no send runs: request for the selected chat.
+        if (!initialized) {
+            initialized = true;
+            if (next.size === 0) {
+                requestSuggestions();
+            }
         }
     });
 
@@ -230,15 +253,15 @@
 
     onDestroy(() => {
         cancelSuggestionRequest();
-        unsubSendingChat();
         unsub();
     });
 
     $effect.pre(() => {
-        const ref = sendingChat;
-        // A background send can publish its target before the job has loaded that chat.
-        if (ref && findChat(ref)?.suggestMessages?.length) {
-            untrack(() => setChatMeta(ref, { suggestMessages: [] }));
+        // A background send can take its entry before the job has loaded that chat.
+        for (const ref of sends.values()) {
+            if (ref && findChat(ref)?.suggestMessages?.length) {
+                untrack(() => setChatMeta(ref, { suggestMessages: [] }));
+            }
         }
     });
     $effect.pre(() => {

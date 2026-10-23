@@ -630,11 +630,7 @@ try {
                 const id = await inlays.postInlayAsset({ name: "pixel.png", data: bytes });
                 const ref = chats.currentChatRef();
                 chats.appendMessage(ref, { role: "user", data: `Look {{inlayed::${id}}}` });
-                try {
-                    return await proc.sendChat(-1, { target: ref });
-                } finally {
-                    proc.doingChat.set(false);
-                }
+                return await proc.sendChat(-1, { target: ref });
             }, tinyPng.toString("base64")),
         (u) => isOpenAI("/v1/chat/completions")(u) && u.body.includes("image_url"),
         (sent) => sent === true,

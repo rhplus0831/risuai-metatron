@@ -97,6 +97,7 @@ import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
+import { anyLocalSend } from "src/ts/process/localSends";
 import { generationPluginWorkActive, onGenerationPluginWork } from "src/ts/network/generationJobs";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModelInfoForMode } from "src/ts/model/modellist";
@@ -682,12 +683,12 @@ function trackHostHook<T>(run: () => T): T {
 
 /**
  * No plugin work of this tab is in flight (a reload never interrupts it): no send
- * (`doingChat`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
+ * (`anyLocalSend`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
  * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
  */
 export function pluginWorkIdle(): boolean {
     return (
-        !get(doingChat) &&
+        !get(anyLocalSend) &&
         !generationPluginWorkActive() &&
         runningHostHooks === 0 &&
         v3PluginInstances.every(({ host }) => host.isIdle?.() ?? true)
@@ -697,7 +698,7 @@ export function pluginWorkIdle(): boolean {
 /** Calls `listener` whenever `pluginWorkIdle` may have changed; returns the unsubscribe function. */
 export function onPluginWorkChange(listener: () => void): () => void {
     pluginWorkListeners.add(listener);
-    const offChat = doingChat.subscribe(() => listener());
+    const offChat = anyLocalSend.subscribe(() => listener());
     const offJobs = onGenerationPluginWork(listener);
     return () => {
         pluginWorkListeners.delete(listener);

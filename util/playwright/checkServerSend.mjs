@@ -308,7 +308,6 @@ try {
                 const proc = await import("/src/ts/process/index.svelte.ts");
                 views.activePreset.mainPrompt = "Edited main for {{char}}.";
                 const ok = await proc.sendChat(-1, { preview: true });
-                proc.doingChat.set(false);
                 return ok ? proc.previewFormated[0]?.content : null;
             });
             check(

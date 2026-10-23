@@ -226,8 +226,6 @@ try {
     const streamed = await evaluate(
         `
         views.writeSettingsRoot("useStreaming", true);
-        // The chat screen clears \`doingChat\` after a send; a direct call has to.
-        proc.doingChat.set(false);
         chatStore.appendMessage({ chaId: arg.chaId, chatId: arg.chatId }, { role: "user", data: "stream please" });
         const ok = await proc.sendChat(-1);
         const chat = chatStore.findChat({ chaId: arg.chaId, chatId: arg.chatId });

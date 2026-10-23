@@ -45,10 +45,6 @@ vi.mock("src/ts/alert", async () =>
         alertError: alerts.alertError,
     }),
 );
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { doingChat: writable(false) };
-});
 // The chat pipeline, the parser, the server transform, the modules, and the model list are not
 // under test; the translator only reaches them on paths these tests do not take.
 vi.mock("src/ts/parser/parser.svelte", () => ({
@@ -76,7 +72,6 @@ vi.mock("src/ts/util", () => ({
     encryptBuffer: vi.fn(),
 }));
 
-import { get } from "svelte/store";
 import type { Chat as ChatRecord } from "../../../shared/database.ts";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
@@ -84,7 +79,7 @@ import { assembleChats, chatEntry, seedChats, selectChat } from "src/ts/storage/
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { doingChat } from "src/ts/process/index.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import {
     exportLLMCacheAsJSON,
     getCurrentTranslatorPreset,
@@ -163,9 +158,11 @@ const succeed = (...results: string[]) => {
     }
 };
 
+/** A send of some chat of this tab on the registry: the translator serves the cache only meanwhile. */
+const sending = () => beginLocalSend({ chaId: "c", chatId: "k" })!;
+
 beforeEach(() => {
     store.clear();
-    doingChat.set(false);
     installFlatDatabase({
         characters: [],
         ...SELECTABLE,
@@ -316,23 +313,26 @@ describe("the LLM translation", () => {
     });
 
     it("translates only from the cache while a chat is generating, with the context read once", async () => {
-        doingChat.set(true);
-        expect(get(doingChat)).toBe(true);
+        let release = sending();
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
         expect(request.requestChatData).not.toHaveBeenCalled();
 
-        doingChat.set(false);
+        release();
         succeed("D", "FINAL");
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("FINAL");
         expect(request.requestChatData).toHaveBeenCalledTimes(2);
 
-        doingChat.set(true);
-        await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("FINAL");
-        expect(request.requestChatData).toHaveBeenCalledTimes(2);
-        // Another preset while generating: no entry, so the source stays.
-        settings.translatorPresets.selectedId = "one";
-        await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
-        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        release = sending();
+        try {
+            await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("FINAL");
+            expect(request.requestChatData).toHaveBeenCalledTimes(2);
+            // Another preset while generating: no entry, so the source stays.
+            settings.translatorPresets.selectedId = "one";
+            await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
+            expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        } finally {
+            release();
+        }
     });
 });
 
@@ -991,11 +991,14 @@ describe("Exclude Chain-of-Thought", () => {
         expect(await getLLMCache(only)).toBe("");
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
         // While a chat generates, the entry is served; without one the html stays, nothing written.
-        doingChat.set(true);
-        await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
-        await expect(translateHTML("<think>other</think>", false, "", -1)).resolves.toBe("<think>other</think>");
-        expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
-        doingChat.set(false);
+        const release = sending();
+        try {
+            await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+            await expect(translateHTML("<think>other</think>", false, "", -1)).resolves.toBe("<think>other</think>");
+            expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
+        } finally {
+            release();
+        }
 
         setAsIs(true);
         await expect(runTranslator(only, false, "ko", "en")).resolves.toBe("");

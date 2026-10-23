@@ -39,11 +39,6 @@ vi.mock("../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => hooks.parse(text)),
     parseMarkdownSafe: vi.fn(),
 }));
-// The send pipeline is not under test: only its busy flag and its busy target store (the lore write fence).
-vi.mock("./index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { doingChat: { set: vi.fn(), subscribe: vi.fn() }, sendingChatRef: writable(null) };
-});
 vi.mock("../translator/translator", () => ({ translateHTML: vi.fn() }));
 vi.mock("./inlayScreen", () => ({ updateInlayScreen: vi.fn() }));
 vi.mock("./files/inlays", () => ({
@@ -294,7 +289,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
 });
 
 // Adding a chat lorebook entry or folder sends the chat's whole `localLore`, so while a send of
-// this tab (`sendingChatRef`) or a job this tab follows (`followedJobs`) runs in that chat it is
+// this tab (a `localSends` entry) or a job this tab follows (`followedJobs`) runs in that chat it is
 // refused with the `chatGenerating` notice and nothing is written, as the lore draft's fence does
 // (`localLoreDraft.fence.test.ts`).
 describe("adding chat lorebook entries during a job in the chat", () => {
@@ -302,12 +297,13 @@ describe("adding chat lorebook entries during a job in the chat", () => {
         const booted = await boot();
         const { followedJobs } = await import("./serverCommands");
         const { chatStatusKey } = await import("./chatStatus.svelte");
-        const { sendingChatRef } = await import("./index.svelte");
+        // The registry of this graph (the fence reads it): imported after the reset, with the wrapper.
+        const { beginLocalSend } = await import("./localSends");
         const { language } = await import("src/lang");
         const follow = (target: { chaId: string; chatId: string } | null) =>
             followedJobs.set(target ? new Map([["job-1", chatStatusKey(target)]]) : new Map());
         const stored = () => booted.chat.findChat(booted.ref)?.localLore.map((entry) => entry.comment);
-        return { ...booted, follow, sendingChatRef, language, stored };
+        return { ...booted, follow, beginLocalSend, language, stored };
     }
 
     it("refuses an entry and a folder while a job this tab follows runs in the chat, and adds again once it ends", async () => {
@@ -338,19 +334,24 @@ describe("adding chat lorebook entries during a job in the chat", () => {
     });
 
     it("is fenced by this tab's own send of the chat only", async () => {
-        const { lorebook, sendingChatRef, language, stored, ref, chaId } = await fenced();
-        sendingChatRef.set({ chaId, chatId: "other" });
+        const { lorebook, beginLocalSend, language, stored, ref, chaId } = await fenced();
+        const releaseOther = beginLocalSend({ chaId, chatId: "other" })!;
         lorebook.addLorebook(1);
         expect(stored()).toEqual(["New Lore 1"]);
         expect(alerts.error).not.toHaveBeenCalled();
 
-        sendingChatRef.set(ref);
+        const releaseOwn = beginLocalSend(ref)!;
         lorebook.addLorebook(1);
         lorebook.addLorebookFolder(1);
         expect(alerts.error).toHaveBeenCalledTimes(2);
         expect(alerts.error).toHaveBeenCalledWith(language.chatGenerating);
         expect(stored()).toEqual(["New Lore 1"]);
-        sendingChatRef.set(null);
+
+        releaseOwn();
+        lorebook.addLorebook(1);
+        expect(stored()).toEqual(["New Lore 1", "New Lore 2"]);
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        releaseOther();
     });
 });
 

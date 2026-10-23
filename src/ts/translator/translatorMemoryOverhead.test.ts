@@ -10,10 +10,6 @@ vi.mock("localforage", () => ({
 }));
 vi.mock("src/ts/process/request/request", () => ({ requestChatData: vi.fn() }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { doingChat: writable(false) };
-});
 vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     applyMarkdownToNode: vi.fn(),

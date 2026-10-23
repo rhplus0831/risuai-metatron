@@ -1004,7 +1004,6 @@ try {
             chatStore.appendMessage(ref, clone(igp.userMessage));
             window.__risuReseed();
             const ok = await proc.sendChat(-1);
-            proc.doingChat.set(false);
             const chat = chatStore.findChat(ref);
             return {
                 sendResult: ok,
@@ -1031,7 +1030,6 @@ try {
             selectCharacter(fixture.chaId, fixture.chatId);
             window.__risuReseed();
             const ok = await proc.sendChat(-1, { preview: true });
-            proc.doingChat.set(false);
             if (!ok) throw new Error("preview failed for " + fixture.name);
             const formated = clone(proc.previewFormated);
             const out = { formated };
@@ -1045,7 +1043,6 @@ try {
             if (fixture.previewPrompt) {
                 window.__risuReseed();
                 const ok2 = await proc.sendChat(-1, { previewPrompt: true });
-                proc.doingChat.set(false);
                 if (!ok2) throw new Error("previewPrompt failed for " + fixture.name);
                 out.previewBody = JSON.parse(proc.previewBody);
             }

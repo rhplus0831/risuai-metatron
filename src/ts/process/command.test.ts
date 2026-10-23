@@ -29,7 +29,7 @@ vi.mock("../parser/parser.svelte", () => ({
     ),
 }));
 // Keep sendChat's real busy guard and cleanup: a caller cannot make sequential sends work by
-// clearing the flag itself. Only the server work is stubbed.
+// releasing the registry entry itself. Only the server work is stubbed.
 vi.mock("./index.svelte", async (importOriginal) => {
     const actual = await importOriginal<typeof import("./index.svelte")>();
     return {
@@ -59,7 +59,8 @@ vi.mock("./serverCommands", () => ({
 }));
 
 import { processMultiCommand } from "./command";
-import { doingChat, sendChat } from "./index.svelte";
+import { sendChat } from "./index.svelte";
+import { beginLocalSend, localSends } from "./localSends";
 import * as chat from "../storage/chatStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
@@ -148,7 +149,6 @@ beforeEach(() => {
     hooks.sendResult.length = 0;
     hooks.input = null;
     hooks.serverRuns.length = 0;
-    doingChat.set(false);
     vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
@@ -323,33 +323,43 @@ describe("/trigger on the server", () => {
 describe("/multisend", () => {
     it("refuses to start while a send is running", async () => {
         const ref = freshChat();
-        doingChat.set(true);
-        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-        expect(sendChat).not.toHaveBeenCalled();
-        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
-        expect(get(doingChat)).toBe(true);
+        const release = beginLocalSend({ chaId: "c", chatId: "first" })!;
+        try {
+            expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
+            expect(sendChat).not.toHaveBeenCalled();
+            expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+            // The refusal releases nothing.
+            expect([...get(localSends).keys()]).toEqual(["c\u0000first"]);
+        } finally {
+            release();
+        }
     });
 
-    it("sends every segment to the line's chat with sendChat owning the busy flag, and stops at a failed send", async () => {
+    it("sends every segment to the line's chat with sendChat owning its registry entry, and stops at a failed send", async () => {
         const ref = freshChat();
-        const flagWrites = vi.spyOn(doingChat, "set");
-        // Quoted: `|` outside quotes separates commands (the quotes stay part of the segments).
-        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-        expect(hooks.sends).toEqual([
-            { index: -1, arg: { target: ref } },
-            { index: -1, arg: { target: ref } },
-        ]);
-        expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
-        expect(get(doingChat)).toBe(false);
-        expect(flagWrites.mock.calls).toEqual([[true], [false], [true], [false]]);
+        const entry = `${ref.chaId}\u0000${ref.chatId}`;
+        const held: string[][] = [];
+        const unsubscribe = localSends.subscribe((sends) => held.push([...sends.keys()]));
+        try {
+            // Quoted: `|` outside quotes separates commands (the quotes stay part of the segments).
+            expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
+            expect(hooks.sends).toEqual([
+                { index: -1, arg: { target: ref } },
+                { index: -1, arg: { target: ref } },
+            ]);
+            expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
+            // Each send held the chat's entry alone and released it before the next.
+            expect(held).toEqual([[], [entry], [], [entry], []]);
 
-        hooks.sends.length = 0;
-        flagWrites.mockClear();
-        hooks.sendResult.push(true, false);
-        expect(await processMultiCommand('/multisend "three|||four|||five"')).toBe("");
-        expect(hooks.sends).toHaveLength(2);
-        expect(texts(ref).slice(6)).toEqual(['"three', "four"]);
-        expect(get(doingChat)).toBe(false);
-        expect(flagWrites.mock.calls).toEqual([[true], [false], [true], [false]]);
+            hooks.sends.length = 0;
+            held.length = 0;
+            hooks.sendResult.push(true, false);
+            expect(await processMultiCommand('/multisend "three|||four|||five"')).toBe("");
+            expect(hooks.sends).toHaveLength(2);
+            expect(texts(ref).slice(6)).toEqual(['"three', "four"]);
+            expect(held).toEqual([[entry], [], [entry], []]);
+        } finally {
+            unsubscribe();
+        }
     });
 });

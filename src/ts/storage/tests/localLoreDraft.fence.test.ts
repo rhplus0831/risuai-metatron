@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The lore draft's generation fence (`docs/structure/persistence.md` `localLoreDraft.svelte.ts`):
 // over the real chat module, a change of the selected chat's local lorebook draft is saved through
-// `setChatMeta`, but while a send of this tab (`sendingChatRef`) or a job this tab follows
+// `setChatMeta`, but while a send of this tab (a `localSends` entry) or a job this tab follows
 // (`followedJobs`) runs in the chat it is refused with the `chatGenerating` notice and undone in the
 // copy, and nothing is written when the fence drops.
 
@@ -24,15 +24,10 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-// The send pipeline is not under test: only its busy target store.
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { sendingChatRef: writable(null) };
-});
 
 import { language } from "src/lang";
 import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
-import { sendingChatRef } from "src/ts/process/index.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { findChat, selectChat, setChatWorkListener, type ChatRef } from "../chatStore.svelte";
 import { selectCharacter } from "../selection.svelte";
@@ -54,6 +49,15 @@ const chatWork = vi.fn();
 const stored = () => findChat(ref)?.localLore.map((lore) => lore.content);
 const follow = (target: ChatRef | null) =>
     followedJobs.set(target ? new Map([["job-1", chatStatusKey(target)]]) : new Map());
+/** The sends begun on the registry, released at the test's end at the latest. */
+const releases: (() => void)[] = [];
+const send = (target: ChatRef) => {
+    const release = beginLocalSend(target)!;
+    expect(release).not.toBeNull();
+    releases.push(release);
+    flushSync();
+    return release;
+};
 
 beforeEach(() => {
     mocks.alertError.mockClear();
@@ -73,14 +77,15 @@ beforeEach(() => {
     selectChat("c", "k");
     setChatWorkListener(chatWork);
     follow(null);
-    sendingChatRef.set(null);
     flushSync();
 });
 
 afterEach(() => {
     setChatWorkListener(null);
     follow(null);
-    sendingChatRef.set(null);
+    for (const release of releases.splice(0)) {
+        release();
+    }
 });
 
 describe("localLoreDraft's write fence", () => {
@@ -127,18 +132,25 @@ describe("localLoreDraft's write fence", () => {
     it("is fenced by this tab's own send of the chat only", () => {
         const draft = useLocalLoreDraft();
         flushSync();
-        sendingChatRef.set({ chaId: "c", chatId: "other" });
-        flushSync();
+        send({ chaId: "c", chatId: "other" });
         draft.value[0].content = "other chat sending";
         flushSync();
         expect(stored()).toEqual(["other chat sending"]);
 
-        sendingChatRef.set(ref);
-        flushSync();
+        const release = send(ref);
         draft.value[0].content = "this chat sending";
         flushSync();
         expect(mocks.alertError).toHaveBeenCalledWith(language.chatGenerating);
         expect(draft.value[0].content).toBe("other chat sending");
         expect(stored()).toEqual(["other chat sending"]);
+
+        // The send's end opens the fence again, with nothing replayed.
+        release();
+        flushSync();
+        expect(stored()).toEqual(["other chat sending"]);
+        draft.value[0].content = "after the send";
+        flushSync();
+        expect(stored()).toEqual(["after the send"]);
+        expect(mocks.alertError).toHaveBeenCalledTimes(1);
     });
 });

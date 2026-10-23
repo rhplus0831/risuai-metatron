@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The modal's half of the generation fence (`docs/structure/memory.md`, UI and Invariants): over the real
-// chat module, the HypaV3 modal writes nothing while a send of this tab (`sendingChatRef`) or a job this
+// chat module, the HypaV3 modal writes nothing while a send of this tab (a `localSends` entry) or a job this
 // tab follows (`followedJobs` → `generatingChatKeys`) runs in the chat. A change made meanwhile is undone
 // in the copy with the `chatGenerating` notice and is not replayed when the fence drops; the empty default
 // of a chat without memory data is never written by the saving effect (the immediate initialization write
@@ -51,11 +51,6 @@ vi.mock("src/ts/process/memory/hypav3", () => ({
     summarize: vi.fn(),
     getCurrentHypaV3Preset: vi.fn(() => ({ settings: { processRegexScript: false } })),
 }));
-// The send pipeline is not under test: only its busy target store.
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { sendingChatRef: writable(null) };
-});
 vi.mock("src/ts/stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { hypaV3ModalOpen: writable(true), settingsOpen: writable(false), SettingsMenuIndex: writable(-1) };
@@ -66,7 +61,7 @@ import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { summarize } from "src/ts/process/memory/hypav3";
 import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
-import { sendingChatRef } from "src/ts/process/index.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
 import {
@@ -97,6 +92,15 @@ const hypaV2Data = {
 };
 const mounted: ReturnType<typeof mount>[] = [];
 const chatWork = vi.fn();
+/** The sends begun on the registry, released at the test's end at the latest. */
+const releases: (() => void)[] = [];
+const send = (ref: ChatRef) => {
+    const release = beginLocalSend(ref)!;
+    expect(release).not.toBeNull();
+    releases.push(release);
+    flushSync();
+    return release;
+};
 
 function install() {
     installFlatDatabaseWithChats({
@@ -163,12 +167,14 @@ beforeEach(() => {
     install();
     setChatWorkListener(chatWork);
     follow(null);
-    sendingChatRef.set(null);
 });
 
 afterEach(async () => {
     setChatWorkListener(null);
     await Promise.all(mounted.splice(0).map((instance) => unmount(instance)));
+    for (const release of releases.splice(0)) {
+        release();
+    }
     document.body.replaceChildren();
 });
 
@@ -207,18 +213,24 @@ describe("HypaV3Modal's write fence", () => {
 
     it("is fenced by this tab's own send of the chat and not by a send of another chat", () => {
         const modal = open(withData);
-        sendingChatRef.set(withoutData);
-        flushSync();
+        send(withoutData);
         modal.type("one, edited");
         expect(storedSummaries(withData)).toEqual(["one, edited", "two"]);
         expect(mocks.alertError).not.toHaveBeenCalled();
 
-        sendingChatRef.set(withData);
-        flushSync();
+        const release = send(withData);
         modal.type("one, again");
         expect(mocks.alertError).toHaveBeenCalledWith(language.chatGenerating);
         expect(modal.textarea().value).toBe("one, edited");
         expect(storedSummaries(withData)).toEqual(["one, edited", "two"]);
+
+        // The send's end replays nothing and opens the fence; the other chat's send still does not fence.
+        release();
+        flushSync();
+        expect(storedSummaries(withData)).toEqual(["one, edited", "two"]);
+        modal.type("one, after");
+        expect(storedSummaries(withData)).toEqual(["one, after", "two"]);
+        expect(mocks.alertError).toHaveBeenCalledTimes(1);
     });
 
     it("keeps the copy in step with a change of the chat (a job's write) made while fenced", () => {

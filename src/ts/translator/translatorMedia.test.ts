@@ -25,10 +25,6 @@ vi.mock("src/ts/alert", async () =>
         alertError: deps.alert,
     }),
 );
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { writable } = await import("svelte/store");
-    return { doingChat: writable(false) };
-});
 vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: (text: string) => text,
     applyMarkdownToNode: deps.markdown,

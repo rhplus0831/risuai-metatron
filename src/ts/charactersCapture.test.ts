@@ -115,17 +115,19 @@ afterEach(() => {
 describe("selection by id", () => {
     it("changeChar selects another character while a send is running", async () => {
         const { characters, characterStore, selection } = await boot();
-        const { doingChat } = await import("./process/index.svelte");
+        const { anyLocalSend, beginLocalSend, isLocalSend } = await import("./process/localSends");
         characterStore.selectCharacter("c");
-        doingChat.set(true);
+        const sending = { chaId: "c", chatId: "running" };
+        const release = beginLocalSend(sending)!;
 
         try {
             await characters.changeChar("d");
 
             expect(selection.characterId).toBe("d");
-            expect(get(doingChat)).toBe(true);
+            expect(isLocalSend(sending)).toBe(true);
+            expect(get(anyLocalSend)).toBe(true);
         } finally {
-            doingChat.set(false);
+            release();
         }
     });
 

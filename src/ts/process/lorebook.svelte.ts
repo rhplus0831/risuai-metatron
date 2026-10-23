@@ -1,5 +1,4 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
-import { get } from "svelte/store";
 import { selectedLoreBookPage, settings } from "../storage/settingsViews.svelte";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
@@ -27,7 +26,7 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 import { upgradeLorebook } from "../../../shared/modules.ts";
 import { chatStatusKey, generatingChatKeys } from "./chatStatus.svelte";
-import { sendingChatRef } from "./index.svelte";
+import { isLocalSend } from "./localSends";
 
 /**
  * Whether a send of this tab or a job this tab knows of runs in `ref`'s chat: the fence of
@@ -35,11 +34,7 @@ import { sendingChatRef } from "./index.svelte";
  * written while the job runs would drop the entries its Lua `upsertLocalLoreBook` writes.
  */
 function localLoreWriteFenced(ref: ChatRef): boolean {
-    const sending = get(sendingChatRef);
-    return (
-        (sending !== null && sending.chaId === ref.chaId && sending.chatId === ref.chatId) ||
-        generatingChatKeys().has(chatStatusKey(ref))
-    );
+    return isLocalSend(ref) || generatingChatKeys().has(chatStatusKey(ref));
 }
 
 /** Appends entries to the selected chat's local lore (through the chat module); refused during a job there. */
