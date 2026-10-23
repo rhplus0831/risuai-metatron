@@ -1,5 +1,5 @@
 import type { Chat, character, groupChat } from "../database.ts";
-import type { LLMModel } from "../llm.ts";
+import { LLMFlags, LLMFormat, type LLMModel } from "../llm.ts";
 import { greetingText } from "../greetings.ts";
 import { replaceAllBound } from "./limits.ts";
 import type { CBSRegisterArg, matcherArg } from "./types.ts";
@@ -1464,6 +1464,10 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "prefillsupported",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
+            const modelInfo = getModelInfo(db.aiModel);
+            if (modelInfo.format === LLMFormat.Anthropic || modelInfo.format === LLMFormat.AnthropicLegacy) {
+                return modelInfo.flags?.includes(LLMFlags.hasPrefill) ? "1" : "0";
+            }
             return db.aiModel.startsWith("claude") ? "1" : "0";
         },
         alias: ["prefill_supported", "prefill"],
