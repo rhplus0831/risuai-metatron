@@ -23,9 +23,10 @@ vi.mock("./gui/colorscheme", () => ({}));
 vi.mock("src/lang", () => ({}));
 vi.mock("./gui/guisize", () => ({}));
 vi.mock("./process/modules", () => ({}));
-vi.mock("./storage/serverAuth", () => ({}));
+vi.mock("./storage/serverAuth", async () => (await import("./storage/tests/serverAuthMock")).createServerAuthMock());
 
 import { readAsset } from "./storage/assetClient";
+import { getNodeServerProxyAuth } from "./storage/serverAuth";
 import {
     addFetchLog,
     appendFetchLog,
@@ -34,7 +35,10 @@ import {
     globalFetch,
     getFileSrc,
     holdFileSrc,
+    setDirectAssets,
     setUsingSw,
+    fetchFileSrc,
+    withFileSrcFetch,
 } from "./globalApi.svelte";
 
 const BUDGET = 16 * 1024 * 1024; // Goal A, UTF-16 code units (not UTF-8 bytes).
@@ -91,11 +95,140 @@ function deferred<T>() {
 beforeEach(() => {
     logs.length = 0;
     setUsingSw(false);
+    setDirectAssets(false);
     vi.mocked(readAsset)
         .mockReset()
         .mockResolvedValue(Buffer.from([1, 2, 3]));
     fetchMock.mockReset().mockRejectedValue(new Error("unexpected network"));
     vi.stubGlobal("fetch", fetchMock);
+});
+
+describe("direct file sources", () => {
+    const worker = { controller: {} as object | null };
+    let create: ReturnType<typeof vi.spyOn>;
+    let revoke: ReturnType<typeof vi.spyOn>;
+    let open: ReturnType<typeof vi.fn>;
+    let match: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        worker.controller = {};
+        vi.stubGlobal("navigator", { serviceWorker: worker });
+        match = vi.fn().mockResolvedValue(undefined);
+        open = vi.fn().mockResolvedValue({ match });
+        vi.stubGlobal("caches", { open, match });
+        create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:direct-fallback");
+        revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+        setUsingSw(true);
+        setDirectAssets(true);
+    });
+
+    it("resolves reads and holds immediately to the UTF-8 direct URL without I/O, allocation, or a retained pin", async () => {
+        const loc = "assets/한글 image.png";
+        const expected = `/api/asset/${Buffer.from(loc, "utf8").toString("hex")}`;
+        const read = vi.fn();
+        const held = vi.fn();
+        void getFileSrc(loc).then(read);
+        const hold = holdFileSrc(loc);
+        void hold.src.then(held);
+        hold.release();
+        // An already resolved promise needs only the next microtask, never a clock advance or I/O.
+        await Promise.resolve();
+        expect(read).toHaveBeenCalledExactlyOnceWith(expected);
+        expect(held).toHaveBeenCalledExactlyOnceWith(expected);
+        hold.release();
+        await vi.runAllTimersAsync();
+        expect(readAsset).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
+        expect(match).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+
+        // A later fallback hold of this same key must remain releasable: the direct read pinned nothing.
+        setUsingSw(false);
+        const fallback = holdFileSrc(loc);
+        expect(await fallback.src).toBe("blob:direct-fallback");
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+        fallback.release();
+        await vi.advanceTimersByTimeAsync(GRACE);
+        expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:direct-fallback");
+    });
+
+    it.each(["capability is missing", "controller is lost"])(
+        "reads stored bytes through the fallback when the %s at the call",
+        async (missing) => {
+            if (missing === "capability is missing") setDirectAssets(false);
+            else worker.controller = null;
+            // Cache Storage unavailable and worker requests rejected select the existing blob fallback.
+            vi.stubGlobal("caches", undefined);
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            const plainKey = path();
+            const heldKey = path();
+            expect(await getFileSrc(plainKey)).toBe("blob:direct-fallback");
+            const hold = holdFileSrc(heldKey);
+            expect(await hold.src).toBe("blob:direct-fallback");
+            expect(vi.mocked(readAsset).mock.calls).toEqual([[plainKey], [heldKey]]);
+            hold.release();
+            await vi.advanceTimersByTimeAsync(GRACE);
+        },
+    );
+});
+
+describe("file source fetch authentication", () => {
+    const origin = "https://app.test";
+    const direct = `/api/asset/${Buffer.from("assets/copy.png", "utf8").toString("hex")}`;
+
+    beforeEach(() => {
+        vi.stubGlobal("location", { href: `${origin}/`, origin });
+        fetchMock.mockResolvedValue(new Response("image bytes"));
+        vi.mocked(getNodeServerProxyAuth)
+            .mockReset()
+            .mockResolvedValueOnce("fresh-get")
+            .mockResolvedValueOnce("fresh-head");
+    });
+
+    it.each(["fetchFileSrc", "withFileSrcFetch"] as const)(
+        "%s signs only same-origin assets GET/HEAD requests with fresh auth",
+        async (helper) => {
+            const exercise = async () => {
+                const send = helper === "fetchFileSrc" ? fetchFileSrc : fetch;
+                await send(direct);
+                await send(new Request(`${origin}${direct}`, { method: "HEAD" }));
+                await send(`https://other.test${direct}`);
+                await send("/api/read");
+                await send(`/api/asset/${Buffer.from("database/settings.json", "utf8").toString("hex")}`);
+                await send(direct, { method: "POST" });
+                const headers = fetchMock.mock.calls.map(([input, init]) =>
+                    new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get(
+                        "risu-auth",
+                    ),
+                );
+                expect(headers).toEqual(["fresh-get", "fresh-head", null, null, null, null]);
+                expect(fetchMock).toHaveBeenCalledTimes(6);
+                expect(getNodeServerProxyAuth).toHaveBeenCalledTimes(2);
+            };
+            if (helper === "withFileSrcFetch") await withFileSrcFetch(exercise);
+            else await exercise();
+        },
+    );
+
+    it.each(["resolves", "throws"])("stops signing global fetch after the callback %s", async (outcome) => {
+        const error = new Error("capture failed");
+        const capture = withFileSrcFetch(async () => {
+            await fetch(direct);
+            if (outcome === "throws") throw error;
+            return "captured";
+        });
+        if (outcome === "throws") await expect(capture).rejects.toBe(error);
+        else expect(await capture).toBe("captured");
+        await fetch(direct);
+        expect(fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("risu-auth"))).toEqual([
+            "fresh-get",
+            null,
+        ]);
+        expect(getNodeServerProxyAuth).toHaveBeenCalledTimes(1);
+    });
 });
 afterEach(() => {
     vi.useRealTimers();

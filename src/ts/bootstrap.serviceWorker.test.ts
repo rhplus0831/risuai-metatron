@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => ({
     startSync: vi.fn(),
     readAsset: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
 }));
-vi.mock("./storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => mocks.server!.fetch(path, init),
-    getNodeServerProxyAuth: async () => "test-token",
-}));
+vi.mock("./storage/serverAuth", async () =>
+    (await import("./storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path: string, init?: RequestInit) => mocks.server!.fetch(path, init),
+        getNodeServerProxyAuth: async () => "test-token",
+    }),
+);
 vi.mock("./storage/assetClient", () => ({ readAsset: mocks.readAsset, writeAsset: vi.fn() }));
 vi.mock("./storage/resourceSync.svelte", () => ({
     seedResources: vi.fn(),
@@ -166,6 +168,30 @@ describe("loadData on a store's first boot", () => {
     it("keeps the default language for a browser language the UI lacks", async () => {
         const { settings } = await firstBoot("fr-FR");
         expect(settings.ui).toMatchObject({ didFirstSetup: true, language: "en" });
+    });
+});
+
+describe("loadData with a controlling service worker", () => {
+    it.each([
+        { body: '{"directAssets":true}', direct: true, behavior: "enables direct URLs from the JSON capability" },
+        { body: "v2", direct: false, behavior: "leaves direct URLs off for the older worker's text response" },
+    ])("$behavior", async ({ body, direct }) => {
+        const current = await app();
+        Object.defineProperty(navigator, "serviceWorker", {
+            configurable: true,
+            value: { register: current.register, controller: {} },
+        });
+        current.globalApi.setUsingSw(false);
+        // Text must clear a previous capability; JSON must enable it from the disabled state.
+        current.globalApi.setDirectAssets(!direct);
+        current.fetch.mockResolvedValueOnce(new Response(body));
+        await current.loadData();
+        expect(get(current.stores.loadedStore)).toBe(true);
+        expect(await current.globalApi.getFileSrc(asset)).toBe(direct ? `/api/asset/${hex}` : `/sw/img/${hex}`);
+        expect(current.fetch.mock.calls.map(([url]) => url)).toEqual(
+            direct ? ["/sw/init"] : ["/sw/init", `/sw/check/${hex}`],
+        );
+        expect(mocks.readAsset).not.toHaveBeenCalled();
     });
 });
 

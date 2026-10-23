@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
-import { openApp } from "../util/playwright/stack.mjs";
+import { createHash } from "node:crypto";
+import { expect, test, type Page, type Request } from "@playwright/test";
+import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // `getFileSrc` (the uncontrolled-page fix, `global-api.md`) in the real app against the isolated
 // stack of `playwright.config.ts`, with the app's own service worker. Before the fix, on a page's
@@ -10,11 +11,14 @@ import { openApp } from "../util/playwright/stack.mjs";
 // the worker). What only the browser shows:
 // - on a page without a worker: an object URL (`blob:`) that displays, one storage read and one URL
 //   for concurrent and later reads, a missing file answers "" and is read again once it exists;
-// - on a page the worker controls: `/sw/img/<hex>`, looked up in the worker's Cache Storage from the
-//   page (no `/sw/check` request since 2fe139df4; that request is only the fallback when the lookup
-//   fails) and registered once for concurrent reads; a missing file is never registered; a refused
-//   registration, a registration that never answers (bounded at 10 s), and no worker at all fall
-//   back to an object URL that displays.
+// - on a page the worker controls, with its direct-asset capability: `/api/asset/<hex>`, signed by the
+//   worker and kept in the browser's HTTP cache, so a reload loads a content-named image with no
+//   server request;
+// - on a page the worker controls, with the direct-asset capability off: `/sw/img/<hex>`, looked up in
+//   the worker's Cache Storage from the page (no `/sw/check` request since 2fe139df4; that request is
+//   only the fallback when the lookup fails) and registered once for concurrent reads; a missing file
+//   is never registered; a refused registration, a registration that never answers (bounded at
+//   10 s), and no worker at all fall back to an object URL that displays.
 // The worker's own requests are faulted through the page's `fetch`, which `getFileSrc` and the
 // storage reads call.
 
@@ -109,6 +113,81 @@ const hex = (path: string) => Buffer.from(path, "utf-8").toString("hex");
 let unique = 0;
 const id = (name: string) => `filesrc-${name}-${Date.now().toString(36)}-${unique++}`;
 
+test("a controlled page displays a content-named direct asset and reloads it from the HTTP cache without a server request", async ({
+    page,
+    context,
+    baseURL,
+    browserName,
+}) => {
+    test.skip(browserName !== "chromium", "This cache check uses Chromium's service-worker network events.");
+    await clearSafeBootAttempts(page);
+    await openApp(page, baseURL!);
+    await page.reload();
+    await openApp(page, baseURL!);
+    await expect.poll(() => controlled(page)).toBe(true);
+
+    const path = await page.evaluate(async (png) => {
+        const { saveAsset } = await import("/src/ts/globalApi.svelte.ts");
+        return await saveAsset(Uint8Array.from(atob(png), (c) => c.charCodeAt(0)));
+    }, PNG_1X1);
+    expect(path).toBe(`assets/${createHash("sha256").update(Buffer.from(PNG_1X1, "base64")).digest("hex")}.png`);
+    const expectedSrc = `/api/asset/${hex(path)}`;
+    const url = new URL(expectedSrc, baseURL).href;
+    const requests: Request[] = [];
+    // Context events include the worker's signed fetch. Page fetch instrumentation cannot see it.
+    context.on("request", (request) => {
+        if (request.url() === url) requests.push(request);
+    });
+    const serverRequests = async () => {
+        const reachedServer = await Promise.all(
+            requests.map(async (request) => {
+                const response = await request.response();
+                expect(response).not.toBeNull();
+                await response!.finished();
+                if (response!.fromServiceWorker()) return false;
+                // Chromium can retain send timings on disk-cache hits. Transferred bytes are zero
+                // for those hits; a server response (even a 304) transfers at least its headers.
+                const sizes = await request.sizes();
+                return sizes.responseHeadersSize + sizes.responseBodySize > 0;
+            }),
+        );
+        return reachedServer.filter(Boolean).length;
+    };
+    const display = async () => {
+        const src = await page.evaluate(async (key) => {
+            const { getFileSrc } = await import("/src/ts/globalApi.svelte.ts");
+            return await getFileSrc(key);
+        }, path);
+        expect(src).toBe(expectedSrc);
+        const finished = context.waitForEvent("requestfinished", {
+            predicate: (request) => request.url() === url && request.serviceWorker() === null,
+        });
+        const width = await page.evaluate(async (src) => {
+            const image = document.createElement("img");
+            image.src = src;
+            document.body.append(image);
+            await image.decode();
+            return image.naturalWidth;
+        }, src);
+        expect(width).toBe(1);
+        return await finished;
+    };
+
+    const first = await display();
+    expect((await first.response())!.fromServiceWorker()).toBe(true);
+    expect(requests.some((request) => request.serviceWorker() !== null)).toBe(true);
+    // A cold first load proves that the observer sees real server requests, including the worker's.
+    expect(await serverRequests()).toBe(1);
+    expect((await first.response())!.headers()["cache-control"]).toContain("immutable");
+
+    requests.length = 0;
+    await page.reload();
+    await openApp(page, baseURL!);
+    expect(await controlled(page)).toBe(true);
+    await display();
+    expect(await serverRequests()).toBe(0);
+});
+
 test("on a page without a worker: an object URL that displays, one read for concurrent and later reads, and a missing file read again", async ({
     page,
     baseURL,
@@ -146,7 +225,7 @@ test("on a page without a worker: an object URL that displays, one read for conc
     expect(errors).toEqual([]);
 });
 
-test("on a page the worker controls: its URL, registered once; a missing file never registered; every worker failure and no worker fall back to an object URL", async ({
+test("on a page the worker controls with direct assets off: its URL, registered once; a missing file never registered; every worker failure and no worker fall back to an object URL", async ({
     page,
     baseURL,
 }) => {
@@ -158,6 +237,9 @@ test("on a page the worker controls: its URL, registered once; a missing file ne
     await openApp(page, baseURL!);
     await expect.poll(() => controlled(page), { timeout: 20_000 }).toBe(true);
     await instrument(page);
+    // The worker reports the direct-asset capability; without it a controlled page uses the worker's
+    // Cache Storage path below.
+    await page.evaluate(async () => (await import("/src/ts/globalApi.svelte.ts")).setDirectAssets(false));
 
     // Concurrent reads: a page-side cache miss (no worker check), one registration, one storage read,
     // one URL that displays.

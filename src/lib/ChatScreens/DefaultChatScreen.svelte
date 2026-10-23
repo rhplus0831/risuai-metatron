@@ -79,7 +79,13 @@
     import ClosedChatScreen from "./ClosedChatScreen.svelte";
     import { selection } from "src/ts/storage/selection.svelte";
     import AssetInput from "./AssetInput.svelte";
-    import { aiLawApplies, chatFoldedState, chatFoldedStateMessageIndex, downloadFile } from "src/ts/globalApi.svelte";
+    import {
+        aiLawApplies,
+        chatFoldedState,
+        chatFoldedStateMessageIndex,
+        downloadFile,
+        withFileSrcFetch,
+    } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
@@ -793,11 +799,13 @@
             alertWait("Taking screenShot...");
             let canvases: HTMLCanvasElement[] = [];
 
-            for (const chat of chats) {
-                const cnv = await html2canvas.toCanvas(chat as HTMLElement);
-                alertWait("Taking screenShot... " + canvases.length + "/" + chats.length);
-                canvases.push(cnv);
-            }
+            await withFileSrcFetch(async () => {
+                for (const chat of chats) {
+                    const cnv = await html2canvas.toCanvas(chat as HTMLElement);
+                    alertWait("Taking screenShot... " + canvases.length + "/" + chats.length);
+                    canvases.push(cnv);
+                }
+            });
 
             canvases.reverse();
 

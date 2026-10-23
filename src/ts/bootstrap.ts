@@ -16,7 +16,7 @@ import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
-import { setUsingSw } from "./globalApi.svelte";
+import { setDirectAssets, setUsingSw } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readBoot, readKinds } from "./storage/resourceClient";
 import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
@@ -81,12 +81,14 @@ export async function loadData() {
             if (navigator.serviceWorker) {
                 const status = await registerSw();
                 setUsingSw(status === "ready");
+                if (status !== "ready") invalidateDirectAssets();
                 if (status === "reloading") {
                     return;
                 }
             } else {
                 recordClientEvent({ kind: "serviceWorker", phase: "unsupported" });
                 setUsingSw(false);
+                invalidateDirectAssets();
             }
             try {
                 const isInStandaloneMode =
@@ -302,9 +304,47 @@ export function watchRemoteRecords() {
 }
 
 const SW_INIT_RELOAD_KEY = "risu.serviceWorker.initReload";
+let swCapabilityProbe = 0;
+let swControllerListenerInstalled = false;
+
+function invalidateDirectAssets(): number {
+    setDirectAssets(false);
+    return ++swCapabilityProbe;
+}
+
+async function probeSw(): Promise<Response> {
+    const probe = invalidateDirectAssets();
+    const controller = navigator.serviceWorker?.controller;
+    const response = await fetch("/sw/init");
+    let directAssets = false;
+    if (response.ok) {
+        try {
+            directAssets = (await response.json())?.directAssets === true;
+        } catch {}
+    }
+    // A replacement controller's probe wins even if the previous response finishes later.
+    if (probe === swCapabilityProbe && controller === navigator.serviceWorker?.controller) {
+        setDirectAssets(directAssets);
+    }
+    return response;
+}
+
+function watchSwController() {
+    const worker = navigator.serviceWorker;
+    if (swControllerListenerInstalled || typeof worker?.addEventListener !== "function") return;
+    worker.addEventListener("controllerchange", () => {
+        invalidateDirectAssets();
+        if (worker.controller) {
+            void probeSw().catch(() => {});
+        }
+    });
+    swControllerListenerInstalled = true;
+}
 
 /** Registers the worker, allowing at most one reload until initialization succeeds. */
 async function registerSw(): Promise<"ready" | "unavailable" | "reloading"> {
+    invalidateDirectAssets();
+    watchSwController();
     try {
         await navigator.serviceWorker.register("/sw.js", {
             scope: "/",
@@ -317,7 +357,7 @@ async function registerSw(): Promise<"ready" | "unavailable" | "reloading"> {
     await sleep(100);
     let da: Response;
     try {
-        da = await fetch("/sw/init");
+        da = await probeSw();
     } catch {
         recordClientEvent({ kind: "serviceWorker", phase: "initFailed" });
         return "unavailable";

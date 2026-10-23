@@ -41,6 +41,7 @@
         changeChatTo,
         foldChatToMessage,
         getFileSrc,
+        fetchFileSrc,
         createChatCopyName,
     } from "src/ts/globalApi.svelte";
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
@@ -1154,7 +1155,7 @@
                                         fetchUrl = window.location.origin + url;
                                     }
 
-                                    const data = await fetch(fetchUrl);
+                                    const data = await fetchFileSrc(fetchUrl);
                                     if (data.ok) {
                                         const canvas = document.createElement("canvas");
                                         const ctx = canvas.getContext("2d");
@@ -1204,7 +1205,7 @@
                                     iconDataUrl = iconImage;
                                     hasValidImage = true;
                                 } else {
-                                    const data = await fetch(iconImage);
+                                    const data = await fetchFileSrc(iconImage);
                                     if (data.ok) {
                                         const canvas = document.createElement("canvas");
                                         const ctx = canvas.getContext("2d");
@@ -1272,7 +1273,7 @@
                                             finalIconDataUrl = userIconSrc;
                                             finalHasValidImage = true;
                                         } else {
-                                            const data = await fetch(userIconSrc);
+                                            const data = await fetchFileSrc(userIconSrc);
                                             if (data.ok) {
                                                 const canvas = document.createElement("canvas");
                                                 const ctx = canvas.getContext("2d");

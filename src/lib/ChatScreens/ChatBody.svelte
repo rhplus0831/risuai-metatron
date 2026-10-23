@@ -333,7 +333,7 @@
             return;
         }
         const imgs = bodyRoot.querySelectorAll(
-            'img:not([src^="data:"]):not([src^="http:"]):not([src^="https:"]):not([src^="blob:"]):not([src^="file:"]):not([noimage])',
+            'img:not([src^="data:"]):not([src^="http:"]):not([src^="https:"]):not([src^="blob:"]):not([src^="file:"]):not([src^="/api/asset/"]):not([src^="/sw/img/"]):not([noimage])',
         ) as NodeListOf<HTMLImageElement>;
 
         if (imgs.length > 0) {

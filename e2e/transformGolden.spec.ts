@@ -481,8 +481,15 @@ test("a display trigger and additional assets render on the server path as the b
             transformPosts.push(request.postData() ?? "");
         }
     });
-    const serverPath = await renderExtra(page, chaId, chatId);
+    const rendered = await renderExtra(page, chaId, chatId);
     expect(transformPosts.length).toBeGreaterThan(0);
+    // The controlled page renders the worker-signed direct URLs; the recording holds the worker's
+    // `/sw/img/` URLs of the same paths.
+    expect(rendered["x-1"]).toContain(`src="/api/asset/${swUrl("assets/golden-pic-1.png").slice("/sw/img/".length)}"`);
+    const serverPath: Record<string, string> = {};
+    for (const [id, html] of Object.entries(rendered)) {
+        serverPath[id] = html.replaceAll("/api/asset/", "/sw/img/");
+    }
 
     // The recorded browser path: the trigger appended its text before the regex scripts (the `em`
     // script ran on it), on every message and the greeting, and both asset passes ran (the message's

@@ -123,22 +123,27 @@ const knownSwPaths = new Set<string>();
 let swCache: Promise<Cache> | undefined;
 
 /**
- * Gets the source URL of a file: the service worker's URL when the worker holds it (registered once
- * per path), else an object URL of its bytes (also on a page the worker does not control yet, its
- * first load). This plain read pins the source for the page; previews use `holdFileSrc` to release
- * theirs. Concurrent reads share one load. Resolves to `""` when the file cannot be read or is empty.
+ * A capable worker controlling this page allows a direct URL without reading or retaining bytes.
+ * Otherwise, reads share a worker-cache URL or object URL, pinned for the page by this plain read;
+ * previews use `holdFileSrc` to release theirs. Only the fallback detects missing or empty files.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
 export function getFileSrc(loc: string): Promise<string> {
+    if (canUseDirectAssets()) {
+        return Promise.resolve(directAssetSrc(loc));
+    }
     const source = getFileSource(loc);
     source.pinned = true;
     return source.src;
 }
 
-/** Holds a preview's source until released; a plain `getFileSrc` read keeps it pinned instead. */
+/** Direct URLs need no release; fallback previews hold a source until released or pinned by a plain read. */
 export function holdFileSrc(loc: string): { src: Promise<string>; release(): void } {
+    if (canUseDirectAssets()) {
+        return { src: Promise.resolve(directAssetSrc(loc)), release() {} };
+    }
     const source = getFileSource(loc);
     source.holders++;
     let released = false;
@@ -151,6 +156,87 @@ export function holdFileSrc(loc: string): { src: Promise<string>; release(): voi
             scheduleFileSourceRelease(loc, source);
         },
     };
+}
+
+function canUseDirectAssets(): boolean {
+    return usingSw && directAssets && !!navigator.serviceWorker?.controller;
+}
+
+function directAssetSrc(loc: string): string {
+    return loc ? "/api/asset/" + Buffer.from(loc, "utf-8").toString("hex") : "";
+}
+
+function directAssetFetchUrl(input: RequestInfo | URL): string | null {
+    try {
+        const url = new URL(input instanceof Request ? input.url : input, location.href);
+        if (url.origin !== location.origin) return null;
+        const hex = /^\/api\/asset\/((?:[\da-fA-F]{2})+)$/.exec(url.pathname)?.[1];
+        if (!hex) return null;
+        const key = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex, "hex"));
+        return key.startsWith("assets/") ? url.href : null;
+    } catch {
+        return null;
+    }
+}
+
+async function fetchFileSrcWith(
+    originalFetch: typeof fetch,
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    active: () => boolean = () => true,
+): Promise<Response> {
+    const url = active() ? directAssetFetchUrl(input) : null;
+    if (url) {
+        const request = input instanceof Request ? input : undefined;
+        const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+        const headers = new Headers(init?.headers ?? request?.headers);
+        if ((method === "GET" || method === "HEAD") && !headers.has("risu-auth")) {
+            const token = await getNodeServerProxyAuth();
+            if (active()) {
+                headers.set("risu-auth", token);
+                return originalFetch.call(globalThis, request ?? url, { ...init, headers, mode: "same-origin" });
+            }
+        }
+    }
+    return originalFetch.call(globalThis, input, init);
+}
+
+/** Fetches displayed assets with auth only for same-origin direct URLs under the assets/ namespace. */
+export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    return fetchFileSrcWith(fetch, input, init);
+}
+
+let fileSrcFetchScope:
+    { depth: number; active: boolean; originalFetch: typeof fetch; wrapper: typeof fetch } | undefined;
+
+/** Signs asset fetches made by capture libraries, including CSS and font resources outside the captured row. */
+export async function withFileSrcFetch<T>(run: () => T | Promise<T>): Promise<T> {
+    if (!fileSrcFetchScope) {
+        const originalFetch = globalThis.fetch;
+        const scope = {
+            depth: 0,
+            active: true,
+            originalFetch,
+            wrapper: ((input, init) =>
+                fetchFileSrcWith(originalFetch, input, init, () => scope.active)) as typeof fetch,
+        };
+        // Plugins can already read any assets/ key through v3 readImage; signing these during capture grants nothing new.
+        fileSrcFetchScope = scope;
+        globalThis.fetch = scope.wrapper;
+    }
+    const scope = fileSrcFetchScope;
+    scope.depth++;
+    try {
+        return await run();
+    } finally {
+        if (--scope.depth === 0) {
+            scope.active = false;
+            if (globalThis.fetch === scope.wrapper) {
+                globalThis.fetch = scope.originalFetch;
+            }
+            fileSrcFetchScope = undefined;
+        }
+    }
 }
 
 function getFileSource(loc: string): FileSource {
@@ -332,9 +418,14 @@ export async function loadAssets(
 export { saving } from "./storage/resourceSync.svelte";
 
 let usingSw = false;
+let directAssets = false;
 
 export function setUsingSw(value: boolean) {
     usingSw = value;
+}
+
+export function setDirectAssets(value: boolean) {
+    directAssets = value;
 }
 
 /**
