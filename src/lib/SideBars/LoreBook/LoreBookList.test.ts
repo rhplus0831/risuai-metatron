@@ -121,6 +121,8 @@ function open(row: HTMLElement) {
 }
 const nestedRows = (folderRow: HTMLElement) => rows(detail(folderRow)!.querySelector("div.mt-4")!);
 const removeButton = (row: HTMLElement) => [...row.querySelector(":scope > div")!.querySelectorAll("button")].at(-1)!;
+const liveSortables = (list: HTMLElement | null) =>
+    sortables.filter((sortable) => !sortable.destroyed && sortable.el === list);
 /** Focuses the control, sets its text, and dispatches `input` (what typing does; `bind:value` writes through). */
 function type(control: HTMLInputElement | HTMLTextAreaElement, text: string) {
     control.focus();
@@ -288,9 +290,20 @@ describe("LoreBookList rows keyed by entry", () => {
         expect(unhandled).toEqual([]);
     });
 
-    it("ignores a delete confirmed after the character switched", async () => {
-        install({ alpha: [entry("a0"), entry("a1")], beta: [entry("b0"), entry("b1")] });
+    it("removes nothing and deactivates no chat links when deletion is confirmed after a character switch", async () => {
+        const link = entry("", { id: "linked", mode: "child", alwaysActive: true });
+        installFlatDatabaseWithChats({
+            characters: ["alpha", "beta"].map((chaId) => ({
+                chaId,
+                type: "character",
+                name: chaId,
+                globalLore: [entry(`${chaId} kept`), entry(`${chaId} linked`, { id: "linked" })],
+                chatPage: 0,
+                chats: [{ id: `k-${chaId}`, name: "K", note: "", localLore: [{ ...link }], message: [] }],
+            })),
+        });
         selectCharacter("alpha");
+        selectChat("alpha", "k-alpha");
         render({ submenu: 0 });
         let confirm!: (answer: boolean) => void;
         mocks.alertConfirm.mockImplementationOnce(() => new Promise<boolean>((resolve) => (confirm = resolve)));
@@ -298,14 +311,158 @@ describe("LoreBookList rows keyed by entry", () => {
         removeButton(rows()[1]).click();
         await Promise.resolve();
         selectCharacter("beta");
+        selectChat("beta", "k-beta");
         flushSync();
         confirm(true);
         await settle();
 
-        expect(plain(globalLore("alpha"))).toEqual(plain([entry("a0"), entry("a1")]));
-        expect(plain(globalLore("beta"))).toEqual(plain([entry("b0"), entry("b1")]));
-        expect(labels()).toEqual(["b0", "b1"]);
+        for (const chaId of ["alpha", "beta"]) {
+            expect(globalLore(chaId)).toEqual([entry(`${chaId} kept`), entry(`${chaId} linked`, { id: "linked" })]);
+            expect(findChat({ chaId, chatId: `k-${chaId}` })!.localLore).toEqual([link]);
+        }
+        expect(labels()).toEqual(["beta kept", "beta linked"]);
         expect(unhandled).toEqual([]);
+    });
+
+    it("deactivates a deleted character entry only in the chat selected before confirmation", async () => {
+        const link = entry("", { id: "linked", mode: "child", alwaysActive: true });
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "alpha",
+                    type: "character",
+                    name: "alpha",
+                    globalLore: [entry("kept"), entry("linked", { id: "linked" })],
+                    chatPage: 0,
+                    chats: ["k1", "k2"].map((id) => ({
+                        id,
+                        name: id,
+                        note: "",
+                        localLore: [{ ...link }],
+                        message: [],
+                    })),
+                },
+            ],
+        });
+        selectCharacter("alpha");
+        selectChat("alpha", "k1");
+        render({ submenu: 0 });
+        let confirm!: (answer: boolean) => void;
+        mocks.alertConfirm.mockImplementationOnce(() => new Promise<boolean>((resolve) => (confirm = resolve)));
+
+        removeButton(rows()[1]).click();
+        expect(mocks.alertConfirm).toHaveBeenCalledTimes(1);
+        selectChat("alpha", "k2");
+        flushSync();
+        confirm(true);
+        await settle();
+
+        expect(globalLore("alpha")).toEqual([entry("kept")]);
+        expect(labels()).toEqual(["kept"]);
+        expect(findChat({ chaId: "alpha", chatId: "k1" })!.localLore).toEqual([]);
+        expect(findChat({ chaId: "alpha", chatId: "k2" })!.localLore).toEqual([link]);
+        expect(unhandled).toEqual([]);
+    });
+
+    it("keeps drag enabled after deleting a closed row and after opening and closing another detail", async () => {
+        install({ alpha: [entry("deleted"), entry("kept")] });
+        selectCharacter("alpha");
+        render({ submenu: 0 });
+        const list = rows()[0].parentElement;
+        expect(detail(rows()[0])).toBeNull();
+
+        removeButton(rows()[0]).click();
+        await settle();
+
+        expect(labels()).toEqual(["kept"]);
+        expect(liveSortables(list).map((sortable) => sortable.options.disabled)).toEqual([false]);
+        const kept = rows()[0];
+        expect(open(kept)).not.toBeNull();
+        kept.querySelector("button")!.click();
+        await settle();
+
+        expect(detail(kept)).toBeNull();
+        expect(liveSortables(list).map((sortable) => sortable.options.disabled)).toEqual([false]);
+    });
+
+    it.each(["character", "chat"] as const)(
+        "enables drag for the new list after a %s switch with an open detail",
+        async (owner) => {
+            installFlatDatabaseWithChats({
+                characters: ["alpha", "beta"].map((chaId) => ({
+                    chaId,
+                    type: "character",
+                    name: chaId,
+                    globalLore: [entry(chaId)],
+                    chatPage: 0,
+                    chats: ["first", "second"].map((name) => ({
+                        id: `${chaId}-${name}`,
+                        name,
+                        note: "",
+                        localLore: [entry(name)],
+                        message: [],
+                    })),
+                })),
+            });
+            selectCharacter("alpha");
+            selectChat("alpha", "alpha-first");
+            render({ submenu: owner === "chat" ? 1 : 0 });
+            expect(liveSortables(rows()[0].parentElement).map((sortable) => sortable.options.disabled)).toEqual([
+                false,
+            ]);
+            open(rows()[0]);
+            expect(liveSortables(rows()[0].parentElement)).toEqual([]);
+
+            if (owner === "character") selectCharacter("beta");
+            else selectChat("alpha", "alpha-second");
+            await settle();
+
+            expect(labels()).toEqual([owner === "character" ? "beta" : "second"]);
+            expect(detail(rows()[0])).toBeNull();
+            expect(liveSortables(rows()[0].parentElement).map((sortable) => sortable.options.disabled)).toEqual([
+                false,
+            ]);
+        },
+    );
+
+    it("mounts a folder's one-way external list and toggles its sub-folder's members without ownership warnings", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            install({
+                alpha: [
+                    folder("Outer", "outer"),
+                    { ...folder("Inner", "inner"), folder: "outer" },
+                    entry("first", { folder: "inner" }),
+                    entry("second", { folder: "inner" }),
+                ],
+            });
+            selectCharacter("alpha");
+            render({ submenu: 0 });
+            const outer = rows()[0];
+            open(outer);
+            const inner = nestedRows(outer)[0];
+            expect(labels(detail(outer)!)).toEqual(["Inner"]);
+
+            // The second header button is the sun/link toggle; the nested list receives its
+            // external array one-way, just like ModuleMenu's list.
+            inner.querySelectorAll<HTMLButtonElement>(":scope > div > button")[1].click();
+            await settle();
+
+            expect(globalLore("alpha").map((book) => [book.comment, book.alwaysActive])).toEqual([
+                ["Outer", false],
+                ["Inner", true],
+                ["first", true],
+                ["second", true],
+            ]);
+            expect(
+                warn.mock.calls
+                    .flat()
+                    .map(String)
+                    .filter((message) => message.includes("ownership_invalid")),
+            ).toEqual([]);
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it("saves a local-lore edit to its chat and leaves the next chat's entries alone across a chat switch", async () => {
@@ -465,6 +622,31 @@ describe("LoreBookList filter", () => {
         search("fold");
         expect(visibleLabels()).toEqual(["Folder", "Beta", "Gamma"]);
         expect(nestedRows(folderRow()).map(shown)).toEqual([true, true]);
+    });
+
+    it("shows the no-match message at the root while keeping unmatched rows mounted and hidden", () => {
+        renderExternal();
+        open(folderRow());
+        const mountedRows = rows();
+        const message = "No lorebook entries match the search.";
+        expect(target.textContent).not.toContain(message);
+
+        search("no such lorebook");
+
+        const notices = [...target.querySelectorAll("span")].filter((span) => span.textContent === message);
+        expect(notices).toHaveLength(1);
+        expect(notices[0].parentElement).toBe(mountedRows[0].parentElement);
+        expect(visibleLabels()).toEqual([]);
+        expect(rows()).toHaveLength(mountedRows.length);
+        mountedRows.forEach((row, index) => {
+            expect(rows()[index]).toBe(row);
+            expect(row.isConnected).toBe(true);
+            expect(shown(row)).toBe(false);
+        });
+
+        search("");
+        expect(target.textContent).not.toContain(message);
+        expect(rows().every(shown)).toBe(true);
     });
 
     it("disables drag while filtered, on every list created meanwhile, and enables it again after clearing", () => {

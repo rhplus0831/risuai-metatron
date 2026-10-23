@@ -75,8 +75,6 @@
     // The selected chat's local lorebook is edited on a copy that is saved through the chat module.
     const localLore = useLocalLoreDraft();
 
-    let reinitializeSortable = false;
-
     interface Props {
         globalMode?: boolean;
         submenu?: number;
@@ -93,6 +91,7 @@
         showFolder = "",
     }: Props = $props();
     let stb: Sortable = null;
+    let destroyed = false;
     // The `disabled` option `stb` has now (set while the filter is non-empty).
     let stbDisabled = false;
     let ele: HTMLDivElement = $state();
@@ -228,13 +227,19 @@
         await new Promise((resolve) => setTimeout(resolve, 10));
     };
 
-    // SortableJS recreation function
-    const recreateStb = async () => {
+    const destroyStb = () => {
+        const instance = stb;
+        stb = null;
         try {
-            stb.destroy();
+            instance?.destroy();
         } catch (error) {
             // Ignore destroy failure (may already be removed)
         }
+    };
+
+    // SortableJS recreation function
+    const recreateStb = async () => {
+        destroyStb();
 
         // Svelte reactivity trigger - force re-render {#key} block by changing sorted value
         sorted += 1;
@@ -267,6 +272,7 @@
     };
 
     const createStb = () => {
+        if (stb || destroyed || !ele || openedDetails > 0) return;
         // No drag reorders a filtered view: every instance starts disabled while filtering.
         const disabled = untrack(filtering);
         stbDisabled = disabled;
@@ -511,20 +517,21 @@
         const index = list.indexOf(book);
         if (index !== -1) list[index] = next;
     };
-    /** Removes `book` (a folder with its entries) from the shown list, if the list still holds it. */
-    const removeEntry = (book: loreBook) => {
+    const setFolderActive = (book: loreBook, active: boolean) => {
+        const list = listHolding(book);
+        if (!list) return;
+        for (const item of list) {
+            if (item.folder === book.key) item.alwaysActive = active;
+        }
+    };
+    /** Removes `book` (a folder with its entries) from the shown list; reports whether it was held. */
+    const removeEntry = (book: loreBook): boolean => {
         const lore = listHolding(book);
-        if (!lore) return;
+        if (!lore) return false;
         if (openedRefs.has(book)) {
-            onClose(!book.folder, book);
+            onClose(book.mode !== "folder", book);
         }
         if (book.mode === "folder") {
-            // Close items belonging to the folder if they are open
-            lore.forEach((item) => {
-                if (item.folder === book.key && openedRefs.has(item)) {
-                    onClose(true, item);
-                }
-            });
             // Filter out the folder and all items belonging to it, in place (one write of the list)
             replaceRecordList(
                 lore,
@@ -534,17 +541,36 @@
             const index = lore.indexOf(book);
             if (index !== -1) lore.splice(index, 1);
         }
+        return true;
     };
 
     let openedDetails = 0; // Count only lorebook details (for drag deactivation)
-    let openedRefs = $state(new Set()); // Track both folders + lorebooks (for UI state)
+    let openedRefs = $state(new Set<loreBook>()); // Track both folders + lorebooks (for UI state)
+
+    // Track list membership, never filter visibility: hidden rows keep their open details.
+    $effect(() => {
+        let held: Set<loreBook>;
+        try {
+            held = new Set(shownList() ?? []);
+        } catch (error) {
+            if (!(error instanceof DetachedWrapperError)) throw error;
+            held = new Set();
+        }
+        untrack(() => {
+            const refs = new Set([...openedRefs].filter((book) => held.has(book)));
+            const hadDetails = openedDetails > 0;
+            openedDetails = [...refs].filter((book) => book.mode !== "folder").length;
+            if (refs.size !== openedRefs.size) openedRefs = refs;
+            if (hadDetails && openedDetails === 0) createStb();
+        });
+    });
 
     // Derived state to calculate number of open folders
     let openFolders = $derived(() => {
         let count = 0;
         for (const ref of openedRefs) {
             // A ref the list no longer holds may be a removed record element: never read it.
-            if (!listHolding(ref as loreBook)) continue;
+            if (!listHolding(ref)) continue;
             if (ref && typeof ref === "object" && "mode" in ref && ref.mode === "folder") {
                 count++;
             }
@@ -552,22 +578,20 @@
         return count;
     });
 
-    const onOpen = (isDetail: boolean = true, bookRef?: any) => {
+    const onOpen = (isDetail: boolean, bookRef: loreBook) => {
+        if (openedRefs.has(bookRef) || !listHolding(bookRef)) return;
         if (isDetail) {
             // Disable drag only when lorebook detail opens
             openedDetails += 1;
-            if (stb) {
-                try {
-                    stb.destroy();
-                } catch (error) {}
-            }
+            destroyStb();
         }
         if (bookRef) {
             openedRefs.add(bookRef);
             openedRefs = new Set(openedRefs); // Trigger reactivity
         }
     };
-    const onClose = (isDetail: boolean = true, bookRef?: any) => {
+    const onClose = (isDetail: boolean, bookRef: loreBook) => {
+        if (!openedRefs.has(bookRef)) return;
         if (isDetail) {
             // Consider reactivating drag only when lorebook detail closes
             openedDetails -= 1;
@@ -582,11 +606,8 @@
     };
 
     onDestroy(() => {
-        if (stb) {
-            try {
-                stb.destroy();
-            } catch (error) {}
-        }
+        destroyed = true;
+        destroyStb();
     });
 </script>
 
@@ -617,6 +638,9 @@
             {#if externalLoreBooks.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
+                {#if isRootList && filtering() && visibleItems.length === 0}
+                    <span class="text-textcolor2">{language.noMatchingLorebooks}</span>
+                {/if}
                 {#each externalLoreBooks as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
@@ -629,9 +653,10 @@
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}
+                            onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
-                            bind:externalLoreBooks
+                            {externalLoreBooks}
                         />
                     {:else}
                         <!-- Hidden marker for filtered items (for SortableJS) -->
@@ -647,6 +672,9 @@
             {#if currentCharacter.globalLore.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
+                {#if isRootList && filtering() && visibleItems.length === 0}
+                    <span class="text-textcolor2">{language.noMatchingLorebooks}</span>
+                {/if}
                 {#each currentCharacter.globalLore as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
@@ -659,6 +687,7 @@
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}
+                            onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             {lorePlus}
@@ -678,6 +707,9 @@
             {#if localLore.value.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
+                {#if isRootList && filtering() && visibleItems.length === 0}
+                    <span class="text-textcolor2">{language.noMatchingLorebooks}</span>
+                {/if}
                 {#each localLore.value as book, i (book)}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
@@ -690,6 +722,7 @@
                             openFolders={openFolders()}
                             isLastInContainer={book === lastVisibleItem}
                             onRemove={() => removeEntry(book)}
+                            onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             {lorePlus}

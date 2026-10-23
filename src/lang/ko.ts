@@ -2200,4 +2200,5 @@ export const languageKorean = {
     nanoGPTSelectFromList: "목록에서 선택",
     nanoGPTManualInput: "수동 입력",
     nanoGPTManualModelSelect: "수동 모델 선택",
+    noMatchingLorebooks: "검색 조건에 맞는 로어북 항목이 없습니다.",
 } satisfies DeepPartial<typeof import("./en").languageEnglish>;

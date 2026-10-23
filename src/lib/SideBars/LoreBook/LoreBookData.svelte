@@ -6,8 +6,16 @@
     import { v4 } from "uuid";
     import { language } from "../../../lang";
     import { type loreBook } from "../../../ts/storage/database.svelte";
-    import { selectedChat } from "../../../ts/storage/chatStore.svelte";
-    import { alertConfirm, alertMd } from "../../../ts/alert";
+    import {
+        chatOwnerToken,
+        currentChatRef,
+        ensureChatLoaded,
+        selectedChat,
+        setChatMeta,
+    } from "../../../ts/storage/chatStore.svelte";
+    import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
+    import { isLocalSend } from "src/ts/process/localSends";
+    import { alertConfirm, alertError, alertMd } from "../../../ts/alert";
     import Check from "../../UI/GUI/CheckInput.svelte";
     import Help from "../../Others/Help.svelte";
     import TextInput from "../../UI/GUI/TextInput.svelte";
@@ -18,9 +26,10 @@
 
     interface Props {
         value: loreBook;
-        onRemove?: () => void;
+        onRemove?: () => boolean | void;
         onClose?: (isDetail?: boolean) => void;
         onOpen?: (isDetail?: boolean) => void;
+        onFolderActive?: (active: boolean) => void;
         lorePlus?: boolean;
         idx: number;
         externalLoreBooks?: loreBook[];
@@ -39,6 +48,7 @@
         onRemove = () => {},
         onClose = (isDetail = true) => {},
         onOpen = (isDetail = true) => {},
+        onFolderActive = (active) => {},
         lorePlus = false,
         idx,
         externalLoreBooks = $bindable(),
@@ -159,11 +169,7 @@
                 class:text-textcolor={value.alwaysActive}
                 onclick={async () => {
                     if (value.mode === "folder") {
-                        for (let i = 0; i < externalLoreBooks.length; i++) {
-                            if (externalLoreBooks[i].folder === value.key) {
-                                externalLoreBooks[i].alwaysActive = !value.alwaysActive;
-                            }
-                        }
+                        onFolderActive(!value.alwaysActive);
                     }
                     value.alwaysActive = !value.alwaysActive;
                 }}
@@ -177,25 +183,32 @@
             <button
                 class="valuer"
                 onclick={async () => {
-                    let shouldRemove = true;
+                    // Keep only the entry's primitives and the chat address across the dialogs.
+                    const id = value.id;
+                    const isCharacterEntry = !!selectedCharacter()?.globalLore.includes(value);
+                    const chatTarget = currentChatRef();
+                    const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
+                    const removeMessage = language.removeConfirm + (value.comment || "Unnamed Folder");
                     if (value.mode === "folder" && externalLoreBooks.some((e) => e.folder === value.key)) {
-                        const firstConfirm = await alertConfirm(language.folderRemoveConfirm);
-                        if (!firstConfirm) {
-                            shouldRemove = false;
-                        }
+                        if (!(await alertConfirm(language.folderRemoveConfirm))) return;
                     }
+                    if (!(await alertConfirm(removeMessage))) return;
+                    const removed = onRemove();
+                    if (!removed || !isCharacterEntry || !id || !chatTarget) return;
 
-                    if (shouldRemove) {
-                        const secondConfirm = await alertConfirm(
-                            language.removeConfirm + (value.comment || "Unnamed Folder"),
-                        );
-                        if (secondConfirm) {
-                            if (!open) {
-                                onClose();
-                            }
-                            deactivateLocally(value);
-                            onRemove();
+                    try {
+                        // The captured chat may have been evicted while a dialog was open.
+                        const chat = await ensureChatLoaded(chatTarget);
+                        if (!chat || chatOwnerToken(chatTarget.chaId) !== chatOwner) return;
+                        const localLore = chat.localLore ?? [];
+                        if (!localLore.some((entry) => entry.id === id)) return;
+                        if (isLocalSend(chatTarget) || generatingChatKeys().has(chatStatusKey(chatTarget))) {
+                            alertError(language.chatGenerating);
+                            return;
                         }
+                        setChatMeta(chatTarget, { localLore: localLore.filter((entry) => entry.id !== id) });
+                    } catch (error) {
+                        alertError(error);
                     }
                 }}
             >
@@ -211,9 +224,6 @@
                 onclick={async () => {
                     const d = await alertConfirm(language.removeConfirm + getParentLoreName(value));
                     if (d) {
-                        if (!open) {
-                            onClose();
-                        }
                         onRemove();
                     }
                 }}
