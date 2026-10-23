@@ -94,6 +94,7 @@ function records(memory: { profileId: string } | { modelId: string } = { profile
             { id: "prov", name: "prov", modelId: "pluginmodel:::prov" },
             { id: "ghost", name: "ghost", modelId: "pluginmodel:::ghost" },
             { id: "local", name: "local", modelId: "hf:::tiny" },
+            { id: "catalogueLocal", name: "catalogueLocal", modelId: "hf:::Xenova/opt-350m" },
         ]),
         modelPresets: normalizeModelPresets([
             {
@@ -344,8 +345,8 @@ describe("the job request model preflight against the job's dispatch", () => {
             kind: "resolved",
             modelInfo: { format: LLMFormat.WebLLM },
         });
-        // Where it went is the point; a reverse proxy id carries no `hf:::` model name for the local run.
-        expect(await dispatch(local.loaded, "memory")).toMatchObject({ kind: "local" });
+        // WebLLM runs the reverse proxy profile's configured request model.
+        expect(await dispatch(local.loaded, "memory")).toEqual({ kind: "local", model: "proxyLocal-model" });
 
         // A request without the tab callback or the local models (a tab's own request, a registry
         // without local generation): the guard refuses on the overridden format, before any adapter.
@@ -373,7 +374,7 @@ describe("the job request model preflight against the job's dispatch", () => {
         expect(await serverOnly.dispatch(local.loaded, "memory")).toEqual({ kind: "refused", result: refusal });
     });
 
-    it("tells a server dispatch for a local `hf:::` model (`LLMFormat.WebLLM`, never Plugin), as the dispatch runs it", async () => {
+    it("tells a server dispatch for dynamic and catalogue `hf:::` models (`LLMFormat.WebLLM`, never Plugin), as the dispatch runs them", async () => {
         const { registry, dispatch } = harness();
         registries.push(registry);
         const { loaded, db } = jobDb({ profileId: "local" });
@@ -385,5 +386,8 @@ describe("the job request model preflight against the job's dispatch", () => {
         });
         expect((resolved as { modelInfo: LLMModel }).modelInfo.format).not.toBe(LLMFormat.Plugin);
         expect(await dispatch(loaded, "memory")).toEqual({ kind: "local", model: "tiny" });
+
+        const catalogue = jobDb({ profileId: "catalogueLocal" });
+        expect(await dispatch(catalogue.loaded, "memory")).toEqual({ kind: "local", model: "Xenova/opt-350m" });
     });
 });

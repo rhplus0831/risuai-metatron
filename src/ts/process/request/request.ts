@@ -783,7 +783,9 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
             : getUserName();
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
-    const realModel = aiModel.split(":::")[1];
+    // Resolved internal ids carry proxy request models and custom internal ids; catalogue entries
+    // default to hf::: ids. Fall back to the id suffix if unresolved, then strip a leading hf:::.
+    const realModel = (arg.modelInfo.internalID || aiModel.split(":::")[1])?.replace(/^hf:::/, "");
     const prompt = applyChatTemplate(formated, { profile: arg.modelProfile ?? null, characterName, userName });
 
     if (arg.previewBody) {
