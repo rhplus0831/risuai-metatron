@@ -4,7 +4,6 @@ import { resolveModelInfo } from "../../shared/llm/models.ts";
 import type { MemoryTaskService } from "../../shared/jobs.ts";
 import { resolveCredential } from "./llm/credentials.ts";
 import { readFileSync } from "node:fs";
-import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -28,6 +27,7 @@ import { createHistoryObserver } from "./llm/historyObserver.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createImportSlot } from "./http/fileImport.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
+import { createStaticCache, serveCachedIndex } from "./http/staticCache.ts";
 import type { ServerCbsTimeLimits } from "./jobs/cbsHost.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
 import type { GenerationRunnerDeps } from "./jobs/runSetup.ts";
@@ -100,7 +100,6 @@ import type { AppEnv } from "./types.ts";
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
 /** An answer slower than this is an `http` diagnostic event whatever its status. */
 const HTTP_SLOW_MS = 5_000;
-const headOpenTag = /<head(\s[^>]*)?>/i;
 
 export type ServerContext = ReturnType<typeof createServerContext>;
 
@@ -665,11 +664,7 @@ export function createServerContext(options: {
             c.req.header("x-forwarded-for") || clientIp(c) || c.env?.incoming?.socket?.remoteAddress || "Unknown IP";
         console.log(`[Server] ${new Date().toISOString()} | Connection from: ${clientIP}`);
 
-        const mainIndex = await fs.readFile(path.join(distPath, "index.html"), "utf-8");
-        if (!headOpenTag.test(mainIndex)) {
-            throw new Error("dist/index.html has no <head>");
-        }
-        return c.html(mainIndex.replace(headOpenTag, (tag) => `${tag}<script>globalThis.__NODE__ = true</script>`));
+        return serveCachedIndex(c, path.join(distPath, "index.html"));
     };
     app.get("/", serveIndex);
     app.get("/index.html", serveIndex);
@@ -678,6 +673,7 @@ export function createServerContext(options: {
     // names no screen); any other unknown path or asset miss stays a 404.
     app.get("*", (c, next) => (isClientRoutePath(c.req.path) ? serveIndex(c) : next()));
 
+    app.get("*", createStaticCache(distPath));
     app.get("*", serveStatic({ root: distPath }));
 
     registerProxyRoutes(app, {

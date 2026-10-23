@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -38,18 +38,118 @@ function freshServer(options?: { password?: string }) {
 }
 
 describe("GET / and /index.html", () => {
+    const modifiedAt = new Date("2025-01-01T00:00:00Z");
+
     // Without the flag the client shows only the "self-host server required" notice, so both
     // entry URLs must inject it (with or without a query string, which deep links carry).
-    it("injects the __NODE__ flag as the first child of <head> on both entry URLs", async () => {
-        const { app } = freshServer();
+    it("injects the __NODE__ flag and revalidates both entry URLs", async () => {
+        const { app, rootDir } = freshServer();
+        utimesSync(path.join(rootDir, "dist", "index.html"), modifiedAt, modifiedAt);
         for (const url of ["/", "/?x=1", "/index.html", "/index.html?share=abc"]) {
             const res = await app.request(url);
             expect(res.status, url).toBe(200);
             expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
+            expect(res.headers.get("cache-control"), url).toBe("no-cache");
+            expect(res.headers.get("etag"), url).toMatch(/^W\//);
+            expect(res.headers.get("last-modified"), url).toBe(modifiedAt.toUTCString());
             const html = await res.text();
             expect(html, url).toContain('<head><script>globalThis.__NODE__ = true</script><meta charset="utf-8">');
             expect(html.match(/__NODE__/g), url).toHaveLength(1);
         }
+    });
+
+    it("caches content-hashed assets immutably for one year", async () => {
+        const { app, rootDir } = freshServer();
+        const content = 'console.log("app");';
+        mkdirSync(path.join(rootDir, "dist", "assets"));
+        writeFileSync(path.join(rootDir, "dist", "assets", "index-abc123.js"), content);
+
+        const res = await app.request("/assets/index-abc123.js");
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(await res.text()).toBe(content);
+    });
+
+    it("revalidates the service worker, manifest, and other unversioned static files", async () => {
+        const { app, rootDir } = freshServer();
+        for (const [filename, content] of [
+            ["sw.js", "self.version = 1;"],
+            ["manifest.json", '{"name":"Test app"}'],
+            ["other.txt", "Unversioned content"],
+        ]) {
+            const filePath = path.join(rootDir, "dist", filename);
+            writeFileSync(filePath, content);
+            utimesSync(filePath, modifiedAt, modifiedAt);
+
+            const res = await app.request(`/${filename}`);
+            expect(res.status, filename).toBe(200);
+            expect(res.headers.get("cache-control"), filename).toBe("no-cache");
+            expect(res.headers.get("etag"), filename).toMatch(/^W\//);
+            expect(res.headers.get("last-modified"), filename).toBe(modifiedAt.toUTCString());
+            expect(await res.text(), filename).toBe(content);
+        }
+    });
+
+    it.each(["/index.html", "/sw.js"])(
+        "returns an empty 304 for matching validators and the full body for a non-matching ETag on %s",
+        async (url) => {
+            const { app, rootDir } = freshServer();
+            const content = url === "/index.html" ? TEST_INDEX_HTML : "self.version = 1;";
+            const expectedBody =
+                url === "/index.html"
+                    ? content.replace("<head>", "<head><script>globalThis.__NODE__ = true</script>")
+                    : content;
+            const filePath = path.join(rootDir, "dist", url.slice(1));
+            writeFileSync(filePath, content);
+            utimesSync(filePath, modifiedAt, modifiedAt);
+
+            const first = await app.request(url);
+            expect(first.status).toBe(200);
+            expect(await first.text()).toBe(expectedBody);
+            const etag = first.headers.get("etag") ?? "";
+            const lastModified = first.headers.get("last-modified") ?? "";
+            expect(etag).toMatch(/^W\//);
+            expect(lastModified).toBe(modifiedAt.toUTCString());
+
+            for (const [header, validator] of [
+                ["If-None-Match", etag],
+                ["If-Modified-Since", lastModified],
+            ]) {
+                const unchanged = await app.request(url, { headers: { [header]: validator } });
+                expect(unchanged.status, header).toBe(304);
+                expect(await unchanged.text(), header).toBe("");
+            }
+
+            const nonMatching = await app.request(url, {
+                headers: { "If-None-Match": 'W/"outdated"', "If-Modified-Since": lastModified },
+            });
+            expect(nonMatching.status).toBe(200);
+            expect(await nonMatching.text()).toBe(expectedBody);
+        },
+    );
+
+    it("delivers a changed service worker with a new ETag when sent the old ETag", async () => {
+        const { app, rootDir } = freshServer();
+        const filePath = path.join(rootDir, "dist", "sw.js");
+        writeFileSync(filePath, "self.version = 1;");
+        utimesSync(filePath, modifiedAt, modifiedAt);
+        const first = await app.request("/sw.js");
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe("self.version = 1;");
+        const oldEtag = first.headers.get("etag") ?? "";
+        expect(oldEtag).toMatch(/^W\//);
+
+        const updatedAt = new Date("2025-01-02T00:00:00Z");
+        writeFileSync(filePath, "self.version = 2;");
+        utimesSync(filePath, updatedAt, updatedAt);
+
+        const updated = await app.request("/sw.js", { headers: { "If-None-Match": oldEtag } });
+        expect(updated.status).toBe(200);
+        expect(await updated.text()).toBe("self.version = 2;");
+        expect(updated.headers.get("cache-control")).toBe("no-cache");
+        expect(updated.headers.get("etag")).toMatch(/^W\//);
+        expect(updated.headers.get("etag")).not.toBe(oldEtag);
+        expect(updated.headers.get("last-modified")).toBe(updatedAt.toUTCString());
     });
 
     it("serves other static files raw and keeps 404 for missing paths and non-GET entry requests", async () => {
@@ -65,7 +165,7 @@ describe("GET / and /index.html", () => {
     });
 
     // A reload or a link on a screen route (`shared/routes.ts`) must land on the client with the flag.
-    it("serves the flagged client for the client's screen routes and nothing else", async () => {
+    it("serves the flagged client with no-cache for the client's screen routes and nothing else", async () => {
         const { app } = freshServer();
         for (const url of [
             "/chat/c1/chat-1",
@@ -79,6 +179,7 @@ describe("GET / and /index.html", () => {
             const res = await app.request(url);
             expect(res.status, url).toBe(200);
             expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
+            expect(res.headers.get("cache-control"), url).toBe("no-cache");
             const html = await res.text();
             expect(html.match(/__NODE__/g), url).toHaveLength(1);
         }
