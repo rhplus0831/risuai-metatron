@@ -7,7 +7,6 @@ import { type character } from "../storage/database.svelte";
 import { runTranslator, translateVox } from "../translator/translator";
 import { globalFetch, loadAsset } from "../globalApi.svelte";
 import { language } from "src/lang";
-import { sleep } from "../util";
 import { runVITS } from "./transformers";
 import {
     getTTSPreprocessors,
@@ -24,7 +23,28 @@ type TTSPlaybackContext = { ttsMode: string; characterId: string; generation: nu
 const activeSpeech = new Set<SpeechPlayback>();
 /** Contexts still decoding: Stop closes them too, so none stays open after it. */
 const pendingContexts = new Set<AudioContext>();
+const activeSpeechControllers = new Set<AbortController>();
 let stopGeneration = 0;
+
+/** Waits before retrying, releasing the timer and listener on completion or cancellation. */
+function retryDelay(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        signal.throwIfAborted();
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+            cleanup();
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, ms);
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
 
 function closePending(context: AudioContext) {
     if (!pendingContexts.delete(context)) return;
@@ -129,6 +149,9 @@ async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackC
 
 export async function sayTTS(character: ClientCharacter, text: string) {
     const generation = stopGeneration;
+    const controller = new AbortController();
+    const signal = controller.signal;
+    activeSpeechControllers.add(controller);
     try {
         if (!character) {
             const v = selectedCharacter();
@@ -182,6 +205,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
             case "elevenlab": {
                 const da = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${character.ttsSpeech}`, {
+                    signal,
                     body: JSON.stringify({
                         text: text,
                         model_id: "eleven_multilingual_v2",
@@ -192,27 +216,35 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                         "xi-api-key": settings.secrets.elevenLabKey || undefined,
                     },
                 });
+                signal.throwIfAborted();
                 if (da.status >= 200 && da.status < 300) {
                     const buffer = await da.arrayBuffer();
+                    signal.throwIfAborted();
                     const mimeType = da.headers.get("content-type") || "audio/mpeg";
                     await playAudio(buffer, mimeType, hookCtx);
                 } else {
-                    alertError(await da.text());
+                    const errorText = await da.text();
+                    signal.throwIfAborted();
+                    alertError(errorText);
                 }
                 break;
             }
             case "VOICEVOX": {
                 const jpText = await translateVox(text);
+                signal.throwIfAborted();
                 const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
                 const queryUrl = new URL(base + "/audio_query");
                 queryUrl.searchParams.set("text", jpText);
                 queryUrl.searchParams.set("speaker", String(character.ttsSpeech));
                 const query = await fetch(queryUrl, {
+                    signal,
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                 });
+                signal.throwIfAborted();
                 if (query.status == 200) {
                     const queryJson = await query.json();
+                    signal.throwIfAborted();
                     const bodyData = {
                         accent_phrases: queryJson.accent_phrases,
                         speedScale: character.voicevoxConfig.SPEED_SCALE,
@@ -228,12 +260,16 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     const synthesisUrl = new URL(base + "/synthesis");
                     synthesisUrl.searchParams.set("speaker", String(character.ttsSpeech));
                     const getVoice = await fetch(synthesisUrl, {
+                        signal,
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(bodyData),
                     });
+                    signal.throwIfAborted();
                     if (getVoice.status == 200 && getVoice.headers.get("content-type") === "audio/wav") {
-                        await playAudio(await getVoice.arrayBuffer(), "audio/wav", hookCtx);
+                        const buffer = await getVoice.arrayBuffer();
+                        signal.throwIfAborted();
+                        await playAudio(buffer, "audio/wav", hookCtx);
                     }
                 }
                 break;
@@ -259,6 +295,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 let res: { ok: boolean; data: any };
                 if (!ownKey && official && storedKey) {
                     const response = await auxFetch("openai-tts", `${baseURL}/audio/speech`, {
+                        signal,
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body,
@@ -269,6 +306,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     break;
                 } else {
                     res = await globalFetch(`${baseURL}/audio/speech`, {
+                        abortSignal: signal,
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
@@ -278,6 +316,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                         rawResponse: true,
                     });
                 }
+                signal.throwIfAborted();
                 const dat = res.data;
 
                 if (res.ok) {
@@ -306,12 +345,14 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 const url = `https://api.novelai.net/ai/generate-voice?text=${encodedText}&voice=-1&seed=${encodedSeed}&opus=false&version=${character.naittsConfig.version}`;
 
                 const response = await globalFetch(url, {
+                    abortSignal: signal,
                     method: "GET",
                     headers: {
                         Authorization: "Bearer " + settings.secrets.NAIApiKey,
                     },
                     rawResponse: true,
                 });
+                signal.throwIfAborted();
 
                 if (response.ok) {
                     await playAudio(response.data.buffer, "audio/wav", hookCtx);
@@ -322,12 +363,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
             case "huggingface": {
                 while (true) {
+                    signal.throwIfAborted();
                     if (character.hfTTS.language !== "en") {
                         text = await runTranslator(text, false, "en", character.hfTTS.language);
                     }
+                    signal.throwIfAborted();
                     const response = await fetch(
                         `https://api-inference.huggingface.co/models/${character.hfTTS.model}`,
                         {
+                            signal,
                             method: "POST",
                             headers: {
                                 Authorization: "Bearer " + settings.secrets.huggingfaceKey,
@@ -338,18 +382,23 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                             }),
                         },
                     );
+                    signal.throwIfAborted();
 
                     if (response.status === 503 && response.headers.get("content-type") === "application/json") {
                         const json = await response.json();
+                        signal.throwIfAborted();
                         if (json.estimated_time) {
-                            await sleep(json.estimated_time * 1000);
+                            await retryDelay(json.estimated_time * 1000, signal);
                             continue;
                         }
                     } else if (response.status >= 400) {
-                        alertError(language.errors.httpError + `${await response.text()}`);
+                        const errorText = await response.text();
+                        signal.throwIfAborted();
+                        alertError(language.errors.httpError + `${errorText}`);
                         return;
                     } else if (response.status === 200) {
                         const buffer = await response.arrayBuffer();
+                        signal.throwIfAborted();
                         const mimeType = response.headers.get("content-type") || "audio/wav";
                         await playAudio(buffer, mimeType, hookCtx);
                     } else {
@@ -360,12 +409,14 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
             case "vits": {
                 const audio = await runVITS(text, character.vits);
+                signal.throwIfAborted();
                 // VITS bypasses the postprocessor hooks but shares the Stop registry.
                 if (audio) await playProcessedAudio(audio, hookCtx);
                 break;
             }
             case "gptsovits": {
                 const audio: Uint8Array = await loadAsset(character.gptSoVitsConfig.ref_audio_data.assetId);
+                signal.throwIfAborted();
                 const base64Audio = btoa(
                     new Uint8Array(audio).reduce((data, byte) => data + String.fromCharCode(byte), ""),
                 );
@@ -395,6 +446,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 if (character.gptSoVitsConfig.use_auto_path) {
                     console.log("auto");
                     const path = await globalFetch(`${character.gptSoVitsConfig.url}/get_path`, {
+                        abortSignal: signal,
                         method: "GET",
                         headers: {
                             "Content-Type": "application/json",
@@ -402,6 +454,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                         rawResponse: false,
                         plainFetchDeforce: true,
                     });
+                    signal.throwIfAborted();
                     console.log(path);
                     if (path.ok) {
                         body.ref_audio_path =
@@ -418,6 +471,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 console.log(body);
 
                 const response = await globalFetch(`${character.gptSoVitsConfig.url}/tts`, {
+                    abortSignal: signal,
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -425,6 +479,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     body: body,
                     rawResponse: true,
                 });
+                signal.throwIfAborted();
                 console.log(response);
 
                 if (response.ok) {
@@ -466,6 +521,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 console.log(body);
 
                 const response = await globalFetch(`https://api.fish.audio/v1/tts`, {
+                    abortSignal: signal,
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -474,6 +530,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     body: body,
                     rawResponse: true,
                 });
+                signal.throwIfAborted();
                 console.log(response);
 
                 if (response.ok) {
@@ -487,7 +544,10 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
         }
     } catch (error) {
+        if (signal.aborted) return;
         alertError(`TTS Error: ${error}`);
+    } finally {
+        activeSpeechControllers.delete(controller);
     }
 }
 
@@ -495,6 +555,8 @@ export const oaiVoices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
 
 export function stopTTS() {
     stopGeneration++;
+    for (const controller of activeSpeechControllers) controller.abort();
+    activeSpeechControllers.clear();
     for (const playback of activeSpeech) {
         try {
             playback.source.stop();

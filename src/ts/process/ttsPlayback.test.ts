@@ -6,6 +6,8 @@ import type { ClientCharacter } from "../storage/characterStore.svelte";
 const deps = vi.hoisted(() => ({
     fetch: vi.fn(),
     globalFetch: vi.fn(),
+    auxFetch: vi.fn(),
+    isSecretSet: vi.fn(() => false),
     translateVox: vi.fn(),
     alert: vi.fn(),
     settings: { memoryTranslateMedia: { voicevoxUrl: "https://voicevox.test/" }, secrets: { elevenLabKey: "test" } },
@@ -13,8 +15,8 @@ const deps = vi.hoisted(() => ({
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
 vi.mock("../storage/characterStore.svelte", () => ({ selectedCharacter: () => null }));
 vi.mock("../storage/database.svelte", () => ({}));
-vi.mock("../network/auxFetch", () => ({ auxFetch: vi.fn() }));
-vi.mock("../storage/llmSecrets.svelte", () => ({ isSecretSet: () => false }));
+vi.mock("../network/auxFetch", () => ({ auxFetch: deps.auxFetch }));
+vi.mock("../storage/llmSecrets.svelte", () => ({ isSecretSet: deps.isSecretSet }));
 vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: deps.alert,
@@ -99,6 +101,8 @@ beforeEach(() => {
         return audioResponse();
     });
     deps.globalFetch.mockImplementation(async () => globalResponse());
+    deps.auxFetch.mockImplementation(async () => audioResponse());
+    deps.isSecretSet.mockReturnValue(false);
     vi.mocked(runVITS).mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
     deps.translateVox.mockResolvedValue("こんにちは &speaker=99 # + 100% 日本語");
     vi.stubGlobal("fetch", deps.fetch);
@@ -222,6 +226,95 @@ describe("sayTTS and stopTTS", () => {
         await sayTTS(character("elevenlab"), "after stop");
         expect(sources.filter((source) => source.start.mock.calls.length)).toHaveLength(1);
         expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("aborts every pending transport on Stop without alerts and gives later speech fresh signals", async () => {
+        const directStarted = deferred<void>();
+        const globalStarted = deferred<void>();
+        const auxStarted = deferred<void>();
+        const cancelled = deferred<void>();
+        deps.fetch.mockImplementationOnce(() => {
+            directStarted.resolve(undefined);
+            return cancelled.promise.then(() => {
+                throw new DOMException("Request aborted", "AbortError");
+            });
+        });
+        deps.globalFetch.mockImplementationOnce(() => {
+            globalStarted.resolve(undefined);
+            return cancelled.promise.then(() => ({ ok: false, data: "Request aborted" }));
+        });
+        deps.auxFetch.mockImplementationOnce(() => {
+            auxStarted.resolve(undefined);
+            return cancelled.promise.then(() => {
+                throw new DOMException("Request aborted", "AbortError");
+            });
+        });
+        deps.isSecretSet.mockReturnValue(true);
+        const speakers = [character("elevenlab"), character("gptsovits"), character("openai")];
+        const work = Promise.all(speakers.map((speaker) => sayTTS(speaker, "pending speech")));
+        const requestSignals = (): AbortSignal[] => [
+            deps.fetch.mock.lastCall![1].signal,
+            deps.globalFetch.mock.lastCall![1].abortSignal,
+            deps.auxFetch.mock.lastCall![2].signal,
+        ];
+        await Promise.all([directStarted.promise, globalStarted.promise, auxStarted.promise]);
+        const signals = requestSignals();
+        try {
+            expect(new Set(signals).size).toBe(speakers.length);
+            for (const signal of signals) {
+                expect(signal).toBeInstanceOf(AbortSignal);
+                expect(signal.aborted).toBe(false);
+            }
+            stopTTS();
+            for (const signal of signals) expect(signal.aborted).toBe(true);
+        } finally {
+            cancelled.resolve(undefined);
+            await work;
+        }
+        expect(deps.alert).not.toHaveBeenCalled();
+        expect(sources).toHaveLength(0);
+
+        await Promise.all(speakers.map((speaker) => sayTTS(speaker, "after Stop")));
+        const freshSignals = requestSignals();
+        expect(new Set(freshSignals).size).toBe(speakers.length);
+        for (const signal of freshSignals) {
+            expect(signal).toBeInstanceOf(AbortSignal);
+            expect(signal.aborted).toBe(false);
+            expect(signals).not.toContain(signal);
+        }
+        expect(sources).toHaveLength(speakers.length);
+        for (const source of sources) expect(source.start).toHaveBeenCalledOnce();
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
+    it("ends a Hugging Face estimated_time wait on Stop without retrying or alerting", async () => {
+        vi.useFakeTimers();
+        const estimatedSeconds = 5;
+        const speaker = character("huggingface");
+        speaker.hfTTS = { language: "en", model: "test/speech-model" };
+        deps.fetch.mockResolvedValueOnce(Response.json({ estimated_time: estimatedSeconds }, { status: 503 }));
+        let finished = false;
+        const work = sayTTS(speaker, "waiting for the model").then(() => {
+            finished = true;
+        });
+        try {
+            await vi.advanceTimersByTimeAsync(estimatedSeconds * 1000 - 1);
+            expect(deps.fetch).toHaveBeenCalledOnce();
+            expect(finished).toBe(false);
+
+            stopTTS();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(finished).toBe(true);
+            await vi.advanceTimersByTimeAsync(estimatedSeconds * 1000 + 1);
+            expect(deps.fetch).toHaveBeenCalledOnce();
+            expect(sources).toHaveLength(0);
+            expect(deps.alert).not.toHaveBeenCalled();
+        } finally {
+            stopTTS();
+            await vi.runOnlyPendingTimersAsync();
+            await work;
+            vi.useRealTimers();
+        }
     });
 
     it("prevents decodes pending at Stop from starting audio and closes both unused contexts", async () => {
