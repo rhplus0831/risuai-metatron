@@ -49,6 +49,6 @@ describe("planPngFile asset-chunk cap", () => {
         await expect(plan(png(ihdr, text("ccv3", "x"), assets, iend))).rejects.toThrow("too many asset chunks");
         await expect(
             plan(png(ihdr, text("ccv3", "x"), assets.subarray(0, MAX_CHARX_ENTRIES * asset.length), iend)),
-        ).resolves.toEqual({ total: MAX_CHARX_ENTRIES });
+        ).resolves.toEqual({ total: MAX_CHARX_ENTRIES, card: "x" });
     }, 120_000);
 });
