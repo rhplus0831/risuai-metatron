@@ -107,6 +107,7 @@
         pendingMessageJump,
     } from "src/ts/messageSearch.svelte";
     import { runMessageJump } from "./messageJump";
+    import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
 
     const subModel = $derived(getModelInfoForMode("submodel").id);
 
@@ -801,7 +802,7 @@
 
             await withFileSrcFetch(async () => {
                 for (const chat of chats) {
-                    const cnv = await html2canvas.toCanvas(chat as HTMLElement);
+                    const cnv = await html2canvas.toCanvas(chat as HTMLElement, SCREENSHOT_CAPTURE_OPTIONS);
                     alertWait("Taking screenShot... " + canvases.length + "/" + chats.length);
                     canvases.push(cnv);
                 }
