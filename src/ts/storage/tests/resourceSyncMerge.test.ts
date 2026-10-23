@@ -1067,6 +1067,28 @@ describe("item lists: this tab's adds over another tab's list", () => {
         await idle(fake, sync);
     });
 
+    it("toggle presets: keeps both tabs' adds in server-first order with no discard or reload notice", async () => {
+        const { fake, sync, settings, remote } = await boot({
+            prepare: (fake) => fake.set("togglePresets", "main", []),
+        });
+        const theirs = {
+            id: "toggle-theirs",
+            name: "Theirs",
+            values: { title: "their title" },
+            kinds: { title: "text" },
+            createdAt: 10,
+            updatedAt: 10,
+        } as const;
+        const mine = { ...theirs, id: "toggle-mine", name: "Mine", values: { title: "my title" } };
+        remote("togglePresets", "main", (data) => data.push(theirs));
+        settings.togglePresets.push(mine);
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.data("togglePresets", "main")).toEqual([theirs, mine]);
+        expect(plain(settings.togglePresets)).toEqual([theirs, mine]);
+        noNotice();
+    });
+
     it("appends several adds in this tab's order, wherever this tab inserted them, after the server's list in the server's order", async () => {
         const { fake, sync, settings, remote } = await bootPresets();
         // The other tab reversed the saved items and renamed one; this tab put `x` first and `y` last.

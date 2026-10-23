@@ -118,11 +118,15 @@ async function fresh<S extends Server>(fake: S) {
  * and the selection, at home), start, and let the boot compare pass run. `bootBatches` is what that
  * pass sent.
  */
-async function boot<S extends Server>(fake: S) {
+async function boot<S extends Server>(fake: S, options: { chats?: boolean } = {}) {
     const modules = await fresh(fake);
     const { client, sync, bootstrap } = modules;
-    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND), options);
     sync.seedResources(snapshot);
+    if (options.chats) {
+        const chat = await import("../chatStore.svelte");
+        chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
+    }
     bootstrap.installBootRecords(snapshot);
     fake.requests.length = 0;
     sync.startResourceSync();
@@ -517,6 +521,59 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
 });
 
 describe("toggle preset records", () => {
+    it("keeps both chats' preset links resolvable after two tabs add presets from the same saved revision", async () => {
+        const store = await StoreBackedServer.create();
+        try {
+            store.set("characters", "c", { chaId: "c", name: "C" });
+            store.store.applyChanges({
+                chats: ["first", "second"].map((id) => ({
+                    characterId: "c",
+                    chatId: id,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id, name: id, note: "", localLore: [], message: [] } }],
+                })),
+            });
+            const revision = store.record("togglePresets", "main")!.revision;
+            const first = await boot(store, { chats: true });
+            const firstChat = await import("../chatStore.svelte");
+            const second = await boot(store, { chats: true });
+            const secondChat = await import("../chatStore.svelte");
+            expect(first.sync.heldRecordRevision("togglePresets", "main")).toBe(revision);
+            expect(second.sync.heldRecordRevision("togglePresets", "main")).toBe(revision);
+            const firstPreset = { ...togglePreset, id: "toggle-first", name: "First chat" };
+            const secondPreset = {
+                ...togglePreset,
+                id: "toggle-second",
+                name: "Second chat",
+                values: { ...togglePreset.values, title: "second title" },
+            };
+
+            // Saving from a chat appends a preset and writes its link as separate records.
+            first.settings.togglePresets.push(firstPreset);
+            firstChat.setChatMeta({ chaId: "c", chatId: "first" }, { togglePresetId: firstPreset.id });
+            second.settings.togglePresets.push(secondPreset);
+            secondChat.setChatMeta({ chaId: "c", chatId: "second" }, { togglePresetId: secondPreset.id });
+            expect((await first.sync.flushResources()).discarded).toEqual([]);
+            const result = await second.sync.flushResources();
+
+            const storedPresets = store.record("togglePresets", "main")!.data;
+            for (const [chatId, preset] of [
+                ["first", firstPreset],
+                ["second", secondPreset],
+            ] as const) {
+                const linkedId = store.chat("c", chatId)!.data.togglePresetId;
+                expect(linkedId).toBe(preset.id);
+                expect(storedPresets).toContainEqual(preset);
+                expect(second.settings.togglePresets.find((entry) => entry.id === linkedId)).toEqual(preset);
+            }
+            expect(secondChat.findChat({ chaId: "c", chatId: "second" })!.togglePresetId).toBe(secondPreset.id);
+            expect(result.discarded).toEqual([]);
+            expect(alerts.normal).not.toHaveBeenCalled();
+        } finally {
+            store.close();
+        }
+    });
+
     it("retains a preset wrapper by id through a conflict reload and saves the next edit to that preset", async () => {
         const store = await StoreBackedServer.create();
         try {

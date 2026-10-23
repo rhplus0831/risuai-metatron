@@ -2358,10 +2358,11 @@ function mergePluginStorageChange(item: RemoteItem, key: string): boolean {
 }
 
 /**
- * The item lists whose items are independent records addressed by their id, so an item this client
- * added can go over another writer's list (`mergeItemAdds`). Other lists that pass `itemIds` are not
- * here: `characterOrder`'s folders hold character membership, and `loreBook`, `plugins`, `hotkeys`,
- * and `authRefreshes` are addressed by page, name, action, or URL, whatever ids their items carry.
+ * The item lists whose items are independent records addressed by their id, including toggle presets,
+ * so an item this client added can go over another writer's list (`mergeItemAdds`). Other lists that
+ * pass `itemIds` are not here: `characterOrder`'s folders hold character membership, and `loreBook`,
+ * `plugins`, `hotkeys`, and `authRefreshes` are addressed by page, name, action, or URL, whatever ids
+ * their items carry.
  */
 const ITEM_LIST_MERGE_KINDS = new Set<string>([
     RESOURCE_KIND.modules,
@@ -2370,6 +2371,7 @@ const ITEM_LIST_MERGE_KINDS = new Set<string>([
     COLLECTION_KIND.credentials,
     COLLECTION_KIND.modelPresets,
     COLLECTION_KIND.modelProfiles,
+    COLLECTION_KIND.togglePresets,
 ]);
 
 /**
