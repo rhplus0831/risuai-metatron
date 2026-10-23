@@ -75,6 +75,7 @@
     import CreatorQuote from "./CreatorQuote.svelte";
     import { stopTTS } from "src/ts/process/tts";
     import MainMenu from "../UI/MainMenu.svelte";
+    import RefusedDataBanner from "../UI/RefusedDataBanner.svelte";
     import ClosedChatScreen from "./ClosedChatScreen.svelte";
     import { selection } from "src/ts/storage/selection.svelte";
     import AssetInput from "./AssetInput.svelte";
@@ -854,6 +855,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
     class="w-full h-full relative"
+    class:flex={chatShown && !!currentChat}
+    class:flex-col={chatShown && !!currentChat}
+    class:min-h-0={chatShown && !!currentChat}
     style={customStyle}
     onclick={() => {
         openMenu = false;
@@ -938,8 +942,14 @@
     {:else if !chatShown}
         <ClosedChatScreen character={currentCharacter} />
     {:else if currentChat}
+        {@const displayedChat = currentChatRef()}
+        {#if displayedChat}
+            <div class="chat-screen-content-width" style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px">
+                <RefusedDataBanner form="chat" chaId={displayedChat.chaId} chatId={displayedChat.chatId} />
+            </div>
+        {/if}
         <div
-            class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
+            class="min-h-0 flex-1 w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
             bind:this={chatScroller}
             class:metatron-chat-theme={settings.ui.theme === "metatron"}
             style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px"

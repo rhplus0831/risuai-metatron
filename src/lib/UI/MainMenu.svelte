@@ -9,6 +9,7 @@
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
     import { summarizingChats } from "src/ts/process/memoryTasks.svelte";
+    import { refusedItems } from "src/ts/storage/resourceSync.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
     import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
@@ -20,7 +21,7 @@
     import { collectHomeRecentCharacters } from "./mainMenuProjection";
     import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "../SideBars/pinnedChats";
     import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
-    import { chatStatusLabel, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
+    import { chatStatusLabel, refusedChatKeys, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
 
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
@@ -32,6 +33,7 @@
     const summarizing = $derived(summarizingChats());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
+        refused: refusedChatKeys(refusedItems()),
         generating: generatingChatKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,

@@ -8,6 +8,7 @@ import {
     folderStatus,
     groupMemoryCount,
     memoryCountText,
+    refusedChatKeys,
     resolveChatStatus,
     type ChatStatus,
     type ChatStatusSets,
@@ -17,6 +18,69 @@ import {
 afterEach(() => changeLanguage("en"));
 
 describe("sidebar chat statuses", () => {
+    it("resolves refused above generating, memory and unseen, but below recovery for the requested chat", () => {
+        const key = "a\u0000shared";
+        const sets: ChatStatusSets = {
+            recovery: new Set(),
+            refused: new Set([key]),
+            generating: new Set([key]),
+            memory: new Set([key]),
+            unseen: new Set([key, "b\u0000shared"]),
+        };
+        expect(resolveChatStatus(sets, key)).toBe("refused");
+        expect(resolveChatStatus({ ...sets, generating: new Set() }, key)).toBe("refused");
+        expect(resolveChatStatus({ ...sets, generating: new Set(), memory: new Set() }, key)).toBe("refused");
+        expect(resolveChatStatus({ ...sets, recovery: new Set([key]) }, key)).toBe("recovery");
+        expect(resolveChatStatus(sets, "b\u0000shared")).toBe("unseen");
+        expect(resolveChatStatus(sets, "a\u0000idle")).toBeNull();
+    });
+
+    it("aggregates refused above generating, memory and unseen and below recovery across characters and folders", () => {
+        const statuses = collectCharacterStatuses({
+            recovery: new Set(["recovering\u0000lost"]),
+            refused: new Set([
+                "recovering\u0000refused",
+                "busy\u0000refused",
+                "memory\u0000refused",
+                "new\u0000refused",
+            ]),
+            generating: new Set(["busy\u0000other", "working\u0000other"]),
+            memory: new Set(["memory\u0000other", "summarizing\u0000other"]),
+            unseen: new Set(["new\u0000other", "unseen\u0000other"]),
+        });
+        expect(statuses).toEqual(
+            new Map<string, ChatStatus>([
+                ["recovering", "recovery"],
+                ["busy", "refused"],
+                ["memory", "refused"],
+                ["new", "refused"],
+                ["working", "generating"],
+                ["summarizing", "memory"],
+                ["unseen", "unseen"],
+            ]),
+        );
+        for (const members of [
+            ["working", "busy"],
+            ["summarizing", "memory"],
+            ["unseen", "new"],
+        ]) {
+            expect(folderStatus(statuses, members)).toBe("refused");
+            expect(folderStatus(statuses, [...members].reverse())).toBe("refused");
+        }
+        expect(folderStatus(statuses, ["busy", "recovering", "idle"])).toBe("recovery");
+    });
+
+    it("maps only chat refusals to character and chat status keys", () => {
+        expect(
+            refusedChatKeys([
+                { kind: "chat", key: "opaque-chat-a", chaId: "a", chatId: "shared", reason: "refused" },
+                { kind: "chat", key: "opaque-chat-b", chaId: "b", chatId: "shared", reason: "refused deletion" },
+                { kind: "record", key: "opaque-record", resourceKind: "characters", id: "a", reason: "refused" },
+                { kind: "order", key: "opaque-order", chaId: "a", reason: "refused" },
+            ]),
+        ).toEqual(new Set(["a\u0000shared", "b\u0000shared"]));
+    });
+
     it("resolves only the requested chat, with recovery before generating before unseen", () => {
         const recoveryKeys = ["a\u0000all", "a\u0000recovery-generating", "a\u0000recovery-unseen", "a\u0000recovery"];
         const sets: ChatStatusSets = {
@@ -53,7 +117,7 @@ describe("sidebar chat statuses", () => {
                 null,
             ]);
         }
-        expect(CHAT_STATUS_PRIORITY).toEqual(["recovery", "generating", "memory", "unseen"]);
+        expect(CHAT_STATUS_PRIORITY).toEqual(["recovery", "refused", "generating", "memory", "unseen"]);
         expect(
             resolveChatStatus({ recovery: new Set(), generating: new Set(), unseen: new Set() }, keys[0]),
         ).toBeNull();

@@ -21,6 +21,7 @@
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
     import ReloadNotice from "./lib/Others/ReloadNotice.svelte";
+    import RefusedDataBanner from "./lib/UI/RefusedDataBanner.svelte";
     import TerminalNotice from "./lib/Others/TerminalNotice.svelte";
     import PushPrompt from "./lib/Others/PushPrompt.svelte";
     import RealmPopUp from "./lib/UI/Realm/RealmPopUp.svelte";
@@ -274,6 +275,7 @@
     {#if $alertStore.type !== "none"}
         <AlertComp />
     {/if}
+    <RefusedDataBanner form="app" />
     <ReloadNotice />
     <TerminalNotice />
     {#if $loadedStore}

@@ -52,6 +52,31 @@ function render(statuses?: ReadonlyMap<string, ChatStatus>) {
 }
 
 describe("PinnedChatsRail status badges", () => {
+    it("renders a labeled refused badge, including when the pinned chat is also unseen", () => {
+        const sets: ChatStatusSets = {
+            recovery: new Set(),
+            refused: new Set(["b\u0000shared"]),
+            generating: new Set(),
+            unseen: new Set(["b\u0000shared"]),
+        };
+        const resolved = resolveChatStatus(sets, "b\u0000shared");
+        expect(resolved).toBe("refused");
+        const { rows } = render(
+            new Map<string, ChatStatus>([
+                ["a\u0000shared", "refused"],
+                ["b\u0000shared", resolved!],
+            ]),
+        );
+        for (const index of [0, 2]) {
+            const badges = rows[index].querySelectorAll<HTMLElement>(badgeSelector);
+            expect(badges).toHaveLength(1);
+            expect(badges[0].dataset.risuChatStatus).toBe("refused");
+            const label = language.chatStatus.refused(items[index].chatName);
+            expect(badges[0].getAttribute("aria-label")).toBe(label);
+            expect(rows[index].getAttribute("aria-label")).toContain(label);
+        }
+    });
+
     it("renders one badge for each chat's own status using theme colors", () => {
         const { target, rows } = render(statuses);
         const expected: [ChatStatus, string][] = [

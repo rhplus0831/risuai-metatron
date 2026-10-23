@@ -9,6 +9,7 @@
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
     import { summarizingChats } from "src/ts/process/memoryTasks.svelte";
+    import { refusedItems } from "src/ts/storage/resourceSync.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
@@ -57,6 +58,7 @@
         folderStatus,
         groupMemoryCount,
         resolveChatStatus,
+        refusedChatKeys,
         type ChatStatus,
         type MemoryCount,
     } from "./chatStatus";
@@ -73,6 +75,7 @@
     const summarizing = $derived(summarizingChats());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
+        refused: refusedChatKeys(refusedItems()),
         generating: generatingChatKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,

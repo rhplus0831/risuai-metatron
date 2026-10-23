@@ -1,19 +1,26 @@
 import { language } from "src/lang";
+import type { RefusedItem } from "src/ts/storage/resourceSync.svelte";
 
-export type ChatStatus = "recovery" | "generating" | "memory" | "unseen";
+export type ChatStatus = "recovery" | "refused" | "generating" | "memory" | "unseen";
 
-export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = ["recovery", "generating", "memory", "unseen"];
+export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = ["recovery", "refused", "generating", "memory", "unseen"];
 
 /** A summarizing chat's progress (`done/total`). */
 export type MemoryCount = { done: number; total: number };
 
 export type ChatStatusSets = {
     recovery: ReadonlySet<string> | ReadonlyMap<string, unknown>;
+    refused?: ReadonlySet<string>;
     generating: ReadonlySet<string>;
     /** Chats whose HypaV3 memory task is queued or running (`summarizingChats`); none when absent. */
     memory?: ReadonlySet<string> | ReadonlyMap<string, unknown>;
     unseen: ReadonlySet<string>;
 };
+
+/** Chat status keys, distinct from the save adapter's opaque refusal keys. */
+export function refusedChatKeys(items: readonly RefusedItem[]): ReadonlySet<string> {
+    return new Set(items.filter((item) => item.kind === "chat").map((item) => `${item.chaId}\u0000${item.chatId}`));
+}
 
 export function resolveChatStatus(sets: ChatStatusSets, chatKey: string): ChatStatus | null {
     return CHAT_STATUS_PRIORITY.find((status) => sets[status]?.has(chatKey)) ?? null;

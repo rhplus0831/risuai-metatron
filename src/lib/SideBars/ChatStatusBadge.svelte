@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { BrainIcon, LoaderCircleIcon, MailIcon, TriangleAlertIcon } from "@lucide/svelte";
+    import { BrainIcon, LoaderCircleIcon, MailIcon, ShieldXIcon, TriangleAlertIcon } from "@lucide/svelte";
     import { memoryCountText, type ChatStatus, type MemoryCount } from "./chatStatus";
 
     interface Props {
@@ -18,6 +18,7 @@
     class:w-5={countText === null}
     class:px-1={countText !== null}
     class:bg-danger-500={status === "recovery"}
+    class:bg-neutral-500={status === "refused"}
     class:bg-primary-500={status === "generating"}
     class:bg-secondary-500={status === "memory"}
     class:bg-success-500={status === "unseen"}
@@ -27,6 +28,8 @@
 >
     {#if status === "recovery"}
         <TriangleAlertIcon size={12} aria-hidden="true" />
+    {:else if status === "refused"}
+        <ShieldXIcon size={12} aria-hidden="true" />
     {:else if status === "generating"}
         <LoaderCircleIcon size={12} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
     {:else if status === "memory"}
