@@ -8,7 +8,7 @@ an ordinary user action; the three that need several unlikely conditions at once
 under Not In This Plan with the reason. Every location below was re-read at `26d806d9e`
 (only docs and a Playwright measurement commit sit between the audit endpoint and it). Line
 numbers are approximate; the identifiers are the anchors. Re-verify each cited location before
-editing. Landed: 3 (`27cf4d231`), 5 (`df4d8017e`).
+editing. Landed: 3 (`27cf4d231`), 5 (`df4d8017e`), 1 (`f1d753045`).
 
 Each audited defect has a reproduction under
 `/home/codex/metatron-stage/combine-audit/evidence/`, written as a test of the desired
