@@ -11,7 +11,7 @@ Active planning and implementation:
   planned; slice 6's wait on the `heap-memory-reduction` merge is over.
 - [Per-Chat Send](per-chat-send.md): a per-chat local send registry replaces the
   tab-wide `doingChat` flag so different chats of one tab generate at the same time;
-  channel deadlines start at dispatch; slices 1–4 landed.
+  channel deadlines start at dispatch; slices 1–5 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
