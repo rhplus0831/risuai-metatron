@@ -1157,6 +1157,64 @@ describe("the server provider adapters", () => {
         });
     });
 
+    it.each([
+        {
+            behavior: "explicitly disables thinking when off on Claude 5 Opus",
+            model: "claude-opus-5",
+            thinkingType: "off",
+            thinking: { type: "disabled" },
+            outputConfig: undefined,
+        },
+        {
+            behavior: "uses adaptive thinking and the stored effort for budget on an adaptive-only model",
+            model: "claude-opus-4-8",
+            thinkingType: "budget",
+            thinking: { type: "adaptive", display: "summarized" },
+            outputConfig: { effort: "medium" },
+        },
+        {
+            behavior: "preserves the token budget on a model supporting both budget and adaptive thinking",
+            model: "claude-opus-4-6",
+            thinkingType: "budget",
+            thinking: { type: "enabled", budget_tokens: 4096, display: "summarized" },
+            outputConfig: undefined,
+        },
+        {
+            behavior: "omits thinking when off on a model without thinking enabled by default",
+            model: "claude-opus-4-6",
+            thinkingType: "off",
+            thinking: undefined,
+            outputConfig: undefined,
+        },
+    ])("Anthropic thinking: $behavior", async ({ model, thinkingType, thinking, outputConfig }) => {
+        const recorded = await run({
+            settings: {
+                preset: {
+                    aiModel: model,
+                    thinkingType,
+                    thinkingTokens: 4096,
+                    adaptiveThinkingEffort: "medium",
+                },
+            },
+            arg: prompt(),
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.result).toEqual({ type: "success", result: "claude says" });
+        expect(recorded.calls).toHaveLength(1);
+        const body = recorded.calls[0].body as Record<string, unknown>;
+        expect(body.model).toBe(model);
+        if (thinking === undefined) {
+            expect(body).not.toHaveProperty("thinking");
+        } else {
+            expect(body.thinking).toEqual(thinking);
+        }
+        if (outputConfig === undefined) {
+            expect(body).not.toHaveProperty("output_config");
+        } else {
+            expect(body.output_config).toEqual(outputConfig);
+        }
+    });
+
     it("Anthropic, streaming: the cumulative chunks, and a provider error that stays answer text", async () => {
         const recorded = await run({
             settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" }, providers: { useStreaming: true } },

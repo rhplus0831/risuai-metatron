@@ -8,6 +8,7 @@
 
 import type { SettingItem } from "./types";
 import { LLMFlags } from "../model/types";
+import { resolveClaudeThinkingType } from "../../../shared/llm/thinkingResolver.ts";
 
 /**
  * Basic parameter settings that are always visible
@@ -143,6 +144,7 @@ export const modelSpecificParameterItems: SettingItem[] = [
         type: "segmented",
         labelKey: "thinkingType",
         bindKey: "thinkingType",
+        getValue: (ctx) => resolveClaudeThinkingType(ctx.modelInfo.flags, ctx.preset.thinkingType),
         condition: (ctx) =>
             ctx.modelInfo.flags.includes(LLMFlags.claudeThinking) ||
             ctx.modelInfo.flags.includes(LLMFlags.claudeAdaptiveThinking),
@@ -183,7 +185,8 @@ export const modelSpecificParameterItems: SettingItem[] = [
         labelKey: "thinkingTokens",
         bindKey: "thinkingTokens",
         condition: (ctx) =>
-            ctx.modelInfo.parameters.includes("thinking_tokens") && ctx.preset.thinkingType === "budget",
+            ctx.modelInfo.parameters.includes("thinking_tokens") &&
+            resolveClaudeThinkingType(ctx.modelInfo.flags, ctx.preset.thinkingType) === "budget",
         options: {
             min: -1,
             max: 64000,
@@ -198,7 +201,8 @@ export const modelSpecificParameterItems: SettingItem[] = [
         labelKey: "adaptiveThinkingEffort",
         bindKey: "adaptiveThinkingEffort",
         condition: (ctx) =>
-            ctx.modelInfo.flags.includes(LLMFlags.claudeAdaptiveThinking) && ctx.preset.thinkingType === "adaptive",
+            ctx.modelInfo.flags.includes(LLMFlags.claudeAdaptiveThinking) &&
+            resolveClaudeThinkingType(ctx.modelInfo.flags, ctx.preset.thinkingType) === "adaptive",
         options: {
             segmentOptions: [
                 { value: "low", label: "Low" },

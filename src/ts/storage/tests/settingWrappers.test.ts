@@ -471,33 +471,34 @@ describe("SettingSegmented", () => {
     // visible options do not run the reset again.
     it("leaves a hidden value in a newly selected preset, also when the switch rebuilds equal options", () => {
         const thinking = modelSpecificParameterItems.find((entry) => entry.id === "params.thinkingType")!;
-        preset("a").thinkingType = "adaptive";
-        preset("b").thinkingType = "budget";
+        // A budget-only model: `adaptive` has no segment and does not resolve to a visible one.
+        preset("a").thinkingType = "budget";
+        preset("b").thinkingType = "adaptive";
         const context = ctx();
         let rebuilt = 0;
         Object.defineProperty(context, "modelInfo", {
             get: () => {
                 void activePreset.name;
                 rebuilt += 1;
-                return { flags: [LLMFlags.claudeAdaptiveThinking], parameters: [] };
+                return { flags: [LLMFlags.claudeThinking], parameters: [] };
             },
         });
         const { target } = render(SettingSegmented, { item: thinking, ctx: context });
-        expect(active(target)).toBe("Adaptive");
-        expect(segment(target, "Budget (Manual Tokens)")).toBeUndefined();
+        expect(active(target)).toBe("Budget (Manual Tokens)");
+        expect(segment(target, "Adaptive")).toBeUndefined();
         const before = rebuilt;
 
         changeToPreset("b");
         flushSync();
         expect(rebuilt).toBeGreaterThan(before);
-        expect(preset("b").thinkingType).toBe("budget");
-        expect(preset("a").thinkingType).toBe("adaptive");
+        expect(preset("b").thinkingType).toBe("adaptive");
+        expect(preset("a").thinkingType).toBe("budget");
         expect(active(target)).toBeUndefined();
 
         changeToPreset("a");
         flushSync();
-        expect(active(target)).toBe("Adaptive");
-        expect(preset("b").thinkingType).toBe("budget");
+        expect(active(target)).toBe("Budget (Manual Tokens)");
+        expect(preset("b").thinkingType).toBe("adaptive");
     });
 
     // The new-chat binding choice shows anything but `empty` as inherit, as `initialChatBinding`
@@ -537,6 +538,38 @@ describe("SettingSegmented", () => {
 
 describe("SettingRenderer", () => {
     const byId = (items: SettingItem[], id: string) => items.find((entry) => entry.id === id)!;
+
+    it("shows a stored budget as Adaptive on adaptive-only models and as Budget on budget-capable models without rewriting the preset", () => {
+        preset("a").thinkingType = "budget";
+        preset("a").thinkingTokens = 4096;
+        preset("a").adaptiveThinkingEffort = "medium";
+        profile("pa").modelId = "claude-opus-4-8";
+        const { target, query } = render(SettingRenderer, {
+            items: [
+                byId(modelSpecificParameterItems, "params.thinkingType"),
+                byId(modelSpecificParameterItems, "params.thinkingTokens"),
+                byId(modelSpecificParameterItems, "params.adaptiveThinkingEffort"),
+            ],
+        });
+        const activeMode = () =>
+            query('[data-setting-id="params.thinkingType"] .segmented-btn-active').textContent?.trim();
+
+        expect(activeMode()).toBe("Adaptive");
+        expect(
+            query('[data-setting-id="params.adaptiveThinkingEffort"] .segmented-btn-active').textContent?.trim(),
+        ).toBe("Medium");
+        expect(target.querySelector('[data-setting-id="params.thinkingTokens"]')).toBeNull();
+        expect(preset("a").thinkingType).toBe("budget");
+
+        profile("pa").modelId = "claude-opus-4-6";
+        flushSync();
+        expect(activeMode()).toBe("Budget (Manual Tokens)");
+        expect(query('[data-setting-id="params.thinkingTokens"] [role=slider]').getAttribute("aria-valuenow")).toBe(
+            "4096",
+        );
+        expect(target.querySelector('[data-setting-id="params.adaptiveThinkingEffort"]')).toBeNull();
+        expect(preset("a").thinkingType).toBe("budget");
+    });
 
     it("shows an item by its condition over the section views and the selected model preset's main profile, and its wrapper writes the record", () => {
         const always = byId(accessibilitySettingsItems, "acc.alwaysScrollToNewMessage");

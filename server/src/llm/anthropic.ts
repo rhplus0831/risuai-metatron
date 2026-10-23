@@ -4,6 +4,7 @@ import { Sha256 } from "@aws-crypto/sha256-js";
 import { HttpRequest } from "@smithy/protocol-http";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
+import { resolveClaudeThinkingType } from "../../../shared/llm/thinkingResolver.ts";
 import { NANOGPT_MESSAGES_ENDPOINT } from "../../../shared/llm/providers/nanogpt.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import type { MultiModal } from "../../../shared/openai.ts";
@@ -380,9 +381,14 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     );
 
     // Handle thinking mode: off, adaptive, or budget
-    if (db.thinkingType === "off") {
-        delete body.thinking;
-    } else if (db.thinkingType === "adaptive" && arg.modelInfo.flags.includes(LLMFlags.claudeAdaptiveThinking)) {
+    const thinkingType = resolveClaudeThinkingType(arg.modelInfo.flags, db.thinkingType);
+    if (thinkingType === "off") {
+        if (arg.modelInfo.flags.includes(LLMFlags.claudeThinkingOnByDefault)) {
+            body.thinking = { type: "disabled" };
+        } else {
+            delete body.thinking;
+        }
+    } else if (thinkingType === "adaptive" && arg.modelInfo.flags.includes(LLMFlags.claudeAdaptiveThinking)) {
         // Adaptive thinking mode
         delete body.thinking;
         body.thinking = { type: "adaptive", display: "summarized" };
