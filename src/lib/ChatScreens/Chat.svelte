@@ -395,6 +395,15 @@
         editMode = true;
     }
 
+    // Lua forms and interactive controls keep body clicks from opening the message editor.
+    function isInteractiveBodyTarget(target: EventTarget | null) {
+        const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+        const interactive = element?.closest(
+            'form[risu-form], input, textarea, select, button, label, a, [contenteditable]:not([contenteditable="false" i])',
+        );
+        return !!interactive && !!bodyRoot?.contains(interactive);
+    }
+
     function toggleOriginalEdit() {
         if (originalEditControlDisabled) return;
 
@@ -1034,8 +1043,13 @@
             class:hidden={editTranslationMode}
             class:prose-invert={$ColorSchemeTypeStore !== "light"}
             bind:this={bodyRoot}
-            onclick={() => {
-                if (settings.ui.clickToEdit && idx > -1 && !isOptimizedStreamingMessage) {
+            onclick={(event) => {
+                if (
+                    settings.ui.clickToEdit &&
+                    idx > -1 &&
+                    !isOptimizedStreamingMessage &&
+                    !isInteractiveBodyTarget(event.target)
+                ) {
                     startOriginalEdit();
                 }
             }}

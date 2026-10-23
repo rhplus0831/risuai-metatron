@@ -308,6 +308,16 @@ beforeEach(() => {
 });
 
 describe("chat row form submissions", () => {
+    let previousClickToEdit: boolean;
+
+    beforeEach(() => {
+        previousClickToEdit = settings.ui.clickToEdit;
+    });
+
+    afterEach(() => {
+        settings.ui.clickToEdit = previousClickToEdit;
+    });
+
     const markup = `<form risu-form="survey">
         <input name="answer" value="initial">
         <input name="choices" value=""><input name="choices" value="second">
@@ -329,6 +339,81 @@ describe("chat row form submissions", () => {
         form.dispatchEvent(event);
         expect(event.defaultPrevented).toBe(true);
     }
+
+    it("keeps form controls usable when click-to-edit is enabled", async () => {
+        boot("form-click-to-edit");
+        settings.ui.clickToEdit = true;
+        const { ui, form } = await renderForm(
+            markup.replace(
+                "</form>",
+                `<input type="checkbox" name="confirmed" value="yes">
+                <select name="topic">
+                    <option value="general">General</option>
+                    <option value="details">Details</option>
+                </select></form>`,
+            ),
+        );
+        ui.click(form.querySelector<HTMLInputElement>('[name="answer"]'));
+        await tick();
+        flushSync();
+        expect(ui.target.querySelector('form[risu-form="survey"]')).toBe(form);
+        expect(ui.textarea()).toBeNull();
+
+        const answer = form.querySelector<HTMLInputElement>('[name="answer"]')!;
+        const confirmed = form.querySelector<HTMLInputElement>('[name="confirmed"]')!;
+        const topic = form.querySelector<HTMLSelectElement>('[name="topic"]')!;
+        expect(confirmed).not.toBeNull();
+        expect(topic).not.toBeNull();
+        expect(topic.options).toHaveLength(2);
+        answer.value = "my Lua form answer";
+        answer.dispatchEvent(new Event("input", { bubbles: true }));
+        ui.click(confirmed);
+        ui.click(topic);
+        topic.value = "details";
+        topic.dispatchEvent(new Event("change", { bubbles: true }));
+
+        ui.click(form.querySelector<HTMLButtonElement>('button[type="submit"]'));
+        await tick();
+        flushSync();
+        expect(runServerJob).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(runServerJob).mock.calls[0][2]).toMatchObject({
+            kind: "command",
+            command: {
+                type: "form",
+                key: "survey",
+                values: { answer: "my Lua form answer", confirmed: "yes", topic: "details" },
+            },
+        });
+        expect(ui.body().querySelector('form[risu-form="survey"]')).toBe(form);
+        expect(ui.textarea()).toBeNull();
+        expect(form.querySelector<HTMLInputElement>('[name="answer"]')!.value).toBe("my Lua form answer");
+        expect(form.querySelector<HTMLInputElement>('[name="confirmed"]')!.checked).toBe(true);
+        expect(form.querySelector<HTMLSelectElement>('[name="topic"]')!.value).toBe("details");
+    });
+
+    it("keeps the form mounted after an input click when click-to-edit is disabled", async () => {
+        boot("form-without-click-to-edit");
+        settings.ui.clickToEdit = false;
+        const { ui, form } = await renderForm();
+        ui.click(form.querySelector<HTMLInputElement>('[name="answer"]'));
+        await tick();
+        flushSync();
+        expect(ui.target.querySelector('form[risu-form="survey"]')).toBe(form);
+        expect(ui.textarea()).toBeNull();
+    });
+
+    it("opens the message editor when plain message text is clicked with click-to-edit enabled", async () => {
+        boot("plain-text-click-to-edit");
+        settings.ui.clickToEdit = true;
+        const ui = render({ message: "Plain message text" });
+        await ui.instance.whenRendered();
+        flushSync();
+        expect(ui.textarea()).toBeNull();
+        ui.click(ui.body().querySelector("p"));
+        await tick();
+        flushSync();
+        expect(ui.textarea()).not.toBeNull();
+    });
 
     it("submits string values once to the chat captured before a pending job and a chat switch", async () => {
         const { ref } = boot("form-source");
