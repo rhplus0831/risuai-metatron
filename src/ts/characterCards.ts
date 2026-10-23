@@ -809,12 +809,6 @@ export async function exportChar(chaId: string): Promise<string> {
         return "";
     }
 
-    if (!char.image) {
-        const res = await fetch("/none.webp");
-        const data = new Uint8Array(await res.arrayBuffer());
-        char.image = await saveAsset(data);
-    }
-
     const option = await alertCardExport();
     if (option.type === "") {
         exportCharacterCard(
@@ -834,6 +828,27 @@ export async function exportChar(chaId: string): Promise<string> {
         return option.type;
     }
     return "";
+}
+
+async function readCardExportImage(image: string): Promise<Uint8Array> {
+    if (image) {
+        // Only missing or empty portraits fall back; transport errors must still fail the export.
+        const img = await readImage(image);
+        if (img?.length) {
+            return img;
+        }
+        console.warn("Export portrait missing or empty:", image);
+    }
+
+    const res = await fetch("/none.webp");
+    if (!res.ok) {
+        throw new Error(language.errors.noData);
+    }
+    const fallbackImage = new Uint8Array(await res.arrayBuffer());
+    if (!fallbackImage.length) {
+        throw new Error(language.errors.noData);
+    }
+    return fallbackImage;
 }
 
 /**
@@ -1436,8 +1451,7 @@ export async function exportCharacterCard(
         return { missingAssets };
     };
     try {
-        let img = await readImage(char.image);
-        if (img === null) throw new Error(language.errors.noData);
+        let img = await readCardExportImage(char.image);
         char.image = "";
         img = type === "png" ? await reencodeImage(img) : img;
         if (!arg.writer && type !== "json") {

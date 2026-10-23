@@ -121,6 +121,18 @@ function batchResponse(keys: readonly string[], data: Map<string, Uint8Array>) {
     );
 }
 
+/** Answers the exporter's same-origin `/none.webp` request with the bundled fallback portrait. */
+function stubFallbackFetch() {
+    const fallback = new Uint8Array(readFileSync(path.resolve(__dirname, "../../public/none.webp")));
+    const realFetch = globalThis.fetch;
+    const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (input, init) =>
+            input === "/none.webp" ? new Response(fallback) : realFetch(input, init),
+        );
+    return { fallback, fetch };
+}
+
 async function boot() {
     vi.resetModules();
     const booted = await bootMutations((fake) => {
@@ -554,24 +566,72 @@ describe("batched exports", () => {
         },
     );
 
-    it.each(["owned", "borrowed"])("a missing portrait fails the %s card export", async (ownership) => {
+    it("exportChar uses the fallback portrait for an empty image without saving an asset", async () => {
         const h = await boot();
         vi.mocked(h.api.readImage).mockResolvedValue(null);
-        const writer = ownership === "borrowed" ? new h.api.LocalWriter() : undefined;
-        if (writer) await writer.init("caller", ["png"]);
-        const exporting = h.cards.exportCharacterCard(character(), "png", { spec: "v3", writer });
-        if (writer) await expect(exporting).rejects.toBeInstanceOf(Error);
-        else await exporting;
-        expect(h.abort).toHaveBeenCalledOnce();
-        expect(h.requests).toHaveLength(0);
-        expect(h.sink.close).not.toHaveBeenCalled();
-        expect(alerts.normal).not.toHaveBeenCalled();
-        if (writer) expect(alerts.error).not.toHaveBeenCalled();
-        else expect(alerts.error).toHaveBeenCalledOnce();
+        const { fallback } = stubFallbackFetch();
+        const id = h.characterStore.addCharacter(character({ image: "" }));
+        alerts.cardExport.mockResolvedValue({ type: "", type2: "charx" });
+
+        await h.cards.exportChar(id);
+        await flush();
+
+        expect(assets.saved).toEqual([]);
+        const zip = fflate.unzipSync(h.output());
+        expect(Array.from(zip["assets/icon/image/main.png"])).toEqual(Array.from(fallback));
+        expect(h.sink.close).toHaveBeenCalledOnce();
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successExport);
     });
+
+    it.each(["owned", "borrowed"])(
+        "a missing portrait exports the %s card with the fallback image",
+        async (ownership) => {
+            const h = await boot();
+            vi.mocked(h.api.readImage).mockResolvedValue(null);
+            const { fallback } = stubFallbackFetch();
+            const writer = ownership === "borrowed" ? new h.api.LocalWriter() : undefined;
+            if (writer) await writer.init("caller", ["charx"]);
+            await h.cards.exportCharacterCard(character(), "charx", { spec: "v3", writer });
+            const zip = fflate.unzipSync(h.output());
+            expect(Array.from(zip["assets/icon/image/main.png"])).toEqual(Array.from(fallback));
+            expect(console.warn).toHaveBeenCalledWith(expect.any(String), "assets/portrait.png");
+            expect(h.abort).not.toHaveBeenCalled();
+            expect(h.sink.close).toHaveBeenCalledOnce();
+            expect(alerts.error).not.toHaveBeenCalled();
+            if (writer) expect(alerts.normal).not.toHaveBeenCalled();
+            else expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successExport);
+        },
+    );
 });
 
 describe("export failure ownership", () => {
+    it.each(["owned", "borrowed"])(
+        "a rejected portrait read aborts the %s card without fetching the fallback",
+        async (ownership) => {
+            const h = await boot();
+            const error = new Error("portrait read failed");
+            vi.mocked(h.api.readImage).mockRejectedValue(error);
+            const { fetch } = stubFallbackFetch();
+            const writer = ownership === "borrowed" ? new h.api.LocalWriter() : undefined;
+            if (writer) await writer.init("caller", ["charx"]);
+
+            const exporting = h.cards.exportCharacterCard(character(), "charx", { spec: "v3", writer });
+            if (writer) {
+                await expect(exporting).rejects.toBe(error);
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(h.sink.abort).toHaveBeenCalledExactlyOnceWith(error);
+            } else {
+                await exporting;
+                expect(alerts.error).toHaveBeenCalledExactlyOnceWith(error);
+            }
+            expect(h.abort).toHaveBeenCalledExactlyOnceWith(error);
+            expect(h.sink.close).not.toHaveBeenCalled();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(fetch.mock.calls.some(([input]) => input === "/none.webp")).toBe(false);
+        },
+    );
+
     const owners = [
         "risum",
         "embedded risum",
