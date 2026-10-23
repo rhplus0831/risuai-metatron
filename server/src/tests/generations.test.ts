@@ -423,36 +423,42 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect((await create({ kind: "send", context: await context(), clientId: "tab" })).status).toBe(200);
     });
 
-    it("keeps one delivery stream per job, orders handshakes by their attach stamp, and refuses the password, another client, and an unknown job", async () => {
+    it("keeps one delivery stream per job, orders handshakes by their attach stamp, replays the latest stage on attach, and refuses the password, another client, and an unknown job", async () => {
         await listen();
         const jobId = await createOk();
         step((job) => {
             job.emit({ type: "progress", payload: 1 });
+            job.emit({ type: "stage", stage: "preparing" });
         });
         expect(await (await follow(jobId, { token: "pw" })).closed).not.toBe(1000);
         expect(await (await follow(jobId, { clientId: "other" })).closed).not.toBe(1000);
         expect(await (await follow("unknown")).closed).not.toBe(1000);
         const a = await follow(jobId, { attach: 5 });
-        await until(a, 1);
+        await a.fence();
+        expect(a.events.filter((event) => event.type === "stage")).toEqual([
+            { type: "stage", epoch, stage: "preparing" },
+        ]);
         // An older stamp never displaces the newest attachment: refused, and `a` keeps the stream.
         const b = await follow(jobId, { attach: 3 });
         expect(await b.closed).not.toBe(1000);
         expect(b.events).toEqual([]);
         step((job) => {
+            job.emit({ type: "stage", stage: "memory" });
             job.emit({ type: "progress", payload: 2 });
         });
-        await until(a, 2);
-        expect(types(a.events)).toEqual(["chatPatch", "progress"]);
+        await until(a, 4);
+        expect(types(a.events)).toEqual(["chatPatch", "stage", "stage", "progress"]);
         // A newer stamp supersedes: `a` is closed with 4001 and `c` gets the fresh snapshot.
         const c = await follow(jobId, { attach: 6 });
         expect(await a.closed).toBe(4001);
-        await until(c, 1);
+        await c.fence();
+        expect(c.events.filter((event) => event.type === "stage")).toEqual([{ type: "stage", epoch, stage: "memory" }]);
         step((job) => {
             job.emit({ type: "progress", payload: 3 });
         });
-        await until(c, 2);
-        expect(types(c.events)).toEqual(["chatPatch", "progress"]);
-        expect(a.events).toHaveLength(2);
+        await until(c, 3);
+        expect(types(c.events)).toEqual(["chatPatch", "stage", "progress"]);
+        expect(a.events).toHaveLength(4);
         c.ws.close();
         await c.closed;
         // The runner reaches the owner's messages through `onClientMessage`.
@@ -463,8 +469,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         // A handshake without a stamp is stamp 0: older than 6, so it would be refused.
         expect(await (await follow(jobId)).closed).not.toBe(1000);
         const d = await follow(jobId, { attach: 7 });
-        await until(d, 1);
-        await sleep(20);
+        await d.fence();
         d.ws.send(JSON.stringify({ answer: 42 }));
         d.ws.send("not json");
         await waitFor(() => received.length >= 1);

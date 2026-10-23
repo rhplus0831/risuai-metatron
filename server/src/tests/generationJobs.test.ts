@@ -1,10 +1,13 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket as WsClient } from "ws";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
+import type { GenerationEvent } from "../../../shared/jobs.ts";
 import { type ChangeFeedEvent, createChangeFeed } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { CommittedWriteError, createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
@@ -21,7 +24,7 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
-import { sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
 
 // The generation job registry (`server/src/jobs/generationJobs.ts`) in process, with a fake runner
 // per test: admission, the job's write capability (lock handoff, rollback, the one F-b retry, the
@@ -187,8 +190,140 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
     };
     const ended = (jobId: string) => waitFor(() => jobs.status(jobId, "tab")?.state === "ended");
     const owner = (messageId: string) => lock.ownerOf({ ...ref, messageId })?.generationId ?? null;
-    return { dir, lock, store, snapshots, jobs, revision, text, context, create, run, ended, owner, bound, events };
+    /** Follows the registry's owner stream; a ping fences the snapshot and any preceding emits. */
+    const follow = async (jobId: string) => {
+        const listener = createServer();
+        listener.on("upgrade", (req, socket, head) => jobs.handleUpgrade(req, socket, head));
+        await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+        allowListenerOrigin(listener);
+        cleanups.push(() => new Promise<void>((resolve) => listener.close(() => resolve())));
+        const { port } = listener.address() as { port: number };
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/generations/${jobId}/ws?clientId=tab`);
+        const events: GenerationEvent[] = [];
+        const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        ws.on("message", (data) => {
+            const event = JSON.parse(String(data)) as GenerationEvent;
+            if (event.type !== "ping") {
+                events.push(event);
+            }
+        });
+        cleanups.push(async () => {
+            ws.close();
+            await closed;
+        });
+        await new Promise<void>((resolve, reject) => {
+            ws.once("open", resolve);
+            ws.once("error", reject);
+        });
+        const fence = () =>
+            new Promise<void>((resolve, reject) => {
+                const onClose = () => reject(new Error("fence: the socket closed before the pong"));
+                ws.once("close", onClose);
+                ws.once("pong", () => {
+                    ws.off("close", onClose);
+                    resolve();
+                });
+                ws.ping();
+            });
+        return { events, fence };
+    };
+    return {
+        dir,
+        lock,
+        store,
+        snapshots,
+        jobs,
+        revision,
+        text,
+        context,
+        create,
+        run,
+        ended,
+        owner,
+        bound,
+        events,
+        follow,
+    };
 }
+
+describe("the presentation stage", () => {
+    it("sends a repeated stage once and sends each changed stage to the owner", async () => {
+        const { store, create, run, follow } = setup();
+        let ready!: (job: RunningJob) => void;
+        const started = new Promise<RunningJob>((resolve) => {
+            ready = resolve;
+        });
+        run(async (job) => {
+            ready(job);
+            await aborted(job);
+        });
+        const jobId = create();
+        const job = await started;
+        const owner = await follow(jobId);
+        for (const stage of ["preparing", "preparing", "memory", "memory", "generating", "finishing"] as const) {
+            job.emit({ type: "stage", stage });
+        }
+        await owner.fence();
+        expect(owner.events.filter((event) => event.type === "stage")).toEqual([
+            { type: "stage", epoch: store.epoch(), stage: "preparing" },
+            { type: "stage", epoch: store.epoch(), stage: "memory" },
+            { type: "stage", epoch: store.epoch(), stage: "generating" },
+            { type: "stage", epoch: store.epoch(), stage: "finishing" },
+        ]);
+    });
+
+    it("replays the current stage on a late attach after the preset and before the current reply", async () => {
+        const { store, create, run, follow, revision, bound } = setup();
+        let ready!: () => void;
+        const started = new Promise<void>((resolve) => {
+            ready = resolve;
+        });
+        run(async (job) => {
+            job.emit({ type: "stage", stage: "preparing" });
+            job.emit({ type: "preset", presetId: bound.presetId });
+            job.emit({ type: "stage", stage: "memory" });
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g1")])] }));
+            job.emit({
+                type: "accepted",
+                jobId: job.id,
+                messageId: "r",
+                generationId: "g1",
+                revision: revision(),
+                text: "",
+            });
+            job.emit({ type: "chunk", messageId: "r", generationId: "g1", text: "one two", seq: 1 });
+            job.emit({ type: "stage", stage: "generating" });
+            ready();
+            await aborted(job);
+        });
+        const jobId = create();
+        await started;
+        const owner = await follow(jobId);
+        await owner.fence();
+        const snapshot = owner.events.filter(
+            (event) => event.type === "preset" || event.type === "stage" || event.type === "accepted",
+        );
+        expect(snapshot.map((event) => event.type)).toEqual(["preset", "stage", "accepted"]);
+        expect(snapshot[0]).toEqual({ type: "preset", epoch: store.epoch(), presetId: bound.presetId });
+        expect(snapshot[1]).toEqual({ type: "stage", epoch: store.epoch(), stage: "generating" });
+        expect(snapshot[2]).toMatchObject({ type: "accepted", messageId: "r", text: "one two", seq: 1 });
+    });
+
+    it("omits the stage from the snapshot when the job ended before its owner attached", async () => {
+        const { store, create, run, follow, revision, bound } = setup();
+        const outcome = run(async (job) => {
+            job.emit({ type: "preset", presetId: bound.presetId });
+            job.emit({ type: "stage", stage: "finishing" });
+            job.emit({ type: "done", revision: revision() });
+        });
+        const jobId = create();
+        await outcome;
+        const owner = await follow(jobId);
+        await owner.fence();
+        expect(owner.events.filter((event) => event.type === "stage")).toEqual([]);
+        expect(owner.events.at(-1)).toEqual({ type: "done", epoch: store.epoch(), revision: revision() });
+    });
+});
 
 describe("admission", () => {
     it("checks the epoch, the chat, a running job (before staleness), and the revision, in that order", async () => {

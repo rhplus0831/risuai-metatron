@@ -135,6 +135,14 @@ export const GENERATION_ERROR_REASONS = ["failed", "aborted", "shutdown", "maint
 export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
 
 /**
+ * A presentation stage of a running job (what the send/stop spinner shows), retained by the
+ * registry and replayed on attach. Never a failure stage; failures use `GenerationErrorStage`.
+ */
+export const GENERATION_STAGES = ["preparing", "memory", "generating", "finishing"] as const;
+
+export type GenerationStage = (typeof GENERATION_STAGES)[number];
+
+/**
  * Where a job failed: the job's setup (its scope, bindings, and speakers), the input stage, prompt
  * assembly, an LLM request, a script (Lua, a trigger, a regex script, a plugin hook), a write, or
  * the tail after the reply.
@@ -663,6 +671,8 @@ export type GenerationEvent =
     | GenerationAcceptedEvent
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
+    /** The job's current stage, sent only when it changes, retained and replayed on attach while it runs. */
+    | { type: "stage"; epoch: string; stage: GenerationStage }
     | GenerationResourceEvent
     | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }

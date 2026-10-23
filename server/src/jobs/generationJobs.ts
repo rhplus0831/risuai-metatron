@@ -21,6 +21,7 @@ import {
     type GenerationErrorStage,
     type GenerationEvent,
     type GenerationKind,
+    type GenerationStage,
     type GenerationStatus,
     type GenerationTerminalEvent,
     HIDDEN_HYDRATION_KINDS,
@@ -168,6 +169,8 @@ export type RunningJob = {
      * Sends an event to the owner. `accepted` is preceded by the job chat's hydration; `done` and
      * `error` end the job (the chat's hydration and the terminal event go out, and every later
      * call throws `GenerationJobEndedError`). A `resource` of a hidden kind throws.
+     * A `stage` equal to the job's current one is not sent; the registry keeps the latest and
+     * replays it on attach while the job runs.
      */
     emit(event: JobEventInput): void;
     /**
@@ -258,6 +261,8 @@ type Job = {
     /** The newest attach stamp admitted (the client's `attach` query); an older handshake is refused. */
     attachStamp: number;
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
+    /** The current presentation stage, retained for attach while the job runs. */
+    stage: GenerationStage | null;
     /** What the job's callbacks act on (its preset can change once: `setCallbackPreset`). */
     targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
@@ -729,6 +734,7 @@ export function createGenerationJobs(options: {
             text = JSON.stringify(terminal);
         }
         job.ended = true;
+        job.stage = null;
         job.endedAt = Date.now();
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
@@ -1023,6 +1029,12 @@ export function createGenerationJobs(options: {
                     case "preset":
                         job.preset = event;
                         break;
+                    case "stage":
+                        if (event.stage === job.stage) {
+                            return;
+                        }
+                        job.stage = event.stage;
+                        break;
                     case "resource":
                         track(
                             job,
@@ -1185,6 +1197,7 @@ export function createGenerationJobs(options: {
             watermarks: new Map(),
             attachStamp: -1,
             preset: null,
+            stage: null,
             targets: {
                 chatRef: { chaId: characterId, chatId },
                 presetId: body.context.presetId ?? "",
@@ -1259,12 +1272,15 @@ export function createGenerationJobs(options: {
         // What the owner needs to resume: the job chat (what changed since the last copy a socket
         // took while the job runs: the owner applies it only at exactly that copy's revision or the
         // current one, and asks for the chat whole otherwise; whole once it ended) and every record
-        // the job sent, read fresh, the chosen preset, the current reply with its text, and the
-        // result if it ended.
+        // the job sent, read fresh, the chosen preset, the current stage while the job runs, the
+        // current reply with its text, and the result if it ended.
         const chat = jobChatEvent(job, job.ended ? "whole" : "patch");
         const events: GenerationEvent[] = [...(chat ? [chat.event] : []), ...freshRecords(job)];
         if (job.preset) {
             events.push(job.preset);
+        }
+        if (!job.ended && job.stage !== null) {
+            events.push({ type: "stage", epoch: job.epoch, stage: job.stage });
         }
         const current = currentReply(job);
         if (current) {
