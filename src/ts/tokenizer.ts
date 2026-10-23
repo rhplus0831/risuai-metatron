@@ -58,6 +58,13 @@ export function tabTokenScope(presetScope?: PresetScope, mainModel?: LLMModel): 
     };
 }
 
+export function tokenScopeKey(captured: TabTokenScope = tabTokenScope()): string {
+    return tokenizerIdentityKey({
+        ...captured,
+        model: { tokenizer: captured.modelTokenizer, internalID: captured.modelInternalID },
+    });
+}
+
 async function requestTokenJson(path: string, payload: unknown, signal?: AbortSignal) {
     let response: Response;
     try {
@@ -159,15 +166,7 @@ export async function countTokens(text: string, scope?: PresetScope, signal?: Ab
         throw signal.reason;
     }
     const captured = tabTokenScope(scope);
-    const cacheKey = captured.useTokenizerCaching
-        ? JSON.stringify([
-              text,
-              tokenizerIdentityKey({
-                  ...captured,
-                  model: { tokenizer: captured.modelTokenizer, internalID: captured.modelInternalID },
-              }),
-          ])
-        : "";
+    const cacheKey = captured.useTokenizerCaching ? JSON.stringify([text, tokenScopeKey(captured)]) : "";
     if (captured.useTokenizerCaching) {
         const cached = countCache.get(cacheKey);
         if (cached !== undefined) {
@@ -231,12 +230,26 @@ export async function tokenize(data: string, scope?: PresetScope) {
     return countTokens(data, scope);
 }
 
-export async function tokenizeAccurate(data: string, consistantChar?: boolean, signal?: AbortSignal) {
-    data = risuChatParser(data.replace("{{slot}}", ""), {
+function expandTokenCountText(text: string, consistantChar?: boolean): string {
+    return risuChatParser(text.replace("{{slot}}", ""), {
         tokenizeAccurate: true,
-        consistantChar: consistantChar,
+        consistantChar,
     });
-    return countTokens(data, undefined, signal);
+}
+
+export type TokenCountInput = { text: string; expanded: string; scope: string } | { text: string; error: unknown };
+
+/** Reads count dependencies synchronously, carrying preparation failures to the delayed count. */
+export function tokenCountInput(text: string): TokenCountInput {
+    try {
+        return { text, expanded: expandTokenCountText(text), scope: tokenScopeKey() };
+    } catch (error) {
+        return { text, error };
+    }
+}
+
+export async function tokenizeAccurate(data: string, consistantChar?: boolean, signal?: AbortSignal) {
+    return countTokens(expandTokenCountText(data, consistantChar), undefined, signal);
 }
 
 /** The shared token arithmetic (`shared/prompt/chatTokens.ts`) with the client's server-backed counts. */

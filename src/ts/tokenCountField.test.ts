@@ -5,6 +5,32 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("createTokenCountField", () => {
+    it("recounts after 400 ms when only the scope of a composite input changes", async () => {
+        type Input = { text: string; scope: string };
+        const count = vi.fn(async (input: Input, _signal: AbortSignal) => (input.scope === "first" ? 11 : 29));
+        const apply = vi.fn();
+        const field = createTokenCountField({
+            count,
+            apply,
+            same: (a, b) => a.text === b.text && a.scope === b.scope,
+        });
+
+        field.update({ text: "unchanged", scope: "first" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(apply).toHaveBeenCalledExactlyOnceWith(11);
+
+        field.update({ text: "unchanged", scope: "second" });
+        await vi.advanceTimersByTimeAsync(399);
+        expect(count).toHaveBeenCalledTimes(1);
+        expect(apply).toHaveBeenCalledExactlyOnceWith(11);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(count).toHaveBeenCalledTimes(2);
+        expect(count).toHaveBeenLastCalledWith({ text: "unchanged", scope: "second" }, expect.any(AbortSignal));
+        expect(apply.mock.calls).toEqual([[11], [29]]);
+        field.dispose();
+    });
+
     it("counts immediately, waits 400 ms after the last edit, and counts immediately again after reset", async () => {
         const count = vi.fn(async (_text: string, _signal: AbortSignal) => 17);
         const apply = vi.fn();

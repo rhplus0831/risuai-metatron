@@ -9,8 +9,8 @@ import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 // edited control as it is removed; `TextAreaInput`'s `onchange` writes the value) goes nowhere once
 // the shown list no longer holds the entry, and a binding read after the row's list is gone never
 // reaches a removed record element. happy-dom removes nodes silently, so the removal-time `change`
-// is dispatched here from a patched `Element.prototype.remove`. SortableJS, the tokenizer, and the
-// alert dialogs are doubled.
+// is dispatched here from a patched `Element.prototype.remove`. SortableJS, the token count route
+// (`authFetch`), and the alert dialogs are doubled.
 
 /** The SortableJS instances the lists created (happy-dom cannot drag): their options and lifecycle. */
 const sortables = vi.hoisted(
@@ -48,8 +48,18 @@ vi.mock("sortablejs/modular/sortable.core.esm.js", () => {
     }
     return { default: Sortable };
 });
-vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn(async () => 0) }));
-const mocks = vi.hoisted(() => ({ alertConfirm: vi.fn(async () => true) }));
+/** Answers `POST /api/tokens/count` with `count` for every text. */
+const countAnswer = vi.hoisted(() => (count: number) => async (_path: string, init?: RequestInit) => {
+    const { texts } = JSON.parse(String(init?.body)) as { texts: string[] };
+    return Response.json({ counts: texts.map(() => count) });
+});
+const mocks = vi.hoisted(() => ({
+    alertConfirm: vi.fn(async () => true),
+    authFetch: vi.fn(countAnswer(0)),
+}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
+);
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: mocks.alertConfirm,
@@ -58,7 +68,6 @@ vi.mock("src/ts/alert", async () =>
 
 import LoreBookList from "./LoreBookList.svelte";
 import { language } from "src/lang";
-import { tokenizeAccurate } from "src/ts/tokenizer";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { findChat, selectChat } from "src/ts/storage/chatStore.svelte";
@@ -169,10 +178,10 @@ afterEach(async () => {
 describe("LoreBookList token counts", () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(29);
+        mocks.authFetch.mockReset().mockImplementation(countAnswer(29));
     });
     afterEach(() => {
-        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(0);
+        mocks.authFetch.mockReset().mockImplementation(countAnswer(0));
         vi.useRealTimers();
     });
 
@@ -183,26 +192,26 @@ describe("LoreBookList token counts", () => {
         const row = rows()[0];
         expect(detail(row)).toBeNull();
         await vi.advanceTimersByTimeAsync(400);
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(mocks.authFetch).not.toHaveBeenCalled();
 
         const fields = open(row);
-        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith("Lore content", undefined, expect.any(AbortSignal));
-        await tick();
+        expect(mocks.authFetch).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(0);
         flushSync();
         expect(fields.textContent).toContain(`29 ${language.tokens}`);
-        vi.mocked(tokenizeAccurate).mockClear();
+        mocks.authFetch.mockClear();
 
         type(fields.querySelector("textarea")!, "edited lore content");
         flushSync();
         expect(globalLore("alpha")[0].content).toBe("edited lore content");
         await vi.advanceTimersByTimeAsync(399);
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(mocks.authFetch).not.toHaveBeenCalled();
         row.querySelector("button")!.click();
         flushSync();
         expect(detail(row)).toBeNull();
         await vi.advanceTimersByTimeAsync(400);
 
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(mocks.authFetch).not.toHaveBeenCalled();
     });
 });
 

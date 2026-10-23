@@ -5,6 +5,7 @@
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
     import { tokenizePreset, type PromptItem } from "src/ts/process/prompt";
     import { createTokenCountField } from "src/ts/tokenCountField";
+    import { tokenScopeKey } from "src/ts/tokenizer";
     import { templateCheck } from "src/ts/process/templates/templateCheck";
 
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -36,24 +37,37 @@
 
     let { onGoBack = () => {}, mode = "independent", subMenu = $bindable(0) }: Props = $props();
 
-    const consistentTokens = createTokenCountField<PromptItem[]>({
-        count: (items) => tokenizePreset(items, true),
+    type PromptTokenCountInput = { items: PromptItem[]; scope: string } | { error: unknown };
+
+    const consistentTokens = createTokenCountField<PromptTokenCountInput>({
+        count: async (input) => {
+            if ("error" in input) throw input.error;
+            return tokenizePreset(input.items, true);
+        },
         apply: (count) => (tokens = count),
-        same: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+        same: (a, b) => !("error" in a) && !("error" in b) && JSON.stringify(a) === JSON.stringify(b),
     });
-    const expandedTokens = createTokenCountField<PromptItem[]>({
-        count: (items) => tokenizePreset(items, false),
+    const expandedTokens = createTokenCountField<PromptTokenCountInput>({
+        count: async (input) => {
+            if ("error" in input) throw input.error;
+            return tokenizePreset(input.items, false);
+        },
         apply: (count) => (extokens = count),
-        same: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+        same: (a, b) => !("error" in a) && !("error" in b) && JSON.stringify(a) === JSON.stringify(b),
     });
 
     $effect.pre(() => {
         warns = templateCheck({ promptTemplate: activePreset.promptTemplate });
     });
     $effect.pre(() => {
-        const items = $state.snapshot(templateItems());
-        consistentTokens.update(items);
-        expandedTokens.update(items);
+        let input: PromptTokenCountInput;
+        try {
+            input = { items: $state.snapshot(templateItems()), scope: tokenScopeKey() };
+        } catch (error) {
+            input = { error };
+        }
+        consistentTokens.update(input);
+        expandedTokens.update(input);
     });
 
     function getDisplayTemplate() {

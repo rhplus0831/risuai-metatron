@@ -21,7 +21,7 @@
     import TextInput from "../../UI/GUI/TextInput.svelte";
     import NumberInput from "../../UI/GUI/NumberInput.svelte";
     import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
-    import { tokenizeAccurate } from "src/ts/tokenizer";
+    import { countTokens, tokenCountInput, type TokenCountInput } from "src/ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { onDestroy } from "svelte";
     import LoreBookList from "./LoreBookList.svelte";
@@ -66,14 +66,18 @@
     const shownOpen = $derived(open || forceOpen);
 
     let tokens = $state(0);
-    const tokenField = createTokenCountField<string>({
-        count: (text, signal) => tokenizeAccurate(text, undefined, signal),
+    const tokenField = createTokenCountField<TokenCountInput>({
+        count: async (input, signal) => {
+            if ("error" in input) throw input.error;
+            return countTokens(input.expanded, undefined, signal);
+        },
         apply: (count) => (tokens = count),
+        same: (a, b) => !("error" in a) && !("error" in b) && a.expanded === b.expanded && a.scope === b.scope,
     });
 
     $effect(() => {
         if (shownOpen && value.mode !== "folder") {
-            tokenField.update(value.content);
+            tokenField.update(tokenCountInput(value.content));
         } else {
             tokenField.reset();
         }
