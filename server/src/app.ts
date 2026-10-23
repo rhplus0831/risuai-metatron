@@ -73,6 +73,7 @@ import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/transl
 import { createTranslationRunner } from "./translation/runner.ts";
 import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
+import { registerTokenRoutes, TOKEN_COUNT_PATH, TOKEN_ENCODE_PATH } from "./routes/tokens.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import {
@@ -295,7 +296,7 @@ export function createServerContext(options: {
         diagnostics,
         abortGraceMs: options.generationAbortGraceMs,
     });
-    // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
+    // The request layer and token routes share one counter and tokenizers, loaded on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
     // Memory on the server: the embedding vectors are a cache in a file of their own (in no snapshot
@@ -585,11 +586,12 @@ export function createServerContext(options: {
             c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
             c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
+        const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
         if (shuttingDown) {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || fileImport || history)) {
+            if (shuttingDown && (resource || backup || fileImport || history || tokenRoute)) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
@@ -603,7 +605,7 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask) {
+            if (history || memoryTask || tokenRoute) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -617,8 +619,8 @@ export function createServerContext(options: {
     });
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, and the memory task start's cap their bodies themselves (8 MiB, 16 KiB, 16 KiB,
-    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB).
+    // message search's, the memory task start's, and the token routes cap their bodies themselves
+    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 2 MiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -634,6 +636,8 @@ export function createServerContext(options: {
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
                     route === MEMORY_TASKS_PATH ||
+                    route === TOKEN_COUNT_PATH ||
+                    route === TOKEN_ENCODE_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
@@ -730,6 +734,20 @@ export function createServerContext(options: {
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
+    });
+    registerTokenRoutes(app, {
+        counter: tokenCounter,
+        tokenizers,
+        googleAccessToken: () => {
+            const secrets = llmSecretsKind
+                ? (resources.get(llmSecretsKind, SINGLETON_RESOURCE_ID)?.data as Pick<Database, "google"> | undefined)
+                : undefined;
+            return secrets?.google?.accessToken;
+        },
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+        shuttingDown: () => shuttingDown,
     });
     registerRequestHistoryRoutes(app, {
         history: requestHistory,

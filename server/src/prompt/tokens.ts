@@ -1,11 +1,11 @@
 import { LRUMap } from "mnemonist";
 import type { LLMTokenizer } from "../../../shared/llm.ts";
-import { selectTokenizer } from "../../../shared/tokenizerChoice.ts";
+import { selectTokenizer, tokenizerIdentityKey, type TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 import type { Tokenizers } from "./tokenizers/index.ts";
 
 /**
  * The server's token counter: the client's `encode` (`src/ts/tokenizer.ts`) with the settings of
- * one job instead of the tab's. The routing is the shared `selectTokenizer`, the families are the
+ * one job or the tab's supplied scope. The routing is the shared `selectTokenizer`, the families are the
  * server's tokenizers, and with `useTokenizerCaching` the results stay in an LRU of 1,500, keyed
  * by the client's fields plus the model's `internalID`.
  *
@@ -34,17 +34,28 @@ export type TokenCountScope = {
     googleAccessToken?: string;
 };
 
-/** The tokenizer-selecting scope fields, shared by the encode and strong-ban cache keys. */
-export function tokenizerIdentityKey(scope: TokenCountScope): string {
-    return JSON.stringify([
-        scope.aiModel,
-        scope.customTokenizer,
-        scope.currentPluginProvider,
-        scope.googleClaudeTokenizing,
-        scope.model.tokenizer,
-        scope.model.internalID ?? null,
-        scope.pluginTokenizer,
-    ]);
+/** The tab's scope with the stored Google key, shared by LLM requests and token counts. */
+export function tokenScopeFromTab(tokenizer: TabTokenScope, googleAccessToken: string | undefined): TokenCountScope {
+    return {
+        aiModel: tokenizer.aiModel,
+        currentPluginProvider: tokenizer.currentPluginProvider,
+        model: {
+            tokenizer: tokenizer.modelTokenizer,
+            ...(tokenizer.modelInternalID !== undefined ? { internalID: tokenizer.modelInternalID } : {}),
+        },
+        pluginTokenizer: tokenizer.pluginTokenizer,
+        customTokenizer: tokenizer.customTokenizer,
+        googleClaudeTokenizing: tokenizer.googleClaudeTokenizing,
+        useTokenizerCaching: tokenizer.useTokenizerCaching,
+        googleAccessToken,
+    };
+}
+
+/** Tiktoken refuses special tokens in ordinary text; loader and service failures are not refusals. */
+export function isTokenizerTextRefusal(error: unknown): error is Error {
+    return (
+        error instanceof Error && error.message.startsWith("The text contains a special token that is not allowed: ")
+    );
 }
 
 type Encoded = ArrayLike<number>;

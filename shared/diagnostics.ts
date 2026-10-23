@@ -270,6 +270,8 @@ export const ROUTE_TEMPLATES = [
     "/api/push/subscription",
     "/api/llm/request",
     "/api/llm/request/:id/answer",
+    "/api/tokens/count",
+    "/api/tokens/encode",
     "/api/request-history",
     "/api/request-history/share",
     "/api/request-history/shares",

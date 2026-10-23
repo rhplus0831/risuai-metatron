@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LLMModel } from "../../../shared/llm.ts";
+import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
 import { dynamicModelOf } from "../../../shared/llm/models.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
@@ -24,7 +25,7 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { markFailure } from "../jobs/generationJobs.ts";
 import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
-import { tokenizerIdentityKey, type TokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
+import { tokenScopeFromTab, type TokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
 import type { ClaudeObserver } from "./claudeObserver.ts";
 import type { PluginProviderAnswer, RequestContext } from "./context.ts";
 import { messages } from "./messages.ts";
@@ -1372,20 +1373,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             tracker.prompt(body.arg.formated, redactor);
             // The client's `encode` scope, read in the tab when the request started (its main model,
             // whatever preset the request uses), with the stored Google key for a remote count.
-            const tokenizer = body.context.tokenizer;
-            const tokenScope: TokenCountScope = {
-                aiModel: tokenizer.aiModel,
-                currentPluginProvider: tokenizer.currentPluginProvider,
-                model: {
-                    tokenizer: tokenizer.modelTokenizer,
-                    ...(tokenizer.modelInternalID !== undefined ? { internalID: tokenizer.modelInternalID } : {}),
-                },
-                pluginTokenizer: tokenizer.pluginTokenizer,
-                customTokenizer: tokenizer.customTokenizer,
-                googleClaudeTokenizing: tokenizer.googleClaudeTokenizing,
-                useTokenizerCaching: tokenizer.useTokenizerCaching,
-                googleAccessToken: loaded.db.google?.accessToken,
-            };
+            const tokenScope = tokenScopeFromTab(body.context.tokenizer, loaded.db.google?.accessToken);
             /** Ends the request (and, for a barrier failure, a timeout, or a disconnect, the job). */
             const endWith = (message: string, endsJob: boolean) => {
                 const error = fatal(message);

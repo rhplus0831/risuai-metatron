@@ -12,6 +12,7 @@ import {
 import { isRecordId } from "../../../shared/ids.ts";
 import { isModelDescriptor } from "../../../shared/llm/validate.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { isTabTokenScope } from "../../../shared/tokenizerChoice.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
@@ -130,17 +131,7 @@ export function parseLlmRequestBody(body: unknown): LlmRequestBody | string {
         return "context.mainModel must be { imageInput }";
     }
     const tokenizer = context.tokenizer;
-    if (
-        !isPlainObject(tokenizer) ||
-        typeof tokenizer.aiModel !== "string" ||
-        typeof tokenizer.currentPluginProvider !== "string" ||
-        typeof tokenizer.modelTokenizer !== "number" ||
-        !optionalString(tokenizer.modelInternalID) ||
-        typeof tokenizer.pluginTokenizer !== "string" ||
-        typeof tokenizer.customTokenizer !== "string" ||
-        typeof tokenizer.googleClaudeTokenizing !== "boolean" ||
-        typeof tokenizer.useTokenizerCaching !== "boolean"
-    ) {
+    if (!isTabTokenScope(tokenizer)) {
         return "context.tokenizer must be the tab's tokenizer scope";
     }
     const arg = parseArgs(body.arg);

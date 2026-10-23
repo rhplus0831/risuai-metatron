@@ -1,8 +1,9 @@
 import { LLMTokenizer } from "./llm.ts";
+import { isPlainObject } from "./valueKinds.ts";
 
 /**
  * Which tokenizer counts a model's text, shared by the client (`encode` in `src/ts/tokenizer.ts`)
- * and the server counter (`server/src/prompt/tokens.ts`), so the two cannot route apart.
+ * and the server counter and token routes, so their model and playground choices stay aligned.
  *
  * The families are the server's (`server/src/prompt/tokenizers/`): `gemma` is the Transformers.js
  * Gemma tokenizer over `llama3.json` (the client's `gemmaTokenize`), `gemmaSentencePiece` the web
@@ -44,6 +45,80 @@ export type TokenizerSettings = {
     /** `providers.googleClaudeTokenizing`. */
     googleClaudeTokenizing: boolean;
 };
+
+/** The tokenizer-selecting fields used by the encode and strong-ban cache keys. */
+export type TokenizerIdentity = {
+    aiModel: string;
+    customTokenizer: string;
+    currentPluginProvider: string;
+    googleClaudeTokenizing: boolean;
+    model: { tokenizer: LLMTokenizer; internalID?: string };
+    pluginTokenizer: string;
+};
+
+export function tokenizerIdentityKey(scope: TokenizerIdentity): string {
+    return JSON.stringify([
+        scope.aiModel,
+        scope.customTokenizer,
+        scope.currentPluginProvider,
+        scope.googleClaudeTokenizing,
+        scope.model.tokenizer,
+        scope.model.internalID ?? null,
+        scope.pluginTokenizer,
+    ]);
+}
+
+/** The tab's tokenizer scope, sent to the LLM request and token count routes. */
+export type TabTokenScope = {
+    aiModel: string;
+    currentPluginProvider: string;
+    modelTokenizer: LLMTokenizer;
+    modelInternalID?: string;
+    /** The legacy plugin provider's declared tokenizer, or "none". */
+    pluginTokenizer: string;
+    customTokenizer: string;
+    googleClaudeTokenizing: boolean;
+    useTokenizerCaching: boolean;
+};
+
+export function isTabTokenScope(value: unknown): value is TabTokenScope {
+    return (
+        isPlainObject(value) &&
+        typeof value.aiModel === "string" &&
+        typeof value.currentPluginProvider === "string" &&
+        typeof value.modelTokenizer === "number" &&
+        (value.modelInternalID === undefined || typeof value.modelInternalID === "string") &&
+        typeof value.pluginTokenizer === "string" &&
+        typeof value.customTokenizer === "string" &&
+        typeof value.googleClaudeTokenizing === "boolean" &&
+        typeof value.useTokenizerCaching === "boolean"
+    );
+}
+
+/** The tab's `encodeWithTokenizer` names; unlike model overrides, `llama3` uses its own family. */
+export function playgroundFamily(name: string): TokenizerFamily {
+    switch (name) {
+        case "mistral":
+        case "novelai":
+        case "claude":
+        case "llama":
+        case "llama3":
+        case "novellist":
+        case "gemma":
+        case "cohere":
+            return name;
+        case "deepseek":
+            return "DeepSeek";
+        case "deepseek-v4":
+            return "DeepSeekV4";
+        case "glm4":
+            return "GLM4";
+        case "glm5":
+            return "GLM5";
+        default:
+            return "cl100k_base";
+    }
+}
 
 const family = (name: TokenizerFamily): TokenizerChoice => ({ kind: "family", family: name });
 

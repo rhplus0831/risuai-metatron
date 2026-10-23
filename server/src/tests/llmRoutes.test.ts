@@ -296,6 +296,16 @@ describe("POST /api/llm/request", () => {
                 /context.modelPresetId must be an id/,
             ],
             [{ ...body(ids), context: { ...body(ids).context, tokenizer: {} } }, /tokenizer scope/],
+            ...[{ modelInternalID: null }, { useTokenizerCaching: undefined }].map((invalid) => [
+                {
+                    ...body(ids),
+                    context: {
+                        ...body(ids).context,
+                        tokenizer: { ...body(ids).context.tokenizer, ...invalid },
+                    },
+                },
+                /tokenizer scope/,
+            ]),
             [body(ids, { bias: undefined }), /arg.bias/],
             [body(ids, { extra: 1 }), /arg.extra is not a request field/],
             [body(ids, { formated: [{ role: "user" }] }), /chat messages/],
