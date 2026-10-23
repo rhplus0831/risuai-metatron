@@ -3,6 +3,11 @@
  * notice and for Web Push alike, and the payload shape the service worker shows.
  */
 
+/**
+ * The tag prefix of every completion notification. Each chat's tag is the prefix plus `:` and a hash of
+ * the chat (`completionNotificationTag`), so a chat's later notice replaces its earlier one and leaves
+ * other chats' notices shown.
+ */
 export const COMPLETION_NOTIFICATION_TAG = "risuai-chat-completion";
 /** `GET`: `{ publicKey }` (null while push is off on the server). */
 export const PUSH_KEY_PATH = "/api/push/key";
@@ -92,7 +97,34 @@ export function chatRoutePath(chaId: string, chatId: string): string {
 }
 
 /**
- * The completion notification for a chat, its serialized form within `MAX_PUSH_PAYLOAD_BYTES`: a
+ * A 53-bit string hash (cyrb53) in base 36: at most 11 characters whatever the ids' length, so the tag
+ * never counts against the payload budget the way the route does.
+ */
+function hash53(text: string): string {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ code, 2654435761);
+        h2 = Math.imul(h2 ^ code, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** The completion notification tag of one chat: `COMPLETION_NOTIFICATION_TAG`, `:`, a hash of the chat. */
+export function completionNotificationTag(chaId: string, chatId: string): string {
+    return `${COMPLETION_NOTIFICATION_TAG}:${hash53(`${chaId}\u0000${chatId}`)}`;
+}
+
+/** Whether `tag` is a completion notification's: the bare prefix (older notices) or a chat's tag. */
+export function isCompletionNotificationTag(tag: string): boolean {
+    return tag === COMPLETION_NOTIFICATION_TAG || tag.startsWith(`${COMPLETION_NOTIFICATION_TAG}:`);
+}
+
+/**
+ * The completion notification for a chat, tagged per chat (`completionNotificationTag`), its serialized form within `MAX_PUSH_PAYLOAD_BYTES`: a
  * route too long for the budget becomes `/`, then the body is cut further.
  */
 export function completionNotification(arg: {
@@ -106,7 +138,7 @@ export function completionNotification(arg: {
         title: COMPLETION_NOTIFICATION_TITLE,
         body: completionNotificationBody(arg),
         url: chatRoutePath(arg.chaId, arg.chatId),
-        tag: COMPLETION_NOTIFICATION_TAG,
+        tag: completionNotificationTag(arg.chaId, arg.chatId),
         icon: NOTIFICATION_ICON,
         badge: NOTIFICATION_ICON,
     };

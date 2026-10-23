@@ -1,6 +1,6 @@
 import { get, writable } from "svelte/store";
 import {
-    COMPLETION_NOTIFICATION_TAG,
+    isCompletionNotificationTag,
     NOTIFICATION_ICON,
     PUSH_KEY_PATH,
     PUSH_SUBSCRIPTION_PATH,
@@ -423,20 +423,25 @@ export function declinePushPrompt() {
     update({ promptDismissed: true });
 }
 
-/** Closes this browser's completion notifications (the page is in front, so they are read). */
+/**
+ * Closes this browser's completion notifications of every chat (the page is in front, so they are
+ * read): each chat has its own tag, so they are listed whole and picked by the tag's prefix.
+ */
 async function dismissCompletionNotifications() {
     try {
         const registration = await readyRegistration();
-        const shown = await registration?.getNotifications({ tag: COMPLETION_NOTIFICATION_TAG });
+        const shown = await registration?.getNotifications();
         for (const notification of shown ?? []) {
-            notification.close();
+            if (isCompletionNotificationTag(notification.tag)) {
+                notification.close();
+            }
         }
     } catch {}
 }
 
 /**
  * The tab's completion notice (`jobChannel.ts`). A browser subscribed to push shows the push instead
- * (the same tag would replace it anyway); otherwise the worker's `showNotification`, else the page's
+ * (the same chat's tag would replace it anyway); otherwise the worker's `showNotification`, else the page's
  * `Notification`. Never asks for the permission.
  */
 export async function showCompletionNotification(payload: {

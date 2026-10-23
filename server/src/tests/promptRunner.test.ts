@@ -6,6 +6,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -912,7 +913,7 @@ describe("a send", () => {
                     title: "Risuai",
                     body: "Crew is done",
                     url: `/chat/${grp}/k`,
-                    tag: "risuai-chat-completion",
+                    tag: completionNotificationTag(grp, "k"),
                 };
                 // One per member's reply; neither names the member nor carries the reply.
                 expect(notices(first.events, "notification").map((event) => event.payload)).toEqual([custom, custom]);

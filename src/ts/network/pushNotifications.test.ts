@@ -64,7 +64,7 @@ function fakeSubscription(endpoint: string, key: Uint8Array | ArrayBuffer): Fake
 
 /** The one registration: its subscription (`current`), the notifications it shows and lists. */
 let current: FakeSubscription | null = null;
-let shown: { close: ReturnType<typeof vi.fn> }[] = [];
+let shown: { tag: string; close: ReturnType<typeof vi.fn> }[] = [];
 const registration = {
     pushManager: {
         getSubscription: vi.fn(async () => current),
@@ -707,12 +707,12 @@ describe("showCompletionNotification", () => {
 
 describe("the page shown and the worker's messages", () => {
     it("closes the tagged notifications when the page is shown", async () => {
-        const first = { close: vi.fn() };
+        const first = { tag: TAG, close: vi.fn() };
         shown = [first];
         await boot();
-        expect(registration.getNotifications).toHaveBeenCalledWith({ tag: TAG });
+        expect(registration.getNotifications).toHaveBeenCalledWith();
         expect(first.close).toHaveBeenCalledTimes(1);
-        const later = { close: vi.fn() };
+        const later = { tag: TAG, close: vi.fn() };
         shown = [later];
         visibilityChange("hidden");
         await settle();
@@ -720,6 +720,21 @@ describe("the page shown and the worker's messages", () => {
         showPage();
         await settle();
         expect(later.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes every chat's completion notifications and the bare prefix, and leaves other notifications", async () => {
+        const chatA = { tag: `${TAG}:a1`, close: vi.fn() };
+        const chatB = { tag: `${TAG}:b2`, close: vi.fn() };
+        const older = { tag: TAG, close: vi.fn() };
+        const other = { tag: "another-notice", close: vi.fn() };
+        const untagged = { tag: "", close: vi.fn() };
+        shown = [chatA, other, chatB, untagged, older];
+        await boot();
+        for (const closed of [chatA, chatB, older]) {
+            expect(closed.close).toHaveBeenCalledTimes(1);
+        }
+        expect(other.close).not.toHaveBeenCalled();
+        expect(untagged.close).not.toHaveBeenCalled();
     });
 
     it("opens the chat of a `risu-open-route` message and answers the worker; other messages are ignored", async () => {

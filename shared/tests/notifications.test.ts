@@ -5,7 +5,9 @@ import {
     chatRoutePath,
     completionNotification,
     completionNotificationBody,
+    completionNotificationTag,
     COMPLETION_NOTIFICATION_TAG,
+    isCompletionNotificationTag,
     COMPLETION_NOTIFICATION_TITLE,
     MAX_NOTIFICATION_BODY_BYTES,
     MAX_PUSH_PAYLOAD_BYTES,
@@ -105,12 +107,12 @@ describe("chatRoutePath", () => {
 describe("completionNotification", () => {
     const base = { name: "Ann", customMessage: "", language: "en", chaId: "c1", chatId: "k" };
 
-    it("carries the fixed title, tag, and logo icon with the chat's route", () => {
+    it("carries the fixed title and logo icon with the chat's route and tag", () => {
         expect(completionNotification(base)).toEqual({
             title: COMPLETION_NOTIFICATION_TITLE,
             body: "Ann's message has been processed.",
             url: "/chat/c1/k",
-            tag: COMPLETION_NOTIFICATION_TAG,
+            tag: completionNotificationTag("c1", "k"),
             icon: NOTIFICATION_ICON,
             badge: NOTIFICATION_ICON,
         });
@@ -173,5 +175,40 @@ describe("completionNotification", () => {
         });
         expect(notification.body).toBe("Crew is done");
         expect(notification.url).toBe("/chat/grp/k");
+    });
+});
+
+describe("completionNotificationTag", () => {
+    const base = { name: "Ann", customMessage: "", language: "en" };
+
+    it("gives each chat its own tag under the prefix and the same chat the same tag", () => {
+        const a = completionNotification({ ...base, chaId: "c1", chatId: "a" }).tag;
+        const b = completionNotification({ ...base, chaId: "c1", chatId: "b" }).tag;
+        const other = completionNotification({ ...base, chaId: "c2", chatId: "a" }).tag;
+        expect(new Set([a, b, other]).size).toBe(3);
+        expect(completionNotification({ ...base, customMessage: "Later", chaId: "c1", chatId: "a" }).tag).toBe(a);
+        for (const tag of [a, b, other]) {
+            expect(tag.startsWith(`${COMPLETION_NOTIFICATION_TAG}:`)).toBe(true);
+            expect(isCompletionNotificationTag(tag)).toBe(true);
+        }
+        // The two ids are not simply joined: moving a character between them changes the tag.
+        expect(completionNotificationTag("ab", "c")).not.toBe(completionNotificationTag("a", "bc"));
+    });
+
+    it("stays short for the longest ids, and the payload still fits the budget", () => {
+        const chaId = "가".repeat(512);
+        const chatId = "나".repeat(512);
+        const tag = completionNotificationTag(chaId, chatId);
+        expect(tag.length).toBeLessThanOrEqual(COMPLETION_NOTIFICATION_TAG.length + 12);
+        const notification = completionNotification({ ...base, customMessage: "x".repeat(1024), chaId, chatId });
+        expect(notification.tag).toBe(tag);
+        expect(utf8(JSON.stringify(notification))).toBeLessThanOrEqual(MAX_PUSH_PAYLOAD_BYTES);
+    });
+
+    it("recognizes the bare prefix of older notices and nothing outside the prefix", () => {
+        expect(isCompletionNotificationTag(COMPLETION_NOTIFICATION_TAG)).toBe(true);
+        expect(isCompletionNotificationTag(`${COMPLETION_NOTIFICATION_TAG}-other`)).toBe(false);
+        expect(isCompletionNotificationTag("other")).toBe(false);
+        expect(isCompletionNotificationTag("")).toBe(false);
     });
 });

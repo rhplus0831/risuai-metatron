@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import { COMPLETION_NOTIFICATION_TAG, completionNotificationTag } from "../../shared/notifications.ts";
 
 // Exercise the installed PWA's HTTP contract, including the manifest that sends the POST.
 const origin = "https://installed.example:8443";
@@ -33,10 +34,12 @@ function worker(windows: FakeWindow[] = []) {
         matchAll: vi.fn(async () => windows),
         openWindow: vi.fn(async () => null),
     };
+    const registration = { showNotification: vi.fn(async (_title: string, _options: { tag?: string }) => {}) };
     runInNewContext(source, {
         self: {
             location: { origin },
             clients,
+            registration,
             addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
         },
         caches: { open },
@@ -68,7 +71,14 @@ function worker(windows: FakeWindow[] = []) {
         expect(waitUntil).toHaveBeenCalledTimes(1);
         await waitUntil.mock.calls[0][0];
     };
-    return { entries, open, dispatch, post, clients, click };
+    /** A push with `payload` as its JSON data; resolves when the worker's `waitUntil` work is done. */
+    const push = async (payload: unknown) => {
+        const waitUntil = vi.fn();
+        listeners.get("push")!({ data: { json: () => payload }, waitUntil });
+        expect(waitUntil).toHaveBeenCalledTimes(1);
+        await waitUntil.mock.calls[0][0];
+    };
+    return { entries, open, dispatch, post, clients, click, push, registration };
 }
 
 function redirected(response: Response, path: string) {
@@ -174,5 +184,39 @@ describe("notification click", () => {
         sw.clients.openWindow.mockRejectedValue(new TypeError("not allowed"));
         await expect(sw.click("/chat/a/b")).resolves.toBeUndefined();
         expect(sw.clients.openWindow).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("completion push", () => {
+    const payload = (tag: unknown) => ({ title: "Risuai", body: "Done.", url: "/chat/c/a", tag });
+    const shownTags = (sw: ReturnType<typeof worker>) =>
+        sw.registration.showNotification.mock.calls.map((call) => call[1].tag);
+
+    it("shows each chat's push under that chat's tag, so another chat's notice stays", async () => {
+        const sw = worker();
+        const tagA = completionNotificationTag("c", "a");
+        const tagB = completionNotificationTag("c", "b");
+        await sw.push(payload(tagA));
+        await sw.push(payload(tagB));
+        await sw.push(payload(tagA));
+        expect(shownTags(sw)).toEqual([tagA, tagB, tagA]);
+        expect(tagA).not.toBe(tagB);
+    });
+
+    it("falls back to the bare prefix for a missing, foreign, or oversized tag", async () => {
+        const sw = worker();
+        await sw.push(payload(undefined));
+        await sw.push(payload("someone-else"));
+        await sw.push(payload(7));
+        await sw.push(payload(`${COMPLETION_NOTIFICATION_TAG}:${"x".repeat(64)}`));
+        expect(shownTags(sw)).toEqual(Array(4).fill(COMPLETION_NOTIFICATION_TAG));
+    });
+
+    it("keeps the chat's tag when it shows the text alone after a refused option", async () => {
+        const sw = worker();
+        sw.registration.showNotification.mockRejectedValueOnce(new TypeError("bad icon"));
+        const tag = completionNotificationTag("c", "a");
+        await sw.push(payload(tag));
+        expect(shownTags(sw)).toEqual([tag, tag]);
     });
 });

@@ -8,6 +8,7 @@ import { serve } from "@hono/node-server";
 import webPush from "web-push";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { completionNotificationTag } from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
@@ -650,7 +651,7 @@ describe("the streaming tail", () => {
                     title: "Risuai",
                     body: "Ann's message has been processed.",
                     url: `/chat/${chaId}/k`,
-                    tag: "risuai-chat-completion",
+                    tag: completionNotificationTag(chaId, "k"),
                 };
                 expect(notices(events, "notification").map((event) => event.payload)).toEqual([notification]);
                 await waitFor(() => pushes.length === 1);

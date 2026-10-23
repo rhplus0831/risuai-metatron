@@ -124,6 +124,8 @@ async function registerCache(urlr, buffer, noContentType = false){
 // which outlives the worker). A rotated subscription (`pushsubscriptionchange`) is not handled
 // here: the worker has no credentials, and the page registers it again when it opens.
 const NOTIFICATION_LOGO = '/logo_192.png'
+// The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
+// (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
 const COMPLETION_TAG = 'risuai-chat-completion'
 
 self.addEventListener('install', (event) => {
@@ -169,14 +171,22 @@ function readPush(event){
         title: text(data && data.title, 'Risuai', 200),
         body: text(data && data.body, 'Chat processing complete.', 2000),
         url: safeRoute(data && data.url),
+        tag: completionTag(data && data.tag),
     }
+}
+
+/** The payload's chat tag when it is a completion tag, else the bare prefix. */
+function completionTag(value){
+    return typeof value === 'string' && value.length <= 64 && value.startsWith(COMPLETION_TAG + ':')
+        ? value
+        : COMPLETION_TAG
 }
 
 async function showPush(event){
     const push = readPush(event)
     const options = {
         body: push.body,
-        tag: COMPLETION_TAG,
+        tag: push.tag,
         icon: NOTIFICATION_LOGO,
         badge: NOTIFICATION_LOGO,
         data: { url: push.url },
@@ -185,7 +195,7 @@ async function showPush(event){
         await self.registration.showNotification(push.title, options)
     } catch {
         // A browser that rejects an option (a badge, an icon it cannot load): the text alone.
-        await self.registration.showNotification(push.title, { body: push.body, tag: COMPLETION_TAG, data: { url: push.url } })
+        await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, data: { url: push.url } })
     }
 }
 
