@@ -3,7 +3,7 @@
 Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
 `832caccf0`, after the Per-Chat Send plan was archived. Re-planned by Combined Run slice ST0
 on 2026-10-23 at `4ef877f64`, over the landed Direct Asset URLs route (DA1–DA6): slices 1 and
-2 now build a `?w=` variant of `/api/asset/<hex>`; no slice landed. Source: Haejeok survey
+2 now build a `?w=` variant of `/api/asset/<hex>`; all 6 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: ST0 (`27b067220`), ST1 (`4a91a3af8`), ST2 (`a1c9d6b6d`), ST3 (`fdf16fd31`), ST4 (`e3f91c5c0`), ST5 (`e905d68dd`). The run's final checks on `b60d8fff5` passed. Source: Haejeok survey
 candidate B1 (`docs/research/haejeok-feature-survey.md` §2 (b) and §3 item 3; HaejeokRisuai
 code at `/home/codex/HaejeokRisuai`, read-only reference). Locations were originally mapped
 by a Luna fan-out (8 workers) against `28e7fda88`. The route, verification, worker, client,

@@ -1,7 +1,7 @@
 # Static Audit Fixes Plan
 
 Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
-`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7
+`832caccf0`, after the Per-Chat Send plan was archived. All 14 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: SA1 (`84ff35294`), SA2 (`ada2e3139`), SA3 (`4f545bc02`), SA4 (`072e0f68d`), SA5 (`8a3a6d00b`), SA6 (`8c6a67465`), SA7 (`5bcc152a7`), SA8 (`fda8d2b35`), SA9 (`f3c4b942a`), SA10 (`c317b2bd4`), SA11 (`99ad3aada`), SA12 (`9c460b847`), SA13 (`aaa118e9e`), SA14 (`3811ebfd9`). The run's final checks on `b60d8fff5` passed. Per-Chat Send slice 7
 (`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`,
 `src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited
 there are stale. Source:

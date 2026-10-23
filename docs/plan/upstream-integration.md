@@ -1,8 +1,7 @@
 # Upstream Integration Plan
 
 Status: drafted 2026-10-23 at `79ae26cc4` as an intake process with a seeded backlog (A–N),
-imported at `832caccf0`, and rewritten into slices on 2026-10-23 at `d5e4b07a5`. No slice
-landed. Every claim was checked at `d5e4b07a5` against the upstream checkout
+imported at `832caccf0`, and rewritten into slices on 2026-10-23 at `d5e4b07a5`. All 23 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: UP1 (`ffc4d03aa`), UP2 (`3c80346dc`), UP3 (`43bb3c63d`), UP4 (`128e6949c`), UP5 (`052b6cad9`), UP6 (`717a371f5`), UP7 (`e555f2f0c`), UP8 (`15ea7614f`), UP9 (`4b9d23ada`), UP10 (`5909b8dfc`), UP11 (`9bd9501b6`), UP12 (`e4ea7c5a3`), UP13 (`385cc8da0`), UP14 (`39f94aaff`), UP15 (`3a9404635`), UP16 (`2285021da`), UP17 (`9d85d9b8f`), UP18 (`1bb7c82a3`), UP19 (`0d0927d7c`), UP20 (`eb44b166c`), UP21 (`695a13dc0`), UP22 (`15503de1f`), UP23 (`513808713`). The run's final checks on `b60d8fff5` passed. Every claim was checked at `d5e4b07a5` against the upstream checkout
 `/home/codex/Risuai` at `f50b5942` by two Luna fan-outs (8 + 3 workers), which also assigned all
 79 upstream non-merge commits to a disposition (Inventory, below). The session re-read the
 block-save refusal, the lore flag declarations and their test pin, the three Gemini

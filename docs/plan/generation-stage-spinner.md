@@ -1,6 +1,6 @@
 # Generation Stage Spinner Plan
 
-Status: planned 2026-10-23 at `b00982244`. No slice landed. Source: the spinner analysis
+Status: planned 2026-10-23 at `b00982244`. All 4 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: GS1 (`e1b49f057`), GS2 (`df489ec91`), GS3 (`54e553623`), GS4 (`34c7fe355`). The run's final checks on `b60d8fff5` passed. Source: the spinner analysis
 (`docs/research/chat-generation-stage-colors-analysis.md`, inspected at `79ae26cc4`; its
 recommended fix, server-reported stages). A Luna fan-out (6 workers) mapped the server
 boundaries, the job contract, the client follow, the spinner, the test harnesses, and the

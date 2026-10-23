@@ -1,7 +1,7 @@
 # Small Fixes Plan
 
 Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
-`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7
+`832caccf0`, after the Per-Chat Send plan was archived. All 12 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: SF1 (`8541758af`), SF2 (`b34906a7d`), SF3 (`5b015c118`), SF4 (`d73df7c0a`), SF5 (`8a756cfd3`), SF6 (`c64dfe7c6`), SF7 (`b06d449af`), SF8 (`3bf30c779`), SF9 (`08c12e1db`), SF10 (`fd26e2dd9`), SF11 (`921913f98`), SF12 (`583505ebf`). The run's final checks on `b60d8fff5` passed. Per-Chat Send slice 7
 (`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`,
 `src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited
 there are stale. Every location was checked against `28e7fda88` by a Luna fan-out (8 workers),

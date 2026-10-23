@@ -1,7 +1,7 @@
 # Direct Asset URLs Plan
 
 Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
-`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. The Server Thumbnails
+`832caccf0`, after the Per-Chat Send plan was archived. All 8 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: DA0 (`81015f89d`), DA1 (`22f1da897`), DA2 (`2a7d338f8`), DA3 (`92c6d4b91`), DA4 (`560a3d86c`), DA5 (`52192c078`), DA6 (`c05c2bf88`), DA7 (`dd19f530b`). The run's final checks on `b60d8fff5` passed. The Server Thumbnails
 plan runs after this one (owner decision 2026-10-23, see Not In This Plan). A Luna fan-out (7
 workers) mapped the code at `28e7fda88`, and the session re-read the signing code, the key
 store, `/api/read`, and the limiters. The source is the 2026-10-20 research pick

@@ -1,6 +1,6 @@
 # Chat Checkpoints Plan
 
-Status: planned 2026-10-20 at `c7628a0bb`. No slice landed. Source: the RisuBard
+Status: planned 2026-10-20 at `c7628a0bb`. All 6 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: CC1 (`b8b75f2e6`), CC2 (`8f16dd41e`), CC3 (`30dfc52cf`), CC4 (`a5398dd28`), CC5 (`f3635120b`), CC6 (`56a21a914`). The run's final checks on `b60d8fff5` passed. Source: the RisuBard
 save slots (`docs/research/risubard-survey.md` §2.3.1, recommended as the best fit in
 `docs/research/pocketrisu-risubard-picks.md` §3 item 1; RisuBard code at
 `/home/codex/RisuBard`, read-only reference). Line numbers are approximate; the

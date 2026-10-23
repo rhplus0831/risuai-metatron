@@ -1,7 +1,7 @@
 # Server Tokenizer Plan
 
 Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
-`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Locations were read by
+`832caccf0`, after the Per-Chat Send plan was archived. All 4 slices landed on `metatron` through the Combined Run index (`docs/plan/combined-run.md`, plan-runner) between 2026-10-23 and 2026-10-24, one cherry-picked commit each: TK1 (`7a7ca32e7`), TK2 (`940c7f8c3`), TK3 (`a719cec11`), TK4 (`4227427ca`). The run's final checks on `b60d8fff5` passed. Locations were read by
 the session against `28e7fda88`. Line numbers are approximate; the identifiers are the anchors.
 Re-verify each cited location before editing.
 
