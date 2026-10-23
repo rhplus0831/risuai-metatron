@@ -9,7 +9,7 @@ Active planning and implementation:
 - [Combine Audit Fixes](combine-audit-fixes.md): the six ordinary-workflow defects from the
   2026-10-24 Combined Run audit (Lua forms with click-to-edit, stale delayed token counts,
   screenshot thumbnail aliasing, per-key thumbnail cleanup, token-count cancellation, upstream
-  export without checkpoint history); 4 of 6 slices landed.
+  export without checkpoint history); 5 of 6 slices landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
