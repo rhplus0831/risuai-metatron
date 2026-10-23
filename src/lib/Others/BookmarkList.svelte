@@ -9,6 +9,7 @@
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         currentChatRef,
         ensureChatLoaded,
@@ -22,6 +23,7 @@
     let chara = $derived(currentCharacter);
     const currentChat = $derived(selectedChat());
     const simpleChar = $derived(createSimpleCharacter(chara));
+    const avatarThumb: 512 | undefined = $derived(settings.ui.theme === "cardboard" ? undefined : 512);
 
     const messageMap = $derived.by(() => {
         if (!chara || !currentChat) return new Map();
@@ -223,7 +225,7 @@
                                         idx={msg.originalIndex}
                                         message={msg.data}
                                         name={msg.speaker?.name}
-                                        img={getCharImage(msg.speaker?.image, "css")}
+                                        img={getCharImage(msg.speaker?.image, "css", avatarThumb)}
                                         role={msg.role}
                                         messageGenerationInfo={msg.generationInfo}
                                         rerollIcon={false}
@@ -237,8 +239,8 @@
                                         message={msg.data}
                                         name={msg.role === "user" ? getUserName() : chara.name}
                                         img={msg.role === "user"
-                                            ? getCharImage(getUserIcon(), "css")
-                                            : getCharImage(chara.image, "css")}
+                                            ? getCharImage(getUserIcon(), "css", avatarThumb)
+                                            : getCharImage(chara.image, "css", avatarThumb)}
                                         role={msg.role}
                                         messageGenerationInfo={msg.generationInfo}
                                         rerollIcon={false}

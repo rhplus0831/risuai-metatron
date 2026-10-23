@@ -1280,7 +1280,11 @@
                         name={currentCharacter.name}
                         message={greetingText(currentCharacter, currentChat?.fmIndex)}
                         role="char"
-                        img={getCharImage(currentCharacter.image, "css")}
+                        img={getCharImage(
+                            currentCharacter.image,
+                            "css",
+                            settings.ui.theme === "cardboard" ? undefined : 512,
+                        )}
                         idx={-1}
                         altGreeting={currentCharacter.alternateGreetings.length > 0}
                         largePortrait={currentCharacter.largePortrait}

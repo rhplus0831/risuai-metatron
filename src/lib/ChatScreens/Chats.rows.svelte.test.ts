@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_ROW_CAP } from "../../../shared/chatLoadPages.ts";
 
 type Message = { chatId: string; data: string; role: "char" | "user"; disabled?: boolean };
-type RowProps = { messageId: string; message: string; idx: number; name: string; largePortrait: boolean };
+type RowProps = {
+    messageId: string;
+    message: string;
+    idx: number;
+    name: string;
+    img: string | Promise<string>;
+    largePortrait: boolean;
+};
 type Row = {
     props: RowProps;
     updates: Record<string, unknown>[];
@@ -51,11 +58,20 @@ vi.mock("./Chat.svelte", () => ({
 }));
 vi.mock("src/ts/storage/settingsViews.svelte", () => {
     const settings = $state({
-        ui: { autoScrollToNewMessage: false, alwaysScrollToNewMessage: false, chatLoadAdditionalPages: 15 },
+        ui: {
+            theme: "standard",
+            autoScrollToNewMessage: false,
+            alwaysScrollToNewMessage: false,
+            chatLoadAdditionalPages: 15,
+        },
     });
     return { settings };
 });
-vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn((path: string) => `image:${path}`) }));
+vi.mock("src/ts/characters", () => ({
+    getCharImage: vi.fn((path: string, _type: string, thumb?: number) =>
+        thumb === undefined ? `image:${path}:original` : `image:${path}`,
+    ),
+}));
 vi.mock("src/ts/stores.svelte", () => ({
     createSimpleCharacter: vi.fn(() => ({})),
     ReloadChatPointer: writable({}),
@@ -85,6 +101,7 @@ vi.mock("src/ts/globalApi.svelte", () => {
 });
 
 import { chatFoldedStateMessageIndex as folded } from "src/ts/globalApi.svelte";
+import { getCharImage } from "src/ts/characters";
 import { currentChatRef, setStreamingState } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { ReloadChatPointer } from "src/ts/stores.svelte";
@@ -184,12 +201,14 @@ beforeEach(() => {
     setStreamingState({ chaId: "c", chatId: "chat" }, null);
     Object.assign(currentChatRef()!, { chaId: "c", chatId: "chat" });
     Object.assign(settings.ui, {
+        theme: "standard",
         autoScrollToNewMessage: false,
         alwaysScrollToNewMessage: false,
         chatLoadAdditionalPages: 15,
     });
     folded.index = -1;
     ReloadChatPointer.set({});
+    vi.mocked(getCharImage).mockClear();
 });
 afterEach(async () => {
     for (const instance of instances.splice(0)) await unmount(instance);
@@ -201,6 +220,64 @@ afterEach(async () => {
 });
 
 describe("chat row invalidation", () => {
+    it("requests original row avatars when mounted under cardboard", () => {
+        settings.ui.theme = "cardboard";
+        const input = messages(4);
+        render(input, input.length, { suspendTrim: true, scrollTop: 0 });
+
+        // Normalize an omitted third argument and an explicit undefined to the same original-image request.
+        const requests = vi.mocked(getCharImage).mock.calls.map(([path, type, thumb]) => [path, type, thumb]);
+        expect(requests).toEqual(
+            expect.arrayContaining([
+                ["char.png", "css", undefined],
+                ["user.png", "css", undefined],
+            ]),
+        );
+        expect(state.rows).toHaveLength(4);
+        for (const row of state.rows) {
+            const source = input[row.props.idx].role === "user" ? "user.png" : "char.png";
+            expect(row.props.img).toBe(`image:${source}:original`);
+        }
+    });
+
+    it("switches every shown row between 512 px thumbnails and originals without remounting", () => {
+        const input = messages(4);
+        render(input, input.length, { suspendTrim: true, scrollTop: 0 });
+        const shown = [...state.rows];
+        expect(shown).toHaveLength(4);
+        expect(getCharImage).toHaveBeenCalledWith("char.png", "css", 512);
+        expect(getCharImage).toHaveBeenCalledWith("user.png", "css", 512);
+        for (const row of shown) {
+            const source = input[row.props.idx].role === "user" ? "user.png" : "char.png";
+            expect(row.props.img).toBe(`image:${source}`);
+        }
+
+        for (const { theme, thumb, suffix } of [
+            { theme: "cardboard", thumb: undefined, suffix: ":original" },
+            { theme: "standard", thumb: 512, suffix: "" },
+        ]) {
+            clearUpdates();
+            vi.mocked(getCharImage).mockClear();
+            settings.ui.theme = theme;
+            flushSync();
+
+            const requests = vi.mocked(getCharImage).mock.calls.map(([path, type, size]) => [path, type, size]);
+            expect(requests).toEqual(
+                expect.arrayContaining([
+                    ["char.png", "css", thumb],
+                    ["user.png", "css", thumb],
+                ]),
+            );
+            for (const row of shown) {
+                const source = input[row.props.idx].role === "user" ? "user.png" : "char.png";
+                expect(row.updates).toContainEqual(expect.objectContaining({ img: `image:${source}${suffix}` }));
+                expect(row.destroyed).toBe(false);
+                expect(latest(row.props.messageId)).toBe(row);
+            }
+            expect(state.rows).toHaveLength(shown.length);
+        }
+    });
+
     it.each(["off", "balanced", "strong"] as const)("isolates streamed chunks with mode %s", (mode) => {
         setStreamingState({ chaId: "c", chatId: "chat" }, { messageId: "m4", mode });
         const untouchedReads = vi.fn();

@@ -78,6 +78,7 @@
     // stylesheets among them) explicitly rather than from whichever effect mounts them.
     const rowContexts = getAllContexts();
     const capturing = $derived(loadPages === Infinity);
+    const avatarThumb: 512 | undefined = $derived(settings.ui.theme === "cardboard" ? undefined : 512);
 
     // Mounting outlives the visibility batch: neither images nor its 1200 ms deadline arm rows.
     type MountBatch = { pending: Map<Row, Row["instance"]>; deferred: Row[] };
@@ -355,6 +356,7 @@
             let mountKey: MountKey | undefined;
             let mountedCharacter: AnyClientCharacter;
             let imageSource: string | undefined;
+            let imageThumb: 512 | undefined;
             let sent: RowUpdate | undefined;
             $effect(() => {
                 if (!row.armed) return;
@@ -373,6 +375,7 @@
                     ]),
                 };
                 const nextImageSource = message.role === "user" ? ctx.userIcon : ctx.image;
+                const nextImageThumb = avatarThumb;
                 const next: RowUpdate = {
                     message: data,
                     idx,
@@ -381,9 +384,11 @@
                     rawStreamingText: data,
                     name: message.role === "user" ? ctx.currentUsername : ctx.name,
                     // Reuse the resolved/pending image on text and name updates, including every
-                    // stream chunk. A changed source updates the portrait without remounting Chat.
+                    // stream chunk. A changed source or size class updates the portrait without remounting Chat.
                     img: untrack(() =>
-                        sent && imageSource === nextImageSource ? sent.img : getCharImage(nextImageSource, "css"),
+                        sent && imageSource === nextImageSource && imageThumb === nextImageThumb
+                            ? sent.img
+                            : getCharImage(nextImageSource, "css", nextImageThumb),
                     ),
                 };
                 untrack(() => {
@@ -430,6 +435,7 @@
                     mountKey = key;
                     mountedCharacter = ctx.character;
                     imageSource = nextImageSource;
+                    imageThumb = nextImageThumb;
                     sent = next;
                 });
             });
