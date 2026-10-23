@@ -29,6 +29,14 @@
         description: "",
         id: v4(),
     });
+    const hasDraftContent = $derived(
+        Object.entries(tempModule).some(([key, value]) => {
+            if (key === "id") return false;
+            if (typeof value === "string" || Array.isArray(value)) return value.length > 0;
+            if (typeof value === "boolean") return value;
+            return value != null;
+        }),
+    );
     let mode = $state(0);
     let editModuleIndex = $state(-1);
     let moduleSearch = $state("");
@@ -201,7 +209,6 @@
                     description: "",
                     id: v4(),
                 };
-                settings.modules.push(tempModule);
                 mode = 1;
             }}
         >
@@ -238,9 +245,11 @@
     <Button
         className="mt-6"
         onclick={() => {
-            settings.modules.push(tempModule);
+            if (hasDraftContent) {
+                settings.modules.push(tempModule);
+            }
             mode = 0;
-        }}>{language.createModule}</Button
+        }}>{hasDraftContent ? language.createModule : language.cancel}</Button
     >
 {:else if mode === 2}
     <h2 class="mb-2 text-2xl font-bold mt-2">{language.editModule}</h2>
